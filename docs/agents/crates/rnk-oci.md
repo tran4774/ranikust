@@ -1,7 +1,7 @@
 # rnk-oci
 
 > **Status:** in progress · **Phase:** 1 ·
-> **Depends on:** — (`serde`, `thiserror`) · **Used by:** `rnk-registry`, `rnk-layer`, `rnk-cache`, `rnk-builder`, `rnk-store` (`Digest`) · **Path:** `crates/rnk-oci/`
+> **Depends on:** — (`serde`, `serde_json`, `thiserror`) · **Used by:** `rnk-registry`, `rnk-layer`, `rnk-cache`, `rnk-builder`, `rnk-store` (`Digest`) · **Path:** `crates/rnk-oci/`
 
 **TL;DR:** OCI and Docker manifests, indexes, image configs and media types,
 owned here rather than taken from `oci-spec`. A digest covers exact bytes:
@@ -41,6 +41,10 @@ impl ImageFormat { fn manifest_media_type/index_media_type/config_media_type(sel
 pub enum Compression { Uncompressed, Gzip, Zstd }
 pub struct Descriptor { media_type, digest, size: u64, urls, annotations: Option<BTreeMap<..>>, data, platform, artifact_type }
 pub struct Platform { architecture, os, os_version /* "os.version" */, os_features, variant, features }
+pub struct ImageManifest { schema_version, media_type, artifact_type, config, layers, subject, annotations } // OCI and Docker v2s2
+pub struct ImageIndex { schema_version, media_type, artifact_type, manifests, subject, annotations }         // OCI index, Docker list
+impl ImageManifest / ImageIndex { fn new(ImageFormat, ..); fn from_json(&[u8]) -> Result<Self, Error>;   // schemaVersion 2, own media type
+                                  fn format(&self) -> Result<ImageFormat, Error> }                       // Err if OCI and Docker mix
 ```
 
 Optional properties are `Option`s: absent or `null` reads as `None` and is not
@@ -49,7 +53,7 @@ written; a present value, even empty, is written back.
 Planned:
 
 ```rust
-pub struct ImageManifest; pub struct ImageIndex; pub struct ImageConfig;        // [design] owned, BTreeMap only
+pub struct ImageConfig;                                                         // [design] owned, BTreeMap only
 pub struct Reference;                                                           // [design] docker/distribution normalization
 pub struct RawManifest { pub bytes: Vec<u8>, pub digest: Digest, pub media_type: MediaType } // [design] never re-serialized
 pub fn to_canonical_json<T: Serialize>(v: &T) -> Result<Vec<u8>, Error>; // [design] owned here; sorted keys
@@ -82,7 +86,10 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
 - T0, next to the code: hostile digest strings (no panic, short messages),
   digest serde and ordering; layer media type per format and compression
   (Docker + zstd fails), conversion along the OCI compatibility matrix,
-  descriptor round trips and malformed descriptors.
+  descriptor round trips and malformed descriptors; manifest and index
+  fixtures in `testdata/` (Docker v2s2 manifest and list, OCI manifest,
+  artifact manifest and index) round trip to the same JSON value; mixed
+  formats, wrong documents, schema 1 and malformed input fail cleanly.
 - T0 round trip: manifests, indexes and configs of real images (both
   formats) parse and serialize back; canonical output is byte-identical over
   100 runs (catches `HashMap` order).
@@ -102,6 +109,10 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   accepts) is rejected: ranikust cannot verify it.
 - Re-serializing a pulled manifest changes its digest; push the raw bytes
   ([exp-05](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180)).
+  Parsing also ignores unknown properties (as the OCI spec asks), so a
+  re-serialized document loses them.
+- One type covers both formats: `from_json` accepts mixed media types so a
+  base image can still be read; check `format()` before writing.
 - Docker schema 2 has no zstd layer type: zstd needs OCI; kaniko rejects
   zstd with `--image-format=docker` or `--tar-path` (`root.go:177-188`).
 - kaniko's `--image-format` defaults to the base's format (`root.go:358`)

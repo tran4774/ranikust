@@ -15,9 +15,12 @@
 mod descriptor;
 mod digest;
 mod error;
+mod manifest;
 mod media_type;
+mod serde_util;
 
 pub use descriptor::{Descriptor, Platform};
 pub use digest::{Digest, DigestAlgorithm};
 pub use error::Error;
+pub use manifest::{ImageIndex, ImageManifest};
 pub use media_type::{Compression, ImageFormat, MediaType};

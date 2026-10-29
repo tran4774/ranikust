@@ -26,13 +26,34 @@ pub enum Error {
         compression: Compression,
     },
     /// A media type has no equivalent in the other image format.
-    #[error("media type {media_type} has no {format} equivalent")]
+    #[error("media type {} has no {format} equivalent", excerpt(.media_type.as_str()))]
     NoEquivalentMediaType {
         /// The media type to convert.
         media_type: MediaType,
         /// The target format.
         format: ImageFormat,
     },
+    /// A manifest or index is not schema version 2 (Docker v2 schema 1 is
+    /// not supported).
+    #[error("unsupported schemaVersion {0}; only 2 is supported")]
+    UnsupportedSchemaVersion(u32),
+    /// A document's own media type says it is something else.
+    #[error("expected {expected}, found media type {}", excerpt(.found.as_str()))]
+    UnexpectedMediaType {
+        /// What the caller asked to parse.
+        expected: &'static str,
+        /// The document's `mediaType`.
+        found: MediaType,
+    },
+    /// A manifest or index mixes OCI and Docker media types.
+    #[error("the {document} mixes OCI and Docker media types")]
+    MixedFormats {
+        /// `manifest` or `index`.
+        document: &'static str,
+    },
+    /// JSON that does not parse into the expected type.
+    #[error("invalid JSON: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 /// Longest excerpt of an untrusted input kept in an error, in characters.
@@ -62,5 +83,14 @@ mod tests {
         let cut = excerpt(&long);
         assert_eq!(cut.chars().count(), EXCERPT_CHARS + 1);
         assert!(cut.ends_with('…'));
+    }
+
+    #[test]
+    fn media_types_in_messages_are_cut() {
+        let err = Error::UnexpectedMediaType {
+            expected: "an image manifest",
+            found: MediaType::new("x".repeat(10_000)),
+        };
+        assert!(err.to_string().len() < 200);
     }
 }
