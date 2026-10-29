@@ -22,6 +22,7 @@ them is a bug.
 | [scheduler.md](scheduler.md) | Stage DAG, `--jobs`, memory-aware limit, lazy export, cancellation, deterministic output | `rnk-sched`, `rnk-builder` |
 | [sandbox.md](sandbox.md) | `RUN` isolation: namespaces, mount sequence, `pivot_root`, capabilities, stubs, users | `rnk-sandbox` |
 | [cache-and-store.md](cache-and-store.md) | State directory, persistent store layout, locks, atomic publication, prune, cache keys | `rnk-store`, `rnk-cache`, `rnk-snapshot`, `rnk-registry` |
+| [metrics.md](metrics.md) | Opt-in build metrics: span conventions, the spans every crate emits, the JSON report, comparison with kaniko's `metrics.json` | `rnk-metrics`, every crate |
 
 ## Conventions
 
