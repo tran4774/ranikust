@@ -29,6 +29,9 @@ where mounting is possible; no `RUN` process outlives the build.
   exist; clone a `RUN` anywhere but on the spawner thread; pick the mode
   (`ranikust`).
 - Allocate, lock, format or panic between `clone` and `execve`.
+- Bind a source below a directory a `RUN` can write (a cache `source=`
+  subpath, Phase 5) by path: resolve it from that directory through
+  `RootPath` first. `open_source` refuses only a final symlink.
 
 ## API
 
@@ -59,11 +62,13 @@ from `rnk-store`, secret file) and passes `--network`.
 
 - `unshare` only while single-threaded. One spawner thread, alive as long as
   the `Sandbox`, clones every `RUN` with a raw `clone` (no `CLONE_VM`); the
-  child arms `PR_SET_PDEATHSIG(SIGKILL)`, then polls a pidfd of the parent
-  process (`getppid` is 0 in a new PID namespace): readable means the
-  process died before the signal was armed. The id switch clears the death
-  signal (`commit_creds`), so it is armed and checked again after it. The
-  child is PID 1 of its PID namespace, so its tree dies with it. Dropping
+  child arms `PR_SET_PDEATHSIG(SIGKILL)`, then reads its parent pid in its
+  own `stat` file of the outer procfs, opened before entering the root
+  (`getppid` is 0 in a new PID namespace): another pid than ranikust's
+  means it was reparented, so ranikust died before the signal was armed.
+  The id switch clears the death signal (`commit_creds`), so it is armed
+  and checked again after it. The child is PID 1 of its PID namespace, so
+  its tree dies with it. Dropping
   the `Sandbox` ends the thread and kills every running `RUN`.
 - Between `clone` and `execve` the child only makes system calls (rustix's
   raw backend, a few `libc` calls) on arguments built before the clone. A
@@ -81,13 +86,17 @@ from `rnk-store`, secret file) and passes `--network`.
   target is resolved with `openat2(RESOLVE_IN_ROOT)` from the bound root and
   mounted through `/proc/self/fd/<n>`; sources are `O_PATH` descriptors the
   parent opened (no symlink as the last component, type checked); remounts
-  keep the source's locked flags. Then `pivot_root(".", ".")` and
+  keep the source's locked flags. The `nodev` remount covers the root's top
+  mount only; a mount nested under a stage root would need its own. Then
+  `pivot_root(".", ".")` and
   `umount2(MNT_DETACH)`; where seccomp refuses it with `EPERM` and `/` is a
   mount root, `MS_MOVE` + `chroot(".")`.
 - Capabilities, for every `USER`: bounding set cut to Docker's 14 defaults,
   ambient cleared, effective and permitted the defaults the process has,
   inheritable empty (Docker since 20.10.14). Then `setsid` (no controlling
-  terminal), a new session keyring, and `setgroups`, `setresgid`,
+  terminal), a new session keyring (root's user and persistent keyrings
+  stay reachable until `--seccomp`, Phase 3; Docker's profile denies
+  `keyctl`), and `setgroups`, `setresgid`,
   `setresuid` to the ids `rnk-rootfs` resolved in the root; `WORKDIR` is
   entered before the switch and again after if only root could.
 - Only stdio crosses `execve` (threat T7): every other descriptor becomes
@@ -196,7 +205,8 @@ from `rnk-store`, secret file) and passes `--network`.
 ## Phase 1
 
 - Done (`feat/rnk-sandbox`): `enter_build_namespace`, spawner thread,
-  PDEATHSIG with the pidfd check, re-armed after the id switch, the `RUN` sequence with `pivot_root` and
+  PDEATHSIG with the parent-pid check, re-armed after the id switch, the
+  `RUN` sequence with `pivot_root` and
   the `MS_MOVE` fallback, bounding-set drop, `USER`, stubs and journal with
   replay, bind mounts for `RUN --mount=type=cache|secret`,
   `--network=none`, `Isolation::Direct` (early, from Phase 2), the probe

@@ -35,6 +35,9 @@ pub(crate) const DEV_NODES: [(&CStr, &CStr); 6] = [
     (c"tty", c"/dev/tty"),
 ];
 
+/// Index of `/dev/null` in [`DEV_NODES`]: masked files are binds of it.
+pub(crate) const DEV_NULL: usize = 0;
+
 /// `(link name, target)` of the symlinks in `/dev`, as Docker creates them.
 pub(crate) const DEV_SYMLINKS: [(&CStr, &CStr); 5] = [
     (c"ptmx", c"pts/ptmx"),
@@ -397,6 +400,11 @@ mod tests {
         let missing = hosts_file(Network::Host, "h", None);
         assert!(missing.starts_with(b"127.0.0.1\tlocalhost\n"));
         assert_eq!(hostname_file("h"), b"h\n");
+    }
+
+    #[test]
+    fn dev_null_index_names_dev_null() {
+        assert_eq!(DEV_NODES[DEV_NULL].1, c"/dev/null");
     }
 
     #[test]

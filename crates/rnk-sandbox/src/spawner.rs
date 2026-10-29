@@ -21,7 +21,7 @@ use rustix::fs::{FileType, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::mount::MountFlags;
 use rustix::pipe::PipeFlags;
-use rustix::process::{Gid, Pid, PidfdFlags, Signal, Uid, WaitId, WaitIdOptions};
+use rustix::process::{Gid, Pid, Signal, Uid, WaitId, WaitIdOptions};
 use tracing::Span;
 use tracing::field::Empty;
 
@@ -67,11 +67,11 @@ impl Sandbox {
                 replayed.journals
             );
         }
-        let parent = ParentFd::new()?;
+        let parent = ParentPid::new()?;
         let (requests, received) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("rnk-sandbox-spawner".into())
-            .spawn(move || spawner(&received, &parent))
+            .spawn(move || spawner(&received, parent))
             .map_err(|e| sys_err("start the spawner thread", e))?;
         Ok(Self {
             runner,
@@ -138,17 +138,20 @@ pub(crate) struct Spawned {
     failures: OwnedFd,
 }
 
-/// A pidfd of this process, which a child polls after arming
-/// `PR_SET_PDEATHSIG` to learn whether the process died before: it becomes
-/// readable once the process has exited, whoever else holds a copy.
-#[derive(Debug)]
-pub(crate) struct ParentFd(OwnedFd);
+/// This process's pid as `/proc` numbers it: the parent pid its children
+/// must see in their outer `/proc/self/stat` (`child::ParentCheck`). Read
+/// from the same procfs, so it matches even when `/proc` belongs to an
+/// outer PID namespace.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParentPid(i32);
 
-impl ParentFd {
+impl ParentPid {
     pub(crate) fn new() -> Result<Self> {
-        let fd = rustix::process::pidfd_open(rustix::process::getpid(), PidfdFlags::empty())
-            .map_err(|e| sys_err("pidfd_open", e))?;
-        Ok(Self(above_stdio(fd)?))
+        let p = Path::new("/proc/self/stat");
+        let stat = fs::read(p).map_err(|e| io_err("read", p, e))?;
+        child::stat_pid_and_ppid(&stat)
+            .map(|(pid, _)| Self(pid))
+            .ok_or_else(|| io_err("parse", p, io::Error::from(io::ErrorKind::InvalidData)))
     }
 }
 
@@ -162,7 +165,7 @@ fn above_stdio(fd: OwnedFd) -> Result<OwnedFd> {
     rustix::io::fcntl_dupfd_cloexec(&fd, 3).map_err(|e| sys_err("fcntl(F_DUPFD_CLOEXEC)", e))
 }
 
-fn spawner(requests: &mpsc::Receiver<Request>, parent: &ParentFd) {
+fn spawner(requests: &mpsc::Receiver<Request>, parent: ParentPid) {
     for Request { job, reply } in requests {
         let spawned = clone_child(job, parent);
         // The caller waits on the answer; it can only be gone if it
@@ -173,7 +176,7 @@ fn spawner(requests: &mpsc::Receiver<Request>, parent: &ParentFd) {
 
 /// Clones `job` on the calling thread, which becomes the child's parent
 /// thread for `PR_SET_PDEATHSIG`.
-pub(crate) fn clone_child(job: Job, parent: &ParentFd) -> Result<Spawned> {
+pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let Job {
         args,
         flags,
@@ -186,7 +189,7 @@ pub(crate) fn clone_child(job: Job, parent: &ParentFd) -> Result<Spawned> {
     let ptrs = ExecPtrs::new(&args);
     let fds = ChildFds {
         err_w: err_w.as_raw_fd(),
-        parent: parent.0.as_raw_fd(),
+        parent: parent.0,
     };
     let null: libc::c_long = 0;
     // SAFETY: `clone` without `CLONE_VM` and with a null stack duplicates the

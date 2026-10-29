@@ -17,7 +17,7 @@ use tracing::field::Empty;
 use crate::child::RootEntry;
 use crate::error::{Error, Result, Step, io_err};
 use crate::journal;
-use crate::spawner::{ParentFd, Runner, clone_child};
+use crate::spawner::{ParentPid, Runner, clone_child};
 use crate::spec::RunSpec;
 
 /// What the probe found the sandbox can do in this environment.
@@ -55,8 +55,8 @@ pub fn probe(dir: &Path) -> Result<Caps> {
     journal::replay(runner.runs_dir())?;
     remove_stale_roots(dir);
     let root_dir = create_root(dir)?;
-    let parent = ParentFd::new()?;
-    let result = attempts(dir, &root_dir, &parent);
+    let parent = ParentPid::new()?;
+    let result = attempts(dir, &root_dir, parent);
     // Empty again: the journal removed the stubs.
     if let Err(e) = fs::remove_dir(&root_dir) {
         tracing::warn!("rnk-sandbox: cannot remove {}: {e}", root_dir.display());
@@ -64,7 +64,7 @@ pub fn probe(dir: &Path) -> Result<Caps> {
     result
 }
 
-fn attempts(dir: &Path, root_dir: &Path, parent: &ParentFd) -> Result<Caps> {
+fn attempts(dir: &Path, root_dir: &Path, parent: ParentPid) -> Result<Caps> {
     let mut last = None;
     for root_entry in [RootEntry::PivotRoot, RootEntry::MoveMount] {
         if root_entry == RootEntry::MoveMount && !slash_is_mount_root()? {

@@ -15,17 +15,18 @@
 use std::ffi::{CStr, CString, c_char};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
-use rustix::event::{PollFd, PollFlags, Timespec};
-use rustix::fs::{CWD, FileType, Mode, OFlags, RawDir, ResolveFlags};
+use rustix::fs::{CWD, FileType, Mode, OFlags, PROC_SUPER_MAGIC, RawDir, ResolveFlags};
 use rustix::io::Errno;
 use rustix::mount::{MountFlags, MountPropagationFlags, UnmountFlags};
 use rustix::process::{Gid, Signal, Uid};
 use rustix::thread::{CapabilitySet, CapabilitySets};
 
 use crate::error::Step;
-use crate::plan::{DEV_NODES, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, MASKED_PATHS, READONLY_PATHS, SHM};
+use crate::plan::{
+    DEV_NODES, DEV_NULL, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, MASKED_PATHS, READONLY_PATHS, SHM,
+};
 
 /// How the child enters the root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,9 +131,50 @@ impl<'a> ExecPtrs<'a> {
 pub(crate) struct ChildFds {
     /// Write end of the error pipe (close-on-exec).
     pub(crate) err_w: RawFd,
-    /// A pidfd of the process that cloned the child (close-on-exec):
-    /// readable once that process has exited.
-    pub(crate) parent: RawFd,
+    /// The pid of the process that cloned the child, as the outer procfs
+    /// numbers it (its `/proc/self/stat`).
+    pub(crate) parent: i32,
+}
+
+/// What the child checks its parent with: its own `stat` file in the outer
+/// procfs, opened before entering the root, and the pid the parent must
+/// have there. A `clone` child reparented after its parent died shows
+/// another parent pid, at once and whatever other children exist.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParentCheck {
+    stat: RawFd,
+    parent: i32,
+}
+
+impl ParentCheck {
+    /// Opens `/proc/self/stat`, numbered 3 or higher so that stdio never
+    /// overwrites it, close-on-exec. Call before entering the root.
+    pub(crate) fn open(err: RawFd, parent: i32) -> Self {
+        let fd = check(
+            err,
+            Step::ParentGone,
+            rustix::fs::openat(
+                CWD,
+                c"/proc/self/stat",
+                OFlags::RDONLY | OFlags::CLOEXEC,
+                Mode::empty(),
+            ),
+        );
+        let fd = if fd.as_raw_fd() < 3 {
+            check(
+                err,
+                Step::ParentGone,
+                rustix::io::fcntl_dupfd_cloexec(&fd, 3),
+            )
+        } else {
+            fd
+        };
+        // Open until `execve` closes it.
+        Self {
+            stat: fd.into_raw_fd(),
+            parent,
+        }
+    }
 }
 
 /// `/proc/self/fd/<fd>`, NUL-terminated, on the stack: mounting onto it acts
@@ -194,7 +236,8 @@ impl FdPath {
 /// the clone.
 pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -> ! {
     let err = fds.err_w;
-    arm_death_signal(err, fds.parent);
+    let parent = ParentCheck::open(err, fds.parent);
+    arm_death_signal(err, parent);
 
     // Nothing mounted from here on propagates to the build's namespace.
     check(
@@ -234,7 +277,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     for m in &args.mounts {
         mount_one(err, root.as_fd(), &args.dev_remount, m);
     }
-    protect_kernel_files(err, root.as_fd());
+    protect_kernel_files(err, root.as_fd(), args.dev_remount[DEV_NULL]);
 
     check(err, Step::EnterRoot, rustix::process::fchdir(&root));
     match args.root_entry {
@@ -270,40 +313,56 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     }
 
     drop_capabilities(err, args);
-    switch_user_and_exec(err, fds.parent, args, ptrs)
+    switch_user_and_exec(err, parent, args, ptrs)
 }
 
 /// Arms `PR_SET_PDEATHSIG(SIGKILL)`, then checks that the process that
 /// cloned the child did not exit before it was armed. `getppid` is 0 in a
-/// new PID namespace, so the check polls a pidfd of that process instead.
-pub(crate) fn arm_death_signal(err: RawFd, parent: RawFd) {
+/// new PID namespace, so the parent pid is read from the outer procfs.
+pub(crate) fn arm_death_signal(err: RawFd, parent: ParentCheck) {
     check(
         err,
         Step::DeathSignal,
         rustix::process::set_parent_process_death_signal(Some(Signal::KILL)),
     );
-    // SAFETY: `parent` is open in the child until `execve` closes it.
-    let pidfd = unsafe { BorrowedFd::borrow_raw(parent) };
-    let mut fds = [PollFd::new(&pidfd, PollFlags::IN)];
-    let now = Timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    loop {
-        match rustix::event::poll(&mut fds, Some(&now)) {
-            Ok(0) => return,
-            Ok(_) => fail(err, Step::ParentGone, Errno::SRCH),
+    // SAFETY: `stat` is open in the child until `execve` closes it.
+    let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
+    // The parent pid is the fourth field, within the first 256 bytes: the
+    // pid, the name (16 bytes, 64 for kernel threads) and the state come
+    // before it.
+    let mut buf = [0u8; 256];
+    let len = loop {
+        match rustix::io::pread(stat, &mut buf, 0) {
+            Ok(n) => break n,
             Err(Errno::INTR) => {}
             Err(e) => fail(err, Step::ParentGone, e),
         }
+    };
+    match buf.get(..len).and_then(stat_pid_and_ppid) {
+        Some((_, ppid)) if ppid == parent.parent => {}
+        Some(_) => fail(err, Step::ParentGone, Errno::SRCH),
+        None => fail(err, Step::ParentGone, Errno::INVAL),
     }
+}
+
+/// The pid and the parent pid of a `/proc/<pid>/stat` line, or of its first
+/// bytes: `pid (name) state ppid …`; the name may hold spaces and `)`.
+pub(crate) fn stat_pid_and_ppid(stat: &[u8]) -> Option<(i32, i32)> {
+    let open = stat.iter().position(|&b| b == b'(')?;
+    let close = stat.iter().rposition(|&b| b == b')')?;
+    let pid = parse_fd(stat.get(..open)?.strip_suffix(b" ")?)?;
+    // ") S 1234 …"
+    let rest = stat.get(close + 1..)?.strip_prefix(b" ")?;
+    let rest = rest.get(1..)?.strip_prefix(b" ")?;
+    let end = rest.iter().position(|&b| b == b' ').unwrap_or(rest.len());
+    Some((pid, parse_fd(rest.get(..end)?)?))
 }
 
 /// A new session and session keyring, `WORKDIR`, the `USER` ids, the death
 /// signal again, stdio, process state, then `execve`.
 pub(crate) fn switch_user_and_exec(
     err: RawFd,
-    parent: RawFd,
+    parent: ParentCheck,
     args: &ChildArgs,
     ptrs: &ExecPtrs<'_>,
 ) -> ! {
@@ -442,7 +501,7 @@ fn mount_one(
 /// `daemon/pkg/oci/defaults.go`): writing a sysctl needs only uid 0, and
 /// `/proc/sys/kernel/core_pattern` or `/proc/sysrq-trigger` reach the host
 /// kernel. A path the kernel does not have is skipped.
-fn protect_kernel_files(err: RawFd, root: BorrowedFd<'_>) {
+fn protect_kernel_files(err: RawFd, root: BorrowedFd<'_>, null_remount: MountFlags) {
     for path in READONLY_PATHS {
         let Some(t) = resolve_existing(err, root, path) else {
             continue;
@@ -495,11 +554,12 @@ fn protect_kernel_files(err: RawFd, root: BorrowedFd<'_>) {
         let Some(t) = resolve_existing(err, root, path) else {
             fail(err, Step::MaskPath, Errno::NOENT)
         };
-        let flags = MountFlags::BIND | MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NOEXEC;
+        // The flags of the `/dev/null` node bind: read-only, and the outer
+        // mount's locked flags kept.
         check(
             err,
             Step::MaskPath,
-            rustix::mount::mount_remount(fd_path(err, &t).path(), flags, c""),
+            rustix::mount::mount_remount(fd_path(err, &t).path(), null_remount, c""),
         );
     }
 }
@@ -855,6 +915,12 @@ fn cloexec_listed() -> bool {
     ) else {
         return false;
     };
+    // After entering the root, `/proc` is the image's path: only the proc
+    // mounted there may be trusted to list the descriptors.
+    match rustix::fs::fstatfs(&dir) {
+        Ok(st) if st.f_type == PROC_SUPER_MAGIC => {}
+        _ => return false,
+    }
     let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
     let mut entries = RawDir::new(&dir, &mut buf);
     while let Some(entry) = entries.next() {
@@ -973,6 +1039,27 @@ mod tests {
             let p = FdPath::new(fd);
             assert_eq!(p.as_cstr().unwrap().to_str().unwrap(), want);
         }
+    }
+
+    #[test]
+    fn stat_lines_give_pid_and_parent_pid() {
+        assert_eq!(
+            stat_pid_and_ppid(b"42 (sh) S 7 42 42 0 -1 4194560 100"),
+            Some((42, 7))
+        );
+        // A name with spaces and parentheses.
+        assert_eq!(stat_pid_and_ppid(b"9 (a) b (c)) R 1 9 9"), Some((9, 1)));
+        // Cut after the parent pid, as a 256-byte read may be.
+        assert_eq!(stat_pid_and_ppid(b"5 (x) S 3"), Some((5, 3)));
+        assert_eq!(stat_pid_and_ppid(b"5 (x) S"), None);
+        assert_eq!(stat_pid_and_ppid(b"garbage"), None);
+        let own = std::fs::read("/proc/self/stat").unwrap();
+        let (pid, ppid) = stat_pid_and_ppid(&own).unwrap();
+        assert_eq!(pid, rustix::process::getpid().as_raw_nonzero().get());
+        assert_eq!(
+            Some(ppid),
+            rustix::process::getppid().map(|p| p.as_raw_nonzero().get())
+        );
     }
 
     #[test]

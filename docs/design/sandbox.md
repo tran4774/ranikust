@@ -47,8 +47,8 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 
 1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check that the parent process
    did not die before: `getppid()` is 0 in a new PID namespace, so the child
-   polls a pidfd of the parent process, which becomes readable once it has
-   exited.
+   reads the parent pid in its own `/proc/self/stat` of the outer procfs,
+   opened before entering the root; a reparented child shows another pid.
 2. In a new user namespace, map the full id range available and allow
    `setgroups`; otherwise `USER _apt` (used by apt-get) fails with
    `setgroups: EPERM`.
