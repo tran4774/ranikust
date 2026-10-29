@@ -10,6 +10,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+mimalloc.workspace = true
 rnk-metrics.workspace = true
 tracing.workspace = true
 

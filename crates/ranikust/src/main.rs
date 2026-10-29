@@ -24,6 +24,12 @@ use std::process::ExitCode;
 
 use rnk_metrics::{Config, Outcome};
 
+/// The allocator of every Rust allocation: the release binary is static musl,
+/// whose allocator is 250–300 times slower than mimalloc at 16 threads
+/// (`exp-05` Q2). C libraries (libzstd) still call libc's `malloc`.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Hidden test hook: `panic` panics and aborts, `error` fails with exit code
 /// 1, after metrics are set up. It lets the tests of the report's exit paths
 /// run the real binary, including a release build, where `panic = "abort"`.
