@@ -16,7 +16,7 @@ the code.
 
 | | Item | Owner |
 |---|---|---|
-| [ ] | OCI and Docker v2s2 manifests, index, config, media types | `rnk-oci` |
+| [~] | OCI and Docker v2s2 manifests, index, config, media types | `rnk-oci` |
 | [ ] | Dockerfile front end: lexer, directives, heredocs, `ARG`/`ENV` expansion, instructions, stage DAG; BuildKit goldens on kaniko's 200 Dockerfiles | `rnk-dockerfile` |
 | [ ] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
 | [ ] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion | `rnk-rootfs` |

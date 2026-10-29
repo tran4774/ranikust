@@ -78,10 +78,15 @@ Dockerfile, or decide which files an instruction copies.
 
 ### `rnk-oci`
 
-OCI and Docker manifests, image configs and media types, on `oci-spec`, and
-the canonical JSON (sorted keys) of every config and manifest ranikust
-writes: `oci-spec` 0.10 serializes labels, annotations, `ExposedPorts` and
-`Volumes` from hash maps, whose order would change the digest.
+Digests, media types, descriptors, manifests, indexes and image configs of
+the OCI and Docker v2 schema 2 formats, image references, and the canonical
+JSON (every object's keys sorted, no whitespace) of every config and
+manifest ranikust writes, so equal values always give equal digests. The
+types are owned here, not taken from `oci-spec`: `oci-spec` 0.10 serializes
+labels, annotations, `ExposedPorts` and `Volumes` from hash maps, whose
+order would change the digest, and drops Docker-only config fields such as
+`Healthcheck` and `OnBuild`. `oci-spec` still comes in with `oci-client`,
+inside `rnk-registry`.
 **Must not** access the network or filesystem.
 
 ### `rnk-registry`
