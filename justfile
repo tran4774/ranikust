@@ -105,35 +105,20 @@ smoke image="docker.io/library/alpine:3.20":
     OUT="$TARGET/smoke/oci"
     NAME=localhost/ranikust-smoke:latest
     rm -rf "$OUT" "$OUT.tar" && mkdir -p "$OUT"
-    # Checked inside the sandbox, one `RUN` each so that a failure names it.
-    # Mount flags come from mountinfo: busybox `test -w` is always true for root.
-    checks=(
-      'test "$$" = 1'                                                    # PID 1 of its namespace
-      'test "$(hostname)" = ranikust'
-      'grep -q "^CapBnd:[[:space:]]*00000000a80425fb$" /proc/self/status' # Docker's 14 capabilities
-      'grep -q "^CapInh:[[:space:]]*0*$" /proc/self/status'
-      'grep -Eq "^([^ ]+ ){4}/ [^ ]*nodev" /proc/self/mountinfo'          # T18
-      'grep -Eq "^([^ ]+ ){4}/dev/null ro," /proc/self/mountinfo'         # T18
-      'grep -Eq "^([^ ]+ ){4}/proc/sys ro," /proc/self/mountinfo'         # T17
-      '! test -s /proc/kcore'                                            # masked
-      '! test -t 0'                                                      # T19
-      'test "$(ls /proc/self/fd | wc -l)" -le 4'                          # stdio and ls's own, T7
-    )
+    source tests/smoke/lib.bash
     runs=(--run 'echo "hello from ranikust" > /hello' --run 'apk add --no-cache jq')
-    for c in "${checks[@]}"; do runs+=(--run "$c"); done
+    for c in "${smoke_checks[@]}"; do runs+=(--run "$c"); done
     podman run --rm --privileged \
       -v "$BIN:/smoke-build:ro" -v "$OUT:/out" \
       "{{ image }}" /smoke-build --image "{{ image }}" --out /out --tag "$NAME" "${runs[@]}"
-    # The sandbox's stubs (here /etc/resolv.conf, which alpine lacks) must not reach the layer.
-    for blob in "$OUT"/blobs/sha256/*; do
-      if gzip -t "$blob" 2>/dev/null && tar -tzf "$blob" | grep -Eq '^(\./)?etc/resolv\.conf$'; then
-        echo "error: a stub leaked into the layer: etc/resolv.conf" >&2
-        exit 1
-      fi
-    done
+    smoke_check_no_stub_leak "$OUT"
     # `podman load` reads the layout as an OCI archive and names the image
     # after its `ref.name` annotation.
     tar -C "$OUT" -cf "$OUT.tar" .
     podman load --quiet -i "$OUT.tar"
     podman run --rm "$NAME" sh -c 'cat /hello && jq --version'
     echo "smoke: ok"
+
+# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
+test-vm *suites:
+    tests/vm/vm.sh {{ suites }}

@@ -1,0 +1,22 @@
+#cloud-config
+# NoCloud seed of the T2 VM; tests/vm/vm.sh puts the run's own key in place
+# of @SSH_KEY@.
+hostname: ranikust-vm
+ssh_pwauth: false
+
+users:
+  - name: rnk
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - @SSH_KEY@
+
+package_update: true
+packages:
+  - docker.io
+
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [usermod, -aG, docker, rnk]
+  - [touch, /var/lib/ranikust-vm-ready]

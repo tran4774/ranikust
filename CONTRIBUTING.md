@@ -26,6 +26,7 @@ must keep compiling ([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)).
 | [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static` and `just check-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
 | [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | `cargo install --locked cargo-zigbuild@0.24.0` |
 | rootless [Podman](https://podman.io/) | Only for `just smoke`, the T1 smoke test ([docs/testing.md](docs/testing.md)) | `podman` package |
+| QEMU with KVM, `xorriso`, `jq` | Only for `just test-vm`, the T2 VM harness; `/dev/kvm` must be readable and writable by you (its group or an ACL), never through `sudo` | `qemu-system-x86`, `qemu-utils`, `xorriso`, `jq` packages |
 
 The versions of cargo-deny, mdBook, zig and cargo-zigbuild match CI. Nothing
 in the build needs root, and nothing in the dev loop should ever be run with
@@ -73,14 +74,14 @@ short version of how to write code here.
 |---|---|---|---|---|
 | T0 | Unit and in-process tests | None | Anywhere: `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay, Podman | A regular user with subordinate IDs | Your machine | Planned |
-| T2 | Privileged integration: real root, overlay without user namespaces, Docker rootful, the host-safety attack suite | root | A disposable VM only | Planned |
+| T2 | Privileged integration: real root, overlay without user namespaces, Docker rootful, the host-safety attack suite | root | A disposable VM only: `just test-vm` | In use |
 | T3 | CI: format, clippy, T0, static build, aarch64 check, cargo-deny, docs | None | GitHub Actions on every pull request | In use |
 
 Tests above T0 are marked `#[ignore = "T1: ..."]` or `#[ignore = "T2: ..."]`
 and run only through their harness. **Never run a T2 test, or ranikust in
 kaniko mode, on your own machine**: kaniko mode empties its root filesystem.
-[`docs/testing.md`](docs/testing.md) has the details and the plan for the VM
-harness.
+T2 tests run in a VM that `just test-vm` boots and deletes;
+[`docs/testing.md`](docs/testing.md) has the details.
 
 A bug fix comes with a test that fails without the fix.
 

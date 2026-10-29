@@ -25,7 +25,7 @@ the code.
 | [ ] | Persistent store in `--state-dir`: `blobs/`, `layers/`, `caches/`, `tmp/`, per-digest `flock`, atomic rename, start-up cleanup; `BuildPaths` (`ADR-0006`, `ADR-0021`, `ADR-0022`) | `rnk-store` |
 | [~] | Process set-up: flags (`--mode`, `ADR-0023`) and validation into `BuildConfig` (done); workdir checks [open: Q-011], marker, private mount namespace, the probes in order, workdir `flock` in kaniko mode, spawner thread, all while single-threaded | `ranikust` |
 | [~] | Overlay-root probe (steps 1, 3, 4 of `design/modes-and-detection.md`): namespaces, `proc`, `pivot_root`, `sysfs`; overlay mount and `lowerdir+`; refusal with the diagnosis `[inferred]` (the sandbox's step 3 is done: the real sequence, `pivot_root` else `MS_MOVE`) | `rnk-sandbox`, `rnk-snapshot`; run by `ranikust` |
-| [~] | `RUN` sandbox: namespaces, mounts, `pivot_root`/`MS_MOVE`, capability drop, `USER` from the root, stubs and journal, PDEATHSIG (done; runs in rootless podman, `just smoke`; not yet as real root, which needs the VM harness) | `rnk-sandbox` |
+| [~] | `RUN` sandbox: namespaces, mounts, `pivot_root`/`MS_MOVE`, capability drop, `USER` from the root, stubs and journal, PDEATHSIG (done; runs in rootless podman, `just smoke`, and as real root in the VM, `just test-vm`, on kernels 5.15 and 6.8: `pivot_root` on the host and in `docker run --privileged`, `MS_MOVE` under Docker's seccomp profile) | `rnk-sandbox` |
 | [~] | `RUN --mount=type=cache\|secret`; `--network=none` (the sandbox's binds and network namespace are done; the flags and the builder are not) | `rnk-sandbox`, `rnk-dockerfile` |
 | [ ] | Overlay stage roots: `StageRootfs`/`Snapshotter` (its signature is designed here, task 9), `fsconfig(lowerdir+)` with `mount(2)` fallback, `ADR-0016` options, one upper per instruction, root metadata from the lower; base-layer extraction into the store (`rnk-layer` decoder → `rnk-rootfs::extract`) | `rnk-snapshot` |
 | [ ] | Upperdir → OCI layer exporter, `WriteUpperdir`-style: whiteouts first, raw modes, overlay xattrs stripped; entries fed to the `rnk-layer` writer, which sorts them and adds parent headers | `rnk-snapshot` → `rnk-layer` |
@@ -36,7 +36,7 @@ the code.
 | [ ] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix | `rnk-sched` |
 | [~] | Common kaniko flags and the subcommands (`ADR-0011`): `build` and `version`, accepted flags parsed and validated, the others refused with a reason (done); final list [open: Q-023], `--cache` [open: Q-021], `--secret` [open: Q-022], `push`/`login` [open: Q-048] | `ranikust` |
 | [ ] | aarch64 in CI: cargo-zigbuild cross-build, unit tests under qemu-user (`ADR-0009`; today only `cargo-zigbuild check`) | CI |
-| [ ] | T2 VM harness `just test-vm` (`docs/testing.md`); overlay as root cannot be tested without it `[inferred]` | tests |
+| [~] | T2 VM harness `just test-vm` (`docs/testing.md`): `unit` and `smoke` suites on Ubuntu 22.04 and 24.04 (done); cgroup v1, kernels before 5.11, the host-safety attack suite and a CI job with KVM to come | tests |
 | [ ] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) | tests |
 | [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `RANIKUST_METRICS_FILE`, `--metrics-file`, `meta.mode` and `meta.options` (done); every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
 | [x] | Build toolchain: cargo-zigbuild with zig in the `justfile` and CI for the musl x86_64 and aarch64 builds (`ADR-0020`, Q-052); zig compiles every C dependency, rustc links x86_64 with `cc` to keep static-pie; mimalloc is the binary's allocator | build, CI, `ranikust` |
@@ -66,7 +66,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 10 | `rnk-context` local directory (done); `COPY` sources are resolved in 11 (Q-080) | 3 | |
 | 11 | `rnk-builder`: executors, lazy export, assembly, outputs and push | 1, 2, 6, 8, 9, 10 | |
 | 12 | `rnk-sched`: DAG, `--jobs`, cancellation | 2, 11 | |
-| 13 | CLI end to end, outputs, acceptance runs | all | VM harness |
+| 13 | CLI end to end, outputs, acceptance runs | all | |
 
 Any time: the aarch64 CI job and the VM harness (before 8 and 9 can be
 tested as root).

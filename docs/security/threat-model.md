@@ -125,9 +125,11 @@ before 1.0:
 - races during extraction and deletion, and concurrent builds on one store,
   including a crash halfway;
 - `--seccomp` and `--userns` end to end;
-- the `RUN` sandbox as real root (T2 VM): T5 under Docker's seccomp profile,
-  T8 with a non-root `USER`, T17 (`/proc/sys` writes fail), T18 (`mknod`
-  and a layer's device node do not open, `chmod /dev/null` fails), T19;
+- the `RUN` sandbox as real root (T2 VM): T8 with a non-root `USER`, T18
+  for a layer's device node and `chmod /dev/null`. Checked by `just test-vm
+  smoke` on kernels 5.15 and 6.8: T5's `chroot` escapes under `MS_MOVE`
+  (Docker's seccomp profile) and `pivot_root`, T17 (a `/proc/sys` write
+  fails), T18 for a node the `RUN` makes with `mknod`, T19;
 - real Kubernetes (containerd's AppArmor profile, `procMount`,
   `hostUsers: false`, Pod Security Standards) and SELinux.
 

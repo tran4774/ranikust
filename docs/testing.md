@@ -12,7 +12,7 @@ than a regular user never run on a developer's machine.
 |---|---|---|---|---|---|
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
-| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | TODO: `just test-vm` | Planned |
+| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit` and `smoke` suites |
 | T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
 
 ### Rules
@@ -64,39 +64,45 @@ From [survey 06](research/survey/06-overlay-and-parallelism.md) §1 and
 | Regular user, Ubuntu 24.04+, no AppArmor profile | refuse with guidance | T2 (needs that distribution) | measured ([experiment 11](research/experiments/11-root-extras.md)) |
 | Kubernetes pod, Pod Security Standards restricted | refuse with guidance | not covered yet | inferred |
 
-## TODO: the VM harness (tier T2)
+## The VM harness (tier T2)
 
-There is no VM harness yet, and therefore no `just test-vm` recipe and no
-`vm-test` skill. Until it exists, T2 tests cannot run, and pull requests that
-need them say so in their test plan.
+`just test-vm [suite]...` (`tests/vm/vm.sh`) runs the T2 suites as real
+root in a disposable QEMU/KVM VM, following
+[experiment 13](research/experiments/13-docker-rootful-vm.md) §6. Nothing
+runs as root on the host:
 
-The harness should follow the pattern of
-[experiment 13](research/experiments/13-docker-rootful-vm.md) §6, which ran
-real rootful Docker under cgroup v2 and v1 without root on the host:
+1. **Build** on the host, as the user: the static musl test binaries of the
+   crates that hold `#[ignore = "T2: ..."]` tests (`unit`) and the
+   `smoke-build` example (`smoke`), with `cargo zigbuild`.
+2. **Fetch** the Ubuntu cloud image of `RANIKUST_VM_RELEASE` (`noble`,
+   kernel 6.8, by default; `jammy`, kernel 5.15) and check its SHA-256
+   against the published `SHA256SUMS`. The verified image is cached in
+   `~/.cache/ranikust/vm` (`RANIKUST_VM_CACHE`).
+3. **Prepare** a run directory under `target/vm/`: a copy-on-write qcow2
+   overlay on the cached image, a fresh SSH key and a NoCloud seed
+   (`tests/vm/cloud-init/user-data`: user `rnk` with passwordless `sudo`,
+   Docker from the Ubuntu archive).
+4. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
+   ACL, never `sudo`), user-mode networking, SSH forwarded to a free port
+   on `127.0.0.1` only.
+5. **Copy in** the binaries and `tests/vm/guest/`, **run** the suites over
+   SSH (`guest/run.sh`), **copy out** `target/vm/results/<release>/`:
+   `env.txt` (kernel, Docker, cgroup), one log per suite, `summary.txt`
+   and the VM's serial log.
+6. **Tear down** on every exit path, Ctrl-C included: QEMU is stopped
+   through its monitor (then `SIGKILL`), and the overlay, seed and key are
+   deleted. The script fails if QEMU is still running.
 
-1. **Fetch** an Ubuntu cloud image and check its SHA-256 against the
-   published `SHA256SUMS` before use. Cache the verified image.
-2. **Prepare** a copy-on-write qcow2 overlay on top of the cached image, so
-   every run starts clean, and a cloud-init NoCloud seed (`user-data`
-   installing Docker and the test dependencies, an SSH key generated for this
-   run).
-3. **Boot** with QEMU/KVM as the invoking user (access to `/dev/kvm` through
-   its group or an ACL, never `sudo`), user-mode networking, and SSH
-   forwarded to `127.0.0.1` only. Host services such as a local registry are
-   reachable from the guest at `10.0.2.2`.
-4. **Copy in** the static musl binary (`just build-static`), the test
-   fixtures and the test scripts; **run** the suite over SSH; **copy out**
-   the results.
-5. **Vary** the environment: Docker `run` variants (default,
-   `--cap-add SYS_ADMIN`, seccomp and AppArmor unconfined, `--privileged`),
-   cgroup v2 and v1 (`systemd.unified_cgroup_hierarchy=0` and a reboot), and
-   several kernels (5.15 and a current one).
-6. **Tear down**: stop the VM and delete the overlay, the seed and the key,
-   whatever the outcome of the run.
+| Suite | What it runs |
+|---|---|
+| `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass |
+| `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` runs inside a plain `chroot` in both Docker variants, where `/` is not a mount root: it must refuse before any `RUN`, as it does at its first step, making `/` a slave mount (`EINVAL`) Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
 
-When it exists, add `just test-vm [suite]`, a CI job on a runner with KVM if
-one is available, and a `vm-test` skill under `.claude/skills/`, and update
-this page, `CONTRIBUTING.md` and `docs/agents/workflow.md`.
+Not covered yet: cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a
+reboot), Docker's default profile and `--cap-add SYS_ADMIN` alone (they
+need kaniko mode), kernels before 5.11 (an older `..` walk; Debian 11
+has 5.10), the host-safety attack suite, a CI job (GitHub's
+hosted runners have no reliable KVM) and an aarch64 guest.
 
 Also TODO: `just test-rootless` for tier T1, with the same rule that tests
 write only below a temporary directory.
@@ -118,12 +124,14 @@ reaches the host as root. It strings the finished crates together:
 3. pack the root into one gzip layer and write an OCI layout
    (`rnk-layer`, `rnk-oci`).
 
-The recipe then checks that the stub `/etc/resolv.conf` did not reach the
-layer, loads the layout into podman as an OCI archive (`podman load`; not
+The recipe then checks that the sandbox's stubs did not reach the layer
+(`/etc/resolv.conf` not at all, `/etc/hosts` and `/etc/hostname` not with
+the host name `ranikust`), loads the layout into podman as an OCI archive (`podman load`; not
 `skopeo`, which calls `unshare` itself and is refused where AppArmor
 restricts unprivileged user namespaces, as on Ubuntu 24.04) and runs it.
 It is not a
 builder: one squashed layer, no diff per instruction, no xattrs; it goes
 away when `rnk-builder` lands. It does not replace the VM: the sandbox runs
 in a user namespace there, so real-root behaviour (T17, T18 of the threat
-model, `MS_MOVE` under Docker's seccomp) stays untested.
+model, `MS_MOVE` under Docker's seccomp) is checked by the `smoke` suite of
+`just test-vm` instead.

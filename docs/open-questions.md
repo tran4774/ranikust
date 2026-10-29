@@ -458,15 +458,24 @@ Entry format:
   mount point that is itself a mount root, so when `/` is a mount root the
   walk stays at the moved root; when `/` is a plain directory (ranikust
   inside a `chroot`), it climbs into ranikust's filesystem, with the state
-  directory and registry credentials [inferred]. Not tested; it needs the
-  T2 VM ([sandbox](design/sandbox.md#variants-by-environment)).
+  directory and registry credentials [inferred]
+  ([sandbox](design/sandbox.md#variants-by-environment)). Measured with
+  `just test-vm smoke` on kernels 5.15 and 6.8
+  ([testing](testing.md#the-vm-harness-tier-t2)): under Docker's seccomp
+  with `CAP_SYS_ADMIN` the probe picks `MS_MOVE`, and the `..` escape,
+  its `O_PATH` + `fchdir` and nested-chroot forms, and `/proc/1/root` and
+  `/proc/self/root/..` all stay inside the stage root, as under
+  `pivot_root`; the same three escapes leave a plain `chroot` of that root.
+  ranikust run inside a plain `chroot` refuses before any `RUN`, already
+  at making `/` a slave mount (`EINVAL`), with an error that does not say
+  why.
 - **Options:** (a) drop `CAP_SYS_CHROOT` from the bounding set under
   `MS_MOVE` (a `RUN` that runs `chroot` fails); (b) keep Docker's defaults,
   and use `MS_MOVE` only where `/` is a mount root; (c) refuse the full
   sandbox under `MS_MOVE` and run `Isolation::Direct`, kaniko's level of
   isolation.
-- **Recommendation:** (b), if the escape test in the VM confirms that `..`
-  stops at the moved root; otherwise (a).
+- **Recommendation:** (b): the VM tests above confirm that `..` stops at
+  the moved root.
 - **Interim:** (b): the probe falls back to `MS_MOVE` only when
   `pivot_root` fails with `EPERM` and `statx` reports `/` as a mount root;
   both root entries keep the 14 defaults (`crates/rnk-sandbox/src/probe.rs`,
