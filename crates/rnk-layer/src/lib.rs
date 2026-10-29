@@ -18,6 +18,7 @@
 //!   sent (`rnk-registry`), and does not write extracted files to disk
 //!   (`rnk-rootfs`).
 
+mod decoder;
 mod digest;
 mod entry;
 mod error;
@@ -25,6 +26,7 @@ mod gzip;
 mod header;
 mod writer;
 
+pub use decoder::Decoder;
 pub use digest::Sha256Digest;
 pub use entry::{Entry, EntryKind, EntryPath};
 pub use error::Error;

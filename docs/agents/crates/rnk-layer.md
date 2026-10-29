@@ -24,7 +24,7 @@ for pulled layers. Same entries, same bytes, whatever the thread count.
 
 ## API (planned)
 
-Built: the tar writer, plain or parallel gzip, with digests. Planned: the rest.
+Built: everything below except zstd [open: Q-050].
 
 ```rust
 pub struct EntryPath;              // [design] relative, normalized bytes; orders component-wise
@@ -42,7 +42,8 @@ pub trait EntrySource {            // [design] implemented by the exporter
 pub struct LayerWriter;            // [design] new(EncodeOptions); add(Entry) in any order; finish(&mut dyn EntrySource, W) -> LayerDigests
 pub struct LayerDigests { pub diff_id: Sha256Digest, pub digest: Sha256Digest, pub size: u64, pub compression: Compression }
 pub struct Sha256Digest;           // [design] Display `sha256:<hex>`; [open: Q-012] sha2 interim
-pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields plain tar bytes, hashes them for the diff_id;
+pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain; impl Read gives the plain tar;
+                                   // diff_id() once at the end, finish() drains and returns it; tar_size()
                                    // [inferred] gzip inflate is sequential: "parallel" means pipelining inflate, hashing, writes
 ```
 
@@ -122,5 +123,7 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
 - [open: Q-013] How `LayerWriter` gets a missing parent's metadata from
   the exporter; interim: `EntrySource::parent`.
 - Done: tar writer with goldens; parallel gzip with determinism tests;
-  streaming digests (`tests/it/`); `examples/throughput.rs` prints MB/s per
-  thread count.
+  streaming digests; the decoder (gzip with any number of members, plain)
+  (`tests/it/`); `examples/throughput.rs` prints MB/s per thread count.
+- Left: zstd ([open: Q-050]); exporter integration with `rnk-snapshot`
+  (task 9).
