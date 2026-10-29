@@ -124,7 +124,8 @@ decision that came out of it is recorded as an
 [architecture decision record](docs/adr/).
 
 Releases will target `x86_64-unknown-linux-musl` first, with `aarch64` kept
-buildable from day one.
+buildable from day one. ranikust requires Linux 5.8 or later
+([ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)).
 
 ## Roadmap
 

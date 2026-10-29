@@ -516,7 +516,7 @@ fn late_syntax_errors_surface_when_matching() {
 #[test]
 fn walk_and_parent_matches_can_differ() {
     // BuildKit's walk skips `!dir` for `dir` (nothing matched yet) and does
-    // not reconsider it through the parent for `dir/f` [open: Q-050].
+    // not reconsider it through the parent for `dir/f` (ADR-0027).
     let pm = Matcher::new(&["dir/f", "!dir"]).unwrap();
     assert_eq!(pm.matches_or_parent_matches("dir/f"), Ok(false));
     assert!(matches_along_walk(&pm, "dir/f"));

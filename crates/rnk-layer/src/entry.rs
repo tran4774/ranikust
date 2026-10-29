@@ -200,8 +200,9 @@ impl Entry {
                 reason,
             })
         };
-        // [open: Q-053] A file really named `.wh.*` cannot be represented: an
-        // extractor would take it for a whiteout. Rejected for now.
+        // A file really named `.wh.*` cannot be represented: an extractor
+        // would take it for a whiteout. Rejected, as the OCI layer
+        // specification recommends (Q-053).
         if self.path.file_name().starts_with(WHITEOUT_PREFIX) {
             return invalid("the name starts with `.wh.`, reserved for whiteouts");
         }

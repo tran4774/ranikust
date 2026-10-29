@@ -5,7 +5,8 @@
 //! hardlinks, PAX xattrs and fixed timestamps for reproducible builds.
 //! Compresses gzip and zstd in parallel, decompresses pulled gzip and zstd
 //! blobs into a plain tar stream, and computes digests while streaming.
-//! zstd is not implemented yet ([open: Q-052]).
+//! zstd is not implemented yet; it arrives with the cargo-zigbuild
+//! toolchain (Q-052).
 //!
 //! The exporter feeds [`Entry`] values to a [`LayerWriter`], then calls
 //! [`LayerWriter::finish`] with an [`EntrySource`] that opens file contents

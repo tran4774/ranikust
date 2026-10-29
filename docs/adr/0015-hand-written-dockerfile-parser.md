@@ -71,3 +71,6 @@ escape character even when the `escape` parser directive selects a backtick
 [code, effect not tested]; ranikust
 follows BuildKit unless a compatibility test shows users depend on kaniko's
 behaviour [inferred].
+- The `.dockerignore` matching bullet is superseded by
+  [ADR-0027](0027-context-filtering-follows-buildkit-walk.md): the build
+  context follows BuildKit's walk.

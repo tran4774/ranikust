@@ -161,7 +161,7 @@ impl Matcher {
     /// This is what BuildKit's context walk calls. It can differ from
     /// `matches_or_parent_matches` when exceptions are involved: a pattern
     /// skipped for the parent is not reconsidered through the parent for
-    /// the child [open: Q-050].
+    /// the child. The context walk follows this routine (ADR-0027).
     ///
     /// # Errors
     ///

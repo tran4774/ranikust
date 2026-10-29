@@ -255,8 +255,8 @@ pub fn stage_graph(df: &Dockerfile, opts: &GraphOptions) -> Result<StageGraph, E
                 Some(v)
             }
         };
-        // [open: Q-051] BuildKit matches the base exactly (names are lower
-        // case); kaniko matches case-insensitively.
+        // BuildKit matches the base exactly (names are lower case); kaniko
+        // matches case-insensitively. ranikust follows BuildKit (Q-051).
         let base = match names.get(&base) {
             Some(&j) => Base::Stage(j),
             None if base == "scratch" => Base::Scratch,

@@ -39,6 +39,9 @@ the code.
 | [ ] | T2 VM harness `just test-vm` (`docs/testing.md`); overlay as root cannot be tested without it `[inferred]` | tests |
 | [ ] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) | tests |
 | [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `RANIKUST_METRICS_FILE` (done); `--metrics-file` and `meta.options` with task 8; every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
+| [ ] | Build toolchain: cargo-zigbuild with zig in the `justfile` and CI for the musl x86_64 and aarch64 builds (`ADR-0020`, Q-052); unblocks zstd and mimalloc | build, CI |
+| [ ] | Start-up check for Linux 5.8 (`openat2` with `RESOLVE_IN_ROOT`, `statx` mount id), with a clear refusal (`ADR-0028`) | `ranikust` |
+| [ ] | Base-layer extraction in the overlay form: a hardlink into a lower layer is copied from the lower layers as a regular file (Q-055) | `rnk-rootfs`, `rnk-snapshot` |
 
 ## Task order
 
@@ -54,11 +57,12 @@ Two mostly independent tracks (survey 04 §3): front end
 | 2 | `rnk-dockerfile` parser with BuildKit goldens | | |
 | 3 | `rnk-ignore` | | |
 | 4 | `rnk-rootfs`: `RootPath` → extraction → copy, ownership, xattrs → safe deletion | | |
-| 5 | `rnk-layer`: tar → gzip → zstd → digests | | |
+| 5 | `rnk-layer`: tar → gzip → digests (done); zstd | 5a | |
+| 5a | cargo-zigbuild toolchain in the `justfile` and CI (`ADR-0020`, Q-052) | | |
 | 6 | `rnk-registry`: auth, TLS (`ADR-0024`), streamed pull | 1 | |
 | 7 | `rnk-store`: layout, locks, publication, start-up clean-up (`ADR-0021`, `ADR-0022`) | 4, 5, 6 | |
-| 8 | `ranikust` set-up and flags (`ADR-0023`); `rnk-sandbox` sandbox and its probes | 4 | |
-| 9 | `rnk-snapshot` overlay roots, overlay probes, extraction and exporter; design the `Snapshotter` signature | 4, 5, 7 | |
+| 8 | `ranikust` set-up and flags (`ADR-0023`), the Linux 5.8 check (`ADR-0028`); `rnk-sandbox` sandbox and its probes | 4 | |
+| 9 | `rnk-snapshot` overlay roots, overlay probes, extraction (hardlinks into lower layers copied, Q-055) and exporter; design the `Snapshotter` signature | 4, 5, 7 | |
 | 10 | `rnk-context` local directory | 3 | |
 | 11 | `rnk-builder`: executors, lazy export, assembly, outputs and push | 1, 2, 6, 8, 9, 10 | |
 | 12 | `rnk-sched`: DAG, `--jobs`, cancellation | 2, 11 | |

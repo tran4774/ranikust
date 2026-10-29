@@ -181,8 +181,9 @@ impl Extractor<'_> {
             EntryType::Directory => Kind::Dir,
             EntryType::Regular | EntryType::Continuous => Kind::File,
             EntryType::GNUSparse => {
-                // [open: Q-056] The `tar` crate fills holes with zeros, so a
-                // tiny entry could claim 2^62 bytes and fill the disk.
+                // The `tar` crate fills holes with zeros, so a tiny entry could
+                // claim 2^62 bytes and fill the disk. Extension headers stay
+                // unbounded for now (Q-056).
                 return Err(refuse("GNU sparse entries are not supported"));
             }
             EntryType::Symlink | EntryType::Link => {
@@ -275,8 +276,10 @@ impl Extractor<'_> {
                 root::set_meta_at(pfd.as_fd(), &name, &m, None, &path)?;
             }
             Kind::Hardlink(target) => {
-                // [open: Q-055] In the overlay form the root holds only this
-                // layer, so a target in a lower layer is missing.
+                // In the overlay form the root holds only this layer, so a
+                // target in a lower layer is missing. Q-055: copy its content
+                // from the lower layers instead (Phase 1 task 9); until then,
+                // an error.
                 let missing = || Error::Entry {
                     path: raw.clone(),
                     reason: format!(

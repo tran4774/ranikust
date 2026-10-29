@@ -194,49 +194,6 @@ Entry format:
   lookup is never called.
 - **Raised:** 2026-10-30
 
-### Q-052: How does zstd reach the static musl build?
-
-- **Blocks:** Phase 1 task 5 (zstd); **Area:** `rnk-layer`, build
-- **Context:** the `zstd` crate builds libzstd from C (`zstd-sys`), the
-  multithreaded encoder `exp-05` measured. `just check-aarch64` and
-  `just build-static` run without a C cross compiler (no `musl-gcc`, no zig
-  on the development machine or in the recipes), so adding it breaks them:
-  with `zstd` 0.14.3 (`zstd-sys` 2.1.2, libzstd 1.5.7) both
-  `cargo check --target aarch64-unknown-linux-musl` and the
-  `x86_64-unknown-linux-musl` release build stop with "failed to find tool
-  `aarch64-linux-musl-gcc`" (or `x86_64-linux-musl-gcc`).
-  `ADR-0020` picks cargo-zigbuild, but no recipe uses it yet
-  ([workflow.md](agents/workflow.md#setup)).
-- **Options:** (a) cargo-zigbuild with zig in the recipes and CI, as
-  `ADR-0020` plans; (b) a pure-Rust encoder (`ruzstd` has a single-threaded
-  one with few levels; not measured), keeping C out; (c) a cargo feature
-  `zstd`, off by default, built only in a zig CI job. Decoding pulled zstd
-  layers could use `ruzstd` in every case.
-- **Recommendation:** none
-- **Interim:** zstd not implemented. `Compression::Zstd` exists;
-  `LayerWriter::new` and the decoder return `Error::Unsupported` for it.
-- **Raised:** 2026-10-30
-
-### Q-053: Which entry order and which names does the layer tar use?
-
-- **Blocks:** Phase 1 task 5; **Area:** `rnk-layer`
-- **Context:** the writer sorts the entries
-  ([overlay-snapshot](design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer)),
-  but no document fixes the order, which is part of every diff ID. kaniko
-  writes all whiteouts first, then the other entries, each sorted by
-  `sort.Strings` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:151`, `:182`,
-  `:341-390`); the OCI layer spec says whiteouts SHOULD precede their
-  sibling entries. A file really named `.wh.<x>` cannot be represented: an
-  extractor takes it for a whiteout.
-- **Options:** order: (a) depth first, components compared byte-wise, and
-  in each directory the opaque marker, then whiteouts, then the rest;
-  (b) kaniko's. Names: (a) reject an entry named `.wh.*`; (b) write it as
-  is, as kaniko does.
-- **Recommendation:** none
-- **Interim:** order (a) and names (a), in `feat/rnk-layer-encode`
-  (`LayerWriter`); both change only the bytes of the layers, nothing else.
-- **Raised:** 2026-10-30
-
 ### Q-014: Are cross-repository mounts part of Phase 1?
 
 - **Blocks:** Phase 1 tasks 6, 11; **Area:** `rnk-registry`
@@ -389,27 +346,6 @@ Entry format:
   an alias is one more variable in `rnk_metrics::Config::from_env`.
 - **Raised:** 2026-10-30
 
-### Q-054: What is the minimum kernel, and who checks it?
-
-- **Blocks:** Phase 1 task 8 (probes, user docs); **Area:** `rnk-rootfs`,
-  `ranikust`, the book
-- **Context:** `RootPath` needs `openat2` (Linux 5.6) and the `statx` mount
-  id (Linux 5.8), with no string-based fallback
-  ([rootfs](design/rootfs.md#invariants)). The probes never compare kernel
-  versions ([modes-and-detection](design/modes-and-detection.md)), the book
-  states no kernel requirement, and the privilege matrix lists RHEL 8
-  (kernel 4.18) among the targets
-  ([where-to-run](book/src/where-to-run.md)).
-- **Options:** (a) document Linux ≥ 5.8 and let the first `RootPath::open`
-  fail with its error; (b) also probe `openat2` and `statx` at start-up and
-  refuse with guidance, like the other probes; (c) support older kernels
-  with a userspace resolver (would reverse this crate's invariant: an ADR).
-- **Recommendation:** none
-- **Interim:** (a) without the documentation: `rnk-rootfs` fails with
-  `Error::Unsupported`, naming Linux 5.8 and seccomp
-  (`feat/rnk-rootfs-rootpath`).
-- **Raised:** 2026-10-30
-
 ### Q-024: What is the Snapshotter signature?
 
 - **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
@@ -450,47 +386,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-055: How does overlay-form extraction handle a hardlink into a lower layer?
-
-- **Blocks:** Phase 1 task 9 (base-layer extraction); **Area:**
-  `rnk-rootfs`, `rnk-snapshot`
-- **Context:** in the overlay form each layer is extracted alone into
-  `layers/<id>` ([rootfs](design/rootfs.md#extraction)), so a hardlink
-  entry whose target lives in a lower layer has nothing to link to. Such
-  layers exist: kaniko-mode layers keep links to lower files
-  ([exp-09](research/experiments/09-kaniko-mode-prototype.md) finding 5),
-  and ranikust pulls kaniko-built base images. containerd avoids the
-  problem by applying each layer through an overlay mount of its lowers.
-- **Options:** (a) refuse the layer; (b) copy the target's content from the
-  lower layers' extracted directories (`extract` gets the lower roots);
-  (c) apply such layers through an overlay mount of the lowers, as
-  containerd does.
-- **Recommendation:** none
-- **Interim:** (a): `extract` fails with `Error::Entry` naming the missing
-  target (`feat/rnk-rootfs-rootpath`).
-- **Raised:** 2026-10-30
-
-### Q-056: How are tar extension headers bounded?
-
-- **Blocks:** Phase 1 task 9 (base-layer extraction); Phase 6 (fuzzing);
-  **Area:** `rnk-rootfs`, `rnk-layer`
-- **Context:** the `tar` crate (0.4.46) reads a GNU long name, long link or
-  PAX header whole into memory, whatever size it declares
-  (`archive.rs:418`, `:440`), so a few MB of compressed zeros in a base
-  layer become GBs of memory and an OOM kill (threat T15). GNU sparse
-  entries, whose holes the crate writes as zeros, are refused for now
-  ([rootfs](design/rootfs.md#extraction)). Found by a host-safety review.
-- **Options:** (a) a reader in front of the `tar` crate that follows the
-  tar framing and fails on an extension header above a cap (1 MiB);
-  (b) parse in raw mode and apply long names and PAX records in
-  `rnk-rootfs`, with the cap; (c) rely on the memory limit of the build's
-  cgroup; for sparse entries, (d) keep refusing them or (e) seek over holes
-  and `ftruncate`, with a cap on the real size.
-- **Recommendation:** none
-- **Interim:** no bound on extension headers; sparse entries refused
-  (`feat/rnk-rootfs-rootpath`).
-- **Raised:** 2026-10-30
-
 ### Q-027: Is the ContextSource trait sync or async?
 
 - **Blocks:** Phase 1 task 10; **Area:** `rnk-context`
@@ -517,28 +412,6 @@ Entry format:
   through `rnk-builder`, which already depends on all of them.
 - **Recommendation:** none
 - **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-050: Which result does the context walk follow when BuildKit's two matchers disagree?
-
-- **Blocks:** Phase 1 task 10; **Area:** `rnk-context`, `rnk-ignore`
-- **Context:** BuildKit's context walk (`fsutil`) calls
-  `MatchesUsingParentResults` with the parent's `MatchInfo`; its `Open`,
-  and ADR-0015, use `MatchesOrParentMatches`. They differ when a pattern
-  skipped for the parent would match the child through it: `dir/f` +
-  `!dir` on `dir/f` is excluded by the walk, kept by the other (verified
-  with Go). The walk also reports errors of patterns it evaluates on parent
-  directories, which the other ignores. In rnk-ignore's Go goldens 138 of
-  12,470 cells differ in result, in both directions, and 84 in error; none
-  of exp-04's or kaniko's cases do
-  ([rnk-ignore](agents/crates/rnk-ignore.md#pitfalls)).
-- **Options:** (a) walk like BuildKit: `matches_using_parent` along the
-  walk, with `may_reinclude_below` to prune; (b) `matches_or_parent_matches`
-  for every path, as ADR-0015 words it.
-- **Recommendation:** (a): it reproduces the file set BuildKit sends as
-  the context.
-- **Interim:** `rnk-ignore` provides both, each an exact port; nothing
-  walks a context yet.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?
@@ -835,26 +708,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-051: Does `FROM <stage>` match stage names case-insensitively?
-
-- **Blocks:** Phase 6 (kaniko's integration Dockerfiles in every mode);
-  **Area:** `rnk-dockerfile`
-- **Context:** BuildKit lower-cases stage names and looks up the `FROM`
-  base exactly, so `FROM BUG_stage` is an image name and fails ("must be
-  lowercase"); a later stage of the same name replaces an earlier one.
-  kaniko lower-cases the base and takes the first earlier stage of that
-  name (`kaniko@44aa7ddc0 pkg/dockerfile/dockerfile.go:80-93`), and its
-  integration test `Dockerfile_test_issue_519` depends on it. `COPY --from`
-  is case-insensitive in both. `ADR-0015` follows BuildKit "unless a
-  compatibility test shows users depend on kaniko's behaviour".
-- **Options:** (a) BuildKit: exact match, `Dockerfile_test_issue_519`
-  fails; (b) kaniko: case-insensitive, first earlier stage; (c)
-  case-insensitive, last earlier stage (BuildKit's rule for duplicates).
-- **Recommendation:** none
-- **Interim:** (a), BuildKit's rule, in `feat/rnk-dockerfile-parser`
-  (`rnk_dockerfile::stage_graph`). Reversible: one lookup in the graph.
-- **Raised:** 2026-10-30
-
 ### Q-057: Does ranikust offer CPU and heap profiling?
 
 - **Blocks:** nothing yet; **Area:** `rnk-metrics`
@@ -921,3 +774,51 @@ Entry format:
   merged into `main`; every feature, fix or refactor starts from it on its
   own branch and is committed at each checkpoint. Recorded in
   [rules.md](agents/rules.md#branches-and-commits).
+
+### Q-050: Which result does the context walk follow when BuildKit's two matchers disagree?
+
+- **Answer (2026-10-30):** follow BuildKit's walk
+  (`matches_using_parent` plus `may_reinclude_below`). Recorded in
+  [ADR-0027](adr/0027-context-filtering-follows-buildkit-walk.md), which
+  supersedes the `.dockerignore` bullet of ADR-0015.
+
+### Q-051: Does `FROM <stage>` match stage names case-insensitively?
+
+- **Answer (2026-10-30):** follow BuildKit: `FROM <stage>` matches stage
+  names exactly. kaniko's `Dockerfile_test_issue_519` is an accepted
+  difference ([kaniko-map](agents/kaniko-map.md#behaviour-to-match)).
+
+### Q-053: Which entry order and which names does the layer tar use?
+
+- **Answer (2026-10-30):** follow the OCI layer specification's
+  recommendation: depth first, the opaque marker and whiteouts before their
+  siblings; files really named `.wh.*` are rejected. Recorded on the
+  [rnk-layer card](agents/crates/rnk-layer.md) and in
+  [overlay-snapshot](design/overlay-snapshot.md).
+
+### Q-056: How are tar extension headers bounded?
+
+- **Answer (2026-10-30):** no bound for now; GNU sparse entries stay
+  refused. Revisit with `cargo fuzz` on `extract` in Phase 6
+  ([rootfs](design/rootfs.md)).
+
+### Q-052: How does zstd reach the static musl build?
+
+- **Answer (2026-10-30):** cargo-zigbuild with zig in the `justfile` and
+  CI, as [ADR-0020](adr/0020-static-musl-via-cargo-zigbuild.md) planned;
+  the same toolchain builds mimalloc. zstd is added after it
+  ([phase-1](agents/phase-1.md#task-order), task 5a).
+
+### Q-054: What is the minimum kernel, and who checks it?
+
+- **Answer (2026-10-30):** require Linux 5.8; the binary probes `openat2`
+  and the `statx` mount id at start-up and refuses with guidance. Recorded
+  in [ADR-0028](adr/0028-minimum-kernel-linux-5-8.md).
+
+### Q-055: How does overlay-form extraction handle a hardlink into a lower layer?
+
+- **Answer (2026-10-30):** option (b): copy the target's content from the
+  lower layers' extracted directories as a regular file, which splits the
+  hardlink as overlay copy-up does (`ADR-0012`). Recorded in
+  [rootfs](design/rootfs.md#extraction); implemented with base-layer
+  extraction (Phase 1 task 9).

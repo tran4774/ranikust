@@ -36,7 +36,7 @@ const DISPATCH_ERRORS: &[(&str, &str)] = &[
     ),
     (
         "Dockerfile_test_issue_519",
-        "FROM BUG_stage: BuildKit matches stage names exactly and rejects the image name; kaniko matches case-insensitively (open question Q-051)",
+        "FROM BUG_stage: BuildKit matches stage names exactly and rejects the image name; kaniko matches case-insensitively; ranikust follows BuildKit (Q-051)",
     ),
 ];
 

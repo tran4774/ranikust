@@ -3,6 +3,11 @@
 > This page describes the design. ranikust cannot build images yet. The
 > expected modes come from experiments run before the code was written.
 
+ranikust needs **Linux 5.8 or later**: it checks at start-up and stops
+with a clear message on older kernels, such as RHEL/CentOS 8, Debian 10,
+Ubuntu 20.04 without the HWE kernel or Amazon Linux 2 with kernel 4.14
+([ADR-0028](https://github.com/tran4774/ranikust/blob/main/docs/adr/0028-minimum-kernel-linux-5-8.md)).
+
 ranikust picks its mode from what the environment allows (see
 [How ranikust builds](how-it-builds.md)). The table lists the mode each common
 environment is expected to get. *Measured* means an experiment observed it;
@@ -19,7 +24,7 @@ not been tried.
 | Docker container with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` | overlay, rootless | | measured |
 | Docker container with default options, under cgroup v2 or v1 | kaniko | Docker's default seccomp profile blocks user namespaces, and AppArmor blocks mounts. | measured |
 | GitHub Actions `container:` job, GitLab Kubernetes executor, ordinary Kubernetes pod, GKE Autopilot, Bottlerocket | kaniko | Same restrictions as a default Docker container. | inferred |
-| Regular user on Debian, Fedora, RHEL 8+ or Ubuntu up to 22.04 | overlay, rootless | Images with several users need `newuidmap` and entries in `/etc/subuid` and `/etc/subgid`. | inferred |
+| Regular user on Debian 11+, Fedora, RHEL 9+ or Ubuntu 22.04 | overlay, rootless | Images with several users need `newuidmap` and entries in `/etc/subuid` and `/etc/subgid`. | inferred |
 | Regular user on Ubuntu 24.04 or later | none | User namespaces get no capabilities by default. With the binary installed at a fixed path and a three-line AppArmor profile for it, rootless overlay mode works. | measured |
 | Kubernetes pod under the "restricted" Pod Security Standard, OpenShift `restricted-v2` | none | Neither root nor user namespaces. | inferred |
 
