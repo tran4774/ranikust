@@ -12,6 +12,7 @@
 //! - Does not encode or compress layers (`rnk-layer`), move blobs
 //!   (`rnk-registry`), or write a Docker tar or OCI layout (`rnk-builder`).
 
+mod canonical;
 mod config;
 mod descriptor;
 mod digest;
@@ -20,6 +21,7 @@ mod manifest;
 mod media_type;
 mod serde_util;
 
+pub use canonical::to_canonical_json;
 pub use config::{ContainerConfig, HealthConfig, History, ImageConfig, RootFs};
 pub use descriptor::{Descriptor, Platform};
 pub use digest::{Digest, DigestAlgorithm};

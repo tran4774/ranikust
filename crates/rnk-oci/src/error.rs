@@ -51,9 +51,13 @@ pub enum Error {
         /// `manifest` or `index`.
         document: &'static str,
     },
-    /// JSON that does not parse into the expected type.
+    /// JSON that does not parse into the expected type, or a value that
+    /// cannot be written as JSON.
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    /// A value that has no canonical JSON form.
+    #[error("not canonical JSON: {0}")]
+    NotCanonical(&'static str),
 }
 
 /// Longest excerpt of an untrusted input kept in an error, in characters.
