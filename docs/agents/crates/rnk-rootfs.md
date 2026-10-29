@@ -46,7 +46,7 @@ impl RootPath {
     // built: create_dir, create_dir_all, symlink, read_link, hard_link,
     // rename, remove_file, remove_dir; mnt_id()
 }
-pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // [design] plain tar; Whiteouts::{Apply, Overlay}
+pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
 pub fn copy(src: &RootPath, from: &Path, dst: &RootPath, to: &Path, o: &CopyOpts) -> Result<()>; // [design] FICLONE, else copy
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
@@ -92,18 +92,16 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   symlinks out, chains and loops, `/proc/self/root`, `../etc/passwd`,
   hardlinks out. Deletion of a 3,004-level tree; raw modes 1777 and 4755;
   marker cases of exp-09 D3. Property test against a model resolver;
-  `cargo fuzz` on `extract`.
-  Built: `tests/escape.rs` (`..` chains, absolute, relative and chained
-  symlinks out, loops and 50-hop chains, `/proc/self/...` targets, real magic
-  links under `/proc/<pid>`, hardlinks out, `sub_root`, a swap between calls,
-  and a thread exchanging a directory with a symlink out during 2,000 rounds
-  of every operation); unit tests per operation, raw modes 4755 and 1777;
-  deletion of a 3,004-level tree, the ignore list, a faked foreign mount id,
-  and a swap racing `delete_contents`.
-- **T1:** a same-filesystem bind mount and a tmpfs inside the root survive
-  `delete_contents` (written, `#[ignore]`; the harness sets `RNK_T1_ROOT`);
-  overlay-form extraction in a user namespace.
-- **T2** (VM only): `--workdir` at `/`, `//`, `/home`, an unmarked directory.
+  `cargo fuzz` on `extract`. Built: `tests/escape.rs` (all of the above
+  but the marker, plus real magic links under `/proc/<pid>` and a thread
+  swapping a directory for a symlink out during every operation); unit
+  tests per module, with the same racing swap under `extract` and
+  `delete_contents`. Still to do: the model-resolver property test, fuzzing.
+- **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
+  survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
+  and setuid in `extract`.
+- **T2** (VM only): device nodes in `extract` (written, `#[ignore]`);
+  `--workdir` at `/`, `//`, `/home`, an unmarked directory.
 
 ## Pitfalls
 
@@ -123,6 +121,8 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   go through `/proc/self/fd/<n>` (`design/rootfs.md#metadata`).
 - `chown` clears setuid, setgid and `security.capability`: owner first, mode
   and xattrs after.
+- Reading a file moves an old atime (relatime): check times before reading.
+- [open: Q-051] Overlay form: a hardlink into a lower layer has no target.
 
 ## Phase 1
 
@@ -130,16 +130,12 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   `extract` → `copy` (`--chown`, `--chmod`, `--from`) and `lookup_user` →
   fd-based deletion of `builds/<id>` and `tmp/` leftovers → the workdir
   checks.
-- Deferred to Phase 2: `Whiteouts::Apply` into a live root, the mountinfo
-  ignore list, `delete_contents` on `/`, `FICLONE` stage copies.
-- [open: Q-011] A workdir holding only mount points has no marker and is
-  refused today (kaniko-mode design, open questions). Its owner is open too:
-  `check_workdir` is not built here; `RootPath::open` and `statx`
-  (`dev`, `ino`, `mnt_id`) are the primitives either owner needs.
-- [open: Q-050] Needs Linux 5.8 (`openat2`, `STATX_MNT_ID`); fails with
-  `Error::Unsupported`, no fallback.
-- Done: `RootPath` with the T0 escape suite; `lookup_user` and
-  `lookup_owner` (two functions: `USER` and `--chown` default the gid
-  differently, `design/rootfs.md#users-and-groups`); `delete_contents`
-  (`design/rootfs.md#deletion`), built before extraction, which reuses its
-  walker.
+- Deferred to Phase 2: `Whiteouts::Apply` into a live root (built and T0
+  tested, not yet used with mounts in the root), the mountinfo ignore list,
+  `delete_contents` on `/`, `FICLONE` stage copies.
+- [open: Q-011] Owner of `check_workdir` open; not built here.
+  `RootPath::open` and `statx` (`dev`, `ino`, `mnt_id`) are its primitives.
+- [open: Q-050] Needs Linux 5.8; `Error::Unsupported`, no fallback.
+- Done: `RootPath`, `extract`, `lookup_user`/`lookup_owner` (`USER` and
+  `--chown` default the gid differently), `delete_contents` (built before
+  `extract`, which reuses its walker). Left: `copy`, `check_workdir`.

@@ -20,7 +20,7 @@ them is a bug.
 | [overlay-snapshot.md](overlay-snapshot.md) | Overlay mode: state directory layout, mount options and procedure, `volatile` lifecycle, upperdir → OCI layer export | `rnk-snapshot`, `rnk-layer` |
 | [kaniko-mode.md](kaniko-mode.md) | Walk and hash, ignore list, safe deletion, host checks, per-stage directories, the `--parallel-stages` path and fake `/proc` | `rnk-snapshot`, `rnk-rootfs`, `rnk-sandbox` |
 | [scheduler.md](scheduler.md) | Stage DAG, `--jobs`, memory-aware limit, lazy export, cancellation, deterministic output | `rnk-sched`, `rnk-builder` |
-| [rootfs.md](rootfs.md) | Confined path resolution (`RootPath`), `EAGAIN` and missing-syscall handling, metadata order, `USER` and `--chown` lookup, fd-based deletion | `rnk-rootfs` |
+| [rootfs.md](rootfs.md) | Confined path resolution (`RootPath`), `EAGAIN` and missing-syscall handling, metadata order, layer extraction and whiteout forms, `USER` and `--chown` lookup, fd-based deletion | `rnk-rootfs` |
 | [sandbox.md](sandbox.md) | `RUN` isolation: namespaces, mount sequence, `pivot_root`, capabilities, stubs, users | `rnk-sandbox` |
 | [cache-and-store.md](cache-and-store.md) | State directory, persistent store layout, locks, atomic publication, prune, cache keys | `rnk-store`, `rnk-cache`, `rnk-snapshot`, `rnk-registry` |
 

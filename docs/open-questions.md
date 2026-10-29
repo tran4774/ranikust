@@ -368,6 +368,26 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-051: How does overlay-form extraction handle a hardlink into a lower layer?
+
+- **Blocks:** Phase 1 task 9 (base-layer extraction); **Area:**
+  `rnk-rootfs`, `rnk-snapshot`
+- **Context:** in the overlay form each layer is extracted alone into
+  `layers/<id>` ([rootfs](design/rootfs.md#extraction)), so a hardlink
+  entry whose target lives in a lower layer has nothing to link to. Such
+  layers exist: kaniko-mode layers keep links to lower files
+  ([exp-09](research/experiments/09-kaniko-mode-prototype.md) finding 5),
+  and ranikust pulls kaniko-built base images. containerd avoids the
+  problem by applying each layer through an overlay mount of its lowers.
+- **Options:** (a) refuse the layer; (b) copy the target's content from the
+  lower layers' extracted directories (`extract` gets the lower roots);
+  (c) apply such layers through an overlay mount of the lowers, as
+  containerd does.
+- **Recommendation:** none
+- **Interim:** (a): `extract` fails with `Error::Entry` naming the missing
+  target (`feat/rnk-rootfs-rootpath`).
+- **Raised:** 2026-10-30
+
 ### Q-027: Is the ContextSource trait sync or async?
 
 - **Blocks:** Phase 1 task 10; **Area:** `rnk-context`

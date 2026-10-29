@@ -72,6 +72,54 @@ with `lsetxattr` on `/proc/self/fd/<parent>/<name>`, which never follows the
 last name. Regular files being written use plain `fchown`, `fsetxattr`,
 `fchmod` and `futimens` on their open fd.
 
+## Extraction
+
+`extract(dst, tar, whiteouts)` reads a plain tar stream; the caller chains
+`rnk-layer`'s decoder in front and publishes the result
+([overlay snapshots](overlay-snapshot.md#exporting-a-diff-as-an-oci-layer),
+`ADR-0006`). The `tar` crate only parses (ustar, GNU long names and sparse
+files, PAX records); its `unpack`, which joins names onto a host path, is
+never called. A hand-written reader would repeat that parsing for no gain.
+
+- **Names.** Each entry name and hardlink target is cleaned lexically; a
+  `..` that climbs above the root is refused (`Error::Entry`), as Docker
+  refuses a "breakout", instead of being clamped. Absolute names are taken
+  relative to the root. The cleaned path is then reached through
+  `RootPath`, so a symlink in the root or earlier in the same layer cannot
+  carry an entry outside.
+- **Replacing.** An existing entry is unlinked (a directory removed
+  through the deletion walker) and the new one created with `O_EXCL`,
+  `mkdirat`, `symlinkat`, `linkat` or `mknodat`, none of which follow the
+  last name; a directory over a directory merges. Missing parents are
+  created `0755`.
+- **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
+  included), raw mode bits, PAX `SCHILY.xattr.*`, PAX `mtime`/`atime` with
+  nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
+  the order of [Metadata](#metadata); a regular file gets them through its
+  open fd. Directories are created `0700` and get their mode and times last,
+  deepest first, so later entries neither move their mtime nor hit a
+  read-only directory.
+- **Hardlinks** link the target named in the archive with `linkat(…, 0)`,
+  so a symlink target is linked itself. A target missing from the root is
+  an `Error::Entry`
+  ([Q-051](../open-questions.md#q-051-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)).
+- **`Whiteouts::Overlay`** (`layers/<id>`, mounted with `userxattr`,
+  `ADR-0016`): `.wh.<name>` becomes the character device 0/0, which an
+  unprivileged user may create (measured on Linux 7.0; allowed since the
+  kernel change "vfs: allow unprivileged whiteout creation", Linux 5.8
+  [external]), so T0 covers it;
+  `.wh..wh..opq` becomes `user.overlay.opaque=y` on its directory; content
+  xattrs `user.overlay.X` are stored as `user.overlay.overlay.X`.
+- **`Whiteouts::Apply`** (a live root, kaniko mode): `.wh.<name>` removes
+  `<name>`; `.wh..wh..opq` removes everything in its directory that this
+  layer did not create, keeping this layer's entries and the directories
+  leading to them, at the point the marker appears in the stream. Writing
+  into a live root, mount points included, is Phase 2
+  ([kaniko mode](kaniko-mode.md)).
+- Other `.wh..wh.*` names (AUFS bookkeeping) are skipped; global PAX
+  headers are ignored; unknown entry types are refused. Device nodes need
+  `CAP_MKNOD` (T2); foreign owners need root or a user namespace (T1).
+
 ## Users and groups
 
 `/etc/passwd` and `/etc/group` are read through `RootPath` (so a symlinked
@@ -118,7 +166,9 @@ directory an extracted entry replaces, and applies OCI whiteouts.
 ## Observability
 
 Coarse `tracing` spans only, named `<crate>.<operation>`, with counters
-recorded once at the end, never per entry: `rnk_rootfs.delete_contents`
+recorded once at the end, never per entry: `rnk_rootfs.extract`
+(`whiteouts` mode; `entries`, `files`, `dirs`, `symlinks`, `hardlinks`,
+`nodes`, `whiteout_entries`, `bytes`) and `rnk_rootfs.delete_contents`
 (`files`, `dirs`, `kept`).
 
 ## Failure handling
@@ -133,6 +183,8 @@ recorded once at the end, never per entry: `rnk_rootfs.delete_contents`
   Who owns the workdir checks?
 - [Q-050](../open-questions.md#q-050-what-is-the-minimum-kernel-and-who-checks-it)
   What is the minimum kernel, and who checks it?
+- [Q-051](../open-questions.md#q-051-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)
+  How does overlay-form extraction handle a hardlink into a lower layer?
 
 ## References
 

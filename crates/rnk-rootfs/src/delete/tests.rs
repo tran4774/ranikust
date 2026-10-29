@@ -7,38 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rustix::fs::{CWD, Mode};
 
 use super::*;
-use crate::test_util::{Fixture, errno};
-
-/// Every path below `dir`, relative to it.
-fn tree(dir: &Path) -> BTreeSet<PathBuf> {
-    let mut out = BTreeSet::new();
-    let mut stack = vec![dir.to_owned()];
-    while let Some(d) = stack.pop() {
-        for e in fs::read_dir(&d).unwrap() {
-            let p = e.unwrap().path();
-            if fs::symlink_metadata(&p).unwrap().is_dir() {
-                stack.push(p.clone());
-            }
-            out.insert(p.strip_prefix(dir).unwrap().to_owned());
-        }
-    }
-    out
-}
-
-/// A directory outside the root with a few entries, and its listing.
-fn outside(f: &Fixture) -> (PathBuf, BTreeSet<PathBuf>) {
-    let out = f.host.with_file_name("outside");
-    fs::create_dir_all(out.join("sub")).unwrap();
-    fs::write(out.join("sentinel"), b"x").unwrap();
-    fs::write(out.join("sub/file"), b"y").unwrap();
-    let t = tree(&out);
-    (out, t)
-}
+use crate::test_util::{Fixture, errno, snapshot, tree};
 
 #[test]
 fn deletes_everything_but_the_root() {
     let f = Fixture::new();
-    let (out, before) = outside(&f);
+    let (out, before) = f.outside();
     fs::create_dir_all(f.host("a/b/c")).unwrap();
     fs::create_dir(f.host("empty")).unwrap();
     fs::write(f.host("a/b/c/f"), b"1").unwrap();
@@ -53,7 +27,7 @@ fn deletes_everything_but_the_root() {
     delete_contents(&f.root, &IgnoreList::new()).unwrap();
     assert!(f.host.is_dir());
     assert_eq!(tree(&f.host), BTreeSet::new());
-    assert_eq!(tree(&out), before);
+    assert_eq!(snapshot(&out), before);
 }
 
 #[test]
@@ -178,7 +152,7 @@ fn deletes_a_tree_deeper_than_path_max() {
 fn concurrent_swap_never_deletes_outside() {
     for _ in 0..20 {
         let f = Fixture::new();
-        let (out, before) = outside(&f);
+        let (out, before) = f.outside();
         fs::create_dir(f.host("d")).unwrap();
         for i in 0..50 {
             fs::write(f.host(&format!("d/f{i}")), b"").unwrap();
@@ -210,7 +184,7 @@ fn concurrent_swap_never_deletes_outside() {
             Ok(()) | Err(Error::Changed { .. }) => {}
             Err(e) => assert_eq!(errno(&e), Some(Errno::NOENT), "{e}"),
         }
-        assert_eq!(tree(&out), before);
+        assert_eq!(snapshot(&out), before);
     }
 }
 

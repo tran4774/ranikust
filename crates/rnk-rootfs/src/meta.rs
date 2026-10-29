@@ -211,7 +211,6 @@ pub struct Meta {
 pub(crate) enum Handle<'a> {
     /// An fd opened for I/O (a regular file being extracted): plain `f*`
     /// syscalls work on it.
-    #[expect(dead_code, reason = "used by tar extraction, added next")]
     Open(BorrowedFd<'a>),
     /// An `O_PATH` fd pinning the entry. `parent`/`name` locate it again for
     /// the one operation that needs a path (xattrs on a symlink); `None` for

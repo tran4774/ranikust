@@ -54,7 +54,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [oci-client](https://crates.io/crates/oci-client) | 0.18.0, Apache-2.0 | Registry client, behind a wrapper | chosen |
 | [oci-spec](https://crates.io/crates/oci-spec) | 0.10.0, Apache-2.0 | OCI types | chosen |
 | [docker_credential](https://crates.io/crates/docker_credential) | 1.4.0, MIT OR Apache-2.0 | `config.json`, credential helpers | chosen; may be vendored |
-| [tar](https://crates.io/crates/tar) | 0.4.46, MIT OR Apache-2.0 | Tar with hand-built headers; never `append_dir_all` | chosen |
+| [tar](https://crates.io/crates/tar) | 0.4.46, MIT OR Apache-2.0 | Tar with hand-built headers; never `append_dir_all`. Reading (`rnk-rootfs`): `entries()` only, never `unpack` | chosen |
 | [flate2](https://crates.io/crates/flate2), [zlib-rs](https://crates.io/crates/zlib-rs) | 1.1.10, MIT OR Apache-2.0; 0.6.8, Zlib | Deflate under the pigz-style gzip | chosen |
 | [zstd](https://crates.io/crates/zstd) | 0.14.3, BSD-3-Clause | Multithreaded zstd, fed 128 KiB chunks | chosen |
 | [gzp](https://crates.io/crates/gzp) | 2.0.4, Unlicense/MIT | Parallel gzip | candidate |

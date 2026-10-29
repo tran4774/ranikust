@@ -25,6 +25,7 @@
 
 mod delete;
 mod error;
+mod extract;
 mod meta;
 mod path;
 mod root;
@@ -34,6 +35,7 @@ mod user;
 
 pub use delete::{IgnoreList, delete_contents};
 pub use error::{Error, Result};
+pub use extract::{Whiteouts, extract};
 pub use meta::{FileTime, FileType, Meta, Stat};
 pub use root::{OpenHow, RootPath};
 pub use user::{Owner, User, lookup_owner, lookup_user};
