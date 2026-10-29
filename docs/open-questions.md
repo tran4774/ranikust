@@ -284,7 +284,10 @@ Entry format:
   use; (b) each library receives only its own settings (snapshot kind,
   sandbox variant).
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** (b) for the sandbox: `rnk_sandbox::probe` returns its own
+  `Caps` (the root entry), and `Sandbox::start` takes `Option<Caps>`,
+  `None` allowing only `Isolation::Direct` (`feat/rnk-sandbox`).
+  Reversible: `ranikust` is the only caller.
 - **Raised:** 2026-10-30
 
 ### Q-018: Where does the probe mount its test overlay?
@@ -410,6 +413,64 @@ Entry format:
 - **Interim:** `rnk-context` offers `Context::sub_context` for any context
   (`feat/rnk-context`), confined to the context with `..` clamped; the CLI
   decides when to call it. Reversible: no caller yet.
+- **Raised:** 2026-10-30
+
+### Q-075: Which host name does a RUN see?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, `rnk-builder`
+- **Context:** every `RUN` gets a new UTS namespace and an `/etc/hostname`
+  copy. kaniko creates no UTS namespace, so its `RUN` sees the host name of
+  the container or pod kaniko runs in; BuildKit uses `buildkitsandbox` and
+  Docker's classic builder the short container ID [inferred]
+  ([rnk-sandbox](agents/crates/rnk-sandbox.md#pitfalls)).
+- **Options:** (a) as kaniko: the host name of the environment ranikust
+  runs in; (b) BuildKit's `buildkitsandbox`; (c) a fixed `ranikust`;
+  (d) one of these plus a flag.
+- **Recommendation:** none
+- **Interim:** (c): `RunSpec::new` sets `ranikust`, and `rnk-builder` may
+  set `RunSpec::hostname` (`feat/rnk-sandbox`). Reversible: one constant.
+- **Raised:** 2026-10-30
+
+### Q-076: What /etc/hosts does a RUN see?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`
+- **Context:** `/etc/hosts` is a writable copy bound over the root's. kaniko's
+  `RUN` reads the file of the container kaniko runs in; BuildKit writes
+  loopback entries and the host name [inferred]
+  ([sandbox](design/sandbox.md#per-run-sequence)).
+- **Options:** (a) ranikust's own `/etc/hosts` plus the host name, for every
+  network; (b) loopback entries plus the host name, as BuildKit; (c) (a)
+  with the host network, (b) with `--network=none`.
+- **Recommendation:** none
+- **Interim:** (c), in `crates/rnk-sandbox/src/plan.rs` `hosts_file`
+  (`feat/rnk-sandbox`). Reversible: one function.
+- **Raised:** 2026-10-30
+
+### Q-077: How is the MS_MOVE fallback kept from a chroot escape?
+
+- **Blocks:** Phase 3 (the fallbacks); **Area:** `rnk-sandbox`
+- **Context:** where seccomp blocks `pivot_root` (Docker's default profile),
+  the child moves the stage root onto `/` and `chroot`s into it, as runc's
+  `--no-pivot`. The old root stays mounted underneath, and root in `RUN`
+  keeps `CAP_SYS_CHROOT` (a Docker default), so the classic escape is
+  `chroot` into a subdirectory, then `chdir("..")` up. The kernel's `..`
+  (`follow_dotdot`, `choose_mountpoint` in `fs/namei.c`) does not stop on a
+  mount point that is itself a mount root, so when `/` is a mount root the
+  walk stays at the moved root; when `/` is a plain directory (ranikust
+  inside a `chroot`), it climbs into ranikust's filesystem, with the state
+  directory and registry credentials [inferred]. Not tested; it needs the
+  T2 VM ([sandbox](design/sandbox.md#variants-by-environment)).
+- **Options:** (a) drop `CAP_SYS_CHROOT` from the bounding set under
+  `MS_MOVE` (a `RUN` that runs `chroot` fails); (b) keep Docker's defaults,
+  and use `MS_MOVE` only where `/` is a mount root; (c) refuse the full
+  sandbox under `MS_MOVE` and run `Isolation::Direct`, kaniko's level of
+  isolation.
+- **Recommendation:** (b), if the escape test in the VM confirms that `..`
+  stops at the moved root; otherwise (a).
+- **Interim:** (b): the probe falls back to `MS_MOVE` only when
+  `pivot_root` fails with `EPERM` and `statx` reports `/` as a mount root;
+  both root entries keep the 14 defaults (`crates/rnk-sandbox/src/probe.rs`,
+  `child.rs`, `feat/rnk-sandbox`). Reversible: one bit in the drop list.
 - **Raised:** 2026-10-30
 
 ### Q-024: What is the Snapshotter signature?

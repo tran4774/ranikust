@@ -17,9 +17,38 @@
 //! `JAVA_TOOL_OPTIONS` limits of ADR-0019. A bare `chroot` is never used when
 //! mounting is possible.
 //!
+//! # Use
+//!
+//! While the process is single-threaded: [`enter_build_namespace`], then
+//! [`probe`]. Then [`Sandbox::start`], which replays the stub journals of
+//! dead builds and starts the spawner thread, and [`Sandbox::run`] per `RUN`.
+//!
+//! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
+//! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. User
+//! namespaces, the `proc` and `sysfs` fallbacks and the bare-`chroot` path
+//! come later (`docs/agents/crates/rnk-sandbox.md`).
+//!
 //! # Boundaries
 //!
 //! - Users and groups are looked up in the rootfs through `rnk-rootfs`, never
 //!   on the host.
 //! - Does not snapshot or diff the rootfs, or mount or probe overlays
 //!   (`rnk-snapshot`).
+
+mod caps;
+mod child;
+mod direct;
+mod error;
+mod journal;
+mod plan;
+mod probe;
+mod setup;
+mod spawner;
+mod spec;
+
+pub use child::RootEntry;
+pub use error::{Error, Result, Step};
+pub use probe::{Caps, probe};
+pub use setup::enter_build_namespace;
+pub use spawner::Sandbox;
+pub use spec::{BindMount, Isolation, MountKind, Network, RunSpec, Stdio};
