@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-use rnk_layer::{Compression, EntryKind, Error, LayerWriter};
+use rnk_layer::{EntryKind, Error, LayerWriter};
 
 use crate::support::{
-    MemSource, ReadBack, Tree, entry, long_component, options, path, plain, read_tar, sample_tree,
+    MemSource, ReadBack, Tree, entry, long_component, path, plain, read_tar, sample_tree,
     sha256_hex,
 };
 
@@ -345,10 +345,4 @@ fn source_errors_name_the_entry() {
         matches!(err, Error::Source { ref path, .. } if *path == crate::support::path("f")),
         "{err}"
     );
-}
-
-#[test]
-fn zstd_is_not_supported_yet() {
-    let err = LayerWriter::new(options(Compression::Zstd, 1)).unwrap_err();
-    assert!(matches!(err, Error::Unsupported(Compression::Zstd)));
 }

@@ -7,24 +7,14 @@
 //! one deflate stream; an empty final block closes it. The trailer's CRC-32
 //! is combined from the blocks' CRCs. A block's bytes depend only on the
 //! block, the previous block's tail and the level, so threads change the
-//! speed and nothing else (`exp-05` Q3; pigz does the same).
-//!
-//! The encoder also hashes its input (the diff ID) and its output (the
-//! blob digest): in the caller's thread when it compresses there, otherwise
-//! in one thread per stream fed in order, so that the caller only copies
-//! and writes.
+//! speed and nothing else (`exp-05` Q3; pigz does the same). The worker
+//! threads and the hashing are [`crate::parallel`]'s.
 
-use std::collections::BTreeMap;
-use std::io::{self, Write};
-use std::mem;
-use std::num::NonZeroUsize;
-use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::thread::{self, JoinHandle};
+use std::io;
 
 use flate2::{Compress, Crc, FlushCompress};
 
-use crate::digest::{Hasher, Sha256Digest};
+use crate::parallel::{BlockEncoder, Codec};
 
 /// Uncompressed bytes per block; part of every gzip layer digest.
 pub(crate) const BLOCK_SIZE: usize = 128 * 1024;
@@ -32,178 +22,64 @@ pub(crate) const BLOCK_SIZE: usize = 128 * 1024;
 pub(crate) const DICT_SIZE: usize = 32 * 1024;
 /// A final, empty, fixed-Huffman deflate block: `BFINAL=1`, `BTYPE=01`, EOB.
 const FINAL_EMPTY_BLOCK: [u8; 2] = [0x03, 0x00];
-/// Blocks queued or being compressed per worker thread.
-const QUEUE_PER_THREAD: usize = 2;
 
-/// A gzip writer compressing 128 KiB blocks on `threads` threads (in the
-/// caller's thread when `threads` is 1), hashing its input and output.
-///
-/// [`flush`](Write::flush) flushes the inner writer only: cutting a block
-/// early would change the output. Call [`finish`](Self::finish) to end the
-/// stream; dropping the encoder discards the unfinished stream.
-pub(crate) struct GzipEncoder<W: Write> {
-    out: W,
-    level: u32,
-    /// The block being filled.
-    block: Vec<u8>,
-    /// The tail of the previous block.
-    dict: Vec<u8>,
-    /// Index of the next block handed to a compressor.
-    next_submit: u64,
-    /// Index of the next block written to `out`.
-    next_write: u64,
-    /// Compressed blocks that came back ahead of `next_write`.
-    ready: BTreeMap<u64, Compressed>,
-    /// CRC of everything written so far.
-    crc: Crc,
-    /// The hash of the input.
-    input_hash: StreamHash,
-    /// The hash of everything written to `out`.
-    output_hash: StreamHash,
-    pool: Option<Pool>,
+/// A gzip writer: one member, compressed block by block on worker threads.
+pub(crate) type GzipEncoder<W> = BlockEncoder<W, Gzip>;
+
+/// The gzip codec at one compression level (0 to 9).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Gzip {
+    pub(crate) level: u32,
 }
 
 /// One compressed block and the CRC of its input.
-struct Compressed {
+pub(crate) struct Compressed {
     deflate: Vec<u8>,
     crc: Crc,
 }
 
-impl<W: Write> GzipEncoder<W> {
-    /// Writes the gzip header and starts the worker threads.
-    pub(crate) fn new(mut out: W, level: u32, threads: NonZeroUsize) -> io::Result<Self> {
+impl Codec for Gzip {
+    type Block = Compressed;
+    type State = Crc;
+    // Each block starts a fresh deflate stream.
+    type Scratch = ();
+    const BLOCK_SIZE: usize = BLOCK_SIZE;
+    const NAME: &'static str = "rnk-gzip";
+    const BLOCK_FOR_EMPTY_INPUT: bool = false;
+
+    fn header(&self) -> Vec<u8> {
         // RFC 1952: no name, no mtime, XFL from the level as Go's
         // compress/gzip sets it, OS unknown.
-        let xfl = match level {
+        let xfl = match self.level {
             9 => 2,
             1 => 4,
             _ => 0,
         };
-        let header = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, xfl, 0xff];
-        out.write_all(&header)?;
-        let (pool, input_hash, mut output_hash) = match threads.get() {
-            1 => (None, StreamHash::inline(), StreamHash::inline()),
-            n => (
-                Some(Pool::start(level, n)?),
-                StreamHash::start("rnk-gzip-hash-in", n)?,
-                StreamHash::start("rnk-gzip-hash-out", n)?,
-            ),
-        };
-        output_hash.update(Arc::new(header))?;
-        Ok(Self {
-            out,
-            level,
-            block: Vec::with_capacity(BLOCK_SIZE),
-            dict: Vec::new(),
-            next_submit: 0,
-            next_write: 0,
-            ready: BTreeMap::new(),
-            crc: Crc::new(),
-            input_hash,
-            output_hash,
-            pool,
-        })
+        vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, xfl, 0xff]
     }
 
-    /// Compresses what is left, writes the final block and the trailer, and
-    /// returns the inner writer with the sha256 and size of the input, then
-    /// of the output.
-    pub(crate) fn finish(mut self) -> io::Result<(W, Digested, Digested)> {
-        if !self.block.is_empty() {
-            self.submit()?;
-        }
-        while self.next_write < self.next_submit {
-            self.wait_one()?;
-        }
-        if let Some(pool) = self.pool.take() {
-            pool.stop()?;
-        }
+    fn carry(&self, block: &[u8]) -> Vec<u8> {
+        block[block.len().saturating_sub(DICT_SIZE)..].to_vec()
+    }
+
+    fn scratch(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn compress(&self, (): &mut (), carried: &[u8], data: &[u8]) -> io::Result<Compressed> {
+        compress_block(self.level, carried, data)
+    }
+
+    fn absorb(crc: &mut Crc, block: Compressed) -> Vec<u8> {
+        crc.combine(&block.crc);
+        block.deflate
+    }
+
+    fn trailer(&self, crc: Crc) -> Vec<u8> {
         let mut end = FINAL_EMPTY_BLOCK.to_vec();
-        end.extend_from_slice(&self.crc.sum().to_le_bytes());
-        end.extend_from_slice(&self.crc.amount().to_le_bytes());
-        self.out.write_all(&end)?;
-        self.output_hash.update(Arc::new(end))?;
-        let input = self.input_hash.finish()?;
-        let output = self.output_hash.finish()?;
-        Ok((self.out, input, output))
-    }
-
-    /// Hands the full (or last) block to a compressor.
-    fn submit(&mut self) -> io::Result<()> {
-        let data = Arc::new(mem::replace(
-            &mut self.block,
-            Vec::with_capacity(BLOCK_SIZE),
-        ));
-        let tail = &data[data.len().saturating_sub(DICT_SIZE)..];
-        let dict = mem::replace(&mut self.dict, tail.to_vec());
-        self.input_hash.update(Arc::clone(&data))?;
-        let index = self.next_submit;
-        self.next_submit += 1;
-        let Some(pool) = &mut self.pool else {
-            let block = compress_block(self.level, &dict, &data)?;
-            return self.write_block(block);
-        };
-        pool.send(Job { index, data, dict })?;
-        while let Some(done) = pool.try_recv()? {
-            self.ready.insert(done.index, done.result?);
-        }
-        self.write_ready()?;
-        let limit = pool_limit(self.pool.as_ref());
-        while self.next_submit - self.next_write >= limit {
-            self.wait_one()?;
-        }
-        Ok(())
-    }
-
-    /// Waits for one block from the workers, then writes what is ready.
-    fn wait_one(&mut self) -> io::Result<()> {
-        let Some(pool) = &self.pool else {
-            return Err(io::Error::other("gzip: no block in flight"));
-        };
-        let done = pool.recv()?;
-        self.ready.insert(done.index, done.result?);
-        self.write_ready()
-    }
-
-    fn write_ready(&mut self) -> io::Result<()> {
-        while let Some(block) = self.ready.remove(&self.next_write) {
-            self.write_block(block)?;
-        }
-        Ok(())
-    }
-
-    fn write_block(&mut self, block: Compressed) -> io::Result<()> {
-        self.out.write_all(&block.deflate)?;
-        self.output_hash.update(Arc::new(block.deflate))?;
-        self.crc.combine(&block.crc);
-        self.next_write += 1;
-        Ok(())
-    }
-}
-
-/// Blocks allowed between submission and writing, written ones excluded.
-fn pool_limit(pool: Option<&Pool>) -> u64 {
-    let workers = pool.map_or(1, |p| p.workers.len());
-    u64::try_from(workers * QUEUE_PER_THREAD).unwrap_or(u64::MAX)
-}
-
-impl<W: Write> Write for GzipEncoder<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut rest = buf;
-        while !rest.is_empty() {
-            let room = BLOCK_SIZE - self.block.len();
-            let (now, later) = rest.split_at(room.min(rest.len()));
-            self.block.extend_from_slice(now);
-            rest = later;
-            if self.block.len() == BLOCK_SIZE {
-                self.submit()?;
-            }
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.out.flush()
+        end.extend_from_slice(&crc.sum().to_le_bytes());
+        end.extend_from_slice(&crc.amount().to_le_bytes());
+        end
     }
 }
 
@@ -241,151 +117,10 @@ fn compress_block(level: u32, dict: &[u8], data: &[u8]) -> io::Result<Compressed
     Ok(Compressed { deflate: out, crc })
 }
 
-struct Job {
-    index: u64,
-    data: Arc<Vec<u8>>,
-    dict: Vec<u8>,
-}
-
-struct Done {
-    index: u64,
-    result: io::Result<Compressed>,
-}
-
-/// Worker threads, each with its own queue; block `i` goes to worker
-/// `i % n`.
-struct Pool {
-    workers: Vec<SyncSender<Job>>,
-    results: Receiver<Done>,
-    handles: Vec<JoinHandle<()>>,
-}
-
-impl Pool {
-    fn start(level: u32, threads: usize) -> io::Result<Self> {
-        let (done_tx, results) = mpsc::channel::<Done>();
-        let mut workers = Vec::with_capacity(threads);
-        let mut handles = Vec::with_capacity(threads);
-        for i in 0..threads {
-            let (job_tx, jobs) = mpsc::sync_channel::<Job>(QUEUE_PER_THREAD);
-            let done = done_tx.clone();
-            let handle = thread::Builder::new()
-                .name(format!("rnk-gzip-{i}"))
-                .spawn(move || {
-                    for job in jobs {
-                        let result = compress_block(level, &job.dict, &job.data);
-                        if done
-                            .send(Done {
-                                index: job.index,
-                                result,
-                            })
-                            .is_err()
-                        {
-                            // The encoder is gone; nothing waits for blocks.
-                            break;
-                        }
-                    }
-                })?;
-            workers.push(job_tx);
-            handles.push(handle);
-        }
-        Ok(Self {
-            workers,
-            results,
-            handles,
-        })
-    }
-
-    fn send(&self, job: Job) -> io::Result<()> {
-        let worker = usize::try_from(
-            job.index % u64::try_from(self.workers.len()).map_err(io::Error::other)?,
-        )
-        .map_err(io::Error::other)?;
-        self.workers[worker].send(job).map_err(|_| stopped())
-    }
-
-    fn recv(&self) -> io::Result<Done> {
-        self.results.recv().map_err(|_| stopped())
-    }
-
-    fn try_recv(&self) -> io::Result<Option<Done>> {
-        match self.results.try_recv() {
-            Ok(done) => Ok(Some(done)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(stopped()),
-        }
-    }
-
-    /// Closes the queues and joins the workers.
-    fn stop(self) -> io::Result<()> {
-        drop(self.workers);
-        for handle in self.handles {
-            handle.join().map_err(|_| stopped())?;
-        }
-        Ok(())
-    }
-}
-
-/// A sha256 and the number of bytes it covers.
-pub(crate) type Digested = (Sha256Digest, u64);
-
-/// The running hash of one stream.
-enum StreamHash {
-    Inline(Hasher),
-    /// Pieces go, in order, to a thread that returns the hash when the
-    /// queue closes.
-    Thread {
-        blocks: SyncSender<Arc<Vec<u8>>>,
-        handle: JoinHandle<Hasher>,
-    },
-}
-
-impl StreamHash {
-    fn inline() -> Self {
-        Self::Inline(Hasher::default())
-    }
-
-    fn start(name: &str, threads: usize) -> io::Result<Self> {
-        let (blocks, queue) = mpsc::sync_channel::<Arc<Vec<u8>>>(threads * QUEUE_PER_THREAD);
-        let handle = thread::Builder::new()
-            .name(name.to_owned())
-            .spawn(move || {
-                let mut hasher = Hasher::default();
-                for block in queue {
-                    hasher.update(&block);
-                }
-                hasher
-            })?;
-        Ok(Self::Thread { blocks, handle })
-    }
-
-    fn update(&mut self, block: Arc<Vec<u8>>) -> io::Result<()> {
-        match self {
-            Self::Inline(hasher) => {
-                hasher.update(&block);
-                Ok(())
-            }
-            Self::Thread { blocks, .. } => blocks.send(block).map_err(|_| stopped()),
-        }
-    }
-
-    fn finish(self) -> io::Result<Digested> {
-        match self {
-            Self::Inline(hasher) => Ok(hasher.finish()),
-            Self::Thread { blocks, handle } => {
-                drop(blocks);
-                handle.join().map(Hasher::finish).map_err(|_| stopped())
-            }
-        }
-    }
-}
-
-fn stopped() -> io::Error {
-    io::Error::other("a gzip worker thread stopped")
-}
-
 #[cfg(test)]
-mod tests {
-    use std::io::Read;
+pub(crate) mod tests {
+    use std::io::{Read, Write as _};
+    use std::num::NonZeroUsize;
 
     use proptest::prelude::*;
 
@@ -393,7 +128,7 @@ mod tests {
 
     fn gzip(data: &[u8], level: u32, threads: usize, chunk: usize) -> Vec<u8> {
         let threads = NonZeroUsize::new(threads).unwrap();
-        let mut enc = GzipEncoder::new(Vec::new(), level, threads).unwrap();
+        let mut enc = GzipEncoder::new(Vec::new(), Gzip { level }, threads).unwrap();
         for piece in data.chunks(chunk.max(1)) {
             enc.write_all(piece).unwrap();
         }
@@ -419,7 +154,7 @@ mod tests {
     }
 
     /// Compressible but not trivial: text-like runs mixed with noise.
-    fn sample(len: usize, seed: u64) -> Vec<u8> {
+    pub(crate) fn sample(len: usize, seed: u64) -> Vec<u8> {
         let mut x = seed | 1;
         (0..len)
             .map(|i| {

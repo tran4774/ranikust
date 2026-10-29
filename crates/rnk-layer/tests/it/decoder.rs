@@ -6,6 +6,7 @@ use proptest::collection::vec;
 use proptest::prelude::*;
 use rnk_layer::{Compression, Decoder};
 
+use crate::gzip_layer::big_tree;
 use crate::support::{options, plain, read_tar, sample_tree};
 use crate::tar_props::{build, spec};
 
@@ -116,6 +117,41 @@ fn corrupt_gzip_is_an_error() {
 }
 
 #[test]
+fn multi_frame_zstd_layers_decode_to_their_tar_and_diff_id() {
+    let mut t = big_tree();
+    let tar = t.encode(plain()).unwrap();
+    let (blob, digests) = t
+        .encode_with_digests(options(Compression::Zstd, 4))
+        .unwrap();
+    for chunk in [1000, 64 * 1024] {
+        let (out, d) = decode(&blob, chunk);
+        assert_eq!(d.compression(), Compression::Zstd);
+        assert_eq!(out, tar, "{chunk}");
+        assert_eq!(d.diff_id(), Some(digests.diff_id));
+        assert_eq!(d.tar_size(), u64::try_from(tar.len()).unwrap());
+    }
+}
+
+#[test]
+fn one_long_zstd_frame_from_another_tool_decodes() {
+    // What containerd and BuildKit write: one frame, with a checksum.
+    let tar = sample_tree().encode(plain()).unwrap();
+    let mut enc = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+    enc.include_checksum(true).unwrap();
+    enc.write_all(&tar).unwrap();
+    let blob = enc.finish().unwrap();
+    let (out, _) = decode(&blob, 4096);
+    assert_eq!(out, tar);
+
+    let mut flipped = blob.clone();
+    let last = flipped.len() - 1;
+    flipped[last] ^= 0xff; // inside the checksum
+    let mut out = Vec::new();
+    let err = Decoder::new(&flipped[..]).unwrap().read_to_end(&mut out);
+    assert!(err.is_err());
+}
+
+#[test]
 fn an_empty_blob_is_an_empty_plain_stream() {
     let (out, d) = decode(b"", 16);
     assert!(out.is_empty());
@@ -134,11 +170,13 @@ proptest! {
         seed: u64,
         threads in 1usize..6,
         chunk in 1usize..70_000,
+        compression in prop_oneof![Just(Compression::Gzip), Just(Compression::Zstd)],
     ) {
         let mut t = build(&specs, seed);
         let tar = t.encode(plain()).unwrap();
-        let (gz, digests) = t.encode_with_digests(options(Compression::Gzip, threads)).unwrap();
-        let (out, d) = decode(&gz, chunk);
+        let (blob, digests) = t.encode_with_digests(options(compression, threads)).unwrap();
+        let (out, d) = decode(&blob, chunk);
+        prop_assert_eq!(d.compression(), compression);
         prop_assert_eq!(out, tar);
         prop_assert_eq!(d.diff_id(), Some(digests.diff_id));
     }

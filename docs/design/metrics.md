@@ -367,7 +367,12 @@ its outputs (Phase 1 task 11).
 ## Testing hooks
 
 - `rnk_metrics::Capture` runs code under a metrics-only subscriber and
-  returns the span sections, for a crate's tests of its own spans.
+  returns the span sections, for a crate's tests of its own spans. Put
+  those tests in a test binary of their own (`rnk-layer`'s
+  `tests/spans.rs`) and create the `Capture` before the first span is
+  reached: tracing caches per process whether a span is wanted, and a test
+  reaching it while no subscriber is alive can race a `Capture` into
+  caching "never" (seen as a flaky missing span).
 - `RANIKUST_DEBUG_FAULT=panic|error` (hidden) makes the binary panic or fail
   after metrics are set up; `crates/ranikust/tests/metrics.rs` uses it to
   check every exit path. It is honoured in release builds too, so the

@@ -8,9 +8,10 @@ use std::num::NonZeroUsize;
 
 use crate::digest::{HashingWriter, Sha256Digest};
 use crate::entry::{OPAQUE_MARKER, WHITEOUT_PREFIX};
-use crate::gzip::Digested;
-use crate::gzip::GzipEncoder;
+use crate::gzip::{Gzip, GzipEncoder};
 use crate::header::{self, BLOCK_SIZE, Header, TypeFlag};
+use crate::parallel::Digested;
+use crate::zstd_frames::{Zstd, ZstdEncoder};
 use crate::{Entry, EntryKind, EntryPath, Error};
 
 /// Size of the buffer file content is copied through.
@@ -23,8 +24,8 @@ pub enum Compression {
     None,
     /// gzip, written as one member by the parallel compressor.
     Gzip,
-    /// zstd. Recognised, not supported yet.
-    // Q-052: zstd arrives with the cargo-zigbuild toolchain.
+    /// zstd, written as one independent frame per 1 MiB of tar by the
+    /// parallel compressor.
     Zstd,
 }
 
@@ -44,7 +45,8 @@ impl fmt::Display for Compression {
 pub struct EncodeOptions {
     /// The blob's compression.
     pub compression: Compression,
-    /// The compression level: 0 to 9 for gzip; ignored when uncompressed.
+    /// The compression level: 0 to 9 for gzip, 1 to 19 for zstd; ignored
+    /// when uncompressed.
     pub level: i32,
     /// Compression threads; above 1, two more threads hash the tar and the
     /// blob. The output does not depend on it.
@@ -119,15 +121,16 @@ impl LayerWriter {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidLevel`] for a level the compression does not have,
-    /// [`Error::Unsupported`] for a compression not implemented yet.
+    /// [`Error::InvalidLevel`] for a level the compression does not have.
     pub fn new(options: EncodeOptions) -> Result<Self, Error> {
         match options.compression {
             Compression::None => {}
             Compression::Gzip => {
                 gzip_level(options.level)?;
             }
-            Compression::Zstd => return Err(Error::Unsupported(options.compression)),
+            Compression::Zstd => {
+                zstd_level(options.level)?;
+            }
         }
         Ok(Self {
             options,
@@ -179,9 +182,22 @@ impl LayerWriter {
         source: &mut dyn EntrySource,
         out: W,
     ) -> Result<LayerDigests, Error> {
-        self.add_parents(source)?;
-        let records = records(&self.entries);
         let compression = self.options.compression;
+        let span = tracing::debug_span!(
+            "rnk_layer.encode",
+            entries = tracing::field::Empty,
+            parents_added = tracing::field::Empty,
+            bytes_in = tracing::field::Empty,
+            bytes_out = tracing::field::Empty,
+            max_threads = self.options.threads.get(),
+        );
+        let _entered = span.enter();
+        let fed = self.entries.len();
+        self.add_parents(source)?;
+        span.record("entries", self.entries.len());
+        span.record("parents_added", self.entries.len() - fed);
+        let records = records(&self.entries);
+        let threads = self.options.threads;
         let sink = match compression {
             Compression::None => Sink::Plain(HashingWriter::new(BufWriter::with_capacity(
                 COPY_BUFFER,
@@ -189,13 +205,12 @@ impl LayerWriter {
             ))),
             Compression::Gzip => {
                 let level = gzip_level(self.options.level)?;
-                Sink::Gzip(Box::new(GzipEncoder::new(
-                    out,
-                    level,
-                    self.options.threads,
-                )?))
+                Sink::Gzip(Box::new(GzipEncoder::new(out, Gzip { level }, threads)?))
             }
-            Compression::Zstd => return Err(Error::Unsupported(Compression::Zstd)),
+            Compression::Zstd => {
+                let level = zstd_level(self.options.level)?;
+                Sink::Zstd(Box::new(ZstdEncoder::new(out, Zstd { level }, threads)?))
+            }
         };
         let mut tar = Tar {
             out: sink,
@@ -207,7 +222,9 @@ impl LayerWriter {
             tar.write(record, source)?;
         }
         tar.out.write_all(&[0; 2 * BLOCK_SIZE])?;
-        let ((diff_id, _), (digest, size)) = tar.out.finish()?;
+        let ((diff_id, tar_size), (digest, size)) = tar.out.finish()?;
+        span.record("bytes_in", tar_size);
+        span.record("bytes_out", size);
         Ok(LayerDigests {
             diff_id,
             digest,
@@ -342,33 +359,45 @@ fn gzip_level(level: i32) -> Result<u32, Error> {
         })
 }
 
+/// Checks a zstd level. Levels 20 to 22 ("ultra") need large windows and
+/// negative levels trade most of the ratio away; neither is offered.
+fn zstd_level(level: i32) -> Result<i32, Error> {
+    if (1..=19).contains(&level) {
+        Ok(level)
+    } else {
+        Err(Error::InvalidLevel {
+            compression: Compression::Zstd,
+            level,
+        })
+    }
+}
+
 /// Where the tar stream goes: hashed and written out, or through a
 /// compressor that hashes its input and its output.
 enum Sink<W: Write> {
     Plain(HashingWriter<BufWriter<W>>),
     Gzip(Box<GzipEncoder<W>>),
+    Zstd(Box<ZstdEncoder<W>>),
 }
 
 impl<W: Write> Sink<W> {
     /// Ends the stream and flushes the output. Returns the sha256 and size
     /// of the tar, then of the blob.
     fn finish(self) -> io::Result<(Digested, Digested)> {
-        match self {
+        let (mut out, tar, blob) = match self {
             Self::Plain(out) => {
                 let tar = out.hasher.finish();
-                let mut out = out
+                let out = out
                     .inner
                     .into_inner()
                     .map_err(io::IntoInnerError::into_error)?;
-                out.flush()?;
-                Ok((tar, tar))
+                (out, tar, tar)
             }
-            Self::Gzip(out) => {
-                let (mut out, tar, blob) = out.finish()?;
-                out.flush()?;
-                Ok((tar, blob))
-            }
-        }
+            Self::Gzip(out) => out.finish()?,
+            Self::Zstd(out) => out.finish()?,
+        };
+        out.flush()?;
+        Ok((tar, blob))
     }
 }
 
@@ -377,6 +406,7 @@ impl<W: Write> Write for Sink<W> {
         match self {
             Self::Plain(out) => out.write(buf),
             Self::Gzip(out) => out.write(buf),
+            Self::Zstd(out) => out.write(buf),
         }
     }
 
@@ -384,6 +414,7 @@ impl<W: Write> Write for Sink<W> {
         match self {
             Self::Plain(out) => out.write_all(buf),
             Self::Gzip(out) => out.write_all(buf),
+            Self::Zstd(out) => out.write_all(buf),
         }
     }
 
@@ -391,6 +422,7 @@ impl<W: Write> Write for Sink<W> {
         match self {
             Self::Plain(out) => out.flush(),
             Self::Gzip(out) => out.flush(),
+            Self::Zstd(out) => out.flush(),
         }
     }
 }

@@ -37,6 +37,8 @@ thiserror = "2.0.21"
 # install the subscriber (ADR-0025).
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry", "std"] }
+# `zstd`: bundled libzstd built by cargo-zigbuild (ADR-0020); no legacy formats or dictionary training.
+zstd = { version = "0.14.3", default-features = false }
 
 # Test-only crates.
 proptest = { version = "1.12", default-features = false, features = ["std"] }
