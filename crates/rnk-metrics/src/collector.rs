@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -12,7 +12,6 @@ use serde_json::{Map, Value};
 use crate::layer::Shared;
 use crate::report::{self, Outcome, ReportInput};
 use crate::resources::{self, HostPaths};
-use crate::state::State;
 
 /// How long the panic hook waits for another thread to release the state
 /// lock before writing the report without the span sections.
@@ -79,8 +78,15 @@ impl Collector {
         if self.finished.swap(true, Ordering::SeqCst) {
             return;
         }
-        let state = self.shared.lock();
-        self.write(Some(&state), outcome, self.panics.load(Ordering::SeqCst));
+        let meta = self
+            .meta
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let input = self.input(outcome, meta, self.panics.load(Ordering::SeqCst));
+        // The lock is held while the report is built, not while it is written.
+        let report = report::build(Some(&self.shared.lock()), &input);
+        self.emit(&report);
     }
 
     /// Writes the report from the panic hook. In a release build the process
@@ -93,10 +99,17 @@ impl Collector {
         if self.finished.load(Ordering::SeqCst) {
             return;
         }
+        // The panicking thread may hold either lock itself: never block on
+        // them here.
+        let meta = match self.meta.try_lock() {
+            Ok(meta) => meta.clone(),
+            Err(TryLockError::Poisoned(meta)) => meta.into_inner().clone(),
+            Err(TryLockError::WouldBlock) => Map::new(),
+        };
+        let outcome = Outcome::panic(message);
+        let input = self.input(&outcome, meta, panics - 1);
         let deadline = Instant::now() + PANIC_LOCK_WAIT;
         let state = loop {
-            // The panicking thread may hold the lock itself (a bug in the
-            // layer): never block on it here.
             if let Some(state) = self.shared.try_lock() {
                 break Some(state);
             }
@@ -105,34 +118,36 @@ impl Collector {
             }
             thread::sleep(Duration::from_millis(1));
         };
-        self.write(state.as_deref(), &Outcome::panic(message), panics - 1);
+        let report = report::build(state.as_deref(), &input);
+        drop(state);
+        self.emit(&report);
     }
 
-    /// Builds the report and writes the file and the summary. `panics`
-    /// counts the panic hooks that ran before this report.
-    fn write(&self, state: Option<&State>, outcome: &Outcome, panics: u64) {
-        let ended = Instant::now();
-        let ended_wall = SystemTime::now();
+    /// Everything but the span state: times, `meta`, the end sample.
+    /// `panics` counts the panic hooks that ran before this report.
+    fn input<'a>(
+        &self,
+        outcome: &'a Outcome,
+        meta: Map<String, Value>,
+        panics: u64,
+    ) -> ReportInput<'a> {
         let end_sample = resources::sample(&self.paths);
-        let resources = resources::report(&self.start_sample, &end_sample, &self.paths);
-        let meta = match self.meta.try_lock() {
-            Ok(meta) => meta.clone(),
-            Err(std::sync::TryLockError::Poisoned(meta)) => meta.into_inner().clone(),
-            Err(std::sync::TryLockError::WouldBlock) => Map::new(),
-        };
-        let input = ReportInput {
+        ReportInput {
             started: self.started,
-            ended,
+            ended: Instant::now(),
             started_wall: self.started_wall,
-            ended_wall,
+            ended_wall: SystemTime::now(),
             meta,
             outcome,
             panics,
-            resources,
-        };
-        let report = report::build(state, &input);
+            resources: resources::report(&self.start_sample, &end_sample, &self.paths),
+        }
+    }
+
+    /// Writes the report file and prints the summary, as configured.
+    fn emit(&self, report: &Value) {
         if let Some(file) = &self.file {
-            let written = report::to_bytes(&report)
+            let written = report::to_bytes(report)
                 .map_err(std::io::Error::from)
                 .and_then(|bytes| report::write_file(file, &bytes));
             if let Err(err) = written {
@@ -140,7 +155,7 @@ impl Collector {
             }
         }
         if self.summary {
-            eprint!("{}", report::summary(&report, self.file.as_deref()));
+            eprint!("{}", report::summary(report, self.file.as_deref()));
         }
     }
 }

@@ -179,10 +179,9 @@ impl Visit for FieldVisitor<'_> {
     }
 
     fn record_i128(&mut self, field: &Field, value: i128) {
-        if let Ok(value) = u64::try_from(value.max(0)) {
-            self.number(field, value);
-        } else {
-            self.number(field, u64::MAX);
+        // Negative counts are dropped, as in `record_i64`; huge ones saturate.
+        if value >= 0 {
+            self.number(field, u64::try_from(value).unwrap_or(u64::MAX));
         }
     }
 
