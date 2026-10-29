@@ -24,36 +24,33 @@ sorted keys.
 
 ## API
 
-Implemented:
+Implemented (optional properties are `Option`s: absent or `null` reads as
+`None` and is not written, a present value is written back even if empty;
+maps are `BTreeMap`s):
 
 ```rust
-pub struct Digest;                 // "sha256:<64 hex>" | "sha512:<128 hex>", lowercase, validated; Ord = string order; serde as string
-impl Digest { fn parse(&str); fn from_parts(DigestAlgorithm, &str); fn from_sha256_bytes(&[u8; 32]); fn from_sha512_bytes(&[u8; 64]);
-              fn algorithm(&self) -> DigestAlgorithm; fn encoded(&self) -> &str; fn as_str(&self) -> &str }
+pub struct Digest;  // "sha256:<64 hex>" | "sha512:<128 hex>", validated; Ord = string order; serde as string
+    // parse, from_parts, from_sha256_bytes(&[u8; 32]), from_sha512_bytes, algorithm, encoded, as_str
 pub enum DigestAlgorithm { Sha256, Sha512 }
-pub enum Error;                    // one enum for the crate; untrusted input quoted as an 80-char excerpt
-pub struct MediaType;              // any string; consts OCI_* and DOCKER_* (manifest, index, config, layers, foreign layers, schema 1)
-impl MediaType { fn format(&self) -> Option<ImageFormat>; fn is_manifest/is_index/is_config/is_layer/is_foreign_layer(&self) -> bool;
-                 fn layer_compression(&self) -> Option<Compression>; fn to_format(&self, ImageFormat) -> Result<MediaType, Error> }
+pub struct MediaType; // any string; consts OCI_* / DOCKER_*: manifest, index, config, layers, foreign layers, schema 1
+    // format() by vendor prefix, is_manifest/is_index/is_config/is_layer/is_foreign_layer, layer_compression, to_format
 pub enum ImageFormat { Oci, Docker } // no Default [open: Q-006]: kaniko follows the base image's format; or OCI
-impl ImageFormat { fn manifest_media_type/index_media_type/config_media_type(self) -> MediaType;
-                   fn layer_media_type(self, Compression) -> Result<MediaType, Error> } // Docker + zstd is an error
+    // manifest_media_type, index_media_type, config_media_type, layer_media_type(Compression) (Docker + zstd: Err)
 pub enum Compression { Uncompressed, Gzip, Zstd }
-pub struct Descriptor { media_type, digest, size: u64, urls, annotations: Option<BTreeMap<..>>, data, platform, artifact_type }
-pub struct Platform { architecture, os, os_version /* "os.version" */, os_features, variant, features }
-pub struct ImageManifest { schema_version, media_type, artifact_type, config, layers, subject, annotations } // OCI and Docker v2s2
-pub struct ImageIndex { schema_version, media_type, artifact_type, manifests, subject, annotations }         // OCI index, Docker list
-impl ImageManifest / ImageIndex { fn new(ImageFormat, ..); fn from_json(&[u8]) -> Result<Self, Error>;   // schemaVersion 2, own media type
-                                  fn format(&self) -> Result<ImageFormat, Error> }                       // Err if OCI and Docker mix
+pub struct Descriptor; pub struct Platform;     // Platform keeps "os.version" / "os.features"
+pub struct ImageManifest; pub struct ImageIndex; // one type each for both formats
+    // new(ImageFormat, ..), from_json (schemaVersion 2, own media type), format() (Err if OCI and Docker mix)
+pub struct ImageConfig;     // created, author, architecture, os, os.version, os.features, variant, config, rootfs, history,
+                            // container, docker_version; from_json, platform()
+pub struct ContainerConfig; // User, ExposedPorts, Env, Entrypoint, Cmd, Volumes, WorkingDir, Labels, StopSignal,
+                            // Healthcheck, OnBuild, Shell, ArgsEscaped, legacy Docker fields; ports and volumes as BTreeSets
+pub struct HealthConfig; pub struct RootFs; pub struct History;
+pub enum Error;             // one enum for the crate; untrusted input quoted as an 80-char excerpt
 ```
-
-Optional properties are `Option`s: absent or `null` reads as `None` and is not
-written; a present value, even empty, is written back.
 
 Planned:
 
 ```rust
-pub struct ImageConfig;                                                         // [design] owned, BTreeMap only
 pub struct Reference;                                                           // [design] docker/distribution normalization
 pub struct RawManifest { pub bytes: Vec<u8>, pub digest: Digest, pub media_type: MediaType } // [design] never re-serialized
 pub fn to_canonical_json<T: Serialize>(v: &T) -> Result<Vec<u8>, Error>; // [design] owned here; sorted keys
@@ -83,17 +80,15 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
 
 ## Tests
 
-- T0, next to the code: hostile digest strings (no panic, short messages),
-  digest serde and ordering; layer media type per format and compression
-  (Docker + zstd fails), conversion along the OCI compatibility matrix,
-  descriptor round trips and malformed descriptors; manifest and index
-  fixtures in `testdata/` (Docker v2s2 manifest and list, OCI manifest,
-  artifact manifest and index) round trip to the same JSON value; mixed
-  formats, wrong documents, schema 1 and malformed input fail cleanly.
-- T0 round trip: manifests, indexes and configs of real images (both
-  formats) parse and serialize back; canonical output is byte-identical over
-  100 runs (catches `HashMap` order).
-- T0 tables: platform selection; proptest on canonical output.
+- T0, next to the code: hostile digests (no panic, short messages); layer
+  media type per format and compression; conversion along the OCI
+  compatibility matrix; malformed descriptors, manifests and configs.
+- T0 fixtures in `testdata/`, crafted after registry output (Docker v2s2
+  manifest, list and config with legacy fields; OCI manifest, artifact
+  manifest, index and config): each parses and serializes back to the same
+  JSON value (minus `container_config`, which kaniko drops too).
+- Planned: canonical output byte-identical over 100 runs and any insertion
+  order (proptest); platform selection.
 - Config fields (`Env`, `Entrypoint`, `Cmd`, `WorkingDir`, `User`, `Labels`)
   compared with kaniko's in the image-content suite (T1/T2).
 
@@ -124,6 +119,8 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   matrix and refuses types without an equivalent.
 - Config `diff_ids` hash uncompressed tars; manifest layer digests hash the
   compressed blobs. Swapping them gives a valid-looking, broken image.
+- Unknown config properties are dropped on parse, as go-containerregistry
+  does: Docker's `container_config` does not reach the built image.
 - kaniko stamps the pushed stage's `created` with the wall clock
   (`build.go:2100`); under `--reproducible` every timestamp must be fixed.
 - A base reference may be an index: pick the platform (kaniko

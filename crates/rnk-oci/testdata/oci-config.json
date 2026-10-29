@@ -1,0 +1,57 @@
+{
+  "created": "2026-10-30T00:00:00Z",
+  "architecture": "arm64",
+  "variant": "v8",
+  "os": "linux",
+  "config": {
+    "User": "1000:1000",
+    "ExposedPorts": {
+      "3000/tcp": {}
+    },
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "NODE_ENV=production"
+    ],
+    "Entrypoint": [
+      "docker-entrypoint.sh"
+    ],
+    "Cmd": [
+      "node",
+      "server.js"
+    ],
+    "Volumes": {
+      "/app/.next/cache": {}
+    },
+    "WorkingDir": "/app",
+    "Labels": {
+      "org.opencontainers.image.source": "https://example.com/app",
+      "org.opencontainers.image.version": "1.2.3"
+    },
+    "StopSignal": "SIGTERM"
+  },
+  "rootfs": {
+    "type": "layers",
+    "diff_ids": [
+      "sha256:f522237855e2e54605d75e894c2fa9b126e1c61fb83d6ee8e3a0bf4faf1e5ee1",
+      "sha256:aa7fa1cfaa1f4f756408f6f8c04d9b3df8061f06a7e328e0024a9f47cb076e78"
+    ]
+  },
+  "history": [
+    {
+      "created": "2026-10-29T00:00:00Z",
+      "created_by": "ADD alpine-minirootfs-3.20.3-aarch64.tar.gz / # buildkit",
+      "comment": "buildkit.dockerfile.v0"
+    },
+    {
+      "created": "2026-10-29T00:00:00Z",
+      "created_by": "CMD [\"/bin/sh\"]",
+      "comment": "buildkit.dockerfile.v0",
+      "empty_layer": true
+    },
+    {
+      "created": "2026-10-30T00:00:00Z",
+      "created_by": "COPY . /app # buildkit",
+      "comment": "buildkit.dockerfile.v0"
+    }
+  ]
+}
