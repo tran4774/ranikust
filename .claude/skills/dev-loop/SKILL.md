@@ -21,8 +21,8 @@ means verified" are adapted from the `test-driven-development`,
 5. `just check` (fmt check, clippy and all T0 tests) before you report the
    task as done.
 6. Only when relevant:
-   - `just check-aarch64` after touching syscalls, `cfg`, FFI or integer
-     widths;
+   - `just check-aarch64`, then `just test-aarch64` (T0 under qemu-user),
+     after touching syscalls, `cfg`, FFI or integer widths;
    - `just deny` after adding or updating a dependency;
    - `just doc` after changing public items or doc comments;
    - `just book` after editing `docs/book/`;

@@ -21,10 +21,11 @@ must keep compiling ([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)).
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | `cargo install --locked cargo-deny@0.20.2` |
 | [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
 | [git-cliff](https://git-cliff.org/) | Drafts release notes; only needed by whoever prepares a release | `cargo install --locked git-cliff` |
-| `file`, `readelf` | `just build-static` checks the binary is static | `file` and `binutils` packages |
+| `file`, `readelf` | `just build-static` and `just test-aarch64` check the binary is static | `file` and `binutils` packages |
 | A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
-| [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static` and `just check-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
+| [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
 | [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | `cargo install --locked cargo-zigbuild@0.24.0` |
+| `qemu-aarch64` (QEMU user mode) | Only for `just test-aarch64`, the aarch64 tests under emulation; a binfmt_misc entry also runs ranikust's own CLI tests (CI requires it) | `qemu-user` package, or `QEMU_AARCH64=<path>` |
 | rootless [Podman](https://podman.io/) | Only for `just smoke`, the T1 smoke test ([docs/testing.md](docs/testing.md)) | `podman` package |
 | QEMU with KVM, `xorriso`, `jq` | Only for `just test-vm`, the T2 VM harness; `/dev/kvm` must be readable and writable by you (its group or an ACL), never through `sudo` | `qemu-system-x86`, `qemu-utils`, `xorriso`, `jq` packages |
 

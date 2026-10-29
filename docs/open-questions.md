@@ -848,6 +848,26 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-140: How is the aarch64 binary made static-pie with symbols?
+
+- **Blocks:** an aarch64 release (Phase 6); **Area:** build, CI
+- **Context:** `ADR-0020` releases a static-pie binary with its symbol
+  table; x86_64 gets both by linking with the host `cc`. For
+  `aarch64-unknown-linux-musl` there is no host cross `cc`: zig's linker
+  (the cargo-zigbuild default) gives a static `EXEC` without `.symtab`, and
+  `rust-lld` (`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld`)
+  a static `EXEC` with `.symtab`; both run `ranikust version` under
+  qemu-user (measured on branch `ci/aarch64-tests`). `just test-aarch64`
+  checks only that the binary is static.
+- **Options:** (a) `rust-lld` plus flags that give static-pie, if rustc's
+  target allows it; (b) a musl cross `cc` (e.g. `aarch64-linux-musl-gcc`)
+  as the linker in CI; (c) accept a non-PIE aarch64 binary and amend the
+  ADR.
+- **Recommendation:** none
+- **Interim:** zig's linker, static `EXEC`, no symbols; nothing is released
+  for aarch64 (`ADR-0009`).
+- **Raised:** 2026-10-30
+
 ## Answered
 
 ### Q-001: Who owns the persistent store and `BuildPaths`?

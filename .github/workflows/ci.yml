@@ -128,6 +128,36 @@ jobs:
           tool: cargo-zigbuild@0.24.0
       - run: cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl
 
+  # The static aarch64 binary and the T0 tests under qemu-user (ADR-0009).
+  # `just test-aarch64` runs the same; the binfmt entry lets ranikust's own
+  # tests spawn the aarch64 binary, so here it is required.
+  test-aarch64:
+    name: test (aarch64 musl, qemu-user)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0,just@1.59.0
+      - name: Install qemu-user with a binfmt entry for aarch64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
+          sudo update-binfmts --enable qemu-aarch64 || true
+          grep '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64
+      - run: just test-aarch64
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-24.04

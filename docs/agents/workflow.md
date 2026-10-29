@@ -11,11 +11,14 @@ Linux only; nothing needs root. `rustup` reads `rust-toolchain.toml` (Rust
 rust-analyzer, x86_64 and aarch64 musl targets). Then, at CI's versions:
 `cargo install --locked just cargo-deny@0.20.2 mdbook@0.5.4`, plus
 `git-cliff` for release notes and `file`/`readelf` for `just build-static`.
-The musl recipes (`just build-static`, `just check-aarch64`, so `just ci`)
+The musl recipes (`just build-static`, `just check-aarch64`,
+`just test-aarch64`, so `just ci`)
 need zig 0.16.0 and `cargo install --locked cargo-zigbuild@0.24.0`: zig
 compiles the C dependencies (libzstd, mimalloc, ring) for musl, the host
 `cc` links (`ADR-0020`); install zig as in
 [CONTRIBUTING.md](../../CONTRIBUTING.md#development-setup).
+`just test-aarch64` also needs `qemu-aarch64` (`qemu-user`, or
+`QEMU_AARCH64=<path>`).
 
 ## Dev loop
 
@@ -23,8 +26,8 @@ compiles the C dependencies (libzstd, mimalloc, ring) for musl, the host
 2. `cargo check -p <crate>` → `cargo test -p <crate> <filter>` →
    `cargo clippy -p <crate> --all-targets -- -D warnings`.
 3. `just check` before reporting done; quote the command and its summary.
-4. When relevant: `just check-aarch64` (syscalls, `cfg`, FFI, integer
-   widths), `just deny` (dependencies), `just doc` (public items, doc
+4. When relevant: `just check-aarch64`, then `just test-aarch64` (syscalls,
+   `cfg`, FFI, integer widths), `just deny` (dependencies), `just doc` (public items, doc
    comments), `just book` (`docs/book/`), `just ci` before a PR.
 
 Fix at the narrowest level that fails, then widen. Bug fix: test first, see
@@ -40,6 +43,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just test [args]` | `cargo test --workspace --locked [args]` (T0) | `test` |
 | `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; fails on a loader, `NEEDED`, non-PIE or no `.symtab`; runs `ranikust version` | `static-build` |
 | `just check-aarch64` | `cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl` | `check-aarch64` |
+| `just test-aarch64 [args]` | static aarch64 musl release build (no loader, no `NEEDED`; runs `ranikust version`), then the T0 tests, all under qemu-user through cargo's target runner; skips one test qemu cannot pass and, without a binfmt entry, ranikust's `cli` and `metrics` tests ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` |
 | `just deny` | `cargo deny --locked check` | `deny` |
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |
 | `just changelog [args]` | `git cliff --unreleased`, a draft to stdout | |
@@ -58,7 +62,7 @@ change both together. `just test -p <crate>` still tests the whole workspace
 | T0 | Unit and in-process tests | none | anywhere: `just test` | in use |
 | T1 | User namespaces, rootless overlay, sandbox in a user namespace, Podman | user with `/etc/subuid` entries | developer machine; `just smoke`; `just test-rootless` TODO | smoke test only |
 | T2 | Overlay as root, `pivot_root`, `mknod`, Docker variants, kaniko mode on `/`, host-safety attacks | root | disposable VM only: `just test-vm` | `unit` and `smoke` suites |
-| T3 | fmt, clippy, T0, static build, aarch64 check, deny, docs | none | GitHub Actions: `just ci` | in use |
+| T3 | fmt, clippy, T0, static build, aarch64 check, aarch64 T0 under qemu-user, deny, docs | none | GitHub Actions: `just ci` | in use |
 
 Planned suites: [`docs/testing.md`](../testing.md#planned-test-suites).
 
@@ -81,7 +85,8 @@ and a row in [README.md](README.md).
   first. crates.io only, no git sources, no wildcard versions.
 - aarch64 musl and a static binary: no OpenSSL, pure-Rust fallback for
   assembly, C code that cross-compiles through zig (`ADR-0009`,
-  `ADR-0020`). Run `just check-aarch64` and `just build-static`.
+  `ADR-0020`). Run `just check-aarch64`, `just test-aarch64` and
+  `just build-static`.
 
 ## Add an ADR
 

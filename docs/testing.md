@@ -13,7 +13,7 @@ than a regular user never run on a developer's machine.
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
 | T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit` and `smoke` suites |
-| T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
+| T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, aarch64 T0 under qemu-user, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
 
 ### Rules
 
@@ -106,6 +106,32 @@ hosted runners have no reliable KVM) and an aarch64 guest.
 
 Also TODO: `just test-rootless` for tier T1, with the same rule that tests
 write only below a temporary directory.
+
+## aarch64 under qemu-user
+
+`just test-aarch64` (CI job `test-aarch64`, `ADR-0009`) cross-builds with
+cargo-zigbuild and runs everything under `qemu-aarch64` on an x86_64 host:
+
+1. The static release binary: no loader and no `NEEDED` entries, then
+   `ranikust version`. It is not static-pie, unlike x86_64 [open: Q-140].
+2. The T0 tests of the workspace, through cargo's target runner
+   (`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER`). `openat2` with
+   `RESOLVE_IN_ROOT`, `statx` and the sandbox's unprivileged tests work
+   under emulation.
+
+`QEMU_AARCH64` names the emulator, else `qemu-aarch64-static` or
+`qemu-aarch64` on `PATH`; `apt download qemu-user` and `dpkg -x` give one
+without installing it. Two exceptions, both from emulation:
+
+- `root::tests::open_gives_cloexec_path_fd_and_mount_id` is skipped:
+  qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.2), so other
+  mount-id comparisons pass only because both sides are 0.
+- ranikust's `cli` and `metrics` tests spawn the binary; without a
+  binfmt_misc entry for aarch64 the kernel cannot execute it, so the
+  recipe skips them with a warning. CI registers the entry and requires it.
+
+Local run, QEMU 10.2 without binfmt: 528 tests pass, one skipped. Real
+aarch64 hardware is Phase 6.
 
 ## Smoke test until the builder exists (tier T1)
 

@@ -35,7 +35,7 @@ the code.
 | [ ] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` | `rnk-builder`, `rnk-registry`, `rnk-layer` |
 | [ ] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix | `rnk-sched` |
 | [~] | Common kaniko flags and the subcommands (`ADR-0011`): `build` and `version`, accepted flags parsed and validated, the others refused with a reason (done); final list [open: Q-023], `--cache` [open: Q-021], `--secret` [open: Q-022], `push`/`login` [open: Q-048] | `ranikust` |
-| [ ] | aarch64 in CI: cargo-zigbuild cross-build, unit tests under qemu-user (`ADR-0009`; today only `cargo-zigbuild check`) | CI |
+| [x] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests under qemu-user (`ADR-0009`; `just test-aarch64`, CI job `test-aarch64`); the release binary is static but not static-pie [open: Q-140] | CI |
 | [~] | T2 VM harness `just test-vm` (`docs/testing.md`): `unit` and `smoke` suites on Ubuntu 22.04 and 24.04 (done); cgroup v1, kernels before 5.11, the host-safety attack suite and a CI job with KVM to come | tests |
 | [ ] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) | tests |
 | [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `RANIKUST_METRICS_FILE`, `--metrics-file`, `meta.mode` and `meta.options` (done); every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
@@ -68,7 +68,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 12 | `rnk-sched`: DAG, `--jobs`, cancellation | 2, 11 | |
 | 13 | CLI end to end, outputs, acceptance runs | all | |
 
-Any time: the aarch64 CI job and the VM harness (before 8 and 9 can be
+Any time: the VM harness (before 8 and 9 can be
 tested as root).
 
 Every task instruments its crate as its card's `## Metrics` and
@@ -95,8 +95,8 @@ with `rnk_metrics::Capture`; a task is not done without it.
 - [ ] `--network=none`: `RUN` sees only loopback.
 - [ ] Common kaniko flags: list fixed ([kaniko-map.md](kaniko-map.md#flags)),
       each accepted flag tested for its meaning, mapping in the book.
-- [ ] aarch64 in CI: `just check-aarch64` (exists) plus the cross-build and
-      qemu-user unit tests of `ADR-0009`.
+- [x] aarch64 in CI: `just check-aarch64` plus the cross-build and
+      qemu-user unit tests of `ADR-0009` (`just test-aarch64`).
 - [ ] W1 and W3 metrics reports compared with kaniko's by the bench harness
       ([phase map](../design/metrics.md#comparing-with-kaniko)); with
       `--reproducible`, the same digests with metrics on and off.
