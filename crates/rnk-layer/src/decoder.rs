@@ -68,7 +68,7 @@ impl<R: Read> Decoder<R> {
         let inner = match compression {
             Compression::None => Inner::Plain(sniffed),
             Compression::Gzip => Inner::Gzip(Box::new(MultiGzDecoder::new(sniffed))),
-            // [open: Q-050]
+            // [open: Q-052]
             Compression::Zstd => return Err(Error::Unsupported(Compression::Zstd)),
         };
         Ok(Self {

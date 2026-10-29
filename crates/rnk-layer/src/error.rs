@@ -46,7 +46,7 @@ pub enum Error {
         level: i32,
     },
     /// The compression is recognised but not implemented yet.
-    // [open: Q-050] zstd needs a C toolchain for the static musl build.
+    // [open: Q-052] zstd needs a C toolchain for the static musl build.
     #[error("{0} layers are not supported yet")]
     Unsupported(Compression),
     /// A file gave fewer bytes than its entry announced.

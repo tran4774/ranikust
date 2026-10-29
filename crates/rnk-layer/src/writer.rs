@@ -24,7 +24,7 @@ pub enum Compression {
     /// gzip, written as one member by the parallel compressor.
     Gzip,
     /// zstd. Recognised, not supported yet.
-    // [open: Q-050]
+    // [open: Q-052]
     Zstd,
 }
 
@@ -107,7 +107,7 @@ pub trait EntrySource {
 /// Depth first, components compared byte-wise (`a`, `a/b`, `a-b`); within
 /// a directory the opaque marker comes first, then whiteouts, then the other
 /// entries, so whiteouts precede their siblings as the OCI layer
-/// specification recommends. [open: Q-051]
+/// specification recommends. [open: Q-053]
 #[derive(Debug)]
 pub struct LayerWriter {
     options: EncodeOptions,

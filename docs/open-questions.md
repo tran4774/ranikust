@@ -166,7 +166,7 @@ Entry format:
   lookup is never called.
 - **Raised:** 2026-10-30
 
-### Q-050: How does zstd reach the static musl build?
+### Q-052: How does zstd reach the static musl build?
 
 - **Blocks:** Phase 1 task 5 (zstd); **Area:** `rnk-layer`, build
 - **Context:** the `zstd` crate builds libzstd from C (`zstd-sys`), the
@@ -189,7 +189,7 @@ Entry format:
   `LayerWriter::new` and the decoder return `Error::Unsupported` for it.
 - **Raised:** 2026-10-30
 
-### Q-051: Which entry order and which names does the layer tar use?
+### Q-053: Which entry order and which names does the layer tar use?
 
 - **Blocks:** Phase 1 task 5; **Area:** `rnk-layer`
 - **Context:** the writer sorts the entries

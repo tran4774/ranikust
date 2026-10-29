@@ -24,7 +24,7 @@ for pulled layers. Same entries, same bytes, whatever the thread count.
 
 ## API (planned)
 
-Built: everything below except zstd [open: Q-050].
+Built: everything below except zstd [open: Q-052].
 
 ```rust
 pub struct EntryPath;              // [design] relative, normalized bytes; orders component-wise
@@ -33,7 +33,7 @@ pub struct Entry { pub path: EntryPath, pub kind: EntryKind, pub mode: u32 /* ra
     pub inode: Option<(u64, u64)> } // [design] (dev, ino) finds hardlinks
 pub enum EntryKind { File { size: u64 }, Dir, Symlink(Vec<u8>), Char(u32, u32), Block(u32, u32), Fifo,
     Whiteout /* path = the deleted path */, OpaqueDir }  // [design]
-pub enum Compression { None, Gzip, Zstd /* [open: Q-050] */ }
+pub enum Compression { None, Gzip, Zstd /* [open: Q-052] */ }
 pub struct EncodeOptions { pub compression: Compression, pub level: i32, pub threads: NonZeroUsize, pub mtime: Option<i64> } // [design] mtime: --reproducible
 pub trait EntrySource {            // [design] implemented by the exporter
     fn open(&mut self, e: &Entry) -> io::Result<Box<dyn Read + '_>>;            // file content, read once in layer order
@@ -52,7 +52,7 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   then streams, hashing the tar (diff ID) and the blob as they pass.
   `LayerDigests` carries the compression, not a media type: that needs the
   image format, which `rnk-oci` owns.
-- Layer order `[open: Q-051]`: depth first, components byte-wise; in each
+- Layer order `[open: Q-053]`: depth first, components byte-wise; in each
   directory the opaque marker, then whiteouts, then the rest. Names starting
   with `.wh.` are rejected.
 - Headers: PAX as Go's `archive/tar` writes them (`src/header.rs`); whiteout
@@ -128,5 +128,5 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
 - Done: tar writer with goldens; parallel gzip with determinism tests;
   streaming digests; the decoder (gzip with any number of members, plain)
   (`tests/it/`); `examples/throughput.rs` prints MB/s per thread count.
-- Left: zstd ([open: Q-050]); exporter integration with `rnk-snapshot`
+- Left: zstd ([open: Q-052]); exporter integration with `rnk-snapshot`
   (task 9).
