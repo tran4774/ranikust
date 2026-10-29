@@ -107,6 +107,7 @@ mode outside a container is `[open: Q-036]`
 | 5 | Feature completion (`ADD` URL/git, more mounts, mirrors, `prune`) | not started |
 | 6 | Hardening and release | not started |
 
-Code today: 14 crates with docs-only `lib.rs` (`skeleton`); the binary
-prints its version; CI runs what `just ci` runs. 1.0 needs all three paths:
-overlay root, rootless overlay, kaniko mode.
+Code today: `rnk-rootfs` is in progress (`RootPath`, extraction, user
+lookup, deletion); the other crates have docs-only `lib.rs` (`skeleton`);
+the binary prints its version; CI runs what `just ci` runs. 1.0 needs all
+three paths: overlay root, rootless overlay, kaniko mode.

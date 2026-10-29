@@ -142,6 +142,10 @@ Entry format:
   mount points (c) counts as empty or (d) is refused.
 - **Recommendation:** none
 - **Interim:** a workdir of pure mount points is refused, as designed today.
+  Owner: `feat/rnk-rootfs-rootpath` does not build `check_workdir` in
+  `rnk-rootfs`; it only provides the primitives either owner needs
+  (`RootPath::open` with `RESOLVE_NO_SYMLINKS`, `statx` with `dev`, `ino`
+  and `mnt_id`). Reversible because nothing calls a workdir check yet.
 - **Raised:** 2026-10-30
 
 ### Q-012: Which crates fill the Phase 1 dependency picks?
@@ -161,13 +165,13 @@ Entry format:
   is not deterministic across thread counts, `exp-05` Q3); `clap`, marked
   `[design]` on the [ranikust card](agents/crates/ranikust.md#api-planned);
   none for the others.
-- **Interim:** task 5, in `feat/rnk-layer-encode`: followed the
-  recommendation, gzip by hand (`crates/rnk-layer/src/gzip.rs`, flate2 on
-  zlib-rs); reversible because the compressor is private to `rnk-layer` and
-  only the gzip bytes would change. sha256: `sha2` (no recommendation; pure
-  Rust, SHA-NI and ARMv8 SHA detected at run time), behind
-  `rnk_layer::Sha256Digest`, so a switch to `aws-lc-rs` stays inside the
-  crate.
+- **Interim:** task 4, in `feat/rnk-rootfs-rootpath`: followed the
+  recommendation, `rustix` 1.1.6 (features `fs`, `std`); reversible because
+  no `rustix` type appears in `rnk-rootfs`'s public API. Task 5, in
+  `feat/rnk-layer-encode`: followed the recommendation, gzip by hand
+  (`crates/rnk-layer/src/gzip.rs`, flate2 on zlib-rs); sha256 is `sha2` (no
+  recommendation; pure Rust, SHA-NI and ARMv8 SHA detected at run time)
+  behind `rnk_layer::Sha256Digest`, so a switch stays inside the crate.
 - **Raised:** 2026-10-30
 
 ### Q-013: How does the layer writer learn missing parent metadata?
@@ -378,6 +382,27 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-054: What is the minimum kernel, and who checks it?
+
+- **Blocks:** Phase 1 task 8 (probes, user docs); **Area:** `rnk-rootfs`,
+  `ranikust`, the book
+- **Context:** `RootPath` needs `openat2` (Linux 5.6) and the `statx` mount
+  id (Linux 5.8), with no string-based fallback
+  ([rootfs](design/rootfs.md#invariants)). The probes never compare kernel
+  versions ([modes-and-detection](design/modes-and-detection.md)), the book
+  states no kernel requirement, and the privilege matrix lists RHEL 8
+  (kernel 4.18) among the targets
+  ([where-to-run](book/src/where-to-run.md)).
+- **Options:** (a) document Linux ≥ 5.8 and let the first `RootPath::open`
+  fail with its error; (b) also probe `openat2` and `statx` at start-up and
+  refuse with guidance, like the other probes; (c) support older kernels
+  with a userspace resolver (would reverse this crate's invariant: an ADR).
+- **Recommendation:** none
+- **Interim:** (a) without the documentation: `rnk-rootfs` fails with
+  `Error::Unsupported`, naming Linux 5.8 and seccomp
+  (`feat/rnk-rootfs-rootpath`).
+- **Raised:** 2026-10-30
+
 ### Q-024: What is the Snapshotter signature?
 
 - **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
@@ -416,6 +441,47 @@ Entry format:
   when the next mount would exceed it.
 - **Recommendation:** none
 - **Interim:** none
+- **Raised:** 2026-10-30
+
+### Q-055: How does overlay-form extraction handle a hardlink into a lower layer?
+
+- **Blocks:** Phase 1 task 9 (base-layer extraction); **Area:**
+  `rnk-rootfs`, `rnk-snapshot`
+- **Context:** in the overlay form each layer is extracted alone into
+  `layers/<id>` ([rootfs](design/rootfs.md#extraction)), so a hardlink
+  entry whose target lives in a lower layer has nothing to link to. Such
+  layers exist: kaniko-mode layers keep links to lower files
+  ([exp-09](research/experiments/09-kaniko-mode-prototype.md) finding 5),
+  and ranikust pulls kaniko-built base images. containerd avoids the
+  problem by applying each layer through an overlay mount of its lowers.
+- **Options:** (a) refuse the layer; (b) copy the target's content from the
+  lower layers' extracted directories (`extract` gets the lower roots);
+  (c) apply such layers through an overlay mount of the lowers, as
+  containerd does.
+- **Recommendation:** none
+- **Interim:** (a): `extract` fails with `Error::Entry` naming the missing
+  target (`feat/rnk-rootfs-rootpath`).
+- **Raised:** 2026-10-30
+
+### Q-056: How are tar extension headers bounded?
+
+- **Blocks:** Phase 1 task 9 (base-layer extraction); Phase 6 (fuzzing);
+  **Area:** `rnk-rootfs`, `rnk-layer`
+- **Context:** the `tar` crate (0.4.46) reads a GNU long name, long link or
+  PAX header whole into memory, whatever size it declares
+  (`archive.rs:418`, `:440`), so a few MB of compressed zeros in a base
+  layer become GBs of memory and an OOM kill (threat T15). GNU sparse
+  entries, whose holes the crate writes as zeros, are refused for now
+  ([rootfs](design/rootfs.md#extraction)). Found by a host-safety review.
+- **Options:** (a) a reader in front of the `tar` crate that follows the
+  tar framing and fails on an extension header above a cap (1 MiB);
+  (b) parse in raw mode and apply long names and PAX records in
+  `rnk-rootfs`, with the cap; (c) rely on the memory limit of the build's
+  cgroup; for sparse entries, (d) keep refusing them or (e) seek over holes
+  and `ftruncate`, with a cap on the real size.
+- **Recommendation:** none
+- **Interim:** no bound on extension headers; sparse entries refused
+  (`feat/rnk-rootfs-rootpath`).
 - **Raised:** 2026-10-30
 
 ### Q-027: Is the ContextSource trait sync or async?

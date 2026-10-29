@@ -1,6 +1,6 @@
 # rnk-rootfs
 
-> **Status:** skeleton · **Phase:** 1 ·
+> **Status:** in progress · **Phase:** 1 ·
 > **Depends on:** no internal crate (never `rnk-layer`) · **Used by:** `rnk-snapshot`, `rnk-sandbox`, `rnk-builder`, `rnk-store`, `rnk-context` · **Path:** `crates/rnk-rootfs/`
 
 **TL;DR:** All filesystem access inside a build root goes through `RootPath`,
@@ -31,19 +31,27 @@ never delete across a mount: compare `mnt_id`, not `st_dev`.
 
 ## API (planned)
 
+Built items say `built`; paths are `impl AsRef<Path>`, absolute or relative,
+both taken relative to the root. Errors: one `Error` enum (`Unsupported`,
+`Io { op, path, source }`, `InvalidPath`, …).
+
 ```rust
-pub struct RootPath { /* O_PATH | O_DIRECTORY | O_CLOEXEC fd, mnt_id */ }  // [design]
+pub struct RootPath { /* O_PATH | O_DIRECTORY | O_CLOEXEC fd, mnt_id */ }  // built
 impl RootPath {
-    pub fn open(host_dir: &Path) -> Result<Self>;                      // [design] the only host path; RESOLVE_NO_SYMLINKS
-    pub fn open_at(&self, p: &Path, how: &OpenHow) -> Result<OwnedFd>; // [design] RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS
-    pub fn sub_root(&self, p: &Path) -> Result<RootPath>;              // [design] stages/<n>/rootfs, a COPY --from source
-    pub fn statx(&self, p: &Path) -> Result<Statx>;                    // [design] no-follow; carries mnt_id
-    pub fn set_meta(&self, p: &Path, m: &Meta) -> Result<()>;          // [design] raw st_mode, ids, times, xattrs
+    pub fn open(host_dir) -> Result<Self>;               // built: the only host path; RESOLVE_NO_SYMLINKS
+    pub fn open_at(&self, p, how: &OpenHow) -> Result<OwnedFd>; // built: RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS
+    pub fn open_regular(&self, p) -> Result<OwnedFd>;    // built: reads a file; FIFOs, devices refused unopened
+    pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
+    pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
+    pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
+    // built: create_dir, create_dir_all, symlink, read_link, hard_link,
+    // rename, remove_file, remove_dir; mnt_id()
 }
-pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // [design] plain tar; Whiteouts::{Apply, Overlay}
+pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
 pub fn copy(src: &RootPath, from: &Path, dst: &RootPath, to: &Path, o: &CopyOpts) -> Result<()>; // [design] FICLONE, else copy
-pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // [design] IgnoreList: exact paths
-pub fn lookup_user(root: &RootPath, spec: &str) -> Result<Ids>;  // [design] "user[:group]": USER (rnk-sandbox), --chown (rnk-builder)
+pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)
+pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
+pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
 pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011] here or `ranikust`
 ```
 
@@ -69,7 +77,7 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
 
 ## Refs
 
-- **Design:** [`design/kaniko-mode.md#safe-deletion`](../../design/kaniko-mode.md#safe-deletion), [`#host-safety-checks`](../../design/kaniko-mode.md#host-safety-checks), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list); [`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer) (its last paragraph: extraction); [threat model T1–T4, T7](../../security/threat-model.md#5-threats-and-mitigations)
+- **Design:** [`design/rootfs.md`](../../design/rootfs.md) (resolution, `EAGAIN`, metadata order); [`design/kaniko-mode.md#safe-deletion`](../../design/kaniko-mode.md#safe-deletion), [`#host-safety-checks`](../../design/kaniko-mode.md#host-safety-checks), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list); [`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer) (its last paragraph: extraction); [threat model T1–T4, T7](../../security/threat-model.md#5-threats-and-mitigations)
 - **Decisions:** [ADR-0006](../../adr/0006-persistent-store.md) (extract to a temporary directory, rename), [ADR-0016](../../adr/0016-overlay-mount-options.md) (`userxattr`, hence the escaping), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (copy or `FICLONE`, never hardlinks to the store)
 - **Evidence:** [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) §A.2 (cases D1–D3), [exp-01](../../research/experiments/01-overlay-semantics.md) finding 7, [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (image check), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) (rootfs preparation)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/util/fs_util.go:292` `DeleteFilesystem`
@@ -85,10 +93,17 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   symlinks out, chains and loops, `/proc/self/root`, `../etc/passwd`,
   hardlinks out. Deletion of a 3,004-level tree; raw modes 1777 and 4755;
   marker cases of exp-09 D3. Property test against a model resolver;
-  `cargo fuzz` on `extract`.
-- **T1:** a same-filesystem bind mount and a tmpfs inside the root survive
-  `delete_contents`; overlay-form extraction in a user namespace.
-- **T2** (VM only): `--workdir` at `/`, `//`, `/home`, an unmarked directory.
+  `cargo fuzz` on `extract`. Built: `tests/escape.rs` (all of the above
+  but the marker, plus real magic links under `/proc/<pid>` and a thread
+  swapping a directory for a symlink out during every operation); unit
+  tests per module, with the same racing swap under `extract` and
+  `delete_contents`; `tests/model.rs` checks `open_at` against a model
+  resolver on 150 random trees. Still to do: `cargo fuzz` on `extract`.
+- **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
+  survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
+  and setuid in `extract`.
+- **T2** (VM only): device nodes in `extract` (written, `#[ignore]`);
+  `--workdir` at `/`, `//`, `/home`, an unmarked directory.
 
 ## Pitfalls
 
@@ -101,6 +116,17 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
 - Extraction without raw modes turned `/tmp` 1777 into 777 (exp-07).
 - A hardlink farm let one `echo >>` change the store and a sibling stage
   (exp-12 finding 9).
+- `RESOLVE_IN_ROOT` returns `EAGAIN` when any rename races a `..` step:
+  retry it (`design/rootfs.md#resolution`; hit by the T0 suite).
+- `fchmod`/`fsetxattr` refuse `O_PATH` fds, `rustix` has no `fchmodat2`:
+  go through `/proc/self/fd/<n>` (`design/rootfs.md#metadata`).
+- `chown` clears setuid, setgid, `security.capability`: owner first.
+- Reading a file moves an old atime (relatime): check times before reading.
+- An image's file opened as root may be a FIFO (hang) or a device node (the
+  host's device): use `open_regular`.
+- `extract` never crosses a mount and refuses sparse entries; extension
+  headers are unbounded ([open: Q-056]). [open: Q-055] Overlay form: a
+  hardlink into a lower layer has no target.
 
 ## Phase 1
 
@@ -108,7 +134,12 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   `extract` → `copy` (`--chown`, `--chmod`, `--from`) and `lookup_user` →
   fd-based deletion of `builds/<id>` and `tmp/` leftovers → the workdir
   checks.
-- Deferred to Phase 2: `Whiteouts::Apply` into a live root, the mountinfo
-  ignore list, `delete_contents` on `/`, `FICLONE` stage copies.
-- [open: Q-011] A workdir holding only mount points has no marker and is
-  refused today (kaniko-mode design, open questions).
+- Deferred to Phase 2: `Whiteouts::Apply` into a live root (built and T0
+  tested, not yet used with mounts in the root), the mountinfo ignore list,
+  `delete_contents` on `/`, `FICLONE` stage copies.
+- [open: Q-011] Owner of `check_workdir` open; not built here.
+  `RootPath::open` and `statx` (`dev`, `ino`, `mnt_id`) are its primitives.
+- [open: Q-054] Needs Linux 5.8; `Error::Unsupported`, no fallback.
+- Done: `RootPath`, `extract`, `lookup_user`/`lookup_owner` (`USER` and
+  `--chown` default the gid differently), `delete_contents` (built before
+  `extract`, which reuses its walker). Left: `copy`, `check_workdir`.

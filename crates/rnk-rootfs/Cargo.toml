@@ -10,3 +10,13 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+rustix.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rustix = { workspace = true, features = ["process"] }
+tempfile.workspace = true
