@@ -96,7 +96,8 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   but the marker, plus real magic links under `/proc/<pid>` and a thread
   swapping a directory for a symlink out during every operation); unit
   tests per module, with the same racing swap under `extract` and
-  `delete_contents`. Still to do: the model-resolver property test, fuzzing.
+  `delete_contents`; `tests/model.rs` checks `open_at` against a model
+  resolver on 150 random trees. Still to do: `cargo fuzz` on `extract`.
 - **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
   survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
   and setuid in `extract`.

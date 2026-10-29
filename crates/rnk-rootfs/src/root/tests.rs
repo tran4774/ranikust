@@ -195,6 +195,21 @@ fn invalid_paths() {
     assert_eq!(errno(&e), Some(Errno::INVAL));
 }
 
+/// Paths reach the kernel unnormalized: `file/.` and `file/` are not `file`.
+#[test]
+fn trailing_dot_or_slash_after_a_file_is_enotdir() {
+    let f = Fixture::new();
+    fs::write(f.host("file"), b"x").unwrap();
+    fs::create_dir(f.host("dir")).unwrap();
+    for p in ["file/.", "file/", "/file/..", "file/./"] {
+        let e = f.root.open_at(p, &OpenHow::read()).unwrap_err();
+        assert_eq!(errno(&e), Some(Errno::NOTDIR), "{p}");
+    }
+    for p in ["dir/.", "dir/", "/dir/./"] {
+        assert!(f.root.open_at(p, &OpenHow::read()).is_ok(), "{p}");
+    }
+}
+
 #[test]
 fn statx_does_not_follow_and_carries_mount_id() {
     let f = Fixture::new();

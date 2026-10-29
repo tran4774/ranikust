@@ -3,7 +3,7 @@
 use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{AtFlags, Mode, OFlags, ResolveFlags};
 use rustix::io::Errno;
@@ -319,16 +319,19 @@ impl RootPath {
             r => return r,
         }
         let mode = Mode::from_raw_mode(mode & meta::PERMISSION_BITS);
-        let rel = path::relative(p);
         let mut cur = self.resolve_dir(Path::new("."))?;
         let mut prefix = PathBuf::new();
-        for c in rel.components() {
-            let name = c.as_os_str();
-            prefix.push(name);
-            if name != "." && name != ".." {
-                match rustix::fs::mkdirat(&cur, name, mode) {
-                    Ok(()) | Err(Errno::EXIST) => {}
-                    Err(e) => return Err(io_err("mkdir", &prefix, e)),
+        for c in p.components() {
+            match c {
+                // Only plain names reach `mkdirat`, never `/`.
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => continue,
+                Component::ParentDir => prefix.push(".."),
+                Component::Normal(name) => {
+                    prefix.push(name);
+                    match rustix::fs::mkdirat(&cur, name, mode) {
+                        Ok(()) | Err(Errno::EXIST) => {}
+                        Err(e) => return Err(io_err("mkdir", &prefix, e)),
+                    }
                 }
             }
             // Re-resolve from the root: the name may be a symlink, which must

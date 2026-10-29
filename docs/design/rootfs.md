@@ -26,8 +26,12 @@ Card: [rnk-rootfs](../agents/crates/rnk-rootfs.md).
 ## Resolution
 
 - **Paths** may be absolute or relative; both are taken relative to the
-  root. `""`, `"/"` and `"."` name the root itself. Only a path ending in a
-  plain name can be created, linked, renamed or removed.
+  root. `""`, `"/"` and `"."` name the root itself. A path is handed to
+  `openat2` as given, not normalized, so `file/.` and `file/` fail with
+  `ENOTDIR` as POSIX says (a model-resolver property test caught the
+  normalized version opening `file`). Operations on an entry split off the
+  last name lexically; only a path ending in a plain name can be created,
+  linked, renamed or removed.
 - **The last symlink** is followed, inside the root, by `open_at` (unless
   `no_follow`), `sub_root` and `create_dir_all`; never by `statx`,
   `set_meta`, `read_link`, `hard_link`, `rename`, `remove_*`.

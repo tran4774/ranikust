@@ -9,23 +9,17 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// The path handed to `openat2`: relative, without root or `.` components,
-/// `..` kept (the kernel clamps it at the root). `.` for the root itself.
-pub(crate) fn relative(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::RootDir | Component::CurDir => {}
-            Component::ParentDir => out.push(".."),
-            Component::Normal(n) => out.push(n),
-            // Never produced on Unix; kept as a name rather than dropped.
-            Component::Prefix(p) => out.push(p.as_os_str()),
-        }
+/// The path handed to `openat2(RESOLVE_IN_ROOT)`: the path as given, which
+/// the kernel takes relative to the root even when absolute and clamps at
+/// the root on `..`; `.` for the empty path. Not normalized: `file/.` and
+/// `file/` must fail with `ENOTDIR` as POSIX says, which dropping the
+/// trailing `.` or `/` (as `Path::components` does) would hide.
+pub(crate) fn relative(p: &Path) -> &Path {
+    if p.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        p
     }
-    if out.as_os_str().is_empty() {
-        out.push(".");
-    }
-    out
 }
 
 /// What a path names, for the operations that work on a directory entry.
@@ -51,7 +45,7 @@ pub(crate) fn target(p: &Path) -> Result<Target<'_>> {
     };
     match last {
         Component::Normal(name) => Ok(Target::Entry {
-            parent: relative(comps.as_path()),
+            parent: relative(comps.as_path()).to_owned(),
             name,
         }),
         Component::RootDir => Ok(Target::Root),
@@ -101,13 +95,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relative_strips_root_and_dots() {
-        assert_eq!(relative(Path::new("/etc/passwd")), Path::new("etc/passwd"));
-        assert_eq!(relative(Path::new("./a/./b/")), Path::new("a/b"));
-        assert_eq!(relative(Path::new("/../a")), Path::new("../a"));
-        assert_eq!(relative(Path::new("")), Path::new("."));
-        assert_eq!(relative(Path::new("/")), Path::new("."));
-        assert_eq!(relative(Path::new("//")), Path::new("."));
+    fn relative_passes_paths_through_unchanged() {
+        // `Path` equality compares components; compare the bytes instead.
+        let r = |p: &str| relative(Path::new(p)).as_os_str().to_owned();
+        for p in [
+            "/etc/passwd",
+            "./a/./b/",
+            "/../a",
+            "file/.",
+            "file/",
+            "/",
+            "//",
+        ] {
+            assert_eq!(r(p), p);
+        }
+        assert_eq!(r(""), ".");
     }
 
     #[test]
@@ -115,7 +117,7 @@ mod tests {
         let Target::Entry { parent, name } = target(Path::new("/a/b/c")).unwrap() else {
             panic!("expected an entry");
         };
-        assert_eq!(parent, Path::new("a/b"));
+        assert_eq!(parent.as_os_str(), "/a/b");
         assert_eq!(name, "c");
 
         let Target::Entry { parent, name } = target(Path::new("c/.")).unwrap() else {
