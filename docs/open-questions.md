@@ -66,7 +66,12 @@ Entry format:
 - **Options:** (a) `rnk-oci`: pure types, no I/O, tested at T0;
   (b) `rnk-builder`, next to assembly and output.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** neither yet (branch `feat/rnk-oci-types`, marked
+  `[open: Q-007]` in `crates/rnk-oci/src/lib.rs`): `rnk-oci` has the data
+  types only, `ImageConfig` with public fields that either crate can edit
+  and `ImageIndex`, which is also a layout's `index.json`. Reversible
+  because nothing uses the assembly types yet; task 11 adds them to
+  whichever crate the answer names.
 - **Raised:** 2026-10-30
 
 ### Q-008: What does a repeated target flag mean?

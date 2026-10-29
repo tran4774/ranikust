@@ -36,3 +36,8 @@ pub use error::Error;
 pub use manifest::{ImageIndex, ImageManifest};
 pub use media_type::{Compression, ImageFormat, MediaType};
 pub use reference::Reference;
+
+// [open: Q-007] Image-assembly types are not here yet: `ConfigEdit` (ENV,
+// LABEL, USER… and history entries) and the docker-save `manifest.json` and
+// OCI layout `oci-layout` types may belong here or in `rnk-builder`. A
+// layout's `index.json` is an `ImageIndex` either way.
