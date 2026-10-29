@@ -12,8 +12,12 @@
 //! - Does not encode or compress layers (`rnk-layer`), move blobs
 //!   (`rnk-registry`), or write a Docker tar or OCI layout (`rnk-builder`).
 
+mod descriptor;
 mod digest;
 mod error;
+mod media_type;
 
+pub use descriptor::{Descriptor, Platform};
 pub use digest::{Digest, DigestAlgorithm};
 pub use error::Error;
+pub use media_type::{Compression, ImageFormat, MediaType};

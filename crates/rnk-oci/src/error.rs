@@ -1,5 +1,7 @@
 //! The crate's error type.
 
+use crate::media_type::{Compression, ImageFormat, MediaType};
+
 /// Everything that can go wrong in `rnk-oci`.
 ///
 /// Inputs quoted in a message are untrusted (they come from registries,
@@ -13,6 +15,23 @@ pub enum Error {
         input: String,
         /// Why it was rejected.
         reason: &'static str,
+    },
+    /// The image format has no layer media type for this compression:
+    /// Docker v2 schema 2 has no zstd.
+    #[error("{format} images cannot carry {compression} layers; zstd needs the OCI format")]
+    UnsupportedCompression {
+        /// The requested image format.
+        format: ImageFormat,
+        /// The requested compression.
+        compression: Compression,
+    },
+    /// A media type has no equivalent in the other image format.
+    #[error("media type {media_type} has no {format} equivalent")]
+    NoEquivalentMediaType {
+        /// The media type to convert.
+        media_type: MediaType,
+        /// The target format.
+        format: ImageFormat,
     },
 }
 

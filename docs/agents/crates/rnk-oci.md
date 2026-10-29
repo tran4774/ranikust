@@ -32,18 +32,26 @@ impl Digest { fn parse(&str); fn from_parts(DigestAlgorithm, &str); fn from_sha2
               fn algorithm(&self) -> DigestAlgorithm; fn encoded(&self) -> &str; fn as_str(&self) -> &str }
 pub enum DigestAlgorithm { Sha256, Sha512 }
 pub enum Error;                    // one enum for the crate; untrusted input quoted as an 80-char excerpt
+pub struct MediaType;              // any string; consts OCI_* and DOCKER_* (manifest, index, config, layers, foreign layers, schema 1)
+impl MediaType { fn format(&self) -> Option<ImageFormat>; fn is_manifest/is_index/is_config/is_layer/is_foreign_layer(&self) -> bool;
+                 fn layer_compression(&self) -> Option<Compression>; fn to_format(&self, ImageFormat) -> Result<MediaType, Error> }
+pub enum ImageFormat { Oci, Docker } // no Default [open: Q-006]: kaniko follows the base image's format; or OCI
+impl ImageFormat { fn manifest_media_type/index_media_type/config_media_type(self) -> MediaType;
+                   fn layer_media_type(self, Compression) -> Result<MediaType, Error> } // Docker + zstd is an error
+pub enum Compression { Uncompressed, Gzip, Zstd }
+pub struct Descriptor { media_type, digest, size: u64, urls, annotations: Option<BTreeMap<..>>, data, platform, artifact_type }
+pub struct Platform { architecture, os, os_version /* "os.version" */, os_features, variant, features }
 ```
+
+Optional properties are `Option`s: absent or `null` reads as `None` and is not
+written; a present value, even empty, is written back.
 
 Planned:
 
 ```rust
-pub struct MediaType; pub struct Descriptor; pub struct Platform;               // [design]
 pub struct ImageManifest; pub struct ImageIndex; pub struct ImageConfig;        // [design] owned, BTreeMap only
 pub struct Reference;                                                           // [design] docker/distribution normalization
 pub struct RawManifest { pub bytes: Vec<u8>, pub digest: Digest, pub media_type: MediaType } // [design] never re-serialized
-pub enum ImageFormat { Oci, Docker }            // [open: Q-006] default: base image's format (kaniko) or OCI
-pub enum Compression { Gzip, Zstd, None }
-pub fn layer_media_type(f: ImageFormat, c: Compression) -> Result<MediaType, Error>; // Docker + zstd is an error
 pub fn to_canonical_json<T: Serialize>(v: &T) -> Result<Vec<u8>, Error>; // [design] owned here; sorted keys
 pub fn select_platform<'a>(i: &'a ImageIndex, p: &Platform) -> Option<&'a Descriptor>; // [design]
 pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: here or in rnk-builder
@@ -72,12 +80,13 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
 ## Tests
 
 - T0, next to the code: hostile digest strings (no panic, short messages),
-  digest serde and ordering.
+  digest serde and ordering; layer media type per format and compression
+  (Docker + zstd fails), conversion along the OCI compatibility matrix,
+  descriptor round trips and malformed descriptors.
 - T0 round trip: manifests, indexes and configs of real images (both
   formats) parse and serialize back; canonical output is byte-identical over
   100 runs (catches `HashMap` order).
-- T0 tables: media type per format and compression (Docker + zstd fails),
-  platform selection; proptest on canonical output.
+- T0 tables: platform selection; proptest on canonical output.
 - Config fields (`Env`, `Entrypoint`, `Cmd`, `WorkingDir`, `User`, `Labels`)
   compared with kaniko's in the image-content suite (T1/T2).
 
@@ -97,7 +106,11 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   zstd with `--image-format=docker` or `--tar-path` (`root.go:177-188`).
 - kaniko's `--image-format` defaults to the base's format (`root.go:358`)
   [open: Q-006]; it converts layer media types when formats differ and
-  asserts no mixing (`build.go:1237-1268`, `transform.go:141-148`).
+  asserts no mixing (`build.go:1237-1268`, `transform.go:141-148`). Its
+  table maps OCI zstd layers to the Docker gzip type and the Docker foreign
+  gzip layer to the uncompressed OCI one (`build.go:1247-1258`), which
+  mislabels the blob; `MediaType::to_format` follows the OCI compatibility
+  matrix and refuses types without an equivalent.
 - Config `diff_ids` hash uncompressed tars; manifest layer digests hash the
   compressed blobs. Swapping them gives a valid-looking, broken image.
 - kaniko stamps the pushed stage's `created` with the wall clock
