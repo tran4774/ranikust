@@ -18,6 +18,7 @@ rnk-rootfs = { path = "crates/rnk-rootfs" }
 rustix = { version = "1.1.6", features = ["fs", "std"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

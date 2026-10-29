@@ -14,6 +14,8 @@ workspace = true
 [dependencies]
 rustix.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+rustix = { workspace = true, features = ["process"] }
 tempfile.workspace = true

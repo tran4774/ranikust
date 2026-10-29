@@ -23,6 +23,7 @@
 //!   the extraction, and this crate never depends on `rnk-layer`.
 //! - Does not mount, create namespaces or run processes (`rnk-sandbox`).
 
+mod delete;
 mod error;
 mod meta;
 mod path;
@@ -31,6 +32,7 @@ mod root;
 mod test_util;
 mod user;
 
+pub use delete::{IgnoreList, delete_contents};
 pub use error::{Error, Result};
 pub use meta::{FileTime, FileType, Meta, Stat};
 pub use root::{OpenHow, RootPath};

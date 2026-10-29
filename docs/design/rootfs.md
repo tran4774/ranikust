@@ -93,6 +93,34 @@ kaniko reads the process's own `/etc/passwd`
 (`kaniko@44aa7ddc0 pkg/util/command_util.go:534`); ranikust never reads the
 host's.
 
+## Deletion
+
+`delete_contents(root, keep)` implements
+[safe deletion](kaniko-mode.md#safe-deletion); the same walker removes a
+directory an extracted entry replaces, and applies OCI whiteouts.
+
+- Iterative, one frame per directory level holding an `O_RDONLY` fd: no
+  recursion, no `PATH_MAX` limit, one fd per level (a 3,004-level tree in
+  T0). Names are read before any is removed.
+- Each entry gets `statx(AT_SYMLINK_NOFOLLOW)`. Another mount id or
+  `STATX_ATTR_MOUNT_ROOT` keeps it untouched. A directory is opened with
+  `O_DIRECTORY | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, and its `ino`, device and
+  mount id must match that `statx`; otherwise, or when `rmdir` then finds a
+  non-directory or new entries under the name, deletion stops with
+  `Error::Changed`.
+- The ignore list holds exact, lexically cleaned paths inside the root;
+  `..` above the root and the root itself are refused. A kept entry keeps
+  its ancestors, which are not empty. What goes on the list is the
+  caller's: [Q-035](../open-questions.md#q-035-what-does-the-kaniko-mode-ignore-list-hold).
+- An entry that vanished meanwhile (`ENOENT`) is skipped; any other error
+  stops the deletion and leaves the rest in place.
+
+## Observability
+
+Coarse `tracing` spans only, named `<crate>.<operation>`, with counters
+recorded once at the end, never per entry: `rnk_rootfs.delete_contents`
+(`files`, `dirs`, `kept`).
+
 ## Failure handling
 
 - Every error carries the operation, the in-root path and the errno; none

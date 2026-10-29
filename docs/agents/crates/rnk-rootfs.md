@@ -48,7 +48,7 @@ impl RootPath {
 }
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // [design] plain tar; Whiteouts::{Apply, Overlay}
 pub fn copy(src: &RootPath, from: &Path, dst: &RootPath, to: &Path, o: &CopyOpts) -> Result<()>; // [design] FICLONE, else copy
-pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // [design] IgnoreList: exact paths
+pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
 pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011] here or `ranikust`
@@ -97,9 +97,12 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   symlinks out, loops and 50-hop chains, `/proc/self/...` targets, real magic
   links under `/proc/<pid>`, hardlinks out, `sub_root`, a swap between calls,
   and a thread exchanging a directory with a symlink out during 2,000 rounds
-  of every operation); unit tests per operation, raw modes 4755 and 1777.
+  of every operation); unit tests per operation, raw modes 4755 and 1777;
+  deletion of a 3,004-level tree, the ignore list, a faked foreign mount id,
+  and a swap racing `delete_contents`.
 - **T1:** a same-filesystem bind mount and a tmpfs inside the root survive
-  `delete_contents`; overlay-form extraction in a user namespace.
+  `delete_contents` (written, `#[ignore]`; the harness sets `RNK_T1_ROOT`);
+  overlay-form extraction in a user namespace.
 - **T2** (VM only): `--workdir` at `/`, `//`, `/home`, an unmarked directory.
 
 ## Pitfalls
@@ -137,4 +140,6 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   `Error::Unsupported`, no fallback.
 - Done: `RootPath` with the T0 escape suite; `lookup_user` and
   `lookup_owner` (two functions: `USER` and `--chown` default the gid
-  differently, `design/rootfs.md#users-and-groups`).
+  differently, `design/rootfs.md#users-and-groups`); `delete_contents`
+  (`design/rootfs.md#deletion`), built before extraction, which reuses its
+  walker.

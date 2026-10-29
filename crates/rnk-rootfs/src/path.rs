@@ -81,10 +81,6 @@ pub(crate) fn entry(p: &Path) -> Result<(PathBuf, &OsStr)> {
 /// Returns `None` when a `..` would climb above the root; such a name is
 /// refused outright rather than clamped, as Docker refuses a tar "breakout".
 /// The empty path means the root itself.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by tar extraction, added next")
-)]
 pub(crate) fn clean(p: &Path) -> Option<PathBuf> {
     let mut parts: Vec<&OsStr> = Vec::new();
     for c in p.components() {

@@ -207,6 +207,14 @@ impl RootPath {
         self.fd.as_fd()
     }
 
+    /// The same root claiming another mount id: every entry then looks like
+    /// it is on another mount. Tests the mount check without mounting.
+    #[cfg(test)]
+    pub(crate) fn with_mnt_id(mut self, mnt_id: u64) -> Self {
+        self.mnt_id = mnt_id;
+        self
+    }
+
     /// `openat2` of `p` relative to the root, confined to it.
     pub(crate) fn resolve(&self, p: &Path, flags: OFlags, mode: Mode) -> Result<OwnedFd> {
         let rel = path::relative(p);
@@ -429,17 +437,29 @@ impl RootPath {
             }
             Target::Entry { parent, name } => {
                 let pfd = self.resolve_dir(&parent)?;
-                let fd = open_name(pfd.as_fd(), name, OFlags::PATH | OFlags::NOFOLLOW, 0, p)?;
-                let file_type = meta::statx_at(fd.as_fd(), OsStr::new(""), p)?.file_type();
-                let h = Handle::Path {
-                    fd: fd.as_fd(),
-                    file_type,
-                    parent: Some((pfd.as_fd(), name)),
-                };
-                meta::apply(&h, m, p)
+                set_meta_at(pfd.as_fd(), name, m, p).map(drop)
             }
         }
     }
+}
+
+/// [`RootPath::set_meta`] on the entry `name` of the resolved directory
+/// `pfd`; returns the entry's type. `path` is only for error messages.
+pub(crate) fn set_meta_at(
+    pfd: BorrowedFd<'_>,
+    name: &OsStr,
+    m: &Meta,
+    path: &Path,
+) -> Result<FileType> {
+    let fd = open_name(pfd, name, OFlags::PATH | OFlags::NOFOLLOW, 0, false, path)?;
+    let file_type = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?.file_type();
+    let h = Handle::Path {
+        fd: fd.as_fd(),
+        file_type,
+        parent: Some((pfd, name)),
+    };
+    meta::apply(&h, m, path)?;
+    Ok(file_type)
 }
 
 /// How often `openat2` is retried on `EAGAIN`.
@@ -470,13 +490,15 @@ fn openat2_retry(
 }
 
 /// Opens the single name `name` in the directory `dirfd`, with no traversal
-/// and no symlink followed. `path` is only for error messages.
+/// and no symlink followed; with `same_mount`, also without entering another
+/// mount (`RESOLVE_NO_XDEV`, `EXDEV`). `path` is only for error messages.
 /// `mode` is used only with `O_CREAT`.
 pub(crate) fn open_name(
     dirfd: BorrowedFd<'_>,
     name: &OsStr,
     flags: OFlags,
     mode: u32,
+    same_mount: bool,
     path: &Path,
 ) -> Result<OwnedFd> {
     let mode = if flags.contains(OFlags::CREATE) {
@@ -484,7 +506,13 @@ pub(crate) fn open_name(
     } else {
         Mode::empty()
     };
-    openat2_retry(dirfd, name, flags | OFlags::CLOEXEC, mode, ONE_NAME).map_err(|e| match e {
+    let resolve = if same_mount {
+        ONE_NAME.union(ResolveFlags::NO_XDEV)
+    } else {
+        ONE_NAME
+    };
+    let flags = flags | OFlags::CLOEXEC;
+    openat2_retry(dirfd, name, flags, mode, resolve).map_err(|e| match e {
         Errno::NOSYS => Error::Unsupported {
             feature: "openat2",
             source: e.into(),
