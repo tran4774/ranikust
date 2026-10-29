@@ -52,6 +52,7 @@ pub fn copy(src: &RootPath, from: &Path, dst: &RootPath, to: &Path, o: &CopyOpts
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
+pub fn probe_support() -> Result<(), Unsupported>;             // built: start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
 pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011] here or `ranikust`
 ```
 
