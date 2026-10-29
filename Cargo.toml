@@ -17,14 +17,20 @@ rnk-rootfs = { path = "crates/rnk-rootfs" }
 # Third-party crates. Each is an architecture change: say why in the commit
 # that adds it.
 #
+# `flate2`: pure-Rust zlib (zlib-rs), so the musl build needs no C
+# toolchain; `runtime_detection` lets zlib-rs pick SIMD code at run time.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 # `regex`: no Unicode tables; `rnk-ignore` writes its classes out itself.
 regex = { version = "1.12", default-features = false, features = ["std", "perf"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-thiserror = "2.0.18"
+# `sha2`: SHA-NI and ARMv8 SHA picked at run time, no asm or C.
+sha2 = { version = "0.11.1", default-features = false }
+thiserror = "2.0.21"
 
 # Test-only crates.
 proptest = { version = "1.12", default-features = false, features = ["std"] }
+tar = { version = "0.4.46", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "warn"

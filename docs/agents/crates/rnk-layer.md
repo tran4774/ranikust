@@ -1,7 +1,7 @@
 # rnk-layer
 
-> **Status:** skeleton · **Phase:** 1 ·
-> **Depends on:** `rnk-oci` · **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder` (`rnk-cache`, `rnk-context` [open: Q-028]) · **Path:** `crates/rnk-layer/`
+> **Status:** in progress · **Phase:** 1 ·
+> **Depends on:** none yet (`rnk-oci` planned) · **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder` (`rnk-cache`, `rnk-context` [open: Q-028]) · **Path:** `crates/rnk-layer/`
 
 **TL;DR:** Entries in, deterministic tar out, through parallel gzip or zstd,
 with diff ID and digest computed while streaming; and a gzip/zstd decoder
@@ -24,18 +24,45 @@ for pulled layers. Same entries, same bytes, whatever the thread count.
 
 ## API (planned)
 
+Built: everything below except zstd [open: Q-052].
+
 ```rust
+pub struct EntryPath;              // [design] relative, normalized bytes; orders component-wise
+pub struct Entry { pub path: EntryPath, pub kind: EntryKind, pub mode: u32 /* raw st_mode, 0o7777 written */,
+    pub uid: u64, pub gid: u64, pub mtime: i64 /* seconds */, pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub inode: Option<(u64, u64)> } // [design] (dev, ino) finds hardlinks
+pub enum EntryKind { File { size: u64 }, Dir, Symlink(Vec<u8>), Char(u32, u32), Block(u32, u32), Fifo,
+    Whiteout /* path = the deleted path */, OpaqueDir }  // [design]
+pub enum Compression { None, Gzip, Zstd /* [open: Q-052] */ }
 pub struct EncodeOptions { pub compression: Compression, pub level: i32, pub threads: NonZeroUsize, pub mtime: Option<i64> } // [design] mtime: --reproducible
-pub struct Entry { pub path: RelPath, pub kind: EntryKind, pub mode: u32 /* raw st_mode */, pub uid: u64, pub gid: u64,
-    pub mtime: i64, pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>, pub inode: Option<(u64, u64)> } // [design] (dev, ino) finds hardlinks
-pub enum EntryKind { File { size: u64 }, Dir, Symlink(Vec<u8>), Char(u32, u32), Block(u32, u32), Fifo, Whiteout, OpaqueDir } // [design]
-pub struct LayerWriter<W: Write>;  // [design] tar -> compressor -> W; sorts entries, adds missing parent dirs
-impl<W: Write> LayerWriter<W> {    // [design] new(out, &EncodeOptions); finish() -> LayerDigests { diff_id, digest, size, media_type }
-    pub fn append(&mut self, e: &Entry, content: Option<&mut dyn Read>) -> Result<(), Error>;
+pub trait EntrySource {            // [design] implemented by the exporter
+    fn open(&mut self, e: &Entry) -> io::Result<Box<dyn Read + '_>>;            // file content, read once in layer order
+    fn parent(&mut self, p: &EntryPath) -> io::Result<Option<Entry>>;          // [open: Q-013] interim: missing parents
 }
-pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields plain tar bytes, hashes them for the diff_id;
+pub struct LayerWriter;            // [design] new(EncodeOptions); add(Entry) in any order; finish(&mut dyn EntrySource, W) -> LayerDigests
+pub struct LayerDigests { pub diff_id: Sha256Digest, pub digest: Sha256Digest, pub size: u64, pub compression: Compression }
+pub struct Sha256Digest;           // [design] Display `sha256:<hex>`; [open: Q-012] sha2 interim
+pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain; impl Read gives the plain tar;
+                                   // diff_id() once at the end, finish() drains and returns it; tar_size()
                                    // [inferred] gzip inflate is sequential: "parallel" means pipelining inflate, hashing, writes
 ```
+
+- `finish` sorts, looks up missing parents once each (outermost first),
+  turns entries sharing an inode into hardlinks to the first in layer order,
+  then streams, hashing the tar (diff ID) and the blob as they pass.
+  `LayerDigests` carries the compression, not a media type: that needs the
+  image format, which `rnk-oci` owns.
+- Layer order `[open: Q-053]`: depth first, components byte-wise; in each
+  directory the opaque marker, then whiteouts, then the rest. Names starting
+  with `.wh.` are rejected.
+- Headers: PAX as Go's `archive/tar` writes them (`src/header.rs`); whiteout
+  and opaque markers are empty files, mode 0, 0:0, the entry's mtime.
+- gzip (`src/gzip.rs`, flate2 on zlib-rs): 128 KiB blocks by offset, each
+  deflated alone with the previous 32 KiB as dictionary and a sync flush,
+  then an empty final block (`03 00`); header mtime 0, OS 255; CRC combined.
+  `threads` = 1 does everything in the caller's thread; above 1, `threads`
+  workers compress and two more threads hash the tar and the blob in order,
+  so the caller only copies and writes.
 
 ## Invariants
 
@@ -62,11 +89,14 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
 
 ## Tests
 
-- T0: pinned sha256s for fixed entries (gzip, zstd, plain); same bytes for
-  threads 1..=N and random chunkings (proptest); zstd 20 times at top threads.
-- T0 round trip (proptest): 124-byte path components, long link targets, PAX
-  xattrs, hardlinks, modes 1777/4755/2755, whiteouts, uid/gid > 2,097,151,
-  sizes > 8 GiB; gzip output is one member.
+- T0 (`tests/it/`, unit tests in `src/`): pinned sha256s of a sample tree,
+  plain and gzip, checked with GNU tar and gzip; same bytes for threads 1..16
+  and random chunkings (proptest); random trees round-tripped through the
+  `tar` crate (124-byte components, long link targets, PAX xattrs, hardlinks,
+  raw modes, whiteouts, opaque directories, uid/gid > 2,097,151, negative
+  mtimes); a > 8 GiB header; gzip is one member; decoder round trips and
+  hostile input. Still to add with zstd: its goldens and 20 runs at top
+  threads.
 - T1/T2: image content against kaniko ([testing](../../testing.md#planned-test-suites)).
 
 ## Pitfalls
@@ -94,4 +124,9 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
 - Order: tar writer with goldens → gzip and zstd with determinism tests →
   streaming digests → decoder → exporter integration with `rnk-snapshot`.
 - [open: Q-013] How `LayerWriter` gets a missing parent's metadata from
-  the exporter.
+  the exporter; interim: `EntrySource::parent`.
+- Done: tar writer with goldens; parallel gzip with determinism tests;
+  streaming digests; the decoder (gzip with any number of members, plain)
+  (`tests/it/`); `examples/throughput.rs` prints MB/s per thread count.
+- Left: zstd ([open: Q-052]); exporter integration with `rnk-snapshot`
+  (task 9).

@@ -58,7 +58,9 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Crate-level `Error` enums in libraries | chosen (`rnk-oci`) |
 | [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only), `std` feature only, no failure files | chosen (`rnk-oci`) |
 | [docker_credential](https://crates.io/crates/docker_credential) | 1.4.0, MIT OR Apache-2.0 | `config.json`, credential helpers | chosen; may be vendored |
-| [tar](https://crates.io/crates/tar) | 0.4.46, MIT OR Apache-2.0 | Tar with hand-built headers; never `append_dir_all` | chosen |
+| [tar](https://crates.io/crates/tar) | 0.4.46, MIT OR Apache-2.0 | Reads layers back in `rnk-layer`'s tests; the writer builds its PAX headers itself (`crates/rnk-layer/src/header.rs`); never `append_dir_all` | chosen (tests) |
+| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | `Error` enums of the library crates | chosen |
+| [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests | chosen (tests) |
 | [flate2](https://crates.io/crates/flate2), [zlib-rs](https://crates.io/crates/zlib-rs) | 1.1.10, MIT OR Apache-2.0; 0.6.8, Zlib | Deflate under the pigz-style gzip | chosen |
 | [zstd](https://crates.io/crates/zstd) | 0.14.3, BSD-3-Clause | Multithreaded zstd, fed 128 KiB chunks | chosen |
 | [gzp](https://crates.io/crates/gzp) | 2.0.4, Unlicense/MIT | Parallel gzip | candidate |
@@ -67,7 +69,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [aws-lc-rs](https://crates.io/crates/aws-lc-rs) | 1.19.0, ISC AND (Apache-2.0 OR ISC) | The other provider; reqwest 0.13's default, kept out of TLS | rejected (`ADR-0024`) |
 | [webpki-roots](https://crates.io/crates/webpki-roots), [webpki-root-certs](https://crates.io/crates/webpki-root-certs) | 1.0.11, CDLA-Permissive-2.0 | Embedded roots, trusted together with the host's CAs; `webpki-root-certs` gives the DER certificates `oci-client` takes | chosen (`ADR-0024`) |
 | [rustls-native-certs](https://crates.io/crates/rustls-native-certs) | 0.8.5, Apache-2.0 OR ISC OR MIT | Reads the host's CAs (`/etc/ssl/certs`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), as `exp-05` did | candidate (`ADR-0024`) |
-| [sha2](https://crates.io/crates/sha2) | 0.11.1, MIT OR Apache-2.0 | sha256 (or `aws-lc-rs`) | candidate |
+| [sha2](https://crates.io/crates/sha2) | 0.11.1, MIT OR Apache-2.0 | sha256 (or `aws-lc-rs`); used by `rnk-layer` as the Q-012 interim | candidate |
 | [reqwest](https://crates.io/crates/reqwest), [hyper](https://crates.io/crates/hyper) | 0.13.5, MIT OR Apache-2.0; 1.12.0, MIT | HTTP | candidate |
 | [tokio](https://crates.io/crates/tokio) | 1.54.1, MIT | Async runtime | chosen |
 | [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, walk | chosen |
