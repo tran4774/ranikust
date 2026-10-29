@@ -109,7 +109,14 @@ Entry format:
   [Phase 1](agents/crates/rnk-ignore.md#phase-1)).
 - **Options:** (a) `&str`; (b) bytes, matched with `regex::bytes`.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** bytes, on branch `feat/rnk-ignore-matcher`: patterns and
+  paths are `impl AsRef<[u8]>` (so `&str` callers need no change) and
+  `read_patterns` returns `Vec<Vec<u8>>`. Go strings are bytes too, so this
+  is the only choice that matches `patternmatcher` on non-UTF-8 names:
+  regexps see an invalid byte as U+FFFD, as Go's do (matched with `regex`
+  on the decoded text rather than `regex::bytes`). Reversible: the crate is
+  unpublished and has no callers yet; narrowing to `&str` changes only
+  signatures.
 - **Raised:** 2026-10-30
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?
@@ -374,6 +381,28 @@ Entry format:
   through `rnk-builder`, which already depends on all of them.
 - **Recommendation:** none
 - **Interim:** none
+- **Raised:** 2026-10-30
+
+### Q-050: Which result does the context walk follow when BuildKit's two matchers disagree?
+
+- **Blocks:** Phase 1 task 10; **Area:** `rnk-context`, `rnk-ignore`
+- **Context:** BuildKit's context walk (`fsutil`) calls
+  `MatchesUsingParentResults` with the parent's `MatchInfo`; its `Open`,
+  and ADR-0015, use `MatchesOrParentMatches`. They differ when a pattern
+  skipped for the parent would match the child through it: `dir/f` +
+  `!dir` on `dir/f` is excluded by the walk, kept by the other (verified
+  with Go). The walk also reports errors of patterns it evaluates on parent
+  directories, which the other ignores. In rnk-ignore's Go goldens 138 of
+  12,470 cells differ in result, in both directions, and 84 in error; none
+  of exp-04's or kaniko's cases do
+  ([rnk-ignore](agents/crates/rnk-ignore.md#pitfalls)).
+- **Options:** (a) walk like BuildKit: `matches_using_parent` along the
+  walk, with `may_reinclude_below` to prune; (b) `matches_or_parent_matches`
+  for every path, as ADR-0015 words it.
+- **Recommendation:** (a): it reproduces the file set BuildKit sends as
+  the context.
+- **Interim:** `rnk-ignore` provides both, each an exact port; nothing
+  walks a context yet.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?

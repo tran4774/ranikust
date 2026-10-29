@@ -62,7 +62,9 @@ build stages.
 
 ### `rnk-ignore`
 
-`.dockerignore` matching with exactly moby `patternmatcher` semantics.
+`.dockerignore` matching with exactly moby `patternmatcher` semantics,
+including the per-directory form BuildKit's context walk uses and its rule
+for skipping excluded directories.
 **Must not** read or walk the filesystem, choose the ignore file
 (`rnk-context`), or approximate: any divergence from `patternmatcher` is a
 bug.

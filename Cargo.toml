@@ -13,11 +13,18 @@ repository = "https://github.com/tran4774/ranikust"
 [workspace.dependencies]
 # Internal crates, referenced as `<name>.workspace = true`.
 rnk-rootfs = { path = "crates/rnk-rootfs" }
-# External crates. Each one is justified in the commit that adds it.
-proptest = { version = "1.12", default-features = false, features = ["std"] }
+
+# Third-party crates. Each is an architecture change: say why in the commit
+# that adds it.
+#
+# `regex`: no Unicode tables; `rnk-ignore` writes its classes out itself.
+regex = { version = "1.12", default-features = false, features = ["std", "perf"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
+
+# Test-only crates.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

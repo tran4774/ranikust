@@ -37,7 +37,8 @@ licenses are crates.io's latest at that date, not what `Cargo.lock` pins.
 | BuildKit Dockerfile parser, instructions, shell lexer (ported by hand, `ADR-0015`) | https://github.com/moby/buildkit/tree/master/frontend/dockerfile/parser, [instructions](https://github.com/moby/buildkit/tree/master/frontend/dockerfile/instructions), [shell/lex.go](https://github.com/moby/buildkit/blob/master/frontend/dockerfile/shell/lex.go) |
 | BuildKit upperdir differ (`WriteUpperdir`), `RUN` stubs | https://github.com/moby/buildkit/blob/master/util/overlay/overlay_linux.go, https://github.com/moby/buildkit/blob/master/executor/stubs.go |
 | containerd overlay snapshotter | https://github.com/containerd/containerd/tree/main/plugins/snapshots/overlay |
-| moby `patternmatcher` (`.dockerignore`) | https://github.com/moby/patternmatcher |
+| moby `patternmatcher` (`.dockerignore`, ported in `rnk-ignore`) | https://github.com/moby/patternmatcher |
+| fsutil filtered walk (BuildKit's context transfer, `.dockerignore` pruning) | https://github.com/tonistiigi/fsutil/blob/master/filter.go |
 | kaniko (cited fork; original, archived) | https://github.com/osscontainertools/kaniko, https://github.com/GoogleContainerTools/kaniko |
 | go-containerregistry (kaniko's image library) | https://github.com/google/go-containerregistry |
 | runc (`MS_MOVE` fallback), youki (sandbox reference) | https://github.com/opencontainers/runc, https://github.com/youki-dev/youki |
@@ -75,6 +76,9 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber), [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.1.44, 0.3.23, MIT; 0.33.1, Apache-2.0 | Logs and tracing | chosen (survey 03) |
 | [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03) | candidate |
 | [highway](https://crates.io/crates/highway), [xxhash-rust](https://crates.io/crates/xxhash-rust), [jwalk](https://crates.io/crates/jwalk) | 1.3.0, MIT; 0.8.19, BSL-1.0; 0.9.0, MIT | Snapshot hash, parallel walk (Phase 2) | candidate |
+| [regex](https://crates.io/crates/regex) | 1.13.1, MIT OR Apache-2.0 | `rnk-ignore`'s compiled patterns (Go regexps translated; no Unicode tables) | chosen |
+| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Library `Error` enums | chosen |
+| [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only, `std` feature) | chosen |
 | [parse-dockerfile](https://crates.io/crates/parse-dockerfile), [ignore](https://crates.io/crates/ignore) | 0.1.8; 0.4.34 | Dockerfile parsing, `.dockerignore` | rejected (`ADR-0015`, `exp-04`) |
 | [libcontainer](https://crates.io/crates/libcontainer) | 0.7.0, Apache-2.0 | youki's runtime | reference only |
 

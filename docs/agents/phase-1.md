@@ -18,7 +18,7 @@ the code.
 |---|---|---|
 | [~] | OCI and Docker v2s2 manifests, index, config, media types | `rnk-oci` |
 | [ ] | Dockerfile front end: lexer, directives, heredocs, `ARG`/`ENV` expansion, instructions, stage DAG; BuildKit goldens on kaniko's 200 Dockerfiles | `rnk-dockerfile` |
-| [ ] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
+| [x] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
 | [ ] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion | `rnk-rootfs` |
 | [ ] | Deterministic tar (the writer sorts entries and adds missing parent headers), pigz-style parallel gzip, zstd in 128 KiB chunks, gzip/zstd decoder for pulled blobs, streaming digests | `rnk-layer` |
 | [ ] | Pulls from public registries and with docker `config.json` auth; rustls with `ring`, trusting host CAs plus webpki roots (`ADR-0024`); `--registry-certificate` | `rnk-registry` |
