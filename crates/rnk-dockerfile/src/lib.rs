@@ -14,11 +14,17 @@
 
 mod error;
 mod goutil;
+mod graph;
 mod instructions;
 mod parser;
+mod scope;
 mod shell;
 
 pub use error::{Error, ErrorKind, Lines};
+pub use graph::{
+    Base, GraphOptions, Origin, Reference, ReferenceKind, Source, StageGraph, StageNode,
+    stage_graph,
+};
 pub use instructions::{
     Add, ArgDecl, CmdLine, Copy, Device, Dockerfile, Healthcheck, InlineFile, Instruction,
     KeyValue, Located, Mount, MountType, Network, Run, Security, Sharing, SourceContent, Stage,
@@ -26,5 +32,7 @@ pub use instructions::{
 };
 pub use parser::{
     Ast, DEFAULT_ESCAPE, Directive, Heredoc, Node, Warning, chomp_heredoc_content, parse_ast,
+    parse_heredoc_marker,
 };
+pub use scope::{DEFAULT_PATH, EnvList, Platform, StageScope};
 pub use shell::{Env, LexError, Lexer, NoEnv, WordMatches};

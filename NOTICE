@@ -49,6 +49,11 @@ License:   Apache License, Version 2.0. BuildKit has no NOTICE file; its
                                               instructions/commands.go,
                                               dockerfile2llb/convert.go,
                                               dockerfile2llb/convert_expose.go
+  crates/rnk-dockerfile/src/scope.rs          dockerfile2llb/convert.go,
+                                              dockerfile2llb/platform.go
+  crates/rnk-dockerfile/src/graph.rs          dockerfile2llb/convert.go,
+                                              dockerfile2llb/convert_runmount.go,
+                                              dockerfile2llb/validations.go
 
 Code derived from go-units
 --------------------------

@@ -18,7 +18,7 @@ use crate::goutil::{
     equal_fold_ascii, parse_duration, parse_int32, to_lower, to_upper, trim_space,
 };
 use crate::parser::{
-    Ast, Directive, Node, Warning, chomp_heredoc_content, parse_ast, parse_heredoc,
+    Ast, Directive, Node, Warning, chomp_heredoc_content, parse_ast, parse_heredoc_marker,
 };
 use flags::{FlagType, Flags};
 pub use mount::{Device, Mount, MountType, Network, Security, Sharing};
@@ -607,12 +607,6 @@ fn parse_run(req: &Request<'_>) -> Result<Run, String> {
     })
 }
 
-/// The heredoc a `COPY`/`ADD` argument names, if it is one.
-fn arg_heredoc(arg: &str) -> Option<crate::parser::Heredoc> {
-    // BuildKit's MustParseHeredoc: a lexing error means "not a heredoc".
-    parse_heredoc(arg).ok().flatten()
-}
-
 /// BuildKit's `parseSourcesAndDest`.
 fn sources_and_dest(
     req: &Request<'_>,
@@ -623,13 +617,13 @@ fn sources_and_dest(
             "{cmd} requires at least two arguments, but only one was provided. Destination could not be determined"
         ));
     };
-    if arg_heredoc(dest).is_some() {
+    if parse_heredoc_marker(dest).is_some() {
         return Err(format!("{cmd} cannot accept a heredoc as a destination"));
     }
     let mut sources = Vec::new();
     let mut contents = Vec::new();
     for src in srcs {
-        if let Some(h) = arg_heredoc(src) {
+        if let Some(h) = parse_heredoc_marker(src) {
             // The last heredoc of that name wins, as in BuildKit's map.
             let content = req
                 .node

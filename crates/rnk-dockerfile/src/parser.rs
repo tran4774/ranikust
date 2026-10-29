@@ -811,6 +811,15 @@ fn heredocs_from_line(line: &str) -> Result<Vec<Heredoc>, String> {
     Ok(docs)
 }
 
+/// BuildKit's `MustParseHeredoc`: the heredoc a single word opens
+/// (`<<EOF`, `<<-"EOF"`, `3<<EOF`), without content. A `RUN` whose whole
+/// command is one such word runs the heredoc body as its script.
+#[must_use]
+pub fn parse_heredoc_marker(word: &str) -> Option<Heredoc> {
+    // A delimiter that cannot be lexed means "not a heredoc" here.
+    parse_heredoc(word).ok().flatten()
+}
+
 /// BuildKit's `ChompHeredocContent`: removes leading tabs from every line.
 #[must_use]
 pub fn chomp_heredoc_content(src: &str) -> String {

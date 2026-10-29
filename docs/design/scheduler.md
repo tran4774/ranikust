@@ -30,6 +30,14 @@ Stages not on a path to `--target` (or the last stage) are dropped, like
 kaniko's `MakeKanikoStages`. In overlay mode `FROM <stage>` just reuses the
 parent's lower stack, so parent stages are never squashed into children.
 
+`rnk_dockerfile::stage_graph` builds this graph with BuildKit's rules
+(`dockerfile2llb`): `ADD` has no `--from`; a reference names a stage
+defined earlier in the file (a later one is an error, as in BuildKit,
+which builds stages in file order); anything that is not a stage name is
+an image the scheduler pulls up front. Several `--target`s are accepted
+until [Q-008](../open-questions.md#q-008-what-does-a-repeated-target-flag-mean)
+is answered; the first is the result.
+
 ## Execution
 
 - Each stage is an async task that starts when all stages it depends on have
