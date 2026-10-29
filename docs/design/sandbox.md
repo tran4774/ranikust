@@ -194,7 +194,7 @@ Settled: a `RUN` sees the fixed host name `ranikust`
 ([Q-075](../open-questions.md#q-075-which-host-name-does-a-run-see)) and,
 with the host network, ranikust's own `/etc/hosts`, with `--network=none`
 loopback names, both plus the host name
-([Q-076](../open-questions.md#q-076-what-etchosts-does-a-run-see)).
+([ADR-0031](../adr/0031-run-host-name-and-hosts-file.md)).
 
 Settled elsewhere: `RUN` gets no cgroup limits, so a fork bomb is bounded
 only by the environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)).

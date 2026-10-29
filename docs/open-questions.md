@@ -937,7 +937,8 @@ Entry format:
   `config.json` itself and credential helpers come in Phase 5 (Q-047);
   `clap` (derive) for the CLI. None of them appears in a library's public
   API. Whether `ring::digest` beats `sha2` on large layers is measured
-  under Q-033.
+  under Q-033. Recorded in
+  [ADR-0030](adr/0030-phase-1-dependency-picks.md).
 
 ### Q-075: Which host name does a RUN see?
 
@@ -945,6 +946,7 @@ Entry format:
   environment, so a `RUN` that records its host name gives the same bytes
   on every host; no flag. `rnk-builder` may still set
   `RunSpec::hostname`. Implemented in `rnk-sandbox` (`DEFAULT_HOSTNAME`).
+  Recorded in [ADR-0031](adr/0031-run-host-name-and-hosts-file.md).
 
 ### Q-076: What /etc/hosts does a RUN see?
 
@@ -952,4 +954,5 @@ Entry format:
   own `/etc/hosts` (as kaniko's `RUN` sees it, so Kubernetes `hostAliases`
   keep working) plus the host name; with `--network=none`, loopback names
   plus the host name, as BuildKit. Implemented in `rnk-sandbox`
-  (`plan.rs`, `hosts_file`).
+  (`plan.rs`, `hosts_file`). Recorded in
+  [ADR-0031](adr/0031-run-host-name-and-hosts-file.md).

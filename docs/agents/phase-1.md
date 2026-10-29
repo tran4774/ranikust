@@ -3,7 +3,7 @@
 **TL;DR:** Build real Dockerfiles in overlay mode as root, with parallel
 stages, lazy export and all three outputs, measured against kaniko and
 BuildKit. Start with the foundations; O1–O5 are resolved (ADR-0021 to
-ADR-0024, Q-012).
+ADR-0024, ADR-0030).
 
 Source: survey 04 §2–§3 and survey 00 §4 (`docs/research/survey/`), an
 internal milestone of 8–12 weeks for one person `[inferred]`. Tick items here
@@ -130,7 +130,7 @@ with `rnk_metrics::Capture`; a task is not done without it.
   ([ADR-0024](../adr/0024-tls-rustls-ring.md)). Task 6 is unblocked.
 - **O5 Dependency picks left open in survey 03 §3.** Resolved for Phase 1:
   `rustix`, `sha2`, gzip by hand, `reqwest`, no `docker_credential`, `clap`
-  ([Q-012](../open-questions.md#q-012-which-crates-fill-the-phase-1-dependency-picks)).
+  ([ADR-0030](../adr/0030-phase-1-dependency-picks.md), Q-012).
   Still open, Phase 2 picks (`highway` or `xxhash-rust`, `jwalk` or `rayon` +
   `getdents64`):
   [Q-038](../open-questions.md#q-038-which-crates-fill-the-phase-2-dependency-picks).
