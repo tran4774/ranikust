@@ -72,8 +72,19 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build --release --locked --target x86_64-unknown-linux-musl -p ranikust
-      - name: Check that the binary is static and runs
+      # zig compiles the C dependencies for musl through cargo-zigbuild
+      # (ADR-0020); rustc still links with the runner's `cc`, which keeps
+      # static-pie and the symbol table. `just build-static` runs the same.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          # The compiled C libraries are in `target/`, which rust-cache keeps.
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      - run: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target x86_64-unknown-linux-musl -p ranikust
+      - name: Check that the binary is static-pie and runs
         run: |
           file "$BIN"
           if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter'; then
@@ -82,6 +93,14 @@ jobs:
           fi
           if readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
             echo "::error::$BIN depends on shared libraries"
+            exit 1
+          fi
+          if ! readelf --file-header --wide "$BIN" | grep -q 'Type: *DYN'; then
+            echo "::error::$BIN is not position-independent (static-pie)"
+            exit 1
+          fi
+          if ! readelf --section-headers --wide "$BIN" | grep -q '\.symtab'; then
+            echo "::error::$BIN has no symbol table"
             exit 1
           fi
           ls -l "$BIN"
@@ -99,7 +118,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --workspace --locked --target aarch64-unknown-linux-musl
+      # Build scripts compile the C dependencies for aarch64 with zig.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      - run: cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl
 
   deny:
     name: cargo-deny

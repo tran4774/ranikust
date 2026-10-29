@@ -31,12 +31,17 @@ lint:
 test *args:
     cargo test --workspace --locked {{ args }}
 
-# Static x86_64 musl release binary, checked to need no loader or shared libraries (CI job `static-build`).
+# The musl recipes run through cargo-zigbuild (ADR-0020), which compiles every
+# C dependency (libzstd, mimalloc, ring...) with `zig cc` for the target, so
+# no musl cross compiler is needed. rustc still links x86_64 with the host
+# `cc`: zig's linker would drop static-pie and the symbol table.
+
+# Static x86_64 musl release binary, checked to need no loader or shared libraries (CI job `static-build`). Requires zig and cargo-zigbuild.
 build-static:
     #!/usr/bin/env bash
     set -euo pipefail
     BIN={{ static_bin }}
-    cargo build --release --locked --target {{ musl_target }} -p ranikust
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust
     file "$BIN"
     if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter'; then
       echo "error: $BIN requests a dynamic loader" >&2
@@ -46,12 +51,20 @@ build-static:
       echo "error: $BIN depends on shared libraries" >&2
       exit 1
     fi
+    if ! readelf --file-header --wide "$BIN" | grep -q 'Type: *DYN'; then
+      echo "error: $BIN is not position-independent (static-pie)" >&2
+      exit 1
+    fi
+    if ! readelf --section-headers --wide "$BIN" | grep -q '\.symtab'; then
+      echo "error: $BIN has no symbol table" >&2
+      exit 1
+    fi
     ls -l "$BIN"
     "$BIN"
 
-# Type-check for aarch64 musl so no architecture-specific code slips in (CI job `check-aarch64`).
+# Type-check for aarch64 musl so no architecture-specific code slips in (CI job `check-aarch64`). Requires zig and cargo-zigbuild.
 check-aarch64:
-    cargo check --workspace --locked --target aarch64-unknown-linux-musl
+    cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl
 
 # Advisories, licenses, bans and sources with cargo-deny (CI job `deny`).
 deny:
