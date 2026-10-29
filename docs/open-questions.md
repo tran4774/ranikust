@@ -505,15 +505,18 @@ Entry format:
   kaniko accepts only `tcp`/`udp` and keeps `8000-8001/tcp` as one key
   (`pkg/commands/expose.go:47-62`); (3) `HEALTHCHECK --start-interval` is
   kept; kaniko drops it (go-containerregistry's `HealthConfig` has no such
-  field, `pkg/commands/healthcheck.go:26-34`).
+  field, `pkg/commands/healthcheck.go:26-34`); (4) an absolute `WORKDIR`
+  is cleaned (`/a/../b/` becomes `/b`) [inferred]; kaniko keeps it as
+  written (`pkg/commands/workdir.go:39-51`).
 - **Options:** (a) kaniko for each, for users migrating from kaniko;
   (b) BuildKit for each, the documented Dockerfile behaviour (as Q-051 and
   `ADR-0027` chose for the front end); (c) per item.
 - **Recommendation:** none; (1) changes what a container runs, so it
   deserves a decision before the config goldens.
-- **Interim:** (a) for (1) and (2); `HealthConfig::start_interval` is kept
+- **Interim:** (a) for (1), (2) and (4); `HealthConfig::start_interval` is kept
   when the builder sets it, so (3) is the builder's choice. Reversible: (1)
-  needs a per-stage "CMD set" bit in `rnk-builder`, (2) a port parser.
+  needs a per-stage "CMD set" bit in `rnk-builder`, (2) a port parser,
+  (4) one call to the cleaning `WORKDIR` already does for relative paths.
 - **Raised:** 2026-10-30
 
 ### Q-131: Which instructions get a history entry, with which fields?

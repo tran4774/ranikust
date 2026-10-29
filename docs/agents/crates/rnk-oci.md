@@ -59,9 +59,9 @@ Config edits and output index files (pure; [open: Q-007] here rather than
 in `rnk-builder`):
 
 ```rust
-pub enum Command { Exec(Vec<String>), Shell(String) }   // CMD/ENTRYPOINT; shell form uses config Shell or DEFAULT_SHELL
+pub enum CommandLine { Exec(Vec<String>), Shell(String) }   // CMD/ENTRYPOINT; shell form uses config Shell or DEFAULT_SHELL
 pub enum ConfigEdit { Env(Vec<(String, String)>), Label(..), User(String), Workdir(String), Expose(Vec<String>),
-    Volume(Vec<String>), Entrypoint(Command), Cmd(Command), Shell(Vec<String>), StopSignal(String),
+    Volume(Vec<String>), Entrypoint(CommandLine), Cmd(CommandLine), Shell(Vec<String>), StopSignal(String),
     Healthcheck(HealthConfig), OnBuild(String) }       // values already expanded
 impl ConfigEdit { pub fn apply(&self, c: &mut ImageConfig) -> Result<(), Error>; pub fn instruction(&self) -> &'static str }
 impl ImageConfig {
@@ -73,15 +73,18 @@ pub struct DockerTarImage { config, repo_tags, layers, layer_sources } // one en
 pub struct OciLayout { image_layout_version }          // `oci-layout`; FILE, INDEX_FILE, VERSION, REF_NAME_ANNOTATION, blob_path
 ```
 
-`apply` follows kaniko's `ExecuteCommand`s (`pkg/commands/*.go`): `ENV`
+`apply` follows kaniko's `ExecuteCommand`s (`pkg/commands/*.go`): an
+empty `ENV`, `LABEL`, `EXPOSE`, `VOLUME` or `SHELL` list is refused; `ENV`
 replaces a key in place or appends, rewriting every entry as `key=value`;
+`USER` keeps two `:`-separated parts; `HEALTHCHECK` zeros become `None`;
 `WORKDIR` keeps an absolute path as written and joins and cleans a relative
 one; `EXPOSE` adds `/tcp` and accepts only `tcp` and `udp`; `STOPSIGNAL` is
 checked as moby's `ParseSignal` and stored as written; `CMD` drops
 `ArgsEscaped`; an empty exec form clears the field. Where BuildKit differs
 (`ENTRYPOINT` resetting an inherited `CMD`, `sctp` and port ranges,
 `--start-interval`): [open: Q-130]. Which instructions get a history entry:
-[open: Q-131]. On error the config is unchanged.
+[open: Q-131]. On error the config is unchanged. Creating the `WORKDIR`
+and `VOLUME` directories is `rnk-builder`'s, through `RootPath`.
 
 `RawManifest` and `select_platform` live in `rnk-registry` (`client.rs`,
 `platform.rs`): platform matching is kaniko's pull rule, not a property of

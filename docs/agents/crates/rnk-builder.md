@@ -77,7 +77,9 @@ pub enum Output { Registry(Reference), DockerTar(PathBuf), OciLayout(PathBuf) } 
 
 - **T0:** each executor's config change (`ENV`, `LABEL`, `USER`, `WORKDIR`,
   `ENTRYPOINT`, `CMD`, `SHELL`, `EXPOSE`, `VOLUME`, `STOPSIGNAL`,
-  `HEALTHCHECK`) against BuildKit and kaniko config goldens; the
+  `HEALTHCHECK`): the rules are `rnk_oci::ConfigEdit`'s, tested in
+  `crates/rnk-oci/src/edit.rs`; here, that each executor builds the right
+  edit, and the result against BuildKit and kaniko config goldens; the
   `LayerDemand` table; assembly of fake layers gives stable digests.
 - **T1/T2:** W1 and W3 end to end; flattened content against kaniko
   (`nextjs-kaniko/digest-check/`) and between modes (ADR-0012 list);

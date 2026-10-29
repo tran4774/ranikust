@@ -1,3 +1,11 @@
+// The signal-name table and `valid_signal` are derived from moby/sys,
+// https://github.com/moby/sys, signal/signal.go and signal/signal_linux.go
+// at signal/v0.7.1 (vendored by kaniko 44aa7ddc0).
+// Copyright The moby/sys authors (no copyright line in the source files).
+// Licensed under the Apache License, Version 2.0.
+// Modified for ranikust: ParseSignal reduced to a validity check, the
+// RTMIN/RTMAX names spelled out as strings.
+
 //! Config edits: what each metadata instruction does to the image config.
 //!
 //! Values arrive expanded (`ARG`/`ENV` substitution is `rnk-dockerfile`'s
@@ -6,6 +14,10 @@
 //! and BuildKit differ, the edit follows kaniko [open: Q-130]. Empty
 //! `Entrypoint`, `Cmd` and a false `ArgsEscaped` are left out, as both write
 //! them (`omitempty`).
+//!
+//! Only the config changes here. Creating the `WORKDIR` directory (owned by
+//! the active user) and the `VOLUME` directories, as kaniko does, is
+//! `rnk-builder`'s job, through `rnk_rootfs::RootPath`.
 //!
 //! History entries and `rootfs.diff_ids` change through
 //! [`ImageConfig::push_layer`] and [`ImageConfig::push_history`]; which
@@ -21,7 +33,7 @@ pub const DEFAULT_SHELL: [&str; 2] = ["/bin/sh", "-c"];
 
 /// A `CMD` or `ENTRYPOINT` command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
+pub enum CommandLine {
     /// Exec form: the arguments as written. Empty clears the field.
     Exec(Vec<String>),
     /// Shell form: the line, run with the config's `Shell`.
@@ -32,28 +44,32 @@ pub enum Command {
 /// value already expanded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigEdit {
-    /// `ENV`: each key replaces its entry in place, or is appended.
+    /// `ENV`: each key replaces its entry in place, or is appended. Not
+    /// empty.
     Env(Vec<(String, String)>),
-    /// `LABEL`: each key is set, later ones winning.
+    /// `LABEL`: each key is set, later ones winning. Not empty.
     Label(Vec<(String, String)>),
-    /// `USER`: `user` or `user:group`, as written.
+    /// `USER`: `user` or `user:group`; past a second `:` the rest is dropped,
+    /// as kaniko does (`pkg/commands/user.go`).
     User(String),
     /// `WORKDIR`: absolute as written, or relative to the current one.
     Workdir(String),
     /// `EXPOSE`: `port`, `port/tcp` or `port/udp`; no protocol means `tcp`.
+    /// Not empty.
     Expose(Vec<String>),
-    /// `VOLUME`: mount points, added to the set.
+    /// `VOLUME`: mount points, added to the set. Not empty.
     Volume(Vec<String>),
     /// `ENTRYPOINT`.
-    Entrypoint(Command),
+    Entrypoint(CommandLine),
     /// `CMD`.
-    Cmd(Command),
+    Cmd(CommandLine),
     /// `SHELL`.
     Shell(Vec<String>),
     /// `STOPSIGNAL`: a signal name (`SIGTERM`, `term`) or a non-zero number,
     /// stored as written.
     StopSignal(String),
-    /// `HEALTHCHECK`; durations in nanoseconds, zero as `None`.
+    /// `HEALTHCHECK`; durations in nanoseconds. A zero duration or retry
+    /// count is stored as `None`, as go-containerregistry omits it.
     Healthcheck(HealthConfig),
     /// `ONBUILD`: the trigger's text, appended.
     OnBuild(String),
@@ -92,7 +108,7 @@ impl ConfigEdit {
                     labels.insert(k.clone(), v.clone());
                 }
             }
-            Self::User(user) => run.user = Some(user.clone()),
+            Self::User(user) => run.user = Some(user_and_group(user)),
             Self::Workdir(dir) => {
                 run.working_dir = Some(workdir(run.working_dir.as_deref().unwrap_or(""), dir));
             }
@@ -120,7 +136,7 @@ impl ConfigEdit {
             }
             Self::Shell(shell) => run.shell = Some(shell.clone()),
             Self::StopSignal(signal) => run.stop_signal = Some(signal.clone()),
-            Self::Healthcheck(health) => run.healthcheck = Some(health.clone()),
+            Self::Healthcheck(health) => run.healthcheck = Some(without_zeros(health)),
             Self::OnBuild(trigger) => run
                 .on_build
                 .get_or_insert_with(Vec::new)
@@ -136,9 +152,21 @@ impl ConfigEdit {
             input: excerpt(input),
             reason,
         };
+        // kaniko writes nothing for an empty list; refuse it rather than
+        // write `{}` or `[]`.
+        let empty = |is_empty: bool| {
+            if is_empty {
+                Err(invalid("", "needs at least one value"))
+            } else {
+                Ok(())
+            }
+        };
         match self {
+            Self::Env(pairs) | Self::Label(pairs) => empty(pairs.is_empty())?,
+            Self::Volume(volumes) => empty(volumes.is_empty())?,
             // `pkg/commands/expose.go:47-62`: tcp or udp, exactly one `/`.
             Self::Expose(ports) => {
+                empty(ports.is_empty())?;
                 for p in ports {
                     if let Some((_, protocol)) = p.split_once('/') {
                         if protocol.contains('/') {
@@ -150,13 +178,18 @@ impl ConfigEdit {
                     }
                 }
             }
-            Self::StopSignal(signal) if !valid_signal(signal) => {
-                return Err(invalid(signal, "not a signal name or a non-zero number"));
+            Self::StopSignal(signal) => {
+                if !valid_signal(signal) {
+                    return Err(invalid(signal, "not a signal name or a non-zero number"));
+                }
             }
-            Self::Shell(shell) if shell.is_empty() => {
-                return Err(invalid("[]", "SHELL needs at least one argument"));
-            }
-            _ => {}
+            Self::Shell(shell) => empty(shell.is_empty())?,
+            Self::User(_)
+            | Self::Workdir(_)
+            | Self::Entrypoint(_)
+            | Self::Cmd(_)
+            | Self::Healthcheck(_)
+            | Self::OnBuild(_) => {}
         }
         Ok(())
     }
@@ -175,6 +208,30 @@ impl ImageConfig {
     pub fn push_history(&mut self, mut history: History) {
         history.empty_layer = Some(true);
         self.history.get_or_insert_with(Vec::new).push(history);
+    }
+}
+
+/// kaniko's `USER` (`pkg/commands/user.go`): it splits on `:` and keeps the
+/// first two parts.
+fn user_and_group(user: &str) -> String {
+    let mut parts = user.split(':');
+    match (parts.next(), parts.next()) {
+        (Some(u), Some(g)) => format!("{u}:{g}"),
+        _ => user.to_owned(),
+    }
+}
+
+/// `health` with zero durations and retries as `None`: go-containerregistry
+/// writes them `omitempty`.
+fn without_zeros(health: &HealthConfig) -> HealthConfig {
+    let nonzero = |v: Option<i64>| v.filter(|&n| n != 0);
+    HealthConfig {
+        test: health.test.clone(),
+        interval: nonzero(health.interval),
+        timeout: nonzero(health.timeout),
+        start_period: nonzero(health.start_period),
+        start_interval: nonzero(health.start_interval),
+        retries: nonzero(health.retries),
     }
 }
 
@@ -232,11 +289,11 @@ fn clean(path: &str) -> String {
 
 /// The command a `CMD` or `ENTRYPOINT` sets; `None` for an empty exec form,
 /// which kaniko and BuildKit leave out.
-fn command_line(command: &Command, shell: Option<&[String]>) -> Option<Vec<String>> {
+fn command_line(command: &CommandLine, shell: Option<&[String]>) -> Option<Vec<String>> {
     match command {
-        Command::Exec(args) if args.is_empty() => None,
-        Command::Exec(args) => Some(args.clone()),
-        Command::Shell(line) => {
+        CommandLine::Exec(args) if args.is_empty() => None,
+        CommandLine::Exec(args) => Some(args.clone()),
+        CommandLine::Shell(line) => {
             let mut argv: Vec<String> = match shell {
                 Some(shell) if !shell.is_empty() => shell.to_vec(),
                 _ => DEFAULT_SHELL.iter().map(|&s| s.to_owned()).collect(),
@@ -249,37 +306,26 @@ fn command_line(command: &Command, shell: Option<&[String]>) -> Option<Vec<Strin
 
 /// Linux signal names, without `SIG`, as moby's `SignalMap`
 /// (`kaniko@44aa7ddc0 vendor/github.com/moby/sys/signal/signal_linux.go`).
-const SIGNALS: [&str; 34] = [
+const SIGNALS: [&str; 65] = [
     "ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "FPE", "HUP", "ILL", "INT", "IO", "IOT", "KILL",
     "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP",
-    "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ",
+    "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ", "RTMIN", "RTMIN+1",
+    "RTMIN+2", "RTMIN+3", "RTMIN+4", "RTMIN+5", "RTMIN+6", "RTMIN+7", "RTMIN+8", "RTMIN+9",
+    "RTMIN+10", "RTMIN+11", "RTMIN+12", "RTMIN+13", "RTMIN+14", "RTMIN+15", "RTMAX-14", "RTMAX-13",
+    "RTMAX-12", "RTMAX-11", "RTMAX-10", "RTMAX-9", "RTMAX-8", "RTMAX-7", "RTMAX-6", "RTMAX-5",
+    "RTMAX-4", "RTMAX-3", "RTMAX-2", "RTMAX-1", "RTMAX",
 ];
 
-/// moby's `ParseSignal`: a non-zero integer (Go's `Atoi`), or a name from
-/// the Linux table, case-insensitive, with or without `SIG`.
+/// moby's `ParseSignal`: a non-zero integer (Go's `Atoi`: an optional sign
+/// and decimal digits, as `i64::from_str`), or a name from the Linux table,
+/// case-insensitive, with or without `SIG`.
 fn valid_signal(raw: &str) -> bool {
     if let Ok(n) = raw.parse::<i64>() {
         return n != 0;
     }
     let upper = raw.to_ascii_uppercase();
     let name = upper.strip_prefix("SIG").unwrap_or(&upper);
-    if SIGNALS.contains(&name) {
-        return true;
-    }
-    // RTMIN, RTMIN+1..=RTMIN+15, RTMAX-14..=RTMAX-1, RTMAX.
-    let offset = |rest: &str, sign: char| {
-        rest.strip_prefix(sign)
-            .filter(|n| !n.starts_with('0'))
-            .and_then(|n| n.parse::<u8>().ok())
-    };
-    match name {
-        "RTMIN" | "RTMAX" => true,
-        _ => match (name.strip_prefix("RTMIN"), name.strip_prefix("RTMAX")) {
-            (Some(rest), _) => offset(rest, '+').is_some_and(|n| (1..=15).contains(&n)),
-            (_, Some(rest)) => offset(rest, '-').is_some_and(|n| (1..=14).contains(&n)),
-            _ => false,
-        },
-    }
+    SIGNALS.contains(&name)
 }
 
 #[cfg(test)]
@@ -395,9 +441,9 @@ mod tests {
     #[test]
     fn shell_form_uses_the_config_shell() {
         let c = applied(&[
-            ConfigEdit::Cmd(Command::Shell("echo hi".to_owned())),
+            ConfigEdit::Cmd(CommandLine::Shell("echo hi".to_owned())),
             ConfigEdit::Shell(s(&["/bin/bash", "-eo", "pipefail", "-c"])),
-            ConfigEdit::Entrypoint(Command::Shell("exec app".to_owned())),
+            ConfigEdit::Entrypoint(CommandLine::Shell("exec app".to_owned())),
         ]);
         assert_eq!(run(&c).cmd, Some(s(&["/bin/sh", "-c", "echo hi"])));
         assert_eq!(
@@ -417,17 +463,17 @@ mod tests {
             ..Default::default()
         };
         // kaniko keeps the inherited CMD under a new ENTRYPOINT [open: Q-130].
-        ConfigEdit::Entrypoint(Command::Exec(s(&["/init"])))
+        ConfigEdit::Entrypoint(CommandLine::Exec(s(&["/init"])))
             .apply(&mut c)
             .unwrap();
         assert_eq!(run(&c).cmd, Some(s(&["nginx"])));
         assert_eq!(run(&c).args_escaped, Some(true));
-        ConfigEdit::Cmd(Command::Exec(Vec::new()))
+        ConfigEdit::Cmd(CommandLine::Exec(Vec::new()))
             .apply(&mut c)
             .unwrap();
         assert_eq!(run(&c).cmd, None);
         assert_eq!(run(&c).args_escaped, None);
-        ConfigEdit::Entrypoint(Command::Exec(Vec::new()))
+        ConfigEdit::Entrypoint(CommandLine::Exec(Vec::new()))
             .apply(&mut c)
             .unwrap();
         assert_eq!(serde_json::to_value(run(&c)).unwrap(), json!({}));
@@ -452,6 +498,7 @@ mod tests {
         }
         for bad in [
             "", "0", "SIGFOO", "RTMIN+16", "RTMIN+0", "RTMAX-15", "RTMIN+01", "SIG", "9x",
+            "RTMIN++5", "RTMAX-+3", "RTMIN-1", "RTMAX+1",
         ] {
             assert!(!valid_signal(bad), "{bad}");
         }
@@ -486,6 +533,52 @@ mod tests {
                 .apply(&mut ImageConfig::default())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn user_keeps_two_parts_as_kaniko() {
+        for (written, stored) in [
+            ("app", "app"),
+            ("app:grp", "app:grp"),
+            ("a:b:c", "a:b"),
+            (":", ":"),
+            ("", ""),
+        ] {
+            let c = applied(&[ConfigEdit::User(written.to_owned())]);
+            assert_eq!(run(&c).user.as_deref(), Some(stored), "{written}");
+        }
+    }
+
+    #[test]
+    fn healthcheck_zeros_are_left_out() {
+        let health = HealthConfig {
+            test: Some(s(&["CMD", "true"])),
+            interval: Some(0),
+            timeout: Some(5),
+            start_period: Some(0),
+            start_interval: Some(0),
+            retries: Some(0),
+        };
+        let c = applied(&[ConfigEdit::Healthcheck(health)]);
+        assert_eq!(
+            serde_json::to_value(run(&c)).unwrap(),
+            json!({"Healthcheck": {"Test": ["CMD", "true"], "Timeout": 5}})
+        );
+    }
+
+    #[test]
+    fn empty_lists_are_refused() {
+        for edit in [
+            ConfigEdit::Env(Vec::new()),
+            ConfigEdit::Label(Vec::new()),
+            ConfigEdit::Expose(Vec::new()),
+            ConfigEdit::Volume(Vec::new()),
+            ConfigEdit::Shell(Vec::new()),
+        ] {
+            let mut c = ImageConfig::default();
+            assert!(edit.apply(&mut c).is_err(), "{}", edit.instruction());
+            assert_eq!(c, ImageConfig::default());
+        }
     }
 
     #[test]

@@ -37,7 +37,7 @@ pub use canonical::to_canonical_json;
 pub use config::{ContainerConfig, HealthConfig, History, ImageConfig, RootFs};
 pub use descriptor::{Descriptor, Platform};
 pub use digest::{Digest, DigestAlgorithm};
-pub use edit::{Command, ConfigEdit, DEFAULT_SHELL};
+pub use edit::{CommandLine, ConfigEdit, DEFAULT_SHELL};
 pub use error::Error;
 pub use layout::{DockerTarImage, OciLayout};
 pub use manifest::{ImageIndex, ImageManifest};

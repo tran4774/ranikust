@@ -121,6 +121,20 @@ Reimplemented in Rust without regular expressions; the file header lists
 what changed.
 
 
+Code derived from moby/sys
+--------------------------
+
+File:      crates/rnk-oci/src/edit.rs (the signal-name table and
+           valid_signal, from signal/signal.go ParseSignal and
+           signal/signal_linux.go SignalMap)
+Source:    https://github.com/moby/sys, module
+           github.com/moby/sys/signal v0.7.1 (the version kaniko 44aa7ddc0
+           vendors)
+Copyright: The moby/sys authors. The source files carry no copyright line,
+           and kaniko's vendored copy has no NOTICE file.
+License:   Apache License, Version 2.0 (LICENSE-APACHE)
+
+
 Code derived from moby/patternmatcher
 -------------------------------------
 

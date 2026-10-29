@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::descriptor::Descriptor;
 use crate::digest::Digest;
 use crate::media_type::Compression;
+use crate::serde_util::null_as_default;
 
 /// One image of a docker-save `manifest.json`, which is a JSON array of
 /// these.
@@ -25,9 +26,12 @@ use crate::media_type::Compression;
 pub struct DockerTarImage {
     /// Path of the config in the tar.
     pub config: String,
-    /// Tags to load the image as, `registry/repository:tag`.
+    /// Tags to load the image as, `registry/repository:tag`. `null` (as
+    /// `docker save` writes for an untagged image) reads as none.
+    #[serde(deserialize_with = "null_as_default")]
     pub repo_tags: Vec<String>,
-    /// Paths of the layers in the tar, base first.
+    /// Paths of the layers in the tar, base first. `null` reads as none.
+    #[serde(deserialize_with = "null_as_default")]
     pub layers: Vec<String>,
     /// Foreign layers that are not in the tar, by `diff_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,6 +128,13 @@ mod tests {
         let back: Vec<DockerTarImage> =
             serde_json::from_slice(&to_canonical_json(&[&image]).unwrap()).unwrap();
         assert_eq!(back, vec![image]);
+    }
+
+    #[test]
+    fn null_tags_and_layers_read_as_empty() {
+        let images: Vec<DockerTarImage> =
+            serde_json::from_str(r#"[{"Config":"c.json","RepoTags":null,"Layers":null}]"#).unwrap();
+        assert!(images[0].repo_tags.is_empty() && images[0].layers.is_empty());
     }
 
     #[test]
