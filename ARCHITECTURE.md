@@ -99,8 +99,8 @@ Client for the OCI distribution API over `oci-client`: credentials from
 docker `config.json` and credential helpers, TLS with rustls and `ring`
 trusting the host's CAs plus embedded roots and `--registry-certificate`
 ([ADR-0024](docs/adr/0024-tls-rustls-ring.md)), mirrors, streamed pulls into
-the store through `rnk-store`, pushes, cross-repository mounts with fallback
-to an upload, retries.
+a sink the caller takes from `rnk-store` (a temporary entry), pushes,
+cross-repository mounts with fallback to an upload, retries.
 **Must not** build, compress or inspect layer contents, hold caching
 policy, or define the store layout (`rnk-store`).
 
@@ -222,8 +222,9 @@ anything but the report, start a thread, or keep state per file.
 → (`rnk-layer`, `rnk-store`) → (`rnk-rootfs`, `rnk-oci`). Besides the
 chain: `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes and
 `rnk-store` for `prune`; `rnk-snapshot` uses `rnk-layer` (decoder for
-extraction, writer for export) and `rnk-store`; `rnk-registry` and
-`rnk-cache` use `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`.
+extraction, writer for export) and `rnk-store`; `rnk-cache` uses
+`rnk-store`; `rnk-registry` does not: it writes pulls into a sink its caller
+gets from `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`.
 `rnk-rootfs` never depends on `rnk-layer`. Lower crates never depend on
 higher ones. `rnk-dockerfile`, `rnk-ignore` and `rnk-oci` stay pure data.
 Only `ranikust` depends on `rnk-metrics`; libraries reach it through

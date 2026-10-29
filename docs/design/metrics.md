@@ -156,14 +156,17 @@ No span: pure data. Serializing configs and manifests is charged to
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_registry.auth` | `host`, `requests` | Token round trips per registry. |
+| `rnk_registry.auth` | `host`, `requests` | The `/v2/` probe when a registry is first used, and token round trips per registry. |
 | `rnk_registry.pull_manifest` | `host`, `requests`, `retries`, `bytes_in` | Resolving base images (all up front). |
 | `rnk_registry.pull_blob` | `host`, `requests`, `retries`, `bytes_in` | One blob into the store: bytes per host, retries; the pull part of `exp-07`'s base pull + extract (0.88 s kaniko, 0.37 s overlay). |
 | `rnk_registry.push_blob` | `host`, `requests`, `retries`, `bytes_out`, `mounted`, `existed` | One blob: uploaded, cross-repository mounted, or already there; `exp-07`/`exp-08` push (0.72 s on W1). |
 | `rnk_registry.push_manifest` | `host`, `requests`, `bytes_out` | The manifest PUT. |
 
 `requests` counts HTTP requests including retries; `retries` the re-sent
-ones. No span per HTTP request or body chunk.
+ones. No span per HTTP request or body chunk. `requests` is the count of
+the requests each `oci-client` call makes; token refreshes `oci-client`
+makes on its own are not seen. `bytes_in`/`bytes_out` include retried
+attempts.
 
 ### `rnk-rootfs`
 

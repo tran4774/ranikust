@@ -172,6 +172,13 @@ Entry format:
   (`crates/rnk-layer/src/gzip.rs`, flate2 on zlib-rs); sha256 is `sha2` (no
   recommendation; pure Rust, SHA-NI and ARMv8 SHA detected at run time)
   behind `rnk_layer::Sha256Digest`, so a switch stays inside the crate.
+  Task 6, in `feat/rnk-registry`: `reqwest` (no recommendation; the client
+  `oci-client` already builds on, used for the `/v2/` probe and the
+  identity-token exchange); no `docker_credential` (no recommendation):
+  `rnk_registry::Credentials` reads `config.json` itself, about 150 lines,
+  and recognises `credHelpers`/`credsStore` without running them until
+  Phase 5, falling back to the `auths` entry or anonymous access with a
+  warning. Reversible: neither crate appears in `rnk-registry`'s public API.
 - **Raised:** 2026-10-30
 
 ### Q-013: How does the layer writer learn missing parent metadata?
@@ -205,7 +212,29 @@ Entry format:
 - **Options:** (a) Phase 1, with the upload fallback; (b) later, plain
   uploads only.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** task 6, in `feat/rnk-registry`: the client offers both
+  `push_blob` (plain upload) and `mount_or_push` (mount, and on a `202`
+  refusal or any failure an upload, as kaniko); whether task 11 calls the
+  mount is left to this answer. Reversible: dropping the mount is not
+  calling `mount_or_push`.
+- **Raised:** 2026-10-30
+
+### Q-065: Do localhost and private-network registries fall back to HTTP?
+
+- **Blocks:** Phase 1 tasks 8, 13; **Area:** `rnk-registry`, `ranikust`
+- **Context:** kaniko's go-containerregistry tries HTTPS, then plain HTTP,
+  for registries named with `--insecure`/`--insecure-registry` and also,
+  unasked, for `localhost:*`, loopback, `*.local` and RFC 1918 addresses
+  (`kaniko@44aa7ddc0 vendor/github.com/google/go-containerregistry/pkg/name/registry.go:88-108`,
+  `pkg/v1/remote/transport/ping.go:47-58`). A pull or push to
+  `10.0.0.5:5000` therefore works in kaniko without a flag, but may go out
+  in clear text.
+- **Options:** (a) the same heuristic, for parity; (b) only registries
+  the user lists fall back to HTTP.
+- **Recommendation:** none
+- **Interim:** (b), in `feat/rnk-registry`: `ClientOptions::insecure`
+  lists the registries that may fall back; others are HTTPS only.
+  Reversible: (a) adds a host test where the client decides the scheme.
 - **Raised:** 2026-10-30
 
 ### Q-015: Which digest names an extracted layer, and where do locks live?

@@ -21,7 +21,7 @@ the code.
 | [x] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
 | [~] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion | `rnk-rootfs` |
 | [~] | Deterministic tar (the writer sorts entries and adds missing parent headers), pigz-style parallel gzip, zstd in 128 KiB chunks, gzip/zstd decoder for pulled blobs, streaming digests | `rnk-layer` |
-| [ ] | Pulls from public registries and with docker `config.json` auth; rustls with `ring`, trusting host CAs plus webpki roots (`ADR-0024`); `--registry-certificate` | `rnk-registry` |
+| [x] | Pulls from public registries and with docker `config.json` auth; rustls with `ring`, trusting host CAs plus webpki roots (`ADR-0024`); `--registry-certificate` (the client; the flags come with task 8) | `rnk-registry` |
 | [ ] | Persistent store in `--state-dir`: `blobs/`, `layers/`, `caches/`, `tmp/`, per-digest `flock`, atomic rename, start-up cleanup; `BuildPaths` (`ADR-0006`, `ADR-0021`, `ADR-0022`) | `rnk-store` |
 | [ ] | Process set-up: flags (`--mode`, `ADR-0023`), workdir checks, marker, private mount namespace, the probes in order, workdir `flock` in kaniko mode, spawner thread, all while single-threaded | `ranikust` |
 | [ ] | Overlay-root probe (steps 1, 3, 4 of `design/modes-and-detection.md`): namespaces, `proc`, `pivot_root`, `sysfs`; overlay mount and `lowerdir+`; refusal with the diagnosis `[inferred]` | `rnk-sandbox`, `rnk-snapshot`; run by `ranikust` |
@@ -59,7 +59,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 4 | `rnk-rootfs`: `RootPath` → extraction → copy, ownership, xattrs → safe deletion | | |
 | 5 | `rnk-layer`: tar → gzip → digests (done); zstd | 5a | |
 | 5a | cargo-zigbuild toolchain in the `justfile` and CI (`ADR-0020`, Q-052) | | |
-| 6 | `rnk-registry`: auth, TLS (`ADR-0024`), streamed pull | 1 | |
+| 6 | `rnk-registry`: auth, TLS (`ADR-0024`), streamed pull (done; also pushes, mounts and retries for task 11; `ring` needs 5a for the musl targets) | 1 | |
 | 7 | `rnk-store`: layout, locks, publication, start-up clean-up (`ADR-0021`, `ADR-0022`) | 4, 5, 6 | |
 | 8 | `ranikust` set-up and flags (`ADR-0023`), the Linux 5.8 check (`ADR-0028`); `rnk-sandbox` sandbox and its probes | 4 | |
 | 9 | `rnk-snapshot` overlay roots, overlay probes, extraction (hardlinks into lower layers copied, Q-055) and exporter; design the `Snapshotter` signature | 4, 5, 7 | |
