@@ -229,7 +229,7 @@ pub(crate) enum Handle<'a> {
 /// as glibc's `fchmodat(AT_SYMLINK_NOFOLLOW)` emulation does) and to set its
 /// xattrs. These are ranikust's own fds in ranikust's own `/proc`, never a
 /// path inside a root.
-fn proc_fd_dir(path: &Path) -> Result<OwnedFd> {
+pub(crate) fn proc_fd_dir(path: &Path) -> Result<OwnedFd> {
     let fd = rustix::fs::open(
         "/proc/self/fd",
         OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,

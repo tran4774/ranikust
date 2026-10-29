@@ -1,7 +1,7 @@
 //! `RootPath`: every path inside a root, resolved by the kernel from a root fd.
 
 use std::ffi::{OsStr, OsString};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -248,6 +248,39 @@ impl RootPath {
     /// (a path cannot leave the root, it is clamped).
     pub fn open_at(&self, p: impl AsRef<Path>, how: &OpenHow) -> Result<OwnedFd> {
         self.resolve(p.as_ref(), how.oflags(), how.rmode())
+    }
+
+    /// Opens the regular file `p` for reading, following symlinks inside the
+    /// root. Use it for any file whose content an image controls.
+    ///
+    /// The entry is pinned with `O_PATH` and checked before anything opens
+    /// it for I/O: opening a FIFO blocks, and opening a device node acts on
+    /// the host's device, as root. The pinned inode is then reopened for
+    /// reading through ranikust's own `/proc/self/fd`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] when `p` is not a regular file; [`Error::Io`]
+    /// as [`RootPath::open_at`].
+    pub fn open_regular(&self, p: impl AsRef<Path>) -> Result<OwnedFd> {
+        let p = p.as_ref();
+        let pinned = self.resolve(p, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
+        let file_type = meta::statx_at(pinned.as_fd(), OsStr::new(""), p)?.file_type();
+        if file_type != FileType::Regular {
+            return Err(Error::InvalidPath {
+                path: p.to_owned(),
+                reason: "not a regular file",
+            });
+        }
+        let proc = meta::proc_fd_dir(p)?;
+        let num = pinned.as_raw_fd().to_string();
+        rustix::fs::openat(
+            &proc,
+            num.as_str(),
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOCTTY,
+            Mode::empty(),
+        )
+        .map_err(|e| io_err("open", p, e))
     }
 
     /// Opens the directory `p` as a new root, for example a stage's `rootfs/`

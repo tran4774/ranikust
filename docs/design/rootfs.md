@@ -126,9 +126,13 @@ never called. A hand-written reader would repeat that parsing for no gain.
 
 ## Users and groups
 
-`/etc/passwd` and `/etc/group` are read through `RootPath` (so a symlinked
-`/etc/passwd` resolves inside the root), up to 16 MiB each; a missing file is
-an empty database. Empty lines, `#` comments, NIS `+`/`-` lines and lines
+`/etc/passwd` and `/etc/group` are read with `RootPath::open_regular` (so a
+symlinked `/etc/passwd` resolves inside the root), up to 16 MiB each; a
+missing file is an empty database. `open_regular` pins the entry with
+`O_PATH`, refuses anything but a regular file, and only then reopens that
+inode for reading through `/proc/self/fd`: an image could otherwise make
+ranikust open a FIFO (the build hangs) or a device node (the host's device,
+as root). Empty lines, `#` comments, NIS `+`/`-` lines and lines
 with a malformed or out-of-range id are skipped, never read as id 0. Ids
 above `2147483647` are refused, as runc does: `chown(2)` reads `u32::MAX` as
 "unchanged".

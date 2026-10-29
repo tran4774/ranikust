@@ -190,13 +190,22 @@ fn concurrent_swap_never_deletes_outside() {
 
 /// Run by the T1 harness inside a mount namespace, which prepares
 /// `$RNK_T1_ROOT` with `bind/` (a bind mount of a directory on the same
-/// filesystem) and `tmpfs/` (a tmpfs), each holding a file `keep`.
+/// filesystem) and `tmpfs/` (a tmpfs), each holding a file `keep`, and the
+/// regular file `.rnk-t1-root` that marks the directory as disposable.
 #[test]
 #[ignore = "T1: needs a bind mount and a tmpfs inside the root (mount namespace)"]
 fn mounts_inside_the_root_survive() {
     let dir = std::env::var_os("RNK_T1_ROOT").expect("RNK_T1_ROOT is set by the T1 harness");
+    // Never empty a directory the harness did not prepare.
+    let marker = fs::symlink_metadata(Path::new(&dir).join(".rnk-t1-root"));
+    assert!(
+        marker.is_ok_and(|m| m.is_file()),
+        "$RNK_T1_ROOT has no .rnk-t1-root marker; refusing to delete it"
+    );
+    let mut keep = IgnoreList::new();
+    keep.insert(".rnk-t1-root").unwrap();
     let root = RootPath::open(&dir).unwrap();
-    delete_contents(&root, &IgnoreList::new()).unwrap();
+    delete_contents(&root, &keep).unwrap();
     let dir = PathBuf::from(dir);
     assert!(
         dir.join("bind/keep").exists(),

@@ -187,3 +187,31 @@ fn oversized_database_is_refused() {
         "{e}"
     );
 }
+
+/// A FIFO would hang the build and a device node would be opened on the
+/// host; neither is opened. The 0/0 character device stands in for a real
+/// device: an unprivileged user may create it.
+#[test]
+fn databases_that_are_not_regular_files_are_refused_unopened() {
+    use rustix::fs::{CWD, FileType as Ft, Mode};
+    let f = Fixture::new();
+    fs::create_dir(f.host("etc")).unwrap();
+    rustix::fs::mkfifoat(CWD, f.host("etc/passwd"), Mode::from_raw_mode(0o644)).unwrap();
+    let e = lookup_user(&f.root, "root").unwrap_err();
+    assert!(matches!(e, Error::InvalidPath { .. }), "{e}");
+    fs::remove_file(f.host("etc/passwd")).unwrap();
+    rustix::fs::mknodat(
+        CWD,
+        f.host("etc/passwd"),
+        Ft::CharacterDevice,
+        Mode::empty(),
+        0,
+    )
+    .unwrap();
+    let e = lookup_owner(&f.root, "root").unwrap_err();
+    assert!(matches!(e, Error::InvalidPath { .. }), "{e}");
+    fs::remove_file(f.host("etc/passwd")).unwrap();
+    fs::create_dir(f.host("etc/passwd")).unwrap();
+    let e = lookup_user(&f.root, "root").unwrap_err();
+    assert!(matches!(e, Error::InvalidPath { .. }), "{e}");
+}

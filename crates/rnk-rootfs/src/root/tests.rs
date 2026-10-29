@@ -195,6 +195,30 @@ fn invalid_paths() {
     assert_eq!(errno(&e), Some(Errno::INVAL));
 }
 
+#[test]
+fn open_regular_reads_files_and_refuses_the_rest() {
+    let f = Fixture::new();
+    fs::write(f.host("t"), b"content").unwrap();
+    symlink("/t", f.host("l")).unwrap();
+    rustix::fs::mkfifoat(rustix::fs::CWD, f.host("fifo"), Mode::from_raw_mode(0o644)).unwrap();
+    fs::create_dir(f.host("d")).unwrap();
+    let mut s = String::new();
+    let fd = f.root.open_regular("l").unwrap();
+    assert!(
+        rustix::io::fcntl_getfd(&fd)
+            .unwrap()
+            .contains(FdFlags::CLOEXEC)
+    );
+    fs::File::from(fd).read_to_string(&mut s).unwrap();
+    assert_eq!(s, "content");
+    for p in ["fifo", "d", "/"] {
+        let e = f.root.open_regular(p).unwrap_err();
+        assert!(matches!(e, Error::InvalidPath { .. }), "{p}: {e}");
+    }
+    let e = f.root.open_regular("missing").unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::NOENT));
+}
+
 /// Paths reach the kernel unnormalized: `file/.` and `file/` are not `file`.
 #[test]
 fn trailing_dot_or_slash_after_a_file_is_enotdir() {

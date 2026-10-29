@@ -264,10 +264,15 @@ fn magic_links_are_refused() {
     let via_fd = format!("fd/{}/sentinel", outside.as_raw_fd());
     assert_eq!(errno(proc.open_at(&via_fd, &OpenHow::read())), Errno::LOOP);
     assert_eq!(errno(proc.sub_root("root")), Errno::LOOP);
+    // Aimed at the fixture, so that even a regression only writes below the
+    // temp dir, never to a shared host path.
+    let before = f.snapshot_outside();
+    let create = Path::new("root").join(f.outside().join("new").strip_prefix("/").unwrap());
     assert_eq!(
-        errno(proc.open_at("root/tmp/x", &OpenHow::write().create(0o644))),
+        errno(proc.open_at(&create, &OpenHow::write().create(0o644))),
         Errno::LOOP
     );
+    assert_eq!(f.snapshot_outside(), before);
     // Not following the last component is fine: the link itself.
     assert_eq!(proc.statx("root").unwrap().file_type(), FileType::Symlink);
     assert!(proc.open_at("root", &OpenHow::path().no_follow()).is_ok());

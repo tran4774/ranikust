@@ -40,6 +40,7 @@ pub struct RootPath { /* O_PATH | O_DIRECTORY | O_CLOEXEC fd, mnt_id */ }  // bu
 impl RootPath {
     pub fn open(host_dir) -> Result<Self>;               // built: the only host path; RESOLVE_NO_SYMLINKS
     pub fn open_at(&self, p, how: &OpenHow) -> Result<OwnedFd>; // built: RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS
+    pub fn open_regular(&self, p) -> Result<OwnedFd>;    // built: reads a file; FIFOs, devices refused unopened
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
@@ -123,6 +124,8 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
 - `chown` clears setuid, setgid and `security.capability`: owner first, mode
   and xattrs after.
 - Reading a file moves an old atime (relatime): check times before reading.
+- An image-controlled file opened as root may be a FIFO (hang) or a device
+  node (the host's device): read such files with `open_regular`.
 - [open: Q-051] Overlay form: a hardlink into a lower layer has no target.
 
 ## Phase 1

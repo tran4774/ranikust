@@ -11,7 +11,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::root::{OpenHow, RootPath};
+use crate::root::RootPath;
 
 /// Largest `/etc/passwd` or `/etc/group` read; a bigger one is refused.
 const DB_LIMIT: u64 = 16 << 20;
@@ -156,7 +156,7 @@ fn unknown(kind: &str, name: &str, db: &str) -> Error {
 
 /// Reads `p` through the root; a missing file is empty.
 fn read_db(root: &RootPath, p: &str) -> Result<Vec<u8>> {
-    let fd = match root.open_at(p, &OpenHow::read()) {
+    let fd = match root.open_regular(p) {
         Ok(fd) => fd,
         Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => {
             return Ok(Vec::new());
