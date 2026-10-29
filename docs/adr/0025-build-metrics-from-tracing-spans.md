@@ -74,7 +74,7 @@ only by the binary, aggregates them into one JSON report when
   at exit, after the last snapshot and push, and no build code reads metric
   state.
 - **Not now:** CPU or heap profiling, OTLP export and a Prometheus endpoint
-  (Q-052, Q-053).
+  (Q-057, Q-058).
 
 ### Consequences
 
@@ -128,9 +128,9 @@ only by the binary, aggregates them into one JSON report when
 - Refines survey 03's choice of `tracing`.
 - Open: [Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted)
   (`KANIKO_METRICS_FILE`),
-  [Q-052](../open-questions.md#q-052-does-ranikust-offer-cpu-and-heap-profiling)
+  [Q-057](../open-questions.md#q-057-does-ranikust-offer-cpu-and-heap-profiling)
   (profiling),
-  [Q-053](../open-questions.md#q-053-which-metric-export-formats-come-after-the-json-report)
+  [Q-058](../open-questions.md#q-058-which-metric-export-formats-come-after-the-json-report)
   (OTLP, Prometheus).
 - Revisit when a long-running mode (a daemon, a CI service) needs live
   metrics rather than one report per build.

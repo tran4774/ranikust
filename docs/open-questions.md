@@ -668,7 +668,7 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-052: Does ranikust offer CPU and heap profiling?
+### Q-057: Does ranikust offer CPU and heap profiling?
 
 - **Blocks:** nothing yet; **Area:** `rnk-metrics`
 - **Context:** kaniko's fork writes `cpu.pprof` and `heap.pprof` when
@@ -684,7 +684,7 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-053: Which metric export formats come after the JSON report?
+### Q-058: Which metric export formats come after the JSON report?
 
 - **Blocks:** nothing yet; **Area:** `rnk-metrics`
 - **Context:** `ADR-0025` writes one JSON file per build. Survey 03 named

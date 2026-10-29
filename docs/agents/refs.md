@@ -70,7 +70,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | candidate |
 | [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required | chosen (`ADR-0020`) |
 | [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | 0.1.44, 0.3.23, MIT | Spans and logs in every crate; the subscriber, per-layer filters and the metrics layer in `rnk-metrics` ([docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/)); `fmt` and `registry` features only | chosen (`ADR-0025`) |
-| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: Q-053]`) |
+| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: Q-058]`) |
 | [serde_json](https://crates.io/crates/serde_json) | 1.0.154, MIT OR Apache-2.0 | JSON: the metrics report (`rnk-metrics`) | chosen |
 | [libc](https://crates.io/crates/libc) | 0.2.191, MIT OR Apache-2.0 | `getrusage` in `rnk-metrics`, which `rustix` 1.1 lacks | chosen |
 | [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03) | candidate |
