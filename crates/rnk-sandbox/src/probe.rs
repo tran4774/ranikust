@@ -17,7 +17,7 @@ use tracing::field::Empty;
 use crate::child::RootEntry;
 use crate::error::{Error, Result, Step, io_err};
 use crate::journal;
-use crate::spawner::{AlivePipe, Runner, clone_child};
+use crate::spawner::{ParentFd, Runner, clone_child};
 use crate::spec::RunSpec;
 
 /// What the probe found the sandbox can do in this environment.
@@ -37,7 +37,8 @@ const PROBE_PROGRAM: &str = "/.ranikust-probe";
 const PROBE_ROOT_PREFIX: &str = "probe-";
 
 /// Probes the sandbox: the full `RUN` sequence with `pivot_root`, then with
-/// `MS_MOVE` if `pivot_root` alone was refused. `dir` is the sandbox's
+/// `MS_MOVE` if `pivot_root` alone was refused with `EPERM` (Docker's
+/// seccomp profile) and `/` is a mount root. `dir` is the sandbox's
 /// directory, as for [`crate::Sandbox::start`]; journals of dead builds are
 /// replayed first.
 ///
@@ -54,8 +55,8 @@ pub fn probe(dir: &Path) -> Result<Caps> {
     journal::replay(runner.runs_dir())?;
     remove_stale_roots(dir);
     let root_dir = create_root(dir)?;
-    let alive = AlivePipe::new()?;
-    let result = attempts(dir, &root_dir, &alive);
+    let parent = ParentFd::new()?;
+    let result = attempts(dir, &root_dir, &parent);
     // Empty again: the journal removed the stubs.
     if let Err(e) = fs::remove_dir(&root_dir) {
         tracing::warn!("rnk-sandbox: cannot remove {}: {e}", root_dir.display());
@@ -63,28 +64,56 @@ pub fn probe(dir: &Path) -> Result<Caps> {
     result
 }
 
-fn attempts(dir: &Path, root_dir: &Path, alive: &AlivePipe) -> Result<Caps> {
+fn attempts(dir: &Path, root_dir: &Path, parent: &ParentFd) -> Result<Caps> {
     let mut last = None;
     for root_entry in [RootEntry::PivotRoot, RootEntry::MoveMount] {
+        if root_entry == RootEntry::MoveMount && !slash_is_mount_root()? {
+            // The moved root would sit on a plain directory, which `..`
+            // climbs out of: no fallback.
+            break;
+        }
         let span = tracing::debug_span!("rnk_sandbox.probe", ok = Empty);
         let runner = Runner::new(dir, Some(root_entry))?;
         let spec = RunSpec::new(root_dir, vec![PROBE_PROGRAM.into()]);
         let outcome =
-            span.in_scope(|| reached_exec(runner.run(spec, false, |job| clone_child(job, alive))));
+            span.in_scope(|| reached_exec(runner.run(spec, false, |job| clone_child(job, parent))));
         span.record("ok", outcome.is_ok());
         match outcome {
             Ok(()) => return Ok(Caps { root_entry }),
-            // Docker's seccomp profile: try `MS_MOVE`.
-            Err(
-                e @ Error::Setup {
-                    step: Step::PivotRoot,
-                    ..
-                },
-            ) => last = Some(e),
+            // Docker's seccomp profile: try `MS_MOVE`. Any other errno
+            // (`EINVAL` when `/` is not a mount point) is final.
+            Err(e) if is_seccomp_refusal(&e) => last = Some(e),
             Err(e) => return Err(e),
         }
     }
     Err(last.unwrap_or(Error::Privilege("the RUN sandbox")))
+}
+
+/// `pivot_root` refused with `EPERM`, as a seccomp filter does.
+fn is_seccomp_refusal(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Setup {
+            step: Step::PivotRoot,
+            source,
+        } if source.raw_os_error() == Some(libc::EPERM)
+    )
+}
+
+/// Whether this process's `/` is the root of a mount. `MS_MOVE` puts the
+/// stage root on top of `/`; `..` stops there only if `/` is a mount root
+/// (`follow_dotdot` in `fs/namei.c`), otherwise it climbs into the
+/// directory above [inferred].
+fn slash_is_mount_root() -> Result<bool> {
+    let st = rustix::fs::statx(
+        rustix::fs::CWD,
+        c"/",
+        rustix::fs::AtFlags::empty(),
+        rustix::fs::StatxFlags::BASIC_STATS,
+    )
+    .map_err(|e| io_err("statx", "/", e.into()))?;
+    let attr = rustix::fs::StatxAttributes::MOUNT_ROOT;
+    Ok(st.stx_attributes_mask.contains(attr) && st.stx_attributes.contains(attr))
 }
 
 /// Success when the child got as far as `execve`.
@@ -154,6 +183,24 @@ mod tests {
             source: io::Error::from_raw_os_error(libc::EPERM),
         };
         assert!(reached_exec(Err(setup)).is_err());
+    }
+
+    #[test]
+    fn only_eperm_from_pivot_root_falls_back() {
+        let setup = |step, errno| Error::Setup {
+            step,
+            source: io::Error::from_raw_os_error(errno),
+        };
+        assert!(is_seccomp_refusal(&setup(Step::PivotRoot, libc::EPERM)));
+        assert!(!is_seccomp_refusal(&setup(Step::PivotRoot, libc::EINVAL)));
+        assert!(!is_seccomp_refusal(&setup(Step::MountProc, libc::EPERM)));
+    }
+
+    #[test]
+    fn the_test_process_root_is_a_mount_root() {
+        // Linux >= 5.8 reports the attribute; outside a plain `chroot`, `/`
+        // is a mount root.
+        assert!(slash_is_mount_root().unwrap());
     }
 
     #[test]

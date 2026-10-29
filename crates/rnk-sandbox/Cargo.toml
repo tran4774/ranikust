@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 libc.workspace = true
 rnk-rootfs.workspace = true
-rustix = { workspace = true, features = ["mount", "pipe", "process", "system", "thread"] }
+rustix = { workspace = true, features = ["event", "mount", "pipe", "process", "system", "thread"] }
 thiserror.workspace = true
 tracing.workspace = true
 

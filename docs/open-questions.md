@@ -451,22 +451,26 @@ Entry format:
 - **Blocks:** Phase 3 (the fallbacks); **Area:** `rnk-sandbox`
 - **Context:** where seccomp blocks `pivot_root` (Docker's default profile),
   the child moves the stage root onto `/` and `chroot`s into it, as runc's
-  `--no-pivot`. The old root stays mounted underneath in the child's mount
-  namespace, and root in `RUN` keeps `CAP_SYS_CHROOT` (a Docker default):
-  `chroot` into a subdirectory, then `chdir("..")` up, reaches the
-  filesystem of the container ranikust runs in, with the state directory,
-  other stages and registry credentials [inferred]. Not tested; it needs the
+  `--no-pivot`. The old root stays mounted underneath, and root in `RUN`
+  keeps `CAP_SYS_CHROOT` (a Docker default), so the classic escape is
+  `chroot` into a subdirectory, then `chdir("..")` up. The kernel's `..`
+  (`follow_dotdot`, `choose_mountpoint` in `fs/namei.c`) does not stop on a
+  mount point that is itself a mount root, so when `/` is a mount root the
+  walk stays at the moved root; when `/` is a plain directory (ranikust
+  inside a `chroot`), it climbs into ranikust's filesystem, with the state
+  directory and registry credentials [inferred]. Not tested; it needs the
   T2 VM ([sandbox](design/sandbox.md#variants-by-environment)).
 - **Options:** (a) drop `CAP_SYS_CHROOT` from the bounding set under
-  `MS_MOVE` (a `RUN` that runs `chroot` fails); (b) keep Docker's defaults
-  and document the risk; (c) refuse the full sandbox under `MS_MOVE` and
-  run `Isolation::Direct`, kaniko's level of isolation.
-- **Recommendation:** (a), because the escape reaches credentials and
-  `chroot` inside a `RUN` is rare [inferred]; to be confirmed by the escape
-  test in the VM.
-- **Interim:** (b): both root entries keep the 14 defaults
-  (`crates/rnk-sandbox/src/child.rs`, `feat/rnk-sandbox`). Reversible: one
-  bit in the drop list.
+  `MS_MOVE` (a `RUN` that runs `chroot` fails); (b) keep Docker's defaults,
+  and use `MS_MOVE` only where `/` is a mount root; (c) refuse the full
+  sandbox under `MS_MOVE` and run `Isolation::Direct`, kaniko's level of
+  isolation.
+- **Recommendation:** (b), if the escape test in the VM confirms that `..`
+  stops at the moved root; otherwise (a).
+- **Interim:** (b): the probe falls back to `MS_MOVE` only when
+  `pivot_root` fails with `EPERM` and `statx` reports `/` as a mount root;
+  both root entries keep the 14 defaults (`crates/rnk-sandbox/src/probe.rs`,
+  `child.rs`, `feat/rnk-sandbox`). Reversible: one bit in the drop list.
 - **Raised:** 2026-10-30
 
 ### Q-024: What is the Snapshotter signature?

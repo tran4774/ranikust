@@ -44,6 +44,34 @@ pub(crate) const DEV_SYMLINKS: [(&CStr, &CStr); 5] = [
     (c"stderr", c"/proc/self/fd/2"),
 ];
 
+/// `/proc` paths bound read-only onto themselves, as Docker's
+/// `ReadonlyPaths` (moby `daemon/pkg/oci/defaults.go`).
+pub(crate) const READONLY_PATHS: [&CStr; 5] = [
+    c"/proc/bus",
+    c"/proc/fs",
+    c"/proc/irq",
+    c"/proc/sys",
+    c"/proc/sysrq-trigger",
+];
+
+/// Paths masked as Docker's `MaskedPaths`: a file under `/dev/null`, a
+/// directory under an empty read-only tmpfs. Docker also masks each CPU's
+/// `thermal_throttle` directory, which this list does not have yet.
+pub(crate) const MASKED_PATHS: [&CStr; 12] = [
+    c"/proc/acpi",
+    c"/proc/asound",
+    c"/proc/interrupts",
+    c"/proc/kcore",
+    c"/proc/keys",
+    c"/proc/latency_stats",
+    c"/proc/sched_debug",
+    c"/proc/scsi",
+    c"/proc/timer_list",
+    c"/proc/timer_stats",
+    c"/sys/devices/virtual/powercap",
+    c"/sys/firmware",
+];
+
 /// Options of the `/dev` tmpfs, as Docker's.
 pub(crate) const DEV_TMPFS: &CStr = c"mode=755,size=65536k";
 /// Options of `/dev/pts`: a private instance, as Docker's.
@@ -82,10 +110,11 @@ pub(crate) enum MountOp {
     Dev { target: PathBuf },
     /// A writable copy of a file of ranikust's, bound read-write.
     File { source: PathBuf, target: PathBuf },
-    /// A `RUN --mount`; a read-only one is remounted with `remount` flags.
+    /// A `RUN --mount`, remounted `nodev`, and read-only when asked.
     Bind {
         source: PathBuf,
         target: PathBuf,
+        kind: MountKind,
         read_only: bool,
     },
 }
@@ -144,17 +173,19 @@ pub(crate) fn mount_plan(spec: &RunSpec, files: &EtcFiles) -> Vec<MountOp> {
     plan.extend(spec.mounts.iter().map(|m| MountOp::Bind {
         source: m.source.clone(),
         target: m.target.clone(),
+        kind: m.kind,
         read_only: m.read_only,
     }));
     plan
 }
 
-/// Flags of a read-only bind remount that keep the source mount's flags:
-/// in a user namespace, dropping a locked flag (`nosuid`, `nodev`,
-/// `noexec`, the atime flags) fails with `EPERM`.
-pub(crate) fn read_only_remount_flags(source: StatVfsMountFlags) -> MountFlags {
-    let mut flags = MountFlags::BIND | MountFlags::RDONLY;
+/// Flags of a bind remount that adds `add` and keeps the source mount's
+/// flags: in a user namespace, dropping a locked flag (`ro`, `nosuid`,
+/// `nodev`, `noexec`, the atime flags) fails with `EPERM`.
+pub(crate) fn remount_flags(source: StatVfsMountFlags, add: MountFlags) -> MountFlags {
+    let mut flags = MountFlags::BIND | add;
     for (st, ms) in [
+        (StatVfsMountFlags::RDONLY, MountFlags::RDONLY),
         (StatVfsMountFlags::NOSUID, MountFlags::NOSUID),
         (StatVfsMountFlags::NODEV, MountFlags::NODEV),
         (StatVfsMountFlags::NOEXEC, MountFlags::NOEXEC),
@@ -293,14 +324,34 @@ mod tests {
     }
 
     #[test]
-    fn read_only_remount_keeps_locked_flags() {
-        let flags =
-            read_only_remount_flags(StatVfsMountFlags::NOSUID | StatVfsMountFlags::RELATIME);
+    fn remounts_add_flags_and_keep_locked_ones() {
+        let flags = remount_flags(
+            StatVfsMountFlags::NOSUID | StatVfsMountFlags::RELATIME,
+            MountFlags::RDONLY,
+        );
         assert_eq!(
             flags,
             MountFlags::BIND | MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::RELATIME
         );
         assert!(!flags.contains(MountFlags::NODEV));
+        let flags = remount_flags(StatVfsMountFlags::RDONLY, MountFlags::NODEV);
+        assert_eq!(
+            flags,
+            MountFlags::BIND | MountFlags::NODEV | MountFlags::RDONLY
+        );
+    }
+
+    #[test]
+    fn kernel_file_tables_are_absolute_and_under_proc_or_sys() {
+        for p in READONLY_PATHS {
+            assert!(p.to_bytes().starts_with(b"/proc/"), "{p:?}");
+        }
+        for p in MASKED_PATHS {
+            let p = p.to_bytes();
+            assert!(p.starts_with(b"/proc/") || p.starts_with(b"/sys/"));
+        }
+        assert!(READONLY_PATHS.contains(&c"/proc/sys"));
+        assert!(MASKED_PATHS.contains(&c"/proc/kcore"));
     }
 
     #[test]

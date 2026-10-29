@@ -17,9 +17,11 @@ use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rnk_rootfs::{RootPath, User};
+use rustix::fs::{FileType, Mode, OFlags};
 use rustix::io::Errno;
+use rustix::mount::MountFlags;
 use rustix::pipe::PipeFlags;
-use rustix::process::{Gid, Pid, Signal, Uid, WaitId, WaitIdOptions};
+use rustix::process::{Gid, Pid, PidfdFlags, Signal, Uid, WaitId, WaitIdOptions};
 use tracing::Span;
 use tracing::field::Empty;
 
@@ -28,9 +30,9 @@ use crate::child::{self, ChildArgs, ChildFds, ChildMount, ChildStdio, ExecPtrs, 
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
 use crate::journal::{self, Journal};
-use crate::plan::{self, EtcFiles, MountOp};
+use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
-use crate::spec::{DEFAULT_HOSTNAME, Isolation, Network, RunSpec, Stdio};
+use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, Stdio};
 
 /// Runs `RUN` commands.
 ///
@@ -65,11 +67,11 @@ impl Sandbox {
                 replayed.journals
             );
         }
-        let alive = AlivePipe::new()?;
+        let parent = ParentFd::new()?;
         let (requests, received) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("rnk-sandbox-spawner".into())
-            .spawn(move || spawner(&received, &alive))
+            .spawn(move || spawner(&received, &parent))
             .map_err(|e| sys_err("start the spawner thread", e))?;
         Ok(Self {
             runner,
@@ -118,9 +120,10 @@ pub(crate) struct Job {
     /// `clone` flags, the exit signal included.
     flags: libc::c_long,
     isolation: Isolation,
-    /// The caller's stdio descriptors, open until the clone and closed right
-    /// after, so that only the child holds them.
-    stdio: Vec<OwnedFd>,
+    /// Descriptors the child uses (the caller's stdio, mount sources), open
+    /// until the clone and closed right after, so that only the child holds
+    /// them.
+    fds: Vec<OwnedFd>,
 }
 
 struct Request {
@@ -135,27 +138,33 @@ pub(crate) struct Spawned {
     failures: OwnedFd,
 }
 
-/// The pipe a child reads to learn whether the process that cloned it is
-/// still alive after arming `PR_SET_PDEATHSIG`: nobody writes to it, so a
-/// read gives `EAGAIN` while the write end is open, end-of-file once the
-/// process is gone.
+/// A pidfd of this process, which a child polls after arming
+/// `PR_SET_PDEATHSIG` to learn whether the process died before: it becomes
+/// readable once the process has exited, whoever else holds a copy.
 #[derive(Debug)]
-pub(crate) struct AlivePipe {
-    read: OwnedFd,
-    write: OwnedFd,
-}
+pub(crate) struct ParentFd(OwnedFd);
 
-impl AlivePipe {
+impl ParentFd {
     pub(crate) fn new() -> Result<Self> {
-        let (read, write) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK)
-            .map_err(|e| sys_err("pipe2", e))?;
-        Ok(Self { read, write })
+        let fd = rustix::process::pidfd_open(rustix::process::getpid(), PidfdFlags::empty())
+            .map_err(|e| sys_err("pidfd_open", e))?;
+        Ok(Self(above_stdio(fd)?))
     }
 }
 
-fn spawner(requests: &mpsc::Receiver<Request>, alive: &AlivePipe) {
+/// `fd`, or a close-on-exec duplicate numbered 3 or higher when it is 0, 1
+/// or 2 (ranikust started with a standard stream closed): the child's
+/// `dup2` onto 0–2 must not overwrite it.
+fn above_stdio(fd: OwnedFd) -> Result<OwnedFd> {
+    if fd.as_raw_fd() >= 3 {
+        return Ok(fd);
+    }
+    rustix::io::fcntl_dupfd_cloexec(&fd, 3).map_err(|e| sys_err("fcntl(F_DUPFD_CLOEXEC)", e))
+}
+
+fn spawner(requests: &mpsc::Receiver<Request>, parent: &ParentFd) {
     for Request { job, reply } in requests {
-        let spawned = clone_child(job, alive);
+        let spawned = clone_child(job, parent);
         // The caller waits on the answer; it can only be gone if it
         // panicked, which aborts the process.
         let _ = reply.send(spawned);
@@ -164,20 +173,20 @@ fn spawner(requests: &mpsc::Receiver<Request>, alive: &AlivePipe) {
 
 /// Clones `job` on the calling thread, which becomes the child's parent
 /// thread for `PR_SET_PDEATHSIG`.
-pub(crate) fn clone_child(job: Job, alive: &AlivePipe) -> Result<Spawned> {
+pub(crate) fn clone_child(job: Job, parent: &ParentFd) -> Result<Spawned> {
     let Job {
         args,
         flags,
         isolation,
-        stdio,
+        fds: keep,
     } = job;
     let (failures, err_w) =
         rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
+    let err_w = above_stdio(err_w)?;
     let ptrs = ExecPtrs::new(&args);
     let fds = ChildFds {
         err_w: err_w.as_raw_fd(),
-        alive_r: alive.read.as_raw_fd(),
-        alive_w: alive.write.as_raw_fd(),
+        parent: parent.0.as_raw_fd(),
     };
     let null: libc::c_long = 0;
     // SAFETY: `clone` without `CLONE_VM` and with a null stack duplicates the
@@ -196,7 +205,7 @@ pub(crate) fn clone_child(job: Job, alive: &AlivePipe) -> Result<Spawned> {
         }
     }
     // Closed before the next clone, so that only this child holds them.
-    drop(stdio);
+    drop(keep);
     if ret < 0 {
         let e = io::Error::last_os_error();
         return Err(match e.raw_os_error() {
@@ -319,9 +328,10 @@ impl Runner {
             return Ok((self.job(spec, &user, Vec::new(), stdio, root_entry)?, None));
         }
         let mut journal = Journal::create(&self.runs_dir, &self.next_id(), &spec.root_dir, root)?;
-        match place(&mut journal, spec)
-            .and_then(|mounts| self.job(spec, &user, mounts, stdio, root_entry))
-        {
+        match place(&mut journal, spec).and_then(|files| {
+            let mounts = plan::mount_plan(spec, &files);
+            self.job(spec, &user, mounts, stdio, root_entry)
+        }) {
             Ok(job) => Ok((job, Some(journal))),
             Err(e) => {
                 if let Err(c) = journal.finish() {
@@ -336,7 +346,7 @@ impl Runner {
         &self,
         spec: &RunSpec,
         user: &User,
-        mounts: Vec<ChildMount>,
+        mounts: Vec<MountOp>,
         stdio: [Stdio; 3],
         root_entry: RootEntry,
     ) -> Result<Job> {
@@ -349,6 +359,15 @@ impl Runner {
             child_stdio(stdout, &mut keep)?,
             child_stdio(stderr, &mut keep)?,
         ];
+        let mounts = mounts
+            .into_iter()
+            .map(|op| child_mount(op, &mut keep))
+            .collect::<Result<_>>()?;
+        let (root_remount, dev_remount) = match spec.isolation {
+            // Unused: `Direct` mounts nothing.
+            Isolation::Direct => (MountFlags::BIND, [MountFlags::BIND; DEV_NODES.len()]),
+            Isolation::Full => (root_remount(&spec.root_dir)?, dev_remount()),
+        };
         let envp = env
             .iter()
             .map(|(k, v)| {
@@ -360,7 +379,9 @@ impl Runner {
             .collect::<Result<_>>()?;
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
+            root_remount,
             mounts,
+            dev_remount,
             root_entry,
             hostname: hostname(spec).as_bytes().to_vec(),
             loopback: spec.network == Network::None,
@@ -384,7 +405,7 @@ impl Runner {
             args,
             flags: libc::c_long::from(clone_flags(spec)),
             isolation: spec.isolation,
-            stdio: keep,
+            fds: keep,
         })
     }
 
@@ -421,8 +442,8 @@ fn clone_flags(spec: &RunSpec) -> libc::c_int {
     }
 }
 
-/// Places the stubs and writes the `/etc` copies; returns the mounts.
-fn place(journal: &mut Journal, spec: &RunSpec) -> Result<Vec<ChildMount>> {
+/// Places the stubs and writes the `/etc` copies.
+fn place(journal: &mut Journal, spec: &RunSpec) -> Result<EtcFiles> {
     for (target, kind) in plan::mount_targets(spec) {
         journal.ensure(&target, kind)?;
     }
@@ -442,10 +463,24 @@ fn place(journal: &mut Journal, spec: &RunSpec) -> Result<Vec<ChildMount>> {
     )?;
     write_scratch(&files.hostname, &plan::hostname_file(name))?;
     journal.commit()?;
-    plan::mount_plan(spec, &files)
-        .into_iter()
-        .map(child_mount)
-        .collect()
+    Ok(files)
+}
+
+/// The remount of the root's bind: `nodev`, the root mount's flags kept.
+fn root_remount(root_dir: &Path) -> Result<MountFlags> {
+    let st = rustix::fs::statvfs(root_dir).map_err(|e| io_err("statvfs", root_dir, e.into()))?;
+    Ok(plan::remount_flags(st.f_flag, MountFlags::NODEV))
+}
+
+/// The read-only remount of each `/dev` node bind, the outer mount's flags
+/// kept (never `nodev`: the nodes must open).
+fn dev_remount() -> [MountFlags; DEV_NODES.len()] {
+    let add = MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NOEXEC;
+    DEV_NODES.map(|(_, source)| match rustix::fs::statvfs(source) {
+        Ok(st) => plan::remount_flags(st.f_flag, add),
+        // Missing: the child leaves the node out.
+        Err(_) => MountFlags::BIND | add,
+    })
 }
 
 fn hostname(spec: &RunSpec) -> &str {
@@ -456,7 +491,7 @@ fn hostname(spec: &RunSpec) -> &str {
     }
 }
 
-fn child_mount(op: MountOp) -> Result<ChildMount> {
+fn child_mount(op: MountOp, keep: &mut Vec<OwnedFd>) -> Result<ChildMount> {
     Ok(match op {
         MountOp::Proc { target } => ChildMount::Proc {
             target: cstring(&target)?,
@@ -467,29 +502,62 @@ fn child_mount(op: MountOp) -> Result<ChildMount> {
         MountOp::Dev { target } => ChildMount::Dev {
             target: cstring(&target)?,
         },
-        MountOp::File { source, target } => ChildMount::File {
-            source: cstring(&source)?,
-            target: cstring(&target)?,
-        },
+        MountOp::File { source, target } => {
+            let (fd, _) = open_source(&source, MountKind::File)?;
+            let raw = fd.as_raw_fd();
+            keep.push(fd);
+            ChildMount::File {
+                source: raw,
+                target: cstring(&target)?,
+            }
+        }
         MountOp::Bind {
             source,
             target,
+            kind,
             read_only,
         } => {
-            let remount = if read_only {
-                let st = rustix::fs::statvfs(&source)
-                    .map_err(|e| io_err("statvfs", &source, e.into()))?;
-                Some(plan::read_only_remount_flags(st.f_flag))
-            } else {
-                None
-            };
+            let (fd, st) = open_source(&source, kind)?;
+            let mut add = MountFlags::NODEV;
+            if read_only {
+                add |= MountFlags::RDONLY;
+            }
+            let raw = fd.as_raw_fd();
+            keep.push(fd);
             ChildMount::Bind {
-                source: cstring(&source)?,
+                source: raw,
                 target: cstring(&target)?,
-                remount,
+                remount: plan::remount_flags(st.f_flag, add),
             }
         }
     })
+}
+
+/// Opens a mount source as an `O_PATH` descriptor the child binds through
+/// `/proc/self/fd`, so the bind is of the file checked here: a symlink as
+/// the last component is refused, and the type must match `kind`. Returns
+/// it with its mount's flags.
+fn open_source(p: &Path, kind: MountKind) -> Result<(OwnedFd, rustix::fs::StatVfs)> {
+    const OP: &str = "open a mount source";
+    let fd = rustix::fs::open(
+        p,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| io_err(OP, p, e.into()))?;
+    let st = rustix::fs::fstat(&fd).map_err(|e| io_err(OP, p, e.into()))?;
+    let want = match kind {
+        MountKind::Directory => FileType::Directory,
+        MountKind::File => FileType::RegularFile,
+    };
+    let found = FileType::from_raw_mode(st.st_mode);
+    if found != want {
+        return Err(Error::InvalidSpec(format!(
+            "mount source {p:?} is a {found:?}, not a {want:?}"
+        )));
+    }
+    let vfs = rustix::fs::fstatvfs(&fd).map_err(|e| io_err("statvfs", p, e.into()))?;
+    Ok((above_stdio(fd)?, vfs))
 }
 
 /// A caller's stream for the child: a descriptor is duplicated to 3 or
@@ -743,12 +811,11 @@ mod tests {
         assert!(write_scratch(&p, b"y").is_err(), "never overwrites");
     }
 
-    /// A program and a directory that do not exist: whatever the privileges
-    /// of the test, the child fails before executing anything.
-    const MISSING: &str = "/nonexistent/ranikust-test";
-
-    fn direct(workdir: &str) -> RunSpec {
-        let mut spec = RunSpec::new("/", vec![MISSING.into()]);
+    /// A `Direct` run of a program that does not exist, under a fresh
+    /// empty directory: whatever the privileges of the test, the child fails
+    /// before executing anything.
+    fn direct(missing: &Path, workdir: &Path) -> RunSpec {
+        let mut spec = RunSpec::new("/", vec![missing.into()]);
         spec.isolation = Isolation::Direct;
         spec.workdir = workdir.into();
         spec
@@ -761,21 +828,24 @@ mod tests {
     #[test]
     fn direct_children_report_their_failing_step() {
         let dir = tempfile::tempdir().unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        let empty = empty.path().canonicalize().unwrap();
+        let missing = empty.join("missing");
         let sandbox = Sandbox::start(None, dir.path()).unwrap();
-        match sandbox.run(direct(MISSING)) {
+        match sandbox.run(direct(&missing, &missing)) {
             Err(Error::Setup {
                 step: Step::Workdir,
                 source,
             }) => assert_eq!(source.raw_os_error(), Some(libc::ENOENT)),
             r => panic!("{r:?}"),
         }
-        match sandbox.run(direct("/")) {
+        match sandbox.run(direct(&missing, Path::new("/"))) {
             Err(Error::Setup {
                 step: Step::Groups,
                 source,
             }) => assert_eq!(source.raw_os_error(), Some(libc::EPERM)),
             Err(Error::Exec { program, source }) => {
-                assert_eq!(program, MISSING);
+                assert_eq!(Path::new(&program), missing);
                 assert_eq!(source.raw_os_error(), Some(libc::ENOENT));
             }
             r => panic!("{r:?}"),
@@ -787,6 +857,50 @@ mod tests {
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
         drop(sandbox);
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn mount_sources_must_be_what_they_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        fs::create_dir(d.join("cache")).unwrap();
+        fs::write(d.join("secret"), b"s").unwrap();
+        std::os::unix::fs::symlink("/", d.join("link")).unwrap();
+        let (_, vfs) = open_source(&d.join("cache"), MountKind::Directory).unwrap();
+        let _ = vfs.f_flag;
+        assert!(open_source(&d.join("secret"), MountKind::File).is_ok());
+        assert!(open_source(&d.join("secret"), MountKind::Directory).is_err());
+        assert!(open_source(&d.join("cache"), MountKind::File).is_err());
+        // A symlink as the last component is never followed.
+        assert!(open_source(&d.join("link"), MountKind::Directory).is_err());
+        let mut keep = Vec::new();
+        let m = child_mount(
+            MountOp::Bind {
+                source: d.join("cache"),
+                target: "/root/.cache".into(),
+                kind: MountKind::Directory,
+                read_only: true,
+            },
+            &mut keep,
+        )
+        .unwrap();
+        let ChildMount::Bind {
+            source, remount, ..
+        } = m
+        else {
+            panic!("{m:?}")
+        };
+        assert_eq!(keep.len(), 1);
+        assert_eq!(source, keep[0].as_raw_fd());
+        assert!(remount.contains(MountFlags::BIND | MountFlags::NODEV | MountFlags::RDONLY));
+    }
+
+    #[test]
+    fn dev_nodes_are_remounted_read_only_and_never_nodev() {
+        for flags in dev_remount() {
+            assert!(flags.contains(MountFlags::BIND | MountFlags::RDONLY));
+            assert!(!flags.contains(MountFlags::NODEV));
+        }
     }
 
     #[test]

@@ -36,6 +36,11 @@ use crate::spec::MountKind;
 /// Symlinks followed while placing one target, as the kernel's limit.
 const MAX_SYMLINKS: u32 = 40;
 
+/// Extension of a journal.
+const JOURNAL_EXT: &str = "journal";
+/// Extension of a journal being created, before it is locked and renamed.
+const NEW_EXT: &str = "journal-new";
+
 /// Scratch files of a run, removed by name, never recursively.
 pub(crate) const SCRATCH_FILES: [&str; 3] = ["resolv.conf", "hosts", "hostname"];
 
@@ -66,22 +71,37 @@ pub(crate) struct Journal {
 
 impl Journal {
     /// Creates and locks `<runs_dir>/<id>.journal` for the root `root_dir`,
-    /// and the empty scratch directory `<runs_dir>/<id>/`.
+    /// and the empty scratch directory `<runs_dir>/<id>/`. The journal is
+    /// written and locked under a temporary name and renamed afterwards, so
+    /// a replay never sees it unlocked.
     pub(crate) fn create(
         runs_dir: &Path,
         id: &str,
         root_dir: &Path,
         root: RootPath,
     ) -> Result<Self> {
-        let path = runs_dir.join(format!("{id}.journal"));
+        let path = runs_dir.join(format!("{id}.{JOURNAL_EXT}"));
+        let new = runs_dir.join(format!("{id}.{NEW_EXT}"));
         let file = File::options()
             .read(true)
             .append(true)
             .create_new(true)
-            .open(&path)
-            .map_err(|e| io_err("create the stub journal", &path, e))?;
+            .open(&new)
+            .map_err(|e| io_err("create the stub journal", &new, e))?;
         rustix::fs::flock(&file, FlockOperation::LockExclusive)
-            .map_err(|e| io_err("lock the stub journal", &path, e.into()))?;
+            .map_err(|e| io_err("lock the stub journal", &new, e.into()))?;
+        if path.exists() {
+            let _ = fs::remove_file(&new);
+            return Err(io_err(
+                "create the stub journal",
+                &path,
+                io::Error::from(io::ErrorKind::AlreadyExists),
+            ));
+        }
+        fs::rename(&new, &path).map_err(|e| io_err("publish the stub journal", &path, e))?;
+        File::open(runs_dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| io_err("sync", runs_dir, e))?;
         let mut journal = Self {
             file,
             scratch: runs_dir.join(id),
@@ -269,7 +289,17 @@ pub(crate) fn replay(runs_dir: &Path) -> Result<Replayed> {
     for entry in entries {
         let entry = entry.map_err(|e| io_err("list the stub journals", runs_dir, e))?;
         let path = entry.path();
-        if path.extension().is_none_or(|ext| ext != "journal") {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        if ext == NEW_EXT {
+            // Its creator died before renaming it, or is about to: removed
+            // only when nobody holds the lock.
+            remove_unlocked(&path);
+            continue;
+        }
+        if ext != JOURNAL_EXT {
             continue;
         }
         match replay_one(&path) {
@@ -283,6 +313,16 @@ pub(crate) fn replay(runs_dir: &Path) -> Result<Replayed> {
         }
     }
     Ok(done)
+}
+
+/// Removes a journal that was never published, unless it is locked.
+fn remove_unlocked(path: &Path) {
+    let Ok(file) = File::open(path) else {
+        return;
+    };
+    if rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
+        let _ = fs::remove_file(path);
+    }
 }
 
 /// Replays one journal; `None` when a live run still holds it.
@@ -684,6 +724,27 @@ mod tests {
         assert!(f.root_dir.join("srv").is_dir());
         assert!(f.runs.join("live.journal").exists());
         assert_eq!(live.finish().unwrap(), 1);
+    }
+
+    #[test]
+    fn unpublished_journals_are_removed_unless_locked() {
+        let f = fixture();
+        let dead = f.runs.join(format!("dead.{NEW_EXT}"));
+        fs::write(&dead, b"").unwrap();
+        let live = f.runs.join(format!("live.{NEW_EXT}"));
+        let held = File::create(&live).unwrap();
+        rustix::fs::flock(&held, FlockOperation::LockExclusive).unwrap();
+        assert_eq!(replay(&f.runs).unwrap(), Replayed::default());
+        assert!(!dead.exists());
+        assert!(live.exists());
+        // Published names never collide.
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        assert!(Journal::create(&f.runs, "1", &f.root_dir, root).is_err());
+        assert!(f.runs.join("1.journal").exists());
+        assert!(!f.runs.join(format!("1.{NEW_EXT}")).exists());
+        j.finish().unwrap();
     }
 
     #[test]

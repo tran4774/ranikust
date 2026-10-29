@@ -114,6 +114,15 @@ pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
   headers let extractors recreate `/root` and `/tmp` as 755 (exp-07).
 - A state directory inside the walked root leaks into the diff unless
   ignored; 32 walk workers were slower than 8 (exp-09).
+- `rnk-sandbox` places stub mount targets (`/etc/resolv.conf`, `/proc`) in
+  the stage root and removes them after the `RUN`, restoring the parent's
+  times; on an overlay root the stub copies its parent (`/etc`) up, so the
+  upper keeps a directory whose metadata equals the lower's. The exporter
+  must leave such directories out, or `/etc` lands in every layer [inferred]
+  (host-safety review of `rnk-sandbox`; exp-12).
+- After a crash the overlay mount is gone, so the sandbox's journal replay
+  cannot find stubs left in an upper; that upper must be discarded with its
+  build, never reused [inferred].
 
 ## Phase 1
 

@@ -75,14 +75,18 @@ mod tests {
     fn a_test_process_is_multi_threaded_and_refused() {
         // The test harness runs tests on worker threads: refused before any
         // system call that could change the process.
-        let spare =
-            std::thread::spawn(|| std::thread::park_timeout(std::time::Duration::from_secs(5)));
+        // A thread that lives until the check is done, whatever the harness
+        // does with threads.
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        let spare = std::thread::spawn(move || {
+            let _ = wait.recv();
+        });
         let r = enter_build_namespace();
+        drop(done);
+        spare.join().unwrap();
         assert!(
             matches!(r, Err(Error::NotSingleThreaded { threads }) if threads > 1),
             "{r:?}"
         );
-        spare.thread().unpark();
-        spare.join().unwrap();
     }
 }

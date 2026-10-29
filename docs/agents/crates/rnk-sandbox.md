@@ -59,11 +59,12 @@ from `rnk-store`, secret file) and passes `--network`.
 
 - `unshare` only while single-threaded. One spawner thread, alive as long as
   the `Sandbox`, clones every `RUN` with a raw `clone` (no `CLONE_VM`); the
-  child arms `PR_SET_PDEATHSIG(SIGKILL)`, then reads an "alive" pipe nobody
-  writes (`getppid` is 0 in a new PID namespace): end-of-file means the
-  process died before the signal was armed. The child is PID 1 of its PID
-  namespace, so its tree dies with it. Dropping the `Sandbox` ends the
-  thread and kills every running `RUN`.
+  child arms `PR_SET_PDEATHSIG(SIGKILL)`, then polls a pidfd of the parent
+  process (`getppid` is 0 in a new PID namespace): readable means the
+  process died before the signal was armed. The id switch clears the death
+  signal (`commit_creds`), so it is armed and checked again after it. The
+  child is PID 1 of its PID namespace, so its tree dies with it. Dropping
+  the `Sandbox` ends the thread and kills every running `RUN`.
 - Between `clone` and `execve` the child only makes system calls (rustix's
   raw backend, a few `libc` calls) on arguments built before the clone. A
   failing step writes `(step, errno)` to a close-on-exec pipe and exits
@@ -72,26 +73,35 @@ from `rnk-store`, secret file) and passes `--network`.
   [design, Phase 3], network for `--network=none`, with `lo` up). Mounts
   exist only in the child, so the parent diffs the root as the image left
   it.
-- Mount order: all mounts private, self-bind, `proc`, read-only `sysfs`,
-  tmpfs `/dev` (nodes bound from the outer `/dev`, `devpts`, `shm`,
-  symlinks), writable copies of `resolv.conf`, `hosts`, `hostname`,
-  `RUN --mount`; every target resolved with `openat2(RESOLVE_IN_ROOT)` from
-  the bound root and mounted through `/proc/self/fd/<n>`; read-only remounts
+- Mount order: all mounts private, self-bind remounted `nodev`, `proc`,
+  read-only `sysfs`, `nodev` tmpfs `/dev` (nodes bound read-only from the
+  outer `/dev`, `devpts`, `shm`, symlinks), writable copies of
+  `resolv.conf`, `hosts`, `hostname`, `RUN --mount` remounted `nodev`, then
+  Docker's read-only `/proc` paths and masked `/proc` and `/sys` paths. Every
+  target is resolved with `openat2(RESOLVE_IN_ROOT)` from the bound root and
+  mounted through `/proc/self/fd/<n>`; sources are `O_PATH` descriptors the
+  parent opened (no symlink as the last component, type checked); remounts
   keep the source's locked flags. Then `pivot_root(".", ".")` and
-  `umount2(MNT_DETACH)`; where seccomp blocks it, `MS_MOVE` + `chroot(".")`.
+  `umount2(MNT_DETACH)`; where seccomp refuses it with `EPERM` and `/` is a
+  mount root, `MS_MOVE` + `chroot(".")`.
 - Capabilities, for every `USER`: bounding set cut to Docker's 14 defaults,
   ambient cleared, effective and permitted the defaults the process has,
-  inheritable empty (Docker since 20.10.14). Then `setgroups`, `setresgid`,
+  inheritable empty (Docker since 20.10.14). Then `setsid` (no controlling
+  terminal), a new session keyring, and `setgroups`, `setresgid`,
   `setresuid` to the ids `rnk-rootfs` resolved in the root; `WORKDIR` is
   entered before the switch and again after if only root could.
 - Only stdio crosses `execve` (threat T7): every other descriptor becomes
-  close-on-exec (`close_range`); umask 022, `SIGPIPE` default, empty signal
-  mask. `PATH` is searched after entering the root and switching user.
+  close-on-exec (`close_range`, or the `/proc/self/fd` list before 5.11);
+  descriptors the child keeps are numbered 3 or higher; stdin is
+  `/dev/null` by default; umask 022, `SIGPIPE` default, empty signal mask.
+  `PATH` is searched after entering the root and switching user.
 - `Direct`: no namespace, mount or capability change; the command gets its
-  own process group, killed with `SIGKILL` once the command exits (waited
-  with `WNOWAIT`, so the group id cannot be reused), as kaniko does.
-- Stubs are journaled in `<state-dir>/sandbox/runs` before they exist and
-  removed before the diff; the parent's mtime returns to m0 only if it still
+  own session, whose process group is killed with `SIGKILL` once the
+  command exits (waited with `WNOWAIT`, so the group id cannot be reused),
+  as kaniko does.
+- Stubs are journaled in `<state-dir>/sandbox/runs` before they exist (the
+  journal is locked before it gets its name, so a replay never takes a live
+  one) and removed before the diff; the parent's mtime returns to m0 only if it still
   shows m1, the value right after placing. Journals no process holds are
   replayed by `probe` and `Sandbox::start`.
 - The probe performs the real sequence, in the configuration that will be
@@ -105,7 +115,7 @@ from `rnk-store`, secret file) and passes `--network`.
 
 ## Refs
 
-- **Design:** [`design/sandbox.md#per-run-sequence`](../../design/sandbox.md#per-run-sequence), [`#process-set-up-once-per-build`](../../design/sandbox.md#process-set-up-once-per-build), [`#stub-mount-points`](../../design/sandbox.md#stub-mount-points); [`design/modes-and-detection.md#probe-order---modeauto`](../../design/modes-and-detection.md#probe-order---modeauto); [`design/kaniko-mode.md#fake-proc`](../../design/kaniko-mode.md#fake-proc), [`#java`](../../design/kaniko-mode.md#java); [threat model T5–T10, T12](../../security/threat-model.md#5-threats-and-mitigations)
+- **Design:** [`design/sandbox.md#per-run-sequence`](../../design/sandbox.md#per-run-sequence), [`#process-set-up-once-per-build`](../../design/sandbox.md#process-set-up-once-per-build), [`#stub-mount-points`](../../design/sandbox.md#stub-mount-points); [`design/modes-and-detection.md#probe-order---modeauto`](../../design/modes-and-detection.md#probe-order---modeauto); [`design/kaniko-mode.md#fake-proc`](../../design/kaniko-mode.md#fake-proc), [`#java`](../../design/kaniko-mode.md#java); [threat model T5–T12, T17–T19](../../security/threat-model.md#5-threats-and-mitigations)
 - **Decisions:** [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (default isolation), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (probe or refuse), [ADR-0010](../../adr/0010-run-network-host-or-none.md) (network), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (bare `chroot` only on request), [ADR-0018](../../adr/0018-no-proot-in-1-0.md) (no proot), [ADR-0019](../../adr/0019-java-tool-options-on-parallel-path.md) (`JAVA_TOOL_OPTIONS`)
 - **Open:** [Q-017](../../open-questions.md#q-017-which-type-carries-the-probe-outcome-to-the-libraries) (`Caps`), [Q-032](../../open-questions.md#q-032-what-remains-to-verify-in-the-run-sandbox), [Q-075](../../open-questions.md#q-075-which-host-name-does-a-run-see) (host name), [Q-076](../../open-questions.md#q-076-what-etchosts-does-a-run-see) (`/etc/hosts`), [Q-077](../../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) (`MS_MOVE` escape)
 - **Evidence:** [exp-02](../../research/experiments/02-run-sandbox.md) (sequence, escape, PDEATHSIG, bounding set, stubs, 1–2.5 ms), [exp-06a](../../research/experiments/06a-root-rerun.md) (real root), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (Docker probe matrix), [exp-12a](../../research/experiments/12a-fake-proc.md), [exp-14](../../research/experiments/14-real-builds-without-proc.md), [exp-15](../../research/experiments/15-java-next-concurrency.md), [exp-16](../../research/experiments/16-cgroup-v1-cpuset.md) (fake `/proc`, Java)
@@ -123,14 +133,19 @@ from `rnk-store`, secret file) and passes `--network`.
   failure records; the stub journal (placement through symlinks, removal,
   parent times, replay of dead journals only); `Direct` children cloned
   through the spawner thread that fail before executing anything (missing
-  `WORKDIR`, then `setgroups` or a missing program); the spans
-  (`tests/spans.rs`).
+  `WORKDIR`, then `setgroups` or a missing program); mount sources
+  (symlink and type refused); remount flags (`nodev`, read-only `/dev`
+  nodes); the probe's `EPERM`-only fallback and the mount-root check; the
+  spans (`tests/spans.rs`).
 - **T1** (rootless podman): the sequence with its fallbacks; `SIGKILL` during
   `RUN sleep 1000` leaves nothing; no stub in a layer; only stdio fds.
 - **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`); real root;
   escapes (`chroot` + `chdir("..")` under `pivot_root` and `MS_MOVE`,
-  `umount /etc/resolv.conf`, a setuid binary) fail; the probe matrix of
-  `docs/testing.md`; no fake file in any layer on the bare-`chroot` path.
+  `umount /etc/resolv.conf`, a setuid binary) fail; writes to `/proc/sys`
+  and `/proc/sysrq-trigger` fail; `mknod` + open and `chmod /dev/null`
+  fail; `USER nobody` + `SIGKILL` of ranikust leaves nothing; no
+  controlling terminal; the probe matrix of `docs/testing.md`; no fake file
+  in any layer on the bare-`chroot` path.
 
 ## Metrics
 
@@ -147,9 +162,20 @@ from `rnk-store`, secret file) and passes `--network`.
 
 - Root escapes a bare `chroot`, reaching the host's `/` (exp-02, exp-06a,
   exp-13) or, under `--parallel-stages`, sibling stages (exp-12).
-- `MS_MOVE` + `chroot` leaves the old root mounted under the stage root:
-  root with `CAP_SYS_CHROOT` can climb out to ranikust's own filesystem
-  [inferred] (Q-077).
+- `MS_MOVE` + `chroot` leaves the old root mounted under the stage root;
+  `..` stops at the moved root only when `/` is a mount root, otherwise root
+  with `CAP_SYS_CHROOT` climbs out to ranikust's own filesystem [inferred]
+  (Q-077).
+- A fresh `proc` is writable: a sysctl write needs only uid 0, and
+  `kernel/core_pattern` makes the host kernel run a `RUN` binary as host
+  root. Docker's read-only and masked paths are not optional (T17).
+- Docker stops device nodes with its device cgroup; without one, only
+  `nodev` does. A bind of a host node is the host's inode: `chmod` in a
+  `RUN` changes the host's `/dev/null` unless the bind is read-only (T18).
+- `setresuid` and `setresgid` clear `PR_SET_PDEATHSIG`; a `RUN` with a
+  non-root `USER` outlived the build until it was armed again (T8).
+- A `RUN` that keeps ranikust's controlling terminal can inject input into
+  the operator's shell with `TIOCSTI` (T19).
 - Multithreaded `unshare(CLONE_NEWNS)` moves one thread; `CLONE_NEWUSER` is
   `EINVAL` (exp-02 finding 5).
 - Without PDEATHSIG a `RUN` outlived a killed build and kept writing; it
@@ -170,11 +196,13 @@ from `rnk-store`, secret file) and passes `--network`.
 ## Phase 1
 
 - Done (`feat/rnk-sandbox`): `enter_build_namespace`, spawner thread,
-  PDEATHSIG with the alive pipe, the `RUN` sequence with `pivot_root` and
+  PDEATHSIG with the pidfd check, re-armed after the id switch, the `RUN` sequence with `pivot_root` and
   the `MS_MOVE` fallback, bounding-set drop, `USER`, stubs and journal with
   replay, bind mounts for `RUN --mount=type=cache|secret`,
-  `--network=none`, `Isolation::Direct` (early, from Phase 2), and the probe
-  of the root entry. Only the T0 tests ran: nothing after the clone of a
+  `--network=none`, `Isolation::Direct` (early, from Phase 2), the probe
+  of the root entry, and the hardening of the host-safety review: Docker's
+  read-only and masked kernel files, `nodev`, read-only `/dev` node binds,
+  `setsid`, a session keyring, mount sources by descriptor. Only the T0 tests ran: nothing after the clone of a
   `Full` child has run as root yet.
 - Left for `ranikust` (task 8): calling `enter_build_namespace` and `probe`
   in the single-threaded window and `Sandbox::start` after.

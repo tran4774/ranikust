@@ -41,7 +41,7 @@ pub enum Step {
     BindFile,
     /// Binding a `RUN --mount`.
     BindMount,
-    /// Remounting a bind read-only.
+    /// Remounting a bind `nodev` or read-only.
     Remount,
     /// `pivot_root(".", ".")`.
     PivotRoot,
@@ -71,13 +71,18 @@ pub enum Step {
     Stdio,
     /// `execve` of the command.
     Exec,
-    /// `setpgid` of an [`Isolation::Direct`](crate::Isolation::Direct)
-    /// command, so its leftovers can be killed.
-    ProcessGroup,
+    /// `setsid`: no controlling terminal, and a process group of its own.
+    Session,
+    /// Making a `/proc` path read-only.
+    ReadonlyPath,
+    /// Masking a `/proc` or `/sys` path.
+    MaskPath,
+    /// Joining a new session keyring.
+    SessionKeyring,
 }
 
 impl Step {
-    const ALL: [Step; 30] = [
+    const ALL: [Step; 33] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -107,7 +112,10 @@ impl Step {
         Step::Workdir,
         Step::Stdio,
         Step::Exec,
-        Step::ProcessGroup,
+        Step::Session,
+        Step::ReadonlyPath,
+        Step::MaskPath,
+        Step::SessionKeyring,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -142,7 +150,7 @@ impl Step {
             Step::DevSymlink => "create a /dev symlink",
             Step::BindFile => "bind resolv.conf, hosts or hostname",
             Step::BindMount => "bind a RUN --mount",
-            Step::Remount => "remount a bind read-only",
+            Step::Remount => "remount a bind nodev or read-only",
             Step::PivotRoot => "pivot_root",
             Step::DetachOldRoot => "detach the old root",
             Step::MoveRoot => "move the root (MS_MOVE)",
@@ -157,7 +165,10 @@ impl Step {
             Step::Workdir => "change to the working directory",
             Step::Stdio => "set up stdin, stdout and stderr",
             Step::Exec => "execute the command",
-            Step::ProcessGroup => "create a process group",
+            Step::Session => "start a new session",
+            Step::ReadonlyPath => "make a /proc path read-only",
+            Step::MaskPath => "mask a /proc or /sys path",
+            Step::SessionKeyring => "join a new session keyring",
         }
     }
 }

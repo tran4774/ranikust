@@ -47,13 +47,16 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 
 1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check that the parent process
    did not die before: `getppid()` is 0 in a new PID namespace, so the child
-   reads a pipe nobody writes, whose write end the parent holds; end-of-file
-   means the parent is gone.
+   polls a pidfd of the parent process, which becomes readable once it has
+   exited.
 2. In a new user namespace, map the full id range available and allow
    `setgroups`; otherwise `USER _apt` (used by apt-get) fails with
    `setgroups: EPERM`.
 3. Mounts, in this order:
-   1. Bind the root onto itself (required by `pivot_root`).
+   1. Bind the root onto itself (required by `pivot_root`) and remount the
+      bind `nodev`: Docker blocks device nodes with its device cgroup, which
+      ranikust does not have, so no node in the root opens, neither one a
+      `RUN` creates with `mknod` nor one from a layer.
    2. A new `proc`. If `/proc` is masked and a new user namespace was created,
       the kernel refuses (`EPERM`); fall back to an rbind of the existing
       `/proc`.
@@ -61,11 +64,14 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
       owns the network namespace, so it fails with the host network plus a
       new user namespace; fall back to an rbind of `/sys` remounted
       read-only.
-   4. A tmpfs on `/dev`, with `null`, `zero`, `full`, `random`, `urandom` and
-      `tty` bind-mounted from the outer `/dev` (`mknod` needs `CAP_MKNOD` in
-      the initial user namespace). Add `devpts` (`newinstance,ptmxmode=0666`,
-      plus `gid=5` only if gid 5 is mapped), `shm`, and the symlinks `ptmx`,
-      `fd`, `stdin`, `stdout`, `stderr`.
+   4. A `nodev` tmpfs on `/dev`, with `null`, `zero`, `full`, `random`,
+      `urandom` and `tty` bind-mounted from the outer `/dev` (`mknod` needs
+      `CAP_MKNOD` in the initial user namespace). Each bind is its own mount
+      and keeps the outer flags, so the node opens; it is remounted
+      read-only, because it is the host's inode and `chmod` from `RUN` would
+      change it. Add `devpts` (`newinstance,ptmxmode=0666`, plus `gid=5` only
+      if gid 5 is mapped), `shm`, and the symlinks `ptmx`, `fd`, `stdin`,
+      `stdout`, `stderr`.
    5. `resolv.conf`, `hosts`, `hostname`: bind a **writable copy**, as
       Docker lets `RUN` write `resolv.conf`. Resolve the target inside the
       root with `openat2(RESOLVE_IN_ROOT)`, because it may be a symlink. A
@@ -74,11 +80,22 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
       fails with `EPERM` in a user namespace.
    6. `RUN --mount`: `type=cache` binds `caches/<id>` from the store
       (`rnk-store`), `type=secret` binds a file, `type=bind` binds the
-      context or another stage's root.
-   7. `pivot_root(".", ".")`, then `umount2(".", MNT_DETACH)`. Where seccomp
+      context or another stage's root. Every bind is remounted `nodev`.
+      Sources are opened by the parent (`O_PATH`, no symlink as the last
+      component, type checked) and bound through `/proc/self/fd`.
+   7. Docker's read-only and masked kernel files (moby
+      `daemon/pkg/oci/defaults.go`): `/proc/bus`, `fs`, `irq`, `sys` and
+      `sysrq-trigger` are bound read-only onto themselves, because writing
+      a sysctl such as `kernel/core_pattern` needs only uid 0 and reaches
+      the host kernel; `kcore`, `keys`, `timer_list`, `sched_debug`,
+      `/sys/firmware` and the rest are masked, a file by a read-only bind of
+      `/dev/null`, a directory by an empty read-only tmpfs. A path the
+      kernel lacks is skipped.
+   8. `pivot_root(".", ".")`, then `umount2(".", MNT_DETACH)`. Where seccomp
       blocks `pivot_root` (Docker's default profile, even with
-      `CAP_SYS_ADMIN`): `mount(root, "/", MS_MOVE)` then `chroot(".")`, as
-      runc's `--no-pivot`.
+      `CAP_SYS_ADMIN`, `EPERM`) and `/` is a mount root:
+      `mount(root, "/", MS_MOVE)` then `chroot(".")`, as runc's
+      `--no-pivot` ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)).
 4. `sethostname`; ignore a seccomp refusal.
 5. Drop capabilities, for **every** `USER`: reduce the **bounding** set to
    Docker's 14 default capabilities, clear the ambient set, keep the
@@ -86,12 +103,19 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
    set empty, as Docker since 20.10.14. A non-root user has no effective
    capabilities but a full bounding set, which a setuid binary in the image
    would regain.
-6. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which
+6. `setsid`: no controlling terminal, so a `RUN` cannot read the
+   operator's keys or push input into the operator's shell (`TIOCSTI`);
+   stdin is `/dev/null` unless the caller says otherwise, as under Docker.
+   Then a new anonymous session keyring, so ranikust's keys stay out of
+   reach (root's user keyring stays reachable until `--seccomp`).
+7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which
    `rnk-rootfs` looked up in the root's `/etc/passwd` and `/etc/group` before
    the fork [inferred]. A numeric uid with no passwd entry gets gid 0, as in
-   Docker.
-7. `chdir` to `WORKDIR` (before the id switch, and again after if only root
-   could traverse it); make every descriptor but stdio close-on-exec, set
+   Docker. A change of uid or gid clears the death signal, so it is armed
+   and checked again.
+8. `chdir` to `WORKDIR` (before the id switch, and again after if only root
+   could traverse it); make every descriptor but stdio close-on-exec
+   (`close_range`, or the list in `/proc/self/fd` before Linux 5.11), set
    the umask to 022, reset `SIGPIPE` (Rust ignores it, and ignored signals
    survive `execve`) and the signal mask; search `PATH` **after**
    `pivot_root` and **after** `setuid`; `execve`.
@@ -128,10 +152,18 @@ is needed for `/proc`, `/dev`, `/sys`, `resolv.conf` or `hosts`.
 | Environment | Differences |
 |---|---|
 | Real root on a host | Every step works without a fallback |
-| `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`; the old root stays mounted underneath, so root with `CAP_SYS_CHROOT` may climb out of the `chroot` [inferred] ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)) |
+| `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root: the old root stays mounted underneath, and `..` stops at the moved root only then [inferred] ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)) |
 | Rootless (user namespace) | Multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail |
-| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own process group, killed once the command exits ([kaniko-mode](kaniko-mode.md)) |
+| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own session, whose process group is killed once the command exits ([kaniko-mode](kaniko-mode.md)) |
 | `--parallel-stages` | Bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
+
+## Differences from Docker
+
+- A device node a `RUN` creates with `mknod` does not open, even one
+  Docker's device cgroup allows (`/dev/null`'s 1:3): every mount but the
+  `/dev` node binds and `devpts` is `nodev`.
+- `/dev/null` and the other nodes are read-only binds: `chmod` and `chown`
+  on them fail with `EROFS`.
 
 ## Optional hardening
 

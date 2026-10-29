@@ -95,7 +95,7 @@ pub struct RunSpec {
     pub hostname: String,
     /// `RUN --mount` binds.
     pub mounts: Vec<BindMount>,
-    /// Standard input.
+    /// Standard input; `/dev/null` by default, as a `RUN` under Docker.
     pub stdin: Stdio,
     /// Standard output.
     pub stdout: Stdio,
@@ -114,7 +114,8 @@ pub(crate) const DEFAULT_HOSTNAME: &str = "ranikust";
 
 impl RunSpec {
     /// A `RUN` of `argv` in the root at `root_dir`, as root, in `/`, with the
-    /// host network, an empty environment and inherited stdio.
+    /// host network, an empty environment, stdin from `/dev/null` and
+    /// inherited stdout and stderr.
     #[must_use]
     pub fn new(root_dir: impl Into<PathBuf>, argv: Vec<OsString>) -> Self {
         Self {
@@ -126,7 +127,7 @@ impl RunSpec {
             network: Network::Host,
             hostname: DEFAULT_HOSTNAME.to_owned(),
             mounts: Vec::new(),
-            stdin: Stdio::Inherit,
+            stdin: Stdio::Null,
             stdout: Stdio::Inherit,
             stderr: Stdio::Inherit,
             isolation: Isolation::Full,
@@ -236,6 +237,7 @@ mod tests {
         assert_eq!(s.user_spec(), "0");
         assert_eq!(s.workdir, Path::new("/"));
         assert_eq!(s.hostname, DEFAULT_HOSTNAME);
+        assert!(matches!(s.stdin, Stdio::Null));
         assert!(s.validate().is_ok());
     }
 

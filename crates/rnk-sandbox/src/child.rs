@@ -14,16 +14,18 @@
 
 use std::ffi::{CStr, CString, c_char};
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
-use rustix::fs::{CWD, Mode, OFlags, ResolveFlags};
+use rustix::event::{PollFd, PollFlags, Timespec};
+use rustix::fs::{CWD, FileType, Mode, OFlags, RawDir, ResolveFlags};
 use rustix::io::Errno;
 use rustix::mount::{MountFlags, MountPropagationFlags, UnmountFlags};
 use rustix::process::{Gid, Signal, Uid};
 use rustix::thread::{CapabilitySet, CapabilitySets};
 
 use crate::error::Step;
-use crate::plan::{DEV_NODES, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, SHM};
+use crate::plan::{DEV_NODES, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, MASKED_PATHS, READONLY_PATHS, SHM};
 
 /// How the child enters the root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +38,7 @@ pub enum RootEntry {
 }
 
 /// One mount, as the child performs it. Targets are paths inside the root;
-/// sources are host paths owned by ranikust.
+/// sources are descriptors the parent opened on files ranikust owns.
 #[derive(Debug)]
 pub(crate) enum ChildMount {
     Proc {
@@ -49,14 +51,17 @@ pub(crate) enum ChildMount {
         target: CString,
     },
     File {
-        source: CString,
+        /// An `O_PATH` descriptor, open in the child until `execve`.
+        source: RawFd,
         target: CString,
     },
     Bind {
-        source: CString,
+        /// An `O_PATH` descriptor, open in the child until `execve`.
+        source: RawFd,
         target: CString,
-        /// Flags of the read-only remount, when read-only.
-        remount: Option<MountFlags>,
+        /// Flags of the remount that follows the bind: `nodev`, and
+        /// read-only when asked.
+        remount: MountFlags,
     },
 }
 
@@ -74,7 +79,11 @@ pub(crate) enum ChildStdio {
 #[derive(Debug)]
 pub(crate) struct ChildArgs {
     pub(crate) root_dir: CString,
+    /// Flags of the remount of the root's bind: `nodev`, the rest kept.
+    pub(crate) root_remount: MountFlags,
     pub(crate) mounts: Vec<ChildMount>,
+    /// Flags of the read-only remount of each [`DEV_NODES`] bind.
+    pub(crate) dev_remount: [MountFlags; DEV_NODES.len()],
     pub(crate) root_entry: RootEntry,
     pub(crate) hostname: Vec<u8>,
     pub(crate) loopback: bool,
@@ -121,10 +130,9 @@ impl<'a> ExecPtrs<'a> {
 pub(crate) struct ChildFds {
     /// Write end of the error pipe (close-on-exec).
     pub(crate) err_w: RawFd,
-    /// Read end of the spawner's alive pipe (close-on-exec, non-blocking).
-    pub(crate) alive_r: RawFd,
-    /// The child's copy of the write end, closed first.
-    pub(crate) alive_w: RawFd,
+    /// A pidfd of the process that cloned the child (close-on-exec):
+    /// readable once that process has exited.
+    pub(crate) parent: RawFd,
 }
 
 /// `/proc/self/fd/<fd>`, NUL-terminated, on the stack: mounting onto it acts
@@ -186,8 +194,7 @@ impl FdPath {
 /// the clone.
 pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -> ! {
     let err = fds.err_w;
-    // SAFETY: forwarded from this function's contract.
-    unsafe { arm_death_signal(fds) };
+    arm_death_signal(err, fds.parent);
 
     // Nothing mounted from here on propagates to the build's namespace.
     check(
@@ -204,6 +211,13 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         Step::BindRoot,
         rustix::mount::mount_bind_recursive(root_dir, root_dir),
     );
+    // No device node in the root opens: neither one from a layer nor one a
+    // `RUN` creates with `mknod`. Docker gets this from its device cgroup.
+    check(
+        err,
+        Step::Remount,
+        rustix::mount::mount_remount(root_dir, args.root_remount, c""),
+    );
     check(err, Step::EnterRoot, rustix::process::chdir(root_dir));
     // Opened after the bind, so it is the bind's root: targets resolved from
     // it are inside the mount `pivot_root` enters.
@@ -218,8 +232,9 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         ),
     );
     for m in &args.mounts {
-        mount_one(err, root.as_fd(), m);
+        mount_one(err, root.as_fd(), &args.dev_remount, m);
     }
+    protect_kernel_files(err, root.as_fd());
 
     check(err, Step::EnterRoot, rustix::process::fchdir(&root));
     match args.root_entry {
@@ -238,8 +253,9 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
             );
         }
         RootEntry::MoveMount => {
-            // The old root stays mounted underneath; root keeps
-            // CAP_SYS_CHROOT for now [open: Q-077].
+            // The old root stays mounted underneath; `..` stops at the
+            // moved root only because the probe chose this entry where `/`
+            // is a mount root. Root keeps CAP_SYS_CHROOT [open: Q-077].
             check(err, Step::MoveRoot, rustix::mount::mount_move(c".", c"/"));
             check(err, Step::ChrootAfterMove, rustix::process::chroot(c"."));
         }
@@ -254,37 +270,50 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     }
 
     drop_capabilities(err, args);
-    switch_user_and_exec(err, args, ptrs)
+    switch_user_and_exec(err, fds.parent, args, ptrs)
 }
 
-/// Arms `PR_SET_PDEATHSIG(SIGKILL)` and checks that the spawner did not die
-/// before it was armed.
-///
-/// # Safety
-///
-/// As [`run`]: in the child, with descriptors prepared before the clone.
-pub(crate) unsafe fn arm_death_signal(fds: ChildFds) {
-    let err = fds.err_w;
-    // SAFETY: `alive_w` is the child's own copy of the write end; it is
-    // closed once here and never used again.
-    unsafe { rustix::io::close(fds.alive_w) };
+/// Arms `PR_SET_PDEATHSIG(SIGKILL)`, then checks that the process that
+/// cloned the child did not exit before it was armed. `getppid` is 0 in a
+/// new PID namespace, so the check polls a pidfd of that process instead.
+pub(crate) fn arm_death_signal(err: RawFd, parent: RawFd) {
     check(
         err,
         Step::DeathSignal,
         rustix::process::set_parent_process_death_signal(Some(Signal::KILL)),
     );
-    // `getppid` is 0 in a new PID namespace; the alive pipe tells instead.
-    // SAFETY: `alive_r` is open in the child until `execve` closes it.
-    let alive = unsafe { BorrowedFd::borrow_raw(fds.alive_r) };
-    match rustix::io::read(alive, &mut [0u8; 1]) {
-        Err(Errno::AGAIN) | Ok(1..) => {}
-        Ok(0) => fail(err, Step::ParentGone, Errno::SRCH),
-        Err(e) => fail(err, Step::ParentGone, e),
+    // SAFETY: `parent` is open in the child until `execve` closes it.
+    let pidfd = unsafe { BorrowedFd::borrow_raw(parent) };
+    let mut fds = [PollFd::new(&pidfd, PollFlags::IN)];
+    let now = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    loop {
+        match rustix::event::poll(&mut fds, Some(&now)) {
+            Ok(0) => return,
+            Ok(_) => fail(err, Step::ParentGone, Errno::SRCH),
+            Err(Errno::INTR) => {}
+            Err(e) => fail(err, Step::ParentGone, e),
+        }
     }
 }
 
-/// `WORKDIR`, the `USER` ids, stdio, process state, then `execve`.
-pub(crate) fn switch_user_and_exec(err: RawFd, args: &ChildArgs, ptrs: &ExecPtrs<'_>) -> ! {
+/// A new session and session keyring, `WORKDIR`, the `USER` ids, the death
+/// signal again, stdio, process state, then `execve`.
+pub(crate) fn switch_user_and_exec(
+    err: RawFd,
+    parent: RawFd,
+    args: &ChildArgs,
+    ptrs: &ExecPtrs<'_>,
+) -> ! {
+    // No controlling terminal: a `RUN` must not read the operator's keys or
+    // push input into the operator's shell (`TIOCSTI`). Also a process
+    // group of its own, which `Direct` kills afterwards.
+    check(err, Step::Session, rustix::process::setsid().map(drop));
+    // Still as root: the keyring counts against root's key quota, and the
+    // process keeps possessing it after the switch.
+    join_session_keyring(err);
     // Change to WORKDIR before switching user, in case only root may
     // traverse its parents, and again after if that was refused (runc).
     let workdir = args.workdir.as_c_str();
@@ -311,13 +340,20 @@ pub(crate) fn switch_user_and_exec(err: RawFd, args: &ChildArgs, ptrs: &ExecPtrs
     if chdir_again {
         check(err, Step::Workdir, rustix::process::chdir(workdir));
     }
+    // A change of uid or gid cleared the death signal (`commit_creds`).
+    arm_death_signal(err, parent);
 
     set_stdio(err, &args.stdio);
     reset_process_state();
     exec(err, args, ptrs)
 }
 
-fn mount_one(err: RawFd, root: BorrowedFd<'_>, m: &ChildMount) {
+fn mount_one(
+    err: RawFd,
+    root: BorrowedFd<'_>,
+    dev_remount: &[MountFlags; DEV_NODES.len()],
+    m: &ChildMount,
+) {
     match m {
         ChildMount::Proc { target } => {
             let t = resolve(err, root, target);
@@ -352,7 +388,9 @@ fn mount_one(err: RawFd, root: BorrowedFd<'_>, m: &ChildMount) {
         }
         ChildMount::Dev { target } => {
             let t = resolve(err, root, target);
-            let flags = MountFlags::NOSUID | MountFlags::STRICTATIME;
+            // `nodev`: the nodes below are binds, separate mounts that keep
+            // the outer `/dev`'s flags; a node created here does not open.
+            let flags = MountFlags::NOSUID | MountFlags::NODEV | MountFlags::STRICTATIME;
             check(
                 err,
                 Step::MountDev,
@@ -367,14 +405,14 @@ fn mount_one(err: RawFd, root: BorrowedFd<'_>, m: &ChildMount) {
             drop(t);
             // Resolved again, it is the tmpfs, not the directory under it.
             let dev = resolve(err, root, target);
-            populate_dev(err, dev.as_fd());
+            populate_dev(err, dev.as_fd(), dev_remount);
         }
         ChildMount::File { source, target } => {
             let t = resolve(err, root, target);
             check(
                 err,
                 Step::BindFile,
-                rustix::mount::mount_bind(source.as_c_str(), fd_path(err, &t).path()),
+                rustix::mount::mount_bind(FdPath::new(*source).path(), fd_path(err, &t).path()),
             );
         }
         ChildMount::Bind {
@@ -386,25 +424,92 @@ fn mount_one(err: RawFd, root: BorrowedFd<'_>, m: &ChildMount) {
             check(
                 err,
                 Step::BindMount,
-                rustix::mount::mount_bind(source.as_c_str(), fd_path(err, &t).path()),
+                rustix::mount::mount_bind(FdPath::new(*source).path(), fd_path(err, &t).path()),
             );
             drop(t);
-            if let Some(flags) = *remount {
-                let t = resolve(err, root, target);
-                check(
-                    err,
-                    Step::Remount,
-                    rustix::mount::mount_remount(fd_path(err, &t).path(), flags, c""),
-                );
-            }
+            // Resolved again, it is the bind, not the directory under it.
+            let t = resolve(err, root, target);
+            check(
+                err,
+                Step::Remount,
+                rustix::mount::mount_remount(fd_path(err, &t).path(), *remount, c""),
+            );
         }
     }
 }
 
+/// Docker's read-only and masked kernel files (moby
+/// `daemon/pkg/oci/defaults.go`): writing a sysctl needs only uid 0, and
+/// `/proc/sys/kernel/core_pattern` or `/proc/sysrq-trigger` reach the host
+/// kernel. A path the kernel does not have is skipped.
+fn protect_kernel_files(err: RawFd, root: BorrowedFd<'_>) {
+    for path in READONLY_PATHS {
+        let Some(t) = resolve_existing(err, root, path) else {
+            continue;
+        };
+        let p = fd_path(err, &t);
+        check(
+            err,
+            Step::ReadonlyPath,
+            rustix::mount::mount_bind(p.path(), p.path()),
+        );
+        drop(t);
+        let Some(t) = resolve_existing(err, root, path) else {
+            fail(err, Step::ReadonlyPath, Errno::NOENT)
+        };
+        let flags = MountFlags::BIND
+            | MountFlags::RDONLY
+            | MountFlags::NOSUID
+            | MountFlags::NODEV
+            | MountFlags::NOEXEC;
+        check(
+            err,
+            Step::ReadonlyPath,
+            rustix::mount::mount_remount(fd_path(err, &t).path(), flags, c""),
+        );
+    }
+    for path in MASKED_PATHS {
+        let Some(t) = resolve_existing(err, root, path) else {
+            continue;
+        };
+        let mode = check(err, Step::MaskPath, rustix::fs::fstat(&t)).st_mode;
+        let target = fd_path(err, &t);
+        if FileType::from_raw_mode(mode) == FileType::Directory {
+            let flags =
+                MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
+            check(
+                err,
+                Step::MaskPath,
+                rustix::mount::mount(c"tmpfs", target.path(), c"tmpfs", flags, None::<&CStr>),
+            );
+            continue;
+        }
+        // Still the outer `/dev/null`, as the root is not entered yet: the
+        // host's inode, so read-only as the `/dev` nodes are.
+        check(
+            err,
+            Step::MaskPath,
+            rustix::mount::mount_bind(c"/dev/null", target.path()),
+        );
+        drop(t);
+        let Some(t) = resolve_existing(err, root, path) else {
+            fail(err, Step::MaskPath, Errno::NOENT)
+        };
+        let flags = MountFlags::BIND | MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NOEXEC;
+        check(
+            err,
+            Step::MaskPath,
+            rustix::mount::mount_remount(fd_path(err, &t).path(), flags, c""),
+        );
+    }
+}
+
 /// A tmpfs `/dev`: the device nodes bound from the outer `/dev`, `pts`,
-/// `shm` and the symlinks.
-fn populate_dev(err: RawFd, dev: BorrowedFd<'_>) {
-    for (name, source) in DEV_NODES {
+/// `shm` and the symlinks. Each node bind is remounted read-only: the bind
+/// is the host's own inode, whose mode and owner uid 0 in a `RUN` could
+/// otherwise change; reads and writes of a device are not affected.
+fn populate_dev(err: RawFd, dev: BorrowedFd<'_>, remount: &[MountFlags; DEV_NODES.len()]) {
+    for ((name, source), flags) in DEV_NODES.into_iter().zip(remount) {
         let node = check(
             err,
             Step::DevNode,
@@ -416,7 +521,25 @@ fn populate_dev(err: RawFd, dev: BorrowedFd<'_>) {
             ),
         );
         match rustix::mount::mount_bind(source, fd_path(err, &node).path()) {
-            Ok(()) => {}
+            Ok(()) => {
+                drop(node);
+                // Opened again by name, it is the bind, not the file under it.
+                let bound = check(
+                    err,
+                    Step::DevNode,
+                    rustix::fs::openat(
+                        dev,
+                        name,
+                        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    ),
+                );
+                check(
+                    err,
+                    Step::Remount,
+                    rustix::mount::mount_remount(fd_path(err, &bound).path(), *flags, c""),
+                );
+            }
             // The outer environment lacks this node (no `/dev/tty` in some
             // sandboxes): leave it out rather than fail every `RUN`.
             Err(Errno::NOENT) => {
@@ -488,6 +611,25 @@ fn resolve(err: RawFd, root: BorrowedFd<'_>, target: &CStr) -> OwnedFd {
         ) {
             Ok(fd) => return fd,
             // A rename raced the lookup; the kernel asks to retry.
+            Err(Errno::AGAIN) if attempts < 16 => attempts += 1,
+            Err(e) => fail(err, Step::ResolveTarget, e),
+        }
+    }
+}
+
+/// As [`resolve`], but `None` when the path does not exist.
+fn resolve_existing(err: RawFd, root: BorrowedFd<'_>, target: &CStr) -> Option<OwnedFd> {
+    let mut attempts = 0;
+    loop {
+        match rustix::fs::openat2(
+            root,
+            target,
+            OFlags::PATH | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::IN_ROOT | ResolveFlags::NO_MAGICLINKS,
+        ) {
+            Ok(fd) => return Some(fd),
+            Err(Errno::NOENT) => return None,
             Err(Errno::AGAIN) if attempts < 16 => attempts += 1,
             Err(e) => fail(err, Step::ResolveTarget, e),
         }
@@ -592,6 +734,24 @@ fn drop_capabilities(err: RawFd, args: &ChildArgs) {
     );
 }
 
+/// A new, empty session keyring, so that a `RUN` cannot use the keys of
+/// ranikust's session keyring (threat T11), as runc does. Where `keyctl` is
+/// missing or refused (Docker's seccomp profile), the `RUN` cannot reach
+/// any keyring either.
+fn join_session_keyring(err: RawFd) {
+    // `KEYCTL_JOIN_SESSION_KEYRING` from `linux/keyctl.h`, a stable ABI.
+    const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
+    let anonymous: libc::c_long = 0;
+    // SAFETY: a plain syscall; a null name asks for an anonymous keyring.
+    let r = unsafe { libc::syscall(libc::SYS_keyctl, KEYCTL_JOIN_SESSION_KEYRING, anonymous) };
+    if r < 0 {
+        let e = last_errno();
+        if !matches!(e, Errno::NOSYS | Errno::PERM | Errno::ACCESS) {
+            fail(err, Step::SessionKeyring, e);
+        }
+    }
+}
+
 fn set_stdio(err: RawFd, stdio: &[ChildStdio; 3]) {
     for (target, how) in (0..).zip(stdio) {
         let source = match *how {
@@ -662,8 +822,9 @@ fn reset_process_state() {
             libc::CLOSE_RANGE_CLOEXEC,
         )
     };
-    if r != 0 {
-        // Linux before 5.11: mark each open descriptor one by one.
+    if r != 0 && !cloexec_listed() {
+        // Linux before 5.11 without a readable `/proc/self/fd`: mark each
+        // descriptor number one by one, up to a bound.
         let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
             .current
             .unwrap_or(1 << 16)
@@ -680,6 +841,56 @@ fn reset_process_state() {
             }
         }
     }
+}
+
+/// Marks every descriptor listed in `/proc/self/fd` from 3 up
+/// close-on-exec, with a buffer on the stack; `false` if the list cannot be
+/// read.
+fn cloexec_listed() -> bool {
+    let Ok(dir) = rustix::fs::openat(
+        CWD,
+        c"/proc/self/fd",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
+    let mut entries = RawDir::new(&dir, &mut buf);
+    while let Some(entry) = entries.next() {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let Some(fd) = parse_fd(entry.file_name().to_bytes()) else {
+            continue;
+        };
+        if fd >= 3 {
+            // SAFETY: `F_GETFD`/`F_SETFD` on a descriptor number; one closed
+            // meanwhile fails with EBADF and is skipped.
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
+            }
+        }
+    }
+    true
+}
+
+/// A descriptor number from its decimal name; `None` for `.` and `..`.
+pub(crate) fn parse_fd(name: &[u8]) -> Option<RawFd> {
+    if name.is_empty() {
+        return None;
+    }
+    let mut n: RawFd = 0;
+    for &b in name {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add(RawFd::from(b - b'0'))?;
+    }
+    Some(n)
 }
 
 /// Tries each candidate path, as `execvp`: a missing one moves on, a
@@ -765,6 +976,16 @@ mod tests {
     }
 
     #[test]
+    fn fd_names_parse_without_allocating() {
+        assert_eq!(parse_fd(b"0"), Some(0));
+        assert_eq!(parse_fd(b"1234"), Some(1234));
+        assert_eq!(parse_fd(b"."), None);
+        assert_eq!(parse_fd(b".."), None);
+        assert_eq!(parse_fd(b""), None);
+        assert_eq!(parse_fd(b"99999999999"), None);
+    }
+
+    #[test]
     fn failure_records_round_trip() {
         let rec = encode_failure(Step::PivotRoot, libc::EPERM);
         assert_eq!(decode_failure(rec), Some((Step::PivotRoot, libc::EPERM)));
@@ -775,7 +996,9 @@ mod tests {
     fn exec_pointer_arrays_are_null_terminated() {
         let args = ChildArgs {
             root_dir: c"/r".into(),
+            root_remount: MountFlags::BIND,
             mounts: Vec::new(),
+            dev_remount: [MountFlags::BIND; DEV_NODES.len()],
             root_entry: RootEntry::PivotRoot,
             hostname: Vec::new(),
             loopback: false,
