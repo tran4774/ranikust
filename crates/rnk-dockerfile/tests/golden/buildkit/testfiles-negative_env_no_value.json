@@ -1,0 +1,10 @@
+{
+  "file": "testfiles-negative_env_no_value",
+  "ok": false,
+  "error": "ENV must have two arguments",
+  "error_line": 3,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

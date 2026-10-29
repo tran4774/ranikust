@@ -1,0 +1,154 @@
+{
+  "file": "testfiles_weechat",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update -qy && apt-get install tmux zsh weechat-curses -y\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \".weechat\" \"/.weechat\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \".tmux.conf\" \"/\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"export TERM=screen-256color\\\" >/.zshenv\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"zsh -c weechat\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update -qy && apt-get install tmux zsh weechat-curses -y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/.weechat",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "sources": [
+            ".weechat"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "sources": [
+            ".tmux.conf"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"export TERM=screen-256color\" >/.zshenv"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "zsh -c weechat"
+          ],
+          "files": [],
+          "lines": [
+            9,
+            9
+          ],
+          "prepend_shell": true
+        }
+      ]
+    }
+  ]
+}

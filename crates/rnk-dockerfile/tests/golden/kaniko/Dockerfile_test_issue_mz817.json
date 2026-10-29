@@ -1,0 +1,128 @@
+{
+  "file": "Dockerfile_test_issue_mz817",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"DO_EXPAND\" \"expanded\" \"=\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"<<EOF\" \"/tmp/expand.txt\"",
+      "lines": [
+        11,
+        14
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "value=${DO_EXPAND}\nescaped=\\${DO_EXPAND}\n"
+        }
+      ]
+    },
+    {
+      "dump": "copy \"<<'EOF'\" \"/tmp/literal.txt\"",
+      "lines": [
+        17,
+        19
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": false,
+          "chomp": false,
+          "content": "value=${DO_EXPAND}\n"
+        }
+      ]
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            8,
+            8
+          ],
+          "pairs": [
+            [
+              "DO_EXPAND",
+              "expanded",
+              false
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "EOF",
+              "value=${DO_EXPAND}\nescaped=\\${DO_EXPAND}\n",
+              true
+            ]
+          ],
+          "dest": "/tmp/expand.txt",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            11,
+            14
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "EOF",
+              "value=${DO_EXPAND}\n",
+              false
+            ]
+          ],
+          "dest": "/tmp/literal.txt",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            17,
+            19
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        }
+      ]
+    }
+  ]
+}

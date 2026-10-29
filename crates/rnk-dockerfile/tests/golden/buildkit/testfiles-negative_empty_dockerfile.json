@@ -1,0 +1,9 @@
+{
+  "file": "testfiles-negative_empty_dockerfile",
+  "ok": false,
+  "error": "file with no instructions",
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

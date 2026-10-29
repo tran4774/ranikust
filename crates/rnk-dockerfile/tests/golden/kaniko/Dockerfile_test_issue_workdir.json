@@ -1,0 +1,62 @@
+{
+  "file": "Dockerfile_test_issue_workdir",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/app\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "workdir",
+          "lines": [
+            8,
+            8
+          ],
+          "value": "/app"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            9,
+            9
+          ],
+          "value": "/"
+        }
+      ]
+    }
+  ]
+}

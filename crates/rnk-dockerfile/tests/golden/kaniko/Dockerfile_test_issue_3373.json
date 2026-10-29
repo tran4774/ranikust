@@ -1,0 +1,176 @@
+{
+  "file": "Dockerfile_test_issue_3373",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox:1.31\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"DIGEST\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"URL\" \"https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz\" \"=\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"ENVDIGEST\" \"sha256:a680e90a30faae7b193edf63b088a11edf856f731d93c25f1fd7c1a21cf82d06\" \"=\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--checksum=sha256:a680e90a30faae7b193edf63b088a11edf856f731d93c25f1fd7c1a21cf82d06\"] \"$URL\" \"/sha256.tar.gz\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--checksum=$ENVDIGEST\"] \"$URL\" \"/env.tar.gz\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--checksum=$DIGEST\"] \"$URL\" \"/arg.tar.gz\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox:1.31",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "DIGEST",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            6,
+            6
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            7,
+            7
+          ],
+          "pairs": [
+            [
+              "URL",
+              "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            8,
+            8
+          ],
+          "pairs": [
+            [
+              "ENVDIGEST",
+              "sha256:a680e90a30faae7b193edf63b088a11edf856f731d93c25f1fd7c1a21cf82d06",
+              false
+            ]
+          ]
+        },
+        {
+          "checksum": "sha256:a680e90a30faae7b193edf63b088a11edf856f731d93c25f1fd7c1a21cf82d06",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/sha256.tar.gz",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "sources": [
+            "$URL"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "$ENVDIGEST",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/env.tar.gz",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            11,
+            11
+          ],
+          "link": false,
+          "sources": [
+            "$URL"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "$DIGEST",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/arg.tar.gz",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            12,
+            12
+          ],
+          "link": false,
+          "sources": [
+            "$URL"
+          ],
+          "unpack": null
+        }
+      ]
+    }
+  ]
+}

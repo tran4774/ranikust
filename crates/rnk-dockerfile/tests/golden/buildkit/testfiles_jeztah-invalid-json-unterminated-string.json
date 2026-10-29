@@ -1,0 +1,20 @@
+{
+  "file": "testfiles_jeztah-invalid-json-unterminated-string",
+  "ok": false,
+  "error": "no build stage in current context",
+  "error_line": 1,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "cmd \"[\\\"echo\\\", \\\"look ma, no quote!]\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

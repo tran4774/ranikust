@@ -1,0 +1,455 @@
+{
+  "file": "Dockerfile_test_workdir_with_user",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd -g 10000 bar\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"useradd -c \\\"Foo user\\\" -u 10000 -g 10000 -m foo\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/wo/user\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"9999\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/uid\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"9999:9999\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/uid_gid\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"0\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/root_uid\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"root\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/root_username\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\"] \"/etc/passwd\" \"/etc/passwd\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\"] \"/etc/group\" \"/etc/group\"",
+      "lines": [
+        26,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"foo\"",
+      "lines": [
+        28,
+        28
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/foo_username\"",
+      "lines": [
+        29,
+        29
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"foo:10000\"",
+      "lines": [
+        31,
+        31
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/foo_username_gid\"",
+      "lines": [
+        32,
+        32
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"10000\"",
+      "lines": [
+        34,
+        34
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/foo_uid\"",
+      "lines": [
+        35,
+        35
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"10000:10000\"",
+      "lines": [
+        37,
+        37
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/foo_uid_gid\"",
+      "lines": [
+        38,
+        38
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"10000:bar\"",
+      "lines": [
+        40,
+        40
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/workdir/w/foo_uid_groupname\"",
+      "lines": [
+        41,
+        41
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd -g 10000 bar"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            2,
+            2
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "useradd -c \"Foo user\" -u 10000 -g 10000 -m foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": [
+        {
+          "cmd": "workdir",
+          "lines": [
+            10,
+            10
+          ],
+          "value": "/workdir/wo/user"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            12,
+            12
+          ],
+          "value": "9999"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            13,
+            13
+          ],
+          "value": "/workdir/w/uid"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            15,
+            15
+          ],
+          "value": "9999:9999"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            16,
+            16
+          ],
+          "value": "/workdir/w/uid_gid"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            18,
+            18
+          ],
+          "value": "0"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            19,
+            19
+          ],
+          "value": "/workdir/w/root_uid"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            21,
+            21
+          ],
+          "value": "root"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            22,
+            22
+          ],
+          "value": "/workdir/w/root_username"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/etc/passwd",
+          "excludes": [],
+          "from": "0",
+          "lines": [
+            25,
+            25
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/etc/passwd"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/etc/group",
+          "excludes": [],
+          "from": "0",
+          "lines": [
+            26,
+            26
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/etc/group"
+          ]
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            28,
+            28
+          ],
+          "value": "foo"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            29,
+            29
+          ],
+          "value": "/workdir/w/foo_username"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            31,
+            31
+          ],
+          "value": "foo:10000"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            32,
+            32
+          ],
+          "value": "/workdir/w/foo_username_gid"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            34,
+            34
+          ],
+          "value": "10000"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            35,
+            35
+          ],
+          "value": "/workdir/w/foo_uid"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            37,
+            37
+          ],
+          "value": "10000:10000"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            38,
+            38
+          ],
+          "value": "/workdir/w/foo_uid_gid"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            40,
+            40
+          ],
+          "value": "10000:bar"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            41,
+            41
+          ],
+          "value": "/workdir/w/foo_uid_groupname"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,190 @@
+{
+  "file": "Dockerfile_test_issue_mz1201",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"builder\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/w\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/abs/\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"rel/\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"builder\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"rel2/\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -f /abs/foo && test -f /w/rel/foo && test -f /w/rel2/foo\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "builder",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "workdir",
+          "lines": [
+            8,
+            8
+          ],
+          "value": "/w"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/abs/",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            9,
+            9
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "rel/",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            10,
+            10
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "builder",
+      "platform": "",
+      "lines": [
+        12,
+        12
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "rel2/",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            14,
+            14
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -f /abs/foo && test -f /w/rel/foo && test -f /w/rel2/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            15,
+            15
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

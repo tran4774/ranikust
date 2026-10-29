@@ -1,0 +1,150 @@
+{
+  "file": "Dockerfile_test_label",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"foo\" \"bar\" \"=\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"\\\"baz\\\"\" \"\\\"bat\\\"\" \"=\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"label1\" \"\\\"mylabel\\\"\" \"\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"label1\" \"$label1\" \"=\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"multilabel1\" \"multilabel1\" \"=\" \"multilabel2\" \"multilabel2\" \"=\" \"multilabel3\" \"multilabel3\" \"=\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            2,
+            2
+          ],
+          "pairs": [
+            [
+              "foo",
+              "bar",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "label",
+          "lines": [
+            3,
+            3
+          ],
+          "pairs": [
+            [
+              "\"baz\"",
+              "\"bat\"",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            4,
+            4
+          ],
+          "pairs": [
+            [
+              "label1",
+              "\"mylabel\"",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "label",
+          "lines": [
+            5,
+            5
+          ],
+          "pairs": [
+            [
+              "label1",
+              "$label1",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "label",
+          "lines": [
+            6,
+            6
+          ],
+          "pairs": [
+            [
+              "multilabel1",
+              "multilabel1",
+              false
+            ],
+            [
+              "multilabel2",
+              "multilabel2",
+              false
+            ],
+            [
+              "multilabel3",
+              "multilabel3",
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

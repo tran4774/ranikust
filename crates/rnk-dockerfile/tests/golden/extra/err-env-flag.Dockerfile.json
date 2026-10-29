@@ -1,0 +1,28 @@
+{
+  "file": "err-env-flag.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: unknown flag: --x",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env [\"--x=1\"] \"A\" \"b\" \"=\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

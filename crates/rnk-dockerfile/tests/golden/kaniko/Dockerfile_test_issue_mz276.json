@@ -1,0 +1,223 @@
+{
+  "file": "Dockerfile_test_issue_mz276",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"first\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"TARGETOS\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"TARGETARCH\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"${TARGETOS}-${TARGETARCH}\\\" = \\\"linux-amd64\\\"\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first\" \"AS\" \"nosquash\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first\" \"AS\" \"second\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"TARGETOS=linux\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"TARGETARCH=x86_64\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"${TARGETOS}-${TARGETARCH}\\\" = \\\"linux-x86_64\\\"\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "first",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "TARGETOS",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "args": [
+            [
+              "TARGETARCH",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"${TARGETOS}-${TARGETARCH}\" = \"linux-amd64\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash",
+      "base": "first",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": []
+    },
+    {
+      "name": "second",
+      "base": "first",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "TARGETOS",
+              "linux"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            11,
+            11
+          ]
+        },
+        {
+          "args": [
+            [
+              "TARGETARCH",
+              "x86_64"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            12,
+            12
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"${TARGETOS}-${TARGETARCH}\" = \"linux-x86_64\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

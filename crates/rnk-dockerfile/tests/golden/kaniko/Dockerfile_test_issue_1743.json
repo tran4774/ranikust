@@ -1,0 +1,399 @@
+{
+  "file": "Dockerfile_test_issue_1743",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"builder\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /work     && echo \\\"content\\\" > /work/target.txt     && ln -s target.txt /work/symlink.txt     && ln /work/target.txt /work/hardlink.txt     && mkfifo /work/pipe\"",
+      "lines": [
+        7,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /sep1 /sep2     && echo \\\"shared\\\" > /sep1/target.txt     && ln /sep1/target.txt /sep2/hardlink.txt\"",
+      "lines": [
+        12,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=builder\"] \"/work/\" \"/work/\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=builder\"] \"/sep1/target.txt\" \"/sep1/target.txt\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=builder\"] \"/sep2/hardlink.txt\" \"/sep2/hardlink.txt\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -L /work/symlink.txt\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"readlink /work/symlink.txt | grep -q '^target\\\\.txt$'\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"grep -q 'content' /work/symlink.txt\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %h /work/hardlink.txt)\\\" = \\\"2\\\"\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %i /work/hardlink.txt)\\\" = \\\"$(stat -c %i /work/target.txt)\\\"\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -p /work/pipe\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"grep -q 'shared' /sep1/target.txt\"",
+      "lines": [
+        26,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"grep -q 'shared' /sep2/hardlink.txt\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        5,
+        5
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "builder",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /work     && echo \"content\" > /work/target.txt     && ln -s target.txt /work/symlink.txt     && ln /work/target.txt /work/hardlink.txt     && mkfifo /work/pipe"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /sep1 /sep2     && echo \"shared\" > /sep1/target.txt     && ln /sep1/target.txt /sep2/hardlink.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        16,
+        16
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/work/",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            17,
+            17
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/work/"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/sep1/target.txt",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            18,
+            18
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/sep1/target.txt"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/sep2/hardlink.txt",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            19,
+            19
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/sep2/hardlink.txt"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -L /work/symlink.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            20,
+            20
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "readlink /work/symlink.txt | grep -q '^target\\.txt$'"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "grep -q 'content' /work/symlink.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            22,
+            22
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %h /work/hardlink.txt)\" = \"2\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            23,
+            23
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %i /work/hardlink.txt)\" = \"$(stat -c %i /work/target.txt)\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            24,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -p /work/pipe"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            25,
+            25
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "grep -q 'shared' /sep1/target.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            26,
+            26
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "grep -q 'shared' /sep2/hardlink.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            27,
+            27
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

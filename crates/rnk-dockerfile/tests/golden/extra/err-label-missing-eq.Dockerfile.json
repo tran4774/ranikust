@@ -1,0 +1,10 @@
+{
+  "file": "err-label-missing-eq.Dockerfile",
+  "ok": false,
+  "error": "Syntax error - can't find = in \"c\". Must be of the form: name=value",
+  "error_line": 2,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

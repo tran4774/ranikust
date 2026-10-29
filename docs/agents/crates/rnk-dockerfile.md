@@ -1,6 +1,6 @@
 # rnk-dockerfile
 
-> **Status:** skeleton · **Phase:** 1 ·
+> **Status:** in progress · **Phase:** 1 ·
 > **Depends on:** — (pure data) · **Used by:** `rnk-builder` (`rnk-sched`, `rnk-cache` [open: Q-028]) · **Path:** `crates/rnk-dockerfile/`
 
 **TL;DR:** A hand port of BuildKit v0.34.0's parser, instruction set and
@@ -25,15 +25,20 @@ its output on the same file is a bug, heredoc names and expansion included.
 ## API (planned)
 
 ```rust
-pub fn parse(src: &str) -> Result<Dockerfile, ParseError>;              // [decided] hand port, ADR-0015
+pub fn parse_ast(src: &str) -> Result<Ast, Error>;                       // [done] raw tree, BuildKit parser.Parse
+pub struct Ast { pub escape: char, pub directives: Vec<Directive>, pub nodes: Vec<Node>, pub warnings: Vec<Warning> } // [done]
+pub struct Node { pub keyword, flags, args, child, json, heredocs, original, lines: Lines, comments } // [done] parser.Node
+pub struct Error { kind: ErrorKind, lines: Option<Lines>, message } // [done] lines always set for text errors
+pub fn parse(src: &str) -> Result<Dockerfile, Error>;                   // [decided] hand port, ADR-0015
 pub struct Dockerfile { pub escape: char, pub meta_args: Vec<ArgDecl>, pub stages: Vec<Stage> } // [design]
 pub struct Stage { pub name: Option<String>, pub base: String, pub platform: Option<String>,
                    pub instructions: Vec<Located<Instruction>> }        // [design] base unexpanded, name lower-cased
 pub enum Instruction { Run(Run), Copy(Copy), Add(Add), Env(Vec<KeyValue>), Arg(Vec<ArgDecl>), Label(Vec<KeyValue>),
     Workdir(String), User(String), Expose(Vec<String>), Volume(Vec<String>), Entrypoint(CmdLine), Cmd(CmdLine),
     Shell(Vec<String>), StopSignal(String), Healthcheck(Healthcheck), Onbuild(String), Maintainer(String) } // [design]
-pub struct Heredoc { pub name: String, pub content: String, pub expand: bool, pub chomp: bool } // [design]
-pub struct Lexer { escape: char }   // [design] port of lex.go: process_word(), process_words()
+pub struct Heredoc { pub name: String, pub file_descriptor: u64, pub expand: bool, pub chomp: bool, pub content: String } // [done]
+pub struct Lexer { escape: char, .. } // [done] port of lex.go: process_word(), process_words(), process_word_with_matches()
+pub trait Env { fn get(&self, name: &str) -> Option<&str>; } // [done] BuildKit EnvGetter
 impl Instruction { pub fn expand(&mut self, lex: &Lexer, env: &dyn Env) -> Result<(), ExpandError>; } // [design] BuildKit Expand()
 pub fn stage_graph(df: &Dockerfile, args: &BuildArgs, target: Option<&str>) -> Result<StageGraph, GraphError>; // [design]
 pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [design] phase 2

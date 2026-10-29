@@ -1,0 +1,116 @@
+{
+  "file": "Dockerfile_onbuild_base",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:18.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"dir\" \"/tmp/dir/\" \"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo \\\"onbuild\\\" > /tmp/onbuild\")",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"mkdir $dir\")",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo \\\"onbuild 2\\\" > ${dir}/onbuild2\")",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (workdir \"/new/workdir\")",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:18.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            2,
+            2
+          ],
+          "pairs": [
+            [
+              "dir",
+              "/tmp/dir/",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo \"onbuild\" > /tmp/onbuild",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN  mkdir $dir",
+          "lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo \"onbuild 2\" > ${dir}/onbuild2",
+          "lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "WORKDIR /new/workdir",
+          "lines": [
+            6,
+            6
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "file": "Dockerfile_test_issue_add",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"context/foo\" \"foo\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "ubuntu",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "foo",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "sources": [
+            "context/foo"
+          ],
+          "unpack": null
+        }
+      ]
+    }
+  ]
+}

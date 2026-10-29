@@ -1,0 +1,48 @@
+{
+  "file": "Dockerfile_test_issue_mz793",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/data\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "volume",
+          "lines": [
+            8,
+            8
+          ],
+          "values": [
+            "/data"
+          ]
+        }
+      ]
+    }
+  ]
+}

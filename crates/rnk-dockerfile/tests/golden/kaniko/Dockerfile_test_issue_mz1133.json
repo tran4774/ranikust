@@ -1,0 +1,652 @@
+{
+  "file": "Dockerfile_test_issue_mz1133",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"builder\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /out && printf built > /out/file\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /real /keep /xreal && ln -s /real /link && ln -s /xreal /xlink\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo base > /keep/base && printf target > /target && ln -s /target /aslink && printf old > /old\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/link/foo\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/keep/foo\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/aslink\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/old\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\" \"--from=builder\"] \"/out/file\" \"/xlink/file\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test ! -L /link && test -f /link/foo && test ! -e /real/foo\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -f /keep/base && test -f /keep/foo\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test ! -L /aslink && test \\\"$(cat /target)\\\" = target\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(cat /old)\\\" = \\\"$(cat /keep/foo)\\\"\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test ! -L /xlink && test \\\"$(cat /xlink/file)\\\" = built && test ! -e /xreal/file\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /treal /ureal /xureal /preal && ln -s /treal /tlink && ln -s /ureal /ulink && ln -s /xureal /xulink && ln -s /preal /plink\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--link\"] \"context/tars/file.tar\" \"/tlink/\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--link\"] \"https://raw.githubusercontent.com/osscontainertools/kaniko/e89c20ae932296e04f44c838b5580d39b00e19d8/README.md\" \"/ulink/\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--link\" \"--unpack=true\"] \"https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz\" \"/xulink/\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--link\" \"--unpack=true\"] \"https://raw.githubusercontent.com/osscontainertools/kaniko/e89c20ae932296e04f44c838b5580d39b00e19d8/README.md\" \"/plink/\"",
+      "lines": [
+        26,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test ! -L /tlink && test ! -L /ulink && test ! -L /xulink && test ! -L /plink && test -z \\\"$(find /treal /ureal /xureal /preal -mindepth 1)\\\"\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"adduser -D -u 1234 app\"",
+      "lines": [
+        28,
+        28
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"app\"",
+      "lines": [
+        29,
+        29
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/linkuser/foo\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\" \"--chown=1234:4321\"] \"context/foo\" \"/linkchown/foo\"",
+      "lines": [
+        31,
+        31
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "builder",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /out && printf built > /out/file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /real /keep /xreal && ln -s /real /link && ln -s /xreal /xlink"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            10,
+            10
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo base > /keep/base && printf target > /target && ln -s /target /aslink && printf old > /old"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/link/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            12,
+            12
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/keep/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            13,
+            13
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/aslink",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            14,
+            14
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/old",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            15,
+            15
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/xlink/file",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            16,
+            16
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "/out/file"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test ! -L /link && test -f /link/foo && test ! -e /real/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            17,
+            17
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -f /keep/base && test -f /keep/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test ! -L /aslink && test \"$(cat /target)\" = target"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(cat /old)\" = \"$(cat /keep/foo)\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            20,
+            20
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test ! -L /xlink && test \"$(cat /xlink/file)\" = built && test ! -e /xreal/file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /treal /ureal /xureal /preal && ln -s /treal /tlink && ln -s /ureal /ulink && ln -s /xureal /xulink && ln -s /preal /plink"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            22,
+            22
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/tlink/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            23,
+            23
+          ],
+          "link": true,
+          "sources": [
+            "context/tars/file.tar"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/ulink/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            24,
+            24
+          ],
+          "link": true,
+          "sources": [
+            "https://raw.githubusercontent.com/osscontainertools/kaniko/e89c20ae932296e04f44c838b5580d39b00e19d8/README.md"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/xulink/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            25,
+            25
+          ],
+          "link": true,
+          "sources": [
+            "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz"
+          ],
+          "unpack": true
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/plink/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            26,
+            26
+          ],
+          "link": true,
+          "sources": [
+            "https://raw.githubusercontent.com/osscontainertools/kaniko/e89c20ae932296e04f44c838b5580d39b00e19d8/README.md"
+          ],
+          "unpack": true
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test ! -L /tlink && test ! -L /ulink && test ! -L /xulink && test ! -L /plink && test -z \"$(find /treal /ureal /xureal /preal -mindepth 1)\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            27,
+            27
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "adduser -D -u 1234 app"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            28,
+            28
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            29,
+            29
+          ],
+          "value": "app"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/linkuser/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            30,
+            30
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "1234:4321",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/linkchown/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            31,
+            31
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        }
+      ]
+    }
+  ]
+}

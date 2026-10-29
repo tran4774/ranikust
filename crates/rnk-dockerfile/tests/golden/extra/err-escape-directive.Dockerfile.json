@@ -1,0 +1,9 @@
+{
+  "file": "err-escape-directive.Dockerfile",
+  "ok": false,
+  "error": "invalid escape token 'x' does not match ` or \\",
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

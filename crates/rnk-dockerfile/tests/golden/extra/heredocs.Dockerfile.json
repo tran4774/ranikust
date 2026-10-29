@@ -1,0 +1,439 @@
+{
+  "file": "heredocs.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"<<EOF\"",
+      "lines": [
+        2,
+        4
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "echo hello\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"<<-EOT bash -ex\"",
+      "lines": [
+        5,
+        8
+      ],
+      "heredocs": [
+        {
+          "name": "EOT",
+          "fd": 0,
+          "expand": true,
+          "chomp": true,
+          "content": "\techo tabbed\n\t\techo more\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"cat <<A > /a && cat <<\\\"B\\\" > /b\"",
+      "lines": [
+        9,
+        13
+      ],
+      "heredocs": [
+        {
+          "name": "A",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "one $HOME\n"
+        },
+        {
+          "name": "B",
+          "fd": 0,
+          "expand": false,
+          "chomp": false,
+          "content": "two $HOME\n"
+        }
+      ]
+    },
+    {
+      "dump": "copy \"<<file1\" \"<<'file2'\" \"/dest/\"",
+      "lines": [
+        14,
+        18
+      ],
+      "heredocs": [
+        {
+          "name": "file1",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "content 1 ${X}\n"
+        },
+        {
+          "name": "file2",
+          "fd": 0,
+          "expand": false,
+          "chomp": false,
+          "content": "content 2 ${X}\n"
+        }
+      ]
+    },
+    {
+      "dump": "copy [\"--chmod=755\"] \"<<-EOF\" \"/usr/local/bin/run.sh\"",
+      "lines": [
+        19,
+        22
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": true,
+          "content": "\t#!/bin/sh\n\techo run\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"3<<EOF cat <&3\"",
+      "lines": [
+        23,
+        25
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 3,
+          "expand": true,
+          "chomp": false,
+          "content": "fd three\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"<<EOF\"",
+      "lines": [
+        26,
+        29
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "#!/usr/bin/env python3\nprint(\"hi\")\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"echo \\\"<<NOTHEREDOC\\\" && echo '<<ALSO'\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cat\" \"<<EOF\"",
+      "lines": [
+        31,
+        31
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"<<EOF\")",
+      "lines": [
+        32,
+        34
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "echo onbuild heredoc\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"<<EOF > /dev/null\"",
+      "lines": [
+        35,
+        36
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": ""
+        }
+      ]
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "<<EOF"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOF",
+              "echo hello\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            2,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "<<-EOT bash -ex"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOT",
+              "\techo tabbed\n\t\techo more\n",
+              true
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            5,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat <<A > /a && cat <<\"B\" > /b"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "A",
+              "one $HOME\n",
+              false
+            ],
+            [
+              "B",
+              "two $HOME\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            9,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "file1",
+              "content 1 ${X}\n",
+              true
+            ],
+            [
+              "file2",
+              "content 2 ${X}\n",
+              false
+            ]
+          ],
+          "dest": "/dest/",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            14,
+            18
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        },
+        {
+          "chmod": "755",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "EOF",
+              "#!/bin/sh\necho run\n",
+              true
+            ]
+          ],
+          "dest": "/usr/local/bin/run.sh",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            19,
+            22
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "3<<EOF cat <&3"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOF",
+              "fd three\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            23,
+            25
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "<<EOF"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOF",
+              "#!/usr/bin/env python3\nprint(\"hi\")\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            26,
+            29
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"<<NOTHEREDOC\" && echo '<<ALSO'"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            30,
+            30
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat",
+            "<<EOF"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            31,
+            31
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": false,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN <<EOF\necho onbuild heredoc\nEOF",
+          "lines": [
+            32,
+            34
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "<<EOF > /dev/null"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOF",
+              "",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            35,
+            36
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

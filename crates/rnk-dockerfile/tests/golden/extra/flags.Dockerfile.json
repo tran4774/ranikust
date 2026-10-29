@@ -1,0 +1,734 @@
+{
+  "file": "flags.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"BASE=alpine:3.20\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"PLATFORM\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from [\"--platform=$PLATFORM\"] \"${BASE}\" \"AS\" \"Build\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=build\" \"--chown=1000:1000\" \"--chmod=0644\" \"--link\"] \"a\" \"b\" \"/dst/\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\" \"--parents\" \"--exclude=*.tmp\" \"--exclude=**/cache\"] \"src/\" \"/app/\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chown=user name:group\"] \"--weird-name\" \"/x\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link=false\" \"--parents=true\"] \"[\\\"a\" \"b\\\",\" \"\\\"c\\\"]\" \"/d/\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--checksum=sha256:0123\" \"--keep-git-dir=true\" \"--unpack=false\"] \"https://example.com/a.tar\" \"/x/\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--keep-git-dir\" \"--unpack\" \"--exclude=a\" \"--exclude=b\" \"--link\"] \"git@example.com:x/y.git\" \"/src\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chown=$UID:$GID\" \"--chmod=$MODE\"] \"a\" \"/b\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/root/.cache,id=pip,sharing=locked,uid=1000,gid=1000,mode=0755\"] \"pip install x\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=token,env=TOKEN,required=true\" \"--mount=type=secret,target=/run/secrets/x,required\"] \"echo\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=ssh\" \"--mount=type=tmpfs,target=/tmp,size=64m\" \"--mount=type=bind,from=build,source=/out,target=/in,rw\"] \"true\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=target=/ctx,ro=false\" \"--mount=type=cache,target=/c,readonly=true\" \"--network=none\" \"--security=insecure\"] \"ls\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--network=host\"] \"true\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--device=nvidia.com/gpu=all,required\" \"--device=name=x\"] \"true\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/a,ro\" \"--mount=type=bind,target=/b,readwrite\"] \"echo\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,\\\"target=/a,b\\\"\"] \"echo\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,src=/s,dst=/d,destination=/e\"] \"echo\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=Build\"] \"a\" \"b\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "BASE",
+          "alpine:3.20"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "args": [
+        [
+          "PLATFORM",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        2,
+        2
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "build",
+      "base": "${BASE}",
+      "platform": "$PLATFORM",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": [
+        {
+          "chmod": "0644",
+          "chown": "1000:1000",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/dst/",
+          "excludes": [],
+          "from": "build",
+          "lines": [
+            4,
+            4
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/app/",
+          "excludes": [
+            "*.tmp",
+            "**/cache"
+          ],
+          "from": "0",
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "parents": true,
+          "sources": [
+            "src/"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "user name:group",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/x",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "--weird-name"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/d/",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "parents": true,
+          "sources": [
+            "[\"a",
+            "b\",",
+            "\"c\"]"
+          ]
+        },
+        {
+          "checksum": "sha256:0123",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/x/",
+          "excludes": [],
+          "keep_git_dir": true,
+          "lines": [
+            8,
+            8
+          ],
+          "link": false,
+          "sources": [
+            "https://example.com/a.tar"
+          ],
+          "unpack": false
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/src",
+          "excludes": [
+            "a",
+            "b"
+          ],
+          "keep_git_dir": true,
+          "lines": [
+            9,
+            9
+          ],
+          "link": true,
+          "sources": [
+            "git@example.com:x/y.git"
+          ],
+          "unpack": true
+        },
+        {
+          "checksum": "",
+          "chmod": "$MODE",
+          "chown": "$UID:$GID",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/b",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "sources": [
+            "a"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "pip install x"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": 1000,
+              "id": "pip",
+              "mode": 493,
+              "readonly": false,
+              "required": false,
+              "sharing": "locked",
+              "size": 0,
+              "source": "",
+              "target": "/root/.cache",
+              "type": "cache",
+              "uid": 1000
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [
+            {
+              "env": "TOKEN",
+              "from": "",
+              "gid": null,
+              "id": "token",
+              "mode": null,
+              "readonly": true,
+              "required": true,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "",
+              "type": "secret",
+              "uid": null
+            },
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": true,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/run/secrets/x",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "true"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "",
+              "type": "ssh",
+              "uid": null
+            },
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 67108864,
+              "source": "",
+              "target": "/tmp",
+              "type": "tmpfs",
+              "uid": null
+            },
+            {
+              "env": null,
+              "from": "build",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "/out",
+              "target": "/in",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount",
+            "network",
+            "security"
+          ],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/ctx",
+              "type": "bind",
+              "uid": null
+            },
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/c",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "none",
+          "prepend_shell": true,
+          "security": "insecure"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "true"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "network"
+          ],
+          "lines": [
+            15,
+            15
+          ],
+          "mounts": [],
+          "network": "host",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "true"
+          ],
+          "devices": [
+            [
+              "nvidia.com/gpu=all",
+              true
+            ],
+            [
+              "x",
+              false
+            ]
+          ],
+          "files": [],
+          "flags_used": [
+            "device"
+          ],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            17,
+            17
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/a",
+              "type": "cache",
+              "uid": null
+            },
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/b",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/a,b",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "/s",
+              "target": "/e",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "b",
+          "excludes": [],
+          "from": "Build",
+          "lines": [
+            20,
+            20
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "a"
+          ]
+        }
+      ]
+    }
+  ]
+}

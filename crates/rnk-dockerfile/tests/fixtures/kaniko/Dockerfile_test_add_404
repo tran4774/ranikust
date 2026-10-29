@@ -1,0 +1,4 @@
+FROM scratch
+
+# Testing that any HTTP failure is handled properly
+ADD http://httpbin.org/status/404 .

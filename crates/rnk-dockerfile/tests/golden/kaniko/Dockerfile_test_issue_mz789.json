@@ -1,0 +1,184 @@
+{
+  "file": "Dockerfile_test_issue_mz789",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"src\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo x > /x\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=src\"] \"/x\" \"/x\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"nosquash\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"final\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo y > /y\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "src",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo x > /x"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "base",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        13,
+        13
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/x",
+          "excludes": [],
+          "from": "src",
+          "lines": [
+            14,
+            14
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nosquash",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": []
+    },
+    {
+      "name": "final",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        17,
+        17
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo y > /y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

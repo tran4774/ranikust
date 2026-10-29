@@ -1,0 +1,144 @@
+{
+  "file": "Dockerfile_test_issue_mz774",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\" \"AS\" \"base\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /opt/keep && echo hi > /opt/keep/marker\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"mutate\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"rm -rf /opt/keep\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"final\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=mutate\"] \"/opt/\" \"/opt/\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /opt/keep && echo hi > /opt/keep/marker"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "mutate",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        13,
+        13
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "rm -rf /opt/keep"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "final",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        16,
+        16
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/opt/",
+          "excludes": [],
+          "from": "mutate",
+          "lines": [
+            17,
+            17
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/opt/"
+          ]
+        }
+      ]
+    }
+  ]
+}

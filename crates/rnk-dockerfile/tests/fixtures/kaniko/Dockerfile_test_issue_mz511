@@ -1,0 +1,21 @@
+ARG IMAGE_REPO
+FROM ${IMAGE_REPO}busybox AS first
+
+# we can mount a secret to a target file
+RUN --mount=type=secret,id=netrc,target=/root/.netrc \
+    cat /root/.netrc
+FROM first AS nosquash
+
+# and the secret is persisted in multistage builds
+FROM first AS second
+
+RUN --mount=type=secret,id=netrc,target=/root/.netrc \
+    cat /root/.netrc
+
+# and even if the original file is deleted
+# mz511: we're using /etc/nsswitch.conf because it pre-exists
+# in the kaniko image and can therefore safely be deleted.
+RUN rm /etc/nsswitch.conf
+
+RUN --mount=type=secret,id=netrc,target=/root/.netrc \
+    cat /root/.netrc

@@ -1,0 +1,501 @@
+{
+  "file": "Dockerfile_test_issue_3344",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine\" \"AS\" \"base\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"HELLO\" \"UPSTREAM\" \"=\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"BAR\" \"from_env\" \"=\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"case1\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"HELLO\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$HELLO\\\" | tee /out\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"alpine\" \"AS\" \"case2\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"FOO=arg_val\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"FOO\" \"env_val\" \"=\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$FOO\\\" | tee /out\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"alpine\" \"AS\" \"case3\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"FOO\" \"env_val\" \"=\"",
+      "lines": [
+        28,
+        28
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"FOO\"",
+      "lines": [
+        29,
+        29
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$FOO\\\" | tee /out\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"case4\"",
+      "lines": [
+        34,
+        34
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"BAR=argdef\"",
+      "lines": [
+        35,
+        35
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$BAR\\\" | tee /out\"",
+      "lines": [
+        36,
+        36
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"alpine\" \"AS\" \"result\"",
+      "lines": [
+        39,
+        39
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=case1\"] \"/out\" \"/case1\"",
+      "lines": [
+        40,
+        40
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=case2\"] \"/out\" \"/case2\"",
+      "lines": [
+        41,
+        41
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=case3\"] \"/out\" \"/case3\"",
+      "lines": [
+        42,
+        42
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=case4\"] \"/out\" \"/case4\"",
+      "lines": [
+        43,
+        43
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            10,
+            10
+          ],
+          "pairs": [
+            [
+              "HELLO",
+              "UPSTREAM",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            11,
+            11
+          ],
+          "pairs": [
+            [
+              "BAR",
+              "from_env",
+              false
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "case1",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        14,
+        14
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "HELLO",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            15,
+            15
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$HELLO\" | tee /out"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "case2",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        20,
+        20
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "FOO",
+              "arg_val"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            21,
+            21
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            22,
+            22
+          ],
+          "pairs": [
+            [
+              "FOO",
+              "env_val",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$FOO\" | tee /out"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            23,
+            23
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "case3",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        27,
+        27
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            28,
+            28
+          ],
+          "pairs": [
+            [
+              "FOO",
+              "env_val",
+              false
+            ]
+          ]
+        },
+        {
+          "args": [
+            [
+              "FOO",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            29,
+            29
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$FOO\" | tee /out"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            30,
+            30
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "case4",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        34,
+        34
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "BAR",
+              "argdef"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            35,
+            35
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$BAR\" | tee /out"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            36,
+            36
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "result",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        39,
+        39
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/case1",
+          "excludes": [],
+          "from": "case1",
+          "lines": [
+            40,
+            40
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/case2",
+          "excludes": [],
+          "from": "case2",
+          "lines": [
+            41,
+            41
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/case3",
+          "excludes": [],
+          "from": "case3",
+          "lines": [
+            42,
+            42
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/case4",
+          "excludes": [],
+          "from": "case4",
+          "lines": [
+            43,
+            43
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        }
+      ]
+    }
+  ]
+}

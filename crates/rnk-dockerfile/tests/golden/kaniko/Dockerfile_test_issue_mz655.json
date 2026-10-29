@@ -1,0 +1,157 @@
+{
+  "file": "Dockerfile_test_issue_mz655",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"BASE_TAG\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"busybox:${BASE_TAG}\" \"AS\" \"src\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\" \"AS\" \"intermediate\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/same\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=src\"] \"/bin/busybox\" \"/diff\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=intermediate\"] \"/same\" \"/same\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "BASE_TAG",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        4,
+        4
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "src",
+      "base": "busybox:${BASE_TAG}",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": []
+    },
+    {
+      "name": "intermediate",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": [
+        {
+          "cmd": "workdir",
+          "lines": [
+            8,
+            8
+          ],
+          "value": "/same"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/diff",
+          "excludes": [],
+          "from": "src",
+          "lines": [
+            11,
+            11
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/bin/busybox"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        13,
+        13
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/same",
+          "excludes": [],
+          "from": "intermediate",
+          "lines": [
+            16,
+            16
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/same"
+          ]
+        }
+      ]
+    }
+  ]
+}

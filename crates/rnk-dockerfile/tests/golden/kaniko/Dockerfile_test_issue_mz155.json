@@ -1,0 +1,175 @@
+{
+  "file": "Dockerfile_test_issue_mz155",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\" \"AS\" \"first-image\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /tmp/testdir     && echo \\\"hello\\\" > /tmp/testdir/file.txt     && touch -d '2000-01-01' /tmp/testdir     && touch -d '2000-01-01' /tmp/testdir/file.txt\"",
+      "lines": [
+        3,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"stat /tmp/testdir     && stat /tmp/testdir/file.txt\"",
+      "lines": [
+        8,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"if ls -l /proc/1/exe | grep -q '/kaniko/executor'; then         if [ $(stat -c %X /tmp/testdir) -ne $(date -d '2000-01-01' +%s) ]; then             echo \\\"FAIL: atime changed on /tmp/testdir\\\";             exit 1;         fi;         if [ $(stat -c %X /tmp/testdir/file.txt) -ne $(date -d '2000-01-01' +%s) ]; then             echo \\\"FAIL: atime changed /tmp/testdir/file.txt\\\";             exit 1;         fi;     else         echo \\\"PID1 is not Kaniko, skipping check\\\";     fi\"",
+      "lines": [
+        15,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"debian:12.10\" \"AS\" \"second-image\"",
+      "lines": [
+        28,
+        28
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=first-image\"] \"/tmp/testdir\" \"/tmp/testdir\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"stat /tmp/testdir     && stat /tmp/testdir/file.txt\"",
+      "lines": [
+        32,
+        33
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "first-image",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /tmp/testdir     && echo \"hello\" > /tmp/testdir/file.txt     && touch -d '2000-01-01' /tmp/testdir     && touch -d '2000-01-01' /tmp/testdir/file.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "stat /tmp/testdir     && stat /tmp/testdir/file.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "if ls -l /proc/1/exe | grep -q '/kaniko/executor'; then         if [ $(stat -c %X /tmp/testdir) -ne $(date -d '2000-01-01' +%s) ]; then             echo \"FAIL: atime changed on /tmp/testdir\";             exit 1;         fi;         if [ $(stat -c %X /tmp/testdir/file.txt) -ne $(date -d '2000-01-01' +%s) ]; then             echo \"FAIL: atime changed /tmp/testdir/file.txt\";             exit 1;         fi;     else         echo \"PID1 is not Kaniko, skipping check\";     fi"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            15,
+            26
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "second-image",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        28,
+        28
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp/testdir",
+          "excludes": [],
+          "from": "first-image",
+          "lines": [
+            30,
+            30
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/tmp/testdir"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "stat /tmp/testdir     && stat /tmp/testdir/file.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            32,
+            33
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

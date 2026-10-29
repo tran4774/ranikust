@@ -1,0 +1,129 @@
+{
+  "file": "Dockerfile_test_issue_mz863",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=0600\"] \"context/foo\" \"/dest/foo\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=0705\"] \"context/foo\" \"/nested/a/b/foo\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c '%a' /dest)\\\" = \\\"600\\\"  && test \\\"$(stat -c '%a' /nested)\\\" = \\\"705\\\"  && test \\\"$(stat -c '%a' /nested/a)\\\" = \\\"705\\\"  && test \\\"$(stat -c '%a' /nested/a/b)\\\" = \\\"705\\\"\"",
+      "lines": [
+        9,
+        12
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "chmod": "0600",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/dest/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "0705",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/nested/a/b/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            8,
+            8
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c '%a' /dest)\" = \"600\"  && test \"$(stat -c '%a' /nested)\" = \"705\"  && test \"$(stat -c '%a' /nested/a)\" = \"705\"  && test \"$(stat -c '%a' /nested/a/b)\" = \"705\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

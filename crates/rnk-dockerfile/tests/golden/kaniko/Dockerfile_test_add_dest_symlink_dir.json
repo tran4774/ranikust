@@ -1,0 +1,57 @@
+{
+  "file": "Dockerfile_test_add_dest_symlink_dir",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"phusion/baseimage:0.11\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"context/foo\" \"/etc/service/foo\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "phusion/baseimage:0.11",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/etc/service/foo",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            2,
+            2
+          ],
+          "link": false,
+          "sources": [
+            "context/foo"
+          ],
+          "unpack": null
+        }
+      ]
+    }
+  ]
+}

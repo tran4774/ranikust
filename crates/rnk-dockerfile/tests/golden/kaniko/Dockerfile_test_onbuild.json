@@ -1,0 +1,169 @@
+{
+  "file": "Dockerfile_test_onbuild",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}onbuild-base:latest\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"context/foo\" \"foo\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"dir\" \"/new/workdir/\" \"\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"file\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo \\\"onbuild\\\" > $file\")",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo \\\"onbuild 2\\\" > ${dir}\")",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (workdir \"/new/workdir\")",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}onbuild-base:latest",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            3,
+            3
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            4,
+            4
+          ],
+          "pairs": [
+            [
+              "dir",
+              "/new/workdir/",
+              true
+            ]
+          ]
+        },
+        {
+          "args": [
+            [
+              "file",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo \"onbuild\" > $file",
+          "lines": [
+            6,
+            6
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo \"onbuild 2\" > ${dir}",
+          "lines": [
+            7,
+            7
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "WORKDIR /new/workdir",
+          "lines": [
+            8,
+            8
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "file": "err-from-args.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 1: FROM requires either one or three arguments",
+  "error_line": 1,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\" \"b\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

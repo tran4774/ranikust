@@ -1,0 +1,28 @@
+{
+  "file": "err-flag-no-value.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: missing a value on flag: --from",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from\"] \"a\" \"b\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

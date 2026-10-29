@@ -1,0 +1,126 @@
+{
+  "file": "testfiles_znc",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"maintainer\" \"Erik Hollensbe <erik@hollensbe.org>\" \"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update && apt-get install znc -y\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"conf\" \"/.znc\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"/usr/bin/znc\" \"-f\" \"-r\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            2,
+            2
+          ],
+          "pairs": [
+            [
+              "maintainer",
+              "Erik Hollensbe <erik@hollensbe.org>",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update && apt-get install znc -y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/.znc",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "sources": [
+            "conf"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "/usr/bin/znc",
+            "-f",
+            "-r"
+          ],
+          "files": [],
+          "lines": [
+            7,
+            7
+          ],
+          "prepend_shell": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "file": "Dockerfile_test_issue_mz1007",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"BASE\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${BASE}\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"mz1007\" \"fallback\" \"=\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "BASE",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${BASE}",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            3,
+            3
+          ],
+          "pairs": [
+            [
+              "mz1007",
+              "fallback",
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

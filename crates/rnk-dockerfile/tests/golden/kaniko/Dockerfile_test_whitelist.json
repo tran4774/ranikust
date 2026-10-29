@@ -1,0 +1,55 @@
+{
+  "file": "Dockerfile_test_whitelist",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian@sha256:38236c068c393272ad02db100e09cac36a5465149e2924a035ee60d6c60c38fe\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /var/test     && mkdir -p /etc/test     && touch /var/test/testfile     && touch /etc/test/testfile     && ls -lah /var/test     && ls -lah /etc/test;\"",
+      "lines": [
+        6,
+        11
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian@sha256:38236c068c393272ad02db100e09cac36a5465149e2924a035ee60d6c60c38fe",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /var/test     && mkdir -p /etc/test     && touch /var/test/testfile     && touch /etc/test/testfile     && ls -lah /var/test     && ls -lah /etc/test;"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

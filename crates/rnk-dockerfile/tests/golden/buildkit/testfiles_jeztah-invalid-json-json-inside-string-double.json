@@ -1,0 +1,20 @@
+{
+  "file": "testfiles_jeztah-invalid-json-json-inside-string-double",
+  "ok": false,
+  "error": "no build stage in current context",
+  "error_line": 1,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "cmd \"\\\"[\\\\\\\"echo\\\\\\\", \\\\\\\"Phew, I just managed to escaped those double quotes\\\\\\\"]\\\"\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

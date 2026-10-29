@@ -1,0 +1,74 @@
+{
+  "file": "Dockerfile_test_arg_from_single_quotes",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_NAME='busybox:latest'\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"$IMAGE_NAME\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"PATH\" \"\\\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\\\"\" \"=\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_NAME",
+          "'busybox:latest'"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "$IMAGE_NAME",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            4,
+            4
+          ],
+          "pairs": [
+            [
+              "PATH",
+              "\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"",
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

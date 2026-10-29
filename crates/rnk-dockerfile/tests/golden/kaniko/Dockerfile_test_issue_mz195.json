@@ -1,0 +1,172 @@
+{
+  "file": "Dockerfile_test_issue_mz195",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\" \"AS\" \"first-stage\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first-stage\" \"AS\" \"second-stage\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first-stage\" \"AS\" \"third-stage\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch test\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"second-stage\" \"AS\" \"fourth-stage\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=third-stage\"] \"test\" \"test\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"debian:12.10\" \"AS\" \"noise\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"fourth-stage\" \"AS\" \"fifth-stage\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "first-stage",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": []
+    },
+    {
+      "name": "second-stage",
+      "base": "first-stage",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": []
+    },
+    {
+      "name": "third-stage",
+      "base": "first-stage",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch test"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "fourth-stage",
+      "base": "second-stage",
+      "platform": "",
+      "lines": [
+        12,
+        12
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "test",
+          "excludes": [],
+          "from": "third-stage",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "test"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "noise",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        17,
+        17
+      ],
+      "commands": []
+    },
+    {
+      "name": "fifth-stage",
+      "base": "fourth-stage",
+      "platform": "",
+      "lines": [
+        18,
+        18
+      ],
+      "commands": []
+    }
+  ]
+}

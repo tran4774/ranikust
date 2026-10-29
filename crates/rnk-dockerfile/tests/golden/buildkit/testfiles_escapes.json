@@ -1,0 +1,151 @@
+{
+  "file": "testfiles_escapes",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 1,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"maintainer\" \"Erik \\\\\\\\Hollensbe <erik@hollensbe.org>\\\\\\\"\" \"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get \\\\update &&   apt-get \\\\\\\"install znc -y\"",
+      "lines": [
+        4,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"\\\\conf\\\\\\\\\\\"\" \"/.znc\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"foo bar baz\"",
+      "lines": [
+        8,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"/usr\\\\\\\"/bin/znc\" \"-f\" \"-r\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            2,
+            2
+          ],
+          "pairs": [
+            [
+              "maintainer",
+              "Erik \\\\Hollensbe <erik@hollensbe.org>\\\"",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get \\update &&   apt-get \\\"install znc -y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            5
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/.znc",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "sources": [
+            "\\conf\\\\\""
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "foo bar baz"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "/usr\\\"/bin/znc",
+            "-f",
+            "-r"
+          ],
+          "files": [],
+          "lines": [
+            14,
+            14
+          ],
+          "prepend_shell": false
+        }
+      ]
+    }
+  ]
+}

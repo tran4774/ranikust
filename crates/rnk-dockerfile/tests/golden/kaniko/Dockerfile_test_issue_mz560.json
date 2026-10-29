@@ -1,0 +1,158 @@
+{
+  "file": "Dockerfile_test_issue_mz560",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=755\"] \"<<tini\" \"/kaniko/tini\"",
+      "lines": [
+        15,
+        18
+      ],
+      "heredocs": [
+        {
+          "name": "tini",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "#!/bin/sh\necho WARN HIJACKED\n"
+        }
+      ]
+    },
+    {
+      "dump": "onbuild (copy [\"--chmod=755\"] \"<<tini\" \"/kaniko/tini\")",
+      "lines": [
+        22,
+        25
+      ],
+      "heredocs": [
+        {
+          "name": "tini",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "#!/bin/sh\necho WARN HIJACKED\n"
+        }
+      ]
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}hijack:latest\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /kaniko || true\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        8,
+        8
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "chmod": "755",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "tini",
+              "#!/bin/sh\necho WARN HIJACKED\n",
+              true
+            ]
+          ],
+          "dest": "/kaniko/tini",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            15,
+            18
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "COPY --chmod=755 <<tini /kaniko/tini\n#!/bin/sh\necho WARN HIJACKED\ntini",
+          "lines": [
+            22,
+            25
+          ]
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}hijack:latest",
+      "platform": "",
+      "lines": [
+        27,
+        27
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /kaniko || true"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            30,
+            30
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "file": "err-arg-blank.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: ARG names can not be blank",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"=x\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

@@ -23,6 +23,43 @@ Copied verbatim for use by contributors' AI coding agents. It is not part of
 the ranikust binary.
 
 
+Code derived from BuildKit
+--------------------------
+
+Source:    https://github.com/moby/buildkit, tag v0.34.0
+           (the version kaniko vendors), frontend/dockerfile/
+License:   Apache License, Version 2.0. BuildKit has no NOTICE file; its
+           files carry no copyright line ("The BuildKit Authors").
+
+  crates/rnk-dockerfile/src/shell.rs          shell/lex.go
+  crates/rnk-dockerfile/src/shell/pattern.rs  shell/lex.go
+  crates/rnk-dockerfile/src/shell/tests.rs    shell/lex_test.go
+  crates/rnk-dockerfile/src/parser.rs         parser/parser.go,
+                                              parser/line_parsers.go,
+                                              parser/split_command.go,
+                                              parser/directives.go
+
+Test data from BuildKit, copied unchanged from the same tag:
+
+  crates/rnk-dockerfile/tests/fixtures/buildkit/parser/
+                                              parser/testfiles,
+                                              parser/testfiles-negative
+  crates/rnk-dockerfile/tests/fixtures/buildkit/shell/
+                                              shell/envVarTest,
+                                              shell/wordsTest
+
+
+Test data from kaniko
+---------------------
+
+  crates/rnk-dockerfile/tests/fixtures/kaniko/
+      kaniko's integration/dockerfiles/ at 44aa7ddc0
+      (osscontainertools/kaniko 34ba9eadf plus local commits), without
+      the one .dockerignore file, copied unchanged. Some files carry
+      "Copyright 2018 Google, Inc." or "Copyright 2020 Google, Inc.";
+      Apache License, Version 2.0.
+
+
 Code derived from kaniko
 ------------------------
 

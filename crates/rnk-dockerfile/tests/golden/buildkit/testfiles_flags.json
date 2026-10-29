@@ -1,0 +1,92 @@
+{
+  "file": "testfiles_flags",
+  "ok": false,
+  "error": "dockerfile parse error on line 3: unknown flag: --user",
+  "error_line": 3,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"foo\" \"/tmp/\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--user=me\"] \"foo\" \"/tmp/\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--doit=true\"] \"foo\" \"/tmp/\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--user=me\" \"--doit=true\"] \"foo\" \"/tmp/\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--doit=true\"] \"foo\" \"/tmp/\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"foo\" \"/tmp/\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd [\"--doit\"] \"a\" \"b\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd [\"--doit=true\"] \"a\" \"b\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd [\"--doit\"]",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

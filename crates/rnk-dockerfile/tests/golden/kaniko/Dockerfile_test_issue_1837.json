@@ -1,0 +1,142 @@
+{
+  "file": "Dockerfile_test_issue_1837",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"registry.access.redhat.com/ubi8/ubi:8.2\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"dnf install -y iputils     && dnf clean all     && rm -rf /var/cache/dnf /var/log/dnf* /var/log/rhsm\"",
+      "lines": [
+        3,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"setcap cap_net_raw+ep /bin/ping || exit 1\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"nosquash\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"final\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"[ ! -z \\\"$(getcap /bin/ping)\\\" ] || exit 1\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "registry.access.redhat.com/ubi8/ubi:8.2",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "dnf install -y iputils     && dnf clean all     && rm -rf /var/cache/dnf /var/log/dnf* /var/log/rhsm"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            5
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "setcap cap_net_raw+ep /bin/ping || exit 1"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        8,
+        8
+      ],
+      "commands": []
+    },
+    {
+      "name": "final",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "[ ! -z \"$(getcap /bin/ping)\" ] || exit 1"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

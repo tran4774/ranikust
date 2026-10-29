@@ -1,0 +1,10 @@
+{
+  "file": "err-env-legacy-one.Dockerfile",
+  "ok": false,
+  "error": "ENV must have two arguments",
+  "error_line": 2,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

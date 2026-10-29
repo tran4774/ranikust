@@ -1,0 +1,74 @@
+{
+  "file": "testfiles_escape-after-comment",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"image\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"maintainer\" \"foo@bar.com\" \"\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"GOPATH\" \"\\\\go\" \"\"",
+      "lines": [
+        8,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "image",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            7,
+            7
+          ],
+          "pairs": [
+            [
+              "maintainer",
+              "foo@bar.com",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            8,
+            9
+          ],
+          "pairs": [
+            [
+              "GOPATH",
+              "\\go",
+              true
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+ARG IMAGE_REPO
+FROM ${IMAGE_REPO}busybox
+
+# mz473: in kaniko v1.26.4, due to a regression in our CopyDir,
+# When running kaniko with KANIKO_DIR=/kaniko2 in order to relocate the binary,
+# The binary would simply get deleted instead.
+# Verify here that relocation indeed works.
+RUN [ ! -d /kaniko ] && [ -f /kaniko2/executor ]

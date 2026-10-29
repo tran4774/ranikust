@@ -1,0 +1,167 @@
+{
+  "file": "Dockerfile_test_issue_1007",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}alpine\" \"AS\" \"build\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apk add --no-scripts --initdb   --keys-dir /etc/apk/keys   --repositories-file /etc/apk/repositories   --root /installroot   alpine-baselayout bash\"",
+      "lines": [
+        4,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /installroot/ &&     test -d /installroot/proc &&     test -d /installroot/sys &&     test -d /installroot/dev\"",
+      "lines": [
+        10,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\" \"AS\" \"final\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=build\"] \"/installroot\" \"/\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"/bin/bash\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "build",
+      "base": "${IMAGE_REPO}alpine",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apk add --no-scripts --initdb   --keys-dir /etc/apk/keys   --repositories-file /etc/apk/repositories   --root /installroot   alpine-baselayout bash"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /installroot/ &&     test -d /installroot/proc &&     test -d /installroot/sys &&     test -d /installroot/dev"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            10,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "final",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "from": "build",
+          "lines": [
+            22,
+            22
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/installroot"
+          ]
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "/bin/bash"
+          ],
+          "files": [],
+          "lines": [
+            24,
+            24
+          ],
+          "prepend_shell": false
+        }
+      ]
+    }
+  ]
+}

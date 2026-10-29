@@ -1,0 +1,164 @@
+{
+  "file": "Dockerfile_test_issue_mz444",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\" \"AS\" \"kaniko\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=executor-image\"] \"/kaniko\" \"/opt/kaniko\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"SSL_CERT_DIR\" \"/opt/kaniko/ssl/certs\" \"=\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"/opt/kaniko/executor\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"[ ! -d /kaniko ]\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "kaniko",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/opt/kaniko",
+          "excludes": [],
+          "from": "executor-image",
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/kaniko"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            11,
+            11
+          ],
+          "pairs": [
+            [
+              "SSL_CERT_DIR",
+              "/opt/kaniko/ssl/certs",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "/opt/kaniko/executor"
+          ],
+          "files": [],
+          "lines": [
+            12,
+            12
+          ],
+          "prepend_shell": false
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "[ ! -d /kaniko ]"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

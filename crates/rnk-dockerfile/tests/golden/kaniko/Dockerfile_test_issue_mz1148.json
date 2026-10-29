@@ -1,0 +1,327 @@
+{
+  "file": "Dockerfile_test_issue_mz1148",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"context/tars/file.tar\" \"/default/\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=true\"] \"context/tars/file.tar\" \"/forcelocal/\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=false\"] \"context/tars/file.tar\" \"/keep/\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=false\"] \"context/tars/file.tar.gz\" \"/keepgz/\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=false\"] \"context/tars/file.bz2\" \"/keepbz/\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz\" \"/download/\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=false\"] \"https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz\" \"/nounpack/\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=true\"] \"https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz\" \"/extract/\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=true\"] \"context/foo\" \"/plainlocal/\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=true\"] \"https://raw.githubusercontent.com/osscontainertools/kaniko/main/README.md\" \"/plainremote/\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--unpack=true\"] \"https://archive.debian.org/debian/dists/jessie/main/i18n/Translation-eo.bz2\" \"/compressedremote/\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/default/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "sources": [
+            "context/tars/file.tar"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/forcelocal/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            8,
+            8
+          ],
+          "link": false,
+          "sources": [
+            "context/tars/file.tar"
+          ],
+          "unpack": true
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/keep/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "sources": [
+            "context/tars/file.tar"
+          ],
+          "unpack": false
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/keepgz/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "sources": [
+            "context/tars/file.tar.gz"
+          ],
+          "unpack": false
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/keepbz/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            11,
+            11
+          ],
+          "link": false,
+          "sources": [
+            "context/tars/file.bz2"
+          ],
+          "unpack": false
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/download/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            14,
+            14
+          ],
+          "link": false,
+          "sources": [
+            "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/nounpack/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            15,
+            15
+          ],
+          "link": false,
+          "sources": [
+            "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz"
+          ],
+          "unpack": false
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/extract/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            16,
+            16
+          ],
+          "link": false,
+          "sources": [
+            "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz"
+          ],
+          "unpack": true
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/plainlocal/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            19,
+            19
+          ],
+          "link": false,
+          "sources": [
+            "context/foo"
+          ],
+          "unpack": true
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/plainremote/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            20,
+            20
+          ],
+          "link": false,
+          "sources": [
+            "https://raw.githubusercontent.com/osscontainertools/kaniko/main/README.md"
+          ],
+          "unpack": true
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/compressedremote/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            21,
+            21
+          ],
+          "link": false,
+          "sources": [
+            "https://archive.debian.org/debian/dists/jessie/main/i18n/Translation-eo.bz2"
+          ],
+          "unpack": true
+        }
+      ]
+    }
+  ]
+}

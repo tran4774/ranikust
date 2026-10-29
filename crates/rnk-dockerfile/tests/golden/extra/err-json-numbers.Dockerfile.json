@@ -1,0 +1,10 @@
+{
+  "file": "err-json-numbers.Dockerfile",
+  "ok": false,
+  "error": "when using JSON array syntax, arrays must be comprised of strings only",
+  "error_line": 2,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

@@ -1,0 +1,177 @@
+{
+  "file": "Dockerfile_test_issue_mz921",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine\" \"AS\" \"ctx\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /c && printf hello > /c/ctx0 && ln -s ctx0 /c/linkS\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"alpine\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=ctx\"] \"/c/ctx0\" \"/dest/ctx0\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=ctx\"] \"/c/linkS\" \"/dest/linkS\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=ctx\"] \"/c/linkS\" \"/dest/linkS\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test ! -L /dest/ctx0 && test \\\"$(cat /dest/ctx0)\\\" = hello\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "ctx",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /c && printf hello > /c/ctx0 && ln -s ctx0 /c/linkS"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            10,
+            10
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        12,
+        12
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/dest/ctx0",
+          "excludes": [],
+          "from": "ctx",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/c/ctx0"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/dest/linkS",
+          "excludes": [],
+          "from": "ctx",
+          "lines": [
+            14,
+            14
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/c/linkS"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/dest/linkS",
+          "excludes": [],
+          "from": "ctx",
+          "lines": [
+            15,
+            15
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/c/linkS"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test ! -L /dest/ctx0 && test \"$(cat /dest/ctx0)\" = hello"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "file": "testfiles_health",
+  "ok": false,
+  "error": "dockerfile parse error on line 4: HEALTHCHECK requires at least one argument",
+  "error_line": 4,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"check.sh\" \"main.sh\" \"/app/\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"/app/main.sh\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--interval=5s\" \"--timeout=3s\" \"--retries=3\"] \"CMD\" \"/app/check.sh --quiet\"",
+      "lines": [
+        5,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck \"CMD\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck \"CMD\" \"a b\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--timeout=3s\"] \"CMD\" \"foo\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck \"CONNECT\" \"TCP 7000\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--start-period=0s\" \"--start-interval=0s\" \"--interval=5s\" \"--timeout=0s\" \"--retries=0\"] \"CMD\" \"foo\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

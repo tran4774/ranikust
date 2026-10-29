@@ -1,0 +1,10 @@
+{
+  "file": "err-nbsp-label.Dockerfile",
+  "ok": false,
+  "error": "Syntax error - can't find = in \"v\". Must be of the form: name=value",
+  "error_line": 2,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

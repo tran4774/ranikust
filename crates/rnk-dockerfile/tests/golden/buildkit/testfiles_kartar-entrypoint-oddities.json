@@ -1,0 +1,162 @@
+{
+  "file": "testfiles_kartar-entrypoint-oddities",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"maintainer\" \"James Turnbull \\\"james@example.com\\\"\" \"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"REFRESHED_AT\" \"2014-06-01\" \"\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get --no-install-recommends install -y redis-server redis-tools\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"6379\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"/usr/bin/redis-server\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            2,
+            2
+          ],
+          "pairs": [
+            [
+              "maintainer",
+              "James Turnbull \"james@example.com\"",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            3,
+            3
+          ],
+          "pairs": [
+            [
+              "REFRESHED_AT",
+              "2014-06-01",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get --no-install-recommends install -y redis-server redis-tools"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            5,
+            5
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            6,
+            6
+          ],
+          "values": [
+            "6379"
+          ]
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "/usr/bin/redis-server"
+          ],
+          "files": [],
+          "lines": [
+            7,
+            7
+          ],
+          "prepend_shell": false
+        }
+      ]
+    }
+  ]
+}

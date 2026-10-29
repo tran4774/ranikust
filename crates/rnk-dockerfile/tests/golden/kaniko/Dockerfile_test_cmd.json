@@ -1,0 +1,107 @@
+{
+  "file": "Dockerfile_test_cmd",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12\" \"AS\" \"first\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"mycmd\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first\" \"AS\" \"nosquash\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first\" \"AS\" \"final\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"[\\\"myentrypoint\\\"] # This should clear out CMD in the config metadata\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "first",
+      "base": "debian:12",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "mycmd"
+          ],
+          "files": [],
+          "lines": [
+            2,
+            2
+          ],
+          "prepend_shell": false
+        }
+      ]
+    },
+    {
+      "name": "nosquash",
+      "base": "first",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": []
+    },
+    {
+      "name": "final",
+      "base": "first",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "[\"myentrypoint\"] # This should clear out CMD in the config metadata"
+          ],
+          "files": [],
+          "lines": [
+            5,
+            5
+          ],
+          "prepend_shell": true
+        }
+      ]
+    }
+  ]
+}

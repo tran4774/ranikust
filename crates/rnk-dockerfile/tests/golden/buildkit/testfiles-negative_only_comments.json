@@ -1,0 +1,10 @@
+{
+  "file": "testfiles-negative_only_comments",
+  "ok": false,
+  "error": "file with no instructions",
+  "error_line": 3,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

@@ -1,0 +1,28 @@
+{
+  "file": "err-volume-empty.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: VOLUME specified can not be an empty string",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

@@ -1,0 +1,203 @@
+{
+  "file": "Dockerfile_test_issue_cg188",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"first\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=netrc\"] \"SECRET=`cat /run/secrets/netrc`     && echo $SECRET | tee /out1.txt     && [ $SECRET = \\\"blubb\\\" ]\"",
+      "lines": [
+        5,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"SECRET\" \"whatever\" \"=\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=netrc,env=SECRET\"] \"echo $SECRET | tee /out2.txt     && [ $SECRET = \\\"blubb\\\" ]\"",
+      "lines": [
+        14,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=netrc,env=SECRET,target=/root/.netrc\"] \"SECRET1=`cat /root/.netrc`     && echo $SECRET1 | tee /out3.txt     && [ $SECRET1 = \\\"blubb\\\" ]     && echo $SECRET | tee /out4.txt     && [ $SECRET = \\\"blubb\\\" ]\"",
+      "lines": [
+        19,
+        24
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "first",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "SECRET=`cat /run/secrets/netrc`     && echo $SECRET | tee /out1.txt     && [ $SECRET = \"blubb\" ]"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            5,
+            8
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "netrc",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            11,
+            11
+          ],
+          "pairs": [
+            [
+              "SECRET",
+              "whatever",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo $SECRET | tee /out2.txt     && [ $SECRET = \"blubb\" ]"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            14,
+            16
+          ],
+          "mounts": [
+            {
+              "env": "SECRET",
+              "from": "",
+              "gid": null,
+              "id": "netrc",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "SECRET1=`cat /root/.netrc`     && echo $SECRET1 | tee /out3.txt     && [ $SECRET1 = \"blubb\" ]     && echo $SECRET | tee /out4.txt     && [ $SECRET = \"blubb\" ]"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            19,
+            24
+          ],
+          "mounts": [
+            {
+              "env": "SECRET",
+              "from": "",
+              "gid": null,
+              "id": "netrc",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/root/.netrc",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

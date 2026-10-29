@@ -1,0 +1,46 @@
+{
+  "file": "err-stopsignal-flag.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "stopsignal [\"--x=y\"] \"SIGKILL\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "stopsignal",
+          "lines": [
+            2,
+            2
+          ],
+          "value": "SIGKILL"
+        }
+      ]
+    }
+  ]
+}

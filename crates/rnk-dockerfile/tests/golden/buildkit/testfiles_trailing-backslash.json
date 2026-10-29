@@ -1,0 +1,184 @@
+{
+  "file": "testfiles_trailing-backslash",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"hello-world\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"A\" \"path\" \"\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"B\" \"another\\\\\\\\path\" \"\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"C\" \"trailing\\\\\\\\backslash\\\\\\\\\" \"\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"D\" \"This should not be appended to C\" \"\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"E\" \"helloworld\" \"\"",
+      "lines": [
+        9,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"F\" \"hello world\" \"\"",
+      "lines": [
+        12,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"G\" \"hello world\" \"\"",
+      "lines": [
+        15,
+        17
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "hello-world",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            5,
+            5
+          ],
+          "pairs": [
+            [
+              "A",
+              "path",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            6,
+            6
+          ],
+          "pairs": [
+            [
+              "B",
+              "another\\\\path",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            7,
+            7
+          ],
+          "pairs": [
+            [
+              "C",
+              "trailing\\\\backslash\\\\",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            8,
+            8
+          ],
+          "pairs": [
+            [
+              "D",
+              "This should not be appended to C",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            9,
+            11
+          ],
+          "pairs": [
+            [
+              "E",
+              "helloworld",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            12,
+            14
+          ],
+          "pairs": [
+            [
+              "F",
+              "hello world",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            15,
+            17
+          ],
+          "pairs": [
+            [
+              "G",
+              "hello world",
+              true
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

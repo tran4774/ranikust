@@ -11,3 +11,14 @@
 //!
 //! - Data in, data out: no filesystem, network or process access.
 //! - Does not schedule or build stages (`rnk-sched`, `rnk-builder`).
+
+mod error;
+mod goutil;
+mod parser;
+mod shell;
+
+pub use error::{Error, ErrorKind, Lines};
+pub use parser::{
+    Ast, DEFAULT_ESCAPE, Directive, Heredoc, Node, Warning, chomp_heredoc_content, parse_ast,
+};
+pub use shell::{Env, LexError, Lexer, NoEnv, WordMatches};

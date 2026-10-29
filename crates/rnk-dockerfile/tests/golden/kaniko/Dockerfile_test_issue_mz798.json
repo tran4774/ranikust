@@ -1,0 +1,135 @@
+{
+  "file": "Dockerfile_test_issue_mz798",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=go=u\"] \"context/foo\" \"/symfile_foo\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=go=u\"] \"context/qux/quz\" \"/symfile_quz\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=u=rwX,go=rX\"] \"context/qux\" \"/symdir\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chmod=a-w\"] \"context/qux/qup\" \"/symfile_qup\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "chmod": "go=u",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/symfile_foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "go=u",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/symfile_quz",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/qux/quz"
+          ]
+        },
+        {
+          "chmod": "u=rwX,go=rX",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/symdir",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/qux"
+          ]
+        },
+        {
+          "checksum": "",
+          "chmod": "a-w",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/symfile_qup",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            16,
+            16
+          ],
+          "link": false,
+          "sources": [
+            "context/qux/qup"
+          ],
+          "unpack": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,217 @@
+{
+  "file": "testfiles_brimstone-docker-consul",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 2,
+  "ast": [
+    {
+      "dump": "from \"brimstone/ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"/usr/bin/consul\" \"agent\" \"-server\" \"-data-dir=/consul\" \"-client=0.0.0.0\" \"-ui-dir=/webui\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"8500\" \"8600\" \"8400\" \"8301\" \"8302\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update     && apt-get --no-install-recommends install -y unzip wget \\t&& apt-get clean \\t&& rm -rf /var/lib/apt/lists\"",
+      "lines": [
+        9,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cd /tmp     && wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     && unzip web_ui.zip     && mv dist /webui     && rm web_ui.zip\"",
+      "lines": [
+        14,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update \\t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.clean     && apt-get --no-install-recommends install -y unzip wget     && apt-get clean     && rm -rf /var/lib/apt/lists     && cd /tmp     && wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     && unzip web_ui.zip     && mv dist /webui     && rm web_ui.zip \\t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.dirty \\t&& apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^>/ {print $2}') \\t&& rm /tmp/dpkg.*\"",
+      "lines": [
+        21,
+        36
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"GOPATH\" \"/go\" \"\"",
+      "lines": [
+        38,
+        38
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update \\t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.clean     && apt-get --no-install-recommends install -y git golang ca-certificates build-essential     && apt-get clean     && rm -rf /var/lib/apt/lists \\t&& go get -v github.com/hashicorp/consul \\t&& mv $GOPATH/bin/consul /usr/bin/consul \\t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.dirty \\t&& apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^>/ {print $2}') \\t&& rm /tmp/dpkg.* \\t&& rm -rf $GOPATH\"",
+      "lines": [
+        40,
+        52
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "brimstone/ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "cmd",
+          "cmdline": [],
+          "files": [],
+          "lines": [
+            3,
+            3
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "/usr/bin/consul",
+            "agent",
+            "-server",
+            "-data-dir=/consul",
+            "-client=0.0.0.0",
+            "-ui-dir=/webui"
+          ],
+          "files": [],
+          "lines": [
+            5,
+            5
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            7,
+            7
+          ],
+          "values": [
+            "8301",
+            "8302",
+            "8400",
+            "8500",
+            "8600"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update     && apt-get --no-install-recommends install -y unzip wget \t&& apt-get clean \t&& rm -rf /var/lib/apt/lists"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cd /tmp     && wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     && unzip web_ui.zip     && mv dist /webui     && rm web_ui.zip"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update \t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.clean     && apt-get --no-install-recommends install -y unzip wget     && apt-get clean     && rm -rf /var/lib/apt/lists     && cd /tmp     && wget https://dl.bintray.com/mitchellh/consul/0.3.1_web_ui.zip        -O web_ui.zip     && unzip web_ui.zip     && mv dist /webui     && rm web_ui.zip \t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.dirty \t&& apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^>/ {print $2}') \t&& rm /tmp/dpkg.*"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            36
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            38,
+            38
+          ],
+          "pairs": [
+            [
+              "GOPATH",
+              "/go",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update \t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.clean     && apt-get --no-install-recommends install -y git golang ca-certificates build-essential     && apt-get clean     && rm -rf /var/lib/apt/lists \t&& go get -v github.com/hashicorp/consul \t&& mv $GOPATH/bin/consul /usr/bin/consul \t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.dirty \t&& apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^>/ {print $2}') \t&& rm /tmp/dpkg.* \t&& rm -rf $GOPATH"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            40,
+            52
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,291 @@
+{
+  "file": "json-forms.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"a\" \"b c\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"['single']\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"[\\\"x\\\",]\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo\" \"é\\n\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "shell \"/bin/bash\" \"-c\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/a\" \"/b\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/c\" \"/d\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"echo shell form\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"exec x\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "a",
+            "b c"
+          ],
+          "files": [],
+          "lines": [
+            2,
+            2
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "['single']"
+          ],
+          "files": [],
+          "lines": [
+            3,
+            3
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [],
+          "files": [],
+          "lines": [
+            4,
+            4
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [],
+          "files": [],
+          "lines": [
+            5,
+            5
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "[\"x\",]"
+          ],
+          "files": [],
+          "lines": [
+            6,
+            6
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo",
+            "é\n"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": false,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "shell",
+          "lines": [
+            8,
+            8
+          ],
+          "values": [
+            "/bin/bash",
+            "-c"
+          ]
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            9,
+            9
+          ],
+          "values": [
+            "/a",
+            "/b"
+          ]
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            10,
+            10
+          ],
+          "values": [
+            "/c",
+            "/d"
+          ]
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "echo shell form"
+          ],
+          "files": [],
+          "lines": [
+            11,
+            11
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "exec x"
+          ],
+          "files": [],
+          "lines": [
+            12,
+            12
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "run",
+          "cmdline": [],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [],
+          "files": [],
+          "lines": [
+            14,
+            14
+          ],
+          "prepend_shell": true
+        }
+      ]
+    }
+  ]
+}

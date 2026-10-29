@@ -1,0 +1,72 @@
+{
+  "file": "Dockerfile_test_arg_two_level",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"A=3.9\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"B=alpine:${A}\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${B}\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "A",
+          "3.9"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "args": [
+        [
+          "B",
+          "alpine:${A}"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        2,
+        2
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${B}",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": []
+    }
+  ]
+}

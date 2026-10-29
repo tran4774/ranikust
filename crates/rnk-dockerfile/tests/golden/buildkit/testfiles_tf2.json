@@ -1,0 +1,482 @@
+{
+  "file": "testfiles_tf2",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:12.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"27015\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"27005\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"26901\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"27020\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update && apt-get install libc6-dev-i386 curl unzip -y\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /steam\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"curl http://media.steampowered.com/client/steamcmd_linux.tar.gz | tar vxz -C /steam\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"./script\" \"/steam/script\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"/steam/steamcmd.sh +runscript /steam/script\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"curl http://mirror.pointysoftware.net/alliedmodders/mmsource-1.10.0-linux.tar.gz | tar vxz -C /steam/tf2/tf\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"curl http://mirror.pointysoftware.net/alliedmodders/sourcemod-1.5.3-linux.tar.gz | tar vxz -C /steam/tf2/tf\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"./server.cfg\" \"/steam/tf2/tf/cfg/server.cfg\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"./ctf_2fort.cfg\" \"/steam/tf2/tf/cfg/ctf_2fort.cfg\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"./sourcemod.cfg\" \"/steam/tf2/tf/cfg/sourcemod/sourcemod.cfg\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"rm -r /steam/tf2/tf/addons/sourcemod/configs\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"./configs\" \"/steam/tf2/tf/addons/sourcemod/configs\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /steam/tf2/tf/addons/sourcemod/translations/en\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cp /steam/tf2/tf/addons/sourcemod/translations/*.txt /steam/tf2/tf/addons/sourcemod/translations/en\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"cd /steam/tf2 && ./srcds_run -port 27015 +ip 0.0.0.0 +map ctf_2fort -autoupdate -steam_dir /steam -steamcmd_script /steam/script +tf_bot_quota 12 +tf_bot_quota_mode fill\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:12.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "expose",
+          "lines": [
+            3,
+            3
+          ],
+          "values": [
+            "27015"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            4,
+            4
+          ],
+          "values": [
+            "27005"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            5,
+            5
+          ],
+          "values": [
+            "26901"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            6,
+            6
+          ],
+          "values": [
+            "27020"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update && apt-get install libc6-dev-i386 curl unzip -y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /steam"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "curl http://media.steampowered.com/client/steamcmd_linux.tar.gz | tar vxz -C /steam"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            10,
+            10
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/steam/script",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            11,
+            11
+          ],
+          "link": false,
+          "sources": [
+            "./script"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "/steam/steamcmd.sh +runscript /steam/script"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "curl http://mirror.pointysoftware.net/alliedmodders/mmsource-1.10.0-linux.tar.gz | tar vxz -C /steam/tf2/tf"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "curl http://mirror.pointysoftware.net/alliedmodders/sourcemod-1.5.3-linux.tar.gz | tar vxz -C /steam/tf2/tf"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/steam/tf2/tf/cfg/server.cfg",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            15,
+            15
+          ],
+          "link": false,
+          "sources": [
+            "./server.cfg"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/steam/tf2/tf/cfg/ctf_2fort.cfg",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            16,
+            16
+          ],
+          "link": false,
+          "sources": [
+            "./ctf_2fort.cfg"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/steam/tf2/tf/cfg/sourcemod/sourcemod.cfg",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            17,
+            17
+          ],
+          "link": false,
+          "sources": [
+            "./sourcemod.cfg"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "rm -r /steam/tf2/tf/addons/sourcemod/configs"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/steam/tf2/tf/addons/sourcemod/configs",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            19,
+            19
+          ],
+          "link": false,
+          "sources": [
+            "./configs"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /steam/tf2/tf/addons/sourcemod/translations/en"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            20,
+            20
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cp /steam/tf2/tf/addons/sourcemod/translations/*.txt /steam/tf2/tf/addons/sourcemod/translations/en"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "cd /steam/tf2 && ./srcds_run -port 27015 +ip 0.0.0.0 +map ctf_2fort -autoupdate -steam_dir /steam -steamcmd_script /steam/script +tf_bot_quota 12 +tf_bot_quota_mode fill"
+          ],
+          "files": [],
+          "lines": [
+            23,
+            23
+          ],
+          "prepend_shell": true
+        }
+      ]
+    }
+  ]
+}

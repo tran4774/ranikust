@@ -1,0 +1,175 @@
+{
+  "file": "Dockerfile_test_issue_mz725",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo 'single' >> /etc/group\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}malformed-oci:latest\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"NEW\" \"val\" \"=\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"sub\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"root\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"id\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        8,
+        8
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo 'single' >> /etc/group"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}malformed-oci:latest",
+      "platform": "",
+      "lines": [
+        11,
+        11
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            13,
+            13
+          ],
+          "pairs": [
+            [
+              "NEW",
+              "val",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            15,
+            15
+          ],
+          "value": "sub"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            17,
+            17
+          ],
+          "value": "root"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "id"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

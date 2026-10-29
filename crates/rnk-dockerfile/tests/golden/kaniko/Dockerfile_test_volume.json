@@ -1,0 +1,165 @@
+{
+  "file": "Dockerfile_test_volume",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /foo\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hello\\\" > /foo/hey\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/foo/bar\" \"/tmp\" \"/qux/quux\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"VOL\" \"/baz/bat\" \"\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"${VOL}\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hello again\\\" > /tmp/hey\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            2,
+            2
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hello\" > /foo/hey"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            4,
+            4
+          ],
+          "values": [
+            "/foo/bar",
+            "/tmp",
+            "/qux/quux"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            5,
+            5
+          ],
+          "pairs": [
+            [
+              "VOL",
+              "/baz/bat",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            6,
+            6
+          ],
+          "values": [
+            "${VOL}"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hello again\" > /tmp/hey"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

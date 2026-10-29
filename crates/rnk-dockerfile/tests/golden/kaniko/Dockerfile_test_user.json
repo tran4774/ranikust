@@ -1,0 +1,46 @@
+{
+  "file": "Dockerfile_test_user",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"testuser:testgroup\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "cmd": "user",
+          "lines": [
+            16,
+            16
+          ],
+          "value": "testuser:testgroup"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "file": "Dockerfile_test_arg_multi_with_quotes",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"FILE_NAME=\\\"myFile\\\"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"builder\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"FILE_NAME\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo $FILE_NAME && touch /$FILE_NAME.txt && stat /$FILE_NAME.txt;\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"FILE_NAME\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo $FILE_NAME && touch /$FILE_NAME.txt && stat /$FILE_NAME.txt;\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=builder\"] \"/$FILE_NAME.txt\" \"/\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "args": [
+        [
+          "FILE_NAME",
+          "\"myFile\""
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        2,
+        2
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "builder",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "FILE_NAME",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo $FILE_NAME && touch /$FILE_NAME.txt && stat /$FILE_NAME.txt;"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "FILE_NAME",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            10,
+            10
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo $FILE_NAME && touch /$FILE_NAME.txt && stat /$FILE_NAME.txt;"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/$FILE_NAME.txt"
+          ]
+        }
+      ]
+    }
+  ]
+}

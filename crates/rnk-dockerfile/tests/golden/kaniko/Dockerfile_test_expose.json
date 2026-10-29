@@ -1,0 +1,164 @@
+{
+  "file": "Dockerfile_test_expose",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"80\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"81/udp\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"protocol\" \"tcp\" \"\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"82/$protocol\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"port\" \"83\" \"\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"$port/udp\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"$port/$protocol\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "expose",
+          "lines": [
+            2,
+            2
+          ],
+          "values": [
+            "80"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            3,
+            3
+          ],
+          "values": [
+            "81/udp"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            4,
+            4
+          ],
+          "pairs": [
+            [
+              "protocol",
+              "tcp",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            5,
+            5
+          ],
+          "values": [
+            "82/$protocol"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            6,
+            6
+          ],
+          "pairs": [
+            [
+              "port",
+              "83",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            7,
+            7
+          ],
+          "values": [
+            "$port/udp"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            8,
+            8
+          ],
+          "values": [
+            "$port/$protocol"
+          ]
+        }
+      ]
+    }
+  ]
+}

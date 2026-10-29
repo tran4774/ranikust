@@ -1,0 +1,36 @@
+{
+  "file": "err-copy-heredoc-dest.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: COPY cannot accept a heredoc as a destination",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"a\" \"<<EOF\"",
+      "lines": [
+        2,
+        4
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "x\n"
+        }
+      ]
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

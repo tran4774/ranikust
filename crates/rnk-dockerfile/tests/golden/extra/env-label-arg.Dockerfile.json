@@ -1,0 +1,383 @@
+{
+  "file": "env-label-arg.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"A\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"B=1\" \"C=\\\"two words\\\"\" \"D=\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"E='single'\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"x\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"legacy\" \"value with  spaces\" \"\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"K1\" \"v1\" \"=\" \"K2\" \"\\\"v 2\\\"\" \"=\" \"K3\" \"v\\\\ 3\" \"=\" \"K4\" \"\" \"=\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"Q\" \"'a b'\" \"=\" \"R\" \"\\\"$A\\\"\" \"=\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"\\\"com.example\\\"\" \"\\\"x y\\\"\" \"=\" \"other\" \"1\" \"=\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"legacy\" \"label value\" \"\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"F\" \"G=g\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "maintainer \"Someone <someone at example.com>\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"80\" \"443/udp\" \"8080/tcp\" \"1000-2000\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"$PORT\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1000:1000\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/a b\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "stopsignal \"SIGTERM\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/v\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "A",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "args": [
+        [
+          "B",
+          "1"
+        ],
+        [
+          "C",
+          "\"two words\""
+        ],
+        [
+          "D",
+          ""
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        2,
+        2
+      ]
+    },
+    {
+      "args": [
+        [
+          "E",
+          "'single'"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        3,
+        3
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "x",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            5,
+            5
+          ],
+          "pairs": [
+            [
+              "legacy",
+              "value with  spaces",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            6,
+            6
+          ],
+          "pairs": [
+            [
+              "K1",
+              "v1",
+              false
+            ],
+            [
+              "K2",
+              "\"v 2\"",
+              false
+            ],
+            [
+              "K3",
+              "v\\ 3",
+              false
+            ],
+            [
+              "K4",
+              "",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            7,
+            7
+          ],
+          "pairs": [
+            [
+              "Q",
+              "'a b'",
+              false
+            ],
+            [
+              "R",
+              "\"$A\"",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "label",
+          "lines": [
+            8,
+            8
+          ],
+          "pairs": [
+            [
+              "\"com.example\"",
+              "\"x y\"",
+              false
+            ],
+            [
+              "other",
+              "1",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "label",
+          "lines": [
+            9,
+            9
+          ],
+          "pairs": [
+            [
+              "legacy",
+              "label value",
+              true
+            ]
+          ]
+        },
+        {
+          "args": [
+            [
+              "F",
+              null
+            ],
+            [
+              "G",
+              "g"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            10,
+            10
+          ]
+        },
+        {
+          "cmd": "maintainer",
+          "lines": [
+            11,
+            11
+          ],
+          "value": "Someone <someone at example.com>"
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            12,
+            12
+          ],
+          "values": [
+            "1000-2000",
+            "443/udp",
+            "80",
+            "8080/tcp"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            13,
+            13
+          ],
+          "values": [
+            "$PORT"
+          ]
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            14,
+            14
+          ],
+          "value": "1000:1000"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            15,
+            15
+          ],
+          "value": "/a b"
+        },
+        {
+          "cmd": "stopsignal",
+          "lines": [
+            16,
+            16
+          ],
+          "value": "SIGTERM"
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            17,
+            17
+          ],
+          "values": [
+            "/v"
+          ]
+        }
+      ]
+    }
+  ]
+}
