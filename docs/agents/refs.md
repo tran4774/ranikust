@@ -52,7 +52,10 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | Crate | Version, license | Role | Status |
 |---|---|---|---|
 | [oci-client](https://crates.io/crates/oci-client) | 0.18.0, Apache-2.0 | Registry client, behind a wrapper | chosen |
-| [oci-spec](https://crates.io/crates/oci-spec) | 0.10.0, Apache-2.0 | OCI types | chosen |
+| [oci-spec](https://crates.io/crates/oci-spec) | 0.10.0, Apache-2.0 | OCI types of `oci-client`; `rnk-oci` owns its own (hash-map order, no Docker-only config fields) | `oci-client` only |
+| [serde](https://crates.io/crates/serde), [serde_json](https://crates.io/crates/serde_json) | 1.0.229, 1.0.154, MIT OR Apache-2.0 | (De)serialization of image types, canonical JSON | chosen (`rnk-oci`) |
+| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Crate-level `Error` enums in libraries | chosen (`rnk-oci`) |
+| [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only), `std` feature only, no failure files | chosen (`rnk-oci`) |
 | [docker_credential](https://crates.io/crates/docker_credential) | 1.4.0, MIT OR Apache-2.0 | `config.json`, credential helpers | chosen; may be vendored |
 | [tar](https://crates.io/crates/tar) | 0.4.46, MIT OR Apache-2.0 | Tar with hand-built headers; never `append_dir_all` | chosen |
 | [flate2](https://crates.io/crates/flate2), [zlib-rs](https://crates.io/crates/zlib-rs) | 1.1.10, MIT OR Apache-2.0; 0.6.8, Zlib | Deflate under the pigz-style gzip | chosen |

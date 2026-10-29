@@ -16,7 +16,7 @@ the code.
 
 | | Item | Owner |
 |---|---|---|
-| [ ] | OCI and Docker v2s2 manifests, index, config, media types | `rnk-oci` |
+| [~] | OCI and Docker v2s2 manifests, index, config, media types | `rnk-oci` |
 | [ ] | Dockerfile front end: lexer, directives, heredocs, `ARG`/`ENV` expansion, instructions, stage DAG; BuildKit goldens on kaniko's 200 Dockerfiles | `rnk-dockerfile` |
 | [ ] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
 | [ ] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion | `rnk-rootfs` |
@@ -31,7 +31,7 @@ the code.
 | [ ] | Upperdir → OCI layer exporter, `WriteUpperdir`-style: whiteouts first, raw modes, overlay xattrs stripped; entries fed to the `rnk-layer` writer, which sorts them and adds parent headers | `rnk-snapshot` → `rnk-layer` |
 | [ ] | Executors: `FROM` (also `<stage>`), `ARG` (also before `FROM`), `ENV`, `RUN` (shell, exec, heredoc), local `COPY`/`ADD` (`--chown`, `--chmod`, `--from`), `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `VOLUME`, `ENTRYPOINT`, `CMD`, `SHELL`, `STOPSIGNAL`, `HEALTHCHECK` | `rnk-builder` |
 | [ ] | Local directory context; locating the ignore file (`<Dockerfile>.dockerignore` first) | `rnk-context` |
-| [ ] | Lazy export, config updates, image assembly; canonical JSON with sorted keys | `rnk-builder`, `rnk-oci` |
+| [~] | Lazy export, config updates, image assembly; canonical JSON with sorted keys | `rnk-builder`, `rnk-oci` |
 | [ ] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` | `rnk-builder`, `rnk-registry`, `rnk-layer` |
 | [ ] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix | `rnk-sched` |
 | [ ] | Common kaniko flags and the subcommands (`ADR-0011`) | `ranikust` |

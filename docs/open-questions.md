@@ -38,7 +38,7 @@ Entry format:
 
 - **Blocks:** Phase 1 tasks 1, 11; **Area:** `rnk-oci`, `rnk-builder`
 - **Context:** `ImageFormat`'s default is open
-  ([rnk-oci](agents/crates/rnk-oci.md#api-planned)): kaniko's
+  ([rnk-oci](agents/crates/rnk-oci.md#api)): kaniko's
   `--image-format` follows the base image
   ([pitfalls](agents/crates/rnk-oci.md#pitfalls)), and under
   `--reproducible` kaniko switches to Docker v2s2 unless
@@ -48,7 +48,11 @@ Entry format:
   `--reproducible`; (b) the base's format in both cases; (c) OCI unless
   `--image-format` says otherwise.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** `rnk-oci` defines `ImageFormat { Oci, Docker }` without a
+  `Default` (branch `feat/rnk-oci-types`, marked `[open: Q-006]` in
+  `media_type.rs`): the caller passes the format, so nothing in `rnk-oci`
+  depends on the answer. Reversible because the default will live in the
+  CLI or `rnk-builder` (task 11); adding it changes no `rnk-oci` type.
 - **Raised:** 2026-10-30
 
 ### Q-007: Which image-assembly types live in rnk-oci?
@@ -57,12 +61,17 @@ Entry format:
 - **Context:** `ConfigEdit` (`ENV`, `LABEL`, `USER`… and history) and the
   docker-save `manifest.json` and OCI layout `index.json`/`oci-layout` types
   sit "here or in rnk-builder"
-  ([rnk-oci](agents/crates/rnk-oci.md#api-planned)); the card's Phase 1
+  ([rnk-oci](agents/crates/rnk-oci.md#api)); the card's Phase 1
   order already lists config edits and tar and layout index types.
 - **Options:** (a) `rnk-oci`: pure types, no I/O, tested at T0;
   (b) `rnk-builder`, next to assembly and output.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** neither yet (branch `feat/rnk-oci-types`, marked
+  `[open: Q-007]` in `crates/rnk-oci/src/lib.rs`): `rnk-oci` has the data
+  types only, `ImageConfig` with public fields that either crate can edit
+  and `ImageIndex`, which is also a layout's `index.json`. Reversible
+  because nothing uses the assembly types yet; task 11 adds them to
+  whichever crate the answer names.
 - **Raised:** 2026-10-30
 
 ### Q-008: What does a repeated target flag mean?
