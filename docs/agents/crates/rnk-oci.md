@@ -66,6 +66,12 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
 - Config fields (`Env`, `Entrypoint`, `Cmd`, `WorkingDir`, `User`, `Labels`)
   compared with kaniko's in the image-content suite (T1/T2).
 
+## Metrics
+
+- None: pure data. Serializing configs and manifests is charged to
+  `rnk_builder.assemble` ([rows](../../design/metrics.md#rnk-oci)).
+- No `tracing` dependency needed.
+
 ## Pitfalls
 
 - `oci-spec` 0.10.0 serializes labels, annotations, `ExposedPorts` and

@@ -85,6 +85,13 @@ pub enum EntryKey { Blob(Digest), Layer(Digest) }  // [open: Q-015] which digest
 - **T2** (VM only): two builds sharing one store; `SIGKILL` during an
   extraction, then a new build.
 
+## Metrics
+
+- `rnk_store.lock` (`contended`; time = lock wait), `rnk_store.fill`
+  (`reused`, `bytes_written`, `bytes_reused`), `rnk_store.cleanup`, later
+  `rnk_store.prune` ([rows](../../design/metrics.md#rnk-store)).
+- Lock waits and reuse show what sharing the store costs and saves.
+
 ## Pitfalls
 
 - `rename` across filesystems fails with `EXDEV`: `tmp/` lives in the state

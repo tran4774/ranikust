@@ -69,6 +69,15 @@ pub struct Credentials; // [design] docker_credential 1.4 lookup; Debug and Disp
   temp dir); trust store with no CAs, `SSL_CERT_FILE`, `SSL_CERT_DIR`. Outside
   T0: `registry:2` in a container; htpasswd, ECR, GCR (never tested).
 
+## Metrics
+
+- One span per operation, each with `host`: `rnk_registry.auth`,
+  `pull_manifest`, `pull_blob`, `push_blob` (`mounted`, `existed`),
+  `push_manifest` ([rows](../../design/metrics.md#rnk-registry)).
+- `bytes_in`/`bytes_out` are body bytes, `requests` includes retries; they
+  fill `network.hosts`. No span per request or chunk, no `host` on nested
+  spans, never a credential in a field.
+
 ## Pitfalls
 
 - `Client::pull()` holds every layer in memory, `push_blob(Vec<u8>)` peaked

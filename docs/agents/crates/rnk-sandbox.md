@@ -91,6 +91,12 @@ pub enum Isolation { Full, Direct, BareChroot { fake_proc: bool } } // [design] 
   `umount /etc/resolv.conf`, a setuid binary) fail; the probe matrix of
   `docs/testing.md`; no fake file in any layer on the bare-`chroot` path.
 
+## Metrics
+
+- `rnk_sandbox.run` per `RUN` (`wait4` rusage, `failed`), `setup`, `probe`
+  ([rows](../../design/metrics.md#rnk-sandbox)).
+- Spawner-thread spans take `parent:`; nothing traced between fork and exec.
+
 ## Pitfalls
 
 - Root escapes a bare `chroot`, reaching the host's `/` (exp-02, exp-06a,

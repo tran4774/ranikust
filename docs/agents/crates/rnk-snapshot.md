@@ -94,6 +94,12 @@ pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
 - **T2** (VM only): overlay as real root; kernel 5.15 fallback; kaniko mode
   on `/`; flattened content against kaniko, BuildKit and the other mode.
 
+## Metrics
+
+- Record `rnk_snapshot.diff`; `mount`, `export` (`blocks_read`) and more;
+  Phase 2 walk spans ([rows](../../design/metrics.md#rnk-snapshot)).
+- Walk workers count locally; totals are recorded once per walk.
+
 ## Pitfalls
 
 - Without `volatile` every copy-up fsyncs: 12.92 s instead of 0.37 s (exp-06).

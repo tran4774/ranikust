@@ -41,6 +41,12 @@ pub struct Example; // one-line purpose
 - Tier (T0 unprivileged / T1 user namespace / T2 VM) and what to cover;
   fixtures and oracles (BuildKit, kaniko) where relevant.
 
+## Metrics
+
+- 2–5 bullets: the spans this crate emits and the fields that matter, with a
+  link to its rows in `design/metrics.md#<crate>`; where counting needs care
+  (loops, other threads). "None" with the reason for a pure crate.
+
 ## Pitfalls
 
 - Traps found by the experiments or by earlier work, one line each, with the

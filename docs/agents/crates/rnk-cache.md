@@ -81,6 +81,13 @@ pub trait LayerCache {                               // [design] RegistryCache, 
   partial; a layer cached in one mode reused by the other, checked against
   the ADR-0012 list.
 
+## Metrics
+
+- Phase 4: `rnk_cache.key` (`files_hashed`, `bytes_hashed`),
+  `rnk_cache.lookup` (`hit`), `rnk_cache.push` (`bytes_out`)
+  ([rows](../../design/metrics.md#rnk-cache)).
+- A push outlives its instruction: parent it to the stage span.
+
 ## Pitfalls
 
 - Environment order is undefined, so kaniko sorts it before hashing

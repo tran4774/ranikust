@@ -65,6 +65,12 @@ impl Matcher {
   `matches_or_parent_matches`. Compatibility: kaniko's
   `Dockerfile_test_dockerignore`, `Dockerfile_dockerignore_relative`.
 
+## Metrics
+
+- None: matching is per path, so a span would be per file. Its cost is
+  charged to `rnk_context.ignore` ([rows](../../design/metrics.md#rnk-ignore)).
+- No `tracing` dependency needed.
+
 ## Pitfalls
 
 - gitignore is not dockerignore: a pattern without `/` matches only at the

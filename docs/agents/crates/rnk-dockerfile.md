@@ -69,6 +69,13 @@ pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [des
 - T0 vectors `shell/envVarTest` (238 cases), `shell/wordsTest`; fuzz `parse`
   and expansion; graph tests against `MakeKanikoStages` (`--target`, `--from`).
 
+## Metrics
+
+- One `rnk_dockerfile.parse` span per Dockerfile (`bytes_in`,
+  `instructions`, `stages`); none per line or instruction
+  ([rows](../../design/metrics.md#rnk-dockerfile)).
+- Depends on `tracing` only; stays free of I/O.
+
 ## Pitfalls
 
 - `parse-dockerfile` failed on mid-command heredocs (`RUN cat <<EOF > /out`):

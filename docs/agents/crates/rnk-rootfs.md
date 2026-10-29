@@ -90,6 +90,13 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   `delete_contents`; overlay-form extraction in a user namespace.
 - **T2** (VM only): `--workdir` at `/`, `//`, `/home`, an unmarked directory.
 
+## Metrics
+
+- `rnk_rootfs.extract` per layer (`entries`, `files`, `whiteouts`,
+  `hardlinks`, `bytes_in`, `bytes_written`), `rnk_rootfs.copy` per `COPY`
+  source set, `rnk_rootfs.delete` per tree ([rows](../../design/metrics.md#rnk-rootfs)).
+- Count in the entry loop, record once at the end: never a span per entry.
+
 ## Pitfalls
 
 - `st_dev`-only deletion emptied a same-filesystem bind mount (exp-09 D2b).

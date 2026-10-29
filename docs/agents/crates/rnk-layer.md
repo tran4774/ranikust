@@ -69,6 +69,13 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
   sizes > 8 GiB; gzip output is one member.
 - T1/T2: image content against kaniko ([testing](../../testing.md#planned-test-suites)).
 
+## Metrics
+
+- `rnk_layer.encode` per layer (`entries`, `parents_added`, `bytes_in` tar,
+  `bytes_out` compressed, `max_threads`), `rnk_layer.decode` per blob
+  ([rows](../../design/metrics.md#rnk-layer)).
+- Compression workers open no span; the calling thread records the totals.
+
 ## Pitfalls
 
 - Never `tar::Builder::append_dir_all` or `append_path`: unsorted, no
