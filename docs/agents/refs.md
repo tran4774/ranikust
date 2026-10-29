@@ -65,7 +65,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [aws-lc-rs](https://crates.io/crates/aws-lc-rs) | 1.19.0, ISC AND (Apache-2.0 OR ISC) | The other provider; reqwest 0.13's default, kept out of TLS | rejected (`ADR-0024`) |
 | [webpki-roots](https://crates.io/crates/webpki-roots), [webpki-root-certs](https://crates.io/crates/webpki-root-certs) | 1.0.11, CDLA-Permissive-2.0 | Embedded roots, trusted together with the host's CAs; `webpki-root-certs` gives the DER certificates `oci-client` takes | chosen (`ADR-0024`) |
 | [rustls-native-certs](https://crates.io/crates/rustls-native-certs) | 0.8.5, Apache-2.0 OR ISC OR MIT | Reads the host's CAs (`/etc/ssl/certs`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), as `exp-05` did | candidate (`ADR-0024`) |
-| [sha2](https://crates.io/crates/sha2) | 0.11.1, MIT OR Apache-2.0 | sha256 (or `aws-lc-rs`) | candidate |
+| [sha2](https://crates.io/crates/sha2) | 0.11.1, MIT OR Apache-2.0 | sha256 (or `aws-lc-rs`); used by `rnk-layer` as the Q-012 interim | candidate |
 | [reqwest](https://crates.io/crates/reqwest), [hyper](https://crates.io/crates/hyper) | 0.13.5, MIT OR Apache-2.0; 1.12.0, MIT | HTTP | candidate |
 | [tokio](https://crates.io/crates/tokio) | 1.54.1, MIT | Async runtime | chosen |
 | [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, walk | chosen |

@@ -8,15 +8,23 @@
 //! is combined from the blocks' CRCs. A block's bytes depend only on the
 //! block, the previous block's tail and the level, so threads change the
 //! speed and nothing else (`exp-05` Q3; pigz does the same).
+//!
+//! The encoder also hashes its input (the diff ID) and its output (the
+//! blob digest): in the caller's thread when it compresses there, otherwise
+//! in one thread per stream fed in order, so that the caller only copies
+//! and writes.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::mem;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 
 use flate2::{Compress, Crc, FlushCompress};
+
+use crate::digest::{Hasher, Sha256Digest};
 
 /// Uncompressed bytes per block; part of every gzip layer digest.
 pub(crate) const BLOCK_SIZE: usize = 128 * 1024;
@@ -28,7 +36,7 @@ const FINAL_EMPTY_BLOCK: [u8; 2] = [0x03, 0x00];
 const QUEUE_PER_THREAD: usize = 2;
 
 /// A gzip writer compressing 128 KiB blocks on `threads` threads (in the
-/// caller's thread when `threads` is 1).
+/// caller's thread when `threads` is 1), hashing its input and output.
 ///
 /// [`flush`](Write::flush) flushes the inner writer only: cutting a block
 /// early would change the output. Call [`finish`](Self::finish) to end the
@@ -48,6 +56,10 @@ pub(crate) struct GzipEncoder<W: Write> {
     ready: BTreeMap<u64, Compressed>,
     /// CRC of everything written so far.
     crc: Crc,
+    /// The hash of the input.
+    input_hash: StreamHash,
+    /// The hash of everything written to `out`.
+    output_hash: StreamHash,
     pool: Option<Pool>,
 }
 
@@ -67,11 +79,17 @@ impl<W: Write> GzipEncoder<W> {
             1 => 4,
             _ => 0,
         };
-        out.write_all(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, xfl, 0xff])?;
-        let pool = match threads.get() {
-            1 => None,
-            n => Some(Pool::start(level, n)?),
+        let header = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, xfl, 0xff];
+        out.write_all(&header)?;
+        let (pool, input_hash, mut output_hash) = match threads.get() {
+            1 => (None, StreamHash::inline(), StreamHash::inline()),
+            n => (
+                Some(Pool::start(level, n)?),
+                StreamHash::start("rnk-gzip-hash-in", n)?,
+                StreamHash::start("rnk-gzip-hash-out", n)?,
+            ),
         };
+        output_hash.update(Arc::new(header))?;
         Ok(Self {
             out,
             level,
@@ -81,13 +99,16 @@ impl<W: Write> GzipEncoder<W> {
             next_write: 0,
             ready: BTreeMap::new(),
             crc: Crc::new(),
+            input_hash,
+            output_hash,
             pool,
         })
     }
 
     /// Compresses what is left, writes the final block and the trailer, and
-    /// returns the inner writer.
-    pub(crate) fn finish(mut self) -> io::Result<W> {
+    /// returns the inner writer with the sha256 and size of the input, then
+    /// of the output.
+    pub(crate) fn finish(mut self) -> io::Result<(W, Digested, Digested)> {
         if !self.block.is_empty() {
             self.submit()?;
         }
@@ -97,17 +118,25 @@ impl<W: Write> GzipEncoder<W> {
         if let Some(pool) = self.pool.take() {
             pool.stop()?;
         }
-        self.out.write_all(&FINAL_EMPTY_BLOCK)?;
-        self.out.write_all(&self.crc.sum().to_le_bytes())?;
-        self.out.write_all(&self.crc.amount().to_le_bytes())?;
-        Ok(self.out)
+        let mut end = FINAL_EMPTY_BLOCK.to_vec();
+        end.extend_from_slice(&self.crc.sum().to_le_bytes());
+        end.extend_from_slice(&self.crc.amount().to_le_bytes());
+        self.out.write_all(&end)?;
+        self.output_hash.update(Arc::new(end))?;
+        let input = self.input_hash.finish()?;
+        let output = self.output_hash.finish()?;
+        Ok((self.out, input, output))
     }
 
     /// Hands the full (or last) block to a compressor.
     fn submit(&mut self) -> io::Result<()> {
-        let data = mem::replace(&mut self.block, Vec::with_capacity(BLOCK_SIZE));
+        let data = Arc::new(mem::replace(
+            &mut self.block,
+            Vec::with_capacity(BLOCK_SIZE),
+        ));
         let tail = &data[data.len().saturating_sub(DICT_SIZE)..];
         let dict = mem::replace(&mut self.dict, tail.to_vec());
+        self.input_hash.update(Arc::clone(&data))?;
         let index = self.next_submit;
         self.next_submit += 1;
         let Some(pool) = &mut self.pool else {
@@ -145,6 +174,7 @@ impl<W: Write> GzipEncoder<W> {
 
     fn write_block(&mut self, block: Compressed) -> io::Result<()> {
         self.out.write_all(&block.deflate)?;
+        self.output_hash.update(Arc::new(block.deflate))?;
         self.crc.combine(&block.crc);
         self.next_write += 1;
         Ok(())
@@ -213,7 +243,7 @@ fn compress_block(level: u32, dict: &[u8], data: &[u8]) -> io::Result<Compressed
 
 struct Job {
     index: u64,
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     dict: Vec<u8>,
 }
 
@@ -295,6 +325,60 @@ impl Pool {
     }
 }
 
+/// A sha256 and the number of bytes it covers.
+pub(crate) type Digested = (Sha256Digest, u64);
+
+/// The running hash of one stream.
+enum StreamHash {
+    Inline(Hasher),
+    /// Pieces go, in order, to a thread that returns the hash when the
+    /// queue closes.
+    Thread {
+        blocks: SyncSender<Arc<Vec<u8>>>,
+        handle: JoinHandle<Hasher>,
+    },
+}
+
+impl StreamHash {
+    fn inline() -> Self {
+        Self::Inline(Hasher::default())
+    }
+
+    fn start(name: &str, threads: usize) -> io::Result<Self> {
+        let (blocks, queue) = mpsc::sync_channel::<Arc<Vec<u8>>>(threads * QUEUE_PER_THREAD);
+        let handle = thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                let mut hasher = Hasher::default();
+                for block in queue {
+                    hasher.update(&block);
+                }
+                hasher
+            })?;
+        Ok(Self::Thread { blocks, handle })
+    }
+
+    fn update(&mut self, block: Arc<Vec<u8>>) -> io::Result<()> {
+        match self {
+            Self::Inline(hasher) => {
+                hasher.update(&block);
+                Ok(())
+            }
+            Self::Thread { blocks, .. } => blocks.send(block).map_err(|_| stopped()),
+        }
+    }
+
+    fn finish(self) -> io::Result<Digested> {
+        match self {
+            Self::Inline(hasher) => Ok(hasher.finish()),
+            Self::Thread { blocks, handle } => {
+                drop(blocks);
+                handle.join().map(Hasher::finish).map_err(|_| stopped())
+            }
+        }
+    }
+}
+
 fn stopped() -> io::Error {
     io::Error::other("a gzip worker thread stopped")
 }
@@ -313,7 +397,13 @@ mod tests {
         for piece in data.chunks(chunk.max(1)) {
             enc.write_all(piece).unwrap();
         }
-        enc.finish().unwrap()
+        let (gz, (_, size), (digest, gz_size)) = enc.finish().unwrap();
+        assert_eq!(size, u64::try_from(data.len()).unwrap());
+        assert_eq!(gz_size, u64::try_from(gz.len()).unwrap());
+        let mut check = crate::digest::Hasher::default();
+        check.update(&gz);
+        assert_eq!(check.finish().0, digest);
+        gz
     }
 
     /// Decodes exactly one gzip member and checks nothing follows it.

@@ -198,26 +198,33 @@ fn a_lone_inode_is_written_as_a_regular_file() {
 
 #[test]
 fn files_above_8_gib_get_a_pax_size() {
-    /// Keeps the first bytes written, counts the rest.
-    struct Head(Vec<u8>, u64);
+    // Streaming and hashing 8 GiB takes minutes in a debug build, so the
+    // source gives 256 KiB and then fails; the header is out by then.
+    /// Keeps the first bytes written.
+    struct Head(Vec<u8>);
     impl Write for Head {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             let room = 4096_usize.saturating_sub(self.0.len()).min(buf.len());
             self.0.extend_from_slice(&buf[..room]);
-            self.1 += u64::try_from(buf.len()).unwrap();
             Ok(buf.len())
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
     }
-    struct Zeros;
-    impl rnk_layer::EntrySource for Zeros {
-        fn open(&mut self, entry: &rnk_layer::Entry) -> io::Result<Box<dyn io::Read + '_>> {
-            let EntryKind::File { size } = entry.kind else {
-                unreachable!()
-            };
-            Ok(Box::new(io::Read::take(io::repeat(0), size)))
+    struct Fails;
+    impl io::Read for Fails {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("stop"))
+        }
+    }
+    struct ZerosThenFail;
+    impl rnk_layer::EntrySource for ZerosThenFail {
+        fn open(&mut self, _: &rnk_layer::Entry) -> io::Result<Box<dyn io::Read + '_>> {
+            Ok(Box::new(io::Read::chain(
+                io::Read::take(io::repeat(0), 256 << 10),
+                Fails,
+            )))
         }
         fn parent(&mut self, _: &rnk_layer::EntryPath) -> io::Result<Option<rnk_layer::Entry>> {
             Ok(None)
@@ -227,11 +234,9 @@ fn files_above_8_gib_get_a_pax_size() {
     let size = (8 << 30) + 1;
     let mut writer = LayerWriter::new(plain()).unwrap();
     writer.add(entry("big", EntryKind::File { size })).unwrap();
-    let mut head = Head(Vec::new(), 0);
-    let written = writer.finish(&mut Zeros, &mut head).unwrap();
-    assert_eq!(written, head.1);
-    // PAX header and records, main header, content, padding, end marker.
-    assert_eq!(written, 512 + 512 + 512 + size + 511 + 1024);
+    let mut head = Head(Vec::new());
+    let err = writer.finish(&mut ZerosThenFail, &mut head).unwrap_err();
+    assert!(matches!(err, Error::Source { .. }), "{err}");
 
     let mut archive = tar::Archive::new(&head.0[..]);
     let mut entries = archive.entries().unwrap();

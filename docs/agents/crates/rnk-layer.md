@@ -24,7 +24,7 @@ for pulled layers. Same entries, same bytes, whatever the thread count.
 
 ## API (planned)
 
-Built: the tar writer, plain or parallel gzip. Planned: the rest.
+Built: the tar writer, plain or parallel gzip, with digests. Planned: the rest.
 
 ```rust
 pub struct EntryPath;              // [design] relative, normalized bytes; orders component-wise
@@ -39,14 +39,18 @@ pub trait EntrySource {            // [design] implemented by the exporter
     fn open(&mut self, e: &Entry) -> io::Result<Box<dyn Read + '_>>;            // file content, read once in layer order
     fn parent(&mut self, p: &EntryPath) -> io::Result<Option<Entry>>;          // [open: Q-013] interim: missing parents
 }
-pub struct LayerWriter;            // [design] new(EncodeOptions); add(Entry) in any order; finish(&mut dyn EntrySource, W)
+pub struct LayerWriter;            // [design] new(EncodeOptions); add(Entry) in any order; finish(&mut dyn EntrySource, W) -> LayerDigests
+pub struct LayerDigests { pub diff_id: Sha256Digest, pub digest: Sha256Digest, pub size: u64, pub compression: Compression }
+pub struct Sha256Digest;           // [design] Display `sha256:<hex>`; [open: Q-012] sha2 interim
 pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields plain tar bytes, hashes them for the diff_id;
                                    // [inferred] gzip inflate is sequential: "parallel" means pipelining inflate, hashing, writes
 ```
 
 - `finish` sorts, looks up missing parents once each (outermost first),
   turns entries sharing an inode into hardlinks to the first in layer order,
-  then streams; it returns the size today, `LayerDigests` once digests land.
+  then streams, hashing the tar (diff ID) and the blob as they pass.
+  `LayerDigests` carries the compression, not a media type: that needs the
+  image format, which `rnk-oci` owns.
 - Layer order `[open: Q-051]`: depth first, components byte-wise; in each
   directory the opaque marker, then whiteouts, then the rest. Names starting
   with `.wh.` are rejected.
@@ -55,7 +59,9 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
 - gzip (`src/gzip.rs`, flate2 on zlib-rs): 128 KiB blocks by offset, each
   deflated alone with the previous 32 KiB as dictionary and a sync flush,
   then an empty final block (`03 00`); header mtime 0, OS 255; CRC combined.
-  `threads` = 1 compresses in the caller's thread.
+  `threads` = 1 does everything in the caller's thread; above 1, `threads`
+  workers compress and two more threads hash the tar and the blob in order,
+  so the caller only copies and writes.
 
 ## Invariants
 
@@ -115,5 +121,6 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
   streaming digests → decoder → exporter integration with `rnk-snapshot`.
 - [open: Q-013] How `LayerWriter` gets a missing parent's metadata from
   the exporter; interim: `EntrySource::parent`.
-- Done: tar writer with goldens; parallel gzip with determinism tests
-  (`tests/it/`); `examples/throughput.rs` prints MB/s per thread count.
+- Done: tar writer with goldens; parallel gzip with determinism tests;
+  streaming digests (`tests/it/`); `examples/throughput.rs` prints MB/s per
+  thread count.

@@ -140,7 +140,10 @@ Entry format:
 - **Interim:** task 5, in `feat/rnk-layer-encode`: followed the
   recommendation, gzip by hand (`crates/rnk-layer/src/gzip.rs`, flate2 on
   zlib-rs); reversible because the compressor is private to `rnk-layer` and
-  only the gzip bytes would change.
+  only the gzip bytes would change. sha256: `sha2` (no recommendation; pure
+  Rust, SHA-NI and ARMv8 SHA detected at run time), behind
+  `rnk_layer::Sha256Digest`, so a switch to `aws-lc-rs` stays inside the
+  crate.
 - **Raised:** 2026-10-30
 
 ### Q-013: How does the layer writer learn missing parent metadata?

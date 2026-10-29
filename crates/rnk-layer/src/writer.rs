@@ -6,7 +6,9 @@ use std::fmt;
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
 use std::num::NonZeroUsize;
 
+use crate::digest::{HashingWriter, Sha256Digest};
 use crate::entry::{OPAQUE_MARKER, WHITEOUT_PREFIX};
+use crate::gzip::Digested;
 use crate::gzip::GzipEncoder;
 use crate::header::{self, BLOCK_SIZE, Header, TypeFlag};
 use crate::{Entry, EntryKind, EntryPath, Error};
@@ -44,11 +46,26 @@ pub struct EncodeOptions {
     pub compression: Compression,
     /// The compression level: 0 to 9 for gzip; ignored when uncompressed.
     pub level: i32,
-    /// Compression threads. The output does not depend on it.
+    /// Compression threads; above 1, two more threads hash the tar and the
+    /// blob. The output does not depend on it.
     pub threads: NonZeroUsize,
     /// Under `--reproducible`, the mtime of every header, in seconds since
     /// the Unix epoch; `None` keeps each entry's own mtime.
     pub mtime: Option<i64>,
+}
+
+/// What [`LayerWriter::finish`] computed while writing a layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LayerDigests {
+    /// sha256 of the uncompressed tar: the image config's `diff_id`.
+    pub diff_id: Sha256Digest,
+    /// sha256 of the blob as written: the descriptor's `digest`.
+    pub digest: Sha256Digest,
+    /// Size of the blob as written, in bytes.
+    pub size: u64,
+    /// The blob's compression; the media type follows from it and the
+    /// image format, which `rnk-oci` owns.
+    pub compression: Compression,
 }
 
 /// Where the writer gets what the entries alone do not carry.
@@ -147,7 +164,8 @@ impl LayerWriter {
         self.entries.is_empty()
     }
 
-    /// Writes the layer to `out` and returns its size in bytes.
+    /// Writes the layer to `out`, which is flushed, and returns its digests,
+    /// computed while streaming.
     ///
     /// # Errors
     ///
@@ -155,23 +173,31 @@ impl LayerWriter {
     /// ancestor that cannot be written as a directory, [`Error::Source`] when
     /// `source` fails, [`Error::ContentShorter`] or [`Error::ContentLonger`]
     /// when a file's size changed, [`Error::Io`] when writing fails.
-    pub fn finish<W: Write>(mut self, source: &mut dyn EntrySource, out: W) -> Result<u64, Error> {
+    pub fn finish<W: Write>(
+        mut self,
+        source: &mut dyn EntrySource,
+        out: W,
+    ) -> Result<LayerDigests, Error> {
         self.add_parents(source)?;
         let records = records(&self.entries);
-        let out = Counter {
-            inner: out,
-            count: 0,
-        };
-        let out = match self.options.compression {
-            Compression::None => Sink::Plain(BufWriter::with_capacity(COPY_BUFFER, out)),
+        let compression = self.options.compression;
+        let sink = match compression {
+            Compression::None => Sink::Plain(HashingWriter::new(BufWriter::with_capacity(
+                COPY_BUFFER,
+                out,
+            ))),
             Compression::Gzip => {
                 let level = gzip_level(self.options.level)?;
-                Sink::Gzip(GzipEncoder::new(out, level, self.options.threads)?)
+                Sink::Gzip(Box::new(GzipEncoder::new(
+                    out,
+                    level,
+                    self.options.threads,
+                )?))
             }
             Compression::Zstd => return Err(Error::Unsupported(Compression::Zstd)),
         };
         let mut tar = Tar {
-            out,
+            out: sink,
             header: Vec::with_capacity(4 * BLOCK_SIZE),
             buffer: vec![0; COPY_BUFFER],
             mtime: self.options.mtime,
@@ -180,8 +206,13 @@ impl LayerWriter {
             tar.write(record, source)?;
         }
         tar.out.write_all(&[0; 2 * BLOCK_SIZE])?;
-        let counter = tar.out.finish()?;
-        Ok(counter.count)
+        let ((diff_id, _), (digest, size)) = tar.out.finish()?;
+        Ok(LayerDigests {
+            diff_id,
+            digest,
+            size,
+            compression,
+        })
     }
 
     /// Looks up every ancestor that was not fed, outermost first.
@@ -310,21 +341,33 @@ fn gzip_level(level: i32) -> Result<u32, Error> {
         })
 }
 
-/// Where the tar stream goes: straight out, or through a compressor.
+/// Where the tar stream goes: hashed and written out, or through a
+/// compressor that hashes its input and its output.
 enum Sink<W: Write> {
-    Plain(BufWriter<W>),
-    Gzip(GzipEncoder<W>),
+    Plain(HashingWriter<BufWriter<W>>),
+    Gzip(Box<GzipEncoder<W>>),
 }
 
 impl<W: Write> Sink<W> {
-    /// Ends the stream and returns the inner writer, flushed.
-    fn finish(self) -> io::Result<W> {
-        let mut out = match self {
-            Self::Plain(out) => out.into_inner().map_err(io::IntoInnerError::into_error)?,
-            Self::Gzip(out) => out.finish()?,
-        };
-        out.flush()?;
-        Ok(out)
+    /// Ends the stream and flushes the output. Returns the sha256 and size
+    /// of the tar, then of the blob.
+    fn finish(self) -> io::Result<(Digested, Digested)> {
+        match self {
+            Self::Plain(out) => {
+                let tar = out.hasher.finish();
+                let mut out = out
+                    .inner
+                    .into_inner()
+                    .map_err(io::IntoInnerError::into_error)?;
+                out.flush()?;
+                Ok((tar, tar))
+            }
+            Self::Gzip(out) => {
+                let (mut out, tar, blob) = out.finish()?;
+                out.flush()?;
+                Ok((tar, blob))
+            }
+        }
     }
 }
 
@@ -348,24 +391,6 @@ impl<W: Write> Write for Sink<W> {
             Self::Plain(out) => out.flush(),
             Self::Gzip(out) => out.flush(),
         }
-    }
-}
-
-/// Counts the bytes written through it.
-struct Counter<W> {
-    inner: W,
-    count: u64,
-}
-
-impl<W: Write> Write for Counter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = self.inner.write(buf)?;
-        self.count += u64::try_from(n).map_err(io::Error::other)?;
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
     }
 }
 

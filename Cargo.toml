@@ -18,11 +18,12 @@ rnk-rootfs = { path = "crates/rnk-rootfs" }
 # Pure-Rust zlib (zlib-rs) under flate2: no C toolchain for the musl build;
 # `runtime_detection` lets zlib-rs pick SIMD code at run time.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+# sha256 for digests; SHA-NI and ARMv8 SHA picked at run time, no asm or C.
+sha2 = { version = "0.11.1", default-features = false }
 thiserror = "2.0.21"
 
 # Test-only crates.
 proptest = "1.12.0"
-sha2 = "0.11.1"
 tar = { version = "0.4.46", default-features = false }
 
 [workspace.lints.rust]

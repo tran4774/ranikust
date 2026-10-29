@@ -6,7 +6,8 @@ use std::io::{self, Read};
 use std::num::NonZeroUsize;
 
 use rnk_layer::{
-    Compression, EncodeOptions, Entry, EntryKind, EntryPath, EntrySource, Error, LayerWriter,
+    Compression, EncodeOptions, Entry, EntryKind, EntryPath, EntrySource, Error, LayerDigests,
+    LayerWriter,
 };
 use sha2::{Digest, Sha256};
 
@@ -94,13 +95,20 @@ impl Tree {
     }
 
     pub(crate) fn encode(&mut self, options: EncodeOptions) -> Result<Vec<u8>, Error> {
+        Ok(self.encode_with_digests(options)?.0)
+    }
+
+    pub(crate) fn encode_with_digests(
+        &mut self,
+        options: EncodeOptions,
+    ) -> Result<(Vec<u8>, LayerDigests), Error> {
         let mut writer = LayerWriter::new(options)?;
         for e in &self.entries {
             writer.add(e.clone())?;
         }
         let mut out = Vec::new();
-        writer.finish(&mut self.source, &mut out)?;
-        Ok(out)
+        let digests = writer.finish(&mut self.source, &mut out)?;
+        Ok((out, digests))
     }
 }
 
