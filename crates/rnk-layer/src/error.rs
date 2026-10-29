@@ -46,7 +46,8 @@ pub enum Error {
         level: i32,
     },
     /// The compression is recognised but not implemented yet.
-    // [open: Q-052] zstd needs a C toolchain for the static musl build.
+    // zstd needs a C toolchain for the static musl build; it arrives with
+    // cargo-zigbuild (Q-052, ADR-0020).
     #[error("{0} layers are not supported yet")]
     Unsupported(Compression),
     /// A file gave fewer bytes than its entry announced.

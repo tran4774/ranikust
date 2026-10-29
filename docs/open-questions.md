@@ -194,29 +194,6 @@ Entry format:
   lookup is never called.
 - **Raised:** 2026-10-30
 
-### Q-052: How does zstd reach the static musl build?
-
-- **Blocks:** Phase 1 task 5 (zstd); **Area:** `rnk-layer`, build
-- **Context:** the `zstd` crate builds libzstd from C (`zstd-sys`), the
-  multithreaded encoder `exp-05` measured. `just check-aarch64` and
-  `just build-static` run without a C cross compiler (no `musl-gcc`, no zig
-  on the development machine or in the recipes), so adding it breaks them:
-  with `zstd` 0.14.3 (`zstd-sys` 2.1.2, libzstd 1.5.7) both
-  `cargo check --target aarch64-unknown-linux-musl` and the
-  `x86_64-unknown-linux-musl` release build stop with "failed to find tool
-  `aarch64-linux-musl-gcc`" (or `x86_64-linux-musl-gcc`).
-  `ADR-0020` picks cargo-zigbuild, but no recipe uses it yet
-  ([workflow.md](agents/workflow.md#setup)).
-- **Options:** (a) cargo-zigbuild with zig in the recipes and CI, as
-  `ADR-0020` plans; (b) a pure-Rust encoder (`ruzstd` has a single-threaded
-  one with few levels; not measured), keeping C out; (c) a cargo feature
-  `zstd`, off by default, built only in a zig CI job. Decoding pulled zstd
-  layers could use `ruzstd` in every case.
-- **Recommendation:** none
-- **Interim:** zstd not implemented. `Compression::Zstd` exists;
-  `LayerWriter::new` and the decoder return `Error::Unsupported` for it.
-- **Raised:** 2026-10-30
-
 ### Q-014: Are cross-repository mounts part of Phase 1?
 
 - **Blocks:** Phase 1 tasks 6, 11; **Area:** `rnk-registry`
@@ -369,27 +346,6 @@ Entry format:
   an alias is one more variable in `rnk_metrics::Config::from_env`.
 - **Raised:** 2026-10-30
 
-### Q-054: What is the minimum kernel, and who checks it?
-
-- **Blocks:** Phase 1 task 8 (probes, user docs); **Area:** `rnk-rootfs`,
-  `ranikust`, the book
-- **Context:** `RootPath` needs `openat2` (Linux 5.6) and the `statx` mount
-  id (Linux 5.8), with no string-based fallback
-  ([rootfs](design/rootfs.md#invariants)). The probes never compare kernel
-  versions ([modes-and-detection](design/modes-and-detection.md)), the book
-  states no kernel requirement, and the privilege matrix lists RHEL 8
-  (kernel 4.18) among the targets
-  ([where-to-run](book/src/where-to-run.md)).
-- **Options:** (a) document Linux ≥ 5.8 and let the first `RootPath::open`
-  fail with its error; (b) also probe `openat2` and `statx` at start-up and
-  refuse with guidance, like the other probes; (c) support older kernels
-  with a userspace resolver (would reverse this crate's invariant: an ADR).
-- **Recommendation:** none
-- **Interim:** (a) without the documentation: `rnk-rootfs` fails with
-  `Error::Unsupported`, naming Linux 5.8 and seccomp
-  (`feat/rnk-rootfs-rootpath`).
-- **Raised:** 2026-10-30
-
 ### Q-024: What is the Snapshotter signature?
 
 - **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
@@ -428,26 +384,6 @@ Entry format:
   when the next mount would exceed it.
 - **Recommendation:** none
 - **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-055: How does overlay-form extraction handle a hardlink into a lower layer?
-
-- **Blocks:** Phase 1 task 9 (base-layer extraction); **Area:**
-  `rnk-rootfs`, `rnk-snapshot`
-- **Context:** in the overlay form each layer is extracted alone into
-  `layers/<id>` ([rootfs](design/rootfs.md#extraction)), so a hardlink
-  entry whose target lives in a lower layer has nothing to link to. Such
-  layers exist: kaniko-mode layers keep links to lower files
-  ([exp-09](research/experiments/09-kaniko-mode-prototype.md) finding 5),
-  and ranikust pulls kaniko-built base images. containerd avoids the
-  problem by applying each layer through an overlay mount of its lowers.
-- **Options:** (a) refuse the layer; (b) copy the target's content from the
-  lower layers' extracted directories (`extract` gets the lower roots);
-  (c) apply such layers through an overlay mount of the lowers, as
-  containerd does.
-- **Recommendation:** none
-- **Interim:** (a): `extract` fails with `Error::Entry` naming the missing
-  target (`feat/rnk-rootfs-rootpath`).
 - **Raised:** 2026-10-30
 
 ### Q-027: Is the ContextSource trait sync or async?
@@ -865,3 +801,24 @@ Entry format:
 - **Answer (2026-10-30):** no bound for now; GNU sparse entries stay
   refused. Revisit with `cargo fuzz` on `extract` in Phase 6
   ([rootfs](design/rootfs.md)).
+
+### Q-052: How does zstd reach the static musl build?
+
+- **Answer (2026-10-30):** cargo-zigbuild with zig in the `justfile` and
+  CI, as [ADR-0020](adr/0020-static-musl-via-cargo-zigbuild.md) planned;
+  the same toolchain builds mimalloc. zstd is added after it
+  ([phase-1](agents/phase-1.md#task-order), task 5a).
+
+### Q-054: What is the minimum kernel, and who checks it?
+
+- **Answer (2026-10-30):** require Linux 5.8; the binary probes `openat2`
+  and the `statx` mount id at start-up and refuses with guidance. Recorded
+  in [ADR-0028](adr/0028-minimum-kernel-linux-5-8.md).
+
+### Q-055: How does overlay-form extraction handle a hardlink into a lower layer?
+
+- **Answer (2026-10-30):** option (b): copy the target's content from the
+  lower layers' extracted directories as a regular file, which splits the
+  hardlink as overlay copy-up does (`ADR-0012`). Recorded in
+  [rootfs](design/rootfs.md#extraction); implemented with base-layer
+  extraction (Phase 1 task 9).

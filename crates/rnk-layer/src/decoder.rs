@@ -68,7 +68,7 @@ impl<R: Read> Decoder<R> {
         let inner = match compression {
             Compression::None => Inner::Plain(sniffed),
             Compression::Gzip => Inner::Gzip(Box::new(MultiGzDecoder::new(sniffed))),
-            // [open: Q-052]
+            // Q-052: zstd arrives with the cargo-zigbuild toolchain.
             Compression::Zstd => return Err(Error::Unsupported(Compression::Zstd)),
         };
         Ok(Self {

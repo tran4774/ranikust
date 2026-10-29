@@ -24,7 +24,7 @@ pub enum Compression {
     /// gzip, written as one member by the parallel compressor.
     Gzip,
     /// zstd. Recognised, not supported yet.
-    // [open: Q-052]
+    // Q-052: zstd arrives with the cargo-zigbuild toolchain.
     Zstd,
 }
 
