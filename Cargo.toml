@@ -21,6 +21,9 @@ rnk-rootfs = { path = "crates/rnk-rootfs" }
 regex = { version = "1.12", default-features = false, features = ["std", "perf"] }
 thiserror = "2.0"
 
+# Test-only crates.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
+
 [workspace.lints.rust]
 missing_docs = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }

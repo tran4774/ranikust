@@ -1,6 +1,6 @@
 # rnk-ignore
 
-> **Status:** in progress · **Phase:** 1 ·
+> **Status:** done · **Phase:** 1 ·
 > **Depends on:** `regex`, `thiserror` (pure data) · **Used by:** `rnk-builder` (`rnk-context`, `rnk-cache` [open: Q-028]) · **Path:** `crates/rnk-ignore/`
 
 **TL;DR:** A port of moby `patternmatcher` v0.6.1 (as BuildKit v0.34.0 uses
@@ -81,6 +81,9 @@ never evaluated never fails.
   chain, errors included); 645 `ReadAll` inputs; 641 BuildKit (`fsutil`)
   walks of a 51-entry tree. `GEN_SCALE=40` ran 434,660 cells once: only the
   surrogate case below differed.
+- T0 property (`tests/props.rs`): no panic; `p` then `!p` re-includes;
+  `./p`, `/p` equal `p`; walk equals parent check without exceptions;
+  agreement with a direct glob interpreter for `* ? ** / .` patterns.
 
 ## Pitfalls
 
@@ -113,6 +116,6 @@ never evaluated never fails.
 ## Phase 1
 
 - Done: `read_patterns`, `Matcher` with both match forms, the walk pruning
-  rule, upstream tests, Go goldens. Left: property tests.
+  rule, upstream tests, Go goldens, property tests.
 - Next, in `rnk-context` (task 10): walk the context with
   `matches_using_parent` and `may_reinclude_below`, after Q-050.

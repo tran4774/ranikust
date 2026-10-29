@@ -75,6 +75,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [highway](https://crates.io/crates/highway), [xxhash-rust](https://crates.io/crates/xxhash-rust), [jwalk](https://crates.io/crates/jwalk) | 1.3.0, MIT; 0.8.19, BSL-1.0; 0.9.0, MIT | Snapshot hash, parallel walk (Phase 2) | candidate |
 | [regex](https://crates.io/crates/regex) | 1.13.1, MIT OR Apache-2.0 | `rnk-ignore`'s compiled patterns (Go regexps translated; no Unicode tables) | chosen |
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Library `Error` enums | chosen |
+| [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only, `std` feature) | chosen |
 | [parse-dockerfile](https://crates.io/crates/parse-dockerfile), [ignore](https://crates.io/crates/ignore) | 0.1.8; 0.4.34 | Dockerfile parsing, `.dockerignore` | rejected (`ADR-0015`, `exp-04`) |
 | [libcontainer](https://crates.io/crates/libcontainer) | 0.7.0, Apache-2.0 | youki's runtime | reference only |
 
