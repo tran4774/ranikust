@@ -11,7 +11,7 @@ than a regular user never run on a developer's machine.
 | Tier | Contents | Privileges | Runs on | Command | Status |
 |---|---|---|---|---|---|
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
-| T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | TODO: `just test-rootless` | Planned |
+| T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
 | T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | TODO: `just test-vm` | Planned |
 | T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
 
@@ -100,3 +100,30 @@ this page, `CONTRIBUTING.md` and `docs/agents/workflow.md`.
 
 Also TODO: `just test-rootless` for tier T1, with the same rule that tests
 write only below a temporary directory.
+
+## Smoke test until the builder exists (tier T1)
+
+`just smoke` builds the `smoke-build` example of `crates/ranikust`
+statically and runs it inside rootless `podman run --privileged`, where
+root is the user's own uid through the user namespace, so nothing it does
+reaches the host as root. It strings the finished crates together:
+
+1. pull `alpine:3.20` (`rnk-registry`), extract each layer and check its
+   diff ID (`rnk-layer`, `rnk-rootfs`);
+2. `enter_build_namespace`, the probe and three `RUN`s through
+   `rnk-sandbox`: a file write, `apk add jq` (network and DNS through the
+   sandbox's `/etc` copies), and checks run inside the sandbox (PID 1, host
+   name, Docker's bounding set `a80425fb`, read-only `/proc/sys`, stdin not
+   a terminal);
+3. pack the root into one gzip layer and write an OCI layout
+   (`rnk-layer`, `rnk-oci`).
+
+The recipe then checks that the stub `/etc/resolv.conf` did not reach the
+layer, loads the layout into podman as an OCI archive (`podman load`; not
+`skopeo`, which calls `unshare` itself and is refused where AppArmor
+restricts unprivileged user namespaces, as on Ubuntu 24.04) and runs it.
+It is not a
+builder: one squashed layer, no diff per instruction, no xattrs; it goes
+away when `rnk-builder` lands. It does not replace the VM: the sandbox runs
+in a user namespace there, so real-root behaviour (T17, T18 of the threat
+model, `MS_MOVE` under Docker's seccomp) stays untested.

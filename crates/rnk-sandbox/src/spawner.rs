@@ -362,10 +362,7 @@ impl Runner {
             child_stdio(stdout, &mut keep)?,
             child_stdio(stderr, &mut keep)?,
         ];
-        let mounts = mounts
-            .into_iter()
-            .map(|op| child_mount(op, &mut keep))
-            .collect::<Result<_>>()?;
+        let mounts = mounts.into_iter().map(child_mount).collect::<Result<_>>()?;
         let (root_remount, dev_remount) = match spec.isolation {
             // Unused: `Direct` mounts nothing.
             Isolation::Direct => (MountFlags::BIND, [MountFlags::BIND; DEV_NODES.len()]),
@@ -494,7 +491,7 @@ fn hostname(spec: &RunSpec) -> &str {
     }
 }
 
-fn child_mount(op: MountOp, keep: &mut Vec<OwnedFd>) -> Result<ChildMount> {
+fn child_mount(op: MountOp) -> Result<ChildMount> {
     Ok(match op {
         MountOp::Proc { target } => ChildMount::Proc {
             target: cstring(&target)?,
@@ -506,11 +503,9 @@ fn child_mount(op: MountOp, keep: &mut Vec<OwnedFd>) -> Result<ChildMount> {
             target: cstring(&target)?,
         },
         MountOp::File { source, target } => {
-            let (fd, _) = open_source(&source, MountKind::File)?;
-            let raw = fd.as_raw_fd();
-            keep.push(fd);
+            check_source(&source, MountKind::File)?;
             ChildMount::File {
-                source: raw,
+                source: cstring(&source)?,
                 target: cstring(&target)?,
             }
         }
@@ -520,15 +515,14 @@ fn child_mount(op: MountOp, keep: &mut Vec<OwnedFd>) -> Result<ChildMount> {
             kind,
             read_only,
         } => {
-            let (fd, st) = open_source(&source, kind)?;
+            let st = check_source(&source, kind)?;
             let mut add = MountFlags::NODEV;
             if read_only {
                 add |= MountFlags::RDONLY;
             }
-            let raw = fd.as_raw_fd();
-            keep.push(fd);
             ChildMount::Bind {
-                source: raw,
+                source: cstring(&source)?,
+                dir: kind == MountKind::Directory,
                 target: cstring(&target)?,
                 remount: plan::remount_flags(st.f_flag, add),
             }
@@ -536,11 +530,10 @@ fn child_mount(op: MountOp, keep: &mut Vec<OwnedFd>) -> Result<ChildMount> {
     })
 }
 
-/// Opens a mount source as an `O_PATH` descriptor the child binds through
-/// `/proc/self/fd`, so the bind is of the file checked here: a symlink as
-/// the last component is refused, and the type must match `kind`. Returns
-/// it with its mount's flags.
-fn open_source(p: &Path, kind: MountKind) -> Result<(OwnedFd, rustix::fs::StatVfs)> {
+/// Checks a mount source as the child will (no symlink as the last
+/// component, the type of `kind`), for an error that names it, and returns
+/// its mount's flags. The child opens it again in its own mount namespace.
+fn check_source(p: &Path, kind: MountKind) -> Result<rustix::fs::StatVfs> {
     const OP: &str = "open a mount source";
     let fd = rustix::fs::open(
         p,
@@ -559,8 +552,7 @@ fn open_source(p: &Path, kind: MountKind) -> Result<(OwnedFd, rustix::fs::StatVf
             "mount source {p:?} is a {found:?}, not a {want:?}"
         )));
     }
-    let vfs = rustix::fs::fstatvfs(&fd).map_err(|e| io_err("statvfs", p, e.into()))?;
-    Ok((above_stdio(fd)?, vfs))
+    rustix::fs::fstatvfs(&fd).map_err(|e| io_err("statvfs", p, e.into()))
 }
 
 /// A caller's stream for the child: a descriptor is duplicated to 3 or
@@ -869,32 +861,31 @@ mod tests {
         fs::create_dir(d.join("cache")).unwrap();
         fs::write(d.join("secret"), b"s").unwrap();
         std::os::unix::fs::symlink("/", d.join("link")).unwrap();
-        let (_, vfs) = open_source(&d.join("cache"), MountKind::Directory).unwrap();
-        let _ = vfs.f_flag;
-        assert!(open_source(&d.join("secret"), MountKind::File).is_ok());
-        assert!(open_source(&d.join("secret"), MountKind::Directory).is_err());
-        assert!(open_source(&d.join("cache"), MountKind::File).is_err());
+        assert!(check_source(&d.join("cache"), MountKind::Directory).is_ok());
+        assert!(check_source(&d.join("secret"), MountKind::File).is_ok());
+        assert!(check_source(&d.join("secret"), MountKind::Directory).is_err());
+        assert!(check_source(&d.join("cache"), MountKind::File).is_err());
         // A symlink as the last component is never followed.
-        assert!(open_source(&d.join("link"), MountKind::Directory).is_err());
-        let mut keep = Vec::new();
-        let m = child_mount(
-            MountOp::Bind {
-                source: d.join("cache"),
-                target: "/root/.cache".into(),
-                kind: MountKind::Directory,
-                read_only: true,
-            },
-            &mut keep,
-        )
+        assert!(check_source(&d.join("link"), MountKind::Directory).is_err());
+        let m = child_mount(MountOp::Bind {
+            source: d.join("cache"),
+            target: "/root/.cache".into(),
+            kind: MountKind::Directory,
+            read_only: true,
+        })
         .unwrap();
         let ChildMount::Bind {
-            source, remount, ..
+            source,
+            dir: is_dir,
+            remount,
+            ..
         } = m
         else {
             panic!("{m:?}")
         };
-        assert_eq!(keep.len(), 1);
-        assert_eq!(source, keep[0].as_raw_fd());
+        // A path: the child opens it in its own mount namespace.
+        assert_eq!(source.as_bytes(), d.join("cache").as_os_str().as_bytes());
+        assert!(is_dir);
         assert!(remount.contains(MountFlags::BIND | MountFlags::NODEV | MountFlags::RDONLY));
     }
 

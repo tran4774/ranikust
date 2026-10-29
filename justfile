@@ -85,3 +85,55 @@ changelog *args:
 
 # Everything CI runs, in CI's order.
 ci: fmt-check lint test build-static check-aarch64 deny doc book
+
+# Until `rnk-builder` exists, `smoke` strings the finished crates together:
+# the `smoke-build` example pulls an image, extracts it, runs `RUN` commands
+# in the sandbox inside rootless `podman run --privileged` (T1: root there is
+# the user's uid), writes a one-layer OCI layout, and podman runs the result.
+
+# Smoke test of pull, extract, sandboxed RUN and a one-layer image (T1). Requires zig, cargo-zigbuild, rootless podman.
+smoke image="docker.io/library/alpine:3.20":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(id -u)" = 0 ] || [ "$(podman info --format '{{{{.Host.Security.Rootless}}')" != true ]; then
+      echo "error: run as a normal user with rootless podman (T1); real root belongs in the VM (T2)" >&2
+      exit 1
+    fi
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust --example smoke-build
+    TARGET="${CARGO_TARGET_DIR:-$PWD/target}"
+    BIN="$TARGET/{{ musl_target }}/release/examples/smoke-build"
+    OUT="$TARGET/smoke/oci"
+    NAME=localhost/ranikust-smoke:latest
+    rm -rf "$OUT" "$OUT.tar" && mkdir -p "$OUT"
+    # Checked inside the sandbox, one `RUN` each so that a failure names it.
+    # Mount flags come from mountinfo: busybox `test -w` is always true for root.
+    checks=(
+      'test "$$" = 1'                                                    # PID 1 of its namespace
+      'test "$(hostname)" = ranikust'
+      'grep -q "^CapBnd:[[:space:]]*00000000a80425fb$" /proc/self/status' # Docker's 14 capabilities
+      'grep -q "^CapInh:[[:space:]]*0*$" /proc/self/status'
+      'grep -Eq "^([^ ]+ ){4}/ [^ ]*nodev" /proc/self/mountinfo'          # T18
+      'grep -Eq "^([^ ]+ ){4}/dev/null ro," /proc/self/mountinfo'         # T18
+      'grep -Eq "^([^ ]+ ){4}/proc/sys ro," /proc/self/mountinfo'         # T17
+      '! test -s /proc/kcore'                                            # masked
+      '! test -t 0'                                                      # T19
+      'test "$(ls /proc/self/fd | wc -l)" -le 4'                          # stdio and ls's own, T7
+    )
+    runs=(--run 'echo "hello from ranikust" > /hello' --run 'apk add --no-cache jq')
+    for c in "${checks[@]}"; do runs+=(--run "$c"); done
+    podman run --rm --privileged \
+      -v "$BIN:/smoke-build:ro" -v "$OUT:/out" \
+      "{{ image }}" /smoke-build --image "{{ image }}" --out /out --tag "$NAME" "${runs[@]}"
+    # The sandbox's stubs (here /etc/resolv.conf, which alpine lacks) must not reach the layer.
+    for blob in "$OUT"/blobs/sha256/*; do
+      if gzip -t "$blob" 2>/dev/null && tar -tzf "$blob" | grep -Eq '^(\./)?etc/resolv\.conf$'; then
+        echo "error: a stub leaked into the layer: etc/resolv.conf" >&2
+        exit 1
+      fi
+    done
+    # `podman load` reads the layout as an OCI archive and names the image
+    # after its `ref.name` annotation.
+    tar -C "$OUT" -cf "$OUT.tar" .
+    podman load --quiet -i "$OUT.tar"
+    podman run --rm "$NAME" sh -c 'cat /hello && jq --version'
+    echo "smoke: ok"

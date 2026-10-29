@@ -1087,10 +1087,17 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "mimalloc",
+ "rnk-layer",
  "rnk-metrics",
+ "rnk-oci",
+ "rnk-registry",
  "rnk-rootfs",
+ "rnk-sandbox",
+ "rustix",
  "serde_json",
+ "sha2",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 

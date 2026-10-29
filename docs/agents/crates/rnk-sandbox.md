@@ -84,8 +84,9 @@ from `rnk-store`, secret file) and passes `--network`.
   `resolv.conf`, `hosts`, `hostname`, `RUN --mount` remounted `nodev`, then
   Docker's read-only `/proc` paths and masked `/proc` and `/sys` paths. Every
   target is resolved with `openat2(RESOLVE_IN_ROOT)` from the bound root and
-  mounted through `/proc/self/fd/<n>`; sources are `O_PATH` descriptors the
-  parent opened (no symlink as the last component, type checked); remounts
+  mounted through `/proc/self/fd/<n>`; sources are opened by the child in
+  its own mount namespace (`O_PATH`, no symlink as the last component, type
+  checked; a parent's descriptor would be refused); remounts
   keep the source's locked flags. The `nodev` remount covers the root's top
   mount only; a mount nested under a stage root would need its own. Then
   `pivot_root(".", ".")` and
@@ -146,8 +147,13 @@ from `rnk-store`, secret file) and passes `--network`.
   (symlink and type refused); remount flags (`nodev`, read-only `/dev`
   nodes); the probe's `EPERM`-only fallback and the mount-root check; the
   spans (`tests/spans.rs`).
-- **T1** (rootless podman): the sequence with its fallbacks; `SIGKILL` during
-  `RUN sleep 1000` leaves nothing; no stub in a layer; only stdio fds.
+- **T1** (rootless podman): `just smoke` (2026-10-30, kernel 7.0, podman
+  5.7): probe → `pivot_root`; `apk add` through the sandbox's network and
+  `/etc` copies; checked inside: PID 1, host name, CapBnd/Prm/Eff
+  `a80425fb` with empty Inh and Amb, root and `/dev` `nodev`, `/proc/sys`
+  and `/dev/null` read-only, `/proc/kcore` and the other paths masked, no
+  terminal, only stdio fds; no stub in the layer [measured]. To add: the
+  fallbacks; `SIGKILL` during `RUN sleep 1000` leaves nothing.
 - **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`); real root;
   escapes (`chroot` + `chdir("..")` under `pivot_root` and `MS_MOVE`,
   `umount /etc/resolv.conf`, a setuid binary) fail; writes to `/proc/sys`
@@ -175,6 +181,11 @@ from `rnk-store`, secret file) and passes `--network`.
   `..` stops at the moved root only when `/` is a mount root, otherwise root
   with `CAP_SYS_CHROOT` climbs out to ranikust's own filesystem [inferred]
   (Q-077).
+- A bind refuses (`EINVAL`) a source opened in another mount namespace: a
+  descriptor the parent opened cannot be bound by the child (`just smoke`
+  found it; no T0 test runs a `Full` child).
+- busybox `test -w` is true for root whatever the mount: check read-only
+  mounts in `/proc/self/mountinfo`.
 - A fresh `proc` is writable: a sysctl write needs only uid 0, and
   `kernel/core_pattern` makes the host kernel run a `RUN` binary as host
   root. Docker's read-only and masked paths are not optional (T17).
@@ -212,8 +223,10 @@ from `rnk-store`, secret file) and passes `--network`.
   `--network=none`, `Isolation::Direct` (early, from Phase 2), the probe
   of the root entry, and the hardening of the host-safety review: Docker's
   read-only and masked kernel files, `nodev`, read-only `/dev` node binds,
-  `setsid`, a session keyring, mount sources by descriptor. Only the T0 tests ran: nothing after the clone of a
-  `Full` child has run as root yet.
+  `setsid`, a session keyring, mount sources by descriptor. Tested by T0 and
+  by `just smoke` (T1, rootless `podman run --privileged`), where the whole
+  sequence runs in a user namespace with `pivot_root` and `RUN`s check the
+  result from inside; nothing has run as real root yet (T2).
 - Left for `ranikust` (task 8): calling `enter_build_namespace` and `probe`
   in the single-threaded window and `Sandbox::start` after.
 - Deferred: bare `chroot`, fake `/proc`, `JAVA_TOOL_OPTIONS` (Phase 2); user
