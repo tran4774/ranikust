@@ -1,0 +1,364 @@
+{
+  "file": "testfiles_mail",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update -qy && apt-get install mutt offlineimap vim-nox abook elinks curl tmux cron zsh -y\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \".muttrc\" \"/\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \".offlineimaprc\" \"/\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \".tmux.conf\" \"/\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"mutt\" \"/.mutt\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"vim\" \"/.vim\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"vimrc\" \"/.vimrc\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"crontab\" \"/etc/crontab\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"chmod 644 /etc/crontab\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /Mail\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /.offlineimap\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"export TERM=screen-256color\\\" >/.zshenv\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"setsid cron; tmux -2\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update -qy && apt-get install mutt offlineimap vim-nox abook elinks curl tmux cron zsh -y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            4,
+            4
+          ],
+          "link": false,
+          "sources": [
+            ".muttrc"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "sources": [
+            ".offlineimaprc"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "sources": [
+            ".tmux.conf"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/.mutt",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "sources": [
+            "mutt"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/.vim",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            8,
+            8
+          ],
+          "link": false,
+          "sources": [
+            "vim"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/.vimrc",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "sources": [
+            "vimrc"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/etc/crontab",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "sources": [
+            "crontab"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "chmod 644 /etc/crontab"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /Mail"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /.offlineimap"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"export TERM=screen-256color\" >/.zshenv"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "setsid cron; tmux -2"
+          ],
+          "files": [],
+          "lines": [
+            16,
+            16
+          ],
+          "prepend_shell": true
+        }
+      ]
+    }
+  ]
+}

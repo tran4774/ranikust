@@ -1,0 +1,28 @@
+{
+  "file": "Dockerfile_test_issue_mz864",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "1000:1000",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "test \"$(stat -c '%u:%g' /work)\" = \"$(id -u):$(id -g)\"  && test \"$(stat -c '%u:%g' /work/dir4)\" = \"$(id -u):$(id -g)\""
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

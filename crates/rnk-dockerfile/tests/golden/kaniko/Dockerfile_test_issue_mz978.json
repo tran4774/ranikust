@@ -1,0 +1,122 @@
+{
+  "file": "Dockerfile_test_issue_mz978",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /data/a /data/b     && chmod 755 /data/a /data/b     && echo 'bli' > /data/a/1 && ln /data/a/1 /data/a/2     && echo 'blubb' > /data/b/1 && ln /data/b/1 /data/b/2\"",
+      "lines": [
+        7,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base\"] \"/data\" \"/out\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /data/a /data/b     && chmod 755 /data/a /data/b     && echo 'bli' > /data/a/1 && ln /data/a/1 /data/a/2     && echo 'blubb' > /data/b/1 && ln /data/b/1 /data/b/2"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        14,
+        14
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/out",
+          "excludes": [],
+          "from": "base",
+          "lines": [
+            18,
+            18
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/data"
+          ]
+        }
+      ]
+    }
+  ]
+}

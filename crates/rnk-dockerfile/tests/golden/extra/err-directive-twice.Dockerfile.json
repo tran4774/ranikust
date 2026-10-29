@@ -1,0 +1,10 @@
+{
+  "file": "err-directive-twice.Dockerfile",
+  "ok": false,
+  "error": "only one syntax parser directive can be used",
+  "error_line": 1,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

@@ -1,0 +1,183 @@
+{
+  "file": "Dockerfile_test_cross_compile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"stage\" \"base\" \"=\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"context/foo\" \"/base/foo\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"app\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/app\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base\"] \"/base/foo\" \"/app/foo\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"GREETING\" \"hello\" \"=\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"test\" \"cross-compile\" \"=\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            2,
+            2
+          ],
+          "pairs": [
+            [
+              "stage",
+              "base",
+              false
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/base/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            3,
+            3
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "app",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": [
+        {
+          "cmd": "workdir",
+          "lines": [
+            6,
+            6
+          ],
+          "value": "/app"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/app/foo",
+          "excludes": [],
+          "from": "base",
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/base/foo"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            8,
+            8
+          ],
+          "pairs": [
+            [
+              "GREETING",
+              "hello",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "label",
+          "lines": [
+            9,
+            9
+          ],
+          "pairs": [
+            [
+              "test",
+              "cross-compile",
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

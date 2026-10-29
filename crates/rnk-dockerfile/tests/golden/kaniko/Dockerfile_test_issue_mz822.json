@@ -1,0 +1,242 @@
+{
+  "file": "Dockerfile_test_issue_mz822",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"one\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"<<A\" \"<<B\" \"/out\"",
+      "lines": [
+        10,
+        15
+      ],
+      "heredocs": [
+        {
+          "name": "A",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "a\n"
+        },
+        {
+          "name": "B",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "\nb\n"
+        }
+      ]
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"two\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"<<A\" \"<<B\" \"/out\"",
+      "lines": [
+        18,
+        23
+      ],
+      "heredocs": [
+        {
+          "name": "A",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "a\n\n"
+        },
+        {
+          "name": "B",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "b\n"
+        }
+      ]
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=one\"] \"/out\" \"/one\"",
+      "lines": [
+        26,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=two\"] \"/out\" \"/two\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        8,
+        8
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "one",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "A",
+              "a\n",
+              true
+            ],
+            [
+              "B",
+              "\nb\n",
+              true
+            ]
+          ],
+          "dest": "/out",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            10,
+            15
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        }
+      ]
+    },
+    {
+      "name": "two",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        17,
+        17
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "A",
+              "a\n\n",
+              true
+            ],
+            [
+              "B",
+              "b\n",
+              true
+            ]
+          ],
+          "dest": "/out",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            18,
+            23
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        25,
+        25
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/one",
+          "excludes": [],
+          "from": "one",
+          "lines": [
+            26,
+            26
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/two",
+          "excludes": [],
+          "from": "two",
+          "lines": [
+            27,
+            27
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        }
+      ]
+    }
+  ]
+}

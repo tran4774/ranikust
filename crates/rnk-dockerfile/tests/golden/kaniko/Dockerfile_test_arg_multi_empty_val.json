@@ -1,0 +1,72 @@
+{
+  "file": "Dockerfile_test_arg_multi_empty_val",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"VARIANT=\\\"\\\"\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"VERSION=1\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"busybox${VARIANT}:1.3${VERSION}\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "VARIANT",
+          "\"\""
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "args": [
+        [
+          "VERSION",
+          "1"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        2,
+        2
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox${VARIANT}:1.3${VERSION}",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": []
+    }
+  ]
+}

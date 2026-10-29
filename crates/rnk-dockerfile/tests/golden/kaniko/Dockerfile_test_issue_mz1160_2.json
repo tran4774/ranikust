@@ -1,0 +1,122 @@
+{
+  "file": "Dockerfile_test_issue_mz1160_2",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"planted\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ln -s / /escape\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=planted\"] \"/escape/kaniko/executor\" \"/copied\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "planted",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ln -s / /escape"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/copied",
+          "excludes": [],
+          "from": "planted",
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/escape/kaniko/executor"
+          ]
+        }
+      ]
+    }
+  ]
+}

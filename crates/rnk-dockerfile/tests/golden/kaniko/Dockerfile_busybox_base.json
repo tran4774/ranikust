@@ -1,0 +1,55 @@
+{
+  "file": "Dockerfile_busybox_base",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /proc /sys\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /proc /sys"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

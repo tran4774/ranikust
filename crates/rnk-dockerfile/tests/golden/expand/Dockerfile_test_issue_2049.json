@@ -1,0 +1,39 @@
+{
+  "file": "Dockerfile_test_issue_2049",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir /v1 &&     echo one > /v1/tool &&     ln -s /v1/tool /usr/bin/tool &&     touch -h -d @1000000000 /usr/bin/tool"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir /v2 &&     echo two > /v2/tool &&     ln -sfn /v2/tool /usr/bin/tool &&     touch -h -d @1000000000 /usr/bin/tool"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

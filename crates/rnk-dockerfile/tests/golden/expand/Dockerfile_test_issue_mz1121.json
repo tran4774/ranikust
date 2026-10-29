@@ -1,0 +1,72 @@
+{
+  "file": "Dockerfile_test_issue_mz1121",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /root/.cache/pip/http && echo wheel > /root/.cache/pip/http/wheel"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /src/.git && echo ref > /src/.git/HEAD"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /src/.hg && echo store > /src/.hg/requires"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /src/.svn && echo db > /src/.svn/wc.db"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /var/lib/apt/lists && echo packages > /var/lib/apt/lists/deb.debian.org_debian_dists_bookworm_InRelease"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

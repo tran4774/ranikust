@@ -1,0 +1,171 @@
+{
+  "file": "1097",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:latest\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd -g 20000 bar\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd -g 10000 foo\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"useradd -c \\\"Foo user\\\" -u 10000 -g 10000 -G bar -m foo\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"id foo\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"foo\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"id\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:latest",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd -g 20000 bar"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd -g 10000 foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "useradd -c \"Foo user\" -u 10000 -g 10000 -G bar -m foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "id foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            10,
+            10
+          ],
+          "value": "foo"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "id"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+FROM debian:12.10
+RUN mkdir /foo
+RUN echo "hello" > /foo/hey
+VOLUME /foo/bar /tmp /qux/quux
+ENV VOL /baz/bat
+VOLUME ["${VOL}"]
+RUN echo "hello again" > /tmp/hey

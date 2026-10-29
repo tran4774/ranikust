@@ -1,0 +1,28 @@
+{
+  "file": "err-bool-flag.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: expecting boolean value for flag --link, not: maybe",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link=maybe\"] \"a\" \"b\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

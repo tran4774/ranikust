@@ -1,0 +1,50 @@
+{
+  "file": "Dockerfile_test_issue_1713",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "cat <<file1.txt > /tmp/file1.txt && cat <<file2.txt > /tmp/file2.txt\nHello from file1\nfile1.txt\nHello from file2\nfile2.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp && cat /tmp/*.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "touch /tmp/bli\ntouch /tmp/bla\ntouch /tmp/blubb\nls -la /tmp\n"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

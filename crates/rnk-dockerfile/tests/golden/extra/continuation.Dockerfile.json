@@ -1,0 +1,209 @@
+{
+  "file": "continuation.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 1,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo a     b       c\"",
+      "lines": [
+        2,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo trailing\\\\\\\\\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo next\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"A\" \"1\" \"=\" \"B\" \"2\" \"=\"",
+      "lines": [
+        10,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"a\" \"b\" \"=\" \"c\" \"d\" \"=\"",
+      "lines": [
+        12,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"indented\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo end\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo a     b       c"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            2,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo trailing\\\\"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo next"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            10,
+            11
+          ],
+          "pairs": [
+            [
+              "A",
+              "1",
+              false
+            ],
+            [
+              "B",
+              "2",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "label",
+          "lines": [
+            12,
+            13
+          ],
+          "pairs": [
+            [
+              "a",
+              "b",
+              false
+            ],
+            [
+              "c",
+              "d",
+              false
+            ]
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "indented"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo end"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            15,
+            15
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

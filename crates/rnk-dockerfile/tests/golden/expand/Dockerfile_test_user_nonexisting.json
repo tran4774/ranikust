@@ -1,0 +1,61 @@
+{
+  "file": "Dockerfile_test_user_nonexisting",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "1001:testgroup",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"hello\" > /tmp/foobar"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"hello\" > /tmp/foobar"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"hey2\" > /tmp/foo"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "groupadd testgroup"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

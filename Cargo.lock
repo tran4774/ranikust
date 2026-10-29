@@ -207,6 +207,11 @@ version = "0.0.0"
 [[package]]
 name = "rnk-dockerfile"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "rnk-ignore"

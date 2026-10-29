@@ -1,0 +1,61 @@
+{
+  "file": "Dockerfile_test_issue_mz511",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "cat /root/.netrc"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "cat /root/.netrc"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "cat /root/.netrc"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "rm /etc/nsswitch.conf"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

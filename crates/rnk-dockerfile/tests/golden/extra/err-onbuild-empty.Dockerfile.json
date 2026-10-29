@@ -1,0 +1,28 @@
+{
+  "file": "err-onbuild-empty.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: ONBUILD requires at least one argument",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

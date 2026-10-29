@@ -1,0 +1,28 @@
+{
+  "file": "err-healthcheck-short.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: Interval \"interval\" cannot be less than 1ms",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--interval=1ns\"] \"CMD\" \"x\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

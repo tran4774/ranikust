@@ -1,0 +1,21 @@
+{
+  "file": "Dockerfile_test_scratch",
+  "build_args": {
+    "file": "context/foo",
+    "file3": "context/b*",
+    "hello": "hello-value",
+    "image": "scratch"
+  },
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "baz=baz",
+    "src=file3",
+    "file=context/bar/bam/bat"
+  ],
+  "labels": {},
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

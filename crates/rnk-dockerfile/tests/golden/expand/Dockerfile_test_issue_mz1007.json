@@ -1,0 +1,19 @@
+{
+  "file": "Dockerfile_test_issue_mz1007",
+  "build_args": {
+    "BASE": "127.0.0.2:5001/userb/test_issue_mz1007:base"
+  },
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base",
+    "mz1007": "fallback"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

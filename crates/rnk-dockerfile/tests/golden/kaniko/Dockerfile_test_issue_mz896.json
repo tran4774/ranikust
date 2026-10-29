@@ -1,0 +1,161 @@
+{
+  "file": "Dockerfile_test_issue_mz896",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\" \"AS\" \"base\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cat /proc/sys/kernel/random/uuid > /u\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"busybox\" \"AS\" \"mid\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base\"] \"/u\" \"/u\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/empty\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"busybox\" \"AS\" \"final\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=mid\"] \"/empty\" \"/empty\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat /proc/sys/kernel/random/uuid > /u"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "mid",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/u",
+          "excludes": [],
+          "from": "base",
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/u"
+          ]
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            11,
+            11
+          ],
+          "value": "/empty"
+        }
+      ]
+    },
+    {
+      "name": "final",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        13,
+        13
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/empty",
+          "excludes": [],
+          "from": "mid",
+          "lines": [
+            14,
+            14
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/empty"
+          ]
+        }
+      ]
+    }
+  ]
+}

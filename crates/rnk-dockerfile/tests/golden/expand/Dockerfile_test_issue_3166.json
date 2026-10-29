@@ -1,0 +1,16 @@
+{
+  "file": "Dockerfile_test_issue_3166",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "nobody",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

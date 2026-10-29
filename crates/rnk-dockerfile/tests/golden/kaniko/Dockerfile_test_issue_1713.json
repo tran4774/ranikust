@@ -1,0 +1,244 @@
+{
+  "file": "Dockerfile_test_issue_1713",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"<<EOF\"",
+      "lines": [
+        3,
+        8
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "touch /tmp/bli\ntouch /tmp/bla\ntouch /tmp/blubb\nls -la /tmp\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"cat <<file1.txt > /tmp/file1.txt && cat <<file2.txt > /tmp/file2.txt\"",
+      "lines": [
+        10,
+        14
+      ],
+      "heredocs": [
+        {
+          "name": "file1.txt",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "Hello from file1\n"
+        },
+        {
+          "name": "file2.txt",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "Hello from file2\n"
+        }
+      ]
+    },
+    {
+      "dump": "copy \"<<file3.txt\" \"/tmp/file3.txt\"",
+      "lines": [
+        16,
+        18
+      ],
+      "heredocs": [
+        {
+          "name": "file3.txt",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "Hello from file3\n"
+        }
+      ]
+    },
+    {
+      "dump": "add \"<<file4.txt\" \"/tmp/file4.txt\"",
+      "lines": [
+        20,
+        22
+      ],
+      "heredocs": [
+        {
+          "name": "file4.txt",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "Hello from file4\n"
+        }
+      ]
+    },
+    {
+      "dump": "run \"ls -la /tmp && cat /tmp/*.txt\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "<<EOF"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOF",
+              "touch /tmp/bli\ntouch /tmp/bla\ntouch /tmp/blubb\nls -la /tmp\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            3,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat <<file1.txt > /tmp/file1.txt && cat <<file2.txt > /tmp/file2.txt"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "file1.txt",
+              "Hello from file1\n",
+              false
+            ],
+            [
+              "file2.txt",
+              "Hello from file2\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            10,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [
+            [
+              "file3.txt",
+              "Hello from file3\n",
+              true
+            ]
+          ],
+          "dest": "/tmp/file3.txt",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            16,
+            18
+          ],
+          "link": false,
+          "parents": false,
+          "sources": []
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [
+            [
+              "file4.txt",
+              "Hello from file4\n",
+              true
+            ]
+          ],
+          "dest": "/tmp/file4.txt",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            20,
+            22
+          ],
+          "link": false,
+          "sources": [],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp && cat /tmp/*.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            24,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

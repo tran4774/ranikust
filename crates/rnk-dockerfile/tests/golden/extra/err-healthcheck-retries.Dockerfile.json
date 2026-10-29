@@ -1,0 +1,28 @@
+{
+  "file": "err-healthcheck-retries.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: --retries cannot be negative (-1)",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--retries=-1\"] \"CMD\" \"x\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

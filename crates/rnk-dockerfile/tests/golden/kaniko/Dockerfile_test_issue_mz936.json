@@ -1,0 +1,147 @@
+{
+  "file": "Dockerfile_test_issue_mz936",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"first\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo first > /first.txt\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=first\"] \"/first.txt\" \"/first.txt\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo second > /second.txt\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        8,
+        8
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "first",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo first > /first.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            10,
+            10
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        12,
+        12
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/first.txt",
+          "excludes": [],
+          "from": "first",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/first.txt"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo second > /second.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

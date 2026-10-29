@@ -1,0 +1,286 @@
+{
+  "file": "Dockerfile_test_copyadd_chmod",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chmod=0666\"] \"context/foo\" \"/file666\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chmod=777\"] \"context/qux\" \"/dir777\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c \\\"%a\\\" /file666)\\\" = \\\"666\\\"\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c \\\"%a\\\" /dir777/qup)\\\" = \\\"777\\\"\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c \\\"%a\\\" /dir777/quw/que)\\\" = \\\"777\\\"\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=0755\"] \"context/foo\" \"/copyfile755\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=755\"] \"context/qux\" \"/copydir755\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c \\\"%a\\\" /copyfile755)\\\" = \\\"755\\\"\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c \\\"%a\\\" /copydir755/qup)\\\" = \\\"755\\\"\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c \\\"%a\\\" /copydir755/quw/que)\\\" = \\\"755\\\"\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "checksum": "",
+          "chmod": "0666",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/file666",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            3,
+            3
+          ],
+          "link": false,
+          "sources": [
+            "context/foo"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "777",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/dir777",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            4,
+            4
+          ],
+          "link": false,
+          "sources": [
+            "context/qux"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c \"%a\" /file666)\" = \"666\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c \"%a\" /dir777/qup)\" = \"777\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c \"%a\" /dir777/quw/que)\" = \"777\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "0755",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/copyfile755",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            16,
+            16
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "755",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/copydir755",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            17,
+            17
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/qux"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c \"%a\" /copyfile755)\" = \"755\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c \"%a\" /copydir755/qup)\" = \"755\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c \"%a\" /copydir755/quw/que)\" = \"755\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            22,
+            22
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

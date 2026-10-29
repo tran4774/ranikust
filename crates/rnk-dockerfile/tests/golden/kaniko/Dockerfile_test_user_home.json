@@ -1,0 +1,219 @@
+{
+  "file": "Dockerfile_test_user_home",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch $HOME/hello\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd testgroup &&     useradd --create-home --gid testgroup alice &&     useradd --create-home --uid 1111 --home-dir /home/john --gid testgroup bob\"",
+      "lines": [
+        22,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"alice:testgroup\"",
+      "lines": [
+        26,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch $HOME/hello\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"bob\"",
+      "lines": [
+        29,
+        29
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch $HOME/hello\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"root\"",
+      "lines": [
+        32,
+        32
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1111\"",
+      "lines": [
+        34,
+        34
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch $HOME/world\"",
+      "lines": [
+        35,
+        35
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch $HOME/hello"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd testgroup &&     useradd --create-home --gid testgroup alice &&     useradd --create-home --uid 1111 --home-dir /home/john --gid testgroup bob"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            22,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            26,
+            26
+          ],
+          "value": "alice:testgroup"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch $HOME/hello"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            27,
+            27
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            29,
+            29
+          ],
+          "value": "bob"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch $HOME/hello"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            30,
+            30
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            32,
+            32
+          ],
+          "value": "root"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            34,
+            34
+          ],
+          "value": "1111"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch $HOME/world"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            35,
+            35
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

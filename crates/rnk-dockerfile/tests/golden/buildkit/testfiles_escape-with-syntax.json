@@ -1,0 +1,29 @@
+{
+  "file": "testfiles_escape-with-syntax",
+  "ok": true,
+  "escape": "`",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"image\"",
+      "lines": [
+        4,
+        5
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "image",
+      "platform": "",
+      "lines": [
+        4,
+        5
+      ],
+      "commands": []
+    }
+  ]
+}

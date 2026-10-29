@@ -1,0 +1,96 @@
+{
+  "file": "Dockerfile_test_issue_mz839",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd -g 4242 testgroup\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"root:testgroup\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"gid=$(id -g)\\\" > /result.txt\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd -g 4242 testgroup"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            5,
+            5
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            6,
+            6
+          ],
+          "value": "root:testgroup"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"gid=$(id -g)\" > /result.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

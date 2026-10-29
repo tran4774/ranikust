@@ -1,0 +1,71 @@
+{
+  "file": "err-mount-csv.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/a true\"]",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            2,
+            2
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/a true",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

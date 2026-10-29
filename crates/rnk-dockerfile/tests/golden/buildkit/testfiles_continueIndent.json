@@ -1,0 +1,255 @@
+{
+  "file": "testfiles_continueIndent",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 1,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo hello  world  goodnight    moon  lightning\"",
+      "lines": [
+        3,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo hello    world\"",
+      "lines": [
+        9,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo hello  world\"",
+      "lines": [
+        11,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo hello goodbyefrog\"",
+      "lines": [
+        13,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo hello  world\"",
+      "lines": [
+        16,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo hi   world  goodnight\"",
+      "lines": [
+        18,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo goodbyefrog\"",
+      "lines": [
+        25,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo goodbyefrog\"",
+      "lines": [
+        27,
+        29
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo hello this is some more useful stuff\"",
+      "lines": [
+        31,
+        36
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo hello  world  goodnight    moon  lightning"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo hello    world"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            10
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo hello  world"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo hello goodbyefrog"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            15
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo hello  world"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            17
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo hi   world  goodnight"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo goodbyefrog"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            25,
+            26
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo goodbyefrog"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            27,
+            29
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo hello this is some more useful stuff"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            31,
+            36
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

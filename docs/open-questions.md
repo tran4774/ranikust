@@ -84,7 +84,11 @@ Entry format:
 - **Options:** (a) kaniko's list: build every listed stage, push the first;
   (b) one target, a repeated flag rejected with a message (`ADR-0011`).
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** in `feat/rnk-dockerfile-parser`, `stage_graph()` takes
+  `GraphOptions::targets: Vec<String>`: every listed stage is built, the
+  first is the result (`StageGraph::primary_target`), and `TARGETSTAGE` is
+  the first name. Reversible because a single target is a one-element list:
+  option (b) only needs the CLI (task 8) to reject a repeated flag.
 - **Raised:** 2026-10-30
 
 ### Q-009: Does the parser accept instructions deferred to Phase 5?
@@ -97,7 +101,11 @@ Entry format:
 - **Options:** (a) parse them so all 200 goldens pass, and let
   `rnk-builder` reject them; (b) reject them in the parser until Phase 5.
 - **Recommendation:** (a), as the crate card proposes.
-- **Interim:** none
+- **Interim:** followed the recommendation in `feat/rnk-dockerfile-parser`:
+  `rnk-dockerfile` parses every instruction and flag BuildKit v0.34.0
+  parses, and all 200 goldens pass. Reversible because rejecting them later
+  is a check in the builder (or in `rnk-dockerfile`) on parsed values; no
+  type or format depends on the choice.
 - **Raised:** 2026-10-30
 
 ### Q-010: Which path type does rnk-ignore match on?
@@ -697,6 +705,26 @@ Entry format:
 - **Options:** for each, (a) build it later; (b) drop it.
 - **Recommendation:** none
 - **Interim:** none
+- **Raised:** 2026-10-30
+
+### Q-051: Does `FROM <stage>` match stage names case-insensitively?
+
+- **Blocks:** Phase 6 (kaniko's integration Dockerfiles in every mode);
+  **Area:** `rnk-dockerfile`
+- **Context:** BuildKit lower-cases stage names and looks up the `FROM`
+  base exactly, so `FROM BUG_stage` is an image name and fails ("must be
+  lowercase"); a later stage of the same name replaces an earlier one.
+  kaniko lower-cases the base and takes the first earlier stage of that
+  name (`kaniko@44aa7ddc0 pkg/dockerfile/dockerfile.go:80-93`), and its
+  integration test `Dockerfile_test_issue_519` depends on it. `COPY --from`
+  is case-insensitive in both. `ADR-0015` follows BuildKit "unless a
+  compatibility test shows users depend on kaniko's behaviour".
+- **Options:** (a) BuildKit: exact match, `Dockerfile_test_issue_519`
+  fails; (b) kaniko: case-insensitive, first earlier stage; (c)
+  case-insensitive, last earlier stage (BuildKit's rule for duplicates).
+- **Recommendation:** none
+- **Interim:** (a), BuildKit's rule, in `feat/rnk-dockerfile-parser`
+  (`rnk_dockerfile::stage_graph`). Reversible: one lookup in the graph.
 - **Raised:** 2026-10-30
 
 ## Answered

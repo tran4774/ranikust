@@ -1,0 +1,164 @@
+{
+  "file": "Dockerfile_test_issue_mz247",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /run     && ln -s /run /var/run\"",
+      "lines": [
+        12,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /var/www\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"nosquash\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"final\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /var     && test -d /var/www\"",
+      "lines": [
+        23,
+        24
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /run     && ln -s /run /var/run"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /var/www"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            17,
+            17
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        18,
+        18
+      ],
+      "commands": []
+    },
+    {
+      "name": "final",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        22,
+        22
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /var     && test -d /var/www"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            23,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

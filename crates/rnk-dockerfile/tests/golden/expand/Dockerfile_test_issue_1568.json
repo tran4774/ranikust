@@ -1,0 +1,171 @@
+{
+  "file": "Dockerfile_test_issue_1568",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp/     && test ! -f /tmp/bli"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp/     && test ! -f /tmp/bli/bla/foo"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp/bli/bla/     && test ! -f /tmp/bli/bla/foo     && test -f /tmp/bli/bla/blubb"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test ! -f /tmp/bli/bla/blubb"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test ! -f /tmp/bli/bla/blubb"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test -f /tmp/bli/bla/blubb"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && touch /tmp/bli/bla/blubb"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /tmp/bli/bla     && touch /tmp/bli/bla/blubb"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /tmp/cache_dir /tmp/bind_dir     && touch /tmp/cache_dir/cache_file     && touch /tmp/bind_dir/bind_file"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /tmp/dirA /tmp/dirB     && touch /tmp/dirA/a_file     && touch /tmp/dirB/b_file"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "test ! -f /tmp/cache_dir/cache_file     && test -f /tmp/bind_dir/foo     && test ! -f /tmp/bind_dir/bind_file"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "test -f /tmp/cache_dir/cache_file     && test -f /tmp/bind_dir/bind_file     && test ! -f /tmp/bind_dir/foo"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "test -f /tmp/dirA/a_file     && test -f /tmp/dirB/b_file     && test ! -f /tmp/dirA/foo     && test ! -f /tmp/dirB/foo"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "test -f /tmp/dirA/foo     && test -f /tmp/dirB/foo     && test ! -f /tmp/dirA/a_file     && test ! -f /tmp/dirB/b_file"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

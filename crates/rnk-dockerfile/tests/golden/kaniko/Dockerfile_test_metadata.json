@@ -1,0 +1,134 @@
+{
+  "file": "Dockerfile_test_metadata",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"command\" \"one\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"command\" \"two\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"echo \\\"hello\\\"\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"execute\" \"something\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"execute\" \"entrypoint\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "command",
+            "one"
+          ],
+          "files": [],
+          "lines": [
+            2,
+            2
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "command",
+            "two"
+          ],
+          "files": [],
+          "lines": [
+            3,
+            3
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "echo \"hello\""
+          ],
+          "files": [],
+          "lines": [
+            4,
+            4
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "execute",
+            "something"
+          ],
+          "files": [],
+          "lines": [
+            6,
+            6
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "execute",
+            "entrypoint"
+          ],
+          "files": [],
+          "lines": [
+            7,
+            7
+          ],
+          "prepend_shell": false
+        }
+      ]
+    }
+  ]
+}

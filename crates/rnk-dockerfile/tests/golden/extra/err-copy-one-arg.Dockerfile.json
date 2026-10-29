@@ -1,0 +1,28 @@
+{
+  "file": "err-copy-one-arg.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: COPY requires at least two arguments, but only one was provided. Destination could not be determined",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"a\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

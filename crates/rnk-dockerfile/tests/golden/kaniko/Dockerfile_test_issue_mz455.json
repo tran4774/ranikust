@@ -1,0 +1,146 @@
+{
+  "file": "Dockerfile_test_issue_mz455",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"executor-image\" \"AS\" \"kaniko\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/var/lib/apt/list/blubb\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/var/lib/apt/list\"] \"[ -z \\\"$(ls -A /var/lib/apt/list)\\\" ]\"",
+      "lines": [
+        18,
+        19
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "kaniko",
+      "base": "executor-image",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "cmd": "workdir",
+          "lines": [
+            12,
+            12
+          ],
+          "value": "/var/lib/apt/list/blubb"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            13,
+            13
+          ],
+          "value": "/"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "[ -z \"$(ls -A /var/lib/apt/list)\" ]"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            18,
+            19
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/var/lib/apt/list",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

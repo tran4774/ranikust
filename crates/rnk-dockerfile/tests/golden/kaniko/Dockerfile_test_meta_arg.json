@@ -1,0 +1,252 @@
+{
+  "file": "Dockerfile_test_meta_arg",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"REGISTRY=docker.io\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"IMAGE=debian\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"TAG=9.11\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"WORD=hello\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"W0RD2=hey\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${REGISTRY}/${IMAGE}:${TAG}\" \"AS\" \"stage1\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"WORD\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch /${WORD}\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${REGISTRY}/${IMAGE}:${TAG}\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=stage1\"] \"/hello\" \"/tmp\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch -d 0 /tmp/${WORD2}\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "REGISTRY",
+          "docker.io"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "args": [
+        [
+          "IMAGE",
+          "debian"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        2,
+        2
+      ]
+    },
+    {
+      "args": [
+        [
+          "TAG",
+          "9.11"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        3,
+        3
+      ]
+    },
+    {
+      "args": [
+        [
+          "WORD",
+          "hello"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        4,
+        4
+      ]
+    },
+    {
+      "args": [
+        [
+          "W0RD2",
+          "hey"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        5,
+        5
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "stage1",
+      "base": "${REGISTRY}/${IMAGE}:${TAG}",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "WORD",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            10,
+            10
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch /${WORD}"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${REGISTRY}/${IMAGE}:${TAG}",
+      "platform": "",
+      "lines": [
+        13,
+        13
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp",
+          "excludes": [],
+          "from": "stage1",
+          "lines": [
+            15,
+            15
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/hello"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch -d 0 /tmp/${WORD2}"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

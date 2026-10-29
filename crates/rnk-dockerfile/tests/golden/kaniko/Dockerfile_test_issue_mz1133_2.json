@@ -1,0 +1,119 @@
+{
+  "file": "Dockerfile_test_issue_mz1133_2",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"adduser -D -u 1234 app\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"app\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/linknamed/foo\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "adduser -D -u 1234 app"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            7,
+            7
+          ],
+          "value": "app"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/linknamed/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            8,
+            8
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "file": "Dockerfile_test_issue_3224",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"(sleep 0.1 &) ;     sleep 1;     ps -o pid,ppid,stat,comm;     ! ps -o pid,ppid,stat,comm | grep -q Z\"",
+      "lines": [
+        6,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "(sleep 0.1 &) ;     sleep 1;     ps -o pid,ppid,stat,comm;     ! ps -o pid,ppid,stat,comm | grep -q Z"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

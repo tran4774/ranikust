@@ -1,0 +1,55 @@
+{
+  "file": "Dockerfile_test_issue_mz731",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo 'hi' > /root/hi.txt\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo 'hi' > /root/hi.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

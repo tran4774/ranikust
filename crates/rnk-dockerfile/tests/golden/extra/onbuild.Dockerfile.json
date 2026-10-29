@@ -1,0 +1,94 @@
+{
+  "file": "onbuild.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo hi\")",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (copy [\"--from=build\"] \"/a\" \"/b\")",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (add \".\" \"/app\")",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (env \"A\" \"1\" \"=\" \"B\" \"2\" \"=\")",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo hi",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "COPY --from=build /a /b",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "add . /app",
+          "lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "ENV A=1 B=2",
+          "lines": [
+            5,
+            5
+          ]
+        }
+      ]
+    }
+  ]
+}

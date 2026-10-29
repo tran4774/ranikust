@@ -1,0 +1,119 @@
+{
+  "file": "stages.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"a\" \"AS\" \"one\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"one\" \"as\" \"Two\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from [\"--platform=linux/amd64\"] \"b\" \"aS\" \"three\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"$X\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"c\" \"AS\" \"x.y-z_1\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": []
+    },
+    {
+      "name": "one",
+      "base": "a",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": []
+    },
+    {
+      "name": "two",
+      "base": "one",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": []
+    },
+    {
+      "name": "three",
+      "base": "b",
+      "platform": "linux/amd64",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": []
+    },
+    {
+      "name": "",
+      "base": "$X",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": []
+    },
+    {
+      "name": "x.y-z_1",
+      "base": "c",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": []
+    }
+  ]
+}

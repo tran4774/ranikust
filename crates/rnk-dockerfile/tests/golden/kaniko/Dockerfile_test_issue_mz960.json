@@ -1,0 +1,116 @@
+{
+  "file": "Dockerfile_test_issue_mz960",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\" \"AS\" \"stage0\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo ob0 > /onbuild0\")",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo stage0 > /artifact\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"stage0\" \"AS\" \"stage1\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\"] \"/artifact\" \"/from-0\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "stage0",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        9,
+        9
+      ],
+      "commands": [
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo ob0 > /onbuild0",
+          "lines": [
+            10,
+            10
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo stage0 > /artifact"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "stage1",
+      "base": "stage0",
+      "platform": "",
+      "lines": [
+        13,
+        13
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/from-0",
+          "excludes": [],
+          "from": "0",
+          "lines": [
+            14,
+            14
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/artifact"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "file": "Dockerfile_relative_copy",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"foo\" \"foo\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"foo\" \"/foodir/\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            2,
+            2
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/foodir/",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            3,
+            3
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "foo"
+          ]
+        }
+      ]
+    }
+  ]
+}

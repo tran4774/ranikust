@@ -1,0 +1,101 @@
+{
+  "file": "comments.Dockerfile",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine\" \"AS\" \"base\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"VERSION\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"true\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"true\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "VERSION",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            9,
+            9
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "true"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "true"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

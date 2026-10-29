@@ -1,0 +1,345 @@
+{
+  "file": "Dockerfile_test_multistage",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \".\" \".\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\" \"AS\" \"second\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"foopath\" \"context/foo\" \"\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\"] \"$foopath\" \"context/b*\" \"/foo/\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"second\" \"AS\" \"third\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base\"] \"/context/foo\" \"/new/foo\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"fourth\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"date > /date\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"foo\" \"bar\" \"\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"fedora@sha256:c4cc32b09c6ae3f1353e7e33a8dda93dc41676b923d6d89afa996b421cc5aa48\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"fourth\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"file\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=second\"] \"/foo\" \"${file}\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=debian:12.10\"] \"/etc/os-release\" \"/new\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": ".",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            2,
+            2
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "second",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            5,
+            5
+          ],
+          "pairs": [
+            [
+              "foopath",
+              "context/foo",
+              true
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/foo/",
+          "excludes": [],
+          "from": "0",
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "$foopath",
+            "context/b*"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "third",
+      "base": "second",
+      "platform": "",
+      "lines": [
+        8,
+        8
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/new/foo",
+          "excludes": [],
+          "from": "base",
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/context/foo"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fourth",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        11,
+        11
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "date > /date"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            14,
+            14
+          ],
+          "pairs": [
+            [
+              "foo",
+              "bar",
+              true
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "fedora@sha256:c4cc32b09c6ae3f1353e7e33a8dda93dc41676b923d6d89afa996b421cc5aa48",
+      "platform": "",
+      "lines": [
+        18,
+        18
+      ],
+      "commands": []
+    },
+    {
+      "name": "",
+      "base": "fourth",
+      "platform": "",
+      "lines": [
+        20,
+        20
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "file",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            21,
+            21
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "${file}",
+          "excludes": [],
+          "from": "second",
+          "lines": [
+            22,
+            22
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/new",
+          "excludes": [],
+          "from": "debian:12.10",
+          "lines": [
+            23,
+            23
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/etc/os-release"
+          ]
+        }
+      ]
+    }
+  ]
+}

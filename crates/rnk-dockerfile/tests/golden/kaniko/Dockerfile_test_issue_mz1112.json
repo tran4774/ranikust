@@ -1,0 +1,99 @@
+{
+  "file": "Dockerfile_test_issue_mz1112",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"daemon\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"context/foo\" \"/home/foo\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"https://raw.githubusercontent.com/osscontainertools/kaniko/main/README.md\" \"/home/README.md\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": [
+        {
+          "cmd": "user",
+          "lines": [
+            8,
+            8
+          ],
+          "value": "daemon"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/home/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/home/README.md",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "sources": [
+            "https://raw.githubusercontent.com/osscontainertools/kaniko/main/README.md"
+          ],
+          "unpack": null
+        }
+      ]
+    }
+  ]
+}

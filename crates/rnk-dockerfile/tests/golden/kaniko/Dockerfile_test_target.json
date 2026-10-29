@@ -1,0 +1,190 @@
+{
+  "file": "Dockerfile_test_target",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"gcr.io/distroless/base:latest\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \".\" \".\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\" \"AS\" \"second\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"foopath\" \"context/foo\" \"\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\"] \"$foopath\" \"context/b*\" \"/foo/\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"file\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=second\"] \"/foo\" \"$file\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "gcr.io/distroless/base:latest",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": ".",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            2,
+            2
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "second",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "cmd": "env",
+          "lines": [
+            5,
+            5
+          ],
+          "pairs": [
+            [
+              "foopath",
+              "context/foo",
+              true
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/foo/",
+          "excludes": [],
+          "from": "0",
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "$foopath",
+            "context/b*"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        8,
+        8
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "file",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            9,
+            9
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "$file",
+          "excludes": [],
+          "from": "second",
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/foo"
+          ]
+        }
+      ]
+    }
+  ]
+}

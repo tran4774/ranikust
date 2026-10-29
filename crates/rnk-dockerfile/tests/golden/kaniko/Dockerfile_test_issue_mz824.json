@@ -1,0 +1,220 @@
+{
+  "file": "Dockerfile_test_issue_mz824",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"one\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cat <<EOF > /out\"",
+      "lines": [
+        6,
+        8
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "helloworld\n"
+        }
+      ]
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"two\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cat <<EOF > /out\"",
+      "lines": [
+        11,
+        13
+      ],
+      "heredocs": [
+        {
+          "name": "EOF",
+          "fd": 0,
+          "expand": true,
+          "chomp": false,
+          "content": "blubb\n"
+        }
+      ]
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=one\"] \"/out\" \"/one\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=two\"] \"/out\" \"/two\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        4,
+        4
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "one",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat <<EOF > /out"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOF",
+              "helloworld\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            6,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "two",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat <<EOF > /out"
+          ],
+          "devices": [],
+          "files": [
+            [
+              "EOF",
+              "blubb\n",
+              false
+            ]
+          ],
+          "flags_used": [],
+          "lines": [
+            11,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/one",
+          "excludes": [],
+          "from": "one",
+          "lines": [
+            16,
+            16
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/two",
+          "excludes": [],
+          "from": "two",
+          "lines": [
+            17,
+            17
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/out"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+{
+  "file": "Dockerfile_test_issue_mz108",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /context\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"nobody\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=400\"] \"context/\" \"/context\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=755\"] \"context/\" \"/context\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /context/workspace\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /context"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            4,
+            4
+          ],
+          "value": "nobody"
+        },
+        {
+          "chmod": "400",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/context",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/"
+          ]
+        },
+        {
+          "chmod": "755",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/context",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            11,
+            11
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /context/workspace"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

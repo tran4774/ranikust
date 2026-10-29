@@ -1,0 +1,55 @@
+{
+  "file": "Dockerfile_test_issue_3344",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"$BAR\" | tee /out"
+      ],
+      "env": [
+        "BAR=argdef",
+        "BASE_VAR=from-base",
+        "HELLO=UPSTREAM",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"$FOO\" | tee /out"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "FOO=env_val",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"$HELLO\" | tee /out"
+      ],
+      "env": [
+        "BAR=from_env",
+        "BASE_VAR=from-base",
+        "HELLO=UPSTREAM",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

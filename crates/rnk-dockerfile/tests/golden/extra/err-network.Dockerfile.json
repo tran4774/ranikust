@@ -1,0 +1,28 @@
+{
+  "file": "err-network.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: invalid network mode \"bridge\"",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--network=bridge\"] \"true\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

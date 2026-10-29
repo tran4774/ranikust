@@ -1,0 +1,12 @@
+{
+  "file": "Dockerfile_test_issue_519",
+  "build_args": {},
+  "ok": false,
+  "error": "failed to parse stage name \"BUG_stage\": invalid reference format: repository name (library/BUG_stage) must be lowercase",
+  "env": [],
+  "labels": {},
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

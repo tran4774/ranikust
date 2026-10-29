@@ -1,0 +1,445 @@
+{
+  "file": "Dockerfile_test_issue_mz622",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base1\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"ARG1=blubb\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$ARG1 $ARG2\\\" > out1\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base2\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"ARG2=bla\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$ARG1 $ARG2\\\" > out2\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base3\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"ARG1=bli\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$ARG1 $ARG2\\\" > out3\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base1\" \"AS\" \"base4\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$ARG1 $ARG2\\\" > out4\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base1\"] \"out1\" \"out1\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base2\"] \"out2\" \"out2\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base3\"] \"out3\" \"out3\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base4\"] \"out4\" \"out4\"",
+      "lines": [
+        26,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"$ARG1 $ARG2\\\" > out5\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cat out1 out2 out3 out4 out5\"",
+      "lines": [
+        28,
+        28
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base1",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        4,
+        4
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "ARG1",
+              "blubb"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$ARG1 $ARG2\" > out1"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "base2",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "ARG2",
+              "bla"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            11,
+            11
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$ARG1 $ARG2\" > out2"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "base3",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        16,
+        16
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "ARG1",
+              "bli"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            17,
+            17
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$ARG1 $ARG2\" > out3"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "base4",
+      "base": "base1",
+      "platform": "",
+      "lines": [
+        19,
+        19
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$ARG1 $ARG2\" > out4"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            20,
+            20
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        22,
+        22
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "out1",
+          "excludes": [],
+          "from": "base1",
+          "lines": [
+            23,
+            23
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "out1"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "out2",
+          "excludes": [],
+          "from": "base2",
+          "lines": [
+            24,
+            24
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "out2"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "out3",
+          "excludes": [],
+          "from": "base3",
+          "lines": [
+            25,
+            25
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "out3"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "out4",
+          "excludes": [],
+          "from": "base4",
+          "lines": [
+            26,
+            26
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "out4"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"$ARG1 $ARG2\" > out5"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            27,
+            27
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat out1 out2 out3 out4 out5"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            28,
+            28
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

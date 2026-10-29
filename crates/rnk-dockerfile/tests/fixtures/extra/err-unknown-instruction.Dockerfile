@@ -1,0 +1,2 @@
+FROM a
+FOO bar

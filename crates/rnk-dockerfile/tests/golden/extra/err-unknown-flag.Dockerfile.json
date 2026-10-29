@@ -1,0 +1,28 @@
+{
+  "file": "err-unknown-flag.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: unknown flag: --foo (did you mean from?)",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--foo=bar\"] \"a\" \"b\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

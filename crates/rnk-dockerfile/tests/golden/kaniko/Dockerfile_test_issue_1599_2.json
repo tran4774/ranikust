@@ -1,0 +1,147 @@
+{
+  "file": "Dockerfile_test_issue_1599_2",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"builder\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkfifo /pipe\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=builder\"] \"/pipe\" \"/kaniko/tini\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo alive\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        7,
+        7
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "builder",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        8,
+        8
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkfifo /pipe"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        11,
+        11
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/kaniko/tini",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            12,
+            12
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/pipe"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo alive"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "file": "Dockerfile_test_issue_mz851",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10@sha256:6bc30d909583f38600edd6609e29eb3fb284ab8affce8d0389f332fc91c2dd91\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo 'hi' > /root/hi.txt\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10@sha256:6bc30d909583f38600edd6609e29eb3fb284ab8affce8d0389f332fc91c2dd91",
+      "platform": "",
+      "lines": [
+        17,
+        17
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo 'hi' > /root/hi.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

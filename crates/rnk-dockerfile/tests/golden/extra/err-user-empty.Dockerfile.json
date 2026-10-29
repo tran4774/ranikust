@@ -1,0 +1,28 @@
+{
+  "file": "err-user-empty.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: USER requires exactly one argument",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

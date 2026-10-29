@@ -1,0 +1,60 @@
+{
+  "file": "healthcheck.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 6: Unknown type \"CMD-SHELL\" in HEALTHCHECK (try CMD)",
+  "error_line": 6,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck \"NONE\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--interval=5s\" \"--timeout=1m30s\" \"--start-period=0\" \"--start-interval=2.5s\" \"--retries=3\"] \"CMD\" \"curl -f http://x/\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck \"CMD\" \"/bin/check\" \"--fast\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--retries=0\" \"--interval=1ms\"] \"cmd\" \"true\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--interval=1h\"] \"CMD-SHELL\" \"x\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

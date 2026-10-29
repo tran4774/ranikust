@@ -1,0 +1,30 @@
+{
+  "file": "Dockerfile_test_issue_mz782",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base",
+    "BLUBB=BLA"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "true"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "BLUBB=BLA",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

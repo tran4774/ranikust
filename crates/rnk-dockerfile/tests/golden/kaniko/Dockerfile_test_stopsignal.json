@@ -1,0 +1,46 @@
+{
+  "file": "Dockerfile_test_stopsignal",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "stopsignal \"SIGTERM\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "stopsignal",
+          "lines": [
+            2,
+            2
+          ],
+          "value": "SIGTERM"
+        }
+      ]
+    }
+  ]
+}

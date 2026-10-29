@@ -1,0 +1,279 @@
+{
+  "file": "Dockerfile_test_add_chown_intermediate_dirs",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"yes | adduser -u 1001 dev\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chown=dev:dev\"] \"context/foo\" \"/path/to/foo\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chown=dev:dev\"] \"context/qux\" \"/path/to/qux\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chown=1001:1001\"] \"context/foo\" \"/path2/to/foo\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--chown=1001:1001\"] \"context/qux\" \"/path2/to/qux\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"dev\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /path/to/new_dir\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /path/to/qux/new_dir\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /path2/to/new_dir\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /path2/to/qux/new_dir\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "alpine@sha256:5ce5f501c457015c4b91f91a15ac69157d9b06f1a75cf9107bf2b62e0843983a",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "yes | adduser -u 1001 dev"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "dev:dev",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/path/to/foo",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "sources": [
+            "context/foo"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "dev:dev",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/path/to/qux",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "sources": [
+            "context/qux"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "1001:1001",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/path2/to/foo",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "sources": [
+            "context/foo"
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "1001:1001",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/path2/to/qux",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            8,
+            8
+          ],
+          "link": false,
+          "sources": [
+            "context/qux"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            10,
+            10
+          ],
+          "value": "dev"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /path/to/new_dir"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /path/to/qux/new_dir"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /path2/to/new_dir"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            15,
+            15
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /path2/to/qux/new_dir"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

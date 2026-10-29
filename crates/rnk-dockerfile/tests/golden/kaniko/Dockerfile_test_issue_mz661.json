@@ -1,0 +1,95 @@
+{
+  "file": "Dockerfile_test_issue_mz661",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=kaniko\"] \"test -s /run/secrets/kaniko\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -s /run/secrets/kaniko"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "kaniko",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

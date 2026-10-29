@@ -1,0 +1,28 @@
+{
+  "file": "err-healthcheck-type.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: Unknown type \"RUN\" in HEALTHCHECK (try CMD)",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck \"RUN\" \"x\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

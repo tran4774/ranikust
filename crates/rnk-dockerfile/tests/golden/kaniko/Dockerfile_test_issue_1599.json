@@ -1,0 +1,349 @@
+{
+  "file": "Dockerfile_test_issue_1599",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"builder\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /work     && echo \\\"content\\\" > /work/regular.txt     && mkfifo -m 640 /work/pipe\"",
+      "lines": [
+        7,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=builder\"] \"/work/\" \"/work/\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -p /work/pipe\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %a /work/pipe)\\\" = \\\"640\\\"\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"grep -q 'content' /work/regular.txt\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=builder\"] \"/work/pipe\" \"/direct/pipe\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -p /direct/pipe\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chown=1000:1000\" \"--chmod=600\" \"--from=builder\"] \"/work/pipe\" \"/owned/pipe\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -p /owned/pipe\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %u:%g /owned/pipe)\\\" = \\\"1000:1000\\\"\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %a /owned/pipe)\\\" = \\\"600\\\"\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        5,
+        5
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "builder",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /work     && echo \"content\" > /work/regular.txt     && mkfifo -m 640 /work/pipe"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        11,
+        11
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/work/",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/work/"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -p /work/pipe"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %a /work/pipe)\" = \"640\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            15,
+            15
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "grep -q 'content' /work/regular.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/direct/pipe",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            18,
+            18
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/work/pipe"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -p /direct/pipe"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "600",
+          "chown": "1000:1000",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/owned/pipe",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            21,
+            21
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/work/pipe"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -p /owned/pipe"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            22,
+            22
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %u:%g /owned/pipe)\" = \"1000:1000\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            23,
+            23
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %a /owned/pipe)\" = \"600\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            24,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

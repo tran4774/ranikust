@@ -1,0 +1,139 @@
+{
+  "file": "Dockerfile_test_issue_mz529",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch test\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"nosquash\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"final\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch blubb\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch test"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": []
+    },
+    {
+      "name": "final",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        16,
+        16
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

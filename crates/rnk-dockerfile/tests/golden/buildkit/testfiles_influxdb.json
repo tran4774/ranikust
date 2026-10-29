@@ -1,0 +1,240 @@
+{
+  "file": "testfiles_influxdb",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update && apt-get install wget -y\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"wget http://s3.amazonaws.com/influxdb/influxdb_latest_amd64.deb\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"dpkg -i influxdb_latest_amd64.deb\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"rm -r /opt/influxdb/shared\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/opt/influxdb/shared\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"/usr/bin/influxdb --pidfile /var/run/influxdb.pid -config /opt/influxdb/shared/config.toml\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"8083\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"8086\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"8090\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"8099\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update && apt-get install wget -y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "wget http://s3.amazonaws.com/influxdb/influxdb_latest_amd64.deb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "dpkg -i influxdb_latest_amd64.deb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            5,
+            5
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "rm -r /opt/influxdb/shared"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            8,
+            8
+          ],
+          "values": [
+            "/opt/influxdb/shared"
+          ]
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "/usr/bin/influxdb --pidfile /var/run/influxdb.pid -config /opt/influxdb/shared/config.toml"
+          ],
+          "files": [],
+          "lines": [
+            10,
+            10
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            12,
+            12
+          ],
+          "values": [
+            "8083"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            13,
+            13
+          ],
+          "values": [
+            "8086"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            14,
+            14
+          ],
+          "values": [
+            "8090"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            15,
+            15
+          ],
+          "values": [
+            "8099"
+          ]
+        }
+      ]
+    }
+  ]
+}

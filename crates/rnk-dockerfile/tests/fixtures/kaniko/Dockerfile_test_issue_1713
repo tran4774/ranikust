@@ -1,0 +1,24 @@
+ARG IMAGE_REPO
+FROM ${IMAGE_REPO}busybox
+RUN <<EOF
+touch /tmp/bli
+touch /tmp/bla
+touch /tmp/blubb
+ls -la /tmp
+EOF
+
+RUN cat <<file1.txt > /tmp/file1.txt && cat <<file2.txt > /tmp/file2.txt
+Hello from file1
+file1.txt
+Hello from file2
+file2.txt
+
+COPY <<file3.txt /tmp/file3.txt
+Hello from file3
+file3.txt
+
+ADD <<file4.txt /tmp/file4.txt
+Hello from file4
+file4.txt
+
+RUN ls -la /tmp && cat /tmp/*.txt

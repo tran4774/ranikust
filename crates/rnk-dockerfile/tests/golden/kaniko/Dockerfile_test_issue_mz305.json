@@ -1,0 +1,165 @@
+{
+  "file": "Dockerfile_test_issue_mz305",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"zero\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"one\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch /tmp/blubb\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"two\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=1\"] \"/tmp\" \"/tmp\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /tmp\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "zero",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": []
+    },
+    {
+      "name": "one",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch /tmp/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "two",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp",
+          "excludes": [],
+          "from": "1",
+          "lines": [
+            11,
+            11
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/tmp"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

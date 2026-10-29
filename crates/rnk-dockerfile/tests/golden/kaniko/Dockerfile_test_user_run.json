@@ -1,0 +1,362 @@
+{
+  "file": "Dockerfile_test_user_run",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"useradd testuser\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd testgroup\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"testuser:testgroup\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hey\\\" > /tmp/foo\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"testuser:1001\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hey2\\\" >> /tmp/foo\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"root\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hi\\\" > $HOME/file\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"context/foo\" \"$HOME/foo\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"useradd -ms /bin/bash newuser\"",
+      "lines": [
+        27,
+        27
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"newuser\"",
+      "lines": [
+        28,
+        28
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hi\\\" > $HOME/file\"",
+      "lines": [
+        29,
+        29
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"context/foo\" \"$HOME/foo\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1001\"",
+      "lines": [
+        32,
+        32
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo $HOME\"",
+      "lines": [
+        33,
+        33
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "useradd testuser"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd testgroup"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            17,
+            17
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            18,
+            18
+          ],
+          "value": "testuser:testgroup"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hey\" > /tmp/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            20,
+            20
+          ],
+          "value": "testuser:1001"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hey2\" >> /tmp/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            23,
+            23
+          ],
+          "value": "root"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hi\" > $HOME/file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            24,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "$HOME/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            25,
+            25
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "useradd -ms /bin/bash newuser"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            27,
+            27
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            28,
+            28
+          ],
+          "value": "newuser"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hi\" > $HOME/file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            29,
+            29
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "$HOME/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            30,
+            30
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            32,
+            32
+          ],
+          "value": "1001"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo $HOME"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            33,
+            33
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

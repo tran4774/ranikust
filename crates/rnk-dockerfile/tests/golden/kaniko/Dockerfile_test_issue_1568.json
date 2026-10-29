@@ -1,0 +1,540 @@
+{
+  "file": "Dockerfile_test_issue_1568",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=bind,source=context,rw,target=/tmp/bli/bla/\"] \"ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && touch /tmp/bli/bla/blubb\"",
+      "lines": [
+        5,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /tmp/     && test ! -f /tmp/bli\"",
+      "lines": [
+        11,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=bind,source=context,target=/tmp/bli/bla/\"] \"ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test ! -f /tmp/bli/bla/blubb\"",
+      "lines": [
+        15,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /tmp/bli/bla     && touch /tmp/bli/bla/blubb\"",
+      "lines": [
+        20,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=bind,source=context,target=/tmp/bli/bla/\"] \"ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test ! -f /tmp/bli/bla/blubb\"",
+      "lines": [
+        24,
+        27
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /tmp/bli/bla/     && test ! -f /tmp/bli/bla/foo     && test -f /tmp/bli/bla/blubb\"",
+      "lines": [
+        30,
+        32
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=bind,source=context/foo,target=/tmp/bli/bla/foo\"] \"ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test -f /tmp/bli/bla/blubb\"",
+      "lines": [
+        35,
+        38
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /tmp/     && test ! -f /tmp/bli/bla/foo\"",
+      "lines": [
+        41,
+        42
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /tmp/dirA /tmp/dirB     && touch /tmp/dirA/a_file     && touch /tmp/dirB/b_file\"",
+      "lines": [
+        44,
+        46
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=bind,source=context,target=/tmp/dirA\" \"--mount=type=bind,source=context,target=/tmp/dirB\"] \"test -f /tmp/dirA/foo     && test -f /tmp/dirB/foo     && test ! -f /tmp/dirA/a_file     && test ! -f /tmp/dirB/b_file\"",
+      "lines": [
+        50,
+        55
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -f /tmp/dirA/a_file     && test -f /tmp/dirB/b_file     && test ! -f /tmp/dirA/foo     && test ! -f /tmp/dirB/foo\"",
+      "lines": [
+        58,
+        61
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /tmp/cache_dir /tmp/bind_dir     && touch /tmp/cache_dir/cache_file     && touch /tmp/bind_dir/bind_file\"",
+      "lines": [
+        63,
+        65
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/tmp/cache_dir\" \"--mount=type=bind,source=context,target=/tmp/bind_dir\"] \"test ! -f /tmp/cache_dir/cache_file     && test -f /tmp/bind_dir/foo     && test ! -f /tmp/bind_dir/bind_file\"",
+      "lines": [
+        68,
+        72
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -f /tmp/cache_dir/cache_file     && test -f /tmp/bind_dir/bind_file     && test ! -f /tmp/bind_dir/foo\"",
+      "lines": [
+        75,
+        77
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && touch /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            5,
+            8
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "context",
+              "target": "/tmp/bli/bla/",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/     && test ! -f /tmp/bli"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test ! -f /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            15,
+            18
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "context",
+              "target": "/tmp/bli/bla/",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /tmp/bli/bla     && touch /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            20,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test ! -f /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            24,
+            27
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "context",
+              "target": "/tmp/bli/bla/",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/bli/bla/     && test ! -f /tmp/bli/bla/foo     && test -f /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            30,
+            32
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/foo     && test -f /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            35,
+            38
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "context/foo",
+              "target": "/tmp/bli/bla/foo",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/     && test ! -f /tmp/bli/bla/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            41,
+            42
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /tmp/dirA /tmp/dirB     && touch /tmp/dirA/a_file     && touch /tmp/dirB/b_file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            44,
+            46
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -f /tmp/dirA/foo     && test -f /tmp/dirB/foo     && test ! -f /tmp/dirA/a_file     && test ! -f /tmp/dirB/b_file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            50,
+            55
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "context",
+              "target": "/tmp/dirA",
+              "type": "bind",
+              "uid": null
+            },
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "context",
+              "target": "/tmp/dirB",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -f /tmp/dirA/a_file     && test -f /tmp/dirB/b_file     && test ! -f /tmp/dirA/foo     && test ! -f /tmp/dirB/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            58,
+            61
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /tmp/cache_dir /tmp/bind_dir     && touch /tmp/cache_dir/cache_file     && touch /tmp/bind_dir/bind_file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            63,
+            65
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test ! -f /tmp/cache_dir/cache_file     && test -f /tmp/bind_dir/foo     && test ! -f /tmp/bind_dir/bind_file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            68,
+            72
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/tmp/cache_dir",
+              "type": "cache",
+              "uid": null
+            },
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "context",
+              "target": "/tmp/bind_dir",
+              "type": "bind",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -f /tmp/cache_dir/cache_file     && test -f /tmp/bind_dir/bind_file     && test ! -f /tmp/bind_dir/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            75,
+            77
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

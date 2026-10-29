@@ -1,0 +1,65 @@
+{
+  "file": "Dockerfile_test_issue_mz282",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\" \"AS\" \"base\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"output1\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"output2\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": []
+    },
+    {
+      "name": "output1",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": []
+    },
+    {
+      "name": "output2",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": []
+    }
+  ]
+}

@@ -1,0 +1,616 @@
+{
+  "file": "testfiles_lk4d4-the-edge-case-generator",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox:buildroot-2014.02\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"maintainer\" \"docker <docker@docker.io>\" \"\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo\" \"test\")",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo test\")",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (copy \".\" \"/\")",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls\" \"-la\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo\" \"'1234'\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"1234\\\"\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo 1234\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo '1234' &&     echo \\\"456\\\" &&     echo 789\"",
+      "lines": [
+        16,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"sh -c 'echo root:testpass         > /tmp/passwd'\"",
+      "lines": [
+        19,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /test /test2 /test3/test\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"SCUBA\" \"1 DUBA 3\" \"\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"SCUBA\" \"\\\"1 DUBA 3\\\"\" \"\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"echo\" \"test\"",
+      "lines": [
+        28,
+        28
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"echo test\"",
+      "lines": [
+        29,
+        29
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"echo \\\"test\\\"\"",
+      "lines": [
+        30,
+        30
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"echo 'test'\"",
+      "lines": [
+        31,
+        31
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"echo 'test' | wc -\"",
+      "lines": [
+        32,
+        32
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"3000\"",
+      "lines": [
+        35,
+        35
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "expose \"9000\" \"5000\" \"6000\"",
+      "lines": [
+        36,
+        36
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"docker\"",
+      "lines": [
+        38,
+        38
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"docker:root\"",
+      "lines": [
+        39,
+        39
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/test\"",
+      "lines": [
+        41,
+        41
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/test\" \"/test2\"",
+      "lines": [
+        42,
+        42
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/test3\"",
+      "lines": [
+        43,
+        43
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/test\"",
+      "lines": [
+        45,
+        45
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \".\" \"/\"",
+      "lines": [
+        47,
+        47
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \".\" \"copy\"",
+      "lines": [
+        48,
+        48
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox:buildroot-2014.02",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            3,
+            3
+          ],
+          "pairs": [
+            [
+              "maintainer",
+              "docker <docker@docker.io>",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN [\"echo\", \"test\"]",
+          "lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo test",
+          "lines": [
+            6,
+            6
+          ]
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "COPY . /",
+          "lines": [
+            7,
+            7
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls",
+            "-la"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": false,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo",
+            "'1234'"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": false,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"1234\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo 1234"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            15,
+            15
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo '1234' &&     echo \"456\" &&     echo 789"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "sh -c 'echo root:testpass         > /tmp/passwd'"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            20
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /test /test2 /test3/test"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            24,
+            24
+          ],
+          "pairs": [
+            [
+              "SCUBA",
+              "1 DUBA 3",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            25,
+            25
+          ],
+          "pairs": [
+            [
+              "SCUBA",
+              "\"1 DUBA 3\"",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "echo",
+            "test"
+          ],
+          "files": [],
+          "lines": [
+            28,
+            28
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "echo test"
+          ],
+          "files": [],
+          "lines": [
+            29,
+            29
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "echo \"test\""
+          ],
+          "files": [],
+          "lines": [
+            30,
+            30
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "echo 'test'"
+          ],
+          "files": [],
+          "lines": [
+            31,
+            31
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "echo 'test' | wc -"
+          ],
+          "files": [],
+          "lines": [
+            32,
+            32
+          ],
+          "prepend_shell": true
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            35,
+            35
+          ],
+          "values": [
+            "3000"
+          ]
+        },
+        {
+          "cmd": "expose",
+          "lines": [
+            36,
+            36
+          ],
+          "values": [
+            "5000",
+            "6000",
+            "9000"
+          ]
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            38,
+            38
+          ],
+          "value": "docker"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            39,
+            39
+          ],
+          "value": "docker:root"
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            41,
+            41
+          ],
+          "values": [
+            "/test"
+          ]
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            42,
+            42
+          ],
+          "values": [
+            "/test",
+            "/test2"
+          ]
+        },
+        {
+          "cmd": "volume",
+          "lines": [
+            43,
+            43
+          ],
+          "values": [
+            "/test3"
+          ]
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            45,
+            45
+          ],
+          "value": "/test"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            47,
+            47
+          ],
+          "link": false,
+          "sources": [
+            "."
+          ],
+          "unpack": null
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "copy",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            48,
+            48
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "."
+          ]
+        }
+      ]
+    }
+  ]
+}

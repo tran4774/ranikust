@@ -1,0 +1,131 @@
+{
+  "file": "Dockerfile_test_issue_mz338",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"alpine\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"touch /blubb\")",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"rm -rf /blubb\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -lah /blubb\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (run \"echo blubb\")",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "alpine",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "onbuild",
+          "expression": "RUN touch /blubb",
+          "lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "rm -rf /blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            6,
+            6
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        8,
+        8
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -lah /blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "onbuild",
+          "expression": "RUN echo blubb",
+          "lines": [
+            10,
+            10
+          ]
+        }
+      ]
+    }
+  ]
+}

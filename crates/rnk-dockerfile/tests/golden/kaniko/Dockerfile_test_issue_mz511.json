@@ -1,0 +1,243 @@
+{
+  "file": "Dockerfile_test_issue_mz511",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"first\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=netrc,target=/root/.netrc\"] \"cat /root/.netrc\"",
+      "lines": [
+        5,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first\" \"AS\" \"nosquash\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"first\" \"AS\" \"second\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=netrc,target=/root/.netrc\"] \"cat /root/.netrc\"",
+      "lines": [
+        12,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"rm /etc/nsswitch.conf\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=secret,id=netrc,target=/root/.netrc\"] \"cat /root/.netrc\"",
+      "lines": [
+        20,
+        21
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "first",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat /root/.netrc"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            5,
+            6
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "netrc",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/root/.netrc",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash",
+      "base": "first",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": []
+    },
+    {
+      "name": "second",
+      "base": "first",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat /root/.netrc"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            12,
+            13
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "netrc",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/root/.netrc",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "rm /etc/nsswitch.conf"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            18
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cat /root/.netrc"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            20,
+            21
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "netrc",
+              "mode": null,
+              "readonly": true,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/root/.netrc",
+              "type": "secret",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

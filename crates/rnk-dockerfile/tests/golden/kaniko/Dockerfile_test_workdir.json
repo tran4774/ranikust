@@ -1,0 +1,262 @@
+{
+  "file": "Dockerfile_test_workdir",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"context/foo\" \"foo\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"test\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"workdir\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"context/foo\" \"./currentfoo\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"cp currentfoo newfoo\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/new/dir\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"dir\" \"/another/new/dir\" \"\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"$dir/newdir\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"$dir/$doesntexist\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"workdir\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"$workdir\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            2,
+            2
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            3,
+            3
+          ],
+          "value": "test"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            5,
+            5
+          ],
+          "value": "workdir"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "./currentfoo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "cp currentfoo newfoo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            9,
+            9
+          ],
+          "value": "/new/dir"
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            10,
+            10
+          ],
+          "pairs": [
+            [
+              "dir",
+              "/another/new/dir",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            11,
+            11
+          ],
+          "value": "$dir/newdir"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            12,
+            12
+          ],
+          "value": "$dir/$doesntexist"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            13,
+            13
+          ],
+          "value": "/"
+        },
+        {
+          "args": [
+            [
+              "workdir",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            16,
+            16
+          ]
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            17,
+            17
+          ],
+          "value": "$workdir"
+        }
+      ]
+    }
+  ]
+}

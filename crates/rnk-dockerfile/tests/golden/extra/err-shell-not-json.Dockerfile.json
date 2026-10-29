@@ -1,0 +1,28 @@
+{
+  "file": "err-shell-not-json.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: SHELL requires the arguments to be in JSON form",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "shell \"/bin/sh -c\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

@@ -1,0 +1,28 @@
+{
+  "file": "err-onbuild-from.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: FROM isn't allowed as an ONBUILD trigger",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "onbuild (from \"b\")",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

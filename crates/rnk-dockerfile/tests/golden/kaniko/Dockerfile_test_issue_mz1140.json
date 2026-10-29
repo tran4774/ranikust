@@ -1,0 +1,56 @@
+{
+  "file": "Dockerfile_test_issue_mz1140",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=localhost:5000/oversized-id:latest\"] \"blubb\" \"blubb\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "blubb",
+          "excludes": [],
+          "from": "localhost:5000/oversized-id:latest",
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "blubb"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+{
+  "file": "Dockerfile_test_user_nonexisting",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1001:1001\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hey2\\\" > /tmp/foo\"",
+      "lines": [
+        17,
+        17
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1001\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hello\\\" > /tmp/foobar\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"root\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd testgroup\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1001:testgroup\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hello\\\" > /tmp/foobar\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "cmd": "user",
+          "lines": [
+            16,
+            16
+          ],
+          "value": "1001:1001"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hey2\" > /tmp/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            17,
+            17
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            18,
+            18
+          ],
+          "value": "1001"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hello\" > /tmp/foobar"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            22,
+            22
+          ],
+          "value": "root"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd testgroup"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            23,
+            23
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            24,
+            24
+          ],
+          "value": "1001:testgroup"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hello\" > /tmp/foobar"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            25,
+            25
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

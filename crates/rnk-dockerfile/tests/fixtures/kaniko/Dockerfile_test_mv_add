@@ -1,0 +1,6 @@
+ARG IMAGE_REPO
+FROM ${IMAGE_REPO}busybox
+ADD context/tars /tmp/tars
+RUN stat /bin/sh
+RUN mv /tmp/tars /foo
+RUN echo "hi"

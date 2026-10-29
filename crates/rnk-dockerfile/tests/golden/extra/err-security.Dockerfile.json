@@ -1,0 +1,28 @@
+{
+  "file": "err-security.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: security \"strict\" is not valid",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--security=strict\"] \"true\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

@@ -1,0 +1,72 @@
+{
+  "file": "Dockerfile_test_issue_3166",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"nobody\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--chmod=400\"] \"context/\" \"/some/nested/context\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "user",
+          "lines": [
+            3,
+            3
+          ],
+          "value": "nobody"
+        },
+        {
+          "chmod": "400",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/some/nested/context",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "context/"
+          ]
+        }
+      ]
+    }
+  ]
+}

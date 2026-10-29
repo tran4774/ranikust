@@ -1,0 +1,76 @@
+{
+  "file": "testfiles_json",
+  "ok": false,
+  "error": "no build stage in current context",
+  "error_line": 1,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "cmd",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"a\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"a\" \"b\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"a\" \"b\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"a\" \"b\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"a\" \"b\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"abc 123\" \"♥\" \"☃\" \"\\\" \\\\ / \\b \\f \\n \\r \\t \\x00\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

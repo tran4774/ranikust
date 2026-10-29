@@ -1,0 +1,292 @@
+{
+  "file": "Dockerfile_test_issue_969",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/tmp/bli/bla/\"] \"touch /tmp/bli/bla/blubb\"",
+      "lines": [
+        5,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"ls -la /tmp/     && test ! -f /tmp/bli/bla/blubb\"",
+      "lines": [
+        9,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,id=1234,target=/tmp/bli/bla\"] \"ls -la /tmp/bli/bla/     && test ! -f /tmp/bli/bla/blubb\"",
+      "lines": [
+        13,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/tmp/bli/bla\"] \"ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/blubb\"",
+      "lines": [
+        18,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/tmp/bli/bla,uid=1000,gid=1000,mode=0700\"] \"out=`stat -c '%u:%g:%A' /tmp/bli/bla`     && echo $out | tee /stat1.txt     && [ $out = \\\"1000:1000:drwx------\\\" ]\"",
+      "lines": [
+        23,
+        26
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--mount=type=cache,target=/tmp/bli/bla\"] \"stat -c '%u %g %A' /tmp/bli/bla | tee /stat2.txt\"",
+      "lines": [
+        29,
+        30
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            5,
+            6
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/tmp/bli/bla/",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/     && test ! -f /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            10
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/bli/bla/     && test ! -f /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            13,
+            15
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "1234",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/tmp/bli/bla",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "ls -la /tmp/bli/bla/     && test -f /tmp/bli/bla/blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            18,
+            20
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/tmp/bli/bla",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "out=`stat -c '%u:%g:%A' /tmp/bli/bla`     && echo $out | tee /stat1.txt     && [ $out = \"1000:1000:drwx------\" ]"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            23,
+            26
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": 1000,
+              "id": "",
+              "mode": 448,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/tmp/bli/bla",
+              "type": "cache",
+              "uid": 1000
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "stat -c '%u %g %A' /tmp/bli/bla | tee /stat2.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [
+            "mount"
+          ],
+          "lines": [
+            29,
+            30
+          ],
+          "mounts": [
+            {
+              "env": null,
+              "from": "",
+              "gid": null,
+              "id": "",
+              "mode": null,
+              "readonly": false,
+              "required": false,
+              "sharing": "",
+              "size": 0,
+              "source": "",
+              "target": "/tmp/bli/bla",
+              "type": "cache",
+              "uid": null
+            }
+          ],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

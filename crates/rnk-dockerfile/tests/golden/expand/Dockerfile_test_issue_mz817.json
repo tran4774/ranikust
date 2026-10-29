@@ -1,0 +1,14 @@
+{
+  "file": "Dockerfile_test_issue_mz817",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "DO_EXPAND=expanded"
+  ],
+  "labels": {},
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

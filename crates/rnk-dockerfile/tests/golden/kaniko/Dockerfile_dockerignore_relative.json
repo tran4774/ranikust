@@ -1,0 +1,56 @@
+{
+  "file": "Dockerfile_dockerignore_relative",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"ignore_relative/*\" \"/foo\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "ignore_relative/*"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "file": "testfiles_multiple-volumes",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"foo\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "volume \"/opt/nagios/var\" \"/opt/nagios/etc\" \"/opt/nagios/libexec\" \"/var/log/apache2\" \"/usr/share/snmp/mibs\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "foo",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "volume",
+          "lines": [
+            3,
+            3
+          ],
+          "values": [
+            "/opt/nagios/var",
+            "/opt/nagios/etc",
+            "/opt/nagios/libexec",
+            "/var/log/apache2",
+            "/usr/share/snmp/mibs"
+          ]
+        }
+      ]
+    }
+  ]
+}

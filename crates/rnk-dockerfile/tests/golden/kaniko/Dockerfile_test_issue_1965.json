@@ -1,0 +1,100 @@
+{
+  "file": "Dockerfile_test_issue_1965",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian\" \"AS\" \"BUILD\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch /blubb\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=BUILD\"] \"/blubb\" \"/blubb\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "build",
+      "base": "debian",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch /blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/blubb",
+          "excludes": [],
+          "from": "BUILD",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/blubb"
+          ]
+        }
+      ]
+    }
+  ]
+}

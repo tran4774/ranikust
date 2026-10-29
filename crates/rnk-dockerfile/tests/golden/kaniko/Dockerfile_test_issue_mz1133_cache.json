@@ -1,0 +1,294 @@
+{
+  "file": "Dockerfile_test_issue_mz1133_cache",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"builder\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /out && printf built > /out/file\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir -p /real && ln -s /real /link\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/link/foo\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\" \"--from=builder\"] \"/out/file\" \"/xfile\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"DIR\" \"/a\" \"=\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"$DIR/foo\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"DIR\" \"/b\" \"=\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"$DIR/foo\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test -f /a/foo && test -f /b/foo\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "builder",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /out && printf built > /out/file"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir -p /real && ln -s /real /link"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/link/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            10,
+            10
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/xfile",
+          "excludes": [],
+          "from": "builder",
+          "lines": [
+            11,
+            11
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "/out/file"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            12,
+            12
+          ],
+          "pairs": [
+            [
+              "DIR",
+              "/a",
+              false
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "$DIR/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            13,
+            13
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            14,
+            14
+          ],
+          "pairs": [
+            [
+              "DIR",
+              "/b",
+              false
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "$DIR/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            15,
+            15
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test -f /a/foo && test -f /b/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

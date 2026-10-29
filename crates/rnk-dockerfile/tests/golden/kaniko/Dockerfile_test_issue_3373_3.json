@@ -1,0 +1,57 @@
+{
+  "file": "Dockerfile_test_issue_3373_3",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"busybox:1.31\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--checksum=sha512:2cdd08b2be9a7376b1db3e4d1278d1d9049ff79bb740d647c5444b30d348578b23c2f69589d1668e845ef554b281d727ed28301884c67a05463ee9555bf560bc\"] \"https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz\" \"/release.tar.gz\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "busybox:1.31",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "checksum": "sha512:2cdd08b2be9a7376b1db3e4d1278d1d9049ff79bb740d647c5444b30d348578b23c2f69589d1668e845ef554b281d727ed28301884c67a05463ee9555bf560bc",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/release.tar.gz",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "sources": [
+            "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz"
+          ],
+          "unpack": null
+        }
+      ]
+    }
+  ]
+}

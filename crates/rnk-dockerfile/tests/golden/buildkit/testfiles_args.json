@@ -1,0 +1,81 @@
+{
+  "file": "testfiles_args",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"foo\" \"bar=baz\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"ubuntu\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"abc=\\\"123 456\\\"\" \"def\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "foo",
+          null
+        ],
+        [
+          "bar",
+          "baz"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "abc",
+              "\"123 456\""
+            ],
+            [
+              "def",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            3,
+            3
+          ]
+        }
+      ]
+    }
+  ]
+}

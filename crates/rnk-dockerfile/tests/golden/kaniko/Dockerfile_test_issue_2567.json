@@ -1,0 +1,142 @@
+{
+  "file": "Dockerfile_test_issue_2567",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"BASE=base\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\" \"AS\" \"base\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo base > /base\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${BASE}\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo 2567 > /2567\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    },
+    {
+      "args": [
+        [
+          "BASE",
+          "base"
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        2,
+        2
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        3,
+        3
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo base > /base"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "${BASE}",
+      "platform": "",
+      "lines": [
+        6,
+        6
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo 2567 > /2567"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

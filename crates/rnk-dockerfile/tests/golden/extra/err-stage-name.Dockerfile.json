@@ -1,0 +1,20 @@
+{
+  "file": "err-stage-name.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 1: invalid name for build stage: \"1bad\", name can't start with a number or contain symbols",
+  "error_line": 1,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\" \"AS\" \"1bad\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

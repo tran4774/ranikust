@@ -1,0 +1,28 @@
+{
+  "file": "err-duplicate-flag.Dockerfile",
+  "ok": false,
+  "error": "dockerfile parse error on line 2: duplicate flag specified: --network",
+  "error_line": 2,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"a\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run [\"--network=host\" \"--network=none\"] \"true\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": []
+}

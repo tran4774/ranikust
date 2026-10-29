@@ -1,0 +1,52 @@
+{
+  "file": "Dockerfile_test_issue_mz881",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"mz881\" \"true\" \"=\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            9,
+            9
+          ],
+          "pairs": [
+            [
+              "mz881",
+              "true",
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

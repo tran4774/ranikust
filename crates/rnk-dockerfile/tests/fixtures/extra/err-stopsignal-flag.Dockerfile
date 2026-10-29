@@ -1,0 +1,2 @@
+FROM a
+STOPSIGNAL --x=y SIGKILL

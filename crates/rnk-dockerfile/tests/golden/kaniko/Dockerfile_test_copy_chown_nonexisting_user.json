@@ -1,0 +1,151 @@
+{
+  "file": "Dockerfile_test_copy_chown_nonexisting_user",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"hey\\\" > /tmp/foo\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"debian:12.10\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"groupadd --gid 5000 testgroup\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\" \"--chown=1001:1001\"] \"/tmp/foo\" \"/tmp/baz\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=0\" \"--chown=1001:testgroup\"] \"/tmp/foo\" \"/tmp/baz\"",
+      "lines": [
+        22,
+        22
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        15,
+        15
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"hey\" > /tmp/foo"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            16,
+            16
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "debian:12.10",
+      "platform": "",
+      "lines": [
+        18,
+        18
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "groupadd --gid 5000 testgroup"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            19,
+            19
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "1001:1001",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp/baz",
+          "excludes": [],
+          "from": "0",
+          "lines": [
+            20,
+            20
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/tmp/foo"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "1001:testgroup",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp/baz",
+          "excludes": [],
+          "from": "0",
+          "lines": [
+            22,
+            22
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/tmp/foo"
+          ]
+        }
+      ]
+    }
+  ]
+}

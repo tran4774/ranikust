@@ -1,0 +1,54 @@
+{
+  "file": "Dockerfile_test_healthcheck",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"scratch\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "healthcheck [\"--interval=30s\" \"--timeout=3s\" \"--retries=3\"] \"CMD\" \"wget -q -O /dev/null http://localhost/ || exit 1\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "scratch",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "healthcheck",
+          "interval": 30000000000,
+          "lines": [
+            2,
+            2
+          ],
+          "retries": 3,
+          "start_interval": 0,
+          "start_period": 0,
+          "test": [
+            "CMD-SHELL",
+            "wget -q -O /dev/null http://localhost/ || exit 1"
+          ],
+          "timeout": 3000000000
+        }
+      ]
+    }
+  ]
+}

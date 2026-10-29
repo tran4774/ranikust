@@ -1,0 +1,238 @@
+{
+  "file": "Dockerfile_test_issue_mz1133_1",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}busybox\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1234:4321\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\"] \"context/foo\" \"/linkuser/foo\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add [\"--link\"] \"context/foo\" \"/addlinkuser/foo\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--link\" \"--chown=5678\"] \"context/foo\" \"/linkchown/foo\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"0\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %u:%g /linkuser/foo)\\\" = 1234:4321\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %u:%g /addlinkuser/foo)\\\" = 1234:4321\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c %u:%g /linkchown/foo)\\\" = 5678:5678\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}busybox",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "user",
+          "lines": [
+            6,
+            6
+          ],
+          "value": "1234:4321"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/linkuser/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            7,
+            7
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/addlinkuser/foo",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            8,
+            8
+          ],
+          "link": true,
+          "sources": [
+            "context/foo"
+          ],
+          "unpack": null
+        },
+        {
+          "chmod": "",
+          "chown": "5678",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/linkchown/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            9,
+            9
+          ],
+          "link": true,
+          "parents": false,
+          "sources": [
+            "context/foo"
+          ]
+        },
+        {
+          "cmd": "user",
+          "lines": [
+            10,
+            10
+          ],
+          "value": "0"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %u:%g /linkuser/foo)\" = 1234:4321"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            11,
+            11
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %u:%g /addlinkuser/foo)\" = 1234:4321"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            12
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c %u:%g /linkchown/foo)\" = 5678:5678"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            13,
+            13
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

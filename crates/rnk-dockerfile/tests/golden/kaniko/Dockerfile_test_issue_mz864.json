@@ -1,0 +1,109 @@
+{
+  "file": "Dockerfile_test_issue_mz864",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"IMAGE_REPO\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${IMAGE_REPO}alpine\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "user \"1000:1000\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "workdir \"/work/dir4\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"test \\\"$(stat -c '%u:%g' /work)\\\" = \\\"$(id -u):$(id -g)\\\"  && test \\\"$(stat -c '%u:%g' /work/dir4)\\\" = \\\"$(id -u):$(id -g)\\\"\"",
+      "lines": [
+        9,
+        10
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "IMAGE_REPO",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${IMAGE_REPO}alpine",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "user",
+          "lines": [
+            7,
+            7
+          ],
+          "value": "1000:1000"
+        },
+        {
+          "cmd": "workdir",
+          "lines": [
+            8,
+            8
+          ],
+          "value": "/work/dir4"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "test \"$(stat -c '%u:%g' /work)\" = \"$(id -u):$(id -g)\"  && test \"$(stat -c '%u:%g' /work/dir4)\" = \"$(id -u):$(id -g)\""
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            10
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

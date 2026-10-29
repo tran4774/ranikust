@@ -1,0 +1,397 @@
+{
+  "file": "Dockerfile_test_multistage_args_issue_1911",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"OTHER=\\\"fix\\\"\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"alpine:latest\" \"AS\" \"base\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"NAME=\\\"base\\\"\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"base:: $NAME\\\" >> A.txt\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"nosquash1\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base\" \"AS\" \"base-dev\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"NAME=\\\"$NAME-dev\\\"\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"dev:: $NAME\\\" >> B.txt\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base-dev\" \"AS\" \"nosquash2\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base-dev\" \"AS\" \"base-custom\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"NAME\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"custom:: $NAME\\\" >> C.txt\"",
+      "lines": [
+        14,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"custom:: $OTHER\\\" >> C.txt\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base-custom\" \"AS\" \"nosquash3\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"base-custom\" \"AS\" \"base-custom2\"",
+      "lines": [
+        18,
+        18
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"OTHER\"",
+      "lines": [
+        19,
+        19
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"custom:: $NAME\\\" >> D.txt\"",
+      "lines": [
+        20,
+        20
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"echo \\\"custom:: $OTHER\\\" >> D.txt\"",
+      "lines": [
+        21,
+        21
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "OTHER",
+          "\"fix\""
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "base",
+      "base": "alpine:latest",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "NAME",
+              "\"base\""
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"base:: $NAME\" >> A.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            4,
+            4
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash1",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        5,
+        5
+      ],
+      "commands": []
+    },
+    {
+      "name": "base-dev",
+      "base": "base",
+      "platform": "",
+      "lines": [
+        7,
+        7
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "NAME",
+              "\"$NAME-dev\""
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            8,
+            8
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"dev:: $NAME\" >> B.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            9,
+            9
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash2",
+      "base": "base-dev",
+      "platform": "",
+      "lines": [
+        10,
+        10
+      ],
+      "commands": []
+    },
+    {
+      "name": "base-custom",
+      "base": "base-dev",
+      "platform": "",
+      "lines": [
+        12,
+        12
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "NAME",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            13,
+            13
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"custom:: $NAME\" >> C.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"custom:: $OTHER\" >> C.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            15,
+            15
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "nosquash3",
+      "base": "base-custom",
+      "platform": "",
+      "lines": [
+        16,
+        16
+      ],
+      "commands": []
+    },
+    {
+      "name": "base-custom2",
+      "base": "base-custom",
+      "platform": "",
+      "lines": [
+        18,
+        18
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "OTHER",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            19,
+            19
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"custom:: $NAME\" >> D.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            20,
+            20
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "echo \"custom:: $OTHER\" >> D.txt"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            21,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

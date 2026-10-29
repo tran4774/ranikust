@@ -1,0 +1,264 @@
+{
+  "file": "testfiles_ADD-COPY-with-JSON",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"maintainer\" \"Seongyeol Lim <seongyeol37@gmail.com>\" \"\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \".\" \"/go/src/github.com/docker/docker\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \".\" \"/\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"null\" \"/\"",
+      "lines": [
+        6,
+        6
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"nullfile\" \"/tmp\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"vimrc\" \"/tmp\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"bashrc\" \"/tmp\"",
+      "lines": [
+        9,
+        9
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"test file\" \"/tmp\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"test file\" \"/tmp/test file\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            2,
+            2
+          ],
+          "pairs": [
+            [
+              "maintainer",
+              "Seongyeol Lim <seongyeol37@gmail.com>",
+              true
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/go/src/github.com/docker/docker",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            4,
+            4
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "."
+          ]
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "sources": [
+            "."
+          ],
+          "unpack": null
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            6,
+            6
+          ],
+          "link": false,
+          "sources": [
+            "null"
+          ],
+          "unpack": null
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            7,
+            7
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "nullfile"
+          ]
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/tmp",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            8,
+            8
+          ],
+          "link": false,
+          "sources": [
+            "vimrc"
+          ],
+          "unpack": null
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            9,
+            9
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "bashrc"
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/tmp",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            10,
+            10
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "test file"
+          ]
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/tmp/test file",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            11,
+            11
+          ],
+          "link": false,
+          "sources": [
+            "test file"
+          ],
+          "unpack": null
+        }
+      ]
+    }
+  ]
+}

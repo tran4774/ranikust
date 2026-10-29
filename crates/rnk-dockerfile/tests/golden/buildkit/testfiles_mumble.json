@@ -1,0 +1,102 @@
+{
+  "file": "testfiles_mumble",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"ubuntu:14.04\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update && apt-get install libcap2-bin mumble-server -y\"",
+      "lines": [
+        3,
+        3
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "add \"./mumble-server.ini\" \"/etc/mumble-server.ini\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "cmd \"/usr/sbin/murmurd\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update && apt-get install libcap2-bin mumble-server -y"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            3,
+            3
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "checksum": "",
+          "chmod": "",
+          "chown": "",
+          "cmd": "add",
+          "contents": [],
+          "dest": "/etc/mumble-server.ini",
+          "excludes": [],
+          "keep_git_dir": null,
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "sources": [
+            "./mumble-server.ini"
+          ],
+          "unpack": null
+        },
+        {
+          "cmd": "cmd",
+          "cmdline": [
+            "/usr/sbin/murmurd"
+          ],
+          "files": [],
+          "lines": [
+            7,
+            7
+          ],
+          "prepend_shell": true
+        }
+      ]
+    }
+  ]
+}

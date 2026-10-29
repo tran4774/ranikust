@@ -1,0 +1,10 @@
+{
+  "file": "err-empty.Dockerfile",
+  "ok": false,
+  "error": "file with no instructions",
+  "error_line": 2,
+  "warnings": 0,
+  "ast": [],
+  "meta_args": [],
+  "stages": []
+}

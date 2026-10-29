@@ -1,0 +1,12 @@
+{
+  "file": "Dockerfile_test_issue_3373_4",
+  "build_args": {},
+  "ok": false,
+  "error": "checksum can't be specified for multiple sources",
+  "env": [],
+  "labels": {},
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

@@ -1,0 +1,119 @@
+{
+  "file": "testfiles_brimstone-consuldock",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 1,
+  "ast": [
+    {
+      "dump": "from \"brimstone/ubuntu:14.04\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "label \"maintainer\" \"brimstone@the.narro.ws\" \"\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"GOPATH\" \"/go\" \"\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "entrypoint \"/usr/local/bin/consuldock\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update \\t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.clean     && apt-get --no-install-recommends install -y git golang ca-certificates     && apt-get clean     && rm -rf /var/lib/apt/lists \\t&& go get -v github.com/brimstone/consuldock     && mv $GOPATH/bin/consuldock /usr/local/bin/consuldock \\t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.dirty \\t&& apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^>/ {print $2}') \\t&& rm /tmp/dpkg.* \\t&& rm -rf $GOPATH\"",
+      "lines": [
+        14,
+        26
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "",
+      "base": "brimstone/ubuntu:14.04",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "cmd": "label",
+          "lines": [
+            4,
+            4
+          ],
+          "pairs": [
+            [
+              "maintainer",
+              "brimstone@the.narro.ws",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            8,
+            8
+          ],
+          "pairs": [
+            [
+              "GOPATH",
+              "/go",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "entrypoint",
+          "cmdline": [
+            "/usr/local/bin/consuldock"
+          ],
+          "files": [],
+          "lines": [
+            11,
+            11
+          ],
+          "prepend_shell": false
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update \t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.clean     && apt-get --no-install-recommends install -y git golang ca-certificates     && apt-get clean     && rm -rf /var/lib/apt/lists \t&& go get -v github.com/brimstone/consuldock     && mv $GOPATH/bin/consuldock /usr/local/bin/consuldock \t&& dpkg -l | awk '/^ii/ {print $2}' > /tmp/dpkg.dirty \t&& apt-get remove --purge -y $(diff /tmp/dpkg.clean /tmp/dpkg.dirty | awk '/^>/ {print $2}') \t&& rm /tmp/dpkg.* \t&& rm -rf $GOPATH"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            14,
+            26
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

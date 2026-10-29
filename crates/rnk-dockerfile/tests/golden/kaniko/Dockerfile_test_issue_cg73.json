@@ -1,0 +1,276 @@
+{
+  "file": "Dockerfile_test_issue_cg73",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "from \"debian\" \"AS\" \"base\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update     && apt-get install -y         libcap2-bin     && rm -rf /var/lib/apt/lists/*\"",
+      "lines": [
+        2,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"touch /blubb\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"setcap \\\"cap_net_raw+ep\\\" /blubb\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"mkdir /dir     && touch /dir/nested     && setcap \\\"cap_net_raw+ep\\\" /dir/nested\"",
+      "lines": [
+        12,
+        14
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"debian\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"apt-get update     && apt-get install -y         libcap2-bin     && rm -rf /var/lib/apt/lists/*\"",
+      "lines": [
+        18,
+        21
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base\"] \"/blubb\" \"/\"",
+      "lines": [
+        23,
+        23
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"getcap /blubb\"",
+      "lines": [
+        24,
+        24
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy [\"--from=base\"] \"/dir\" \"/dir\"",
+      "lines": [
+        25,
+        25
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "run \"getcap /dir/nested\"",
+      "lines": [
+        26,
+        26
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [],
+  "stages": [
+    {
+      "name": "base",
+      "base": "debian",
+      "platform": "",
+      "lines": [
+        1,
+        1
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update     && apt-get install -y         libcap2-bin     && rm -rf /var/lib/apt/lists/*"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            2,
+            5
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "touch /blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            7,
+            7
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "setcap \"cap_net_raw+ep\" /blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            8,
+            8
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "mkdir /dir     && touch /dir/nested     && setcap \"cap_net_raw+ep\" /dir/nested"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            12,
+            14
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    },
+    {
+      "name": "",
+      "base": "debian",
+      "platform": "",
+      "lines": [
+        16,
+        16
+      ],
+      "commands": [
+        {
+          "cmd": "run",
+          "cmdline": [
+            "apt-get update     && apt-get install -y         libcap2-bin     && rm -rf /var/lib/apt/lists/*"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            18,
+            21
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/",
+          "excludes": [],
+          "from": "base",
+          "lines": [
+            23,
+            23
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/blubb"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "getcap /blubb"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            24,
+            24
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/dir",
+          "excludes": [],
+          "from": "base",
+          "lines": [
+            25,
+            25
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "/dir"
+          ]
+        },
+        {
+          "cmd": "run",
+          "cmdline": [
+            "getcap /dir/nested"
+          ],
+          "devices": [],
+          "files": [],
+          "flags_used": [],
+          "lines": [
+            26,
+            26
+          ],
+          "mounts": [],
+          "network": "default",
+          "prepend_shell": true,
+          "security": "sandbox"
+        }
+      ]
+    }
+  ]
+}

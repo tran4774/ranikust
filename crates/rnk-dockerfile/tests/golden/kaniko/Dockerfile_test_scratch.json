@@ -1,0 +1,285 @@
+{
+  "file": "Dockerfile_test_scratch",
+  "ok": true,
+  "escape": "\\",
+  "warnings": 0,
+  "ast": [
+    {
+      "dump": "arg \"image\"",
+      "lines": [
+        1,
+        1
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "from \"${image}\"",
+      "lines": [
+        2,
+        2
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"file\"",
+      "lines": [
+        4,
+        4
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"$file\" \"/foo\"",
+      "lines": [
+        5,
+        5
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"file2=context/bar/bat\"",
+      "lines": [
+        7,
+        7
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"$file2\" \"/bat\"",
+      "lines": [
+        8,
+        8
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"baz\" \"baz\" \"\"",
+      "lines": [
+        10,
+        10
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"src\" \"file3\" \"\"",
+      "lines": [
+        11,
+        11
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "arg \"${src}=context/bar/${baz}\"",
+      "lines": [
+        12,
+        12
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"$file3\" \"/baz\"",
+      "lines": [
+        13,
+        13
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "env \"file\" \"context/bar/bam/bat\" \"\"",
+      "lines": [
+        15,
+        15
+      ],
+      "heredocs": []
+    },
+    {
+      "dump": "copy \"$file\" \"/env\"",
+      "lines": [
+        16,
+        16
+      ],
+      "heredocs": []
+    }
+  ],
+  "meta_args": [
+    {
+      "args": [
+        [
+          "image",
+          null
+        ]
+      ],
+      "cmd": "arg",
+      "lines": [
+        1,
+        1
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "name": "",
+      "base": "${image}",
+      "platform": "",
+      "lines": [
+        2,
+        2
+      ],
+      "commands": [
+        {
+          "args": [
+            [
+              "file",
+              null
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/foo",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            5,
+            5
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "$file"
+          ]
+        },
+        {
+          "args": [
+            [
+              "file2",
+              "context/bar/bat"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            7,
+            7
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/bat",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            8,
+            8
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "$file2"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            10,
+            10
+          ],
+          "pairs": [
+            [
+              "baz",
+              "baz",
+              true
+            ]
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            11,
+            11
+          ],
+          "pairs": [
+            [
+              "src",
+              "file3",
+              true
+            ]
+          ]
+        },
+        {
+          "args": [
+            [
+              "${src}",
+              "context/bar/${baz}"
+            ]
+          ],
+          "cmd": "arg",
+          "lines": [
+            12,
+            12
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/baz",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            13,
+            13
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "$file3"
+          ]
+        },
+        {
+          "cmd": "env",
+          "lines": [
+            15,
+            15
+          ],
+          "pairs": [
+            [
+              "file",
+              "context/bar/bam/bat",
+              true
+            ]
+          ]
+        },
+        {
+          "chmod": "",
+          "chown": "",
+          "cmd": "copy",
+          "contents": [],
+          "dest": "/env",
+          "excludes": [],
+          "from": "",
+          "lines": [
+            16,
+            16
+          ],
+          "link": false,
+          "parents": false,
+          "sources": [
+            "$file"
+          ]
+        }
+      ]
+    }
+  ]
+}
