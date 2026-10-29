@@ -395,6 +395,23 @@ Entry format:
   a table row.
 - **Raised:** 2026-10-30
 
+### Q-081: Does the context sub-path flag apply to a local directory?
+
+- **Blocks:** Phase 1 task 8, if the flag is accepted (Q-023); **Area:**
+  `ranikust`, `rnk-context`
+- **Context:** kaniko joins `--context-sub-path` to a fetched context only:
+  a `--context` without `://` returns before that line, so the flag is
+  silently ignored for a bare path, while `dir://` reaches it
+  (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:599-601`, `:625-630`;
+  [rnk-context](agents/crates/rnk-context.md#pitfalls)).
+- **Options:** (a) as kaniko: ignore it for a bare path; (b) apply it to
+  every context; (c) reject a sub-path with a bare path, with a message.
+- **Recommendation:** none
+- **Interim:** `rnk-context` offers `Context::sub_context` for any context
+  (`feat/rnk-context`), confined to the context with `..` clamped; the CLI
+  decides when to call it. Reversible: no caller yet.
+- **Raised:** 2026-10-30
+
 ### Q-024: What is the Snapshotter signature?
 
 - **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
@@ -440,11 +457,15 @@ Entry format:
 - **Blocks:** Phase 1 task 10; **Area:** `rnk-context`
 - **Context:** the trait is defined in Phase 1 for local directories, but
   its HTTPS and git sources (Phase 5) do network I/O
-  ([rnk-context](agents/crates/rnk-context.md#api-planned),
+  ([rnk-context](agents/crates/rnk-context.md#api),
   [Phase 1](agents/crates/rnk-context.md#phase-1)).
 - **Options:** (a) sync; (b) async.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** sync, on branch `feat/rnk-context`: `ContextSource::open`
+  returns `Result<Context>`, and the only source is a local directory.
+  Reversible: the trait has one implementation and no caller outside the
+  crate; making it async changes `open`'s signature and its callers in
+  `rnk-builder`, nothing else.
 - **Raised:** 2026-10-30
 
 ### Q-028: Which planned crate dependencies are allowed?
@@ -460,7 +481,36 @@ Entry format:
 - **Options:** per edge, (a) allow the direct dependency; (b) route it
   through `rnk-builder`, which already depends on all of them.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** `rnk-context` → `rnk-ignore` is declared on branch
+  `feat/rnk-context`: ADR-0027 makes the context walk call
+  `matches_using_parent` and `may_reinclude_below`, which only work inside
+  the walk, so routing through `rnk-builder` would move the walk there.
+  Reversible: one dependency line, and `rnk-ignore` is pure data. The other
+  edges are still undeclared.
+- **Raised:** 2026-10-30
+
+### Q-080: Who resolves COPY sources against the context, and how?
+
+- **Blocks:** Phase 1 task 11; **Area:** `rnk-builder`, `rnk-context`
+- **Context:** `rnk-context` must not decide which files an instruction
+  copies ([rnk-context](agents/crates/rnk-context.md#must-not)), but
+  something must expand `COPY` source globs and keep ignored files out.
+  kaniko lists the whole context and matches each source with Go's
+  `filepath.Match` (`kaniko@44aa7ddc0 pkg/util/command_util.go:145-185`),
+  then drops excluded files; BuildKit only ever sees the files its
+  filtered walk transferred and resolves wildcards in its copy backend.
+  `Context::root()` sees ignored files too.
+- **Options:** (a) `rnk-builder` resolves sources against the walk's
+  entries (or `root()` plus the same `Matcher`), with BuildKit's wildcard
+  rules; (b) `rnk-context` gains a resolver, e.g.
+  `resolve_sources(&[pattern], &Matcher) -> Vec<Entry>`, and the builder
+  only copies; which glob dialect (`filepath.Match` as kaniko, or
+  BuildKit's) is part of either.
+- **Recommendation:** (a), which the card's boundary already implies;
+  the dialect needs a golden against BuildKit.
+- **Interim:** `rnk-context` exposes the filtered walk and `root()` only
+  (`feat/rnk-context`); nothing resolves globs yet. Reversible: adding a
+  resolver to either crate later is additive.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?
