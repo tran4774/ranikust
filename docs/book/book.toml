@@ -1,0 +1,16 @@
+[book]
+title = "ranikust"
+description = "User guide for ranikust, a kaniko-compatible container image builder that ships as one static Linux binary"
+authors = ["The ranikust contributors"]
+language = "en"
+src = "src"
+
+[build]
+# Build into the workspace's target directory, which git already ignores.
+build-dir = "../../target/book"
+# Fail instead of creating empty pages for entries missing from SUMMARY.md.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/tran4774/ranikust"
+edit-url-template = "https://github.com/tran4774/ranikust/edit/main/docs/book/{path}"

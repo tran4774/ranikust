@@ -1,0 +1,52 @@
+# git-cliff configuration: https://git-cliff.org/docs/configuration
+#
+# `just changelog` prints a draft of the unreleased section, in the Keep a
+# Changelog format of CHANGELOG.md, built from Conventional Commit messages.
+# The draft is edited by hand before it goes into CHANGELOG.md.
+
+[changelog]
+header = ""
+body = """
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## [Unreleased]
+{% endif -%}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}{{ commit.scope }}: {% endif %}\
+{% if commit.breaking %}**Breaking:** {% endif %}\
+{{ commit.message | split(pat="\n") | first | trim | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+footer = ""
+# Keep the blank line that separates releases.
+trim = false
+
+[git]
+conventional_commits = true
+# Commits that do not follow Conventional Commits are left out.
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = true
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+# Groups follow Keep a Changelog. The HTML comments fix the order of the
+# sections and are stripped from the output.
+commit_parsers = [
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^[a-z]+(\\([^)]*\\))?!?: [Ss]ecurity", group = "<!-- 5 -->Security" },
+  { message = "^[a-z]+\\(security\\)", group = "<!-- 5 -->Security" },
+  { message = "^[a-z]+(\\([^)]*\\))?!?: [Dd]eprecate", group = "<!-- 2 -->Deprecated" },
+  { message = "^[a-z]+(\\([^)]*\\))?!?: [Rr]emove", group = "<!-- 3 -->Removed" },
+  { message = "^feat", group = "<!-- 0 -->Added" },
+  { message = "^fix", group = "<!-- 4 -->Fixed" },
+  { message = "^perf", group = "<!-- 1 -->Changed" },
+  { message = "^revert", group = "<!-- 1 -->Changed" },
+  # A breaking change of any other type is user-visible.
+  { message = "^[a-z]+(\\([^)]*\\))?!:", group = "<!-- 1 -->Changed" },
+  { footer = "^BREAKING[ -]CHANGE", group = "<!-- 1 -->Changed" },
+  { message = "^(refactor|docs|test|ci|build|chore|style)", skip = true },
+]

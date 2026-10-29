@@ -1,0 +1,114 @@
+name: Bug report
+description: ranikust builds something wrong, fails, or picks the wrong mode.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Security problems** (escaping the work
+        directory, credential leaks, sandbox escapes) must be reported
+        privately: see SECURITY.md. ranikust behaves very differently
+        depending on where it runs and with which privileges, so the
+        environment fields below matter.
+  - type: input
+    id: version
+    attributes:
+      label: ranikust version or commit
+      placeholder: "0.1.0, or a commit hash"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Where did ranikust run?
+      options:
+        - Directly on a host or VM
+        - Docker container
+        - Podman container
+        - Kubernetes pod
+        - CI job (say which system below)
+        - Other (describe below)
+    validations:
+      required: true
+  - type: dropdown
+    id: privilege
+    attributes:
+      label: Privilege level
+      description: The user ranikust ran as, and what its container allowed.
+      options:
+        - root on a host or VM
+        - root in a privileged container (--privileged or CAP_SYS_ADMIN)
+        - root in a container with default options
+        - regular (non-root) user
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Chosen mode
+      description: The snapshot mode ranikust reported at startup.
+      options:
+        - overlay
+        - overlay (rootless)
+        - kaniko
+        - kaniko with --parallel-stages
+        - None, ranikust refused to build
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: mode-selection
+    attributes:
+      label: How was the mode chosen?
+      options:
+        - Automatically
+        - Forced with a command-line flag
+    validations:
+      required: true
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel and distribution
+      description: Output of `uname -r`, and the distribution of the host.
+      placeholder: "6.8.0-48-generic, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: environment-details
+    attributes:
+      label: Environment details
+      description: >-
+        Container runtime and its options (`docker run` flags, pod
+        securityContext), CI system, cgroup version
+        (`stat -fc %T /sys/fs/cgroup`), AppArmor or SELinux, and the file
+        system of the work directory.
+  - type: textarea
+    id: command
+    attributes:
+      label: Command line
+      description: The full ranikust command. Remove credentials.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: dockerfile
+    attributes:
+      label: Minimal Dockerfile
+      description: The smallest Dockerfile that shows the problem.
+      render: dockerfile
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened instead?
+      description: >-
+        If kaniko or `docker build` behaves differently with the same
+        Dockerfile, say how.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: The log from the start of the build. Remove credentials.
+      render: text

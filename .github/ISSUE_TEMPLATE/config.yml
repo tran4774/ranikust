@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/tran4774/ranikust/security/advisories/new
+    about: >-
+      Report vulnerabilities privately through GitHub. Do not open a public
+      issue. See SECURITY.md for what is in scope.

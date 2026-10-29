@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a feature or a kaniko behaviour ranikust should support.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ranikust is pre-alpha. Check the roadmap in the user guide and the
+        decisions in docs/adr first: some features are out of scope by
+        decision (for example kaniko's `bake`, the cache warmer, and S3, GCS
+        or Azure build contexts, see ADR-0008).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How ranikust could solve it, for example a flag or a behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: kaniko
+    attributes:
+      label: kaniko and other builders
+      description: >-
+        Does kaniko, `docker build` or BuildKit support this? Link the
+        documentation or the flag.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Where would you run it?
+      description: >-
+        Host or container, user and privileges, CI system. Some features
+        are only possible in some modes.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

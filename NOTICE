@@ -1,0 +1,41 @@
+ranikust
+Copyright The ranikust contributors
+
+ranikust is licensed under the Apache License, Version 2.0, or the MIT
+license, at your option (see LICENSE-APACHE and LICENSE-MIT). The
+third-party material listed below remains under its own license.
+
+
+Third-party attributions
+========================
+
+Claude Code skill "security-audit"
+----------------------------------
+
+Directory: .claude/skills/security-audit/
+Source:    https://github.com/cloudflare/security-audit-skill
+           (skills/security-audit/), commit
+           c1c8a8c1471069fb0e188eeaff69b8e8db6564a8
+Copyright: Copyright (c) 2025-2026 Cloudflare, Inc.
+License:   MIT (.claude/skills/security-audit/LICENSE)
+
+Copied verbatim for use by contributors' AI coding agents. It is not part of
+the ranikust binary.
+
+
+Code derived from kaniko
+------------------------
+
+None yet.
+
+kaniko (https://github.com/osscontainertools/kaniko, originally
+https://github.com/GoogleContainerTools/kaniko) is licensed under the Apache
+License, Version 2.0, and its files carry "Copyright <year> Google LLC". The
+kaniko repository has no NOTICE file of its own. Code ported from kaniko is
+listed here, one entry per ranikust file, with the kaniko source path and
+commit. See "Porting code from kaniko" in CONTRIBUTING.md.
+
+Code ported from a dependency vendored in kaniko carries that project's
+license and NOTICE instead: for example, github.com/moby/patternmatcher has a
+NOTICE file (Docker, Inc.) whose text must be reproduced here if its code is
+ported.
