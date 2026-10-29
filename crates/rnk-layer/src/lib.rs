@@ -3,10 +3,10 @@
 //! Writes layer tar streams with fully controlled headers: the writer sorts the
 //! entries it is fed and emits missing parent directory headers, with
 //! hardlinks, PAX xattrs and fixed timestamps for reproducible builds.
-//! Compresses gzip and zstd in parallel, decompresses pulled gzip and zstd
-//! blobs into a plain tar stream, and computes digests while streaming.
-//! zstd is not implemented yet; it arrives with the cargo-zigbuild
-//! toolchain (Q-052).
+//! Compresses gzip (one pigz-style member) and zstd (independent 1 MiB
+//! frames) in parallel with the same bytes for any thread count,
+//! decompresses pulled gzip and zstd blobs into a plain tar stream, and
+//! computes digests while streaming.
 //!
 //! The exporter feeds [`Entry`] values to a [`LayerWriter`], then calls
 //! [`LayerWriter::finish`] with an [`EntrySource`] that opens file contents
@@ -28,7 +28,9 @@ mod entry;
 mod error;
 mod gzip;
 mod header;
+mod parallel;
 mod writer;
+mod zstd_frames;
 
 pub use decoder::Decoder;
 pub use digest::Sha256Digest;

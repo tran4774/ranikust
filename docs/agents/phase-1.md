@@ -20,7 +20,7 @@ the code.
 | [x] | Dockerfile front end: lexer, directives, heredocs, `ARG`/`ENV` expansion, instructions, stage DAG; BuildKit goldens on kaniko's 200 Dockerfiles | `rnk-dockerfile` |
 | [x] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
 | [~] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion | `rnk-rootfs` |
-| [~] | Deterministic tar (the writer sorts entries and adds missing parent headers), pigz-style parallel gzip, zstd in 128 KiB chunks, gzip/zstd decoder for pulled blobs, streaming digests | `rnk-layer` |
+| [x] | Deterministic tar (the writer sorts entries and adds missing parent headers), pigz-style parallel gzip, parallel zstd as independent 1 MiB frames, gzip/zstd decoder for pulled blobs, streaming digests | `rnk-layer` |
 | [ ] | Pulls from public registries and with docker `config.json` auth; rustls with `ring`, trusting host CAs plus webpki roots (`ADR-0024`); `--registry-certificate` | `rnk-registry` |
 | [ ] | Persistent store in `--state-dir`: `blobs/`, `layers/`, `caches/`, `tmp/`, per-digest `flock`, atomic rename, start-up cleanup; `BuildPaths` (`ADR-0006`, `ADR-0021`, `ADR-0022`) | `rnk-store` |
 | [ ] | Process set-up: flags (`--mode`, `ADR-0023`), workdir checks, marker, private mount namespace, the probes in order, workdir `flock` in kaniko mode, spawner thread, all while single-threaded | `ranikust` |
@@ -35,11 +35,11 @@ the code.
 | [ ] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` | `rnk-builder`, `rnk-registry`, `rnk-layer` |
 | [ ] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix | `rnk-sched` |
 | [ ] | Common kaniko flags and the subcommands (`ADR-0011`) | `ranikust` |
-| [ ] | aarch64 in CI: cargo-zigbuild cross-build, unit tests under qemu-user (`ADR-0009`; today only `cargo check`) | CI |
+| [ ] | aarch64 in CI: cargo-zigbuild cross-build, unit tests under qemu-user (`ADR-0009`; today only `cargo-zigbuild check`) | CI |
 | [ ] | T2 VM harness `just test-vm` (`docs/testing.md`); overlay as root cannot be tested without it `[inferred]` | tests |
 | [ ] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) | tests |
 | [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `RANIKUST_METRICS_FILE` (done); `--metrics-file` and `meta.options` with task 8; every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
-| [ ] | Build toolchain: cargo-zigbuild with zig in the `justfile` and CI for the musl x86_64 and aarch64 builds (`ADR-0020`, Q-052); unblocks zstd and mimalloc | build, CI |
+| [x] | Build toolchain: cargo-zigbuild with zig in the `justfile` and CI for the musl x86_64 and aarch64 builds (`ADR-0020`, Q-052); zig compiles every C dependency, rustc links x86_64 with `cc` to keep static-pie; mimalloc is the binary's allocator | build, CI, `ranikust` |
 | [ ] | Start-up check for Linux 5.8 (`openat2` with `RESOLVE_IN_ROOT`, `statx` mount id), with a clear refusal (`ADR-0028`) | `ranikust` |
 | [ ] | Base-layer extraction in the overlay form: a hardlink into a lower layer is copied from the lower layers as a regular file (Q-055) | `rnk-rootfs`, `rnk-snapshot` |
 
@@ -57,8 +57,8 @@ Two mostly independent tracks (survey 04 §3): front end
 | 2 | `rnk-dockerfile` parser with BuildKit goldens | | |
 | 3 | `rnk-ignore` | | |
 | 4 | `rnk-rootfs`: `RootPath` → extraction → copy, ownership, xattrs → safe deletion | | |
-| 5 | `rnk-layer`: tar → gzip → digests (done); zstd | 5a | |
-| 5a | cargo-zigbuild toolchain in the `justfile` and CI (`ADR-0020`, Q-052) | | |
+| 5 | `rnk-layer`: tar → gzip → digests → zstd (done) | 5a | |
+| 5a | cargo-zigbuild toolchain in the `justfile` and CI (`ADR-0020`, Q-052); mimalloc (done) | | |
 | 6 | `rnk-registry`: auth, TLS (`ADR-0024`), streamed pull | 1 | |
 | 7 | `rnk-store`: layout, locks, publication, start-up clean-up (`ADR-0021`, `ADR-0022`) | 4, 5, 6 | |
 | 8 | `ranikust` set-up and flags (`ADR-0023`), the Linux 5.8 check (`ADR-0028`); `rnk-sandbox` sandbox and its probes | 4 | |

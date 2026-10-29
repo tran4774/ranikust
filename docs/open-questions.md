@@ -808,6 +808,11 @@ Entry format:
   CI, as [ADR-0020](adr/0020-static-musl-via-cargo-zigbuild.md) planned;
   the same toolchain builds mimalloc. zstd is added after it
   ([phase-1](agents/phase-1.md#task-order), task 5a).
+- **Implemented (2026-10-30):** `just build-static` and `just
+  check-aarch64` run cargo-zigbuild 0.24.0 with zig 0.16.0, the same in
+  CI; zig compiles every C dependency (libzstd, mimalloc, ring) and the
+  host `cc` links x86_64 to keep static-pie. `rnk-layer` writes zstd as
+  independent 1 MiB frames.
 
 ### Q-054: What is the minimum kernel, and who checks it?
 

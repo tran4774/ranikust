@@ -6,3 +6,4 @@ mod gzip_layer;
 mod support;
 mod tar_props;
 mod tar_writer;
+mod zstd_layer;

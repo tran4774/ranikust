@@ -314,7 +314,8 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 
 - Layer contents and digests never depend on `--jobs`, thread count,
   scheduling or input chunking, or on the host's users. Parallel gzip is a
-  single deterministic member; zstd is fed in fixed 128 KiB chunks; tar
+  single deterministic member; zstd is one independent frame per 1 MiB of
+  tar (libzstd's own multithreading is not deterministic, `exp-05`); tar
   entries are sorted; configs are canonical JSON.
 - Timestamps follow kaniko: the current time by default (the config's
   `created` and history; files keep the times they have on disk); with

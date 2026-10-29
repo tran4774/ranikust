@@ -23,6 +23,8 @@ rnk-rootfs = { path = "crates/rnk-rootfs" }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 # `libc`: `getrusage` for the metrics report (rustix 1.1 has no wrapper).
 libc = "0.2.186"
+# `mimalloc`: the binary's allocator; musl's is 250–300× slower under threads (exp-05).
+mimalloc = { version = "0.1.52", default-features = false }
 # `regex`: no Unicode tables; `rnk-ignore` writes its classes out itself.
 regex = { version = "1.12", default-features = false, features = ["std", "perf"] }
 rustix = { version = "1.1.6", features = ["fs", "std"] }
@@ -37,6 +39,8 @@ thiserror = "2.0.21"
 # install the subscriber (ADR-0025).
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry", "std"] }
+# `zstd`: bundled libzstd built by cargo-zigbuild (ADR-0020); no legacy formats or dictionary training.
+zstd = { version = "0.14.3", default-features = false }
 
 # Test-only crates.
 proptest = { version = "1.12", default-features = false, features = ["std"] }

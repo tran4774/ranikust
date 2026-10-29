@@ -26,8 +26,9 @@ pub(crate) fn gunzip_one_member(gz: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A tree of a few MiB, so that layers span many gzip blocks.
-fn big_tree() -> Tree {
+/// A tree of a few MiB, so that layers span many gzip blocks and several
+/// zstd frames.
+pub(crate) fn big_tree() -> Tree {
     let mut t = Tree::default();
     t.dir("data", 0o755);
     let mut x: u64 = 0x9e37_79b9_7f4a_7c15;

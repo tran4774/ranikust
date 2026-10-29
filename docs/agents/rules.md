@@ -68,7 +68,8 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
 
 - Layer contents and digests never depend on `--jobs`, thread count,
   scheduling, input chunking or the host's users. Parallel gzip writes one
-  member; zstd is fed fixed 128 KiB chunks (`exp-05`).
+  member; zstd writes one independent frame per 1 MiB, never libzstd's
+  multithreading (`exp-05`).
 - Timestamps follow kaniko: the current time unless `--reproducible`, which
   uses a fixed epoch or `SOURCE_DATE_EPOCH`.
 - Tested: with `--reproducible`, `--jobs 1` and the default give the same

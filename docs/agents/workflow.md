@@ -11,7 +11,11 @@ Linux only; nothing needs root. `rustup` reads `rust-toolchain.toml` (Rust
 rust-analyzer, x86_64 and aarch64 musl targets). Then, at CI's versions:
 `cargo install --locked just cargo-deny@0.20.2 mdbook@0.5.4`, plus
 `git-cliff` for release notes and `file`/`readelf` for `just build-static`.
-Cross builds use cargo-zigbuild with zig (`ADR-0020`); no recipe needs it yet.
+The musl recipes (`just build-static`, `just check-aarch64`, so `just ci`)
+need zig 0.16.0 and `cargo install --locked cargo-zigbuild@0.24.0`: zig
+compiles the C dependencies (libzstd, mimalloc, ring) for musl, the host
+`cc` links (`ADR-0020`); install zig as in
+[CONTRIBUTING.md](../../CONTRIBUTING.md#development-setup).
 
 ## Dev loop
 
@@ -34,8 +38,8 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just fmt` / `fmt-check` | `cargo fmt --all` (`--check`) | `fmt` |
 | `just lint` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | `clippy` |
 | `just test [args]` | `cargo test --workspace --locked [args]` (T0) | `test` |
-| `just build-static` | release musl build of `ranikust`; fails on a loader or `NEEDED`; runs it | `static-build` |
-| `just check-aarch64` | `cargo check --workspace --locked --target aarch64-unknown-linux-musl` | `check-aarch64` |
+| `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; fails on a loader, `NEEDED`, non-PIE or no `.symtab`; runs it | `static-build` |
+| `just check-aarch64` | `cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl` | `check-aarch64` |
 | `just deny` | `cargo deny --locked check` | `deny` |
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |
 | `just changelog [args]` | `git cliff --unreleased`, a draft to stdout | |

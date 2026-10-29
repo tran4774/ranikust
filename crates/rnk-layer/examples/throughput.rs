@@ -1,5 +1,6 @@
-//! Rough throughput of the layer writer, and a check that thread counts give
-//! the same bytes. Prints numbers; asserts only the equality.
+//! Rough throughput of the layer writer with gzip and zstd, and a check that
+//! thread counts give the same bytes. Prints numbers; asserts only the
+//! equality.
 //!
 //! ```sh
 //! cargo run --release -p rnk-layer --example throughput -- [MiB] [threads...]
@@ -120,19 +121,21 @@ fn main() {
         tar.len()
     );
 
-    let mut reference: Option<Vec<u8>> = None;
-    for t in threads {
-        let start = Instant::now();
-        let gz = encode(&mut files, mib, Compression::Gzip, t);
-        let secs = start.elapsed().as_secs_f64();
-        println!(
-            "gzip -6, {t:2} threads: {:7.0} MB/s ({} bytes)",
-            input / secs / 1e6,
-            gz.len()
-        );
-        match &reference {
-            Some(r) => assert!(*r == gz, "{t} threads gave other bytes"),
-            None => reference = Some(gz),
+    for compression in [Compression::Gzip, Compression::Zstd] {
+        let mut reference: Option<Vec<u8>> = None;
+        for &t in &threads {
+            let start = Instant::now();
+            let blob = encode(&mut files, mib, compression, t);
+            let secs = start.elapsed().as_secs_f64();
+            println!(
+                "{compression} -6, {t:2} threads: {:7.0} MB/s ({} bytes)",
+                input / secs / 1e6,
+                blob.len()
+            );
+            match &reference {
+                Some(r) => assert!(*r == blob, "{compression}: {t} threads gave other bytes"),
+                None => reference = Some(blob),
+            }
         }
     }
 }
