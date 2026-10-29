@@ -6,3 +6,6 @@ CLAUDE.local.md
 
 # Git worktrees created by Claude Code agents
 .claude/worktrees/
+
+# graphify knowledge graph (rebuilt locally by `graphify update .`)
+graphify-out/

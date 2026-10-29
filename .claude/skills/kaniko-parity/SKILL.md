@@ -58,7 +58,10 @@ what kaniko does is only valid with a citation into kaniko's source.
      needs a new ADR.
 
 For broad questions that need a lot of reading, delegate to the
-`kaniko-oracle` subagent and pass it the resolved path.
+`kaniko-oracle` subagent and pass it the resolved path. If
+`<path>/graphify-out/graph.json` exists, run
+`graphify query "<question>" --graph <path>/graphify-out/graph.json` first
+and include the output in its prompt so it starts at the right files.
 
 Reading kaniko to learn its behaviour is fine. Translating its code closely
 makes the result a derivative of Apache-2.0 code: follow "Porting code from

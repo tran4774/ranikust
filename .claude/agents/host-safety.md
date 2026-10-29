@@ -10,9 +10,13 @@ Dockerfile `RUN` commands as root, mounts overlay filesystems, extracts
 untrusted image layers and deletes whole build roots. A bug here deletes or
 overwrites host files, or lets a `RUN` command reach the host.
 
-You can only read. Read the files you were given in full, then follow calls
-into other crates as needed. Read `ARCHITECTURE.md`, the `# Boundaries` doc
-of each touched crate and `docs/security/threat-model.md` first.
+You can only read. The caller gives you the changed files and usually the
+graphify subgraph (callers, callees, related nodes with `path:line`) and
+the threat-model sections that apply; start from those instead of
+searching. Read the changed files in full and the `# Boundaries` doc of
+each touched crate, then follow calls into other crates only where the
+subgraph or the code points. Open `ARCHITECTURE.md` or other sections of
+`docs/security/threat-model.md` only when a finding depends on them.
 
 ## Checklist
 
