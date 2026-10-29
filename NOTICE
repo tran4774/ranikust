@@ -39,3 +39,20 @@ Code ported from a dependency vendored in kaniko carries that project's
 license and NOTICE instead: for example, github.com/moby/patternmatcher has a
 NOTICE file (Docker, Inc.) whose text must be reproduced here if its code is
 ported.
+
+
+Code derived from distribution/reference
+----------------------------------------
+
+File:      crates/rnk-oci/src/reference.rs
+Source:    https://github.com/distribution/reference, normalize.go,
+           regexp.go and reference.go (the reference grammar and Docker
+           Hub normalization) and normalize_test.go and reference_test.go
+           (the test vectors), tag v0.6.0, commit
+           ff14fafe2236e51c2894ac07d4bdfc778e96d682
+Copyright: The distribution/reference authors. The source files carry no
+           copyright line and the repository has no NOTICE file.
+License:   Apache License, Version 2.0 (LICENSE-APACHE)
+
+Reimplemented in Rust without regular expressions; the file header lists
+what changed.

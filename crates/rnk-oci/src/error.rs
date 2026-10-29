@@ -16,6 +16,14 @@ pub enum Error {
         /// Why it was rejected.
         reason: &'static str,
     },
+    /// An image reference is malformed.
+    #[error("invalid image reference {input:?}: {reason}")]
+    InvalidReference {
+        /// The start of the rejected input.
+        input: String,
+        /// Why it was rejected.
+        reason: &'static str,
+    },
     /// The image format has no layer media type for this compression:
     /// Docker v2 schema 2 has no zstd.
     #[error("{format} images cannot carry {compression} layers; zstd needs the OCI format")]

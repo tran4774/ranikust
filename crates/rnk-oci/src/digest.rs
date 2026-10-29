@@ -69,10 +69,16 @@ pub struct Digest {
 impl Digest {
     /// Parses and validates a digest string.
     pub fn parse(input: &str) -> Result<Self, Error> {
-        let algorithm = validate(input).map_err(|reason| Error::InvalidDigest {
+        Self::parse_or_reason(input).map_err(|reason| Error::InvalidDigest {
             input: excerpt(input),
             reason,
-        })?;
+        })
+    }
+
+    /// Like [`Digest::parse`], with the bare reason on failure, for callers
+    /// that report it inside their own error.
+    pub(crate) fn parse_or_reason(input: &str) -> Result<Self, &'static str> {
+        let algorithm = validate(input)?;
         Ok(Self {
             algorithm,
             value: input.to_owned(),

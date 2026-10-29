@@ -12,6 +12,7 @@ sorted keys.
 
 - Digests, media types, descriptors, manifests, indexes and image configs of
   the OCI and Docker v2s2 formats, and their (de)serialization.
+- Image references, normalized as docker/distribution does.
 - Canonical JSON, with sorted keys, of every config and manifest ranikust
   writes.
 
@@ -24,9 +25,8 @@ sorted keys.
 
 ## API
 
-Implemented (optional properties are `Option`s: absent or `null` reads as
-`None` and is not written, a present value is written back even if empty;
-maps are `BTreeMap`s):
+Implemented (optional properties are `Option`s: absent or `null` is `None`,
+a present value is written back even if empty; maps are `BTreeMap`s):
 
 ```rust
 pub struct Digest;  // "sha256:<64 hex>" | "sha512:<128 hex>", validated; Ord = string order; serde as string
@@ -47,17 +47,17 @@ pub struct ContainerConfig; // User, ExposedPorts, Env, Entrypoint, Cmd, Volumes
 pub struct HealthConfig; pub struct RootFs; pub struct History;
 pub enum Error;             // one enum for the crate; untrusted input quoted as an 80-char excerpt
 pub fn to_canonical_json<T: Serialize + ?Sized>(v: &T) -> Result<Vec<u8>, Error>; // bytes to digest and write
+pub struct Reference; // parse (docker/distribution ParseNormalizedNamed), registry, repository, tag, digest, name,
+                      // with_default_tag ("latest"), with_tag, with_digest; Display "registry/repo[:tag][@digest]"
 ```
 
-Canonical JSON (OCI [considerations.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/considerations.md#json)
-asks for OLPC canonical JSON): every object's keys sorted by UTF-8 bytes,
-struct fields included; no whitespace; integers only (a float is an error);
-`serde_json`'s string escaping; no Unicode normalization.
+Canonical JSON is OLPC's, as OCI [considerations.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/considerations.md#json)
+asks: every object's keys sorted by UTF-8 bytes, struct fields included; no
+whitespace; integers only; `serde_json`'s string escaping.
 
 Planned:
 
 ```rust
-pub struct Reference;                                                           // [design] docker/distribution normalization
 pub struct RawManifest { pub bytes: Vec<u8>, pub digest: Digest, pub media_type: MediaType } // [design] never re-serialized
 pub fn select_platform<'a>(i: &'a ImageIndex, p: &Platform) -> Option<&'a Descriptor>; // [design]
 pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: here or in rnk-builder
@@ -85,17 +85,15 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
 
 ## Tests
 
-- T0 next to the code: hostile digests (no panic, short messages); layer
-  media types per format and compression; conversion along the OCI
-  compatibility matrix; malformed descriptors, manifests and configs.
-- T0 fixtures in `testdata/`, crafted after registry output (Docker v2s2
-  manifest, list, config; OCI manifest, artifact manifest, index, config):
-  each serializes back to the same JSON value (minus `container_config`).
-- T0 canonical JSON: golden bytes; the compact OCI fixture byte for byte;
-  `HashMap` order never shows over 100 runs; proptest: insertion order,
-  any JSON value (sorted, idempotent), random configs and manifests.
-- Planned: platform selection. Config fields compared with kaniko's in the
-  image-content suite (T1/T2).
+- T0 next to the code: hostile digests and references (no panic, short
+  messages); media types per format and compression, OCI matrix conversion;
+  malformed descriptors, manifests and configs; distribution v0.6.0's
+  reference test vectors, adapted to normalized parsing.
+- T0 fixtures in `testdata/` (Docker v2s2 manifest, list, config; OCI
+  manifest, artifact manifest, index, config) serialize back to the same
+  JSON value. Canonical JSON: golden bytes, `HashMap` order never shows over
+  100 runs, proptest on insertion order, any JSON value, random documents.
+- Planned: platform selection; config fields compared with kaniko's (T1/T2).
 
 ## Pitfalls
 
@@ -105,6 +103,9 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   `os.version`: hence the types are owned here.
 - Only `sha256` and `sha512` digests parse; `sha384` (which go-digest
   accepts) is rejected: ranikust cannot verify it.
+- `Reference` normalizes Docker Hub to `docker.io` (distribution);
+  go-containerregistry, and so kaniko, says `index.docker.io`. It is not
+  `oci_client::Reference`: `rnk-registry` converts through the string.
 - Re-serializing a pulled manifest changes its digest; push the raw bytes
   ([exp-05](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180)).
   Parsing drops unknown properties (Docker's `container_config` too, as
@@ -114,11 +115,10 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
 - Docker schema 2 has no zstd layer type: zstd needs OCI; kaniko rejects
   zstd with `--image-format=docker` or `--tar-path` (`root.go:177-188`).
 - kaniko's `--image-format` defaults to the base's format (`root.go:358`)
-  [open: Q-006]; it converts layer media types when formats differ and
-  asserts no mixing (`build.go:1237-1268`, `transform.go:141-148`). Its
-  table maps OCI zstd to the Docker gzip type and Docker foreign gzip to
-  uncompressed OCI (`build.go:1247-1258`), mislabeling the blob;
-  `MediaType::to_format` follows the OCI matrix instead.
+  [open: Q-006], converts layer media types and asserts no mixing
+  (`build.go:1237-1268`, `transform.go:141-148`); its table maps OCI zstd to
+  Docker gzip and Docker foreign gzip to uncompressed OCI, mislabeling the
+  blob. `MediaType::to_format` follows the OCI matrix instead.
 - Config `diff_ids` hash uncompressed tars; manifest layer digests hash the
   compressed blobs. Swapping them gives a valid-looking, broken image.
 - Digest only `to_canonical_json` output, never `serde_json::to_vec` (Rust
@@ -135,5 +135,6 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   layouts with gzip or zstd and `--reproducible` ([survey 04 §2](../../research/survey/04-risks-and-roadmap.md#2-mvp-and-10-scope)).
 - Order: `Digest` and media types → raw manifest, index and config parsing,
   platform selection → canonical serialization and config edits → tar and
-  layout index types.
+  layout index types. Left: `RawManifest`, platform selection, and
+  `ConfigEdit` and the tar and layout types once Q-007 is answered.
 - Nothing deferred; multi-platform output is out of scope ([ADR-0008](../../adr/0008-out-of-scope-bake-warmer-cloud-contexts.md)).
