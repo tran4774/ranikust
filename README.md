@@ -64,7 +64,8 @@ flowchart LR
 The probe performs each step for real (create a namespace, write the uid
 map, mount an overlay, mount `/proc`, `pivot_root`) instead of guessing from
 kernel versions, because many environments allow the first step and block a
-later one.
+later one. See [ADR-0002](docs/adr/0002-two-snapshot-modes.md) and
+[ADR-0004](docs/adr/0004-support-every-privilege-level.md).
 
 | Where you run it | Mode |
 |---|---|
@@ -87,8 +88,7 @@ Target design; nothing here is released yet.
 | No daemon | ✅ | ✅ | ⚠️ one temporary daemon per build | ✅ |
 | Accepts kaniko's flags | ✅ | ✅ | ❌ | ❌ |
 
-Sources and caveats are in the survey's privilege matrix, which will be
-published with the documentation.
+Sources and caveats: [privilege matrix](docs/research/experiments/03-privilege-matrix.md).
 
 ## Early numbers
 
@@ -110,8 +110,9 @@ and the same registry (median of 5 rounds, 32 CPUs).
 | **ranikust overlay-mode prototype, parallel stages** | **6.0 s** |
 
 These are prototype measurements, not benchmarks of a released tool. The
-full method, environment and caveats are written up in the survey's
-experiment reports, which will be published with the documentation.
+full method, environment and caveats are in experiments
+[07](docs/research/experiments/07-kaniko-vs-overlay.md) and
+[08](docs/research/experiments/08-parallel-stages-lazy-export.md).
 
 ## Status
 
@@ -119,7 +120,8 @@ The survey phase is complete. It answered whether this is feasible and how,
 with 16 experiments covering overlayfs semantics at every privilege level,
 `RUN` sandboxing, real rootful Docker under cgroup v1 and v2, parallel stages
 without mount rights, and real-world builds (Next.js, Maven, Gradle). Every
-decision that came out of it is recorded as an architecture decision record.
+decision that came out of it is recorded as an
+[architecture decision record](docs/adr/).
 
 Releases will target `x86_64-unknown-linux-musl` first, with `aarch64` kept
 buildable from day one.
@@ -139,27 +141,33 @@ buildable from day one.
       every mode, fuzzing, host-safety tests, signed static releases
 
 Not planned: `bake`, a cache warmer, cloud-storage build contexts, and
-multi-platform builds through emulation.
+multi-platform builds through emulation
+([ADR-0008](docs/adr/0008-out-of-scope-bake-warmer-cloud-contexts.md),
+[ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)).
 
 ## Documentation
 
-The documentation is being prepared for publication and will land here
-soon:
-
-- **Decisions:** architecture decision records, what was decided and why,
-  each with its evidence.
-- **Research:** the survey and all 16 experiments behind the design.
-- **Design:** the architecture overview and per-component design documents.
-- **Security policy:** how to report a vulnerability and what is in scope.
-  Until it is published, please report security issues privately to the
-  maintainer through GitHub rather than in a public issue.
+| | |
+|---|---|
+| **Decisions** | [`docs/adr/`](docs/adr/): what was decided and why, with the evidence |
+| **Research** | [`docs/research/`](docs/research/): the survey and every experiment behind the design |
+| **Design** | [`docs/design/`](docs/design/) and [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| **Security** | [`SECURITY.md`](SECURITY.md): how to report a vulnerability, and what is in scope |
+| **Contributing** | [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/testing.md`](docs/testing.md) and the [open questions](docs/open-questions.md) waiting for an answer |
+| **AI coding agents** | [`CLAUDE.md`](CLAUDE.md) and [`docs/agents/`](docs/agents/README.md): a compact, task-oriented map of the code |
 
 ## Contributing
 
 ranikust is at the very beginning, which is the best time to shape it.
-Issues and discussions about the design are welcome now; code contributions
-open with Phase 1. Please read the [code of conduct](CODE_OF_CONDUCT.md)
-first.
+Issues and discussions about the design are welcome, and the
+[open questions](docs/open-questions.md) are a good place to start. Read
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the development loop and the
+[code of conduct](CODE_OF_CONDUCT.md) first.
+
+```sh
+git clone https://github.com/tran4774/ranikust && cd ranikust
+just check   # format, lint, test (needs `just`; rustup installs the pinned toolchain)
+```
 
 ## Acknowledgements
 
