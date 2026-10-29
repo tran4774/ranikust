@@ -3,7 +3,7 @@
 use std::fmt;
 use std::io::{self, Write};
 
-// [open: Q-012] sha2 or aws-lc-rs for sha256; sha2 is the interim choice.
+// sha2 for sha256 (Q-012); `ring::digest` is to be measured (Q-033).
 use sha2::{Digest, Sha256};
 
 /// A sha256 digest, displayed as `sha256:<64 hex digits>`.

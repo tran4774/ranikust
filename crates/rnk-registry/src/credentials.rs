@@ -9,7 +9,7 @@
 //! `https://index.docker.io/v1/`.
 //!
 //! Credential helpers (`credHelpers`, `credsStore`) are recognised but not
-//! run before Phase 5 [open: Q-012]: a host they serve falls back to its
+//! run before Phase 5 (Q-012, Q-047): a host they serve falls back to its
 //! `auths` entry, if any, and otherwise to anonymous access.
 
 use std::collections::BTreeMap;
@@ -160,7 +160,7 @@ impl Credentials {
     }
 
     /// The credential helper configured for `registry` (`credHelpers`, else
-    /// `credsStore`), which Phase 1 does not run [open: Q-012].
+    /// `credsStore`), which Phase 1 does not run (Q-012).
     pub fn helper(&self, registry: &str) -> Option<&str> {
         self.helpers
             .get(&canonical_host(registry))

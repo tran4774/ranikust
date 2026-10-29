@@ -188,9 +188,13 @@ is needed for `/proc`, `/dev`, `/sys`, `resolv.conf` or `hosts`.
 ## Open questions
 
 - [Q-032](../open-questions.md#q-032-what-remains-to-verify-in-the-run-sandbox) What remains to verify in the RUN sandbox?
-- [Q-075](../open-questions.md#q-075-which-host-name-does-a-run-see) Which host name does a RUN see?
-- [Q-076](../open-questions.md#q-076-what-etchosts-does-a-run-see) What /etc/hosts does a RUN see?
 - [Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) How is the MS_MOVE fallback kept from a chroot escape?
+
+Settled: a `RUN` sees the fixed host name `ranikust`
+([Q-075](../open-questions.md#q-075-which-host-name-does-a-run-see)) and,
+with the host network, ranikust's own `/etc/hosts`, with `--network=none`
+loopback names, both plus the host name
+([Q-076](../open-questions.md#q-076-what-etchosts-does-a-run-see)).
 
 Settled elsewhere: `RUN` gets no cgroup limits, so a fork bomb is bounded
 only by the environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)).
