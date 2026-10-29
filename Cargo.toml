@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# Kept equal to the channel in `rust-toolchain.toml`.
+rust-version = "1.99.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tran4774/ranikust"
+
+[workspace.dependencies]
+# Internal crates, referenced as `<name>.workspace = true`.
+rnk-rootfs = { path = "crates/rnk-rootfs" }
+
+[workspace.lints.rust]
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+# Keep each crate's public surface explicit: items that are not reachable from
+# the crate root must be `pub(crate)`.
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# The default groups (correctness, suspicious, style, complexity, perf) stay
+# on. The lints below are picked one by one from `pedantic` and `restriction`.
+#
+# Syscall-heavy code: every `unsafe` block needs a `// SAFETY:` comment.
+undocumented_unsafe_blocks = "warn"
+# Every `#[allow]`/`#[expect]` must say why.
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+# One module layout: `foo.rs` + `foo/`, never `foo/mod.rs`.
+mod_module_files = "warn"
+# Sizes, offsets, uids, gids and modes cross many integer types; silent
+# truncation or sign changes there are bugs. Prefer `From`/`TryFrom`.
+cast_lossless = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# Abort instead of unwinding: smaller and faster binary. Cleanup must not rely
+# on unwinding anyway, because the build has to survive SIGKILL and OOM kills
+# (mounts live in a private mount namespace, `RUN` children get
+# PR_SET_PDEATHSIG, stub mountpoints are journaled before creation). The cost
+# is that a panic in any thread or task ends the whole process instead of
+# surfacing as a `JoinError`; panics are bugs, not error handling.
+panic = "abort"
+# Strip debug info but keep the symbol table, so panic backtraces from user
+# reports stay readable.
+strip = "debuginfo"

@@ -1,0 +1,52 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Only the platforms ranikust is built for; Windows/macOS-only dependencies
+# are left out of every check.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+all-features = true
+
+[advisories]
+yanked = "deny"
+# Unmaintained advisories fail the check only for direct dependencies, which
+# we can replace; transitive ones are a matter for the crate depending on them.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+# Permissive licenses compatible with shipping a static binary under
+# `MIT OR Apache-2.0`. Anything else (for example MPL-2.0, or OpenSSL with its
+# advertising clause) needs an explicit decision before it is added here.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# The list is written ahead of the dependencies that need it.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between unpublished workspace crates carry no version.
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

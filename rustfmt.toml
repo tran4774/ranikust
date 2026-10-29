@@ -1,0 +1,5 @@
+# Stable options only. `edition` is repeated here so that editors invoking
+# rustfmt directly format exactly like `cargo fmt`.
+edition = "2024"
+newline_style = "Unix"
+use_field_init_shorthand = true

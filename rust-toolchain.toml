@@ -1,0 +1,9 @@
+# The exact toolchain used locally and in CI. `rust-version` in `Cargo.toml`
+# (the MSRV) is kept equal to this channel: bump both together.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy", "rust-analyzer"]
+# x86_64 is the supported release target; aarch64 is checked in CI so that no
+# architecture-specific code slips in.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]

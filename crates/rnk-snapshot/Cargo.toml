@@ -1,0 +1,15 @@
+[package]
+name = "rnk-snapshot"
+description = "Per-stage root filesystems and their per-instruction diffs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+rnk-rootfs.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "rnk-builder"
+description = "Stage builder: executes a stage's instructions and assembles the image"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "rnk-layer"
+description = "Layer encoding: deterministic tar, parallel compression, digests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
