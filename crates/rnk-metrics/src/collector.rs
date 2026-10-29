@@ -29,6 +29,8 @@ pub(crate) struct Collector {
     /// A normal exit wrote the report; nothing writes after it.
     finished: AtomicBool,
     panics: AtomicU64,
+    /// Held while a report is written, so two writes never interleave.
+    pub(crate) writing: Mutex<()>,
 }
 
 impl Collector {
@@ -63,6 +65,7 @@ impl Collector {
             meta: Mutex::new(meta),
             finished: AtomicBool::new(false),
             panics: AtomicU64::new(0),
+            writing: Mutex::new(()),
         }
     }
 
@@ -84,8 +87,12 @@ impl Collector {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let input = self.input(outcome, meta, self.panics.load(Ordering::SeqCst));
-        // The lock is held while the report is built, not while it is written.
+        // The state lock is held while the report is built, not while it is
+        // written.
         let report = report::build(Some(&self.shared.lock()), &input);
+        // Waits for a panic report being written on another thread; this one
+        // replaces it.
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         self.emit(&report);
     }
 
@@ -120,6 +127,17 @@ impl Collector {
         };
         let report = report::build(state.as_deref(), &input);
         drop(state);
+        // One report at a time. If another is being written (a panic on
+        // another thread, or the normal exit), it is at least as recent:
+        // this one is dropped rather than racing it.
+        let _writing = match self.writing.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(guard)) => guard.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        if self.finished.load(Ordering::SeqCst) {
+            return;
+        }
         self.emit(&report);
     }
 
@@ -155,7 +173,7 @@ impl Collector {
             }
         }
         if self.summary {
-            eprint!("{}", report::summary(report, self.file.as_deref()));
+            crate::to_stderr(&report::summary(report, self.file.as_deref()));
         }
     }
 }

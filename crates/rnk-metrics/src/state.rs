@@ -188,13 +188,17 @@ pub(crate) struct Links {
     pub(crate) stage: Option<usize>,
     pub(crate) command: Option<usize>,
     pub(crate) snapshot: Option<usize>,
-    /// An ancestor already counts its time and fields against a host.
+    /// An ancestor already counts its time and fields against a host. The
+    /// layer sets it when the span closes, from its ancestors' final fields.
     pub(crate) in_host: bool,
 }
 
 impl Links {
     /// The links a child of a span with these links, own record and fields
-    /// inherits.
+    /// inherits. A record replaces the records below it in the nesting: a
+    /// stage opened inside another stage's instruction (a stage built for
+    /// `COPY --from`) is charged to neither that instruction nor its
+    /// snapshot.
     pub(crate) fn for_child(
         self,
         record: Option<(usize, RecordKind)>,
@@ -202,8 +206,15 @@ impl Links {
     ) -> Self {
         let mut links = self;
         match record {
-            Some((idx, RecordKind::Stage)) => links.stage = Some(idx),
-            Some((idx, RecordKind::Command)) => links.command = Some(idx),
+            Some((idx, RecordKind::Stage)) => {
+                links.stage = Some(idx);
+                links.command = None;
+                links.snapshot = None;
+            }
+            Some((idx, RecordKind::Command)) => {
+                links.command = Some(idx);
+                links.snapshot = None;
+            }
             Some((idx, RecordKind::Snapshot(_))) => links.snapshot = Some(idx),
             None => {}
         }
@@ -485,6 +496,45 @@ mod tests {
         }
         assert!(!snap.phases.contains_key(DIFF_SPAN));
         assert_eq!(state.records[command].wall_ns, None);
+    }
+
+    #[test]
+    fn a_stage_inside_an_instruction_is_not_charged_to_it() {
+        let t0 = Instant::now();
+        let mut state = State::default();
+        let none = SpanFields::default();
+        let mut outer = SpanFields::default();
+        outer.id.stage = Some(1);
+        let (s1, k1) = state
+            .open(STAGE_SPAN, t0, &outer, Links::default())
+            .expect("stage");
+        let in_s1 = Links::default().for_child(Some((s1, k1)), &outer);
+        let (c1, kc) = state
+            .open(INSTRUCTION_SPAN, t0, &none, in_s1)
+            .expect("command");
+        let in_c1 = in_s1.for_child(Some((c1, kc)), &none);
+
+        // `COPY --from` builds stage 0 from inside stage 1's instruction.
+        let mut inner = SpanFields::default();
+        inner.id.stage = Some(0);
+        let (s0, k0) = state
+            .open(STAGE_SPAN, t0, &inner, in_c1)
+            .expect("inner stage");
+        let in_s0 = in_c1.for_child(Some((s0, k0)), &inner);
+        assert_eq!(
+            (in_s0.stage, in_s0.command, in_s0.snapshot),
+            (Some(s0), None, None)
+        );
+        let (b, _) = state
+            .open(BASELINE_SPAN, t0, &none, in_s0)
+            .expect("baseline");
+        assert_eq!((state.records[b].stage, state.records[b].index), (0, -1));
+        state.open("rnk_snapshot.walk", t0, &none, in_s0);
+        state.close("rnk_snapshot.walk", t0, 5, &none, in_s0, None);
+
+        assert!(state.records[s0].phases.contains_key("rnk_snapshot.walk"));
+        assert!(!state.records[c1].phases.contains_key("rnk_snapshot.walk"));
+        assert!(!state.records[s1].phases.contains_key("rnk_snapshot.walk"));
     }
 
     #[test]

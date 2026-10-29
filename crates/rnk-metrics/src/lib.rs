@@ -160,12 +160,16 @@ where
         .with_filter(LevelFilter::INFO)
 }
 
-/// Builds the subscriber without installing it. Disabled, it is the log
-/// layer alone, whose `INFO` level hint lets tracing reject `debug_span!`
-/// with one comparison.
+/// The subscriber with metrics off: the log layer alone, whose `INFO` level
+/// hint lets tracing reject `debug_span!` with one comparison.
+fn logs_only() -> impl tracing::Subscriber + Send + Sync {
+    Registry::default().with(logs())
+}
+
+/// Builds the subscriber without installing it.
 fn build(config: &Config, paths: HostPaths) -> (Dispatch, Option<Arc<Collector>>) {
     if !config.is_enabled() {
-        return (Dispatch::new(Registry::default().with(logs())), None);
+        return (Dispatch::new(logs_only()), None);
     }
     let collector = Arc::new(Collector::new(config.file.clone(), config.summary, paths));
     let metrics =
@@ -193,7 +197,16 @@ fn install_panic_hook(collector: Arc<Collector>) {
 /// A warning about metrics themselves: straight to stderr, since it may come
 /// from the panic hook or after the subscriber is gone.
 pub(crate) fn warn(message: &str) {
-    eprintln!("ranikust: warning: metrics: {message}");
+    to_stderr(&format!("ranikust: warning: metrics: {message}\n"));
+}
+
+/// Writes to stderr without panicking: `eprint!` panics when stderr is a
+/// closed pipe or a full disk, and in a release build that panic would abort
+/// and change the exit code.
+pub(crate) fn to_stderr(text: &str) {
+    use std::io::Write as _;
+    // Nowhere left to report a failing stderr: the text is dropped.
+    let _ = std::io::stderr().write_all(text.as_bytes());
 }
 
 /// Collects spans in a test, with the same aggregation as the report.

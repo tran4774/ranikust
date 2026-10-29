@@ -10,7 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
-use std::time::{Instant, SystemTime};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
@@ -362,20 +362,25 @@ pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
             "the metrics path has no file name",
         )
     })?;
-    fs::create_dir_all(dir)?;
+    fs::create_dir_all(dir)
+        .map_err(|err| io::Error::new(err.kind(), format!("creating {}: {err}", dir.display())))?;
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     let tmp = dir.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{unique}.tmp",
         name.to_string_lossy(),
         std::process::id()
     ));
-    let written = OpenOptions::new()
+    // `create_new` (O_EXCL): never truncate or follow a file that is already
+    // there, a symlink included.
+    let mut file = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o644)
-        .open(&tmp)
-        .and_then(|mut file| file.write_all(bytes))
-        .and_then(|()| fs::rename(&tmp, path));
+        .open(&tmp)?;
+    let written = file.write_all(bytes).and_then(|()| fs::rename(&tmp, path));
+    drop(file);
     if written.is_err() {
         // Best effort: the write error below is what the user needs to see.
         if let Err(cleanup) = fs::remove_file(&tmp)
@@ -492,7 +497,7 @@ fn secs(ns: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::time::Duration;
 
     use super::*;
     use crate::state::{DIFF_SPAN, INSTRUCTION_SPAN, Links, STAGE_SPAN, SpanFields};

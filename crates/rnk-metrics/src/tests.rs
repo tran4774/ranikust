@@ -42,11 +42,9 @@ fn disabled_path_installs_nothing() {
     let (dispatch, collector) = build(&Config::default(), fake_host(tmp.path()));
     assert!(collector.is_none());
     assert!(dispatch.downcast_ref::<MetricsLayer>().is_none());
-    // The level hint is the log layer's: tracing rejects `debug_span!` with
-    // one comparison against it.
-    let logs_only = Registry::default().with(logs());
-    assert_eq!(logs_only.max_level_hint(), Some(LevelFilter::INFO));
-    assert_eq!(fs::read_dir(tmp.path()).expect("read_dir").count(), 0);
+    // `build` returns `logs_only()` when disabled. Its level hint is the log
+    // layer's: tracing rejects `debug_span!` with one comparison against it.
+    assert_eq!(logs_only().max_level_hint(), Some(LevelFilter::INFO));
     // Whether a `debug_span!` is then disabled depends on the process-wide
     // callsite cache, which the other tests' subscribers share: checked in
     // `tests/init_disabled.rs`, a process of its own.
@@ -60,13 +58,16 @@ fn log_level_never_hides_a_metric_span() {
         summary: false,
     };
     let (dispatch, collector) = build(&config, fake_host(tmp.path()));
-    assert!(collector.is_some());
+    let collector = collector.expect("collector");
     assert!(dispatch.downcast_ref::<MetricsLayer>().is_some());
-    // The metrics layer takes spans at every level, whatever the log level;
-    // the process-wide behaviour is checked in `tests/init_enabled.rs`.
-    let capture = Capture::new();
-    capture.run(|| drop(trace_span!("rnk_test.fine").entered()));
-    assert_eq!(capture.report()["phases"]["rnk_test.fine"]["count"], 1);
+    // Through the full subscriber, log layer at INFO included.
+    tracing::dispatcher::with_default(&dispatch, || {
+        drop(trace_span!("rnk_test.fine").entered());
+        drop(debug_span!("rnk_test.coarse").entered());
+    });
+    let state = collector.shared.lock();
+    assert_eq!(state.phases["rnk_test.fine"].agg.count, 1);
+    assert_eq!(state.phases["rnk_test.coarse"].agg.count, 1);
 }
 
 #[test]
@@ -320,6 +321,52 @@ fn panic_hook_does_not_wait_forever_for_the_lock() {
     drop(held);
     let report = read_report(&path);
     assert_eq!(report["exit"]["spans_unavailable"], true);
+}
+
+#[test]
+fn a_panic_report_never_races_another_write() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("m.json");
+    let collector = Collector::new(Some(path.clone()), false, fake_host(tmp.path()));
+    // Another report is being written: this panic's report is dropped.
+    let writing = collector.writing.lock().expect("lock");
+    collector.finish_panic("second panic".to_owned());
+    drop(writing);
+    assert!(!path.exists());
+    collector.finish(&Outcome::success());
+    assert_eq!(read_report(&path)["exit"]["panics"], 1);
+}
+
+#[test]
+fn host_recorded_late_is_still_counted_once() {
+    let capture = Capture::new();
+    capture.run(|| {
+        let blob = debug_span!("rnk_registry.pull_blob", host = Empty, bytes_in = 10u64);
+        let _blob = blob.enter();
+        // The child opens before the parent knows its host.
+        let request = debug_span!("rnk_registry.request", host = "r:5000", bytes_in = 10u64);
+        blob.record("host", "r:5000");
+        drop(request);
+    });
+    let host = &capture.report()["network"]["hosts"]["r:5000"];
+    assert_eq!(host["count"], 1);
+    assert_eq!(host["bytes_in"], 10);
+}
+
+#[test]
+fn a_record_lasts_until_its_last_child_closes() {
+    // tracing keeps a span open while a child is: background work parented
+    // to a record stretches it. design/metrics.md therefore parents such
+    // work to `rnk_sched.run`.
+    let capture = Capture::new();
+    let child = capture.run(|| {
+        let _stage = debug_span!("rnk_sched.stage", stage = 0u64).entered();
+        debug_span!("rnk_cache.push")
+    });
+    assert_eq!(capture.report()["stages"][0]["incomplete"], true);
+    // The registry closes the parent through the current subscriber.
+    capture.run(|| drop(child));
+    assert!(capture.report()["stages"][0].get("incomplete").is_none());
 }
 
 #[test]

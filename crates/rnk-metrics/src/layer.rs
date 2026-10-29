@@ -92,8 +92,13 @@ where
             })
             .unwrap_or_default();
         let name = attrs.metadata().name();
-        let started = Instant::now();
-        let record = self.shared.lock().open(name, started, &fields, links);
+        // Times are read under the state lock, so opens and closes reach the
+        // state in time order and the wall-time union is exact.
+        let (started, record) = {
+            let mut state = self.shared.lock();
+            let started = Instant::now();
+            (started, state.open(name, started, &fields, links))
+        };
         span.extensions_mut().insert(SpanState {
             name,
             started,
@@ -116,14 +121,24 @@ where
         let Some(state) = span.extensions_mut().remove::<SpanState>() else {
             return;
         };
+        // Whether an ancestor counts against a host is decided now, not when
+        // this span opened: `host` may have been recorded on it since.
+        let mut links = state.links;
+        links.in_host = span.scope().skip(1).any(|ancestor| {
+            ancestor
+                .extensions()
+                .get::<SpanState>()
+                .is_some_and(|a| a.fields.id.host.is_some())
+        });
+        let mut shared = self.shared.lock();
         let now = Instant::now();
         let elapsed = nanos(now.saturating_duration_since(state.started));
-        self.shared.lock().close(
+        shared.close(
             state.name,
             now,
             elapsed,
             &state.fields,
-            state.links,
+            links,
             state.record.map(|(idx, _)| idx),
         );
     }

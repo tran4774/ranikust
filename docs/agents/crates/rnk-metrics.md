@@ -54,7 +54,8 @@ pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sec
 - Canonical bytes: sorted keys whether or not some crate enables
   `serde_json/preserve_order`; integers only.
 - The panic hook never blocks on the state lock (100 ms, then
-  `spans_unavailable`).
+  `spans_unavailable`). One report is written at a time; a panic report
+  never overwrites the normal exit's, and the temporary file is `O_EXCL`.
 - Records follow span nesting, not time: a span counts in the records it is
   nested in, across threads only with an explicit parent.
 
@@ -77,8 +78,9 @@ pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sec
 ## Tests
 
 - T0 unit: aggregation with synthetic times (sum, max, wall union, nested
-  records, hosts once), real spans nested and from 8 threads, parallel
-  stages overlapping, open spans as `incomplete`, exact canonical bytes,
+  records, a stage inside an instruction, hosts once even when recorded
+  late), real spans nested and from 8 threads, parallel stages overlapping,
+  open spans and lingering children as `incomplete`, exact canonical bytes,
   readers with missing `/proc` and cgroup files, write-once and panic rules.
 - T0, one process each: `tests/init_disabled.rs` (nothing installed,
   spans disabled), `tests/init_enabled.rs` (spans at every level, panic
@@ -103,6 +105,11 @@ pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sec
   metric spans out: never enable them.
 - `rustix` 1.1 has no `getrusage`; it goes through `libc` with a `SAFETY`
   comment.
+- A span closes only after its children, and the registry closes a parent
+  through the *current* subscriber: a lingering child stretches a record;
+  in tests, drop children inside `Capture::run`.
+- `eprintln!` panics on a closed or full stderr, and a panic aborts: write
+  to stderr through `to_stderr`, which drops errors.
 
 ## Phase 1
 

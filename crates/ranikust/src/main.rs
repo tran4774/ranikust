@@ -19,6 +19,7 @@
 //! - Probes no capability itself: each library probes its own, and this
 //!   binary runs the probes in order and combines their results.
 
+use std::io::Write as _;
 use std::process::ExitCode;
 
 use rnk_metrics::{Config, Outcome};
@@ -35,7 +36,8 @@ fn main() -> ExitCode {
     let (code, outcome) = match &result {
         Ok(()) => (0, Outcome::success()),
         Err(message) => {
-            eprintln!("ranikust: error: {message}");
+            // `eprintln!` would panic, and abort, on a closed stderr.
+            let _ = writeln!(std::io::stderr(), "ranikust: error: {message}");
             (1, Outcome::error(1, message))
         }
     };

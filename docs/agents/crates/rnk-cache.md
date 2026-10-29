@@ -86,7 +86,7 @@ pub trait LayerCache {                               // [design] RegistryCache, 
 - Phase 4: `rnk_cache.key` (`files_hashed`, `bytes_hashed`),
   `rnk_cache.lookup` (`hit`), `rnk_cache.push` (`bytes_out`)
   ([rows](../../design/metrics.md#rnk-cache)).
-- A push outlives its instruction: parent it to the stage span.
+- A push outlives its instruction and stage: parent it to `rnk_sched.run`.
 
 ## Pitfalls
 

@@ -60,14 +60,15 @@ The rules every crate follows; `rules.md` repeats the short form.
   thousand spans per build.
 - **Lifetime:** a span measures from creation to close. Create it when the
   operation starts and drop it when it ends; with async code, attach it with
-  `.instrument(span)`.
+  `.instrument(span)`. tracing closes a span only once its children have
+  closed, so a child that lingers stretches its parent.
 - **Other threads:** a span created on another thread (`spawn_blocking`,
   rayon, the `RUN` spawner thread) names its parent (`parent: &span`) or
   runs inside `span.in_scope`. Otherwise it counts only in the global
   totals, not in its stage or instruction.
-- **Background work** that outlives its instruction (cache pushes) uses the
-  stage span as parent, so an instruction's totals stay within its wall
-  time.
+- **Background work** that outlives the instruction or stage that started
+  it (cache pushes) takes `rnk_sched.run` as parent, never a record span:
+  under a record it would keep the record open until it ends.
 - **Fork:** no span or event between `fork` and `exec` in a child.
 - **Fields:** integers, declared at creation (`files = Empty` when recorded
   later) and recorded once with the total: `span.record("files", n)`.
@@ -97,7 +98,9 @@ expansion; never expanded values, build arguments or secrets.
 
 Four span names open a record, the per-instance view kaniko calls stages,
 commands and snapshots. Every span closed inside a record is added to that
-record's `phases`, and to every enclosing record's.
+record's `phases`, and to every enclosing record's. A stage record opened
+inside another stage's instruction (a stage built for `COPY --from`) starts
+a new nesting: its spans are not charged to that instruction or stage.
 
 | Span | Record | Identity fields |
 |---|---|---|
@@ -239,7 +242,7 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 |---|---|---|
 | `rnk_cache.key` | `files_hashed`, `bytes_hashed` | Phase 4: kaniko's `cache.key`. |
 | `rnk_cache.lookup` | `hit` | Phase 4: misses = `count` − `hit`; kaniko's `cache.lookup_hit`/`_miss`. |
-| `rnk_cache.push` | `bytes_out` | Phase 4: background push, parented to the stage; kaniko's `cache.push`. |
+| `rnk_cache.push` | `bytes_out` | Phase 4: background push, parented to `rnk_sched.run`; kaniko's `cache.push`. |
 
 ## The report
 
@@ -344,7 +347,12 @@ Differences that change how numbers read:
 
 The panic hook never blocks on the span state: if another thread holds the
 lock for 100 ms, or the panicking thread holds it, the report is written
-without span sections and says `spans_unavailable`.
+without span sections and says `spans_unavailable`. One report is written
+at a time: a panic report is dropped while another write is in progress
+and never follows the normal exit's. The temporary file is created with
+`O_EXCL` under a unique name, so nothing already there is truncated or
+followed. Warnings go to stderr without `eprint!`, which would panic, and
+abort, on a closed or full stderr.
 
 ## Determinism
 
