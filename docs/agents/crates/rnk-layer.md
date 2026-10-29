@@ -1,7 +1,7 @@
 # rnk-layer
 
-> **Status:** skeleton · **Phase:** 1 ·
-> **Depends on:** `rnk-oci` · **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder` (`rnk-cache`, `rnk-context` [open: Q-028]) · **Path:** `crates/rnk-layer/`
+> **Status:** in progress · **Phase:** 1 ·
+> **Depends on:** none yet (`rnk-oci` planned) · **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder` (`rnk-cache`, `rnk-context` [open: Q-028]) · **Path:** `crates/rnk-layer/`
 
 **TL;DR:** Entries in, deterministic tar out, through parallel gzip or zstd,
 with diff ID and digest computed while streaming; and a gzip/zstd decoder
@@ -24,18 +24,34 @@ for pulled layers. Same entries, same bytes, whatever the thread count.
 
 ## API (planned)
 
+Built: the tar writer (plain output). Planned: the rest.
+
 ```rust
+pub struct EntryPath;              // [design] relative, normalized bytes; orders component-wise
+pub struct Entry { pub path: EntryPath, pub kind: EntryKind, pub mode: u32 /* raw st_mode, 0o7777 written */,
+    pub uid: u64, pub gid: u64, pub mtime: i64 /* seconds */, pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub inode: Option<(u64, u64)> } // [design] (dev, ino) finds hardlinks
+pub enum EntryKind { File { size: u64 }, Dir, Symlink(Vec<u8>), Char(u32, u32), Block(u32, u32), Fifo,
+    Whiteout /* path = the deleted path */, OpaqueDir }  // [design]
+pub enum Compression { None, Gzip, Zstd /* [open: Q-050] */ }
 pub struct EncodeOptions { pub compression: Compression, pub level: i32, pub threads: NonZeroUsize, pub mtime: Option<i64> } // [design] mtime: --reproducible
-pub struct Entry { pub path: RelPath, pub kind: EntryKind, pub mode: u32 /* raw st_mode */, pub uid: u64, pub gid: u64,
-    pub mtime: i64, pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>, pub inode: Option<(u64, u64)> } // [design] (dev, ino) finds hardlinks
-pub enum EntryKind { File { size: u64 }, Dir, Symlink(Vec<u8>), Char(u32, u32), Block(u32, u32), Fifo, Whiteout, OpaqueDir } // [design]
-pub struct LayerWriter<W: Write>;  // [design] tar -> compressor -> W; sorts entries, adds missing parent dirs
-impl<W: Write> LayerWriter<W> {    // [design] new(out, &EncodeOptions); finish() -> LayerDigests { diff_id, digest, size, media_type }
-    pub fn append(&mut self, e: &Entry, content: Option<&mut dyn Read>) -> Result<(), Error>;
+pub trait EntrySource {            // [design] implemented by the exporter
+    fn open(&mut self, e: &Entry) -> io::Result<Box<dyn Read + '_>>;            // file content, read once in layer order
+    fn parent(&mut self, p: &EntryPath) -> io::Result<Option<Entry>>;          // [open: Q-013] interim: missing parents
 }
+pub struct LayerWriter;            // [design] new(EncodeOptions); add(Entry) in any order; finish(&mut dyn EntrySource, W)
 pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields plain tar bytes, hashes them for the diff_id;
                                    // [inferred] gzip inflate is sequential: "parallel" means pipelining inflate, hashing, writes
 ```
+
+- `finish` sorts, looks up missing parents once each (outermost first),
+  turns entries sharing an inode into hardlinks to the first in layer order,
+  then streams; it returns the size today, `LayerDigests` once digests land.
+- Layer order `[open: Q-051]`: depth first, components byte-wise; in each
+  directory the opaque marker, then whiteouts, then the rest. Names starting
+  with `.wh.` are rejected.
+- Headers: PAX as Go's `archive/tar` writes them (`src/header.rs`); whiteout
+  and opaque markers are empty files, mode 0, 0:0, the entry's mtime.
 
 ## Invariants
 
@@ -94,4 +110,5 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
 - Order: tar writer with goldens → gzip and zstd with determinism tests →
   streaming digests → decoder → exporter integration with `rnk-snapshot`.
 - [open: Q-013] How `LayerWriter` gets a missing parent's metadata from
-  the exporter.
+  the exporter; interim: `EntrySource::parent`.
+- Done: tar writer with goldens (`tests/it/`).

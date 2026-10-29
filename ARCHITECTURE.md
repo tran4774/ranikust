@@ -168,9 +168,11 @@ order.
 ### `rnk-layer`
 
 Deterministic tar with fully controlled headers: the writer sorts the
-entries it is fed and emits missing parent directory headers. Parallel gzip
-and zstd compression; decompression of pulled gzip and zstd blobs into a
-plain tar stream; digests computed while streaming.
+entries it is fed and emits missing parent directory headers, whose metadata
+it asks the exporter for through `EntrySource` ([open: Q-013], interim),
+which also gives file contents. Parallel gzip and zstd compression;
+decompression of pulled gzip and zstd blobs into a plain tar stream; digests
+computed while streaming.
 **Must not** produce bytes that depend on thread count or input chunking,
 decide what goes into a layer or where it is sent, or write extracted files
 (`rnk-rootfs`).

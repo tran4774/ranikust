@@ -130,20 +130,22 @@ Requirements found by comparing images:
   hardlinks by `(dev, ino)` among the remaining entries.
 - **Parent directory headers.** Every emitted entry's ancestor directories
   are emitted too, with their current metadata, even when unchanged; the
-  `rnk-layer` writer adds the missing ones [inferred: how it obtains their
-  metadata from the exporter].
+  `rnk-layer` writer adds the missing ones, asking the exporter for their
+  metadata through a lookup ([open: Q-013], interim).
   Otherwise extractors such as containers-storage create missing parents as
   0755 and mask the real mode below (`/root` 700 → 755, `/tmp` 1777 → 755).
   The `sameDirent` rule only stops an unchanged directory from being emitted
-  on its own [inferred: how the two rules combine].
+  on its own: the exporter skips it, and the writer adds it back through the
+  lookup when a descendant is emitted (same interim).
 - **Raw mode bits.** Read and set modes with the raw `st_mode` bits
   (`fchmodat` with the full value) so sticky, setuid and setgid survive;
   `/tmp` must stay 1777.
 - **Root directory metadata** comes from the lower root (step 2 above).
-- **Deterministic output.** Sorted entries; same bytes for any thread
-  count. Timestamps follow kaniko: files keep the times they have on disk
-  by default; under `--reproducible` every timestamp is a fixed epoch, or
-  `SOURCE_DATE_EPOCH` when set.
+- **Deterministic output.** Sorted entries (the order is
+  [open: Q-051]); same bytes for any thread count. Timestamps follow
+  kaniko: files keep the times they have on disk by default; under
+  `--reproducible` every timestamp is a fixed epoch, or `SOURCE_DATE_EPOCH`
+  when set.
 
 Optionally, the exporter can compare copied-up files with their lower version
 and drop unchanged ones; BuildKit does not, and it is off by default.
@@ -202,6 +204,8 @@ stages as in kaniko.
 - [Q-025](../open-questions.md#q-025-are-other-user-xattrs-kept-in-exported-layers) Are other user xattrs kept in exported layers?
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
 - [Q-026](../open-questions.md#q-026-when-and-how-are-layers-merged-near-the-500-lower-limit) When and how are layers merged near the 500-lower limit?
+- [Q-013](../open-questions.md#q-013-how-does-the-layer-writer-learn-missing-parent-metadata) How does the layer writer learn missing parent metadata?
+- [Q-051](../open-questions.md#q-051-which-entry-order-and-which-names-does-the-layer-tar-use) Which entry order and which names does the layer tar use?
 
 ## References
 

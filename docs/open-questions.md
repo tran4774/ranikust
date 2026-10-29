@@ -151,7 +151,52 @@ Entry format:
 - **Options:** (a) the exporter hands the writer a metadata lookup;
   (b) the exporter emits every ancestor itself and the writer only sorts.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** (a), in `feat/rnk-layer-encode`: `LayerWriter::finish` takes
+  an `EntrySource` whose `parent(path)` gives a directory entry for each
+  ancestor that was not fed; the writer asks once per missing ancestor,
+  outermost first, and fails with `Error::MissingParent` on `None`. With the
+  `sameDirent` rule the exporter skips an unchanged directory on its own and
+  the writer adds it back as a parent. Reversible: (b) is the case where the
+  lookup is never called.
+- **Raised:** 2026-10-30
+
+### Q-050: How does zstd reach the static musl build?
+
+- **Blocks:** Phase 1 task 5 (zstd); **Area:** `rnk-layer`, build
+- **Context:** the `zstd` crate builds libzstd from C (`zstd-sys`), the
+  multithreaded encoder `exp-05` measured. `just check-aarch64` and
+  `just build-static` run without a C cross compiler (no `musl-gcc`, no zig
+  on the development machine or in the recipes), so adding it breaks them.
+  `ADR-0020` picks cargo-zigbuild, but no recipe uses it yet
+  ([workflow.md](agents/workflow.md#setup)).
+- **Options:** (a) cargo-zigbuild with zig in the recipes and CI, as
+  `ADR-0020` plans; (b) a pure-Rust encoder (`ruzstd` has a single-threaded
+  one with few levels; not measured), keeping C out; (c) a cargo feature
+  `zstd`, off by default, built only in a zig CI job. Decoding pulled zstd
+  layers could use `ruzstd` in every case.
+- **Recommendation:** none
+- **Interim:** zstd not implemented. `Compression::Zstd` exists;
+  `LayerWriter::new` and the decoder return `Error::Unsupported` for it.
+- **Raised:** 2026-10-30
+
+### Q-051: Which entry order and which names does the layer tar use?
+
+- **Blocks:** Phase 1 task 5; **Area:** `rnk-layer`
+- **Context:** the writer sorts the entries
+  ([overlay-snapshot](design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer)),
+  but no document fixes the order, which is part of every diff ID. kaniko
+  writes all whiteouts first, then the other entries, each sorted by
+  `sort.Strings` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:151`, `:182`,
+  `:341-390`); the OCI layer spec says whiteouts SHOULD precede their
+  sibling entries. A file really named `.wh.<x>` cannot be represented: an
+  extractor takes it for a whiteout.
+- **Options:** order: (a) depth first, components compared byte-wise, and
+  in each directory the opaque marker, then whiteouts, then the rest;
+  (b) kaniko's. Names: (a) reject an entry named `.wh.*`; (b) write it as
+  is, as kaniko does.
+- **Recommendation:** none
+- **Interim:** order (a) and names (a), in `feat/rnk-layer-encode`
+  (`LayerWriter`); both change only the bytes of the layers, nothing else.
 - **Raised:** 2026-10-30
 
 ### Q-014: Are cross-repository mounts part of Phase 1?
