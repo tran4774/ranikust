@@ -19,12 +19,12 @@ pub(crate) fn check_kernel(fault: Option<&str>) -> Result<(), Unsupported> {
         Some("kernel-missing") => Err(Unsupported {
             feature: "openat2",
             cause: Cause::Missing(io::Error::from(io::ErrorKind::Unsupported)),
-            kernel: "4.18.0 (simulated)".to_owned(),
+            kernel: "4.18.0-simulated".to_owned(),
         }),
         Some("kernel-blocked") => Err(Unsupported {
             feature: "openat2",
             cause: Cause::Blocked(io::Error::from(io::ErrorKind::PermissionDenied)),
-            kernel: "6.8.0 (simulated)".to_owned(),
+            kernel: "6.8.0-simulated".to_owned(),
         }),
         _ => rnk_rootfs::probe_support(),
     }

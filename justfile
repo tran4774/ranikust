@@ -47,7 +47,7 @@ build-static:
       exit 1
     fi
     ls -l "$BIN"
-    "$BIN"
+    "$BIN" version
 
 # Type-check for aarch64 musl so no architecture-specific code slips in (CI job `check-aarch64`).
 check-aarch64:

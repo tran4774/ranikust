@@ -165,9 +165,9 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_name = "DIR", help_heading = "ranikust")]
     pub(crate) workdir: Option<PathBuf>,
 
-    /// State directory holding the store [default: <workdir>/.ranikust in
-    /// overlay mode, /ranikust/state in kaniko mode]; kaniko's
-    /// `--kaniko-dir`.
+    /// State directory holding the store; kaniko's `--kaniko-dir`. Default:
+    /// `<workdir>/.ranikust` in overlay mode, `/ranikust/state` in kaniko
+    /// mode.
     #[arg(long, value_name = "DIR", help_heading = "ranikust")]
     pub(crate) state_dir: Option<PathBuf>,
 
@@ -194,6 +194,8 @@ enum Refusal {
     NotYet(&'static str),
     /// The feature is out of scope (ADR-0008).
     OutOfScope(&'static str),
+    /// kaniko itself deprecated the flag.
+    Deprecated(&'static str),
 }
 
 /// kaniko executor flags that ranikust recognises but does not accept
@@ -284,16 +286,13 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("skip-push-permission-check", Refusal::NotYet(Q023)),
     ("dryrun", Refusal::NotYet(Q023)),
     // kaniko's deprecated spellings.
-    ("snapshotMode", Refusal::Renamed("use --snapshot-mode")),
-    ("customPlatform", Refusal::Renamed("use --platform")),
-    ("tarPath", Refusal::Renamed("use --tar-path")),
-    (
-        "force-build-metadata",
-        Refusal::Renamed("deprecated in kaniko; drop it"),
-    ),
+    ("snapshotMode", Refusal::Deprecated("use --snapshot-mode")),
+    ("customPlatform", Refusal::Deprecated("use --platform")),
+    ("tarPath", Refusal::Deprecated("use --tar-path")),
+    ("force-build-metadata", Refusal::Deprecated("drop it")),
     (
         "skip-unused-stages",
-        Refusal::Renamed("deprecated in kaniko; ranikust always skips unused stages"),
+        Refusal::Deprecated("drop it; ranikust always skips unused stages"),
     ),
 ];
 
@@ -353,6 +352,7 @@ fn refused_flags<'a>(args: impl Iterator<Item = &'a OsString>) -> Vec<String> {
                 Refusal::Renamed(why) => format!("renamed in ranikust: {why}"),
                 Refusal::NotYet(why) => (*why).to_owned(),
                 Refusal::OutOfScope(why) => (*why).to_owned(),
+                Refusal::Deprecated(why) => format!("deprecated in kaniko: {why}"),
             };
             lines.push(format!("kaniko's --{name} is not supported: {reason}"));
         }

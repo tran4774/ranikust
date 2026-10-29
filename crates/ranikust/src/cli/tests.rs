@@ -191,7 +191,7 @@ fn refused_kaniko_flags_say_why() {
         (&["--use-new-run"], "Q-023"),
         (&["--snapshotMode=redo"], "use --snapshot-mode"),
         (&["--tarPath=/x"], "use --tar-path"),
-        (&["--skip-unused-stages"], "deprecated"),
+        (&["--skip-unused-stages"], "deprecated in kaniko: drop it"),
     ];
     for (args, reason) in cases {
         let lines = refused(args);

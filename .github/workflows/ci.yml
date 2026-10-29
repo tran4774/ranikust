@@ -85,7 +85,7 @@ jobs:
             exit 1
           fi
           ls -l "$BIN"
-          "$BIN"
+          "$BIN" version
 
   check-aarch64:
     name: check (aarch64 musl)
