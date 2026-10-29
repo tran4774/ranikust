@@ -17,8 +17,8 @@ need zig 0.16.0 and `cargo install --locked cargo-zigbuild@0.24.0`: zig
 compiles the C dependencies (libzstd, mimalloc, ring) for musl, the host
 `cc` links (`ADR-0020`); install zig as in
 [CONTRIBUTING.md](../../CONTRIBUTING.md#development-setup).
-`just test-aarch64` also needs `qemu-aarch64` (`qemu-user`, or
-`QEMU_AARCH64=<path>`).
+`just test-aarch64`, so `just ci`, also needs `qemu-aarch64` 9.1 or later
+(`qemu-user`, or `QEMU_AARCH64=<path>`).
 
 ## Dev loop
 
@@ -26,9 +26,10 @@ compiles the C dependencies (libzstd, mimalloc, ring) for musl, the host
 2. `cargo check -p <crate>` → `cargo test -p <crate> <filter>` →
    `cargo clippy -p <crate> --all-targets -- -D warnings`.
 3. `just check` before reporting done; quote the command and its summary.
-4. When relevant: `just check-aarch64`, then `just test-aarch64` (syscalls,
-   `cfg`, FFI, integer widths), `just deny` (dependencies), `just doc` (public items, doc
-   comments), `just book` (`docs/book/`), `just ci` before a PR.
+4. When relevant: `just check-aarch64`, then `just test-aarch64`
+   (syscalls, `cfg`, FFI, integer widths), `just deny` (dependencies),
+   `just doc` (public items, doc comments), `just book` (`docs/book/`),
+   `just ci` before a PR.
 
 Fix at the narrowest level that fails, then widen. Bug fix: test first, see
 it fail. After three failed fixes, stop and report. More: `dev-loop` skill.

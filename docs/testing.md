@@ -119,19 +119,26 @@ cargo-zigbuild and runs everything under `qemu-aarch64` on an x86_64 host:
    `RESOLVE_IN_ROOT`, `statx` and the sandbox's unprivileged tests work
    under emulation.
 
-`QEMU_AARCH64` names the emulator, else `qemu-aarch64-static` or
-`qemu-aarch64` on `PATH`; `apt download qemu-user` and `dpkg -x` give one
-without installing it. Two exceptions, both from emulation:
+QEMU 9.1 or later is needed, and the recipe refuses an older one: QEMU
+8.2 (Ubuntu 24.04's `qemu-user`) has no `openat2` and fails most
+`rnk-rootfs` tests with `ENOSYS`. `QEMU_AARCH64` names the emulator, else
+`qemu-aarch64-static` or `qemu-aarch64` on `PATH`; `apt download
+qemu-user` (if the distribution's is 9.1 or later) or the Debian 13 package
+CI pins, unpacked with `dpkg -x`, gives one without installing it. The
+recipe prints the binfmt entry's interpreter; CI points the entry at the
+same binary as cargo's runner. Two exceptions, both from emulation:
 
 - `root::tests::open_gives_cloexec_path_fd_and_mount_id` is skipped:
-  qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.2), so other
-  mount-id comparisons pass only because both sides are 0.
+  qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so
+  other mount-id comparisons pass only because both sides are 0. The
+  mount-ID checks that guard deletion (T4 of the threat model) are
+  therefore not exercised on aarch64.
 - ranikust's `cli` and `metrics` tests spawn the binary; without a
   binfmt_misc entry for aarch64 the kernel cannot execute it, so the
   recipe skips them with a warning. CI registers the entry and requires it.
 
-Local run, QEMU 10.2 without binfmt: 528 tests pass, one skipped. Real
-aarch64 hardware is Phase 6.
+Checked locally with QEMU 10.0.13 (CI's) and 10.2.1, without binfmt.
+Real aarch64 hardware is Phase 6.
 
 ## Smoke test until the builder exists (tier T1)
 

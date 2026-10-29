@@ -68,21 +68,31 @@ check-aarch64:
 
 # aarch64 runs under qemu-user (ADR-0009): the static release binary, then the
 # T0 tests, built with cargo-zigbuild and run through cargo's target runner.
+# QEMU 9.1 or later: older qemu-user has no openat2, which RootPath needs.
 # Skipped there, with the reason:
 # - `open_gives_cloexec_path_fd_and_mount_id`: qemu-user's statx leaves
-#   `stx_mnt_id` at 0 (QEMU 10.2), so the mount id it asserts is not seen;
+#   `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id it asserts is not seen;
 # - without a binfmt_misc entry for aarch64, ranikust's `cli` and `metrics`
 #   tests, which spawn the binary themselves (CI registers one and requires it).
 
-# Static aarch64 musl binary and T0 tests under qemu-user (CI job `test-aarch64`). QEMU_AARCH64 names the emulator. Requires zig, cargo-zigbuild, qemu-user.
+# Static aarch64 musl binary and T0 tests under qemu-user (CI job `test-aarch64`). QEMU_AARCH64 names the emulator. Requires zig, cargo-zigbuild, qemu-user 9.1 or later.
 test-aarch64 *args:
     #!/usr/bin/env bash
     set -euo pipefail
     target=aarch64-unknown-linux-musl
     qemu="${QEMU_AARCH64:-$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)}"
     if [ ! -x "$qemu" ]; then
-      echo "error: no qemu-aarch64: install qemu-user or set QEMU_AARCH64" >&2
+      echo "error: no qemu-aarch64: install qemu-user 9.1 or later, or set QEMU_AARCH64" >&2
       exit 1
+    fi
+    version="$("$qemu" --version | sed -nE '1s/.*version ([0-9]+\.[0-9]+).*/\1/p')"
+    if [ -z "$version" ] || [ "$(printf '%s\n' 9.1 "$version" | sort -V | head -1)" != 9.1 ]; then
+      echo "error: $qemu is QEMU ${version:-of unknown version}; 9.1 or later is needed for openat2" >&2
+      exit 1
+    fi
+    echo "qemu: $qemu ($version)"
+    if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+      echo "binfmt: $(grep '^interpreter' /proc/sys/fs/binfmt_misc/qemu-aarch64)"
     fi
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER="$qemu"
     BIN=target/$target/release/ranikust
