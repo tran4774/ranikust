@@ -82,6 +82,10 @@ pub fn find_dockerignore(ctx: &Context, dockerfile: &Path) -> Result<Option<Vec<
 - A static binary in `scratch` has no `git` to call [open: Q-045].
 - `<Dockerfile>.dockerignore` wins over `<context>/.dockerignore` in kaniko
   (`fs_util.go:1195-1204`) and BuildKit; kaniko's integration set uses it.
+- BuildKit's walk passes each directory's `MatchInfo` to its children and
+  prunes with fsutil's rule: `rnk-ignore`'s `matches_using_parent` and
+  `may_reinclude_below`; its results can differ from
+  `matches_or_parent_matches` [open: Q-050].
 
 ## Phase 1
 

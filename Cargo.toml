@@ -14,6 +14,13 @@ repository = "https://github.com/tran4774/ranikust"
 # Internal crates, referenced as `<name>.workspace = true`.
 rnk-rootfs = { path = "crates/rnk-rootfs" }
 
+# Third-party crates. Each is an architecture change: say why in the commit
+# that adds it.
+#
+# `regex`: no Unicode tables; `rnk-ignore` writes its classes out itself.
+regex = { version = "1.12", default-features = false, features = ["std", "perf"] }
+thiserror = "2.0"
+
 [workspace.lints.rust]
 missing_docs = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
