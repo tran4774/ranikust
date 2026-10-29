@@ -99,9 +99,10 @@ smoke image="docker.io/library/alpine:3.20":
       echo "error: run as a normal user with rootless podman (T1); real root belongs in the VM (T2)" >&2
       exit 1
     fi
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust --example smoke-build
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust --example smoke-build --bin ranikust
     TARGET="${CARGO_TARGET_DIR:-$PWD/target}"
     BIN="$TARGET/{{ musl_target }}/release/examples/smoke-build"
+    RNK="$TARGET/{{ musl_target }}/release/ranikust"
     OUT="$TARGET/smoke/oci"
     NAME=localhost/ranikust-smoke:latest
     rm -rf "$OUT" "$OUT.tar" && mkdir -p "$OUT"
@@ -112,6 +113,10 @@ smoke image="docker.io/library/alpine:3.20":
       -v "$BIN:/smoke-build:ro" -v "$OUT:/out" \
       "{{ image }}" /smoke-build --image "{{ image }}" --out /out --tag "$NAME" "${runs[@]}"
     smoke_check_no_stub_leak "$OUT"
+    rc=0
+    log="$(podman run --rm --privileged -v "$RNK:/ranikust:ro" "{{ image }}" \
+      /ranikust --no-push --workdir /tmp/w 2>&1)" || rc=$?
+    smoke_check_setup "$log" pivot_root "$rc"
     # `podman load` reads the layout as an OCI archive and names the image
     # after its `ref.name` annotation.
     tar -C "$OUT" -cf "$OUT.tar" .

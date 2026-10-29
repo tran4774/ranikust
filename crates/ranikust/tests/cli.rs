@@ -65,16 +65,64 @@ fn help_lists_kaniko_and_ranikust_flags() {
     }
 }
 
+/// Whether the tests run as root, from the effective uid in
+/// `/proc/self/status`.
+fn running_as_root() -> bool {
+    fs::read_to_string("/proc/self/status")
+        .expect("status")
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .and_then(|ids| ids.split_whitespace().nth(1).map(|euid| euid == "0"))
+        .expect("Uid: line")
+}
+
 #[test]
-fn a_valid_build_stops_before_building() {
+fn overlay_mode_needs_a_workdir_or_state_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let out = ranikust(tmp.path(), &["--no-push", "--context", "."], &[]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(
-        stderr(&out).contains("not implemented yet"),
-        "{}",
-        stderr(&out)
+    assert!(stderr(&out).contains("--workdir"), "{}", stderr(&out));
+}
+
+#[test]
+fn kaniko_mode_is_not_built_yet() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko"], &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("Phase 2"), "{}", stderr(&out));
+}
+
+#[test]
+fn without_root_the_set_up_refuses_before_touching_the_workdir() {
+    if running_as_root() {
+        // As root the set-up really runs: T2, in the VM smoke suite.
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workdir = tmp.path().join("work");
+    fs::create_dir(&workdir).expect("workdir");
+    let out = ranikust(
+        tmp.path(),
+        &[
+            "--no-push",
+            "--context",
+            ".",
+            "--workdir=work",
+            "--metrics-file=m.json",
+        ],
+        &[],
     );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("a private mount namespace"), "{err}");
+    assert!(err.contains("sudo"), "{err}");
+    assert_eq!(fs::read_dir(&workdir).expect("workdir").count(), 0);
+    let report: Value =
+        serde_json::from_slice(&fs::read(tmp.path().join("m.json")).expect("report"))
+            .expect("json");
+    assert_eq!(report["phases"]["ranikust.setup"]["count"], 1, "{report}");
+    // Refused before the probes.
+    assert!(report["phases"]["ranikust.probe"].is_null(), "{report}");
 }
 
 #[test]

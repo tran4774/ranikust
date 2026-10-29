@@ -214,6 +214,15 @@ pub enum Error {
         /// Threads counted in `/proc/self/status`.
         threads: u64,
     },
+    /// `/` is not the root of a mount: the process runs inside a plain
+    /// `chroot`, where the build namespace cannot be set up and `MS_MOVE`
+    /// would let a `RUN` climb out of its root.
+    #[error(
+        "/ is not a mount point: ranikust runs inside a plain chroot, where it \
+         cannot isolate RUN; run it on the host or in a container, or \
+         bind-mount the chroot directory onto itself before entering it"
+    )]
+    InPlainChroot,
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,

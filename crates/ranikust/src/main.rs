@@ -10,11 +10,13 @@
 //! ADR-0028 (`rnk_rootfs::probe_support`), for every subcommand but
 //! `version` → logs and the opt-in metrics of `rnk-metrics`, which start no
 //! thread, with `--metrics-file` over `RANIKUST_METRICS_FILE` → flag
-//! validation into a `BuildConfig` → hand-off. Still to come in later tasks:
-//! the workdir checks (Q-011), a private mount namespace when permitted, the
-//! probes of `rnk-sandbox` and `rnk-snapshot` that pick the mode, the
-//! kaniko-mode workdir lock, and the hand-off to the library crates. Until
-//! the builder exists, `build` stops after validation with exit code 2.
+//! validation into a `BuildConfig` → the process set-up of `setup`: a
+//! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`
+//! (the latter a seam until task 9), the outcome, the spawner thread →
+//! hand-off. Still to come in later tasks: the workdir checks (Q-011), the
+//! store (task 7), kaniko mode and its workdir lock (Phase 2), and the
+//! hand-off to the library crates. Until the builder exists, `build` stops
+//! after the set-up with exit code 2.
 //!
 //! The metrics report is written on every way out.
 //!
@@ -27,6 +29,7 @@
 
 mod cli;
 mod config;
+mod setup;
 mod startup;
 
 use std::io::Write as _;
@@ -168,12 +171,33 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
         state_dir = ?config.state_dir_for(config.mode),
         "build settings validated"
     );
-    if config.mode == config::Mode::Overlay && args.snapshot_mode.is_some() {
+    if config.mode == config::Mode::Kaniko {
+        return Err(Failure::usage(
+            "--mode=kaniko is not implemented yet (Phase 2); use --mode=overlay as root",
+        ));
+    }
+    // Overlay mode is the only outcome of Phase 1, so its state directory
+    // is the one the probes use (Q-018, Q-110).
+    let state_dir = config.state_dir_for(config::Mode::Overlay).ok_or_else(|| {
+        Failure::usage(
+            "overlay mode needs --workdir or --state-dir: the state directory holds the \
+             stage roots",
+        )
+    })?;
+    let setup = tracing::debug_span!("ranikust.setup")
+        .in_scope(|| setup::set_up(&state_dir))
+        .map_err(|refusal| Failure::error(refusal.to_string()))?;
+    if args.snapshot_mode.is_some() {
         tracing::warn!("--snapshot-mode is ignored in overlay mode (ADR-0023)");
     }
-    Err(Failure::usage(
-        "the flags are valid, but building is not implemented yet (Phase 1 task 11)",
-    ))
+    tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
+    // The hand-off to the store, the scheduler and the builder (tasks 7, 11
+    // and 12) goes here. Until then, stop the spawner thread.
+    drop(setup.sandbox);
+    Err(Failure::usage(format!(
+        "set up for {}, but building is not implemented yet (Phase 1 task 11)",
+        setup.outcome
+    )))
 }
 
 /// Panics, then aborts. Release builds abort inside the panic, right after

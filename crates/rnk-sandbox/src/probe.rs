@@ -103,8 +103,9 @@ fn is_seccomp_refusal(e: &Error) -> bool {
 /// Whether this process's `/` is the root of a mount. `MS_MOVE` puts the
 /// stage root on top of `/`; `..` stops there only if `/` is a mount root
 /// (`follow_dotdot` in `fs/namei.c`), otherwise it climbs into the
-/// directory above [inferred].
-fn slash_is_mount_root() -> Result<bool> {
+/// directory above (measured by the VM smoke suite). In a plain `chroot`, `/`
+/// is not a mount root.
+pub(crate) fn slash_is_mount_root() -> Result<bool> {
     let st = rustix::fs::statx(
         rustix::fs::CWD,
         c"/",
