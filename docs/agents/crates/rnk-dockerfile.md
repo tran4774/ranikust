@@ -98,7 +98,7 @@ pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [des
 - `FROM` matches only earlier stage names, exactly (lower-case), the last
   definition winning; `scratch` can be shadowed by a stage of that name.
   `COPY --from` takes an index or a name in any case; `--mount from=` names
-  only. A stage may read only stages defined before it. [open: Q-050]
+  only. A stage may read only stages defined before it. [open: Q-051]
 - Not expanded at all: `RUN`/`CMD`/`ENTRYPOINT` commands, `SHELL`,
   `HEALTHCHECK`, `COPY --from`, `--exclude`. `ARG` without a default takes
   the global value; build arguments for undeclared names are invisible.

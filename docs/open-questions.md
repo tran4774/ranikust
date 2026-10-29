@@ -669,7 +669,7 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-050: Does `FROM <stage>` match stage names case-insensitively?
+### Q-051: Does `FROM <stage>` match stage names case-insensitively?
 
 - **Blocks:** Phase 6 (kaniko's integration Dockerfiles in every mode);
   **Area:** `rnk-dockerfile`
