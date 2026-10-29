@@ -59,6 +59,16 @@ pub enum Error {
         /// `manifest` or `index`.
         document: &'static str,
     },
+    /// A config edit with a value the instruction does not accept.
+    #[error("{instruction} {input:?}: {reason}")]
+    InvalidEdit {
+        /// The instruction, upper case.
+        instruction: &'static str,
+        /// The start of the rejected value.
+        input: String,
+        /// Why it was rejected.
+        reason: &'static str,
+    },
     /// JSON that does not parse into the expected type, or a value that
     /// cannot be written as JSON.
     #[error("invalid JSON: {0}")]

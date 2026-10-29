@@ -16,7 +16,7 @@ the code.
 
 | | Item | Owner |
 |---|---|---|
-| [~] | OCI and Docker v2s2 manifests, index, config, media types | `rnk-oci` |
+| [x] | OCI and Docker v2s2 manifests, index, config, media types; config edits of the metadata instructions, history and `diff_ids` appends, docker-save `manifest.json` and OCI layout types (Q-007 interim; kaniko/BuildKit differences Q-130 to Q-132) | `rnk-oci` |
 | [x] | Dockerfile front end: lexer, directives, heredocs, `ARG`/`ENV` expansion, instructions, stage DAG; BuildKit goldens on kaniko's 200 Dockerfiles | `rnk-dockerfile` |
 | [x] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
 | [~] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion | `rnk-rootfs` |
@@ -53,7 +53,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | # | Task | Needs | Blocked by |
 |---|---|---|---|
 | 0 | `rnk-metrics` and the binary's wiring (`ADR-0025`); done | | |
-| 1 | `rnk-oci` types | | |
+| 1 | `rnk-oci` types (done) | | |
 | 2 | `rnk-dockerfile` parser with BuildKit goldens | | |
 | 3 | `rnk-ignore` | | |
 | 4 | `rnk-rootfs`: `RootPath` → extraction → copy, ownership, xattrs → safe deletion | | |
