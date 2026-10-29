@@ -114,11 +114,21 @@ never called. A hand-written reader would repeat that parsing for no gain.
   deepest first, so later entries neither move their mtime nor hit a
   read-only directory.
 - **Hardlinks** link the target named in the archive with `linkat(…, 0)`,
-  so a symlink target is linked itself. A target missing from the root is
-  an `Error::Entry` today. Decided (Q-055): in the overlay form, a
-  target in a lower layer is copied from the lower layers' directories as
-  a regular file, which splits the hardlink as overlay copy-up does
-  (`ADR-0012`); to implement with base-layer extraction (task 9).
+  so a symlink target is linked itself. In the overlay form the target may
+  be in a lower layer, which `layers/<id>` does not hold:
+  `extract_overlay(dst, tar, lowers)` takes the lower layers' extracted
+  directories, the nearest first as in `lowerdir=`, and copies the target
+  from the first one that shows it (Q-055). "Shows" follows overlay's merged
+  view: each layer, this one first, is walked by name without following a
+  symlink; a whiteout, a non-directory (a symlink included) on the way, or
+  a missing directory below an opaque one hides everything below; an
+  opaque directory hides what its layer lacks. The copy is a regular file
+  (or symlink, FIFO, device node) with the lower inode's owner, mode, times
+  and every xattr as stored, which splits the hardlink as overlay's copy-up
+  does (`ADR-0012`); later links in the layer to the same target link to
+  that copy. A target in no layer, hidden, or a directory is an
+  `Error::Entry`; so is any missing target for plain `extract`. Lower
+  layers are only read.
 - **`Whiteouts::Overlay`** (`layers/<id>`, mounted with `userxattr`,
   `ADR-0016`): `.wh.<name>` becomes the character device 0/0, which an
   unprivileged user may create (measured on Linux 7.0; allowed since the
@@ -135,6 +145,54 @@ never called. A hand-written reader would repeat that parsing for no gain.
 - Other `.wh..wh.*` names (AUFS bookkeeping) are skipped; global PAX
   headers are ignored; unknown entry types are refused. Device nodes need
   `CAP_MKNOD` (T2); foreign owners need root or a user namespace (T1).
+
+## Copy
+
+`copy(src, from, dst, to, opts)` copies one source of a `COPY` or local
+`ADD` between two roots: the context and a stage root, or two stage roots
+for `--from`. The builder expands wildcards and `.dockerignore` and derives
+`to` from the Dockerfile's destination (Q-080); `ADD`'s archive extraction
+is `extract`.
+
+- **Source.** `from` is resolved in `src` following symlinks there, the
+  last one included, as BuildKit's `FollowSymlinks` copy does [inferred];
+  kaniko copies a symlinked source as a symlink
+  (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`) [open: Q-120]. A
+  directory has its contents copied; anything else is copied to exactly
+  `to`.
+- **Reading.** The source tree is walked by `(directory fd, name)`: each
+  entry is pinned with `O_PATH | O_NOFOLLOW` and `statx`ed through that fd.
+  Only a pinned regular file or directory is reopened, through ranikust's
+  own `/proc/self/fd`, for reading; a FIFO or device node is recreated with
+  `mknodat`, never opened; a symlink is copied with `readlinkat` on the
+  pinned fd; a socket is skipped. Names are sorted, so neither the copy nor
+  which name of a hardlinked inode comes first depends on directory order.
+- **Writing.** As extraction writes: parents resolved in `dst` with
+  `RESOLVE_NO_XDEV`, entries created with `O_EXCL`, `mkdirat`, `symlinkat`,
+  `linkat` or `mknodat`, never following the last name; an entry on
+  another mount or at a mount root is refused. A directory merges into a
+  directory and replaces anything else; any other entry replaces a
+  non-directory and is refused over a directory. The destination
+  directory of a directory's contents, and only it, is followed when it is
+  a symlink, inside `dst`. Content goes through `copy_file_range`
+  (`std::io::copy`), which reflinks where the filesystem shares extents.
+- **Metadata.** Every copied entry gets `opts.owner` (`--chown`; `None`
+  keeps the source's, as `COPY --from` without `--chown`), `opts.chmod`
+  (`--chmod`, octal, directories included, not symlinks; `None` keeps the
+  raw bits), the source's mtime as mtime and atime, and
+  `security.capability`, the only xattr kaniko copies
+  (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1533`) [open: Q-120]. Hardlinks
+  inside the copied tree stay hardlinks. Directories the copy creates
+  above `to`, and `to` itself for a directory's contents, are `0755`,
+  owned by `opts.owner` (`to`: else the source directory's owner, with its
+  times), as kaniko's `MkdirAllWithPermissions` and
+  `createParentDirectory` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1287`,
+  `:1562`); an existing `to` keeps its metadata. Directory modes and times
+  are set last, deepest first.
+- **Owners by source.** The builder passes `0:0` for context sources
+  without `--chown` (Docker's documented rule; kaniko only behind its
+  `FF_KANIKO_COPY_AS_ROOT`, `kaniko@44aa7ddc0 pkg/commands/copy.go:84`),
+  and `None` for `--from` without `--chown`.
 
 ## Users and groups
 
@@ -191,10 +249,13 @@ directory an extracted entry replaces, and applies OCI whiteouts.
 ## Observability
 
 Coarse `tracing` spans only, named `<crate>.<operation>`, with counters
-recorded once at the end, never per entry: `rnk_rootfs.extract`
-(`whiteouts` mode; `entries`, `files`, `dirs`, `symlinks`, `hardlinks`,
-`nodes`, `whiteout_entries`, `bytes`) and `rnk_rootfs.delete_contents`
-(`files`, `dirs`, `kept`).
+recorded once at the end, never per entry
+([metrics](metrics.md#rnk-rootfs)): `rnk_rootfs.extract` (`mode`,
+`lowers`; `entries`, `files`, `dirs`, `symlinks`, `hardlinks`,
+`hardlinks_copied`, `nodes`, `whiteouts`, `bytes_in` read from the tar
+stream, `bytes_written`), `rnk_rootfs.copy` (`files`, `dirs`, `bytes`) and
+`rnk_rootfs.delete` (`entries`, `files`, `dirs`, `kept`). Tested with
+`rnk_metrics::Capture` (`crates/rnk-rootfs/tests/spans.rs`).
 
 ## Failure handling
 
@@ -206,6 +267,8 @@ recorded once at the end, never per entry: `rnk_rootfs.extract`
 
 - [Q-011](../open-questions.md#q-011-who-owns-the-workdir-checks-and-what-counts-as-empty)
   Who owns the workdir checks?
+- [Q-120](../open-questions.md#q-120-where-kaniko-and-buildkit-copy-differently-which-does-copy-follow)
+  Where kaniko and BuildKit copy differently, which does `copy` follow?
   What is the minimum kernel, and who checks it?
   How does overlay-form extraction handle a hardlink into a lower layer?
   How are tar extension headers bounded?

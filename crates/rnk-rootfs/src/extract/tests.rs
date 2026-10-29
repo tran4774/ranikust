@@ -670,3 +670,173 @@ fn device_nodes_and_foreign_owners_fail_cleanly_unprivileged() {
     let e = extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap_err();
     assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
 }
+
+/// A whiteout (char 0/0) at `p`, as an extracted lower layer holds it.
+fn whiteout_at(p: &Path) {
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        p,
+        RawFileType::CharacterDevice,
+        Mode::empty(),
+        rustix::fs::makedev(0, 0),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
+    let lower = Fixture::new();
+    fs::create_dir_all(lower.host("usr/bin")).unwrap();
+    fs::write(lower.host("usr/bin/dash"), b"#!dash").unwrap();
+    rustix::fs::setxattr(
+        lower.host("usr/bin/dash"),
+        "user.overlay.overlay.origin",
+        b"o",
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+    let m = Meta {
+        mode: Some(0o4755),
+        mtime: Some(FileTime::from_secs(1_234)),
+        atime: Some(FileTime::from_secs(1_234)),
+        ..Meta::default()
+    };
+    lower.root.set_meta("usr/bin/dash", &m).unwrap();
+    let before = snapshot(&lower.host);
+
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("usr/bin/sh", "usr/bin/dash")
+        .hardlink("bin/sh2", "/usr/bin/dash")
+        .file("usr/bin/own", 0o644, b"own")
+        .hardlink("usr/bin/own2", "usr/bin/own");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+
+    // A regular file with the lower inode's content and metadata.
+    let sh = fs::symlink_metadata(f.host("usr/bin/sh")).unwrap();
+    assert!(sh.is_file());
+    assert_eq!(fs::read(f.host("usr/bin/sh")).unwrap(), b"#!dash");
+    assert_eq!(mode_of(&f.host("usr/bin/sh")), 0o4755);
+    assert_eq!(f.root.statx("usr/bin/sh").unwrap().mtime.secs, 1_234);
+    // Stored xattrs are copied as stored: still escaped.
+    assert_eq!(
+        xattr(&f.host("usr/bin/sh"), "user.overlay.overlay.origin").unwrap(),
+        b"o"
+    );
+    // The second link to the same target links the copy.
+    assert_eq!(sh.nlink(), 2);
+    assert_eq!(fs::metadata(f.host("bin/sh2")).unwrap().ino(), sh.ino());
+    // Links within the layer stay links.
+    assert_eq!(fs::metadata(f.host("usr/bin/own2")).unwrap().nlink(), 2);
+    assert!(!f.host("usr/bin/dash").exists());
+    // The lower layer is only read.
+    assert_eq!(snapshot(&lower.host), before);
+}
+
+#[test]
+fn the_nearest_lower_layer_shows_the_target() {
+    let top = Fixture::new();
+    let bottom = Fixture::new();
+    fs::write(top.host("t"), b"top").unwrap();
+    fs::write(bottom.host("t"), b"bottom").unwrap();
+    fs::write(bottom.host("only_bottom"), b"bottom").unwrap();
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("a", "t").hardlink("b", "only_bottom");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&top.root, &bottom.root]).unwrap();
+    assert_eq!(fs::read(f.host("a")).unwrap(), b"top");
+    assert_eq!(fs::read(f.host("b")).unwrap(), b"bottom");
+}
+
+/// Checks that `target` is hidden from a hardlink in a layer built by
+/// `layer`, over a top lower layer prepared by `setup` and a bottom one
+/// that has `t` and `d/e/t`.
+fn assert_hidden(setup: &dyn Fn(&Fixture), target: &str, layer: &dyn Fn(&mut Tar)) {
+    let top = Fixture::new();
+    let bottom = Fixture::new();
+    fs::create_dir_all(bottom.host("d/e")).unwrap();
+    fs::write(bottom.host("d/e/t"), b"bottom").unwrap();
+    fs::write(bottom.host("t"), b"bottom").unwrap();
+    setup(&top);
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    layer(&mut t);
+    t.hardlink("h", target);
+    let e = extract_overlay(&f.root, t.bytes().as_slice(), &[&top.root, &bottom.root]).unwrap_err();
+    assert!(
+        matches!(e, Error::Entry { ref reason, .. }
+            if reason.contains("hidden") || reason.contains("whited out")),
+        "{target}: {e}"
+    );
+    assert!(!f.host("h").exists(), "{target}");
+}
+
+fn make_opaque(top: &Fixture) {
+    fs::create_dir(top.host("d")).unwrap();
+    rustix::fs::setxattr(
+        top.host("d"),
+        "user.overlay.opaque",
+        b"y",
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn whiteouts_opaque_directories_and_files_in_the_way_hide_lower_targets() {
+    let none = |_: &mut Tar| {};
+    // A whiteout in the higher lower layer.
+    assert_hidden(&|top| whiteout_at(&top.host("t")), "t", &none);
+    // An opaque directory above it, with or without the deeper directory.
+    assert_hidden(&make_opaque, "d/e/t", &none);
+    assert_hidden(
+        &|top| {
+            make_opaque(top);
+            fs::create_dir(top.host("d/e")).unwrap();
+        },
+        "d/e/t",
+        &none,
+    );
+    // A file, or a symlink, where a lower layer has a directory.
+    assert_hidden(
+        &|top| fs::write(top.host("d"), b"").unwrap(),
+        "d/e/t",
+        &none,
+    );
+    assert_hidden(
+        &|top| symlink("/elsewhere", top.host("d")).unwrap(),
+        "d/e/t",
+        &none,
+    );
+    // This layer's own whiteout and opaque marker.
+    assert_hidden(&|_| {}, "t", &|t: &mut Tar| {
+        t.file(".wh.t", 0o644, b"");
+    });
+    assert_hidden(&|_| {}, "d/e/t", &|t: &mut Tar| {
+        t.dir("d/", 0o755).file("d/.wh..wh..opq", 0o644, b"");
+    });
+}
+
+#[test]
+fn lower_targets_never_leave_the_lower_roots() {
+    let lower = Fixture::new();
+    let (out, before) = lower.outside();
+    // Symlinks in the lower layer toward the host's outside directory.
+    symlink(&out, lower.host("dir")).unwrap();
+    symlink(out.join("sentinel"), lower.host("file")).unwrap();
+    fs::create_dir(lower.host("adir")).unwrap();
+    let f = Fixture::new();
+    for target in ["dir/sentinel", "missing", "adir"] {
+        let mut t = Tar::new(&f);
+        t.hardlink("h", target);
+        let e = extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap_err();
+        assert!(matches!(e, Error::Entry { .. }), "{target}: {e}");
+        assert!(!f.host("h").exists(), "{target}");
+    }
+    // A symlink target is copied as a symlink, never followed.
+    let mut t = Tar::new(&f);
+    t.hardlink("h", "file");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    assert_eq!(fs::read_link(f.host("h")).unwrap(), out.join("sentinel"));
+    assert_eq!(snapshot(&out), before);
+}

@@ -155,8 +155,10 @@ and drop unchanged ones; BuildKit does not, and it is off by default.
 xattr `user.overlay.opaque=y`; `user.overlay.*` xattrs in the content are
 escaped as `user.overlay.overlay.*` (kernel ≥ 6.7); modes are set raw.
 `rnk-snapshot` chains `rnk-layer`'s decoder (gzip or zstd to a plain tar
-stream) into `rnk-rootfs::extract`, which writes into a temporary entry that
-`rnk-store` renames into place.
+stream) into `rnk-rootfs::extract_overlay`, which writes into a temporary
+entry that `rnk-store` renames into place; it gets the layers below, so
+that a hardlink into one of them is copied from it (Q-055,
+[rootfs](rootfs.md#extraction)).
 
 ## Lazy export
 

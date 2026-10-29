@@ -25,6 +25,7 @@
 //!   the extraction, and this crate never depends on `rnk-layer`.
 //! - Does not mount, create namespaces or run processes (`rnk-sandbox`).
 
+mod copy;
 mod delete;
 mod error;
 mod extract;
@@ -36,9 +37,10 @@ mod support;
 mod test_util;
 mod user;
 
+pub use copy::{CopyOpts, copy};
 pub use delete::{IgnoreList, delete_contents};
 pub use error::{Error, Result};
-pub use extract::{Whiteouts, extract};
+pub use extract::{Whiteouts, extract, extract_overlay};
 pub use meta::{FileTime, FileType, Meta, Stat};
 pub use root::{OpenHow, RootPath};
 pub use support::{Cause, Unsupported, probe_support};

@@ -48,7 +48,9 @@ impl RootPath {
     // rename, remove_file, remove_dir; mnt_id()
 }
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
-pub fn copy(src: &RootPath, from: &Path, dst: &RootPath, to: &Path, o: &CopyOpts) -> Result<()>; // [design] FICLONE, else copy
+pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<()>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055)
+pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; copy_file_range
+pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<u32> } // built: None keeps the source's
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
@@ -97,14 +99,18 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   `cargo fuzz` on `extract`. Built: `tests/escape.rs` (all of the above
   but the marker, plus real magic links under `/proc/<pid>` and a thread
   swapping a directory for a symlink out during every operation); unit
-  tests per module, with the same racing swap under `extract` and
-  `delete_contents`; `tests/model.rs` checks `open_at` against a model
-  resolver on 150 random trees. Still to do: `cargo fuzz` on `extract`.
+  tests per module, with the same racing swap under `extract`,
+  `delete_contents` and `copy` (both roots); `extract_overlay` against
+  whiteouts, opaque directories and symlinks in the lowers;
+  `tests/model.rs` checks `open_at` against a model resolver on 150 random
+  trees; `tests/spans.rs` the metrics. Still to do: `cargo fuzz` on
+  `extract`.
 - **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
   survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
   and setuid in `extract`.
-- **T2** (VM only): device nodes in `extract` (written, `#[ignore]`);
-  `--workdir` at `/`, `//`, `/home`, an unmarked directory.
+- **T2** (VM only): device nodes in `extract`, device nodes and foreign
+  owners in `copy` (written, `#[ignore]`, `just test-vm unit`); `--workdir`
+  at `/`, `//`, `/home`, an unmarked directory.
 
 ## Metrics
 
@@ -134,8 +140,11 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   host's device): use `open_regular`.
 - `extract` never crosses a mount and refuses sparse entries; extension
   headers are unbounded for now (Q-056). Overlay form: a hardlink into a
-  lower layer has no target; Q-055 decided to copy its content from the
-  lower layers (task 9), today an error.
+  lower layer has no target in `layers/<id>`; `extract_overlay` copies it
+  from the lowers (Q-055), plain `extract` refuses it.
+- `copy` follows the source's own symlink and the destination
+  directory's, inside their roots, but never one inside the copied tree;
+  where kaniko and BuildKit differ it picks one ([open: Q-120]).
 
 ## Phase 1
 
@@ -150,6 +159,9 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   `RootPath::open` and `statx` (`dev`, `ino`, `mnt_id`) are its primitives.
 - Needs Linux 5.8; `Error::Unsupported`, no fallback. The binary checks
   it at start-up (ADR-0028).
-- Done: `RootPath`, `extract`, `lookup_user`/`lookup_owner` (`USER` and
-  `--chown` default the gid differently), `delete_contents` (built before
-  `extract`, which reuses its walker). Left: `copy`, `check_workdir`.
+- Done: `RootPath`, `extract` and `extract_overlay` (Q-055),
+  `lookup_user`/`lookup_owner` (`USER` and `--chown` default the gid
+  differently), `delete_contents` (built before `extract`, which reuses
+  its walker), `copy`. Left: `check_workdir` (Q-011). The builder still
+  resolves `COPY` sources and the destination name (Q-080) and extracts
+  `ADD` archives.
