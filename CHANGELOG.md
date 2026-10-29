@@ -28,6 +28,20 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   meaning matches. `RANIKUST_METRICS_SUMMARY=1` prints a short summary to
   stderr. Unset, nothing is collected and nothing changes; the image is the
   same either way.
+- The command line: `ranikust` with kaniko's executor flags builds, as
+  `executor` does (`ranikust build` spelt out), and `ranikust version`.
+  Accepted kaniko flags keep their names, short forms and meaning:
+  `--context`, `--dockerfile`, `--build-arg`, `--target`, `--destination`,
+  `--no-push`, `--tar-path`, `--oci-layout-path`, `--compression`,
+  `--reproducible`, `--registry-certificate`, `--snapshot-mode`. New flags:
+  `--mode=auto|overlay|kaniko`, `--workdir`, `--state-dir` (kaniko's
+  `--kaniko-dir`), `--jobs`, `--network=host|none`, `--platform` and
+  `--metrics-file`. Other kaniko flags are refused with the reason, never
+  ignored. Building itself is not implemented yet: a valid command stops
+  with exit code 2.
+- A start-up check: on a kernel older than Linux 5.8, or where seccomp
+  blocks `openat2` or `statx`, ranikust stops at once with a message naming
+  the kernel.
 
 ### Changed
 

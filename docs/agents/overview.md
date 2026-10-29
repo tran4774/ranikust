@@ -117,6 +117,7 @@ mode outside a container is `[open: Q-036]`
 Code today: 15 crates. Implemented (Phase 1, in progress where the card
 says so): `rnk-oci`, `rnk-dockerfile`, `rnk-ignore`, `rnk-rootfs`,
 `rnk-layer` and `rnk-metrics`; the others have docs-only `lib.rs`
-(`skeleton`). The binary prints its version and, on request, writes the
-metrics report. CI runs what `just ci` runs. 1.0 needs all three paths:
-overlay root, rootless overlay, kaniko mode.
+(`skeleton`). The binary parses kaniko's executor flags, refuses a
+kernel older than 5.8, and stops after validating a build; on request it
+writes the metrics report. CI runs what `just ci` runs. 1.0 needs all three
+paths: overlay root, rootless overlay, kaniko mode.

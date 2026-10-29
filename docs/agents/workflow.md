@@ -38,7 +38,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just fmt` / `fmt-check` | `cargo fmt --all` (`--check`) | `fmt` |
 | `just lint` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | `clippy` |
 | `just test [args]` | `cargo test --workspace --locked [args]` (T0) | `test` |
-| `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; fails on a loader, `NEEDED`, non-PIE or no `.symtab`; runs it | `static-build` |
+| `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; fails on a loader, `NEEDED`, non-PIE or no `.symtab`; runs `ranikust version` | `static-build` |
 | `just check-aarch64` | `cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl` | `check-aarch64` |
 | `just deny` | `cargo deny --locked check` | `deny` |
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |

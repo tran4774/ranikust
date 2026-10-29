@@ -12,7 +12,8 @@ publish = false
 workspace = true
 
 [dependencies]
-rustix.workspace = true
+# `system`: `uname` for the start-up probe's message (ADR-0028).
+rustix = { workspace = true, features = ["system"] }
 tar.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

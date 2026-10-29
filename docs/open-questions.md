@@ -88,7 +88,9 @@ Entry format:
   `GraphOptions::targets: Vec<String>`: every listed stage is built, the
   first is the result (`StageGraph::primary_target`), and `TARGETSTAGE` is
   the first name. Reversible because a single target is a one-element list:
-  option (b) only needs the CLI (task 8) to reject a repeated flag.
+  option (b) only needs the CLI (task 8) to reject a repeated flag. The CLI
+  (`feat/ranikust-cli`) follows: `--target` takes a list, comma-separated
+  or repeated, an empty name refused.
 - **Raised:** 2026-10-30
 
 ### Q-009: Does the parser accept instructions deferred to Phase 5?
@@ -146,6 +148,9 @@ Entry format:
   `rnk-rootfs`; it only provides the primitives either owner needs
   (`RootPath::open` with `RESOLVE_NO_SYMLINKS`, `statx` with `dev`, `ino`
   and `mnt_id`). Reversible because nothing calls a workdir check yet.
+  `feat/ranikust-cli` (task 8a) does not check the workdir either: it only
+  makes `--workdir` and `--state-dir` absolute, without touching the
+  filesystem; the build stops before any use of them.
 - **Raised:** 2026-10-30
 
 ### Q-012: Which crates fill the Phase 1 dependency picks?
@@ -179,6 +184,8 @@ Entry format:
   and recognises `credHelpers`/`credsStore` without running them until
   Phase 5, falling back to the `auths` entry or anonymous access with a
   warning. Reversible: neither crate appears in `rnk-registry`'s public API.
+  Task 8, in `feat/ranikust-cli`: followed the recommendation, `clap` 4.6
+  (derive, no colour); its types stay in the binary.
 - **Raised:** 2026-10-30
 
 ### Q-013: How does the layer writer learn missing parent metadata?
@@ -319,7 +326,9 @@ Entry format:
 - **Options:** (a) accept `--custom-platform` as an alias; (b) reject it
   with a message naming `--platform`.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** option (b), in `feat/ranikust-cli`: `--custom-platform`
+  and the deprecated `--customPlatform` are refused with a message naming
+  `--platform`. Reversible: an alias is one clap attribute.
 - **Raised:** 2026-10-30
 
 ### Q-021: What do the cache flags do before Phase 4?
@@ -334,7 +343,9 @@ Entry format:
 - **Options:** (a) reject both with a clear message until Phase 4;
   (b) accept them as no-ops.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** option (a), in `feat/ranikust-cli`: `--cache` and
+  `--cache-repo` are refused with a message naming Phase 4, also
+  `--cache=false`. Reversible: accepting them is two flags.
 - **Raised:** 2026-10-30
 
 ### Q-022: What format does the secret flag take?
@@ -347,7 +358,9 @@ Entry format:
 - **Options:** (a) kaniko's syntax, file and env sources; (b) a subset in
   Phase 1, the rest later.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** `feat/ranikust-cli` refuses `--secret` with a message
+  naming this question. Reversible: accepting it is one more flag, and no
+  build runs yet.
 - **Raised:** 2026-10-30
 
 ### Q-023: Which other kaniko flags and variables are accepted?
@@ -372,7 +385,14 @@ Entry format:
 - **Recommendation:** none
 - **Interim:** `KANIKO_METRICS_FILE` is not read; only
   `RANIKUST_METRICS_FILE` turns metrics on (`feat/rnk-metrics`). Reversible:
-  an alias is one more variable in `rnk_metrics::Config::from_env`.
+  an alias is one more variable in `rnk_metrics::Config::from_env`. In
+  `feat/ranikust-cli`: option (b) for every flag listed here, `--force` and
+  `--cache-dir` included; each is refused with exit code 2 and a reason
+  (`crates/ranikust/src/cli.rs` `REFUSED`), the deprecated forms naming
+  their replacement. The flag keeps the name `--metrics-file` and wins over
+  the variable. `KANIKO_NO_PUSH`, `KANIKO_REGISTRY_MIRROR` and
+  `KANIKO_REGISTRY_MAP` are not read. Reversible: accepting a flag removes
+  a table row.
 - **Raised:** 2026-10-30
 
 ### Q-024: What is the Snapshotter signature?
@@ -719,7 +739,8 @@ Entry format:
 - **Options:** phase: none listed; `push` input: (a) both formats, as
   kaniko; (b) one format.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** `feat/ranikust-cli` has `build` and `version` only;
+  `ranikust push` and `ranikust login` are clap errors (exit code 2).
 - **Raised:** 2026-10-30
 
 ### Q-049: Which overlay optimizations come after Phase 1?

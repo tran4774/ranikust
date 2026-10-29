@@ -12,10 +12,11 @@ use serde_json::Value;
 
 const SIGABRT: i32 = 6;
 
-/// Runs the binary in `cwd` with a clean metrics environment plus `env`.
+/// Runs `ranikust version` in `cwd` with a clean metrics environment plus
+/// `env`: the shortest command that sets up metrics and succeeds.
 fn ranikust(cwd: &Path, env: &[(&str, &OsStr)], fault: Option<&str>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ranikust"));
-    cmd.current_dir(cwd);
+    cmd.arg("version").current_dir(cwd);
     cmd.env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")

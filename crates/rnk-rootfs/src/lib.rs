@@ -10,7 +10,9 @@
 //!
 //! Linux only: the crate needs `openat2` (Linux 5.6) and the `statx` mount id
 //! (Linux 5.8). When either is missing or blocked by seccomp it fails with
-//! [`Error::Unsupported`]; there is no string-based fallback.
+//! [`Error::Unsupported`]; there is no string-based fallback. The binary
+//! calls [`probe_support`] at start-up to refuse such a kernel before any
+//! work (ADR-0028).
 //!
 //! # Boundaries
 //!
@@ -29,6 +31,7 @@ mod extract;
 mod meta;
 mod path;
 mod root;
+mod support;
 #[cfg(test)]
 mod test_util;
 mod user;
@@ -38,4 +41,5 @@ pub use error::{Error, Result};
 pub use extract::{Whiteouts, extract};
 pub use meta::{FileTime, FileType, Meta, Stat};
 pub use root::{OpenHow, RootPath};
+pub use support::{Cause, Unsupported, probe_support};
 pub use user::{Owner, User, lookup_owner, lookup_user};

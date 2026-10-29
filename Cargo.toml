@@ -23,6 +23,9 @@ rnk-rootfs = { path = "crates/rnk-rootfs" }
 base64 = "0.22.1"
 # `bytes`: the body type `oci-client` and `reqwest` stream.
 bytes = "1.10"
+# `clap`: the command line (Q-012); no colour, so help and errors are the
+# same on every terminal.
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 # `flate2`: pure-Rust zlib (zlib-rs), so the musl build needs no C
 # toolchain; `runtime_detection` lets zlib-rs pick SIMD code at run time.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }

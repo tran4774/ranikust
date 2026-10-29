@@ -43,8 +43,7 @@ pub struct Outcome;    // success() | error(code, message); panics are reported 
 pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sections only
 ```
 
-`--metrics-file` arrives with the CLI (Phase 1 task 8) and fills
-`Config::file`.
+The binary's `--metrics-file` fills `Config::file` after `from_env`.
 
 ## Invariants
 
@@ -114,7 +113,6 @@ pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sec
 ## Phase 1
 
 - Done: the crate, the binary's wiring (`ranikust.run`, report on every exit
-  path).
-- Next, with task 8: `--metrics-file`, `meta.options` and `meta.mode`.
+  path); with task 8, `--metrics-file`, `meta.options` and `meta.mode`.
 - Every Phase 1 task instruments its crate per the design table and checks
   its spans with `Capture`.
