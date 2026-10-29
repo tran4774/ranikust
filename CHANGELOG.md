@@ -29,4 +29,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   stderr. Unset, nothing is collected and nothing changes; the image is the
   same either way.
 
+### Changed
+
+- Building the static musl binary from source needs zig 0.16.0 and
+  cargo-zigbuild 0.24.0, which compile its C dependencies; see
+  `CONTRIBUTING.md`.
+
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main

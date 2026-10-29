@@ -78,3 +78,7 @@ in the experiment. jemalloc was not measured.
 
 The trust store combines host CAs and embedded roots, with the `ring`
 provider ([ADR-0024](0024-tls-rustls-ring.md)).
+
+Implemented (Q-052): the `justfile` and CI build the musl targets with
+cargo-zigbuild 0.24.0 and zig 0.16.0, rustc links x86_64 with the host `cc`
+to keep static-pie and symbols, and mimalloc is the binary's allocator.

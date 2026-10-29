@@ -24,8 +24,7 @@ for pulled layers. Same entries, same bytes, whatever the thread count.
 
 ## API (planned)
 
-Built: everything below except zstd, which waits for the cargo-zigbuild
-toolchain (Q-052).
+Built: everything below.
 
 ```rust
 pub struct EntryPath;              // [design] relative, normalized bytes; orders component-wise
@@ -34,7 +33,7 @@ pub struct Entry { pub path: EntryPath, pub kind: EntryKind, pub mode: u32 /* ra
     pub inode: Option<(u64, u64)> } // [design] (dev, ino) finds hardlinks
 pub enum EntryKind { File { size: u64 }, Dir, Symlink(Vec<u8>), Char(u32, u32), Block(u32, u32), Fifo,
     Whiteout /* path = the deleted path */, OpaqueDir }  // [design]
-pub enum Compression { None, Gzip, Zstd /* Q-052: needs cargo-zigbuild */ }
+pub enum Compression { None, Gzip, Zstd }  // [design] level: gzip 0..=9, zstd 1..=19
 pub struct EncodeOptions { pub compression: Compression, pub level: i32, pub threads: NonZeroUsize, pub mtime: Option<i64> } // [design] mtime: --reproducible
 pub trait EntrySource {            // [design] implemented by the exporter
     fn open(&mut self, e: &Entry) -> io::Result<Box<dyn Read + '_>>;            // file content, read once in layer order
@@ -64,12 +63,20 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   `threads` = 1 does everything in the caller's thread; above 1, `threads`
   workers compress and two more threads hash the tar and the blob in order,
   so the caller only copies and writes.
+- zstd (`src/zstd_frames.rs`, crate `zstd` on libzstd 1.5.7): 1 MiB blocks
+  by offset, each one complete frame (content size, no checksum), written
+  in order; an empty layer is one empty frame. Each worker reuses one zstd
+  context. Both codecs share the block-parallel encoder (`src/parallel.rs`:
+  `Codec` trait, workers, ordered writes, hash threads).
+- Decoder: sniffs the magic; gzip through `MultiGzDecoder`, zstd through
+  libzstd's streaming decoder (any number of frames, window at most
+  128 MiB); counts blob bytes for `rnk_layer.decode`.
 
 ## Invariants
 
 - Output depends only on entries, compression, level and block size: not on
   threads, chunking, clock (with `--reproducible`) or host users
-  ([ARCHITECTURE.md#determinism](../../../ARCHITECTURE.md#determinism)); gzip is one member, zstd gets 128 KiB chunks.
+  ([ARCHITECTURE.md#determinism](../../../ARCHITECTURE.md#determinism)); gzip is one member, zstd one frame per 1 MiB.
 - Raw mode bits survive (sticky, setuid, setgid); no user or group names.
 - A hostile tar never panics the reader and stays bounded in memory
   ([threat model T15, T16](../../security/threat-model.md#5-threats-and-mitigations)).
@@ -86,7 +93,7 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   `security.capability`), `:162-176` (whiteout), `:179-197` (hardlinks);
   `pkg/snapshot/snapshot.go:341-390`, `:432-446` (parent directories);
   `pkg/pgzip/pgzip.go:17-35` (local branch only: 1 MiB independent blocks)
-- **External:** [OCI image-spec v1.1.1 layer.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/layer.md); BuildKit v0.34.0 [WriteUpperdir](https://github.com/moby/buildkit/blob/v0.34.0/util/overlay/overlay_linux.go#L113), [sameDirent](https://github.com/moby/buildkit/blob/v0.34.0/util/overlay/overlay_linux.go#L348); [tar 0.4.46](https://docs.rs/tar/0.4.46/tar/)
+- **External:** [OCI image-spec v1.1.1 layer.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/layer.md); [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878) (zstd frames, concatenation); BuildKit v0.34.0 [WriteUpperdir](https://github.com/moby/buildkit/blob/v0.34.0/util/overlay/overlay_linux.go#L113), [sameDirent](https://github.com/moby/buildkit/blob/v0.34.0/util/overlay/overlay_linux.go#L348); [tar 0.4.46](https://docs.rs/tar/0.4.46/tar/)
 
 ## Tests
 
@@ -96,8 +103,13 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   `tar` crate (124-byte components, long link targets, PAX xattrs, hardlinks,
   raw modes, whiteouts, opaque directories, uid/gid > 2,097,151, negative
   mtimes); a > 8 GiB header; gzip is one member; decoder round trips and
-  hostile input. Still to add with zstd: its goldens and 20 runs at top
-  threads.
+  hostile input. zstd: pinned sha256 (checked with the zstd CLI), one frame
+  per MiB each equal to a fresh one-shot compression, same bytes for threads
+  1..16 and random chunkings, the `zstd` CLI reads the frames (skipped
+  without it), a one-frame blob with checksum from another tool decodes, a
+  2 GiB window is refused.
+- Spans: `tests/spans.rs`, a binary of its own
+  ([why](../../design/metrics.md#testing-hooks)).
 - T1/T2: image content against kaniko ([testing](../../testing.md#planned-test-suites)).
 
 ## Metrics
@@ -114,9 +126,15 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
 - `gzp` gives other bytes at t=1 than at t≥2 and is nondeterministic with a
   dictionary; pigz-style (128 KiB blocks, 32 KiB dictionary, sync flush,
   `Crc::combine`) is deterministic at every t ([exp-05 Q3](../../research/experiments/05-rust-ecosystem.md#q3-parallel-compression)).
-- zstd at t=0 and t≥1 differ, and one 1 GiB write at t=32 gave two results:
-  always multithreaded mode with 128 KiB writes, even for one worker. Library,
-  level and block size are part of every digest (Q3).
+- libzstd's multithreading is not deterministic: t=0 and t≥1 differ, and
+  1 GiB or 1 MiB writes at t=32 gave two results over 20 runs (exp-05 Q3);
+  hence independent frames. They cost about 0.4% of size against one
+  single-threaded stream at level 3 (236 MB of rlibs: 66.48 MB against
+  66.20 MB). libzstd's version, the level and the frame size are part of
+  every zstd digest.
+- libzstd allocates with libc's `malloc` (musl's in the release binary),
+  not mimalloc: keep a context alive per worker rather than creating one
+  per block.
 - Overlay whiteouts share one inode (`nlink=4`): detect hardlinks only after
   whiteouts are converted ([design](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer)); a hardlink whose target is
   in a lower layer is written as a regular file ([inferred](../../design/kaniko-mode.md#exporter-requirements-specific-to-the-walk)).
@@ -133,8 +151,9 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   streaming digests → decoder → exporter integration with `rnk-snapshot`.
 - [open: Q-013] How `LayerWriter` gets a missing parent's metadata from
   the exporter; interim: `EntrySource::parent`.
-- Done: tar writer with goldens; parallel gzip with determinism tests;
-  streaming digests; the decoder (gzip with any number of members, plain)
-  (`tests/it/`); `examples/throughput.rs` prints MB/s per thread count.
-- Left: zstd, after the cargo-zigbuild toolchain lands (Q-052); exporter integration with `rnk-snapshot`
-  (task 9).
+- Done: tar writer with goldens; parallel gzip and zstd with determinism
+  tests; streaming digests; the decoder (gzip with any number of members,
+  zstd with any number of frames, plain) (`tests/it/`); the `rnk_layer.*`
+  spans; `examples/throughput.rs` prints MB/s per thread count for gzip
+  and zstd.
+- Left: exporter integration with `rnk-snapshot` (task 9).

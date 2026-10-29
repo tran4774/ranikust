@@ -22,9 +22,31 @@ must keep compiling ([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)).
 | [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
 | [git-cliff](https://git-cliff.org/) | Drafts release notes; only needed by whoever prepares a release | `cargo install --locked git-cliff` |
 | `file`, `readelf` | `just build-static` checks the binary is static | `file` and `binutils` packages |
+| A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
+| [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static` and `just check-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
+| [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | `cargo install --locked cargo-zigbuild@0.24.0` |
 
-The versions of cargo-deny and mdBook match CI. Nothing in the build needs
-root, and nothing in the dev loop should ever be run with `sudo`.
+The versions of cargo-deny, mdBook, zig and cargo-zigbuild match CI. Nothing
+in the build needs root, and nothing in the dev loop should ever be run with
+`sudo`.
+
+zig is one tarball; install it into your home and check it against Zig's
+signing key (from [ziglang.org/download](https://ziglang.org/download/)):
+
+```sh
+v=0.16.0 a=x86_64                     # or a=aarch64
+f=zig-$a-linux-$v.tar.xz
+curl -fLO https://ziglang.org/download/$v/$f
+curl -fLO https://ziglang.org/download/$v/$f.minisig
+minisign -Vm "$f" -P RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U
+mkdir -p ~/.local/share/zig ~/.local/bin
+tar -C ~/.local/share/zig -xf "$f"
+ln -sf ~/.local/share/zig/zig-$a-linux-$v/zig ~/.local/bin/zig
+zig version
+```
+
+Without `minisign`, compare `sha256sum "$f"` with the tarball's `shasum` in
+<https://ziglang.org/download/index.json>.
 
 ## Development loop
 

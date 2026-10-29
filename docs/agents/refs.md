@@ -62,7 +62,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | `Error` enums of the library crates | chosen |
 | [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests | chosen (tests) |
 | [flate2](https://crates.io/crates/flate2), [zlib-rs](https://crates.io/crates/zlib-rs) | 1.1.10, MIT OR Apache-2.0; 0.6.8, Zlib | Deflate under the pigz-style gzip | chosen |
-| [zstd](https://crates.io/crates/zstd) | 0.14.3, BSD-3-Clause | Multithreaded zstd, fed 128 KiB chunks | chosen |
+| [zstd](https://crates.io/crates/zstd) | 0.14.3 (libzstd 1.5.7), BSD-3-Clause | zstd layers as independent 1 MiB frames compressed on `rnk-layer`'s workers (never libzstd's multithreading), and the decoder; no default features | chosen (`rnk-layer`) |
 | [gzp](https://crates.io/crates/gzp) | 2.0.4, Unlicense/MIT | Parallel gzip | candidate |
 | [rustls](https://crates.io/crates/rustls) | 0.23.46, Apache-2.0 OR ISC OR MIT | TLS, no OpenSSL (`ADR-0020`, `ADR-0024`) | chosen |
 | [ring](https://crates.io/crates/ring) | 0.17.14, Apache-2.0 AND ISC | rustls crypto provider; 5.1 MB static binary against 7.3 MB (`exp-05`) | chosen (`ADR-0024`) |
@@ -76,7 +76,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | candidate; `rustix` used by `rnk-rootfs` (Q-012 interim) |
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Derives each library crate's `Error` enum; no `anyhow` in libraries | candidate; used by `rnk-rootfs` |
 | [tempfile](https://crates.io/crates/tempfile) | 3.27.0, MIT OR Apache-2.0 | Temp dirs for T0 tests, removed on drop | candidate; used by `rnk-rootfs` tests |
-| [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required | chosen (`ADR-0020`) |
+| [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required; set in `crates/ranikust/src/main.rs`, no features | chosen (`ADR-0020`) |
 | [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | 0.1.44, 0.3.23, MIT | Spans and logs in every crate; the subscriber, per-layer filters and the metrics layer in `rnk-metrics` ([docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/)); `fmt` and `registry` features only | chosen (`ADR-0025`) |
 | [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: Q-058]`) |
 | [serde_json](https://crates.io/crates/serde_json) | 1.0.154, MIT OR Apache-2.0 | JSON: the metrics report (`rnk-metrics`) | chosen |
@@ -94,6 +94,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | What | Link |
 |---|---|
 | just, cargo-deny, mdBook, git-cliff, cargo-zigbuild | https://github.com/casey/just, https://embarkstudios.github.io/cargo-deny/, https://rust-lang.github.io/mdBook/, https://git-cliff.org/, https://github.com/rust-cross/cargo-zigbuild |
+| zig 0.16.0 (C compiler of the musl builds, through cargo-zigbuild 0.24.0) and its CI action | https://ziglang.org/download/, https://github.com/mlugg/setup-zig |
 | MADR, Conventional Commits, Keep a Changelog | https://adr.github.io/madr/, https://www.conventionalcommits.org/en/v1.0.0/, https://keepachangelog.com/en/1.1.0/ |
 | AGENTS.md convention | https://agents.md/ |
 
