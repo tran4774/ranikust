@@ -72,6 +72,7 @@ pub struct LayerDigests {
 pub trait EntrySource {
     /// Opens the content of a regular file entry, positioned at its start.
     /// The writer reads exactly the entry's size, then checks for the end.
+    /// It is not called for empty files or for files written as hardlinks.
     ///
     /// # Errors
     ///

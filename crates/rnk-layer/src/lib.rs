@@ -5,10 +5,13 @@
 //! hardlinks, PAX xattrs and fixed timestamps for reproducible builds.
 //! Compresses gzip and zstd in parallel, decompresses pulled gzip and zstd
 //! blobs into a plain tar stream, and computes digests while streaming.
+//! zstd is not implemented yet ([open: Q-050]).
 //!
 //! The exporter feeds [`Entry`] values to a [`LayerWriter`], then calls
 //! [`LayerWriter::finish`] with an [`EntrySource`] that opens file contents
-//! and answers lookups for parent directories it did not feed.
+//! and answers lookups for parent directories it did not feed; it gets
+//! [`LayerDigests`] back. A pulled blob goes through a [`Decoder`], which
+//! reads as the plain tar stream and gives its diff ID.
 //!
 //! # Boundaries
 //!

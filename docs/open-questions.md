@@ -172,7 +172,11 @@ Entry format:
 - **Context:** the `zstd` crate builds libzstd from C (`zstd-sys`), the
   multithreaded encoder `exp-05` measured. `just check-aarch64` and
   `just build-static` run without a C cross compiler (no `musl-gcc`, no zig
-  on the development machine or in the recipes), so adding it breaks them.
+  on the development machine or in the recipes), so adding it breaks them:
+  with `zstd` 0.14.3 (`zstd-sys` 2.1.2, libzstd 1.5.7) both
+  `cargo check --target aarch64-unknown-linux-musl` and the
+  `x86_64-unknown-linux-musl` release build stop with "failed to find tool
+  `aarch64-linux-musl-gcc`" (or `x86_64-linux-musl-gcc`).
   `ADR-0020` picks cargo-zigbuild, but no recipe uses it yet
   ([workflow.md](agents/workflow.md#setup)).
 - **Options:** (a) cargo-zigbuild with zig in the recipes and CI, as

@@ -89,11 +89,14 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
 
 ## Tests
 
-- T0: pinned sha256s for fixed entries (gzip, zstd, plain); same bytes for
-  threads 1..=N and random chunkings (proptest); zstd 20 times at top threads.
-- T0 round trip (proptest): 124-byte path components, long link targets, PAX
-  xattrs, hardlinks, modes 1777/4755/2755, whiteouts, uid/gid > 2,097,151,
-  sizes > 8 GiB; gzip output is one member.
+- T0 (`tests/it/`, unit tests in `src/`): pinned sha256s of a sample tree,
+  plain and gzip, checked with GNU tar and gzip; same bytes for threads 1..16
+  and random chunkings (proptest); random trees round-tripped through the
+  `tar` crate (124-byte components, long link targets, PAX xattrs, hardlinks,
+  raw modes, whiteouts, opaque directories, uid/gid > 2,097,151, negative
+  mtimes); a > 8 GiB header; gzip is one member; decoder round trips and
+  hostile input. Still to add with zstd: its goldens and 20 runs at top
+  threads.
 - T1/T2: image content against kaniko ([testing](../../testing.md#planned-test-suites)).
 
 ## Pitfalls
