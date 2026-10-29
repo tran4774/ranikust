@@ -40,8 +40,9 @@ Fix a failure at the narrowest level that shows it, then widen again.
 - Test behaviour through the public API of the crate, not private details.
 - Tests run unprivileged and write only below a fresh temporary directory.
   Anything that needs user namespaces, mounts or root belongs to tier T1 or
-  T2 (`docs/testing.md`): mark it `#[ignore = "T2: <why>"]` and say in your
-  report that it was not run. Never run it on the host to "just check".
+  T2 (`docs/testing.md`): mark it `#[ignore = "T2: <why>"]`, run it with
+  `just test-vm unit` (the `vm-test` skill), or say in your report that it
+  was not run. Never run it on the host to "just check".
 
 ## Debugging
 

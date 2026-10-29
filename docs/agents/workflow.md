@@ -44,6 +44,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |
 | `just changelog [args]` | `git cliff --unreleased`, a draft to stdout | |
 | `just smoke [image]` | T1 smoke test until `rnk-builder` exists: the `smoke-build` example pulls, extracts, runs `RUN`s in the sandbox inside rootless `podman run --privileged` and writes a one-layer image podman then runs ([testing](../testing.md#smoke-test-until-the-builder-exists-tier-t1)) | |
+| `just test-vm [suite]...` | T2 in a disposable QEMU/KVM VM, as the user: `unit` (the `T2:` ignored tests as root) and `smoke` (`smoke-build` as real root and in rootful Docker); results in `target/vm/results/<release>/` ([testing](../testing.md#the-vm-harness-tier-t2)) | |
 | `just ci` | all of the above that CI runs, in CI's order | all |
 
 `just` lists them. A recipe that mirrors CI runs exactly the job's command:
@@ -56,7 +57,7 @@ change both together. `just test -p <crate>` still tests the whole workspace
 |---|---|---|---|---|
 | T0 | Unit and in-process tests | none | anywhere: `just test` | in use |
 | T1 | User namespaces, rootless overlay, sandbox in a user namespace, Podman | user with `/etc/subuid` entries | developer machine; `just smoke`; `just test-rootless` TODO | smoke test only |
-| T2 | Overlay as root, `pivot_root`, `mknod`, Docker variants, kaniko mode on `/`, host-safety attacks | root | disposable VM only; `just test-vm` TODO | planned |
+| T2 | Overlay as root, `pivot_root`, `mknod`, Docker variants, kaniko mode on `/`, host-safety attacks | root | disposable VM only: `just test-vm` | `unit` and `smoke` suites |
 | T3 | fmt, clippy, T0, static build, aarch64 check, deny, docs | none | GitHub Actions: `just ci` | in use |
 
 Planned suites: [`docs/testing.md`](../testing.md#planned-test-suites).
