@@ -24,7 +24,7 @@ for pulled layers. Same entries, same bytes, whatever the thread count.
 
 ## API (planned)
 
-Built: the tar writer (plain output). Planned: the rest.
+Built: the tar writer, plain or parallel gzip. Planned: the rest.
 
 ```rust
 pub struct EntryPath;              // [design] relative, normalized bytes; orders component-wise
@@ -52,6 +52,10 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
   with `.wh.` are rejected.
 - Headers: PAX as Go's `archive/tar` writes them (`src/header.rs`); whiteout
   and opaque markers are empty files, mode 0, 0:0, the entry's mtime.
+- gzip (`src/gzip.rs`, flate2 on zlib-rs): 128 KiB blocks by offset, each
+  deflated alone with the previous 32 KiB as dictionary and a sync flush,
+  then an empty final block (`03 00`); header mtime 0, OS 255; CRC combined.
+  `threads` = 1 compresses in the caller's thread.
 
 ## Invariants
 
@@ -111,4 +115,5 @@ pub struct Decoder<R: Read>;       // [design] sniffs gzip/zstd/plain, yields pl
   streaming digests → decoder → exporter integration with `rnk-snapshot`.
 - [open: Q-013] How `LayerWriter` gets a missing parent's metadata from
   the exporter; interim: `EntrySource::parent`.
-- Done: tar writer with goldens (`tests/it/`).
+- Done: tar writer with goldens; parallel gzip with determinism tests
+  (`tests/it/`); `examples/throughput.rs` prints MB/s per thread count.

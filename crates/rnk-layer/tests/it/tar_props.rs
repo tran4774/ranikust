@@ -35,7 +35,7 @@ enum Leaf {
 }
 
 #[derive(Clone, Debug)]
-struct Spec {
+pub(crate) struct Spec {
     path: Vec<usize>,
     leaf: Leaf,
     mode: u32,
@@ -57,7 +57,7 @@ fn leaf() -> impl Strategy<Value = Leaf> {
     ]
 }
 
-fn spec() -> impl Strategy<Value = Spec> {
+pub(crate) fn spec() -> impl Strategy<Value = Spec> {
     (
         vec(0..names().len(), 1..4),
         leaf(),
@@ -85,7 +85,7 @@ fn hash(bytes: &[u8], seed: u64) -> u64 {
 
 /// Builds a valid tree from the specs: ancestors become directories, fed or
 /// left to the parent lookup depending on `seed`.
-fn build(specs: &[Spec], seed: u64) -> Tree {
+pub(crate) fn build(specs: &[Spec], seed: u64) -> Tree {
     let names = names();
     let mut chosen: BTreeMap<String, Spec> = BTreeMap::new();
     for s in specs {

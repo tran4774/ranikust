@@ -15,6 +15,9 @@ repository = "https://github.com/tran4774/ranikust"
 rnk-rootfs = { path = "crates/rnk-rootfs" }
 
 # External crates. Each one is justified in the commit that adds it.
+# Pure-Rust zlib (zlib-rs) under flate2: no C toolchain for the musl build;
+# `runtime_detection` lets zlib-rs pick SIMD code at run time.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 thiserror = "2.0.21"
 
 # Test-only crates.

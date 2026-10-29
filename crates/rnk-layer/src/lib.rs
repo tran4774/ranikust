@@ -20,6 +20,7 @@
 
 mod entry;
 mod error;
+mod gzip;
 mod header;
 mod writer;
 

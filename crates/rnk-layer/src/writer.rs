@@ -7,6 +7,7 @@ use std::io::{self, BufWriter, ErrorKind, Read, Write};
 use std::num::NonZeroUsize;
 
 use crate::entry::{OPAQUE_MARKER, WHITEOUT_PREFIX};
+use crate::gzip::GzipEncoder;
 use crate::header::{self, BLOCK_SIZE, Header, TypeFlag};
 use crate::{Entry, EntryKind, EntryPath, Error};
 
@@ -105,9 +106,10 @@ impl LayerWriter {
     pub fn new(options: EncodeOptions) -> Result<Self, Error> {
         match options.compression {
             Compression::None => {}
-            Compression::Gzip | Compression::Zstd => {
-                return Err(Error::Unsupported(options.compression));
+            Compression::Gzip => {
+                gzip_level(options.level)?;
             }
+            Compression::Zstd => return Err(Error::Unsupported(options.compression)),
         }
         Ok(Self {
             options,
@@ -156,14 +158,20 @@ impl LayerWriter {
     pub fn finish<W: Write>(mut self, source: &mut dyn EntrySource, out: W) -> Result<u64, Error> {
         self.add_parents(source)?;
         let records = records(&self.entries);
+        let out = Counter {
+            inner: out,
+            count: 0,
+        };
+        let out = match self.options.compression {
+            Compression::None => Sink::Plain(BufWriter::with_capacity(COPY_BUFFER, out)),
+            Compression::Gzip => {
+                let level = gzip_level(self.options.level)?;
+                Sink::Gzip(GzipEncoder::new(out, level, self.options.threads)?)
+            }
+            Compression::Zstd => return Err(Error::Unsupported(Compression::Zstd)),
+        };
         let mut tar = Tar {
-            out: BufWriter::with_capacity(
-                COPY_BUFFER,
-                Counter {
-                    inner: out,
-                    count: 0,
-                },
-            ),
+            out,
             header: Vec::with_capacity(4 * BLOCK_SIZE),
             buffer: vec![0; COPY_BUFFER],
             mtime: self.options.mtime,
@@ -172,10 +180,7 @@ impl LayerWriter {
             tar.write(record, source)?;
         }
         tar.out.write_all(&[0; 2 * BLOCK_SIZE])?;
-        let counter = tar
-            .out
-            .into_inner()
-            .map_err(io::IntoInnerError::into_error)?;
+        let counter = tar.out.finish()?;
         Ok(counter.count)
     }
 
@@ -294,6 +299,58 @@ fn records(entries: &BTreeMap<EntryPath, Entry>) -> Vec<Record<'_>> {
     records
 }
 
+/// Checks a gzip level.
+fn gzip_level(level: i32) -> Result<u32, Error> {
+    u32::try_from(level)
+        .ok()
+        .filter(|&l| l <= 9)
+        .ok_or(Error::InvalidLevel {
+            compression: Compression::Gzip,
+            level,
+        })
+}
+
+/// Where the tar stream goes: straight out, or through a compressor.
+enum Sink<W: Write> {
+    Plain(BufWriter<W>),
+    Gzip(GzipEncoder<W>),
+}
+
+impl<W: Write> Sink<W> {
+    /// Ends the stream and returns the inner writer, flushed.
+    fn finish(self) -> io::Result<W> {
+        let mut out = match self {
+            Self::Plain(out) => out.into_inner().map_err(io::IntoInnerError::into_error)?,
+            Self::Gzip(out) => out.finish()?,
+        };
+        out.flush()?;
+        Ok(out)
+    }
+}
+
+impl<W: Write> Write for Sink<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(out) => out.write(buf),
+            Self::Gzip(out) => out.write(buf),
+        }
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Plain(out) => out.write_all(buf),
+            Self::Gzip(out) => out.write_all(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(out) => out.flush(),
+            Self::Gzip(out) => out.flush(),
+        }
+    }
+}
+
 /// Counts the bytes written through it.
 struct Counter<W> {
     inner: W,
@@ -314,7 +371,7 @@ impl<W: Write> Write for Counter<W> {
 
 /// The tar stream being written.
 struct Tar<W: Write> {
-    out: W,
+    out: Sink<W>,
     header: Vec<u8>,
     buffer: Vec<u8>,
     mtime: Option<i64>,
