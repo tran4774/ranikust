@@ -17,11 +17,16 @@ use rustix::io::Errno;
 use crate::error::{Error, Result, io_err};
 use crate::meta::{self, FileType, Stat};
 use crate::path;
-use crate::root::{RootPath, open_name};
+use crate::root::{Mounts, RootPath, open_name};
 
 /// Paths inside a root that [`delete_contents`] keeps, with everything below
 /// them. Matching is exact, on lexically cleaned paths: `/a/./b/` keeps
 /// `a/b`, not `a/bc`. Their ancestors survive because they are not empty.
+///
+/// Paths are physical: they are compared with the path the walk reaches,
+/// and the walk never follows a symlink. With `/var/run -> /run`, keeping
+/// `/var/run` keeps the symlink, not `/run`; list `/run` (mountinfo gives
+/// physical paths).
 #[derive(Clone, Debug, Default)]
 pub struct IgnoreList {
     paths: HashSet<PathBuf>,
@@ -109,9 +114,21 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
             Keep::Remove
         }
     };
-    let r = remove_below(root, Path::new(""), &mut decide, &mut counts);
+    let r = open_dir(root, Path::new(""))
+        .and_then(|start| remove_below(root, start, Path::new(""), &mut decide, &mut counts));
     counts.record(&span);
     r.map(drop)
+}
+
+/// Opens the directory `dir` inside `root` for a deletion walk: no final
+/// symlink followed, no mount entered on the way (`EXDEV`).
+pub(crate) fn open_dir(root: &RootPath, dir: &Path) -> Result<OwnedFd> {
+    root.resolve_in(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+        Mounts::Stay,
+    )
 }
 
 /// What to do with an entry met while deleting.
@@ -158,23 +175,21 @@ struct Frame {
     keep_self: bool,
 }
 
-/// Deletes the entries below the directory `dir` (a cleaned path inside
-/// `root`, `""` for the root) as `decide` says; `dir` itself stays. Returns
-/// whether nothing below `dir` was kept.
+/// Deletes the entries below the directory `fd` (an `O_RDONLY` directory fd,
+/// from [`open_dir`] or [`open_dir_checked`]; `dir` is its cleaned path
+/// inside `root`, `""` for the root) as `decide` says; the directory itself
+/// stays. Returns whether nothing below it was kept.
 ///
 /// `decide` gets each entry's cleaned path and type; entries on another
-/// mount, and mount roots, are kept without asking.
+/// mount, and mount roots, are kept without asking. Starting from an
+/// opened fd means the directory checked by the caller is the one emptied.
 pub(crate) fn remove_below(
     root: &RootPath,
+    fd: OwnedFd,
     dir: &Path,
     decide: &mut dyn FnMut(&Path, FileType) -> Keep,
     counts: &mut Counts,
 ) -> Result<bool> {
-    let fd = root.resolve(
-        dir,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
     let st = meta::statx_at(fd.as_fd(), OsStr::new(""), dir)?;
     if st.mnt_id != root.mnt_id() {
         counts.kept += 1;
@@ -208,8 +223,9 @@ pub(crate) fn remove_below(
                 match rustix::fs::unlinkat(&parent.fd, &done.name, AtFlags::REMOVEDIR) {
                     Ok(()) => counts.dirs += 1,
                     // The name now holds something else than the directory
-                    // just emptied (a swap), or something was added to it.
-                    Err(Errno::NOTDIR | Errno::NOTEMPTY) => {
+                    // just emptied (a swap), something was added to it, or
+                    // it was removed meanwhile.
+                    Err(Errno::NOTDIR | Errno::NOTEMPTY | Errno::NOENT) => {
                         return Err(Error::Changed { path: done.path });
                     }
                     Err(e) => return Err(io_err("rmdir", &done.path, e)),
@@ -263,7 +279,7 @@ pub(crate) fn remove_below(
 
 /// Opens the directory `name` in `dirfd` without following a symlink or
 /// entering another mount, and checks it is the entry `st` described.
-fn open_dir_checked(
+pub(crate) fn open_dir_checked(
     dirfd: BorrowedFd<'_>,
     name: &OsStr,
     st: &Stat,
@@ -301,9 +317,15 @@ fn open_dir_checked(
     Ok(fd)
 }
 
-/// The names in a directory, without `.` and `..`.
+/// The names in a directory, without `.` and `..`. A directory removed
+/// since it was opened (`ENOENT` on reopening `.`) is a change.
 fn read_names(fd: BorrowedFd<'_>, path: &Path) -> Result<Vec<OsString>> {
-    let dir = rustix::fs::Dir::read_from(fd).map_err(|e| io_err("opendir", path, e))?;
+    let dir = rustix::fs::Dir::read_from(fd).map_err(|e| match e {
+        Errno::NOENT => Error::Changed {
+            path: path.to_owned(),
+        },
+        e => io_err("opendir", path, e),
+    })?;
     let mut names = Vec::new();
     for entry in dir {
         let entry = entry.map_err(|e| io_err("readdir", path, e))?;

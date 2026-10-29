@@ -92,10 +92,19 @@ never called. A hand-written reader would repeat that parsing for no gain.
   `RootPath`, so a symlink in the root or earlier in the same layer cannot
   carry an entry outside.
 - **Replacing.** An existing entry is unlinked (a directory removed
-  through the deletion walker) and the new one created with `O_EXCL`,
-  `mkdirat`, `symlinkat`, `linkat` or `mknodat`, none of which follow the
-  last name; a directory over a directory merges. Missing parents are
-  created `0755`.
+  through the deletion walker, started from the very directory just
+  `statx`ed) and the new one created with `O_EXCL`, `mkdirat`, `symlinkat`,
+  `linkat` or `mknodat`, none of which follow the last name; a directory
+  over a directory merges. Missing parents are created `0755`.
+- **Mounts.** Extraction never crosses a mount inside the root: parents are
+  resolved with `RESOLVE_NO_XDEV`, and an existing entry on another mount
+  or at a mount root is never replaced, merged into or whited out; such
+  entries fail with `Error::Entry`. Skipping them, as kaniko's ignore list
+  does, waits for the ignore list in `extract` (Phase 2, kaniko mode).
+- **Bombs.** GNU sparse entries are refused: the `tar` crate writes their
+  holes as zeros, so a tiny entry could claim 2^62 bytes. GNU long names and
+  PAX headers are read whole into memory by the `tar` crate, with no bound
+  ([Q-052](../open-questions.md#q-052-how-are-tar-extension-headers-bounded)).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*`, PAX `mtime`/`atime` with
   nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
@@ -164,12 +173,17 @@ directory an extracted entry replaces, and applies OCI whiteouts.
   mount id must match that `statx`; otherwise, or when `rmdir` then finds a
   non-directory or new entries under the name, deletion stops with
   `Error::Changed`.
-- The ignore list holds exact, lexically cleaned paths inside the root;
-  `..` above the root and the root itself are refused. A kept entry keeps
-  its ancestors, which are not empty. What goes on the list is the
-  caller's: [Q-035](../open-questions.md#q-035-what-does-the-kaniko-mode-ignore-list-hold).
-- An entry that vanished meanwhile (`ENOENT`) is skipped; any other error
-  stops the deletion and leaves the rest in place.
+- The ignore list holds exact, lexically cleaned, physical paths inside the
+  root (the walk never follows a symlink, so a path through one never
+  matches); `..` above the root and the root itself are refused. A kept
+  entry keeps its ancestors, which are not empty. What goes on the list is
+  the caller's: [Q-035](../open-questions.md#q-035-what-does-the-kaniko-mode-ignore-list-hold).
+- The walk starts from an opened directory fd: the root, a path opened
+  with `RESOLVE_NO_XDEV`, or the directory a caller just checked by
+  `statx`, so the directory checked is the one emptied.
+- An entry that vanished before its `statx` (`ENOENT`) is skipped; a
+  directory that vanishes while being emptied is `Error::Changed`; any
+  other error stops the deletion and leaves the rest in place.
 
 ## Observability
 
@@ -193,6 +207,8 @@ recorded once at the end, never per entry: `rnk_rootfs.extract`
   What is the minimum kernel, and who checks it?
 - [Q-051](../open-questions.md#q-051-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)
   How does overlay-form extraction handle a hardlink into a lower layer?
+- [Q-052](../open-questions.md#q-052-how-are-tar-extension-headers-bounded)
+  How are tar extension headers bounded?
 
 ## References
 

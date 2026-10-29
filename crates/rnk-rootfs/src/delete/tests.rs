@@ -82,8 +82,15 @@ fn entries_on_another_mount_are_kept() {
         .unwrap()
         .with_mnt_id(f.root.mnt_id() + 1);
     let mut counts = Counts::default();
-    let all_gone =
-        remove_below(&root, Path::new("a"), &mut |_, _| Keep::Remove, &mut counts).unwrap();
+    let start = open_dir(&root, Path::new("a")).unwrap();
+    let all_gone = remove_below(
+        &root,
+        start,
+        Path::new("a"),
+        &mut |_, _| Keep::Remove,
+        &mut counts,
+    )
+    .unwrap();
     assert!(!all_gone);
     delete_contents(&root, &IgnoreList::new()).unwrap();
     assert_eq!(tree(&f.host).len(), 3);
@@ -132,8 +139,10 @@ fn deletes_a_tree_deeper_than_path_max() {
     .unwrap();
     drop((leaf, cur));
     let mut counts = Counts::default();
+    let start = open_dir(&f.root, Path::new("")).unwrap();
     remove_below(
         &f.root,
+        start,
         Path::new(""),
         &mut |_, _| Keep::Remove,
         &mut counts,

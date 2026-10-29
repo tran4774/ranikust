@@ -388,6 +388,27 @@ Entry format:
   target (`feat/rnk-rootfs-rootpath`).
 - **Raised:** 2026-10-30
 
+### Q-052: How are tar extension headers bounded?
+
+- **Blocks:** Phase 1 task 9 (base-layer extraction); Phase 6 (fuzzing);
+  **Area:** `rnk-rootfs`, `rnk-layer`
+- **Context:** the `tar` crate (0.4.46) reads a GNU long name, long link or
+  PAX header whole into memory, whatever size it declares
+  (`archive.rs:418`, `:440`), so a few MB of compressed zeros in a base
+  layer become GBs of memory and an OOM kill (threat T15). GNU sparse
+  entries, whose holes the crate writes as zeros, are refused for now
+  ([rootfs](design/rootfs.md#extraction)). Found by a host-safety review.
+- **Options:** (a) a reader in front of the `tar` crate that follows the
+  tar framing and fails on an extension header above a cap (1 MiB);
+  (b) parse in raw mode and apply long names and PAX records in
+  `rnk-rootfs`, with the cap; (c) rely on the memory limit of the build's
+  cgroup; for sparse entries, (d) keep refusing them or (e) seek over holes
+  and `ftruncate`, with a cap on the real size.
+- **Recommendation:** none
+- **Interim:** no bound on extension headers; sparse entries refused
+  (`feat/rnk-rootfs-rootpath`).
+- **Raised:** 2026-10-30
+
 ### Q-027: Is the ContextSource trait sync or async?
 
 - **Blocks:** Phase 1 task 10; **Area:** `rnk-context`

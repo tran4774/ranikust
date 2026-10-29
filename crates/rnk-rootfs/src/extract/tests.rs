@@ -424,6 +424,23 @@ fn malformed_streams_and_entries_fail() {
     let e = extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap_err();
     assert!(matches!(e, Error::Entry { .. }), "{e}");
 
+    // A GNU sparse entry could claim any size and have its holes written as
+    // zeros: refused.
+    let mut t = Tar::new(&f);
+    // One data byte at offset 2^62 - 1: everything before it is a hole.
+    let mut h = t.header(b"sparse", EntryType::GNUSparse, 0o644, 1);
+    let gnu = h.as_gnu_mut().unwrap();
+    gnu.set_real_size(1 << 62);
+    gnu.sparse[0].set_offset((1 << 62) - 1);
+    gnu.sparse[0].set_length(1);
+    t.push(h, b"x");
+    let e = extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap_err();
+    assert!(
+        matches!(e, Error::Entry { ref reason, .. } if reason.contains("sparse")),
+        "{e}"
+    );
+    assert!(!f.host("sparse").exists());
+
     let mut t = Tar::new(&f);
     t.file("./", 0o644, b"");
     let e = extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap_err();
@@ -528,6 +545,71 @@ fn concurrent_swap_during_extraction_stays_inside() {
         });
         assert_eq!(snapshot(&out), before);
     }
+}
+
+/// Existing entries that look like another mount (the root claims another
+/// mount id) are never replaced, merged into or whited out.
+#[test]
+fn entries_on_a_mount_point_are_refused() {
+    let f = Fixture::new();
+    fs::write(f.host("file"), b"lower").unwrap();
+    fs::create_dir(f.host("dir")).unwrap();
+    fs::write(f.host("dir/keep"), b"").unwrap();
+    let dir_mode = mode_of(&f.host("dir"));
+    let root = RootPath::open(&f.host)
+        .unwrap()
+        .with_mnt_id(f.root.mnt_id() + 1);
+    // (entry name, directory entry?, whiteout form)
+    let cases = [
+        ("file", false, Whiteouts::Apply),
+        ("dir/", true, Whiteouts::Apply),
+        (".wh.dir", false, Whiteouts::Apply),
+        (".wh.file", false, Whiteouts::Overlay),
+    ];
+    for (name, dir, wh) in cases {
+        let mut t = Tar::new(&f);
+        if dir {
+            t.dir(name, 0o700);
+        } else {
+            t.file(name, 0o644, b"new");
+        }
+        let e = extract(&root, t.bytes().as_slice(), wh).unwrap_err();
+        assert!(
+            matches!(e, Error::Entry { ref reason, .. } if reason.contains("mount")),
+            "{name}: {e}"
+        );
+    }
+    assert_eq!(fs::read(f.host("file")).unwrap(), b"lower");
+    assert!(f.host("dir/keep").exists());
+    assert_eq!(mode_of(&f.host("dir")), dir_mode);
+}
+
+/// Run by the T1 harness in a mount namespace, with `$RNK_T1_ROOT` prepared
+/// as for the deletion test (`bind/`, `tmpfs/`, the `.rnk-t1-root` marker):
+/// extraction never writes below a mount inside the root.
+#[test]
+#[ignore = "T1: needs a bind mount and a tmpfs inside the root (mount namespace)"]
+fn extraction_never_writes_below_a_mount() {
+    let dir = std::env::var_os("RNK_T1_ROOT").expect("RNK_T1_ROOT is set by the T1 harness");
+    let marker = fs::symlink_metadata(Path::new(&dir).join(".rnk-t1-root"));
+    assert!(marker.is_ok_and(|m| m.is_file()), "no .rnk-t1-root marker");
+    let root = RootPath::open(&dir).unwrap();
+    let (uid, gid) = {
+        let md = fs::metadata(&dir).unwrap();
+        (md.uid(), md.gid())
+    };
+    for name in ["bind/x", "tmpfs/x", "tmpfs/", ".wh.bind"] {
+        let mut t = Tar {
+            out: Vec::new(),
+            uid: u64::from(uid),
+            gid: u64::from(gid),
+        };
+        t.file(name, 0o644, b"");
+        let e = extract(&root, t.bytes().as_slice(), Whiteouts::Apply).unwrap_err();
+        assert!(matches!(e, Error::Entry { .. }), "{name}: {e}");
+    }
+    assert!(!Path::new(&dir).join("bind/x").exists());
+    assert!(!Path::new(&dir).join("tmpfs/x").exists());
 }
 
 /// Run by the T1 harness inside a user namespace mapping a range of ids:

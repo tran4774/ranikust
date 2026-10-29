@@ -17,6 +17,17 @@ use crate::path::{self, Target};
 /// and the like) are refused.
 const IN_ROOT: ResolveFlags = ResolveFlags::IN_ROOT.union(ResolveFlags::NO_MAGICLINKS);
 
+/// Whether a resolution may enter another mount below the root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mounts {
+    /// Mounts inside the root are part of it (a `RUN` bind mount, `/proc`
+    /// in a container root).
+    Cross,
+    /// Stay on the root's own mount: extraction and deletion never write
+    /// across a mount point.
+    Stay,
+}
+
 /// How a single name is opened inside an already resolved directory: no
 /// traversal at all.
 const ONE_NAME: ResolveFlags = ResolveFlags::BENEATH
@@ -215,10 +226,28 @@ impl RootPath {
         self
     }
 
-    /// `openat2` of `p` relative to the root, confined to it.
+    /// `openat2` of `p` relative to the root, confined to it. Always
+    /// `O_CLOEXEC`.
     pub(crate) fn resolve(&self, p: &Path, flags: OFlags, mode: Mode) -> Result<OwnedFd> {
+        self.resolve_in(p, flags, mode, Mounts::Cross)
+    }
+
+    /// [`RootPath::resolve`]; with [`Mounts::Stay`], entering another mount
+    /// below the root fails with `EXDEV` (`RESOLVE_NO_XDEV`).
+    pub(crate) fn resolve_in(
+        &self,
+        p: &Path,
+        flags: OFlags,
+        mode: Mode,
+        mounts: Mounts,
+    ) -> Result<OwnedFd> {
         let rel = path::relative(p);
-        openat2_retry(self.fd(), rel.as_os_str(), flags, mode, IN_ROOT).map_err(|e| match e {
+        let resolve = match mounts {
+            Mounts::Cross => IN_ROOT,
+            Mounts::Stay => IN_ROOT.union(ResolveFlags::NO_XDEV),
+        };
+        let flags = flags | OFlags::CLOEXEC;
+        openat2_retry(self.fd(), rel.as_os_str(), flags, mode, resolve).map_err(|e| match e {
             Errno::NOSYS => Error::Unsupported {
                 feature: "openat2",
                 source: e.into(),
@@ -229,11 +258,12 @@ impl RootPath {
 
     /// An `O_PATH` fd of the directory `p`, following symlinks inside the root.
     pub(crate) fn resolve_dir(&self, p: &Path) -> Result<OwnedFd> {
-        self.resolve(
-            p,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
+        self.resolve_dir_in(p, Mounts::Cross)
+    }
+
+    /// [`RootPath::resolve_dir`], optionally staying on the root's mount.
+    pub(crate) fn resolve_dir_in(&self, p: &Path, mounts: Mounts) -> Result<OwnedFd> {
+        self.resolve_in(p, OFlags::PATH | OFlags::DIRECTORY, Mode::empty(), mounts)
     }
 
     /// Opens `p` inside the root.
@@ -342,17 +372,17 @@ impl RootPath {
     /// [`Error::Io`] when a component exists and is not a directory, or is a
     /// symlink that leads nowhere.
     pub fn create_dir_all(&self, p: impl AsRef<Path>, mode: u32) -> Result<()> {
-        self.mkdir_all(p.as_ref(), mode).map(drop)
+        self.mkdir_all(p.as_ref(), mode, Mounts::Cross).map(drop)
     }
 
     /// [`RootPath::create_dir_all`], returning an `O_PATH` fd of the directory.
-    pub(crate) fn mkdir_all(&self, p: &Path, mode: u32) -> Result<OwnedFd> {
-        match self.resolve_dir(p) {
+    pub(crate) fn mkdir_all(&self, p: &Path, mode: u32, mounts: Mounts) -> Result<OwnedFd> {
+        match self.resolve_dir_in(p, mounts) {
             Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {}
             r => return r,
         }
         let mode = Mode::from_raw_mode(mode & meta::PERMISSION_BITS);
-        let mut cur = self.resolve_dir(Path::new("."))?;
+        let mut cur = self.resolve_dir_in(Path::new("."), mounts)?;
         let mut prefix = PathBuf::new();
         for c in p.components() {
             match c {
@@ -369,7 +399,7 @@ impl RootPath {
             }
             // Re-resolve from the root: the name may be a symlink, which must
             // be followed relative to the root, not to `cur`.
-            cur = self.resolve_dir(&prefix)?;
+            cur = self.resolve_dir_in(&prefix, mounts)?;
         }
         Ok(cur)
     }
@@ -473,29 +503,47 @@ impl RootPath {
             }
             Target::Entry { parent, name } => {
                 let pfd = self.resolve_dir(&parent)?;
-                set_meta_at(pfd.as_fd(), name, m, p).map(drop)
+                set_meta_at(pfd.as_fd(), name, m, None, p).map(drop)
+            }
+        }
+    }
+
+    /// [`RootPath::set_meta`] only if `p` is a directory, checked on the
+    /// pinned entry itself; `Ok(false)` when it is something else.
+    pub(crate) fn set_dir_meta(&self, p: &Path, m: &Meta) -> Result<bool> {
+        match path::target(p)? {
+            Target::Root => self.set_meta(p, m).map(|()| true),
+            Target::Entry { parent, name } => {
+                let pfd = self.resolve_dir(&parent)?;
+                set_meta_at(pfd.as_fd(), name, m, Some(FileType::Directory), p)
             }
         }
     }
 }
 
 /// [`RootPath::set_meta`] on the entry `name` of the resolved directory
-/// `pfd`; returns the entry's type. `path` is only for error messages.
+/// `pfd`. With `only`, an entry of another type is left alone and `false`
+/// returned; the type is read from the pinned entry, so a swap cannot slip
+/// in between the check and the change. `path` is only for error messages.
 pub(crate) fn set_meta_at(
     pfd: BorrowedFd<'_>,
     name: &OsStr,
     m: &Meta,
+    only: Option<FileType>,
     path: &Path,
-) -> Result<FileType> {
+) -> Result<bool> {
     let fd = open_name(pfd, name, OFlags::PATH | OFlags::NOFOLLOW, 0, false, path)?;
     let file_type = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?.file_type();
+    if only.is_some_and(|t| t != file_type) {
+        return Ok(false);
+    }
     let h = Handle::Path {
         fd: fd.as_fd(),
         file_type,
         parent: Some((pfd, name)),
     };
     meta::apply(&h, m, path)?;
-    Ok(file_type)
+    Ok(true)
 }
 
 /// How often `openat2` is retried on `EAGAIN`.

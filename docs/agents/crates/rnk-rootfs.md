@@ -116,17 +116,17 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
 - Extraction without raw modes turned `/tmp` 1777 into 777 (exp-07).
 - A hardlink farm let one `echo >>` change the store and a sibling stage
   (exp-12 finding 9).
-- `openat2(RESOLVE_IN_ROOT)` returns `EAGAIN` when any rename on the system
-  races a `..` step: retry it (`design/rootfs.md#resolution`; hit by the T0
-  suite).
-- `fchmod`/`fsetxattr` refuse `O_PATH` fds and `rustix` has no `fchmodat2`:
+- `RESOLVE_IN_ROOT` returns `EAGAIN` when any rename races a `..` step:
+  retry it (`design/rootfs.md#resolution`; hit by the T0 suite).
+- `fchmod`/`fsetxattr` refuse `O_PATH` fds, `rustix` has no `fchmodat2`:
   go through `/proc/self/fd/<n>` (`design/rootfs.md#metadata`).
-- `chown` clears setuid, setgid and `security.capability`: owner first, mode
-  and xattrs after.
+- `chown` clears setuid, setgid, `security.capability`: owner first.
 - Reading a file moves an old atime (relatime): check times before reading.
-- An image-controlled file opened as root may be a FIFO (hang) or a device
-  node (the host's device): read such files with `open_regular`.
-- [open: Q-051] Overlay form: a hardlink into a lower layer has no target.
+- An image's file opened as root may be a FIFO (hang) or a device node (the
+  host's device): use `open_regular`.
+- `extract` never crosses a mount and refuses sparse entries; extension
+  headers are unbounded ([open: Q-052]). [open: Q-051] Overlay form: a
+  hardlink into a lower layer has no target.
 
 ## Phase 1
 
