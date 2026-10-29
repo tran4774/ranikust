@@ -29,17 +29,20 @@ pub fn parse_ast(src: &str) -> Result<Ast, Error>;                       // [don
 pub struct Ast { pub escape: char, pub directives: Vec<Directive>, pub nodes: Vec<Node>, pub warnings: Vec<Warning> } // [done]
 pub struct Node { pub keyword, flags, args, child, json, heredocs, original, lines: Lines, comments } // [done] parser.Node
 pub struct Error { kind: ErrorKind, lines: Option<Lines>, message } // [done] lines always set for text errors
-pub fn parse(src: &str) -> Result<Dockerfile, Error>;                   // [decided] hand port, ADR-0015
-pub struct Dockerfile { pub escape: char, pub meta_args: Vec<ArgDecl>, pub stages: Vec<Stage> } // [design]
-pub struct Stage { pub name: Option<String>, pub base: String, pub platform: Option<String>,
-                   pub instructions: Vec<Located<Instruction>> }        // [design] base unexpanded, name lower-cased
+pub fn parse(src: &str) -> Result<Dockerfile, Error>;                   // [done] parse_ast + instructions.Parse
+pub struct Dockerfile { pub escape: char, pub directives, pub meta_args: Vec<Located<Vec<ArgDecl>>>,
+                        pub stages: Vec<Stage>, pub warnings }             // [done]
+pub struct Stage { pub name: Option<String>, pub base: String, pub platform: Option<String>, pub lines, pub code,
+                   pub comments, pub instructions: Vec<Located<Instruction>> } // [done] base unexpanded, name lower-cased
+pub struct Located<T> { pub value: T, pub lines: Lines, pub keyword: String, pub code: String, pub comments } // [done]
 pub enum Instruction { Run(Run), Copy(Copy), Add(Add), Env(Vec<KeyValue>), Arg(Vec<ArgDecl>), Label(Vec<KeyValue>),
     Workdir(String), User(String), Expose(Vec<String>), Volume(Vec<String>), Entrypoint(CmdLine), Cmd(CmdLine),
-    Shell(Vec<String>), StopSignal(String), Healthcheck(Healthcheck), Onbuild(String), Maintainer(String) } // [design]
+    Shell(Vec<String>), StopSignal(String), Healthcheck(Healthcheck), Onbuild(String), Maintainer(String) } // [done]
+pub struct Run { pub cmd: CmdLine, pub mount_specs, pub mounts: Vec<Mount>, pub network, pub security, pub devices, pub flags_used } // [done]
 pub struct Heredoc { pub name: String, pub file_descriptor: u64, pub expand: bool, pub chomp: bool, pub content: String } // [done]
 pub struct Lexer { escape: char, .. } // [done] port of lex.go: process_word(), process_words(), process_word_with_matches()
 pub trait Env { fn get(&self, name: &str) -> Option<&str>; } // [done] BuildKit EnvGetter
-impl Instruction { pub fn expand(&mut self, lex: &Lexer, env: &dyn Env) -> Result<(), ExpandError>; } // [design] BuildKit Expand()
+impl Located<Instruction> { pub fn expand(&mut self, lex: &Lexer, env: &dyn Env) -> Result<(), Error>; } // [done] Expand() + dispatch
 pub fn stage_graph(df: &Dockerfile, args: &BuildArgs, target: Option<&str>) -> Result<StageGraph, GraphError>; // [design]
 pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [design] phase 2
 // [open: Q-044] how remote base ONBUILD triggers enter stage_graph() without I/O

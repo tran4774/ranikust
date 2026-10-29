@@ -1,14 +1,15 @@
+// `ram_in_bytes` is derived from go-units, https://github.com/docker/go-units,
+// size.go at v0.5.0.
+// Copyright 2015 Docker, Inc. Licensed under the Apache License, Version 2.0.
+// Modified for ranikust: Rust port of RAMInBytes.
+
 //! Small helpers that reproduce the behaviour of Go standard-library
 //! functions BuildKit relies on (`unicode`, `strings`, `strconv`, `time`),
-//! written from their documented behaviour.
+//! written from their documented behaviour, and go-units' `RAMInBytes`.
 //!
 //! Go strings are byte strings and Rust strings are UTF-8, so every helper
 //! here works on valid UTF-8 and documents where Go would differ on invalid
 //! input.
-#![allow(
-    dead_code,
-    reason = "the flag and duration helpers are used by the instruction layer, added next"
-)]
 
 /// Go's `unicode.IsSpace`. Go's table is the Unicode `White_Space`
 /// property, which is exactly what `char::is_whitespace` implements.

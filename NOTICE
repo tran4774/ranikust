@@ -38,6 +38,27 @@ License:   Apache License, Version 2.0. BuildKit has no NOTICE file; its
                                               parser/line_parsers.go,
                                               parser/split_command.go,
                                               parser/directives.go
+  crates/rnk-dockerfile/src/instructions.rs   instructions/parse.go,
+                                              instructions/commands.go,
+                                              instructions/support.go
+  crates/rnk-dockerfile/src/instructions/flags.rs
+                                              instructions/bflag.go
+  crates/rnk-dockerfile/src/instructions/mount.rs
+                                              instructions/commands_run*.go
+  crates/rnk-dockerfile/src/instructions/expand.rs
+                                              instructions/commands.go,
+                                              dockerfile2llb/convert.go,
+                                              dockerfile2llb/convert_expose.go
+
+Code derived from go-units
+--------------------------
+
+Source:    https://github.com/docker/go-units, v0.5.0 (vendored by
+           BuildKit), size.go
+Copyright: Copyright 2015 Docker, Inc.
+License:   Apache License, Version 2.0
+
+  crates/rnk-dockerfile/src/goutil.rs         RAMInBytes (ram_in_bytes)
 
 Test data from BuildKit, copied unchanged from the same tag:
 

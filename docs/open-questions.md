@@ -88,7 +88,11 @@ Entry format:
 - **Options:** (a) parse them so all 200 goldens pass, and let
   `rnk-builder` reject them; (b) reject them in the parser until Phase 5.
 - **Recommendation:** (a), as the crate card proposes.
-- **Interim:** none
+- **Interim:** followed the recommendation in `feat/rnk-dockerfile-parser`:
+  `rnk-dockerfile` parses every instruction and flag BuildKit v0.34.0
+  parses, and all 200 goldens pass. Reversible because rejecting them later
+  is a check in the builder (or in `rnk-dockerfile`) on parsed values; no
+  type or format depends on the choice.
 - **Raised:** 2026-10-30
 
 ### Q-010: Which path type does rnk-ignore match on?

@@ -14,10 +14,16 @@
 
 mod error;
 mod goutil;
+mod instructions;
 mod parser;
 mod shell;
 
 pub use error::{Error, ErrorKind, Lines};
+pub use instructions::{
+    Add, ArgDecl, CmdLine, Copy, Device, Dockerfile, Healthcheck, InlineFile, Instruction,
+    KeyValue, Located, Mount, MountType, Network, Run, Security, Sharing, SourceContent, Stage,
+    from_ast, parse, parse_instruction,
+};
 pub use parser::{
     Ast, DEFAULT_ESCAPE, Directive, Heredoc, Node, Warning, chomp_heredoc_content, parse_ast,
 };
