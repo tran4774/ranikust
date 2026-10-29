@@ -4,7 +4,8 @@
 
 ranikust is **pre-alpha**. There is no release, and the binary cannot
 build yet: it checks the kernel, reads and validates kaniko's flags and its
-own ([Command line](usage.md)), then stops. Its build metrics already work:
+own ([Command line](usage.md)), probes whether it can isolate `RUN` here,
+then stops. Its build metrics already work:
 with `RANIKUST_METRICS_FILE=<path>` or `--metrics-file=<path>`, it writes a
 JSON report of where the run spent time and resources when it exits.
 
