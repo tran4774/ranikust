@@ -36,9 +36,11 @@ Code: `crates/rnk-metrics`, wired in `crates/ranikust/src/main.rs`.
 | `RANIKUST_METRICS_FILE=<path>` | Collect, and write the report there at exit. A relative path is resolved at start-up; the parent directory is created; the file is written to a temporary name and renamed. |
 | `RANIKUST_METRICS_SUMMARY=1` | Collect, and print a short summary to stderr at exit (anything but empty or `0`). |
 
-A `--metrics-file` flag comes with the CLI (Phase 1 task 8). Whether
-kaniko's `KANIKO_METRICS_FILE` is honoured too is part of
-[Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted).
+`build --metrics-file=<path>` takes the report path's place; the other
+variable still applies. Whether kaniko's `KANIKO_METRICS_FILE` is honoured
+too is part of
+[Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted)
+(interim: not read).
 
 Logs are a separate layer: stderr, `INFO` until the verbosity and format
 flags are decided ([Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted),
@@ -125,7 +127,7 @@ code. All names are `[design]`.
 | Span | Fields | Why |
 |---|---|---|
 | `ranikust.run` | | The whole process, already emitted. Parent of everything; `meta.wall_ns` adds metrics set-up. |
-| `ranikust.build` | | The `build` subcommand (task 8): kaniko's `build.total` plus `push.total`. |
+| `ranikust.build` | | The `build` subcommand, emitted from flag validation on: kaniko's `build.total` plus `push.total`. |
 | `ranikust.setup` | | Workdir checks, mount namespace, store open: what a build pays before its first stage. |
 | `ranikust.probe` | `steps` | The probe sequence at every start (forked children); `exp-03`, `exp-13`. |
 
@@ -252,7 +254,7 @@ indent, final newline. Times in nanoseconds; integers only.
 | Section | Holds |
 |---|---|
 | `schema` | `ranikust.metrics/v1`; bumped on any incompatible change |
-| `meta` | `ranikust_version`, `os`, `arch`, `num_cpu`, `pid`, `file`, `start`, `end` (RFC 3339 UTC), `wall_ns`; later the mode and the cost-relevant options (`Telemetry::set_meta`; never build arguments, secrets or credentials) |
+| `meta` | `ranikust_version`, `os`, `arch`, `num_cpu`, `pid`, `file`, `start`, `end` (RFC 3339 UTC), `wall_ns`; for `build`, `mode` (the `--mode` asked for) and `options`: `compression`, `jobs`, `mode`, `network`, `no_push`, `outputs` (`destinations` count, `oci_layout` and `tar` booleans), `reproducible`, `snapshot_mode`, `targets` count (`Telemetry::set_meta`; never a destination, path, build argument, secret or credential) |
 | `exit` | `status` (`success`, `error`, `panic`), `code`, `message` (500 characters at most); `panics` when an unwinding build panicked earlier; `spans_unavailable` when the panic hook could not read the span state |
 | `phases` | per span name: `count`, `total_ns` (sum), `max_ns`, `wall_ns` (time at least one was open), `open` (still open at exit), and the summed fields |
 | `stages`, `commands`, `snapshots` | records: `build` (always 0), `stage`, `index`, `line`, `kind`, `name`, `text`, `cache_hit`, `start_ns` (from process start), `wall_ns`, `incomplete` (open at exit), `values` (the record span's own fields), `phases` (spans nested in it: `count`, `total_ns`, `max_ns`, fields) |

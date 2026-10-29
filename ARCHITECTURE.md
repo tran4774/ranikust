@@ -47,9 +47,13 @@ subcommands, the common kaniko flags and `--mode=auto|overlay|kaniko`
 single-threaded, it checks the workdir, enters a private mount namespace
 when permitted, runs the privilege probes of `rnk-sandbox` and `rnk-snapshot`
 in order and picks the mode, and in kaniko mode locks the workdir; then it
-hands off to the libraries. `prune` only calls `rnk-store`. First of all
-it installs the logs and the opt-in metrics of `rnk-metrics`, and it
-writes the metrics report on every way out.
+hands off to the libraries. `prune` only calls `rnk-store`. Before all
+that, it parses the flags (kaniko flags it does not accept are refused by
+name), refuses a kernel older than Linux 5.8 through
+`rnk_rootfs::probe_support`
+([ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)), installs the logs
+and the opt-in metrics of `rnk-metrics`, and validates the flags into a
+`BuildConfig`; it writes the metrics report on every way out.
 **Must not** contain build logic, or probe a capability itself.
 
 ### `rnk-dockerfile`
