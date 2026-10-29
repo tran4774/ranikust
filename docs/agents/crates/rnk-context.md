@@ -92,7 +92,7 @@ pub fn find_dockerignore(ctx: &Context, dockerfile: &Path) -> Result<Option<Vec<
 - BuildKit's walk passes each directory's `MatchInfo` to its children and
   prunes with fsutil's rule: `rnk-ignore`'s `matches_using_parent` and
   `may_reinclude_below`; its results can differ from
-  `matches_or_parent_matches` [open: Q-050].
+  `matches_or_parent_matches`; the walk is what counts (ADR-0027).
 
 ## Phase 1
 

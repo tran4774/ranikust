@@ -104,7 +104,7 @@ never called. A hand-written reader would repeat that parsing for no gain.
 - **Bombs.** GNU sparse entries are refused: the `tar` crate writes their
   holes as zeros, so a tiny entry could claim 2^62 bytes. GNU long names and
   PAX headers are read whole into memory by the `tar` crate, with no bound
-  ([Q-056](../open-questions.md#q-056-how-are-tar-extension-headers-bounded)).
+  for now (Q-056, answered: revisit with fuzzing in Phase 6).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*`, PAX `mtime`/`atime` with
   nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
@@ -207,7 +207,6 @@ recorded once at the end, never per entry: `rnk_rootfs.extract`
   What is the minimum kernel, and who checks it?
 - [Q-055](../open-questions.md#q-055-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)
   How does overlay-form extraction handle a hardlink into a lower layer?
-- [Q-056](../open-questions.md#q-056-how-are-tar-extension-headers-bounded)
   How are tar extension headers bounded?
 
 ## References

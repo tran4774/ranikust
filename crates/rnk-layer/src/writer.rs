@@ -107,7 +107,7 @@ pub trait EntrySource {
 /// Depth first, components compared byte-wise (`a`, `a/b`, `a-b`); within
 /// a directory the opaque marker comes first, then whiteouts, then the other
 /// entries, so whiteouts precede their siblings as the OCI layer
-/// specification recommends. [open: Q-053]
+/// specification recommends (Q-053).
 #[derive(Debug)]
 pub struct LayerWriter {
     options: EncodeOptions,

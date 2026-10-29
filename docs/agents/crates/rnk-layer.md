@@ -52,7 +52,7 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   then streams, hashing the tar (diff ID) and the blob as they pass.
   `LayerDigests` carries the compression, not a media type: that needs the
   image format, which `rnk-oci` owns.
-- Layer order `[open: Q-053]`: depth first, components byte-wise; in each
+- Layer order (Q-053, the OCI recommendation): depth first, components byte-wise; in each
   directory the opaque marker, then whiteouts, then the rest. Names starting
   with `.wh.` are rejected.
 - Headers: PAX as Go's `archive/tar` writes them (`src/header.rs`); whiteout

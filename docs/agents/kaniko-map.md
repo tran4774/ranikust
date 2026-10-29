@@ -99,6 +99,12 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   dropped (`MakeKanikoStages`). ranikust squashes only in sequential kaniko
   mode; overlay mode reuses the parent's lower stack
   (`design/scheduler.md#the-graph`).
+- **Stage names.** kaniko lower-cases a `FROM` base and matches it to an
+  earlier stage case-insensitively (`pkg/dockerfile/dockerfile.go:80-93`);
+  ranikust matches exactly, as BuildKit does (Q-051), so
+  `Dockerfile_test_issue_519` (`FROM BUG_stage`) is an accepted difference.
+- **`.dockerignore`.** kaniko filters with the deprecated `Matches`;
+  ranikust follows BuildKit's walk (`ADR-0027`).
 - **Ignore list.** kaniko ignores `/kaniko`, `/etc/mtab` and
   `/tmp/apt-key-gpghome` (`pkg/util/fs_util.go:72-89`), `/var/run` while
   `--ignore-var-run` is true (`cmd/executor/cmd/root.go:155-165`), every

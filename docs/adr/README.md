@@ -24,7 +24,8 @@ ADR-0003 to ADR-0014 carry over decisions Q1 to Q12 of the pre-code survey
 from the experiments. All twenty were accepted by the maintainer on
 2026-10-29. ADR-0021 to ADR-0024 answer the open questions O1 to O4 that
 blocked Phase 1 ([phase-1](../agents/phase-1.md)); they were accepted on
-2026-10-30. ADR-0025 records how builds are measured (`rnk-metrics`).
+2026-10-30. ADR-0025 records how builds are measured (`rnk-metrics`);
+ADR-0026 and ADR-0027 record decisions made while implementing Phase 1.
 
 ## Status lifecycle
 
@@ -91,4 +92,6 @@ when new measurements contradict its evidence.
 | [0022](0022-common-state-dir.md) | One state directory for every mode | Accepted | 2026-10-30 | Phase 1 O3 |
 | [0023](0023-mode-flag.md) | `--mode` selects the snapshot mode; `--snapshot-mode` keeps kaniko's meaning | Accepted | 2026-10-30 | Phase 1 O2 |
 | [0024](0024-tls-rustls-ring.md) | rustls with the `ring` provider; trust host CAs and embedded roots together | Accepted | 2026-10-30 | Phase 1 O4, Exp 05 |
-| [0025](0025-build-metrics-from-tracing-spans.md) | Build metrics from `tracing` spans, aggregated by an opt-in `rnk-metrics` crate | Proposed | 2026-10-30 | kaniko fork metrics, Exp 07, 08, 12 |
+| [0025](0025-build-metrics-from-tracing-spans.md) | Build metrics from `tracing` spans, aggregated by an opt-in `rnk-metrics` crate | Accepted | 2026-10-30 | kaniko fork metrics, Exp 07, 08, 12 |
+| [0026](0026-rnk-oci-owns-its-types.md) | `rnk-oci` owns its OCI and Docker image types instead of using `oci-spec` | Accepted | 2026-10-30 | `oci-spec` 0.10 source, `rnk-oci` tests |
+| [0027](0027-context-filtering-follows-buildkit-walk.md) | Build-context filtering follows BuildKit's walk, not `MatchesOrParentMatches` | Accepted | 2026-10-30 | Q-050, `rnk-ignore` goldens |

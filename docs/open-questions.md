@@ -217,26 +217,6 @@ Entry format:
   `LayerWriter::new` and the decoder return `Error::Unsupported` for it.
 - **Raised:** 2026-10-30
 
-### Q-053: Which entry order and which names does the layer tar use?
-
-- **Blocks:** Phase 1 task 5; **Area:** `rnk-layer`
-- **Context:** the writer sorts the entries
-  ([overlay-snapshot](design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer)),
-  but no document fixes the order, which is part of every diff ID. kaniko
-  writes all whiteouts first, then the other entries, each sorted by
-  `sort.Strings` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:151`, `:182`,
-  `:341-390`); the OCI layer spec says whiteouts SHOULD precede their
-  sibling entries. A file really named `.wh.<x>` cannot be represented: an
-  extractor takes it for a whiteout.
-- **Options:** order: (a) depth first, components compared byte-wise, and
-  in each directory the opaque marker, then whiteouts, then the rest;
-  (b) kaniko's. Names: (a) reject an entry named `.wh.*`; (b) write it as
-  is, as kaniko does.
-- **Recommendation:** none
-- **Interim:** order (a) and names (a), in `feat/rnk-layer-encode`
-  (`LayerWriter`); both change only the bytes of the layers, nothing else.
-- **Raised:** 2026-10-30
-
 ### Q-014: Are cross-repository mounts part of Phase 1?
 
 - **Blocks:** Phase 1 tasks 6, 11; **Area:** `rnk-registry`
@@ -470,27 +450,6 @@ Entry format:
   target (`feat/rnk-rootfs-rootpath`).
 - **Raised:** 2026-10-30
 
-### Q-056: How are tar extension headers bounded?
-
-- **Blocks:** Phase 1 task 9 (base-layer extraction); Phase 6 (fuzzing);
-  **Area:** `rnk-rootfs`, `rnk-layer`
-- **Context:** the `tar` crate (0.4.46) reads a GNU long name, long link or
-  PAX header whole into memory, whatever size it declares
-  (`archive.rs:418`, `:440`), so a few MB of compressed zeros in a base
-  layer become GBs of memory and an OOM kill (threat T15). GNU sparse
-  entries, whose holes the crate writes as zeros, are refused for now
-  ([rootfs](design/rootfs.md#extraction)). Found by a host-safety review.
-- **Options:** (a) a reader in front of the `tar` crate that follows the
-  tar framing and fails on an extension header above a cap (1 MiB);
-  (b) parse in raw mode and apply long names and PAX records in
-  `rnk-rootfs`, with the cap; (c) rely on the memory limit of the build's
-  cgroup; for sparse entries, (d) keep refusing them or (e) seek over holes
-  and `ftruncate`, with a cap on the real size.
-- **Recommendation:** none
-- **Interim:** no bound on extension headers; sparse entries refused
-  (`feat/rnk-rootfs-rootpath`).
-- **Raised:** 2026-10-30
-
 ### Q-027: Is the ContextSource trait sync or async?
 
 - **Blocks:** Phase 1 task 10; **Area:** `rnk-context`
@@ -517,28 +476,6 @@ Entry format:
   through `rnk-builder`, which already depends on all of them.
 - **Recommendation:** none
 - **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-050: Which result does the context walk follow when BuildKit's two matchers disagree?
-
-- **Blocks:** Phase 1 task 10; **Area:** `rnk-context`, `rnk-ignore`
-- **Context:** BuildKit's context walk (`fsutil`) calls
-  `MatchesUsingParentResults` with the parent's `MatchInfo`; its `Open`,
-  and ADR-0015, use `MatchesOrParentMatches`. They differ when a pattern
-  skipped for the parent would match the child through it: `dir/f` +
-  `!dir` on `dir/f` is excluded by the walk, kept by the other (verified
-  with Go). The walk also reports errors of patterns it evaluates on parent
-  directories, which the other ignores. In rnk-ignore's Go goldens 138 of
-  12,470 cells differ in result, in both directions, and 84 in error; none
-  of exp-04's or kaniko's cases do
-  ([rnk-ignore](agents/crates/rnk-ignore.md#pitfalls)).
-- **Options:** (a) walk like BuildKit: `matches_using_parent` along the
-  walk, with `may_reinclude_below` to prune; (b) `matches_or_parent_matches`
-  for every path, as ADR-0015 words it.
-- **Recommendation:** (a): it reproduces the file set BuildKit sends as
-  the context.
-- **Interim:** `rnk-ignore` provides both, each an exact port; nothing
-  walks a context yet.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?
@@ -835,26 +772,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-051: Does `FROM <stage>` match stage names case-insensitively?
-
-- **Blocks:** Phase 6 (kaniko's integration Dockerfiles in every mode);
-  **Area:** `rnk-dockerfile`
-- **Context:** BuildKit lower-cases stage names and looks up the `FROM`
-  base exactly, so `FROM BUG_stage` is an image name and fails ("must be
-  lowercase"); a later stage of the same name replaces an earlier one.
-  kaniko lower-cases the base and takes the first earlier stage of that
-  name (`kaniko@44aa7ddc0 pkg/dockerfile/dockerfile.go:80-93`), and its
-  integration test `Dockerfile_test_issue_519` depends on it. `COPY --from`
-  is case-insensitive in both. `ADR-0015` follows BuildKit "unless a
-  compatibility test shows users depend on kaniko's behaviour".
-- **Options:** (a) BuildKit: exact match, `Dockerfile_test_issue_519`
-  fails; (b) kaniko: case-insensitive, first earlier stage; (c)
-  case-insensitive, last earlier stage (BuildKit's rule for duplicates).
-- **Recommendation:** none
-- **Interim:** (a), BuildKit's rule, in `feat/rnk-dockerfile-parser`
-  (`rnk_dockerfile::stage_graph`). Reversible: one lookup in the graph.
-- **Raised:** 2026-10-30
-
 ### Q-057: Does ranikust offer CPU and heap profiling?
 
 - **Blocks:** nothing yet; **Area:** `rnk-metrics`
@@ -921,3 +838,30 @@ Entry format:
   merged into `main`; every feature, fix or refactor starts from it on its
   own branch and is committed at each checkpoint. Recorded in
   [rules.md](agents/rules.md#branches-and-commits).
+
+### Q-050: Which result does the context walk follow when BuildKit's two matchers disagree?
+
+- **Answer (2026-10-30):** follow BuildKit's walk
+  (`matches_using_parent` plus `may_reinclude_below`). Recorded in
+  [ADR-0027](adr/0027-context-filtering-follows-buildkit-walk.md), which
+  supersedes the `.dockerignore` bullet of ADR-0015.
+
+### Q-051: Does `FROM <stage>` match stage names case-insensitively?
+
+- **Answer (2026-10-30):** follow BuildKit: `FROM <stage>` matches stage
+  names exactly. kaniko's `Dockerfile_test_issue_519` is an accepted
+  difference ([kaniko-map](agents/kaniko-map.md#behaviour-to-match)).
+
+### Q-053: Which entry order and which names does the layer tar use?
+
+- **Answer (2026-10-30):** follow the OCI layer specification's
+  recommendation: depth first, the opaque marker and whiteouts before their
+  siblings; files really named `.wh.*` are rejected. Recorded on the
+  [rnk-layer card](agents/crates/rnk-layer.md) and in
+  [overlay-snapshot](design/overlay-snapshot.md).
+
+### Q-056: How are tar extension headers bounded?
+
+- **Answer (2026-10-30):** no bound for now; GNU sparse entries stay
+  refused. Revisit with `cargo fuzz` on `extract` in Phase 6
+  ([rootfs](design/rootfs.md)).

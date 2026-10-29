@@ -141,8 +141,8 @@ Requirements found by comparing images:
   (`fchmodat` with the full value) so sticky, setuid and setgid survive;
   `/tmp` must stay 1777.
 - **Root directory metadata** comes from the lower root (step 2 above).
-- **Deterministic output.** Sorted entries (the order is
-  [open: Q-053]); same bytes for any thread count. Timestamps follow
+- **Deterministic output.** Sorted entries, in the order the OCI layer
+  specification recommends (Q-053); same bytes for any thread count. Timestamps follow
   kaniko: files keep the times they have on disk by default; under
   `--reproducible` every timestamp is a fixed epoch, or `SOURCE_DATE_EPOCH`
   when set.
@@ -205,7 +205,6 @@ stages as in kaniko.
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
 - [Q-026](../open-questions.md#q-026-when-and-how-are-layers-merged-near-the-500-lower-limit) When and how are layers merged near the 500-lower limit?
 - [Q-013](../open-questions.md#q-013-how-does-the-layer-writer-learn-missing-parent-metadata) How does the layer writer learn missing parent metadata?
-- [Q-053](../open-questions.md#q-053-which-entry-order-and-which-names-does-the-layer-tar-use) Which entry order and which names does the layer tar use?
 
 ## References
 

@@ -38,7 +38,7 @@ impl Matcher {
     pub fn new<P: AsRef<[u8]>>(patterns: &[P]) -> Result<Matcher, Error>;
     pub fn matches_or_parent_matches(&self, path: impl AsRef<[u8]>) -> Result<bool, Error>;
     pub fn matches_using_parent(&self, path: impl AsRef<[u8]>, parent: &MatchInfo)
-        -> Result<(bool, MatchInfo), Error>;                            // BuildKit's walk [open: Q-050]
+        -> Result<(bool, MatchInfo), Error>;                            // BuildKit's walk (ADR-0027)
     pub fn has_exclusions(&self) -> bool;
     pub fn may_reinclude_below(&self, dir: impl AsRef<[u8]>) -> bool;  // false: a walk may skip this excluded dir (fsutil)
 }
@@ -100,7 +100,8 @@ never evaluated never fails.
 - A child can be re-included below an excluded parent (`docs` +
   `!docs/keep.md`): a walker asks `may_reinclude_below` before pruning.
 - BuildKit's walk (`matches_using_parent`) and `matches_or_parent_matches`
-  disagree for `dir/f` + `!dir` on `dir/f` (walk: excluded) [open: Q-050].
+  disagree for `dir/f` + `!dir` on `dir/f` (walk: excluded); the context
+  walk follows the walk (ADR-0027).
 - `[!b]` is a class containing `!`; only `[^b]` negates (exp-04).
 - `|`, `{` and `}` reach Go's regexp unescaped (its escape bitmap overflows):
   `a|b*` is an alternation, `a{2}*` a repetition, `x{*` a literal `{`.
@@ -124,4 +125,4 @@ never evaluated never fails.
 - Done: `read_patterns`, `Matcher` with both match forms, the walk pruning
   rule, upstream tests, Go goldens, property tests.
 - Next, in `rnk-context` (task 10): walk the context with
-  `matches_using_parent` and `may_reinclude_below`, after Q-050.
+  `matches_using_parent` and `may_reinclude_below` (ADR-0027).

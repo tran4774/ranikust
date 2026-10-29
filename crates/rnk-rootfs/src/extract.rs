@@ -181,8 +181,9 @@ impl Extractor<'_> {
             EntryType::Directory => Kind::Dir,
             EntryType::Regular | EntryType::Continuous => Kind::File,
             EntryType::GNUSparse => {
-                // [open: Q-056] The `tar` crate fills holes with zeros, so a
-                // tiny entry could claim 2^62 bytes and fill the disk.
+                // The `tar` crate fills holes with zeros, so a tiny entry could
+                // claim 2^62 bytes and fill the disk. Extension headers stay
+                // unbounded for now (Q-056).
                 return Err(refuse("GNU sparse entries are not supported"));
             }
             EntryType::Symlink | EntryType::Link => {
