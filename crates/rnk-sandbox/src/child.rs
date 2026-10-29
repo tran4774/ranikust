@@ -39,7 +39,9 @@ pub enum RootEntry {
 }
 
 /// One mount, as the child performs it. Targets are paths inside the root;
-/// sources are descriptors the parent opened on files ranikust owns.
+/// sources are host paths of files ranikust owns, which the child opens in
+/// its own mount namespace: a bind refuses (`EINVAL`) a source from another
+/// namespace, such as a descriptor the parent opened.
 #[derive(Debug)]
 pub(crate) enum ChildMount {
     Proc {
@@ -52,13 +54,14 @@ pub(crate) enum ChildMount {
         target: CString,
     },
     File {
-        /// An `O_PATH` descriptor, open in the child until `execve`.
-        source: RawFd,
+        /// A regular file.
+        source: CString,
         target: CString,
     },
     Bind {
-        /// An `O_PATH` descriptor, open in the child until `execve`.
-        source: RawFd,
+        source: CString,
+        /// The source is a directory, else a regular file.
+        dir: bool,
         target: CString,
         /// Flags of the remount that follows the bind: `nodev`, and
         /// read-only when asked.
@@ -467,23 +470,26 @@ fn mount_one(
             populate_dev(err, dev.as_fd(), dev_remount);
         }
         ChildMount::File { source, target } => {
+            let s = open_source(err, Step::BindFile, source, false);
             let t = resolve(err, root, target);
             check(
                 err,
                 Step::BindFile,
-                rustix::mount::mount_bind(FdPath::new(*source).path(), fd_path(err, &t).path()),
+                rustix::mount::mount_bind(fd_path(err, &s).path(), fd_path(err, &t).path()),
             );
         }
         ChildMount::Bind {
             source,
+            dir,
             target,
             remount,
         } => {
+            let s = open_source(err, Step::BindMount, source, *dir);
             let t = resolve(err, root, target);
             check(
                 err,
                 Step::BindMount,
-                rustix::mount::mount_bind(FdPath::new(*source).path(), fd_path(err, &t).path()),
+                rustix::mount::mount_bind(fd_path(err, &s).path(), fd_path(err, &t).path()),
             );
             drop(t);
             // Resolved again, it is the bind, not the directory under it.
@@ -494,6 +500,29 @@ fn mount_one(
                 rustix::mount::mount_remount(fd_path(err, &t).path(), *remount, c""),
             );
         }
+    }
+}
+
+/// A mount source as an `O_PATH` descriptor in the child's own mount
+/// namespace, so that the bind is of the file checked here: a symlink as
+/// the last component is refused, and the type must be the one expected.
+fn open_source(err: RawFd, step: Step, source: &CStr, dir: bool) -> OwnedFd {
+    let fd = check(
+        err,
+        step,
+        rustix::fs::openat(
+            CWD,
+            source,
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ),
+    );
+    let mode = check(err, step, rustix::fs::fstat(&fd)).st_mode;
+    match (FileType::from_raw_mode(mode), dir) {
+        (FileType::Directory, true) | (FileType::RegularFile, false) => fd,
+        (FileType::Symlink, _) => fail(err, step, Errno::LOOP),
+        (_, true) => fail(err, step, Errno::NOTDIR),
+        (_, false) => fail(err, step, Errno::INVAL),
     }
 }
 

@@ -81,8 +81,10 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
    6. `RUN --mount`: `type=cache` binds `caches/<id>` from the store
       (`rnk-store`), `type=secret` binds a file, `type=bind` binds the
       context or another stage's root. Every bind is remounted `nodev`.
-      Sources are opened by the parent (`O_PATH`, no symlink as the last
-      component, type checked) and bound through `/proc/self/fd`.
+      The child opens each source in its own mount namespace (`O_PATH`,
+      no symlink as the last component, type checked) and binds it through
+      `/proc/self/fd`: a bind refuses (`EINVAL`) a source opened in another
+      mount namespace, such as a descriptor of the parent.
    7. Docker's read-only and masked kernel files (moby
       `daemon/pkg/oci/defaults.go`): `/proc/bus`, `fs`, `irq`, `sys` and
       `sysrq-trigger` are bound read-only onto themselves, because writing
