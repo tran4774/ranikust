@@ -68,6 +68,14 @@ runs+=(
 
 for m in "${ESCAPE_MODES[@]}"; do runs+=(--run "python3 -c '$ESCAPE' $m"); done # Q-077
 
+# Docker's own pull, retried: Docker Hub's CDN resets connections now and
+# then, and `docker run` gives up on the first.
+for i in 1 2 3 4 5; do
+  sudo docker pull -q "$IMAGE" && break
+  [ "$i" = 5 ] && { echo "error: docker pull $IMAGE failed 5 times" >&2; exit 1; }
+  sleep $((i * 10))
+done
+
 sudo rm -rf "$W" && sudo mkdir -p "$W"
 sudo touch "$MARKER" "$W/marker"
 trap 'sudo rm -f "$MARKER"' EXIT
