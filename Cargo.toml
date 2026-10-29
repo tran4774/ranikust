@@ -35,7 +35,9 @@ futures-util = { version = "0.3.31", default-features = false, features = ["std"
 # `http-auth`: `WWW-Authenticate` parsing for the identity-token exchange;
 # the parser `oci-client` already uses.
 http-auth = { version = "0.1.10", default-features = false }
-# `libc`: `getrusage` for the metrics report (rustix 1.1 has no wrapper).
+# `libc`: syscalls rustix 1.1 has no wrapper for: `getrusage` (metrics),
+# `clone` with namespace flags, `wait4`, `execve` and the capability
+# `prctl`s (`rnk-sandbox`).
 libc = "0.2.186"
 # `mimalloc`: the binary's allocator; musl's is 250–300× slower under threads (exp-05).
 mimalloc = { version = "0.1.52", default-features = false }

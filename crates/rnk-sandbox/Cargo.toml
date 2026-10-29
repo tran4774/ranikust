@@ -10,3 +10,14 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+libc.workspace = true
+rnk-rootfs.workspace = true
+rustix = { workspace = true, features = ["mount", "pipe", "process", "system", "thread"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rnk-metrics.workspace = true
+tempfile.workspace = true

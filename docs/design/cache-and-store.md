@@ -30,6 +30,7 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
 ├── tmp/                        entries being written, renamed into place
+├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 └── builds/<build-id>/          one per running build, deleted afterwards
 ```
 

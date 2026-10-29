@@ -29,10 +29,10 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    process. In a multi-threaded process `unshare(CLONE_NEWNS)` silently moves
    only the calling thread, and `unshare(CLONE_NEWUSER)` fails with `EINVAL`.
 2. Start one **spawner thread** that lives for the whole build. Every `RUN`
-   child is forked from it, never from tokio's `spawn_blocking`:
+   child is cloned from it, never from tokio's `spawn_blocking`:
    `PR_SET_PDEATHSIG` fires when the parent *thread* exits, and blocking-pool
-   threads are reaped when idle.
-3. Replay the stub journal from a previous crashed run and remove its stubs.
+   threads are reaped when idle. Any thread may wait for the child.
+3. Replay the stub journals of previous crashed runs and remove their stubs.
 
 The privilege probes of [modes-and-detection](modes-and-detection.md) also
 run in this single-threaded window: `ranikust` runs this crate's probes
@@ -45,8 +45,10 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 `CLONE_NEWIPC`, plus `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`, plus
 `CLONE_NEWNET` for `--network=none`.
 
-1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check `getppid()` in case the
-   parent already died.
+1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check that the parent process
+   did not die before: `getppid()` is 0 in a new PID namespace, so the child
+   reads a pipe nobody writes, whose write end the parent holds; end-of-file
+   means the parent is gone.
 2. In a new user namespace, map the full id range available and allow
    `setgroups`; otherwise `USER _apt` (used by apt-get) fails with
    `setgroups: EPERM`.
@@ -78,16 +80,26 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
       `CAP_SYS_ADMIN`): `mount(root, "/", MS_MOVE)` then `chroot(".")`, as
       runc's `--no-pivot`.
 4. `sethostname`; ignore a seccomp refusal.
-5. Drop capabilities: reduce the **bounding** and inheritable sets to
-   Docker's 14 default capabilities, for **every** `USER`. A non-root user
-   has no effective capabilities but a full bounding set, which a setuid
-   binary in the image would regain.
+5. Drop capabilities, for **every** `USER`: reduce the **bounding** set to
+   Docker's 14 default capabilities, clear the ambient set, keep the
+   defaults in the effective and permitted sets and leave the inheritable
+   set empty, as Docker since 20.10.14. A non-root user has no effective
+   capabilities but a full bounding set, which a setuid binary in the image
+   would regain.
 6. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which
    `rnk-rootfs` looked up in the root's `/etc/passwd` and `/etc/group` before
    the fork [inferred]. A numeric uid with no passwd entry gets gid 0, as in
    Docker.
-7. `chdir` to `WORKDIR`; search `PATH` **after** `pivot_root` and **after**
-   `setuid`; `execve`.
+7. `chdir` to `WORKDIR` (before the id switch, and again after if only root
+   could traverse it); make every descriptor but stdio close-on-exec, set
+   the umask to 022, reset `SIGPIPE` (Rust ignores it, and ignored signals
+   survive `execve`) and the signal mask; search `PATH` **after**
+   `pivot_root` and **after** `setuid`; `execve`.
+
+Between `clone` and `execve` the child of a multi-threaded process only
+makes system calls on arguments built before the clone: no allocation, no
+lock. A failing step writes the step and the errno to a close-on-exec pipe
+and exits 127; the parent reads end-of-file once `execve` succeeded.
 
 The parent waits for the child. The child is PID 1 of its namespace; when it
 exits, the kernel kills everything left in the namespace, so no `tini` and no
@@ -99,7 +111,8 @@ unless it installs a handler, as under Docker and BuildKit.
 An image may lack a bind target (`alpine:3.20` has no `/etc/resolv.conf`,
 `debian` no `/etc/hosts`). The empty file or directory created as a target is
 a real file in the root: it would enter the layer, and it survives a killed
-build. So, as in BuildKit's `executor/stubs.go`:
+build. So, as in BuildKit's `executor/stubs.go`, with one journal per `RUN`
+in `<state-dir>/sandbox/runs/`, locked while the `RUN` lives:
 
 1. write the stub's path to the journal in the state directory, then create
    it;
@@ -115,9 +128,9 @@ is needed for `/proc`, `/dev`, `/sys`, `resolv.conf` or `hosts`.
 | Environment | Differences |
 |---|---|
 | Real root on a host | Every step works without a fallback |
-| `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root` |
+| `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`; the old root stays mounted underneath, so root with `CAP_SYS_CHROOT` may climb out of the `chroot` [inferred] ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)) |
 | Rootless (user namespace) | Multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail |
-| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko ([kaniko-mode](kaniko-mode.md)) |
+| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own process group, killed once the command exits ([kaniko-mode](kaniko-mode.md)) |
 | `--parallel-stages` | Bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
 ## Optional hardening
@@ -141,6 +154,9 @@ is needed for `/proc`, `/dev`, `/sys`, `resolv.conf` or `hosts`.
 ## Open questions
 
 - [Q-032](../open-questions.md#q-032-what-remains-to-verify-in-the-run-sandbox) What remains to verify in the RUN sandbox?
+- [Q-075](../open-questions.md#q-075-which-host-name-does-a-run-see) Which host name does a RUN see?
+- [Q-076](../open-questions.md#q-076-what-etchosts-does-a-run-see) What /etc/hosts does a RUN see?
+- [Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) How is the MS_MOVE fallback kept from a chroot escape?
 
 Settled elsewhere: `RUN` gets no cgroup limits, so a fork bomb is bounded
 only by the environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)).

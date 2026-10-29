@@ -1,7 +1,8 @@
 # rnk-sandbox
 
-> **Status:** skeleton · **Phase:** 1 ·
-> **Depends on:** `rnk-rootfs` (`USER` lookup) · **Used by:** `rnk-builder`, `ranikust` (probes, process set-up) · **Path:** `crates/rnk-sandbox/`
+> **Status:** Phase 1 implemented, untested as root (T2 VM harness
+> missing) · **Phase:** 1 ·
+> **Depends on:** `rnk-rootfs` (`RootPath`, `USER` lookup) · **Used by:** `rnk-builder`, `ranikust` (probes, process set-up) · **Path:** `crates/rnk-sandbox/`
 
 **TL;DR:** Runs each `RUN` in fresh namespaces inside the stage root, entered
 with `pivot_root` (or `MS_MOVE`), with the capability bounding set cut to
@@ -16,7 +17,7 @@ where mounting is possible; no `RUN` process outlives the build.
   bind mounts, `mknod`. `ranikust` runs them, with `rnk-snapshot`'s.
 - Per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop, the
   `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`; and
-  `Isolation::Direct` [design]: sequential kaniko-mode `RUN` on `/`.
+  `Isolation::Direct`: sequential kaniko-mode `RUN` on `/`.
 - The no-mount `--parallel-stages` path: bare `chroot`, `mknod` `/dev`
   nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`.
 
@@ -25,82 +26,130 @@ where mounting is possible; no `RUN` process outlives the build.
 - Look up users on the host or parse `/etc/passwd` itself (`rnk-rootfs`);
   snapshot, diff or mount stage roots, or probe overlays (`rnk-snapshot`).
 - Use a bare `chroot` where mounting is possible; `unshare` once threads
-  exist; fork `RUN` from tokio's `spawn_blocking`; pick the mode (`ranikust`).
+  exist; clone a `RUN` anywhere but on the spawner thread; pick the mode
+  (`ranikust`).
+- Allocate, lock, format or panic between `clone` and `execve`.
 
-## API (planned)
+## API
 
 ```rust
-pub fn enter_build_namespace() -> Result<()>;   // [design] unshare(CLONE_NEWNS) + rslave; single-threaded only
-pub mod probe { /* userns + map, proc, pivot_root, sysfs, bind, mknod */ }  // [design] one fn per step, forked child each; ranikust calls them
-pub struct Caps { /* pivot_root or MS_MOVE, proc or rbind, sysfs or rbind, mknod */ }  // [design] what the probes found; the Outcome is ranikust's
-pub struct Sandbox { /* spawner thread, stub journal */ }               // [design]
+pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads
+pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
+pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]; what the probe found
+pub enum RootEntry { PivotRoot, MoveMount }
+pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
-    pub fn start(caps: &Caps, journal: &Path) -> Result<Self>;          // [design] replays the journal first
-    pub async fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // [design] caller holds a --jobs permit
+    pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
+    pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
 }
-pub struct RunSpec { /* root: RootPath, argv, env, user, workdir, network, mounts, isolation */ }  // [design]
-pub enum Network { Host, None }                                     // [decided] ADR-0010
-pub enum Isolation { Full, Direct, BareChroot { fake_proc: bool } } // [design] Direct: sequential kaniko mode on `/`
+pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation */ }  // #[non_exhaustive]; RunSpec::new
+pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache|secret
+pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
+pub enum Network { Host, None }                 // [decided] ADR-0010
+pub enum Isolation { Full, Direct }             // #[non_exhaustive]; BareChroot { fake_proc } [design], Phase 2
+pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, .. }
 ```
+
+`run` blocks: `rnk-builder` calls it from a blocking thread, holding a
+`--jobs` permit; the fork happens on the spawner thread whatever thread
+calls. The caller resolves `RUN --mount` into `BindMount`s (cache directory
+from `rnk-store`, secret file) and passes `--network`.
 
 ## Invariants
 
-- `unshare` only while single-threaded. One spawner thread, alive for the
-  build, forks every `RUN`; the child sets `PR_SET_PDEATHSIG(SIGKILL)`,
-  re-checks `getppid()` and is PID 1 of its PID namespace, so its tree dies.
-- Namespaces: mount, PID, UTS, IPC (plus user without `CAP_SYS_ADMIN`, network
-  for `--network=none`). Mounts exist only in the child, so the parent diffs
-  the root as the image left it.
-- Mount order: self-bind, `proc`, read-only `sysfs`, tmpfs `/dev`, writable
-  copies of `resolv.conf`, `hosts`, `hostname` (targets via `RootPath`;
-  remounts keep the locked flags), `RUN --mount`; then `pivot_root(".", ".")`
-  and `umount2(MNT_DETACH)`; where seccomp blocks it, `MS_MOVE` + `chroot(".")`.
-- Bounding and inheritable sets: Docker's 14 defaults for every `USER`. Only
-  stdio crosses `execve` (threat T7). `USER` comes from the root's files;
-  `PATH` is searched after `pivot_root` and after `setuid`.
-- Stubs are journaled in the state directory before they exist and removed
-  before the diff; the parent's mtime returns to m0 only if it still shows
-  m1, the value right after placing. The journal is replayed at start-up.
-- The probe performs each step for real, in the configuration that will be
-  used, never by kernel version; failures carry the errno; it is final.
-- Fake `/proc`: files chosen at run time from `/proc/self/cgroup` and
-  `mountinfo` (v1 or v2 by `statfs`), read to EOF before `exec`, written 0444;
-  after the whole tree exits, all of `rootfs/proc` and `rootfs/sys` is
-  deleted and their times restored. `JAVA_TOOL_OPTIONS` is prepended in the
-  `RUN` environment only, never in the config, never with GC flags.
+- `unshare` only while single-threaded. One spawner thread, alive as long as
+  the `Sandbox`, clones every `RUN` with a raw `clone` (no `CLONE_VM`); the
+  child arms `PR_SET_PDEATHSIG(SIGKILL)`, then reads an "alive" pipe nobody
+  writes (`getppid` is 0 in a new PID namespace): end-of-file means the
+  process died before the signal was armed. The child is PID 1 of its PID
+  namespace, so its tree dies with it. Dropping the `Sandbox` ends the
+  thread and kills every running `RUN`.
+- Between `clone` and `execve` the child only makes system calls (rustix's
+  raw backend, a few `libc` calls) on arguments built before the clone. A
+  failing step writes `(step, errno)` to a close-on-exec pipe and exits
+  127; end-of-file on the pipe means `execve` succeeded.
+- Namespaces: mount, PID, UTS, IPC (plus user without `CAP_SYS_ADMIN`
+  [design, Phase 3], network for `--network=none`, with `lo` up). Mounts
+  exist only in the child, so the parent diffs the root as the image left
+  it.
+- Mount order: all mounts private, self-bind, `proc`, read-only `sysfs`,
+  tmpfs `/dev` (nodes bound from the outer `/dev`, `devpts`, `shm`,
+  symlinks), writable copies of `resolv.conf`, `hosts`, `hostname`,
+  `RUN --mount`; every target resolved with `openat2(RESOLVE_IN_ROOT)` from
+  the bound root and mounted through `/proc/self/fd/<n>`; read-only remounts
+  keep the source's locked flags. Then `pivot_root(".", ".")` and
+  `umount2(MNT_DETACH)`; where seccomp blocks it, `MS_MOVE` + `chroot(".")`.
+- Capabilities, for every `USER`: bounding set cut to Docker's 14 defaults,
+  ambient cleared, effective and permitted the defaults the process has,
+  inheritable empty (Docker since 20.10.14). Then `setgroups`, `setresgid`,
+  `setresuid` to the ids `rnk-rootfs` resolved in the root; `WORKDIR` is
+  entered before the switch and again after if only root could.
+- Only stdio crosses `execve` (threat T7): every other descriptor becomes
+  close-on-exec (`close_range`); umask 022, `SIGPIPE` default, empty signal
+  mask. `PATH` is searched after entering the root and switching user.
+- `Direct`: no namespace, mount or capability change; the command gets its
+  own process group, killed with `SIGKILL` once the command exits (waited
+  with `WNOWAIT`, so the group id cannot be reused), as kaniko does.
+- Stubs are journaled in `<state-dir>/sandbox/runs` before they exist and
+  removed before the diff; the parent's mtime returns to m0 only if it still
+  shows m1, the value right after placing. Journals no process holds are
+  replayed by `probe` and `Sandbox::start`.
+- The probe performs the real sequence, in the configuration that will be
+  used, never by kernel version; a command that does not exist fails at
+  `execve` with `ENOENT`, which proves every step before it.
+- Fake `/proc` (Phase 2): files chosen at run time from `/proc/self/cgroup`
+  and `mountinfo` (v1 or v2 by `statfs`), read to EOF before `exec`, written
+  0444; after the whole tree exits, all of `rootfs/proc` and `rootfs/sys`
+  is deleted and their times restored. `JAVA_TOOL_OPTIONS` is prepended in
+  the `RUN` environment only, never in the config, never with GC flags.
 
 ## Refs
 
 - **Design:** [`design/sandbox.md#per-run-sequence`](../../design/sandbox.md#per-run-sequence), [`#process-set-up-once-per-build`](../../design/sandbox.md#process-set-up-once-per-build), [`#stub-mount-points`](../../design/sandbox.md#stub-mount-points); [`design/modes-and-detection.md#probe-order---modeauto`](../../design/modes-and-detection.md#probe-order---modeauto); [`design/kaniko-mode.md#fake-proc`](../../design/kaniko-mode.md#fake-proc), [`#java`](../../design/kaniko-mode.md#java); [threat model T5–T10, T12](../../security/threat-model.md#5-threats-and-mitigations)
 - **Decisions:** [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (default isolation), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (probe or refuse), [ADR-0010](../../adr/0010-run-network-host-or-none.md) (network), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (bare `chroot` only on request), [ADR-0018](../../adr/0018-no-proot-in-1-0.md) (no proot), [ADR-0019](../../adr/0019-java-tool-options-on-parallel-path.md) (`JAVA_TOOL_OPTIONS`)
+- **Open:** [Q-017](../../open-questions.md#q-017-which-type-carries-the-probe-outcome-to-the-libraries) (`Caps`), [Q-032](../../open-questions.md#q-032-what-remains-to-verify-in-the-run-sandbox), [Q-075](../../open-questions.md#q-075-which-host-name-does-a-run-see) (host name), [Q-076](../../open-questions.md#q-076-what-etchosts-does-a-run-see) (`/etc/hosts`), [Q-077](../../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) (`MS_MOVE` escape)
 - **Evidence:** [exp-02](../../research/experiments/02-run-sandbox.md) (sequence, escape, PDEATHSIG, bounding set, stubs, 1–2.5 ms), [exp-06a](../../research/experiments/06a-root-rerun.md) (real root), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (Docker probe matrix), [exp-12a](../../research/experiments/12a-fake-proc.md), [exp-14](../../research/experiments/14-real-builds-without-proc.md), [exp-15](../../research/experiments/15-java-next-concurrency.md), [exp-16](../../research/experiments/16-cgroup-v1-cpuset.md) (fake `/proc`, Java)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/commands/run.go:288` `runCommandInExec`
   (no namespaces; `:335` searches the process's `PATH`); `:356` and `:407`
-  process-group kill, replaced by the PID namespace; `:375` users from the
-  process's `/etc/passwd`; `:83-135` cache mounts via `swapDir`, a bind here.
-- **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot` <https://github.com/opencontainers/runc>
+  process-group kill, replaced by the PID namespace (kept for `Direct`);
+  `:375` users from the process's `/etc/passwd`; `:83-135` cache mounts via
+  `swapDir`, a bind here.
+- **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot` and `libcontainer` capabilities <https://github.com/opencontainers/runc>
 
 ## Tests
 
-- **T0:** `USER` lookup in fixture roots (`_apt`; numeric uid → gid 0); fake
-  files from captured `cgroup` and `mountinfo` (Docker v1, v2); the
-  `JAVA_TOOL_OPTIONS` value; probe outcomes from synthetic steps.
+- **T0** (any user, `cargo test`): spec validation; mount plan order,
+  environment defaults, `PATH` candidates, `/etc/hosts`; capability lists;
+  failure records; the stub journal (placement through symlinks, removal,
+  parent times, replay of dead journals only); `Direct` children cloned
+  through the spawner thread that fail before executing anything (missing
+  `WORKDIR`, then `setgroups` or a missing program); the spans
+  (`tests/spans.rs`).
 - **T1** (rootless podman): the sequence with its fallbacks; `SIGKILL` during
   `RUN sleep 1000` leaves nothing; no stub in a layer; only stdio fds.
-- **T2** (VM only): real root; escapes (`chroot` + `chdir("..")`,
+- **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`); real root;
+  escapes (`chroot` + `chdir("..")` under `pivot_root` and `MS_MOVE`,
   `umount /etc/resolv.conf`, a setuid binary) fail; the probe matrix of
   `docs/testing.md`; no fake file in any layer on the bare-`chroot` path.
 
 ## Metrics
 
-- `rnk_sandbox.run` per `RUN` (`wait4` rusage, `failed`), `setup`, `probe`
+- `rnk_sandbox.run` per `RUN`: `wait4` rusage (`user_ns`, `sys_ns`,
+  `max_rss_kb`, faults, blocks, context switches) when the child was
+  reaped after `execve`, and `failed`; `rnk_sandbox.setup` (`stubs`);
+  `rnk_sandbox.probe` (`ok`) per attempt
   ([rows](../../design/metrics.md#rnk-sandbox)).
-- Spawner-thread spans take `parent:`; nothing traced between fork and exec.
+- Spans are opened on the caller's thread, so they nest in its span with no
+  `parent:`; the spawner thread opens none; nothing is traced between fork
+  and exec. The probe's own runs record no `run` or `setup` span.
 
 ## Pitfalls
 
 - Root escapes a bare `chroot`, reaching the host's `/` (exp-02, exp-06a,
   exp-13) or, under `--parallel-stages`, sibling stages (exp-12).
+- `MS_MOVE` + `chroot` leaves the old root mounted under the stage root:
+  root with `CAP_SYS_CHROOT` can climb out to ranikust's own filesystem
+  [inferred] (Q-077).
 - Multithreaded `unshare(CLONE_NEWNS)` moves one thread; `CLONE_NEWUSER` is
   `EINVAL` (exp-02 finding 5).
 - Without PDEATHSIG a `RUN` outlived a killed build and kept writing; it
@@ -109,6 +158,9 @@ pub enum Isolation { Full, Direct, BareChroot { fake_proc: bool } } // [design] 
   wrote the root; unjournaled stubs leak and survive `SIGKILL` (exp-02).
 - Docker's seccomp blocks `pivot_root` even with `CAP_SYS_ADMIN` (sandbox
   design); on Ubuntu ≥ 24.04 `unshare` works, then mounts fail (exp-02).
+- Rust ignores `SIGPIPE` and ignored signals survive `execve`: unless it is
+  reset, `yes | head` in a `RUN` ends with `EPIPE` errors instead of a quiet
+  `SIGPIPE`.
 - `next build` fails without `/proc/self/stat` (exp-14); Java is OOM-killed
   under a memory limit without `JAVA_TOOL_OPTIONS` (exp-15).
 - A hard-coded cgroup file set fixes neither v1 nor v2 (exp-13, exp-16);
@@ -117,10 +169,16 @@ pub enum Isolation { Full, Direct, BareChroot { fake_proc: bool } } // [design] 
 
 ## Phase 1
 
-- Build, in order: `enter_build_namespace`, spawner, PDEATHSIG → the `RUN`
-  sequence as real root, `MS_MOVE` fallback → bounding-set drop → `USER` →
-  stubs → `RUN --mount=type=cache|secret` → `--network=none`. Probe only
-  this crate's part of steps 1 and 3 of modes-and-detection, with errno.
-- Deferred: `Direct`, bare `chroot`, fake `/proc`, `JAVA_TOOL_OPTIONS`
-  (Phase 2); user namespaces, fallbacks, full probe and guidance,
-  `--seccomp`, `--userns` (Phase 3); `RUN --mount=type=bind` (Phase 5).
+- Done (`feat/rnk-sandbox`): `enter_build_namespace`, spawner thread,
+  PDEATHSIG with the alive pipe, the `RUN` sequence with `pivot_root` and
+  the `MS_MOVE` fallback, bounding-set drop, `USER`, stubs and journal with
+  replay, bind mounts for `RUN --mount=type=cache|secret`,
+  `--network=none`, `Isolation::Direct` (early, from Phase 2), and the probe
+  of the root entry. Only the T0 tests ran: nothing after the clone of a
+  `Full` child has run as root yet.
+- Left for `ranikust` (task 8): calling `enter_build_namespace` and `probe`
+  in the single-threaded window and `Sandbox::start` after.
+- Deferred: bare `chroot`, fake `/proc`, `JAVA_TOOL_OPTIONS` (Phase 2); user
+  namespaces, the `proc` and `sysfs` fallbacks, the full probe and guidance
+  (uid map, `sysfs`, bind, `mknod`), `--seccomp`, `--userns` (Phase 3);
+  `RUN --mount=type=bind` (Phase 5).
