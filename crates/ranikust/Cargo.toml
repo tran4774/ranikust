@@ -6,6 +6,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Depends on unpublished workspace crates, like every crate here.
+publish = false
+
+[dependencies]
+rnk-metrics.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
