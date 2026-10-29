@@ -1325,6 +1325,16 @@ dependencies = [
 [[package]]
 name = "rnk-store"
 version = "0.0.0"
+dependencies = [
+ "rnk-metrics",
+ "rnk-oci",
+ "rnk-rootfs",
+ "rustix",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "rustc_version"

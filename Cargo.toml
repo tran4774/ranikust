@@ -19,6 +19,7 @@ rnk-oci = { path = "crates/rnk-oci" }
 rnk-registry = { path = "crates/rnk-registry" }
 rnk-rootfs = { path = "crates/rnk-rootfs" }
 rnk-sandbox = { path = "crates/rnk-sandbox" }
+rnk-store = { path = "crates/rnk-store" }
 
 # Third-party crates. Each is an architecture change: say why in the commit
 # that adds it.

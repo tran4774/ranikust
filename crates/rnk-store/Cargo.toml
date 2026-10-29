@@ -10,3 +10,15 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+rnk-oci.workspace = true
+rnk-rootfs.workspace = true
+rustix.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rnk-metrics.workspace = true
+tempfile.workspace = true
