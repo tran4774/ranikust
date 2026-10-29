@@ -95,6 +95,12 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   100 runs, proptest on insertion order, any JSON value, random documents.
 - Planned: platform selection; config fields compared with kaniko's (T1/T2).
 
+## Metrics
+
+- None: pure data. Serializing configs and manifests is charged to
+  `rnk_builder.assemble` ([rows](../../design/metrics.md#rnk-oci)).
+- No `tracing` dependency needed.
+
 ## Pitfalls
 
 - `oci-spec` 0.10.0 writes labels, annotations, `ExposedPorts` and

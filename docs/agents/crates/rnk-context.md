@@ -65,6 +65,13 @@ pub fn find_dockerignore(ctx: &Context, dockerfile: &Path) -> Result<Option<Vec<
 - T0 HTTPS against a loopback server with a test CA; git against a local
   repository [open: Q-045].
 
+## Metrics
+
+- `rnk_context.load` (`files`, `dirs`, `bytes`, `files_ignored`);
+  `rnk_context.ignore` when filtering is a pass of its own; Phase 4
+  `rnk_context.hash` ([rows](../../design/metrics.md#rnk-context)).
+- Count in the walk and record the totals once: no span or timer per file.
+
 ## Pitfalls
 
 - kaniko takes a `--context` without `://` as a directory and dispatches

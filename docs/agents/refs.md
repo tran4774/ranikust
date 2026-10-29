@@ -77,7 +77,10 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Derives each library crate's `Error` enum; no `anyhow` in libraries | candidate; used by `rnk-rootfs` |
 | [tempfile](https://crates.io/crates/tempfile) | 3.27.0, MIT OR Apache-2.0 | Temp dirs for T0 tests, removed on drop | candidate; used by `rnk-rootfs` tests |
 | [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required | chosen (`ADR-0020`) |
-| [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber), [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.1.44, 0.3.23, MIT; 0.33.1, Apache-2.0 | Logs and tracing | chosen (survey 03) |
+| [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | 0.1.44, 0.3.23, MIT | Spans and logs in every crate; the subscriber, per-layer filters and the metrics layer in `rnk-metrics` ([docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/)); `fmt` and `registry` features only | chosen (`ADR-0025`) |
+| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: Q-058]`) |
+| [serde_json](https://crates.io/crates/serde_json) | 1.0.154, MIT OR Apache-2.0 | JSON: the metrics report (`rnk-metrics`) | chosen |
+| [libc](https://crates.io/crates/libc) | 0.2.191, MIT OR Apache-2.0 | `getrusage` in `rnk-metrics`, which `rustix` 1.1 lacks | chosen |
 | [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03) | candidate |
 | [highway](https://crates.io/crates/highway), [xxhash-rust](https://crates.io/crates/xxhash-rust), [jwalk](https://crates.io/crates/jwalk) | 1.3.0, MIT; 0.8.19, BSL-1.0; 0.9.0, MIT | Snapshot hash, parallel walk (Phase 2) | candidate |
 | [regex](https://crates.io/crates/regex) | 1.13.1, MIT OR Apache-2.0 | `rnk-ignore`'s compiled patterns (Go regexps translated; no Unicode tables) | chosen |

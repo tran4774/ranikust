@@ -57,6 +57,12 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   is removed and its parent's metadata restored before the diff.
 - A new dependency or a new `pub` item at a crate root is an architecture
   change: justify it in the PR.
+- New code instruments as [`design/metrics.md`](../design/metrics.md#emitting-spans)
+  says: a `debug_span!` named `<crate>.<operation>` per layer, blob,
+  instruction or stage, never a span or timer per file or entry (count in
+  the loop, record the total once); numeric fields carry their unit in the
+  name (`bytes_in`, `files`, `user_ns`); no library depends on
+  `rnk-metrics`.
 
 ## Determinism
 
@@ -118,6 +124,7 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 | Test tiers, recipes or CI jobs | `justfile` and `ci.yml` identical; `docs/testing.md`, `CONTRIBUTING.md`, the command lists in `CLAUDE.md` and [workflow.md](workflow.md) |
 | Code ported from kaniko or elsewhere | file header, `NOTICE` entry, source commit ([CONTRIBUTING.md](../../CONTRIBUTING.md#porting-code-from-kaniko)) |
 | Phase 1 task finished | tick it in [phase-1.md](phase-1.md) |
+| Span or span field added, renamed or removed | [`design/metrics.md`](../design/metrics.md#spans-per-crate) and the card's `## Metrics` |
 | New measurement | a new experiment report or ADR evidence; `docs/research/` is frozen |
 
 ## Writing

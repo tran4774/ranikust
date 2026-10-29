@@ -12,6 +12,7 @@ repository = "https://github.com/tran4774/ranikust"
 
 [workspace.dependencies]
 # Internal crates, referenced as `<name>.workspace = true`.
+rnk-metrics = { path = "crates/rnk-metrics" }
 rnk-rootfs = { path = "crates/rnk-rootfs" }
 
 # Third-party crates. Each is an architecture change: say why in the commit
@@ -20,6 +21,8 @@ rnk-rootfs = { path = "crates/rnk-rootfs" }
 # `flate2`: pure-Rust zlib (zlib-rs), so the musl build needs no C
 # toolchain; `runtime_detection` lets zlib-rs pick SIMD code at run time.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+# `libc`: `getrusage` for the metrics report (rustix 1.1 has no wrapper).
+libc = "0.2.186"
 # `regex`: no Unicode tables; `rnk-ignore` writes its classes out itself.
 regex = { version = "1.12", default-features = false, features = ["std", "perf"] }
 rustix = { version = "1.1.6", features = ["fs", "std"] }
@@ -30,7 +33,10 @@ sha2 = { version = "0.11.1", default-features = false }
 # `tar`: reading only (`entries()`, never `unpack`); writers build headers.
 tar = { version = "0.4.46", default-features = false }
 thiserror = "2.0.21"
+# `tracing`: libraries emit spans only; `rnk-metrics` and the binary
+# install the subscriber (ADR-0025).
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry", "std"] }
 
 # Test-only crates.
 proptest = { version = "1.12", default-features = false, features = ["std"] }

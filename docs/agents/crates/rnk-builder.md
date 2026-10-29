@@ -84,6 +84,14 @@ pub enum Output { Registry(Reference), DockerTar(PathBuf), OciLayout(PathBuf) } 
   `--jobs 1` and the default give one digest. Phase 6: kaniko's 201
   integration Dockerfiles in every mode.
 
+## Metrics
+
+- The instruction record `rnk_builder.instruction` (`stage`, `index`,
+  `line`, `kind`, `text` as written, never expanded, `cache_hit`); `stage`,
+  `execute`, `layer` (`skipped`), `assemble`, `output` ([rows](../../design/metrics.md#rnk-builder)).
+- Test: with `--reproducible`, digests equal with `RANIKUST_METRICS_FILE`
+  set and unset.
+
 ## Pitfalls
 
 - Exporting costs about 2 s per large layer: lazy export matters as much as

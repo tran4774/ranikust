@@ -88,6 +88,13 @@ pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [des
   `testfiles` dumps, proptest (no panic, errors carry lines), graph and
   scope walks over the 200 files with kaniko's build arguments.
 
+## Metrics
+
+- One `rnk_dockerfile.parse` span per Dockerfile (`bytes_in`,
+  `instructions`, `stages`); none per line or instruction
+  ([rows](../../design/metrics.md#rnk-dockerfile)).
+- Depends on `tracing` only; stays free of I/O.
+
 ## Pitfalls
 
 - Heredocs are found with the shell lexer over the whole line (`<<` inside

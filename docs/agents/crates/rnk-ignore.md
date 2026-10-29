@@ -85,6 +85,12 @@ never evaluated never fails.
   `./p`, `/p` equal `p`; walk equals parent check without exceptions;
   agreement with a direct glob interpreter for `* ? ** / .` patterns.
 
+## Metrics
+
+- None: matching is per path, so a span would be per file. Its cost is
+  charged to `rnk_context.ignore` ([rows](../../design/metrics.md#rnk-ignore)).
+- No `tracing` dependency needed.
+
 ## Pitfalls
 
 - gitignore is not dockerignore: a pattern without `/` matches only at the

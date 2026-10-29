@@ -81,6 +81,14 @@ the outputs is [open: Q-029]. Log lines carry `[<stage-name> <k>/<n>]` [design].
   build leaves no mount, process or stub (T2, VM only). Timing comes from the
   `nextjs-kaniko` harness, not from tests.
 
+## Metrics
+
+- `rnk_sched.run` (`stages`, `jobs`, `max_running`); the stage record
+  `rnk_sched.stage` (`stage`, `name`, `base`, `max_memory_bytes`);
+  `wait_deps`, `wait_memory`, `wait_jobs` ([rows](../../design/metrics.md#rnk-sched)).
+- Each stage task is `.instrument`ed with its stage span, so all its work
+  lands in its record (`exp-12` per-stage times).
+
 ## Pitfalls
 
 - Memory, not CPU, bounds parallelism: W3 peak 4.1–4.5 → 6.6–7.3 GB

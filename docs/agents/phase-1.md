@@ -38,6 +38,7 @@ the code.
 | [ ] | aarch64 in CI: cargo-zigbuild cross-build, unit tests under qemu-user (`ADR-0009`; today only `cargo check`) | CI |
 | [ ] | T2 VM harness `just test-vm` (`docs/testing.md`); overlay as root cannot be tested without it `[inferred]` | tests |
 | [ ] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) | tests |
+| [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `RANIKUST_METRICS_FILE` (done); `--metrics-file` and `meta.options` with task 8; every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
 
 ## Task order
 
@@ -48,6 +49,7 @@ Two mostly independent tracks (survey 04 §3): front end
 
 | # | Task | Needs | Blocked by |
 |---|---|---|---|
+| 0 | `rnk-metrics` and the binary's wiring (`ADR-0025`); done but for `--metrics-file`, which comes with 8 | | |
 | 1 | `rnk-oci` types | | |
 | 2 | `rnk-dockerfile` parser with BuildKit goldens | | |
 | 3 | `rnk-ignore` | | |
@@ -64,6 +66,10 @@ Two mostly independent tracks (survey 04 §3): front end
 
 Any time: the aarch64 CI job and the VM harness (before 8 and 9 can be
 tested as root).
+
+Every task instruments its crate as its card's `## Metrics` and
+[design/metrics.md](../design/metrics.md#spans-per-crate) list, tested
+with `rnk_metrics::Capture`; a task is not done without it.
 
 ## Acceptance criteria
 
@@ -87,6 +93,9 @@ tested as root).
       each accepted flag tested for its meaning, mapping in the book.
 - [ ] aarch64 in CI: `just check-aarch64` (exists) plus the cross-build and
       qemu-user unit tests of `ADR-0009`.
+- [ ] W1 and W3 metrics reports compared with kaniko's by the bench harness
+      ([phase map](../design/metrics.md#comparing-with-kaniko)); with
+      `--reproducible`, the same digests with metrics on and off.
 
 ## Deferred
 

@@ -18,6 +18,7 @@ source; do not load the long documents unless a card sends you there.
 | Need a spec, upstream source or crate doc | [refs.md](refs.md) |
 | Need the reason behind a decision | the ADR listed on the crate card; index in [`../adr/README.md`](../adr/README.md) |
 | Need measured evidence | the experiment listed on the crate card; index in [`../research/README.md`](../research/README.md) |
+| Instrument a crate, read or compare a metrics report | the card's `## Metrics`, then [`../design/metrics.md`](../design/metrics.md#spans-per-crate) |
 | Hit a question no ADR or design doc answers | [`../open-questions.md`](../open-questions.md): check it is not there, then add it (rules: [rules.md](rules.md#open-questions)) |
 
 ## Files
@@ -51,6 +52,7 @@ source; do not load the long documents unless a card sends you there.
 | `rnk-layer` | [crates/rnk-layer.md](crates/rnk-layer.md) | Deterministic tar, parallel compression, digests |
 | `rnk-cache` | [crates/rnk-cache.md](crates/rnk-cache.md) | Cache keys, layer cache |
 | `rnk-builder` | [crates/rnk-builder.md](crates/rnk-builder.md) | Builds one stage, assembles the image |
+| `rnk-metrics` | [crates/rnk-metrics.md](crates/rnk-metrics.md) | Log subscriber and opt-in build metrics: spans → JSON report |
 
 ## Conventions in these files
 

@@ -1,7 +1,7 @@
 # ranikust
 
 > **Status:** skeleton · **Phase:** 1 ·
-> **Depends on:** `rnk-sched`, `rnk-sandbox` and `rnk-snapshot` (probes), `rnk-store` (`prune`) · **Used by:** — · **Path:** `crates/ranikust/`
+> **Depends on:** `rnk-metrics` (subscriber, report), `rnk-sched`, `rnk-sandbox` and `rnk-snapshot` (probes), `rnk-store` (`prune`) · **Used by:** — · **Path:** `crates/ranikust/`
 
 **TL;DR:** The binary: subcommands, kaniko-compatible flags, and the process
 set-up that must run while single-threaded. Start no thread (tokio, rayon, a
@@ -42,7 +42,8 @@ enum Outcome { OverlayRoot, OverlayRootless, KanikoCanMount, KanikoCannotMount, 
 struct PushArgs { path: PathBuf, destination: Vec<String> } // [open: Q-048] kaniko pushes a docker-save tar or OCI layout
 ```
 
-Set-up order [design]: validate flags (no I/O) → workdir checks →
+Set-up order [design]: `rnk_metrics::init` (done; starts no thread) →
+validate flags (no I/O) → workdir checks →
 `unshare(CLONE_NEWNS)`, `/` rslave → probes of `rnk-sandbox` and
 `rnk-snapshot` in forked children → outcome → `rnk-store` open and
 clean-up → kaniko mode: `flock` the workdir → spawner thread, stub-journal
@@ -77,6 +78,16 @@ replay → tokio runtime → `rnk-sched`.
   unmarked `--workdir` under a fresh temp dir. T3: `just build-static`.
 - T2 only, in the VM: `--workdir` at `/`, `/home`, other system directories
   ([testing](../../testing.md#planned-test-suites)).
+- T0 done: the metrics report on every exit path, panic included
+  (`tests/metrics.rs`; hidden `RANIKUST_DEBUG_FAULT=panic|error`).
+
+## Metrics
+
+- Emits `ranikust.run` (done), then `ranikust.build`, `ranikust.setup`,
+  `ranikust.probe` ([design/metrics.md](../../design/metrics.md#ranikust)).
+- `Telemetry::finish` on every way out that returns. Task 8: `--metrics-file`
+  [open: Q-023] fills `Config::file`; `set_meta` records the mode and the
+  cost-relevant options, never build arguments or credentials.
 
 ## Pitfalls
 
@@ -101,8 +112,8 @@ replay → tokio runtime → `rnk-sched`.
   `--dockerfile`, `--destination`, `--tar-path`, `--oci-layout-path`,
   `--no-push`, `--build-arg`, `--target`, `--reproducible`, `--compression`,
   `--registry-certificate`, `--workdir`, `--state-dir`, `--mode`, `--jobs`,
-  `--network=none`) and `version`; fix the final list and the
-  `--parallel-stages` name (ADR-0011, ADR-0014).
+  `--network=none`, `--metrics-file`) and `version`; fix the final list
+  and the `--parallel-stages` name (ADR-0011, ADR-0014).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push` and

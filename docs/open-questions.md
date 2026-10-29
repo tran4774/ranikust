@@ -113,7 +113,7 @@ Entry format:
 - **Blocks:** Phase 1 task 3; **Area:** `rnk-ignore`
 - **Context:** the planned `Matcher` takes `&str`, which cannot hold
   non-UTF-8 file names; the card says to decide the path type first
-  ([rnk-ignore](agents/crates/rnk-ignore.md#api-planned),
+  ([rnk-ignore](agents/crates/rnk-ignore.md#api),
   [Phase 1](agents/crates/rnk-ignore.md#phase-1)).
 - **Options:** (a) `&str`; (b) bytes, matched with `regex::bytes`.
 - **Recommendation:** none
@@ -374,12 +374,19 @@ Entry format:
   forms…), plus `--force` (replaced by the workdir checks), `--cache-dir`
   (the store replaces it) and `KANIKO_REGISTRY_MIRROR`, `KANIKO_NO_PUSH`,
   `KANIKO_REGISTRY_MAP` ([ranikust](agents/crates/ranikust.md#pitfalls)).
-  `ADR-0011` and `ADR-0023` fix the list in Phase 1.
+  `ADR-0011` and `ADR-0023` fix the list in Phase 1. Also
+  `KANIKO_METRICS_FILE` (the maintainer's kaniko fork,
+  `kaniko@88b6d2b75`): honour it as an alias of `RANIKUST_METRICS_FILE`,
+  whose report follows the same sections but not the same phase names
+  (`ADR-0025`, [metrics](design/metrics.md#comparing-with-kaniko)), and the
+  final name of the `--metrics-file` flag.
 - **Options:** per flag, (a) accept with kaniko's meaning and a test;
   (b) reject with a message; (c) accept and ignore with a warning, as
   `--snapshot-mode` in overlay mode (`ADR-0023`).
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** `KANIKO_METRICS_FILE` is not read; only
+  `RANIKUST_METRICS_FILE` turns metrics on (`feat/rnk-metrics`). Reversible:
+  an alias is one more variable in `rnk_metrics::Config::from_env`.
 - **Raised:** 2026-10-30
 
 ### Q-054: What is the minimum kernel, and who checks it?
@@ -846,6 +853,39 @@ Entry format:
 - **Recommendation:** none
 - **Interim:** (a), BuildKit's rule, in `feat/rnk-dockerfile-parser`
   (`rnk_dockerfile::stage_graph`). Reversible: one lookup in the graph.
+- **Raised:** 2026-10-30
+
+### Q-057: Does ranikust offer CPU and heap profiling?
+
+- **Blocks:** nothing yet; **Area:** `rnk-metrics`
+- **Context:** kaniko's fork writes `cpu.pprof` and `heap.pprof` when
+  `KANIKO_PPROF_DIR` is set (`kaniko@88b6d2b75 pkg/metrics/metrics.go:82-109`);
+  `ADR-0025` leaves profiling out of the metrics report
+  ([metrics](design/metrics.md#comparing-with-kaniko)). Spans show which
+  phase is slow, not which function.
+- **Options:** (a) none: `perf record` on the static binary (symbols are
+  kept, `strip = "debuginfo"`); (b) an opt-in sampling profiler writing
+  pprof (`pprof` crate, signal-based; check musl and aarch64); (c) heap
+  statistics from mimalloc in the report.
+- **Recommendation:** none
+- **Interim:** none
+- **Raised:** 2026-10-30
+
+### Q-058: Which metric export formats come after the JSON report?
+
+- **Blocks:** nothing yet; **Area:** `rnk-metrics`
+- **Context:** `ADR-0025` writes one JSON file per build. Survey 03 named
+  `opentelemetry-otlp` ([refs](agents/refs.md#crates)); kaniko exports
+  OpenTelemetry traces. A CI service may want spans in a tracing backend or
+  counters scraped by Prometheus
+  ([metrics](design/metrics.md#open-questions)).
+- **Options:** (a) the file only; (b) an OTLP exporter layer behind a flag
+  or `OTEL_*` variables, which starts a thread and a runtime (after
+  set-up only); (c) a Prometheus text file written at exit
+  (node-exporter textfile collector); (d) a Prometheus endpoint, which
+  needs a long-lived process.
+- **Recommendation:** none
+- **Interim:** none
 - **Raised:** 2026-10-30
 
 ## Answered

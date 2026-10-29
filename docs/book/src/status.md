@@ -3,7 +3,9 @@
 ## Where the project is
 
 ranikust is **pre-alpha**. There is no release, and the binary only prints
-its version.
+its version. Its build metrics already work: with
+`RANIKUST_METRICS_FILE=<path>` set, it writes a JSON report of where the
+run spent time and resources when it exits.
 
 What exists:
 
