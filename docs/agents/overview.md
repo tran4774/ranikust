@@ -61,7 +61,8 @@ runs the checks. Images from the two modes may differ as `ADR-0012` lists.
 
 Intended direction from [`ARCHITECTURE.md`](../../ARCHITECTURE.md#intended-dependency-direction);
 lower crates never depend on higher ones. Today only `rnk-snapshot` →
-`rnk-rootfs` and `ranikust` → `rnk-metrics` are declared in a `Cargo.toml`.
+`rnk-rootfs`, `rnk-context` → `rnk-rootfs`, `rnk-ignore` and `ranikust` →
+`rnk-metrics` are declared in a `Cargo.toml`.
 
 ```
 ranikust ── rnk-metrics   (subscriber, opt-in metrics; libraries only emit tracing spans)
@@ -86,7 +87,8 @@ Decided edges besides the chain (`[design]`):
 
 `[open: Q-028]` edges: `ranikust` → `rnk-registry` (`login`, `push`);
 `rnk-sched` → `rnk-dockerfile` (stage graph type); `rnk-cache` →
-`rnk-registry`; `rnk-context` → `rnk-ignore`.
+`rnk-registry`; `rnk-context` → `rnk-ignore` (declared in the interim:
+ADR-0027 puts the matcher inside the walk).
 
 ## Where state lives
 

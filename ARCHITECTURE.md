@@ -76,7 +76,8 @@ bug.
 Build context sources: local directory, tar archive, git repository, HTTPS
 URL, behind an open trait. Locates the ignore file:
 `<Dockerfile>.dockerignore` before `<context>/.dockerignore`, as kaniko and
-BuildKit do.
+BuildKit do. Walks the context as BuildKit's filtered walk does, with
+`rnk-ignore`'s matcher (ADR-0027).
 **Must not** fetch from cloud object stores (S3, GCS, Azure), interpret the
 Dockerfile, or decide which files an instruction copies.
 
@@ -223,7 +224,8 @@ anything but the report, start a thread, or keep state per file.
 chain: `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes and
 `rnk-store` for `prune`; `rnk-snapshot` uses `rnk-layer` (decoder for
 extraction, writer for export) and `rnk-store`; `rnk-registry` and
-`rnk-cache` use `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`.
+`rnk-cache` use `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`;
+`rnk-context` uses `rnk-ignore` for its walk (ADR-0027; interim, Q-028).
 `rnk-rootfs` never depends on `rnk-layer`. Lower crates never depend on
 higher ones. `rnk-dockerfile`, `rnk-ignore` and `rnk-oci` stay pure data.
 Only `ranikust` depends on `rnk-metrics`; libraries reach it through

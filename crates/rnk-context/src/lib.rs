@@ -27,7 +27,8 @@
 //!
 //! - No cloud object-store sources (S3, GCS, Azure) for now.
 //! - Does not interpret the Dockerfile or decide which files an instruction
-//!   copies (`rnk-builder`), and does not match ignore patterns (`rnk-ignore`).
+//!   copies (`rnk-builder`; resolving `COPY` sources is [open: Q-080]), and
+//!   does not match ignore patterns (`rnk-ignore`).
 //! - Reaches context paths only through `rnk-rootfs`'s `RootPath`, and never
 //!   writes to a local directory context.
 
