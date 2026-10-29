@@ -3,3 +3,6 @@
 # Personal Claude Code files (not shared)
 .claude/settings.local.json
 CLAUDE.local.md
+
+# Git worktrees created by Claude Code agents
+.claude/worktrees/
