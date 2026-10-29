@@ -5,6 +5,7 @@
 // Usage:
 //
 //	golden-gen dockerfile <outdir> <file>...   one <basename>.json per file
+//	golden-gen expand <outdir> <file>...       ARG/ENV expansion through dockerfile2llb
 //	golden-gen lex <out.json>                   shell lexer vectors
 package main
 

@@ -1,0 +1,35 @@
+{
+  "file": "Dockerfile_test_env",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=something",
+    "BASE_VAR=from-base",
+    "hey=hello",
+    "testmultipleeq=this=is a=test string=with a=lot of=equals",
+    "first=foo",
+    "second=foo2",
+    "third=foo2:/third",
+    "myName=John Doe",
+    "myDog=Rex The Dog",
+    "myCat=fluffy",
+    "test=value value2",
+    "test1=a'b'c",
+    "test2=a\"b\"c",
+    "test3=a b",
+    "name2=b c",
+    "test4=a\"b",
+    "test5=a\\\"b",
+    "test6=a\\'b",
+    "atomic=two",
+    "newatomic=one",
+    "newenv=/newenv"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

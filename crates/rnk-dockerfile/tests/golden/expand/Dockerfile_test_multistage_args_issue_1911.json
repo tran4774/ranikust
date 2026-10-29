@@ -1,0 +1,91 @@
+{
+  "file": "Dockerfile_test_multistage_args_issue_1911",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"base:: $NAME\" >> A.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "NAME=base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"custom:: $NAME\" >> C.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "NAME=base-dev",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"custom:: $NAME\" >> D.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "NAME=base-dev",
+        "OTHER=fix",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"custom:: $OTHER\" >> C.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "NAME=base-dev",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"custom:: $OTHER\" >> D.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "NAME=base-dev",
+        "OTHER=fix",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"dev:: $NAME\" >> B.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "NAME=base-dev",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

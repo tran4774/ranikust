@@ -1,0 +1,21 @@
+{
+  "file": "Dockerfile_test_add",
+  "build_args": {
+    "file": "context/foo"
+  },
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base",
+    "contextenv=./context",
+    "VERSION=v2.1.0",
+    "URL=https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v1.4.3/docker-credential-gcr_linux_386-1.4.3.tar.gz"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

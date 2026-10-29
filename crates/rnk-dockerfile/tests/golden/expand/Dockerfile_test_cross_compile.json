@@ -1,0 +1,19 @@
+{
+  "file": "Dockerfile_test_cross_compile",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base",
+    "GREETING=hello"
+  ],
+  "labels": {
+    "base.label": "base",
+    "stage": "base",
+    "test": "cross-compile"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

@@ -1,0 +1,18 @@
+{
+  "file": "Dockerfile_test_issue_mz793",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [
+    "/data"
+  ],
+  "stop_signal": "",
+  "runs": []
+}

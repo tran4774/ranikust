@@ -21,6 +21,9 @@ GO_MOD_VOLUME=${GO_MOD_VOLUME:-rk-gomod}
     rm -rf /tests/golden/kaniko
     mkdir -p /tests/golden/kaniko
     /tmp/golden-gen dockerfile /tests/golden/kaniko /tests/fixtures/kaniko/*
+    rm -rf /tests/golden/expand
+    mkdir -p /tests/golden/expand
+    /tmp/golden-gen expand /tests/golden/expand /tests/fixtures/kaniko/*
     rm -rf /tests/golden/buildkit
     mkdir -p /tests/golden/buildkit
     for d in /tests/fixtures/buildkit/parser/testfiles/* /tests/fixtures/buildkit/parser/testfiles-negative/*; do

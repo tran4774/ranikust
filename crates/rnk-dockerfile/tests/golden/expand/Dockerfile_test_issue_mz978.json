@@ -1,0 +1,28 @@
+{
+  "file": "Dockerfile_test_issue_mz978",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /data/a /data/b     && chmod 755 /data/a /data/b     && echo 'bli' > /data/a/1 && ln /data/a/1 /data/a/2     && echo 'blubb' > /data/b/1 && ln /data/b/1 /data/b/2"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

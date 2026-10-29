@@ -136,7 +136,7 @@ func lexVectors(out string) {
 
 func main() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: golden-gen dockerfile <outdir> <file>... | golden-gen lex <out.json>")
+		fmt.Fprintln(os.Stderr, "usage: golden-gen dockerfile|expand <outdir> <file>... | golden-gen lex <out.json>")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -144,6 +144,8 @@ func main() {
 		dockerfiles(os.Args[2], os.Args[3:])
 	case "lex":
 		lexVectors(os.Args[2])
+	case "expand":
+		expandGoldens(os.Args[2], os.Args[3:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown mode", os.Args[1])
 		os.Exit(2)

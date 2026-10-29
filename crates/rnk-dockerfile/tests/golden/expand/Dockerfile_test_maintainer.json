@@ -1,0 +1,13 @@
+{
+  "file": "Dockerfile_test_maintainer",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  ],
+  "labels": {},
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

@@ -1,0 +1,30 @@
+{
+  "file": "Dockerfile_test_issue_mz725",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base",
+    "NEW=val"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "root",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "id"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "NEW=val",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

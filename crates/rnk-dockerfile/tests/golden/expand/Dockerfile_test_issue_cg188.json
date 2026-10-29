@@ -1,0 +1,53 @@
+{
+  "file": "Dockerfile_test_issue_cg188",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base",
+    "SECRET=whatever"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "SECRET1=`cat /root/.netrc`     && echo $SECRET1 | tee /out3.txt     && [ $SECRET1 = \"blubb\" ]     && echo $SECRET | tee /out4.txt     && [ $SECRET = \"blubb\" ]"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "SECRET=whatever"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "SECRET=`cat /run/secrets/netrc`     && echo $SECRET | tee /out1.txt     && [ $SECRET = \"blubb\" ]"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo $SECRET | tee /out2.txt     && [ $SECRET = \"blubb\" ]"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "SECRET=whatever"
+      ]
+    }
+  ]
+}

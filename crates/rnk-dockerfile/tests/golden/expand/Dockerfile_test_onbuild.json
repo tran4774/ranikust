@@ -1,0 +1,19 @@
+{
+  "file": "Dockerfile_test_onbuild",
+  "build_args": {
+    "file": "/tmp/onbuild"
+  },
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base",
+    "dir=/new/workdir/"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

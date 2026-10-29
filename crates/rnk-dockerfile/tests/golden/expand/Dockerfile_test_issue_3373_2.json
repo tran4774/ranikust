@@ -1,0 +1,12 @@
+{
+  "file": "Dockerfile_test_issue_3373_2",
+  "build_args": {},
+  "ok": false,
+  "error": "checksum requires HTTP(S) or Git sources",
+  "env": [],
+  "labels": {},
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

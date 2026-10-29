@@ -1,0 +1,61 @@
+{
+  "file": "Dockerfile_test_issue_mz155",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "if ls -l /proc/1/exe | grep -q '/kaniko/executor'; then         if [ $(stat -c %X /tmp/testdir) -ne $(date -d '2000-01-01' +%s) ]; then             echo \"FAIL: atime changed on /tmp/testdir\";             exit 1;         fi;         if [ $(stat -c %X /tmp/testdir/file.txt) -ne $(date -d '2000-01-01' +%s) ]; then             echo \"FAIL: atime changed /tmp/testdir/file.txt\";             exit 1;         fi;     else         echo \"PID1 is not Kaniko, skipping check\";     fi"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /tmp/testdir     && echo \"hello\" > /tmp/testdir/file.txt     && touch -d '2000-01-01' /tmp/testdir     && touch -d '2000-01-01' /tmp/testdir/file.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "stat /tmp/testdir     && stat /tmp/testdir/file.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "stat /tmp/testdir     && stat /tmp/testdir/file.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "file": "Dockerfile_test_label",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base",
+    "label1=mylabel"
+  ],
+  "labels": {
+    "base.label": "base",
+    "baz": "bat",
+    "foo": "bar",
+    "label1": "mylabel",
+    "multilabel1": "multilabel1",
+    "multilabel2": "multilabel2",
+    "multilabel3": "multilabel3"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}

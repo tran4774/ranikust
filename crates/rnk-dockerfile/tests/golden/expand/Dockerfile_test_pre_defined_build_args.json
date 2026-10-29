@@ -1,0 +1,68 @@
+{
+  "file": "Dockerfile_test_pre_defined_build_args",
+  "build_args": {},
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/bin:/usr/bin:/bin",
+    "BASE_VAR=from-base"
+  ],
+  "labels": {
+    "base.label": "base"
+  },
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": [
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"BUILDPLATFORM: ${BUILDPLATFORM}\" | tee info1.txt &&     echo \"BUILDOS: ${BUILDOS}\" | tee -a info1.txt &&     echo \"BUILDARCH: ${BUILDARCH}\" | tee -a info1.txt &&     echo \"BUILDVARIANT: ${BUILDVARIANT}\" | tee -a info1.txt &&     echo \"TARGETPLATFORM: ${TARGETPLATFORM}\" | tee -a info1.txt &&     echo \"TARGETOS: ${TARGETOS}\" | tee -a info1.txt &&     echo \"TARGETARCH: ${TARGETARCH}\" | tee -a info1.txt &&     echo \"TARGETVARIANT: ${TARGETVARIANT}\" | tee -a info1.txt &&     echo \"TARGETSTAGE: ${TARGETSTAGE}\" | tee -a info1.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "PATH=/usr/local/bin:/usr/bin:/bin"
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "echo \"BUILDPLATFORM: ${BUILDPLATFORM}\" | tee info2.txt &&     echo \"BUILDOS: ${BUILDOS}\" | tee -a info2.txt &&     echo \"BUILDARCH: ${BUILDARCH}\" | tee -a info2.txt &&     echo \"BUILDVARIANT: ${BUILDVARIANT}\" | tee -a info2.txt &&     echo \"TARGETPLATFORM: ${TARGETPLATFORM}\" | tee -a info2.txt &&     echo \"TARGETOS: ${TARGETOS}\" | tee -a info2.txt &&     echo \"TARGETARCH: ${TARGETARCH}\" | tee -a info2.txt &&     echo \"TARGETVARIANT: ${TARGETVARIANT}\" | tee -a info2.txt &&     echo \"TARGETSTAGE: ${TARGETSTAGE}\" | tee -a info2.txt"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "BUILDARCH=amd64",
+        "BUILDOS=linux",
+        "BUILDPLATFORM=linux/amd64",
+        "BUILDVARIANT=",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "TARGETARCH=amd64",
+        "TARGETOS=linux",
+        "TARGETPLATFORM=linux/amd64",
+        "TARGETSTAGE=final",
+        "TARGETVARIANT="
+      ]
+    },
+    {
+      "args": [
+        "/bin/sh",
+        "-c",
+        "uname -a"
+      ],
+      "env": [
+        "BASE_VAR=from-base",
+        "BUILDARCH=amd64",
+        "BUILDOS=linux",
+        "BUILDPLATFORM=linux/amd64",
+        "BUILDVARIANT=",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "TARGETARCH=amd64",
+        "TARGETOS=linux",
+        "TARGETPLATFORM=linux/amd64",
+        "TARGETSTAGE=final",
+        "TARGETVARIANT="
+      ]
+    }
+  ]
+}

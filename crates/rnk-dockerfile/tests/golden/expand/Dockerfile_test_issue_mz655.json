@@ -1,0 +1,15 @@
+{
+  "file": "Dockerfile_test_issue_mz655",
+  "build_args": {
+    "BASE_TAG": "1.37.0"
+  },
+  "ok": true,
+  "env": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  ],
+  "labels": {},
+  "user": "",
+  "volumes": [],
+  "stop_signal": "",
+  "runs": []
+}
