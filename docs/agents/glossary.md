@@ -35,6 +35,8 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | manifest list | OCI image index or Docker manifest list: one manifest per platform; the base is picked by platform, never by host | `ADR-0009` |
 | marker file | `.ranikust-root`; a non-empty workdir without it is refused | `design/kaniko-mode.md#host-safety-checks` |
 | metacopy | Overlay option to copy up only metadata; ranikust mounts with `metacopy=off` | `ADR-0016` |
+| metric span | `tracing` span named `<crate>.<operation>` at `debug` level, one per layer, blob, instruction or stage (never per file), with unit-named numeric fields; what `rnk-metrics` aggregates | `design/metrics.md#emitting-spans` |
+| metrics report | Opt-in JSON file (`RANIKUST_METRICS_FILE`, schema `ranikust.metrics/v1`) written at exit: phases, records, network, resources; shaped like kaniko's `metrics.json` | `ADR-0025`, `design/metrics.md#the-report` |
 | `mnt_id` | Mount id from `statx`; deletion stops where it changes (`st_dev` misses binds of the same filesystem) | `exp-09` |
 | `--mode` | Selects the snapshot mode: `auto` (probe, default), `overlay` or `kaniko`; a forced mode still runs its checks | `ADR-0023` |
 | `MS_MOVE` | Mount move; `mount(root, "/", MS_MOVE)` + `chroot(".")` replaces `pivot_root` where seccomp blocks it | `design/sandbox.md#per-run-sequence` |
@@ -43,9 +45,11 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | overlay mode | Each instruction writes into a fresh upperdir, which is the diff; stages run in parallel; needs mount privileges | `ADR-0002`, `design/overlay-snapshot.md` |
 | `--parallel-stages` | Opt-in parallel stages in kaniko mode without mounts: a directory per stage, bare `chroot`, fake `/proc`; placeholder name | `ADR-0014` |
 | PDEATHSIG | `prctl(PR_SET_PDEATHSIG, SIGKILL)`: the child dies with its parent *thread*, hence the spawner thread | `design/sandbox.md` |
+| phases (metrics) | Report section: totals per span name (`count`, `total_ns`, `max_ns`, `wall_ns`, summed fields); kaniko's word for its timed stats | `design/metrics.md#the-report` |
 | `pivot_root` | Swaps the root mount for `RUN`; root escapes a bare `chroot` | `exp-02`, `exp-06a` |
 | probe | Start-up checks: each crate performs its own privileged steps for real (`rnk-sandbox`, `rnk-snapshot`); `ranikust` runs them in order and picks overlay root, overlay rootless, kaniko, or refuse | `design/modes-and-detection.md#probe-order---modeauto` |
 | Q1–Q12 | The survey's decision questions, now `ADR-0003` to `ADR-0014` | `docs/research/survey/05-decisions.md` |
+| record (metrics) | One stage, instruction or snapshot in the report (`stages`, `commands`, `snapshots`), opened by its span; holds the totals of the spans nested in it | `design/metrics.md#records` |
 | `redirect_dir` | Overlay directory-rename feature; ranikust uses `nofollow` (`off` is refused in a user namespace), so lower-directory renames give `EXDEV` | `ADR-0016` |
 | `rnk-store` | Crate owning the store in the state directory, its locks, clean-up, `prune` and `BuildPaths` | [crates/rnk-store.md](crates/rnk-store.md), `ADR-0021` |
 | rootless overlay | Overlay mode inside a user namespace (`userxattr`); Phase 3 | `design/modes-and-detection.md#outcomes` |

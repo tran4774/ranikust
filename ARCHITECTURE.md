@@ -35,7 +35,7 @@ outside the workdir, the state directory and the requested outputs.
 
 ## Code map
 
-Fourteen crates under `crates/`. Each crate's `lib.rs` starts with a
+Fifteen crates under `crates/`. Each crate's `lib.rs` starts with a
 `# Boundaries` section; it is the authority on what the crate must not do,
 and this map follows it.
 
@@ -47,7 +47,9 @@ subcommands, the common kaniko flags and `--mode=auto|overlay|kaniko`
 single-threaded, it checks the workdir, enters a private mount namespace
 when permitted, runs the privilege probes of `rnk-sandbox` and `rnk-snapshot`
 in order and picks the mode, and in kaniko mode locks the workdir; then it
-hands off to the libraries. `prune` only calls `rnk-store`.
+hands off to the libraries. `prune` only calls `rnk-store`. First of all
+it installs the logs and the opt-in metrics of `rnk-metrics`, and it
+writes the metrics report on every way out.
 **Must not** contain build logic, or probe a capability itself.
 
 ### `rnk-dockerfile`
@@ -191,6 +193,19 @@ of the target), image config updates, then image assembly and output.
 **Must not** keep global state (paths arrive as `rnk-store`'s
 `BuildPaths`), order stages, or parse flags.
 
+### `rnk-metrics`
+
+The process's `tracing` subscriber: logs to stderr and, opt-in through
+`RANIKUST_METRICS_FILE`, a layer that aggregates every crate's spans into
+one JSON report at exit (totals per span name, records per stage,
+instruction and snapshot, bytes per registry host, `getrusage` and cgroup
+v2 counters), shaped like kaniko's `metrics.json`
+([ADR-0025](docs/adr/0025-build-metrics-from-tracing-spans.md),
+[metrics](docs/design/metrics.md)). Writes the report on every exit path,
+from a panic hook too.
+**Must not** be a dependency of a library (they only emit spans), write
+anything but the report, start a thread, or keep state per file.
+
 ### Intended dependency direction
 
 `ranikust` → `rnk-sched` → `rnk-builder` → (`rnk-snapshot`, `rnk-sandbox`,
@@ -202,6 +217,8 @@ extraction, writer for export) and `rnk-store`; `rnk-registry` and
 `rnk-cache` use `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`.
 `rnk-rootfs` never depends on `rnk-layer`. Lower crates never depend on
 higher ones. `rnk-dockerfile`, `rnk-ignore` and `rnk-oci` stay pure data.
+Only `ranikust` depends on `rnk-metrics`; libraries reach it through
+`tracing` spans alone.
 
 ## Data flow of a build
 
@@ -303,6 +320,18 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
   `PATH` or environment changes for a build.
 - `unshare` happens only while the process is single-threaded. `RUN`
   children are forked from one thread that lives for the whole build.
+
+### Observability
+
+- Every crate describes its work as `tracing` spans named
+  `<crate>.<operation>`, one per layer, blob, instruction or stage, never
+  per file, with numeric fields that carry their unit; the list is
+  [metrics](docs/design/metrics.md#spans-per-crate).
+- Metrics are opt-in (`RANIKUST_METRICS_FILE`); off, no metrics layer is
+  installed. Logs and metrics are separate layers, so a log level never
+  hides a metric.
+- Metrics never reach an image: the report is written at exit only, and no
+  build code reads metric state.
 
 ### Portability and errors
 

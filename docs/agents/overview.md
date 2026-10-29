@@ -36,6 +36,10 @@ in I/O. Full text: [`ARCHITECTURE.md`](../../ARCHITECTURE.md#data-flow-of-a-buil
 | 9 | Image assembly: config, manifest | `rnk-builder`, `rnk-oci` | |
 | 10 | Output: parallel push with cross-repository mounts, Docker tar, OCI layout | `rnk-registry`, `rnk-builder` | |
 
+Every step emits `tracing` spans; with `RANIKUST_METRICS_FILE` set,
+`rnk-metrics` writes them as one JSON report at exit (`ADR-0025`,
+`design/metrics.md`).
+
 ## Modes and the probe
 
 | | overlay mode | kaniko mode |
@@ -57,10 +61,10 @@ runs the checks. Images from the two modes may differ as `ADR-0012` lists.
 
 Intended direction from [`ARCHITECTURE.md`](../../ARCHITECTURE.md#intended-dependency-direction);
 lower crates never depend on higher ones. Today only `rnk-snapshot` →
-`rnk-rootfs` is declared in a `Cargo.toml`.
+`rnk-rootfs` and `ranikust` → `rnk-metrics` are declared in a `Cargo.toml`.
 
 ```
-ranikust
+ranikust ── rnk-metrics   (subscriber, opt-in metrics; libraries only emit tracing spans)
 └─ rnk-sched
    └─ rnk-builder
       └─ rnk-snapshot  rnk-sandbox  rnk-cache  rnk-registry
@@ -77,6 +81,8 @@ Decided edges besides the chain (`[design]`):
   exporter) and → `rnk-store`; `rnk-registry`, `rnk-cache` → `rnk-store`.
 - `rnk-sandbox` → `rnk-rootfs` (`USER` lookup); `rnk-store` → `rnk-rootfs`
   (deletion). Never `rnk-rootfs` → `rnk-layer`.
+- Only `ranikust` → `rnk-metrics` (`ADR-0025`); every crate emits `tracing`
+  spans ([design/metrics.md](../design/metrics.md#spans-per-crate)).
 
 `[open: Q-028]` edges: `ranikust` → `rnk-registry` (`login`, `push`);
 `rnk-sched` → `rnk-dockerfile` (stage graph type); `rnk-cache` →
@@ -89,7 +95,8 @@ Decided edges besides the chain (`[design]`):
 | Workdir | `--workdir`; `/` by default in a container, required on a host | overlay mode: holds the default state directory; kaniko mode: the root being walked, `flock`ed (kaniko mode only). Marker `.ranikust-root` |
 | State directory | `--state-dir` (kaniko's `--kaniko-dir`); default `<workdir>/.ranikust` in overlay mode, `/ranikust/state` in kaniko mode (`ADR-0022`) | the store, `builds/<id>/` (`design/overlay-snapshot.md#state-directory-layout`), stub journal, `deps/` for `COPY --from`, stage images, secrets. In kaniko mode on the ignore list: never walked, snapshotted or deleted |
 | Store | in the state directory, owned by `rnk-store` (`ADR-0021`) | `blobs/sha256/`, `layers/<id>/`, `caches/`, `tmp/`: content-addressed, immutable, per-digest `flock`, atomic rename, shared by concurrent builds (`ADR-0006`, `ADR-0007`) |
-| Outputs | `--destination`, `--tar-path`, `--oci-layout-path` | the image; the only other place written |
+| Outputs | `--destination`, `--tar-path`, `--oci-layout-path` | the image; the only other place written, besides the metrics report |
+| Metrics report | `RANIKUST_METRICS_FILE` (opt-in) | one JSON file written at exit, never during the build (`ADR-0025`) |
 
 One state directory serves every mode (`ADR-0022`); the default for kaniko
 mode outside a container is `[open: Q-036]`
@@ -107,6 +114,7 @@ mode outside a container is `[open: Q-036]`
 | 5 | Feature completion (`ADD` URL/git, more mounts, mirrors, `prune`) | not started |
 | 6 | Hardening and release | not started |
 
-Code today: 14 crates with docs-only `lib.rs` (`skeleton`); the binary
-prints its version; CI runs what `just ci` runs. 1.0 needs all three paths:
+Code today: 15 crates, most with docs-only `lib.rs` (`skeleton`);
+`rnk-metrics` works: the binary prints its version and, on request, writes
+the metrics report. CI runs what `just ci` runs. 1.0 needs all three paths:
 overlay root, rootless overlay, kaniko mode.

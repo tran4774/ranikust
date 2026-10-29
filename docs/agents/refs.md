@@ -69,7 +69,10 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, walk | chosen |
 | [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | candidate |
 | [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required | chosen (`ADR-0020`) |
-| [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber), [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.1.44, 0.3.23, MIT; 0.33.1, Apache-2.0 | Logs and tracing | chosen (survey 03) |
+| [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | 0.1.44, 0.3.23, MIT | Spans and logs in every crate; the subscriber, per-layer filters and the metrics layer in `rnk-metrics` ([docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/)); `fmt` and `registry` features only | chosen (`ADR-0025`) |
+| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: Q-053]`) |
+| [serde_json](https://crates.io/crates/serde_json) | 1.0.154, MIT OR Apache-2.0 | JSON: the metrics report (`rnk-metrics`) | chosen |
+| [libc](https://crates.io/crates/libc) | 0.2.191, MIT OR Apache-2.0 | `getrusage` in `rnk-metrics`, which `rustix` 1.1 lacks | chosen |
 | [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03) | candidate |
 | [highway](https://crates.io/crates/highway), [xxhash-rust](https://crates.io/crates/xxhash-rust), [jwalk](https://crates.io/crates/jwalk) | 1.3.0, MIT; 0.8.19, BSL-1.0; 0.9.0, MIT | Snapshot hash, parallel walk (Phase 2) | candidate |
 | [parse-dockerfile](https://crates.io/crates/parse-dockerfile), [ignore](https://crates.io/crates/ignore) | 0.1.8; 0.4.34 | Dockerfile parsing, `.dockerignore` | rejected (`ADR-0015`, `exp-04`) |
