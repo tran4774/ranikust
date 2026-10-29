@@ -29,7 +29,9 @@ mod path;
 mod root;
 #[cfg(test)]
 mod test_util;
+mod user;
 
 pub use error::{Error, Result};
 pub use meta::{FileTime, FileType, Meta, Stat};
 pub use root::{OpenHow, RootPath};
+pub use user::{Owner, User, lookup_owner, lookup_user};

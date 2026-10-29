@@ -49,7 +49,8 @@ impl RootPath {
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // [design] plain tar; Whiteouts::{Apply, Overlay}
 pub fn copy(src: &RootPath, from: &Path, dst: &RootPath, to: &Path, o: &CopyOpts) -> Result<()>; // [design] FICLONE, else copy
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // [design] IgnoreList: exact paths
-pub fn lookup_user(root: &RootPath, spec: &str) -> Result<Ids>;  // [design] "user[:group]": USER (rnk-sandbox), --chown (rnk-builder)
+pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
+pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
 pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011] here or `ranikust`
 ```
 
@@ -134,4 +135,6 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   (`dev`, `ino`, `mnt_id`) are the primitives either owner needs.
 - [open: Q-050] Needs Linux 5.8 (`openat2`, `STATX_MNT_ID`); fails with
   `Error::Unsupported`, no fallback.
-- Done: `RootPath` with the T0 escape suite.
+- Done: `RootPath` with the T0 escape suite; `lookup_user` and
+  `lookup_owner` (two functions: `USER` and `--chown` default the gid
+  differently, `design/rootfs.md#users-and-groups`).

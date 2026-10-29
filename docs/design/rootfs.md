@@ -72,6 +72,27 @@ with `lsetxattr` on `/proc/self/fd/<parent>/<name>`, which never follows the
 last name. Regular files being written use plain `fchown`, `fsetxattr`,
 `fchmod` and `futimens` on their open fd.
 
+## Users and groups
+
+`/etc/passwd` and `/etc/group` are read through `RootPath` (so a symlinked
+`/etc/passwd` resolves inside the root), up to 16 MiB each; a missing file is
+an empty database. Empty lines, `#` comments, NIS `+`/`-` lines and lines
+with a malformed or out-of-range id are skipped, never read as id 0. Ids
+above `2147483647` are refused, as runc does: `chown(2)` reads `u32::MAX` as
+"unchanged".
+
+| | `USER` (`lookup_user`, for `rnk-sandbox`) | `--chown` (`lookup_owner`, for `rnk-builder`) |
+|---|---|---|
+| user | name in `passwd`, else numeric uid, looked up by uid for its group and home | name in `passwd`, else numeric uid |
+| unknown numeric uid | gid 0, home `/`, as Docker ([sandbox](sandbox.md)) | allowed |
+| group given | name in `group`, else numeric gid; no supplementary groups | name in `group`, else numeric gid |
+| group omitted | the passwd entry's gid; supplementary groups are the groups listing the user | gid = uid, Docker's documented rule and `kaniko@44aa7ddc0 pkg/util/command_util.go:495` |
+| home | passwd home, `/` when unknown or empty | n/a |
+
+kaniko reads the process's own `/etc/passwd`
+(`kaniko@44aa7ddc0 pkg/util/command_util.go:534`); ranikust never reads the
+host's.
+
 ## Failure handling
 
 - Every error carries the operation, the in-root path and the errno; none
