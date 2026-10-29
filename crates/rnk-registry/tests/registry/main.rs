@@ -467,6 +467,43 @@ async fn registry_certificates_must_be_readable() {
     assert!(matches!(err, Error::Tls(_)), "{err}");
 }
 
+/// Pulls `RNK_TEST_IMAGE` (an image on a plain-HTTP registry, such as
+/// `127.0.0.1:5001/node:22-bookworm-slim`) for linux/amd64: the manifest,
+/// the config and the smallest layer. Read-only.
+#[tokio::test]
+#[ignore = "needs a registry: RNK_TEST_IMAGE=127.0.0.1:5001/<repo>:<tag>"]
+async fn real_registry_pull() {
+    let Ok(image) = std::env::var("RNK_TEST_IMAGE") else {
+        panic!("set RNK_TEST_IMAGE to an image reference");
+    };
+    let reference = Reference::parse(&image).unwrap();
+    let mut options = ClientOptions::default();
+    options.insecure = BTreeSet::from([reference.registry().to_owned()]);
+    let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
+
+    let pulled = client
+        .pull_image_manifest(&reference, &Platform::new("linux", "amd64"))
+        .await
+        .unwrap();
+    let manifest = ImageManifest::from_json(pulled.manifest.bytes()).unwrap();
+    let mut config = Vec::new();
+    client
+        .pull_blob(&reference, &manifest.config, &mut config)
+        .await
+        .unwrap();
+    assert_eq!(u64::try_from(config.len()).unwrap(), manifest.config.size);
+    let smallest = manifest.layers.iter().min_by_key(|l| l.size).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut file = tokio::fs::File::create(dir.path().join("layer"))
+        .await
+        .unwrap();
+    client
+        .pull_blob(&reference, smallest, &mut file)
+        .await
+        .unwrap();
+    assert_eq!(file.metadata().await.unwrap().len(), smallest.size);
+}
+
 /// Pushes and pulls a small image in a `k6-*` repository of a real
 /// registry, `RNK_TEST_REGISTRY` (`host:port`, plain HTTP, no auth), then
 /// deletes the manifest it pushed.

@@ -98,10 +98,14 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 - T0 unit tests: exp-05's Table 14 credential cases without helpers, secret
   redaction in `Debug` and errors, trust store (embedded roots, invalid host
   certificates dropped, PEM files), retry delays, challenge parsing.
-- Ignored: `real_registry_round_trip` against `RNK_TEST_REGISTRY`
-  (`host:port`, plain HTTP), in a `k6-*` repository. Not covered:
-  `SSL_CERT_FILE`/`SSL_CERT_DIR` (process environment), TLS handshakes,
-  htpasswd, ECR, GCR.
+- Ignored: `real_registry_pull`, read-only, pulls `RNK_TEST_IMAGE` for
+  linux/amd64 (passed on 2026-10-30 against a local `registry:2` and
+  `docker.io/library/busybox:latest`, the latter over TLS with the
+  combined trust store and an anonymous token); `real_registry_round_trip`
+  pushes to a `k6-*` repository of `RNK_TEST_REGISTRY` (`host:port`, plain
+  HTTP) and deletes the manifest, but `registry:2` keeps the repository
+  in its catalog. Not covered in T0: `SSL_CERT_FILE`/`SSL_CERT_DIR`
+  (process environment), TLS handshakes, htpasswd, ECR, GCR.
 
 ## Metrics
 
