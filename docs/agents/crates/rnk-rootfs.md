@@ -125,7 +125,7 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
 - An image's file opened as root may be a FIFO (hang) or a device node (the
   host's device): use `open_regular`.
 - `extract` never crosses a mount and refuses sparse entries; extension
-  headers are unbounded ([open: Q-052]). [open: Q-051] Overlay form: a
+  headers are unbounded ([open: Q-056]). [open: Q-055] Overlay form: a
   hardlink into a lower layer has no target.
 
 ## Phase 1
@@ -139,7 +139,7 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   `delete_contents` on `/`, `FICLONE` stage copies.
 - [open: Q-011] Owner of `check_workdir` open; not built here.
   `RootPath::open` and `statx` (`dev`, `ino`, `mnt_id`) are its primitives.
-- [open: Q-050] Needs Linux 5.8; `Error::Unsupported`, no fallback.
+- [open: Q-054] Needs Linux 5.8; `Error::Unsupported`, no fallback.
 - Done: `RootPath`, `extract`, `lookup_user`/`lookup_owner` (`USER` and
   `--chown` default the gid differently), `delete_contents` (built before
   `extract`, which reuses its walker). Left: `copy`, `check_workdir`.

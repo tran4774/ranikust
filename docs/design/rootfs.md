@@ -21,7 +21,7 @@ Card: [rnk-rootfs](../agents/crates/rnk-rootfs.md).
 - Every fd is `O_CLOEXEC`; opens other than `O_PATH` add `O_NOCTTY`.
 - No string-based fallback. When `openat2` or the `statx` mount id is
   missing (before Linux 5.8) or blocked by seccomp, the call fails with
-  `Error::Unsupported` ([Q-050](../open-questions.md#q-050-what-is-the-minimum-kernel-and-who-checks-it)).
+  `Error::Unsupported` ([Q-054](../open-questions.md#q-054-what-is-the-minimum-kernel-and-who-checks-it)).
 
 ## Resolution
 
@@ -104,7 +104,7 @@ never called. A hand-written reader would repeat that parsing for no gain.
 - **Bombs.** GNU sparse entries are refused: the `tar` crate writes their
   holes as zeros, so a tiny entry could claim 2^62 bytes. GNU long names and
   PAX headers are read whole into memory by the `tar` crate, with no bound
-  ([Q-052](../open-questions.md#q-052-how-are-tar-extension-headers-bounded)).
+  ([Q-056](../open-questions.md#q-056-how-are-tar-extension-headers-bounded)).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*`, PAX `mtime`/`atime` with
   nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
@@ -115,7 +115,7 @@ never called. A hand-written reader would repeat that parsing for no gain.
 - **Hardlinks** link the target named in the archive with `linkat(…, 0)`,
   so a symlink target is linked itself. A target missing from the root is
   an `Error::Entry`
-  ([Q-051](../open-questions.md#q-051-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)).
+  ([Q-055](../open-questions.md#q-055-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)).
 - **`Whiteouts::Overlay`** (`layers/<id>`, mounted with `userxattr`,
   `ADR-0016`): `.wh.<name>` becomes the character device 0/0, which an
   unprivileged user may create (measured on Linux 7.0; allowed since the
@@ -203,11 +203,11 @@ recorded once at the end, never per entry: `rnk_rootfs.extract`
 
 - [Q-011](../open-questions.md#q-011-who-owns-the-workdir-checks-and-what-counts-as-empty)
   Who owns the workdir checks?
-- [Q-050](../open-questions.md#q-050-what-is-the-minimum-kernel-and-who-checks-it)
+- [Q-054](../open-questions.md#q-054-what-is-the-minimum-kernel-and-who-checks-it)
   What is the minimum kernel, and who checks it?
-- [Q-051](../open-questions.md#q-051-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)
+- [Q-055](../open-questions.md#q-055-how-does-overlay-form-extraction-handle-a-hardlink-into-a-lower-layer)
   How does overlay-form extraction handle a hardlink into a lower layer?
-- [Q-052](../open-questions.md#q-052-how-are-tar-extension-headers-bounded)
+- [Q-056](../open-questions.md#q-056-how-are-tar-extension-headers-bounded)
   How are tar extension headers bounded?
 
 ## References

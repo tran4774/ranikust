@@ -307,7 +307,7 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-050: What is the minimum kernel, and who checks it?
+### Q-054: What is the minimum kernel, and who checks it?
 
 - **Blocks:** Phase 1 task 8 (probes, user docs); **Area:** `rnk-rootfs`,
   `ranikust`, the book
@@ -368,7 +368,7 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-051: How does overlay-form extraction handle a hardlink into a lower layer?
+### Q-055: How does overlay-form extraction handle a hardlink into a lower layer?
 
 - **Blocks:** Phase 1 task 9 (base-layer extraction); **Area:**
   `rnk-rootfs`, `rnk-snapshot`
@@ -388,7 +388,7 @@ Entry format:
   target (`feat/rnk-rootfs-rootpath`).
 - **Raised:** 2026-10-30
 
-### Q-052: How are tar extension headers bounded?
+### Q-056: How are tar extension headers bounded?
 
 - **Blocks:** Phase 1 task 9 (base-layer extraction); Phase 6 (fuzzing);
   **Area:** `rnk-rootfs`, `rnk-layer`
