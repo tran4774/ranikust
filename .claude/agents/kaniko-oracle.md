@@ -26,6 +26,9 @@ The caller gives you the path of a kaniko checkout and a question.
 
 ## Where to start
 
+If the caller passed graphify results from the kaniko graph (nodes with
+`src=... loc=L...`), start at those locations instead of searching; they
+are leads, not evidence, so read the code before citing it. Otherwise:
 `cmd/executor/cmd/root.go` (flags), `pkg/config/` (options),
 `pkg/executor/build.go` (stage loop), `pkg/commands/` (one file per
 instruction), `pkg/snapshot/` and `pkg/util/fs_util.go` (snapshots, ignore

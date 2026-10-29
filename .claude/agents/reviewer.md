@@ -13,9 +13,14 @@ requirement.
 ## Rules
 
 - Do not edit files. Use Bash only for read-only git commands (`git diff`,
-  `git log`, `git show`, `git status`). Do not build, test or run anything.
-- Read `docs/agents/rules.md`, `ARCHITECTURE.md` and `docs/security/threat-model.md`
-  first, then the diff, then enough surrounding code to judge it.
+  `git log`, `git show`, `git status`) and read-only graphify queries
+  (`graphify query`, `explain`, `path`, `affected`). Do not build, test or
+  run anything else.
+- Read `docs/agents/rules.md` and the diff first. To find callers, callees
+  and what a change affects, use `graphify affected "<symbol>"` and
+  `graphify explain "<symbol>"` before grep, then read only the lines they
+  locate. Open `ARCHITECTURE.md` and `docs/security/threat-model.md` at the
+  sections a finding depends on, not whole.
 - Every finding cites `path:line`. No finding without evidence in the code.
 
 ## Check, in this order
