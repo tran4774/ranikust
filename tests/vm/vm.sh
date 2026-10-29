@@ -95,6 +95,10 @@ log "image $IMG_NAME sha256 $want (verified)"
 
 mkdir -p "$TARGET/vm"
 RUN="$(mktemp -d "$TARGET/vm/run.XXXXXX")"
+# A Unix socket path must fit in 108 bytes, which a run directory in a deep
+# checkout (a git worktree) does not.
+SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
+MONITOR="$SOCKDIR/monitor.sock"
 RESULTS="$TARGET/vm/results/$RELEASE"
 rm -rf "$RESULTS"
 QEMU_PID=
@@ -107,12 +111,12 @@ teardown() {
     python3 -c '
 import socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n"); s.recv(4096)
-' "$RUN/monitor.sock" 2>/dev/null
+' "$MONITOR" 2>/dev/null
     for _ in $(seq 20); do kill -0 "$QEMU_PID" 2>/dev/null || break; sleep 0.5; done
     kill -9 "$QEMU_PID" 2>/dev/null
   fi
   mkdir -p "$RESULTS" && cp "$RUN/serial.log" "$RESULTS/serial.log" 2>/dev/null
-  rm -rf "$RUN"
+  rm -rf "$RUN" "$SOCKDIR"
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     echo "error: QEMU (pid $QEMU_PID) is still running" >&2
     status=1
@@ -138,7 +142,7 @@ qemu-system-x86_64 \
   -drive file="$RUN/seed.iso",if=virtio,format=raw,readonly=on \
   -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$PORT"-:22 -device virtio-net-pci,netdev=n0 \
   -display none -serial file:"$RUN/serial.log" \
-  -monitor unix:"$RUN/monitor.sock",server,nowait \
+  -monitor unix:"$MONITOR",server,nowait \
   -pidfile "$RUN/qemu.pid" -daemonize
 QEMU_PID="$(cat "$RUN/qemu.pid")"
 
