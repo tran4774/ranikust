@@ -63,7 +63,7 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   `threads` = 1 does everything in the caller's thread; above 1, `threads`
   workers compress and two more threads hash the tar and the blob in order,
   so the caller only copies and writes.
-- zstd (`src/zstd_frames.rs`, crate `zstd` on libzstd 1.5.7): 1 MiB blocks
+- zstd (`src/zstd_frames.rs`, crate `zstd` on libzstd 1.5.7, ADR-0029): 1 MiB blocks
   by offset, each one complete frame (content size, no checksum), written
   in order; an empty layer is one empty frame. Each worker reuses one zstd
   context. Both codecs share the block-parallel encoder (`src/parallel.rs`:

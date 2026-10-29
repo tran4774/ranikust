@@ -25,7 +25,7 @@ from the experiments. All twenty were accepted by the maintainer on
 2026-10-29. ADR-0021 to ADR-0024 answer the open questions O1 to O4 that
 blocked Phase 1 ([phase-1](../agents/phase-1.md)); they were accepted on
 2026-10-30. ADR-0025 records how builds are measured (`rnk-metrics`);
-ADR-0026 to ADR-0028 record decisions made while implementing Phase 1.
+ADR-0026 to ADR-0029 record decisions made while implementing Phase 1.
 
 ## Status lifecycle
 
@@ -96,3 +96,4 @@ when new measurements contradict its evidence.
 | [0026](0026-rnk-oci-owns-its-types.md) | `rnk-oci` owns its OCI and Docker image types instead of using `oci-spec` | Accepted | 2026-10-30 | `oci-spec` 0.10 source, `rnk-oci` tests |
 | [0027](0027-context-filtering-follows-buildkit-walk.md) | Build-context filtering follows BuildKit's walk, not `MatchesOrParentMatches` | Accepted | 2026-10-30 | Q-050, `rnk-ignore` goldens |
 | [0028](0028-minimum-kernel-linux-5-8.md) | Require Linux 5.8 or later and check it at start-up | Accepted | 2026-10-30 | Q-054, `rnk-rootfs` escape suite |
+| [0029](0029-zstd-layers-as-independent-1-mib-frames.md) | zstd layers are written as independent 1 MiB frames | Accepted | 2026-10-30 | Exp 05 Q3, `rnk-layer` tests |
