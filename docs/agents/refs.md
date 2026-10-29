@@ -57,7 +57,7 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [serde](https://crates.io/crates/serde), [serde_json](https://crates.io/crates/serde_json) | 1.0.229, 1.0.154, MIT OR Apache-2.0 | (De)serialization of image types, canonical JSON | chosen (`rnk-oci`) |
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Crate-level `Error` enums in libraries | chosen (`rnk-oci`) |
 | [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only), `std` feature only, no failure files | chosen (`rnk-oci`) |
-| [docker_credential](https://crates.io/crates/docker_credential) | 1.4.0, MIT OR Apache-2.0 | `config.json`, credential helpers | chosen; may be vendored |
+| [docker_credential](https://crates.io/crates/docker_credential) | 1.4.0, MIT OR Apache-2.0 | `config.json`, credential helpers | candidate for the Phase 5 helpers; `rnk-registry` reads `config.json` itself (Q-012 interim) |
 | [tar](https://crates.io/crates/tar) | 0.4.46, MIT OR Apache-2.0 | Reading layers in `rnk-rootfs` (`entries()` only, never `unpack`) and in `rnk-layer`'s tests; `rnk-layer` builds its PAX headers itself (`crates/rnk-layer/src/header.rs`); never `append_dir_all` | chosen |
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | `Error` enums of the library crates | chosen |
 | [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests | chosen (tests) |
@@ -68,9 +68,14 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [ring](https://crates.io/crates/ring) | 0.17.14, Apache-2.0 AND ISC | rustls crypto provider; 5.1 MB static binary against 7.3 MB (`exp-05`) | chosen (`ADR-0024`) |
 | [aws-lc-rs](https://crates.io/crates/aws-lc-rs) | 1.19.0, ISC AND (Apache-2.0 OR ISC) | The other provider; reqwest 0.13's default, kept out of TLS | rejected (`ADR-0024`) |
 | [webpki-roots](https://crates.io/crates/webpki-roots), [webpki-root-certs](https://crates.io/crates/webpki-root-certs) | 1.0.11, CDLA-Permissive-2.0 | Embedded roots, trusted together with the host's CAs; `webpki-root-certs` gives the DER certificates `oci-client` takes | chosen (`ADR-0024`) |
-| [rustls-native-certs](https://crates.io/crates/rustls-native-certs) | 0.8.5, Apache-2.0 OR ISC OR MIT | Reads the host's CAs (`/etc/ssl/certs`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), as `exp-05` did | candidate (`ADR-0024`) |
+| [rustls-native-certs](https://crates.io/crates/rustls-native-certs) | 0.8.5, Apache-2.0 OR ISC OR MIT | Reads the host's CAs (`/etc/ssl/certs`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), as `exp-05` did | chosen (`ADR-0024`); used by `rnk-registry` |
+| [rustls-pki-types](https://crates.io/crates/rustls-pki-types) | 1.15.1, MIT OR Apache-2.0 | DER certificate type; PEM parsing of `--registry-certificate` files | chosen (`rnk-registry`) |
 | [sha2](https://crates.io/crates/sha2) | 0.11.1, MIT OR Apache-2.0 | sha256 (or `aws-lc-rs`); used by `rnk-layer` as the Q-012 interim | candidate |
-| [reqwest](https://crates.io/crates/reqwest), [hyper](https://crates.io/crates/hyper) | 0.13.5, MIT OR Apache-2.0; 1.12.0, MIT | HTTP | candidate |
+| [reqwest](https://crates.io/crates/reqwest), [hyper](https://crates.io/crates/hyper) | 0.13.5, MIT OR Apache-2.0; 1.12.0, MIT | HTTP | candidate; `reqwest` (the one `oci-client` uses, `rustls-no-provider`) used by `rnk-registry` for the `/v2/` probe and the identity-token exchange (Q-012 interim); `hyper` for its tests' fake registry |
+| [http-auth](https://crates.io/crates/http-auth) | 0.1.10, MIT OR Apache-2.0 | `WWW-Authenticate` parsing, the parser `oci-client` uses | chosen (`rnk-registry`) |
+| [base64](https://crates.io/crates/base64) | 0.22.1, MIT OR Apache-2.0 | The `auth` field of `config.json` | chosen (`rnk-registry`) |
+| [bytes](https://crates.io/crates/bytes), [futures-util](https://crates.io/crates/futures-util), [tokio-util](https://crates.io/crates/tokio-util) | 1.12.1, MIT; 0.3.34, MIT OR Apache-2.0; 0.7.20, MIT | Push bodies as the byte streams `oci-client` takes | chosen (`rnk-registry`) |
+| [http-body-util](https://crates.io/crates/http-body-util), [hyper-util](https://crates.io/crates/hyper-util) | 0.1.5, 0.1.21, MIT | The fake registry in `rnk-registry`'s tests | chosen (tests) |
 | [tokio](https://crates.io/crates/tokio) | 1.54.1, MIT | Async runtime | chosen |
 | [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, walk | chosen |
 | [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | candidate; `rustix` used by `rnk-rootfs` (Q-012 interim) |
