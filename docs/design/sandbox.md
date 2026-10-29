@@ -1,0 +1,158 @@
+# `RUN` sandbox
+
+How ranikust runs a `RUN` command inside a stage root with isolation roughly
+equivalent to `docker build`, in overlay mode and in kaniko mode where
+mounting is possible.
+
+Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
+[ADR-0010](../adr/0010-run-network-host-or-none.md).
+
+## Invariants
+
+- A `RUN` never outlives the build: its children die with it, even on
+  `SIGKILL` of ranikust.
+- Every mount made for a `RUN` exists only in that `RUN`'s mount namespace;
+  the parent, which takes the diff, sees the root as the image left it.
+- The command enters its root with `pivot_root`. A bare `chroot` is never
+  used where mounting is possible: root inside `RUN` keeps `CAP_SYS_CHROOT`
+  and escapes it.
+- Users and groups are resolved from the root's `/etc/passwd` and
+  `/etc/group` by `rnk-rootfs`, never from the host's.
+- Whatever ranikust creates on the real root (stubs) is journaled before it
+  is created and removed before the diff.
+
+## Process set-up, once per build
+
+1. While the process is still **single-threaded** (before tokio or rayon
+   start), `unshare(CLONE_NEWNS)` and make `/` a slave mount
+   (`--make-rslave`). From then on every build mount disappears with the
+   process. In a multi-threaded process `unshare(CLONE_NEWNS)` silently moves
+   only the calling thread, and `unshare(CLONE_NEWUSER)` fails with `EINVAL`.
+2. Start one **spawner thread** that lives for the whole build. Every `RUN`
+   child is forked from it, never from tokio's `spawn_blocking`:
+   `PR_SET_PDEATHSIG` fires when the parent *thread* exits, and blocking-pool
+   threads are reaped when idle.
+3. Replay the stub journal from a previous crashed run and remove its stubs.
+
+The privilege probes of [modes-and-detection](modes-and-detection.md) also
+run in this single-threaded window: `ranikust` runs this crate's probes
+(namespaces, uid map, `proc`, `pivot_root`/`MS_MOVE`, `sysfs`) and
+`rnk-snapshot`'s overlay probes in order, before the spawner thread starts.
+
+## Per-`RUN` sequence
+
+The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
+`CLONE_NEWIPC`, plus `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`, plus
+`CLONE_NEWNET` for `--network=none`.
+
+1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check `getppid()` in case the
+   parent already died.
+2. In a new user namespace, map the full id range available and allow
+   `setgroups`; otherwise `USER _apt` (used by apt-get) fails with
+   `setgroups: EPERM`.
+3. Mounts, in this order:
+   1. Bind the root onto itself (required by `pivot_root`).
+   2. A new `proc`. If `/proc` is masked and a new user namespace was created,
+      the kernel refuses (`EPERM`); fall back to an rbind of the existing
+      `/proc`.
+   3. A read-only `sysfs`. It needs privileges over the user namespace that
+      owns the network namespace, so it fails with the host network plus a
+      new user namespace; fall back to an rbind of `/sys` remounted
+      read-only.
+   4. A tmpfs on `/dev`, with `null`, `zero`, `full`, `random`, `urandom` and
+      `tty` bind-mounted from the outer `/dev` (`mknod` needs `CAP_MKNOD` in
+      the initial user namespace). Add `devpts` (`newinstance,ptmxmode=0666`,
+      plus `gid=5` only if gid 5 is mapped), `shm`, and the symlinks `ptmx`,
+      `fd`, `stdin`, `stdout`, `stderr`.
+   5. `resolv.conf`, `hosts`, `hostname`: bind a **writable copy**, as
+      Docker lets `RUN` write `resolv.conf`. Resolve the target inside the
+      root with `openat2(RESOLVE_IN_ROOT)`, because it may be a symlink. A
+      read-only remount must keep the source mount's locked flags
+      (`statfs().f_flags`: `nosuid`, `nodev`, `noexec`, `relatime`) or it
+      fails with `EPERM` in a user namespace.
+   6. `RUN --mount`: `type=cache` binds `caches/<id>` from the store
+      (`rnk-store`), `type=secret` binds a file, `type=bind` binds the
+      context or another stage's root.
+   7. `pivot_root(".", ".")`, then `umount2(".", MNT_DETACH)`. Where seccomp
+      blocks `pivot_root` (Docker's default profile, even with
+      `CAP_SYS_ADMIN`): `mount(root, "/", MS_MOVE)` then `chroot(".")`, as
+      runc's `--no-pivot`.
+4. `sethostname`; ignore a seccomp refusal.
+5. Drop capabilities: reduce the **bounding** and inheritable sets to
+   Docker's 14 default capabilities, for **every** `USER`. A non-root user
+   has no effective capabilities but a full bounding set, which a setuid
+   binary in the image would regain.
+6. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which
+   `rnk-rootfs` looked up in the root's `/etc/passwd` and `/etc/group` before
+   the fork [inferred]. A numeric uid with no passwd entry gets gid 0, as in
+   Docker.
+7. `chdir` to `WORKDIR`; search `PATH` **after** `pivot_root` and **after**
+   `setuid`; `execve`.
+
+The parent waits for the child. The child is PID 1 of its namespace; when it
+exits, the kernel kills everything left in the namespace, so no `tini` and no
+process-group kill are needed. A command running as PID 1 ignores `SIGTERM`
+unless it installs a handler, as under Docker and BuildKit.
+
+## Stub mount points
+
+An image may lack a bind target (`alpine:3.20` has no `/etc/resolv.conf`,
+`debian` no `/etc/hosts`). The empty file or directory created as a target is
+a real file in the root: it would enter the layer, and it survives a killed
+build. So, as in BuildKit's `executor/stubs.go`:
+
+1. write the stub's path to the journal in the state directory, then create
+   it;
+2. remove stubs after the `RUN`, before the diff, and restore the parent's
+   metadata;
+3. on start-up, remove any stub left in the journal.
+
+Because all other mounts live in the child's namespace, no ignore-list entry
+is needed for `/proc`, `/dev`, `/sys`, `resolv.conf` or `hosts`.
+
+## Variants by environment
+
+| Environment | Differences |
+|---|---|
+| Real root on a host | Every step works without a fallback |
+| `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root` |
+| Rootless (user namespace) | Multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail |
+| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko ([kaniko-mode](kaniko-mode.md)) |
+| `--parallel-stages` | Bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
+
+## Optional hardening
+
+- `--seccomp=default|unconfined|<file>`: a seccomp filter for `RUN`; profiles
+  are generated per architecture.
+- `--userns`: the build runs in a user namespace, so uid 0 inside maps to an
+  unprivileged uid on the host. Every parent directory of the workdir must be
+  traversable by the mapped uid.
+
+## Failure handling
+
+- A failing mount step aborts the `RUN` with the step and errno; fallbacks
+  are chosen once by the probe ([modes-and-detection](modes-and-detection.md)),
+  not by trial during the build.
+- A non-zero exit of the command fails the stage; ranikust still removes
+  stubs and lets the namespace collapse.
+- Overhead per `RUN` is about 1 ms (1–2.5 ms in the Go prototype including
+  its re-exec), negligible next to any real command.
+
+## Open questions
+
+- [Q-032](../open-questions.md#q-032-what-remains-to-verify-in-the-run-sandbox) What remains to verify in the RUN sandbox?
+
+Settled elsewhere: `RUN` gets no cgroup limits, so a fork bomb is bounded
+only by the environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)).
+
+## References
+
+- [Survey 02](../research/survey/02-kaniko-mode-requirements.md) §3;
+  [survey 05](../research/survey/05-decisions.md) Q1.
+- [Experiment 02](../research/experiments/02-run-sandbox.md): sequence
+  verified on alpine, debian and node images; minimum privileges; `chroot`
+  escape; capability drop; PDEATHSIG (without it `RUN sleep 1000` survived
+  and kept writing); stubs left after `SIGKILL`; overhead.
+- [Experiment 06a](../research/experiments/06a-root-rerun.md): as real root,
+  all steps without fallback; bare-`chroot` escape reached the host's `/`;
+  overhead 1.05 ms against a 0.11 ms baseline.
