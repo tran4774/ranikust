@@ -18,7 +18,20 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The crates `examples/smoke-build.rs` strings together until `rnk-builder`
+# exists.
+rnk-layer.workspace = true
+rnk-oci.workspace = true
+rnk-registry.workspace = true
+rnk-sandbox.workspace = true
+rustix = { workspace = true, features = ["fs"] }
+sha2.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[[example]]
+name = "smoke-build"
+path = "examples/smoke-build.rs"
 
 [lints]
 workspace = true
