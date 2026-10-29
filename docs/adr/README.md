@@ -25,7 +25,8 @@ from the experiments. All twenty were accepted by the maintainer on
 2026-10-29. ADR-0021 to ADR-0024 answer the open questions O1 to O4 that
 blocked Phase 1 ([phase-1](../agents/phase-1.md)); they were accepted on
 2026-10-30. ADR-0025 records how builds are measured (`rnk-metrics`);
-ADR-0026 to ADR-0029 record decisions made while implementing Phase 1.
+ADR-0026 to ADR-0029 record decisions made while implementing Phase 1;
+ADR-0030 and ADR-0031 answer open questions Q-012, Q-075 and Q-076.
 
 ## Status lifecycle
 
@@ -97,3 +98,5 @@ when new measurements contradict its evidence.
 | [0027](0027-context-filtering-follows-buildkit-walk.md) | Build-context filtering follows BuildKit's walk, not `MatchesOrParentMatches` | Accepted | 2026-10-30 | Q-050, `rnk-ignore` goldens |
 | [0028](0028-minimum-kernel-linux-5-8.md) | Require Linux 5.8 or later and check it at start-up | Accepted | 2026-10-30 | Q-054, `rnk-rootfs` escape suite |
 | [0029](0029-zstd-layers-as-independent-1-mib-frames.md) | zstd layers are written as independent 1 MiB frames | Accepted | 2026-10-30 | Exp 05 Q3, `rnk-layer` tests |
+| [0030](0030-phase-1-dependency-picks.md) | Phase 1 dependencies: rustix, sha2, gzip by hand, reqwest, own config.json reader, clap | Accepted | 2026-10-30 | Q-012 (Phase 1 O5), Exp 05 |
+| [0031](0031-run-host-name-and-hosts-file.md) | A RUN sees the fixed host name `ranikust` and the host's /etc/hosts, or loopback without network | Accepted | 2026-10-30 | Q-075, Q-076, kaniko source |

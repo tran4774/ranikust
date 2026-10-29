@@ -109,7 +109,8 @@ pub struct RunSpec {
 pub(crate) const DEFAULT_PATH: &str =
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/// The host name used when the caller leaves it empty [open: Q-075].
+/// The host name used when the caller leaves it empty: fixed, so that it
+/// does not depend on the host (Q-075).
 pub(crate) const DEFAULT_HOSTNAME: &str = "ranikust";
 
 impl RunSpec {

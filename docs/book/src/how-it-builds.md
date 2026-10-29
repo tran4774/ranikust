@@ -31,6 +31,10 @@ privileged container, or as a regular user who may create user namespaces.
   that Docker gives a container by default. The isolation is about that of
   `docker build`
   ([ADR-0003](https://github.com/tran4774/ranikust/blob/main/docs/adr/0003-dockerfile-trust-and-default-isolation.md)).
+  The host name is always `ranikust`. `/etc/hosts` is the one ranikust
+  itself sees (so Kubernetes `hostAliases` keep working), or only loopback
+  names with `--network=none`
+  ([ADR-0031](https://github.com/tran4774/ranikust/blob/main/docs/adr/0031-run-host-name-and-hosts-file.md)).
 - Stages that do not depend on each other build in parallel, up to `--jobs`
   at a time, which defaults to the number of CPUs available to ranikust
   ([ADR-0013](https://github.com/tran4774/ranikust/blob/main/docs/adr/0013-jobs-default-available-parallelism.md)).

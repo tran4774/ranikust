@@ -248,7 +248,7 @@ pub(crate) fn exec_candidates(program: &OsStr, path: Option<&OsStr>) -> Vec<OsSt
         .collect()
 }
 
-/// The `/etc/hosts` of a `RUN` [open: Q-076]. With the host network, the
+/// The `/etc/hosts` of a `RUN` (Q-076). With the host network, the
 /// file ranikust itself sees (as kaniko's `RUN` sees it), with the host
 /// name added; with `--network=none`, only loopback names.
 pub(crate) fn hosts_file(network: Network, hostname: &str, host_hosts: Option<&[u8]>) -> Vec<u8> {

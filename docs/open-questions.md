@@ -153,41 +153,6 @@ Entry format:
   filesystem; the build stops before any use of them.
 - **Raised:** 2026-10-30
 
-### Q-012: Which crates fill the Phase 1 dependency picks?
-
-- **Blocks:** Phase 1 tasks 4, 5, 6, 8; **Area:** dependencies
-- **Context:** picks left open in survey 03 §3
-  ([phase-1.md](agents/phase-1.md#open-questions-blocking-phase-1) O5,
-  [refs.md](agents/refs.md#crates)); each blocks the task that first adds it.
-- **Options:**
-  - task 4: `rustix` or `nix`;
-  - task 5: `sha2` (asm) or `aws-lc-rs` for sha256 (TLS no longer needs
-    `aws-lc-rs`, `ADR-0024`); pigz-style gzip by hand or `gzp`;
-  - task 6: `reqwest` or `hyper`; `docker_credential` as is or vendored;
-  - task 8: the CLI parser (`clap` is named only in the survey's crate tree).
-- **Recommendation:** `rustix` ([refs.md](agents/refs.md#crates),
-  [rules.md](agents/rules.md#code-traps)); gzip by hand (survey 03 §3: `gzp`
-  is not deterministic across thread counts, `exp-05` Q3); `clap`, marked
-  `[design]` on the [ranikust card](agents/crates/ranikust.md#api-planned);
-  none for the others.
-- **Interim:** task 4, in `feat/rnk-rootfs-rootpath`: followed the
-  recommendation, `rustix` 1.1.6 (features `fs`, `std`); reversible because
-  no `rustix` type appears in `rnk-rootfs`'s public API. Task 5, in
-  `feat/rnk-layer-encode`: followed the recommendation, gzip by hand
-  (`crates/rnk-layer/src/gzip.rs`, flate2 on zlib-rs); sha256 is `sha2` (no
-  recommendation; pure Rust, SHA-NI and ARMv8 SHA detected at run time)
-  behind `rnk_layer::Sha256Digest`, so a switch stays inside the crate.
-  Task 6, in `feat/rnk-registry`: `reqwest` (no recommendation; the client
-  `oci-client` already builds on, used for the `/v2/` probe and the
-  identity-token exchange); no `docker_credential` (no recommendation):
-  `rnk_registry::Credentials` reads `config.json` itself, about 150 lines,
-  and recognises `credHelpers`/`credsStore` without running them until
-  Phase 5, falling back to the `auths` entry or anonymous access with a
-  warning. Reversible: neither crate appears in `rnk-registry`'s public API.
-  Task 8, in `feat/ranikust-cli`: followed the recommendation, `clap` 4.6
-  (derive, no colour); its types stay in the binary.
-- **Raised:** 2026-10-30
-
 ### Q-013: How does the layer writer learn missing parent metadata?
 
 - **Blocks:** Phase 1 tasks 5, 9; **Area:** `rnk-layer`, `rnk-snapshot`
@@ -415,37 +380,6 @@ Entry format:
   decides when to call it. Reversible: no caller yet.
 - **Raised:** 2026-10-30
 
-### Q-075: Which host name does a RUN see?
-
-- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, `rnk-builder`
-- **Context:** every `RUN` gets a new UTS namespace and an `/etc/hostname`
-  copy. kaniko creates no UTS namespace, so its `RUN` sees the host name of
-  the container or pod kaniko runs in; BuildKit uses `buildkitsandbox` and
-  Docker's classic builder the short container ID [inferred]
-  ([rnk-sandbox](agents/crates/rnk-sandbox.md#pitfalls)).
-- **Options:** (a) as kaniko: the host name of the environment ranikust
-  runs in; (b) BuildKit's `buildkitsandbox`; (c) a fixed `ranikust`;
-  (d) one of these plus a flag.
-- **Recommendation:** none
-- **Interim:** (c): `RunSpec::new` sets `ranikust`, and `rnk-builder` may
-  set `RunSpec::hostname` (`feat/rnk-sandbox`). Reversible: one constant.
-- **Raised:** 2026-10-30
-
-### Q-076: What /etc/hosts does a RUN see?
-
-- **Blocks:** nothing yet; **Area:** `rnk-sandbox`
-- **Context:** `/etc/hosts` is a writable copy bound over the root's. kaniko's
-  `RUN` reads the file of the container kaniko runs in; BuildKit writes
-  loopback entries and the host name [inferred]
-  ([sandbox](design/sandbox.md#per-run-sequence)).
-- **Options:** (a) ranikust's own `/etc/hosts` plus the host name, for every
-  network; (b) loopback entries plus the host name, as BuildKit; (c) (a)
-  with the host network, (b) with `--network=none`.
-- **Recommendation:** none
-- **Interim:** (c), in `crates/rnk-sandbox/src/plan.rs` `hosts_file`
-  (`feat/rnk-sandbox`). Reversible: one function.
-- **Raised:** 2026-10-30
-
 ### Q-077: How is the MS_MOVE fallback kept from a chroot escape?
 
 - **Blocks:** Phase 3 (the fallbacks); **Area:** `rnk-sandbox`
@@ -643,7 +577,10 @@ Entry format:
 ### Q-033: Which performance conditions are still unmeasured?
 
 - **Blocks:** Phase 1 task 13; Phase 2; **Area:** performance
-- **Context:** not measured: real network registries, where overlapping
+- **Context:** not measured: sha256 of large layers with `sha2` against
+  `ring::digest`, which the TLS provider already brings in (Q-012 kept
+  `sha2`; the switch stays inside `rnk_layer::Sha256Digest`); real network
+  registries, where overlapping
   pulls may matter more than CPU
   ([scheduler](design/scheduler.md#open-questions));
   export on memory-starved runners, where one layer took 1.8–6.6 s
@@ -997,3 +934,34 @@ Entry format:
   hardlink as overlay copy-up does (`ADR-0012`). Recorded in
   [rootfs](design/rootfs.md#extraction); implemented with base-layer
   extraction (Phase 1 task 9).
+
+### Q-012: Which crates fill the Phase 1 dependency picks?
+
+- **Answer (2026-10-30):** the picks the code already made: `rustix` for
+  syscalls (with `libc` where `rustix` lacks a call), not `nix`; `sha2` for
+  sha256, not `aws-lc-rs` (a C and CMake build, kept out by `ADR-0024`);
+  gzip by hand on `flate2`/zlib-rs, not `gzp` (not deterministic across
+  thread counts, `exp-05`); `reqwest`, the stack `oci-client` builds on,
+  not `hyper` directly; no `docker_credential`: `rnk-registry` reads
+  `config.json` itself and credential helpers come in Phase 5 (Q-047);
+  `clap` (derive) for the CLI. None of them appears in a library's public
+  API. Whether `ring::digest` beats `sha2` on large layers is measured
+  under Q-033. Recorded in
+  [ADR-0030](adr/0030-phase-1-dependency-picks.md).
+
+### Q-075: Which host name does a RUN see?
+
+- **Answer (2026-10-30):** a fixed `ranikust` (option c), whatever the
+  environment, so a `RUN` that records its host name gives the same bytes
+  on every host; no flag. `rnk-builder` may still set
+  `RunSpec::hostname`. Implemented in `rnk-sandbox` (`DEFAULT_HOSTNAME`).
+  Recorded in [ADR-0031](adr/0031-run-host-name-and-hosts-file.md).
+
+### Q-076: What /etc/hosts does a RUN see?
+
+- **Answer (2026-10-30):** option (c): with the host network, ranikust's
+  own `/etc/hosts` (as kaniko's `RUN` sees it, so Kubernetes `hostAliases`
+  keep working) plus the host name; with `--network=none`, loopback names
+  plus the host name, as BuildKit. Implemented in `rnk-sandbox`
+  (`plan.rs`, `hosts_file`). Recorded in
+  [ADR-0031](adr/0031-run-host-name-and-hosts-file.md).
