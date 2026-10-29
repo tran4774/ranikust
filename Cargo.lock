@@ -315,6 +315,15 @@ version = "0.0.0"
 [[package]]
 name = "rnk-context"
 version = "0.0.0"
+dependencies = [
+ "rnk-ignore",
+ "rnk-metrics",
+ "rnk-rootfs",
+ "rustix",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "rnk-dockerfile"

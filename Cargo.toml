@@ -12,6 +12,7 @@ repository = "https://github.com/tran4774/ranikust"
 
 [workspace.dependencies]
 # Internal crates, referenced as `<name>.workspace = true`.
+rnk-ignore = { path = "crates/rnk-ignore" }
 rnk-metrics = { path = "crates/rnk-metrics" }
 rnk-rootfs = { path = "crates/rnk-rootfs" }
 
