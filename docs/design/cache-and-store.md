@@ -25,12 +25,14 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ```
 <state-dir>/
 ├── .ranikust-root
-├── blobs/sha256/<digest>       compressed blobs (base images, cache layers)
-├── layers/<id>/                extracted layers, immutable
+├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
+├── layers/sha256/<hex>/        extracted layers by diff ID, immutable [open: Q-015]
 ├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
-├── tmp/                        entries being written, renamed into place
+├── locks/{blobs,layers}/sha256/<hex>   per-digest lock files [open: Q-015]
+├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
+├── builds/<build-id>.lock      held (flock) while the build runs
 └── builds/<build-id>/          one per running build, deleted afterwards
 ```
 
@@ -61,24 +63,31 @@ form of a flattened base in the store is not designed yet].
 - **Per digest**: before downloading a blob or extracting a layer, a build
   takes the lock for that digest. A build that waited finds the entry
   published and uses it.
-- **Per build**: each build owns `builds/<build-id>/`; nothing else writes
-  there.
+- **Per build**: each build owns `builds/<build-id>/` and
+  `tmp/<build-id>/`; nothing else writes there. It holds the lock on
+  `builds/<build-id>.lock` while it runs, taken before either directory
+  exists; a build whose lock is free is dead, and the next start removes
+  its directories.
 - **kaniko-mode workdir**: `flock(LOCK_EX | LOCK_NB)` on the workdir; a
   second build on the same workdir is refused. Only kaniko mode takes this
   lock, because there the workdir is the root being built. Overlay-mode
   builds that share a workdir share its store through the per-digest locks.
 - Locks are `flock` on lock files in the store, released by the kernel when
-  the process dies [inferred].
+  the process dies (T0 test with `SIGKILL`). Per-digest lock files are never
+  removed, so no build ever locks a file another has just unlinked.
 
 ## Atomic publication
 
-1. Write the new entry under `tmp/<random>` on the same filesystem.
-2. Verify it (blob digest; layer extracted completely).
-3. `rename` it to its final name. If another build published it meanwhile,
-   discard the temporary copy.
+1. Under the per-digest lock, return the entry if it is published.
+2. Write the new entry under `tmp/<build-id>/<n>` on the same filesystem.
+3. Verify it (blob digest; layer extracted completely): the caller does,
+   while filling it.
+4. `fsync` a blob [open: Q-100], then `rename` it to its final name.
 
-Start-up removes `tmp/` leftovers and `builds/<id>` directories whose build
-is no longer running. In overlay mode an upper directory written under
+Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build
+is no longer running. A state directory that is not empty and has no
+regular `.ranikust-root` file is refused, so this clean-up never runs in a
+directory the user pointed at by mistake. In overlay mode an upper directory written under
 `volatile` is never trusted after a crash.
 
 ## Prune
@@ -144,7 +153,10 @@ other and carry that mode's accepted differences
 - A digest mismatch on download discards the temporary file and fails the
   pull; nothing is published.
 - A lock that cannot be taken because the store is on a filesystem without
-  `flock` support is a start-up error [inferred].
+  `flock` support is a start-up error that asks for a local `--state-dir`.
+- A filler that fails leaves nothing: its temporary entry is removed and
+  the lock released; a build killed while filling leaves `tmp/<id>`, which
+  the next start removes.
 
 ## Open questions
 

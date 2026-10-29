@@ -219,7 +219,28 @@ Entry format:
 - **Options:** layers named by (a) the compressed blob digest or (b) the
   diff ID; lock files (c) in one directory or (d) beside each entry.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** (b) and (c) on `feat/rnk-store`: `layers/<algorithm>/<hex>`
+  by diff ID, so a gzip and a zstd blob of one layer share one extraction,
+  and the image config lists diff IDs; lock files in
+  `locks/{blobs,layers}/<algorithm>/<hex>`, never removed, so a waiter never
+  locks an unlinked file. Reversible: only `EntryKey`'s paths change, and
+  nothing has published layers yet.
+- **Raised:** 2026-10-30
+
+### Q-100: How durable is a published store entry after a power loss?
+
+- **Blocks:** nothing yet; **Area:** `rnk-store`, `rnk-snapshot`
+- **Context:** an entry is published by `rename` from `tmp/`. Without a
+  sync, a crash of the host (not of ranikust) can leave a renamed blob
+  empty or short, or a layer missing files, and later builds would trust it
+  (ADR-0006, threat T13). `syncfs` after each extraction costs time on
+  large layers ([cache-and-store](design/cache-and-store.md#atomic-publication)).
+- **Options:** (a) `fsync` blobs only, check nothing at start-up; (b) also
+  `syncfs` the state directory after each layer; (c) record entries in a
+  journal and re-verify the unjournaled ones at start-up; (d) no sync.
+- **Recommendation:** none
+- **Interim:** (a) on `feat/rnk-store` (`Store::fill`). Reversible: one
+  call in `fill`.
 - **Raised:** 2026-10-30
 
 ### Q-016: How is the store lock protocol proven under crashes and races?

@@ -22,7 +22,7 @@ the code.
 | [~] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion | `rnk-rootfs` |
 | [x] | Deterministic tar (the writer sorts entries and adds missing parent headers), pigz-style parallel gzip, parallel zstd as independent 1 MiB frames, gzip/zstd decoder for pulled blobs, streaming digests | `rnk-layer` |
 | [x] | Pulls from public registries and with docker `config.json` auth; rustls with `ring`, trusting host CAs plus webpki roots (`ADR-0024`); `--registry-certificate` (the client; the flags come with task 8) | `rnk-registry` |
-| [ ] | Persistent store in `--state-dir`: `blobs/`, `layers/`, `caches/`, `tmp/`, per-digest `flock`, atomic rename, start-up cleanup; `BuildPaths` (`ADR-0006`, `ADR-0021`, `ADR-0022`) | `rnk-store` |
+| [x] | Persistent store in `--state-dir`: `blobs/`, `layers/`, `caches/`, `tmp/`, per-digest `flock`, atomic rename, start-up cleanup; `BuildPaths` (`ADR-0006`, `ADR-0021`, `ADR-0022`); T0 across threads, processes and `SIGKILL` (`ranikust` still has to open and close it) | `rnk-store` |
 | [~] | Process set-up: flags (`--mode`, `ADR-0023`) and validation into `BuildConfig` (done); workdir checks [open: Q-011], marker, private mount namespace, the probes in order, workdir `flock` in kaniko mode, spawner thread, all while single-threaded | `ranikust` |
 | [~] | Overlay-root probe (steps 1, 3, 4 of `design/modes-and-detection.md`): namespaces, `proc`, `pivot_root`, `sysfs`; overlay mount and `lowerdir+`; refusal with the diagnosis `[inferred]` (the sandbox's step 3 is done: the real sequence, `pivot_root` else `MS_MOVE`) | `rnk-sandbox`, `rnk-snapshot`; run by `ranikust` |
 | [~] | `RUN` sandbox: namespaces, mounts, `pivot_root`/`MS_MOVE`, capability drop, `USER` from the root, stubs and journal, PDEATHSIG (done; runs in rootless podman, `just smoke`, and as real root in the VM, `just test-vm`, on kernels 5.15 and 6.8: `pivot_root` on the host and in `docker run --privileged`, `MS_MOVE` under Docker's seccomp profile) | `rnk-sandbox` |
@@ -60,7 +60,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 5 | `rnk-layer`: tar → gzip → digests → zstd (done) | 5a | |
 | 5a | cargo-zigbuild toolchain in the `justfile` and CI (`ADR-0020`, Q-052); mimalloc (done) | | |
 | 6 | `rnk-registry`: auth, TLS (`ADR-0024`), streamed pull (done; also pushes, mounts and retries for task 11; `ring` needs 5a for the musl targets) | 1 | |
-| 7 | `rnk-store`: layout, locks, publication, start-up clean-up (`ADR-0021`, `ADR-0022`) | 4, 5, 6 | |
+| 7 | `rnk-store`: layout, locks, publication, start-up clean-up (`ADR-0021`, `ADR-0022`) (done; `prune` is Phase 5) | 4, 5, 6 | |
 | 8 | `ranikust` set-up and flags (`ADR-0023`), the Linux 5.8 check (`ADR-0028`); `rnk-sandbox` sandbox and its probes (done, T0 and the T1 `just smoke`; `ranikust` still has to call them) | 4 | |
 | 9 | `rnk-snapshot` overlay roots, overlay probes, extraction (hardlinks into lower layers copied, Q-055) and exporter; design the `Snapshotter` signature | 4, 5, 7 | |
 | 10 | `rnk-context` local directory (done); `COPY` sources are resolved in 11 (Q-080) | 3 | |
