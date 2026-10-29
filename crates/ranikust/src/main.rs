@@ -1,16 +1,22 @@
 //! The `ranikust` command-line tool.
 //!
-//! Parses the `build`, `push`, `prune`, `version` and `login` subcommands,
-//! accepting the common kaniko flags, plus `--mode=auto|overlay|kaniko` to
-//! choose the snapshot mode. While the process is still single-threaded it
-//! checks the workdir, enters a private mount namespace when permitted, runs
-//! the privilege probes of `rnk-sandbox` and `rnk-snapshot` in order and picks
-//! the mode, and in kaniko mode locks the workdir; then it hands off to the
-//! library crates. `prune` only calls `rnk-store`.
+//! Parses the `build` and `version` subcommands; `build` is the default and
+//! accepts kaniko's common executor flags, plus `--mode=auto|overlay|kaniko`
+//! to choose the snapshot mode (ADR-0011, ADR-0023). `push`, `prune` and
+//! `login` come later (Q-048).
 //!
-//! First thing, it installs the logs and the opt-in metrics of `rnk-metrics`
-//! (`RANIKUST_METRICS_FILE`), which start no thread, and writes the metrics
-//! report on every way out.
+//! Set-up order, each step before the next: parse the flags (no I/O;
+//! refused kaniko flags are reported first) → the Linux 5.8 check of
+//! ADR-0028 (`rnk_rootfs::probe_support`), for every subcommand but
+//! `version` → logs and the opt-in metrics of `rnk-metrics`, which start no
+//! thread, with `--metrics-file` over `RANIKUST_METRICS_FILE` → flag
+//! validation into a `BuildConfig` → hand-off. Still to come in later tasks:
+//! the workdir checks (Q-011), a private mount namespace when permitted, the
+//! probes of `rnk-sandbox` and `rnk-snapshot` that pick the mode, the
+//! kaniko-mode workdir lock, and the hand-off to the library crates. Until
+//! the builder exists, `build` stops after validation with exit code 2.
+//!
+//! The metrics report is written on every way out.
 //!
 //! # Boundaries
 //!
@@ -19,41 +25,149 @@
 //! - Probes no capability itself: each library probes its own, and this
 //!   binary runs the probes in order and combines their results.
 
+mod cli;
+mod config;
+mod startup;
+
 use std::io::Write as _;
 use std::process::ExitCode;
 
-use rnk_metrics::{Config, Outcome};
+use rnk_metrics::{Config, Outcome, Telemetry};
 
-/// Hidden test hook: `panic` panics and aborts, `error` fails with exit code
-/// 1, after metrics are set up. It lets the tests of the report's exit paths
-/// run the real binary, including a release build, where `panic = "abort"`.
+use crate::cli::{BuildArgs, Command, ParseError};
+use crate::config::BuildConfig;
+
+/// Hidden test hook. `panic` panics and aborts and `error` fails with exit
+/// code 1, after metrics are set up; `kernel-missing` and `kernel-blocked`
+/// make the kernel check fail. It lets the tests run the real binary through
+/// these paths, including a release build, where `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
+/// Exit code of a usage error, as clap uses, and of a build that stops
+/// because the builder does not exist yet.
+const EXIT_USAGE: u8 = 2;
+
+/// How a run ends when it does not succeed.
+struct Failure {
+    code: u8,
+    message: String,
+}
+
+impl Failure {
+    fn usage(message: impl Into<String>) -> Self {
+        Self {
+            code: EXIT_USAGE,
+            message: message.into(),
+        }
+    }
+
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            code: 1,
+            message: message.into(),
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    let telemetry = rnk_metrics::init(Config::from_env());
+    let command = match cli::parse(std::env::args_os()) {
+        Ok(cli) => cli.into_command(),
+        Err(ParseError::Clap(err)) => {
+            // Prints usage errors to stderr and `--help`/`--version` to
+            // stdout; a closed stream is no reason to panic.
+            let _ = err.print();
+            return ExitCode::from(u8::try_from(err.exit_code()).unwrap_or(EXIT_USAGE));
+        }
+        Err(ParseError::Refused(lines)) => {
+            for line in &lines {
+                report(line);
+            }
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    let fault = std::env::var(DEBUG_FAULT_ENV).ok();
+
+    // ADR-0028: before any other work. `version` needs no filesystem access
+    // and stays usable on any kernel, to tell what is installed.
+    if !matches!(command, Command::Version)
+        && let Err(err) = startup::check_kernel(fault.as_deref())
+    {
+        report(&err.to_string());
+        return ExitCode::from(1);
+    }
+
+    let telemetry = rnk_metrics::init(metrics_config(&command));
     telemetry.set_meta("ranikust_version", env!("CARGO_PKG_VERSION"));
-    let result = tracing::debug_span!("ranikust.run").in_scope(run);
+    let result = tracing::debug_span!("ranikust.run")
+        .in_scope(|| run(&command, &telemetry, fault.as_deref()));
     let (code, outcome) = match &result {
         Ok(()) => (0, Outcome::success()),
-        Err(message) => {
-            // `eprintln!` would panic, and abort, on a closed stderr.
-            let _ = writeln!(std::io::stderr(), "ranikust: error: {message}");
-            (1, Outcome::error(1, message))
+        Err(failure) => {
+            report(&failure.message);
+            (
+                failure.code,
+                Outcome::error(i32::from(failure.code), &failure.message),
+            )
         }
     };
     telemetry.finish(&outcome);
     ExitCode::from(code)
 }
 
-fn run() -> Result<(), String> {
-    match std::env::var(DEBUG_FAULT_ENV).as_deref() {
-        Ok("panic") => deliberate_panic(),
-        Ok("error") => return Err(format!("deliberate error ({DEBUG_FAULT_ENV}=error)")),
+/// Writes `ranikust: error: …` to stderr. `eprintln!` would panic, and
+/// abort, on a closed stderr.
+fn report(message: &str) {
+    let _ = writeln!(std::io::stderr(), "ranikust: error: {message}");
+}
+
+/// The metrics settings: the environment, with `--metrics-file` taking the
+/// report path's place.
+fn metrics_config(command: &Command) -> Config {
+    let mut config = Config::from_env();
+    if let Command::Build(args) = command
+        && let Some(file) = &args.metrics_file
+    {
+        config.file = Some(std::path::absolute(file).unwrap_or_else(|_| file.clone()));
+    }
+    config
+}
+
+fn run(command: &Command, telemetry: &Telemetry, fault: Option<&str>) -> Result<(), Failure> {
+    match fault {
+        Some("panic") => deliberate_panic(),
+        Some("error") => {
+            return Err(Failure::error(format!(
+                "deliberate error ({DEBUG_FAULT_ENV}=error)"
+            )));
+        }
         _ => {}
     }
-    println!("ranikust {}", env!("CARGO_PKG_VERSION"));
-    eprintln!("ranikust: not implemented yet");
-    Ok(())
+    match command {
+        Command::Version => {
+            let _ = writeln!(std::io::stdout(), "ranikust {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Command::Build(args) => {
+            tracing::debug_span!("ranikust.build").in_scope(|| build(args, telemetry))
+        }
+    }
+}
+
+fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
+    let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
+    telemetry.set_meta("mode", config::name(config.mode));
+    telemetry.set_meta("options", config.meta_options());
+    tracing::debug!(
+        mode = %config::name(config.mode),
+        state_dir = ?config.state_dir_for(config.mode),
+        "build settings validated"
+    );
+    if config.mode == config::Mode::Overlay && args.snapshot_mode.is_some() {
+        tracing::warn!("--snapshot-mode is ignored in overlay mode (ADR-0023)");
+    }
+    Err(Failure::usage(
+        "the flags are valid, but building is not implemented yet (Phase 1 task 11)",
+    ))
 }
 
 /// Panics, then aborts. Release builds abort inside the panic, right after
