@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo doc *)",
+      "Bash(cargo tree *)",
+      "Bash(cargo metadata *)",
+      "Bash(cargo deny check *)",
+      "Bash(cargo deny --locked check *)",
+      "Bash(just)",
+      "Bash(just --list)",
+      "Bash(just check)",
+      "Bash(just fmt)",
+      "Bash(just fmt-check)",
+      "Bash(just lint)",
+      "Bash(just test *)",
+      "Bash(just build-static)",
+      "Bash(just check-aarch64)",
+      "Bash(just deny)",
+      "Bash(just doc)",
+      "Bash(just book)",
+      "Bash(just changelog *)",
+      "Bash(just ci)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git blame *)",
+      "Bash(git ls-files *)",
+      "Bash(git rev-parse *)",
+      "Bash(rg *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git switch *)",
+      "Bash(git fetch *)",
+      "Bash(git pull --ff-only *)",
+      "Bash(git pull --ff-only)",
+      "Bash(git branch *)",
+      "Bash(git stash *)"
+    ],
+    "ask": [
+      "Bash(cargo run *)",
+      "Bash(cargo add *)",
+      "Bash(cargo remove *)",
+      "Bash(cargo update *)",
+      "Bash(cargo install *)",
+      "Bash(./target/*)",
+      "Bash(target/*)",
+      "Bash(podman *)",
+      "Bash(docker *)",
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git reset --hard *)"
+    ],
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(pkexec *)",
+      "Bash(su *)",
+      "Bash(doas *)",
+      "Bash(mount *)",
+      "Bash(umount *)",
+      "Bash(unshare *)",
+      "Bash(nsenter *)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf / *)",
+      "Bash(rm -fr /)",
+      "Bash(rm -fr / *)",
+      "Bash(rm *--no-preserve-root*)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/)",
+      "Bash(rm -rf $HOME)",
+      "Bash(rm -rf $HOME/)",
+      "Bash(rg *--pre*)",
+      "Bash(cargo publish *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.config/containers/auth.json)",
+      "Read(//run/user/*/containers/auth.json)",
+      "Read(~/.ssh/**)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/rustfmt-edited.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
