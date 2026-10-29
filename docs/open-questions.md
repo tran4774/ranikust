@@ -118,6 +118,10 @@ Entry format:
   mount points (c) counts as empty or (d) is refused.
 - **Recommendation:** none
 - **Interim:** a workdir of pure mount points is refused, as designed today.
+  Owner: `feat/rnk-rootfs-rootpath` does not build `check_workdir` in
+  `rnk-rootfs`; it only provides the primitives either owner needs
+  (`RootPath::open` with `RESOLVE_NO_SYMLINKS`, `statx` with `dev`, `ino`
+  and `mnt_id`). Reversible because nothing calls a workdir check yet.
 - **Raised:** 2026-10-30
 
 ### Q-012: Which crates fill the Phase 1 dependency picks?
@@ -137,7 +141,11 @@ Entry format:
   is not deterministic across thread counts, `exp-05` Q3); `clap`, marked
   `[design]` on the [ranikust card](agents/crates/ranikust.md#api-planned);
   none for the others.
-- **Interim:** none
+- **Interim:** task 4: followed the recommendation in
+  `feat/rnk-rootfs-rootpath`: `rustix` 1.1.6 (features `fs`, `std`).
+  Reversible because no `rustix` type appears in `rnk-rootfs`'s public API
+  (it has its own `Stat`, `Meta`, `OpenHow`, `FileTime`), so moving to `nix`
+  would touch only the crate's internals.
 - **Raised:** 2026-10-30
 
 ### Q-013: How does the layer writer learn missing parent metadata?
@@ -297,6 +305,27 @@ Entry format:
   `--snapshot-mode` in overlay mode (`ADR-0023`).
 - **Recommendation:** none
 - **Interim:** none
+- **Raised:** 2026-10-30
+
+### Q-050: What is the minimum kernel, and who checks it?
+
+- **Blocks:** Phase 1 task 8 (probes, user docs); **Area:** `rnk-rootfs`,
+  `ranikust`, the book
+- **Context:** `RootPath` needs `openat2` (Linux 5.6) and the `statx` mount
+  id (Linux 5.8), with no string-based fallback
+  ([rootfs](design/rootfs.md#invariants)). The probes never compare kernel
+  versions ([modes-and-detection](design/modes-and-detection.md)), the book
+  states no kernel requirement, and the privilege matrix lists RHEL 8
+  (kernel 4.18) among the targets
+  ([where-to-run](book/src/where-to-run.md)).
+- **Options:** (a) document Linux ≥ 5.8 and let the first `RootPath::open`
+  fail with its error; (b) also probe `openat2` and `statx` at start-up and
+  refuse with guidance, like the other probes; (c) support older kernels
+  with a userspace resolver (would reverse this crate's invariant: an ADR).
+- **Recommendation:** none
+- **Interim:** (a) without the documentation: `rnk-rootfs` fails with
+  `Error::Unsupported`, naming Linux 5.8 and seccomp
+  (`feat/rnk-rootfs-rootpath`).
 - **Raised:** 2026-10-30
 
 ### Q-024: What is the Snapshotter signature?

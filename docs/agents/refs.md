@@ -67,7 +67,9 @@ picked it), **candidate** (`[open: Q-012]`, Phase 2 `[open: Q-038]`; see [open-q
 | [reqwest](https://crates.io/crates/reqwest), [hyper](https://crates.io/crates/hyper) | 0.13.5, MIT OR Apache-2.0; 1.12.0, MIT | HTTP | candidate |
 | [tokio](https://crates.io/crates/tokio) | 1.54.1, MIT | Async runtime | chosen |
 | [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, walk | chosen |
-| [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | candidate |
+| [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | candidate; `rustix` used by `rnk-rootfs` (Q-012 interim) |
+| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Derives each library crate's `Error` enum; no `anyhow` in libraries | candidate; used by `rnk-rootfs` |
+| [tempfile](https://crates.io/crates/tempfile) | 3.27.0, MIT OR Apache-2.0 | Temp dirs for T0 tests, removed on drop | candidate; used by `rnk-rootfs` tests |
 | [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required | chosen (`ADR-0020`) |
 | [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber), [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.1.44, 0.3.23, MIT; 0.33.1, Apache-2.0 | Logs and tracing | chosen (survey 03) |
 | [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03) | candidate |

@@ -8,6 +8,10 @@
 //! `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the ignore list; and safe
 //! deletion of a root's contents.
 //!
+//! Linux only: the crate needs `openat2` (Linux 5.6) and the `statx` mount id
+//! (Linux 5.8). When either is missing or blocked by seccomp it fails with
+//! [`Error::Unsupported`]; there is no string-based fallback.
+//!
 //! # Boundaries
 //!
 //! - Never reaches a path in the root by joining strings onto a host path.
@@ -18,3 +22,14 @@
 //! - Does not decompress layers: the caller chains `rnk-layer`'s decoder into
 //!   the extraction, and this crate never depends on `rnk-layer`.
 //! - Does not mount, create namespaces or run processes (`rnk-sandbox`).
+
+mod error;
+mod meta;
+mod path;
+mod root;
+#[cfg(test)]
+mod test_util;
+
+pub use error::{Error, Result};
+pub use meta::{FileTime, FileType, Meta, Stat};
+pub use root::{OpenHow, RootPath};
