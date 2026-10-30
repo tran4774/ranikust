@@ -96,9 +96,13 @@ runs as root on the host:
 4. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
    ACL, never `sudo`), user-mode networking, SSH forwarded to a free port
    on `127.0.0.1` only. The disk is 20 GB (`RANIKUST_VM_DISK`) and the
-   memory 4 GiB (`RANIKUST_VM_MEM`), more for `e2e`.
-5. **Copy in** the binaries and `tests/vm/guest/`, **run** the suites over
-   SSH (`guest/run.sh`), **copy out** `target/vm/results/<release>/`:
+   memory 4 GiB (`RANIKUST_VM_MEM`), more for `e2e`. A balloon device
+   with free-page reporting hands memory the guest frees back to the host.
+5. **Copy in** the binaries and `tests/vm/guest/`, **run** the suites
+   (`guest/run.sh`) detached in the guest while the host follows their log
+   over SSH every 15 s, reconnecting for up to 15 minutes, so a VM that
+   stalls while the host swaps loses neither the run nor its results;
+   **copy out** `target/vm/results/<release>/` (retried):
    `env.txt` (kernel, Docker, cgroup), one log per suite, `summary.txt`
    and the VM's serial log.
 6. **Tear down** on every exit path, Ctrl-C included: QEMU is stopped
@@ -195,7 +199,11 @@ implemented`, a flag refused until a later phase) is recorded as
 `RANIKUST_E2E_WORKLOADS`, `_BUILDERS`, `_ROUNDS` (default 1; use 3 or more
 for the acceptance timings), `_WARMUP`, `_CPUS`, `_MEMORY`, `_JOBS`. The
 VM gets 12 GiB and an 80 GB disk unless `RANIKUST_VM_MEM`/`_DISK` say
-otherwise. A run of one round took about 15 minutes on noble, most of it
+otherwise; when the host has less than 12 GiB plus 3 GiB available, the
+default shrinks to fit (never below 8 GiB) and the run says so. A guest
+fills its memory with page cache, which QEMU keeps: on a host short of
+memory, with swap full, an earlier version of the harness lost whole runs
+when the VM stalled for over 45 s and its single SSH session dropped. A run of one round took about 15 minutes on noble, most of it
 the seed copy, the builds and flattening W1's images.
 
 First run (2026-10-30, noble, 4 vCPUs, one round, so indicative only):
