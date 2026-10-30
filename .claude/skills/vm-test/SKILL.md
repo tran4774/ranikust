@@ -16,8 +16,12 @@ just test-vm              # unit and smoke, Ubuntu 24.04 (kernel 6.8)
 just test-vm unit         # only the #[ignore = "T2: ..."] tests
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
 just test-vm e2e          # nextjs-kaniko W1-W3: kaniko, BuildKit, ranikust
+just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
 ```
 
+- `push` runs only when named and needs the host's test registries
+  (`just registry-up`, docs/testing.md#test-registries), which the VM
+  reaches as `10.0.2.2`.
 - `e2e` runs only when named: about 15–25 minutes and 2.8 GB copied in,
   read from the `nextjs-kaniko` checkout next to the main checkout and
   from the host's podman images (docs/testing.md#end-to-end-workloads-e2e).

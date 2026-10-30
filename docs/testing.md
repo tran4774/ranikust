@@ -12,7 +12,7 @@ than a regular user never run on a developer's machine.
 |---|---|---|---|---|---|
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
-| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit`, `smoke` and `e2e` suites |
+| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit`, `smoke`, `e2e` and `push` suites |
 | T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, aarch64 T0 under qemu-user, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
 
 ### Rules
@@ -105,6 +105,31 @@ runs as root on the host:
 | `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass |
 | `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image. The `ranikust` binary then builds `tests/smoke/e2e` in the same environment (the workdir a volume in Docker, since overlay refuses an upper directory on the container's own overlay root; the `SYS_ADMIN` variant has no `NET_ADMIN`, so it passes `--allow network.none-userns`, [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md), and the build checks `lo` is up). In the `SYS_ADMIN` variant a `RUN --network=none` without that flag must be refused naming it, and with it, after `modprobe ip_tables ip6_tables af_key` in the VM, `tests/smoke/netns-check.py` must find, as root in the `RUN`, loopback up and working; `EPERM` for `setns` into the user namespace owning the network namespace (`NS_GET_USERNS`), `unshare(CLONE_NEWUSER)`, `IPT_SO_SET_REPLACE`, `IPT_SO_GET_INFO`, `IP6T_SO_GET_INFO`, `TCP_REPAIR` and `socket(AF_KEY)`; `EPROTONOSUPPORT` for `NETLINK_NETFILTER` and `NETLINK_XFRM`; rtnetlink and audit netlink open; and a later `RUN --network=none useradd` must succeed: it must reach overlay mode as root with the same root entry and a real overlay probe (either mount API) and print a digest; no stub or secret may reach a blob, and Docker loads the tar and runs the image as user `app`. On the VM itself, `--reproducible` must give one digest with `--jobs 1` and the default. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
 | `e2e` | The Phase 1 workloads of `nextjs-kaniko` ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust`; times, image comparison, metrics. Not part of the default `just test-vm` |
+| `push` | One `ranikust build` as real root pushing to three registries and writing `--tar-path` and `--oci-layout-path` ([below](#test-registries)): a `registry:2` on the VM's loopback (plain HTTP, anonymous, unasked), the host's HTTP test registry as `10.0.2.2:5000` with `--insecure-registry`, and the host's HTTPS one as `10.0.2.2:5443` with `--registry-certificate` and credentials from a `config.json`. Each manifest read back must hash to the printed digest, the HTTPS one must refuse an anonymous read, Docker pulls and runs the loopback image and loads and runs the tarball and the layout, and every layout blob must hash to its name. Needs `just registry-up`; not part of the default `just test-vm` |
+
+### Test registries
+
+`tests/registry/compose.yaml` runs two `registry:2` (pinned by digest) with
+rootless podman, both on the host's loopback:
+
+| Service | Address | Access |
+|---|---|---|
+| `http` | `127.0.0.1:5000` | plain HTTP, anonymous |
+| `https` | `127.0.0.1:5443` | TLS from a self-signed CA, basic auth (user `ranikust`) |
+
+`just registry-up` runs `tests/registry/setup.sh`, which makes, under
+`tests/registry/_data` (ignored by version control, with the registries'
+storage): the CA (`certs/ca.crt`, what a client passes to
+`--registry-certificate`), a server certificate for `localhost`, the host's
+name, `127.0.0.1`, `::1` and `10.0.2.2`, and `auth/htpasswd` with a random
+password kept in `auth/credentials`. It then starts both and checks them
+with `tests/registry/check.sh`: an image pushed into each reads back, and
+the HTTPS one refuses an anonymous read. `just registry-down` stops them and
+keeps the data. The T2 VM reaches them as `10.0.2.2`, which QEMU's user
+network maps to the host's loopback, so they need no wider binding. On a
+host whose AppArmor restricts unprivileged user namespaces, only podman
+(which has a profile) can read local storage, so the check pushes with
+`podman push` and reads with `skopeo inspect`.
 
 ### End-to-end workloads (`e2e`)
 
