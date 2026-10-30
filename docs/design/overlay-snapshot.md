@@ -183,7 +183,19 @@ Requirements found by comparing images:
 - **Content comparison.** For a copied-up file whose metadata, size and
   whole-second time equal the lower one's, both copies are read through
   their `RootPath`s in 32 KiB blocks up to the first difference
-  (`bytes_compared` on `rnk_snapshot.diff`).
+  (`bytes_compared` on `rnk_snapshot.diff`); an opened file that is not the
+  inode `statx` saw counts as changed. Over a diff this build made (not an
+  extracted image layer) the content is compared whenever the stat
+  matches, nanoseconds included: two `COPY`s within one clock tick or
+  `cp -a` give equal times to different bytes. This is a deliberate
+  deviation from BuildKit, which trusts the nanoseconds there (ADR-0034).
+  On a state directory with whole-second timestamps every matching copy-up
+  is compared, which is correct but slower.
+- **Merged listings.** Under an opaque directory the lower stack's names
+  are gathered in one pass from the top, as overlay's `readdir`: each
+  layer's directory is reached without following anything, a whiteout
+  hides a name of the layers below, and the pass stops at a layer where
+  the directory is opaque, a whiteout or not a directory.
 - **Raw mode bits.** Read and set modes with the raw `st_mode` bits
   (`fchmodat` with the full value) so sticky, setuid and setgid survive;
   `/tmp` must stay 1777.

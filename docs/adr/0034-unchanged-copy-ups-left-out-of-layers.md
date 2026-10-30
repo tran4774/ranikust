@@ -44,10 +44,22 @@ both modification times are whole seconds (option (a)).
   zero nanoseconds, a symlink's target or a regular file's bytes decide
   (an empty file is equal), else the nanoseconds must match and nothing is
   read.
+- **One deviation from BuildKit.** When the lower entry comes from a diff
+  this build made (an earlier instruction of the stage or of its parent
+  stage), equal nanoseconds prove nothing either: two `COPY`s of same-size
+  files within one clock tick, `cp -a` or `touch -r` give a file the same
+  time to the nanosecond with other bytes. There the symlink target or
+  content is compared whenever the stat check says equal. BuildKit has the
+  same latent gap and drops such a file, shipping the old content. For
+  extracted image layers the nanoseconds stay trusted, as in BuildKit.
 - **Reading.** Contents are compared in 32 KiB blocks through both layers'
-  `RootPath`s (`open_regular`, no symlink followed, regular files only),
-  stopping at the first difference; both files were checked to have the
-  same size, so the read is bounded by it.
+  `RootPath`s (`open_regular`, regular files only), stopping at the first
+  difference; each opened file must be the inode `statx` saw, else it
+  counts as changed. Both files were checked to have the same size, so the
+  read is bounded by it.
+- **Coarse clocks.** On a state directory whose filesystem keeps only
+  whole seconds, every file has zero nanoseconds, so every copy-up that
+  matches in stat is compared by content: correct, but slower.
 - **Opaque directories.** An opaque upper directory over a lower one is
   walked against the lower stack as continuity's double-walking differ,
   which BuildKit runs there: a name only below gets a whiteout (one for a
@@ -69,7 +81,8 @@ both modification times are whole seconds (option (a)).
   mode, owner, capabilities and whole-second time already equal the lower
   one's.
 - Bad, because those files are read twice at export time: a reinstall that
-  rewrites many files with the same times pays a full read of both copies.
+  rewrites many files with the same times pays a full read of both copies,
+  and so does a copy-up over this build's own diffs whose stat matches.
 - Neutral, because ranikust's layers now hold per-name whiteouts where they
   held an opaque marker; extractors treat both the same.
 

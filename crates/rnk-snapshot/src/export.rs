@@ -27,6 +27,10 @@ pub struct LayerDiff {
     pub(crate) upper: PathBuf,
     /// Topmost first.
     pub(crate) lowers: Vec<PathBuf>,
+    /// How many of the topmost `lowers` are diffs this build made, not
+    /// extracted image layers: their times are no proof that a file is
+    /// unchanged (ADR-0034).
+    pub(crate) built: usize,
 }
 
 /// What [`LayerDiff::export`] found, besides the layer.
@@ -57,9 +61,16 @@ impl LayerDiff {
     /// for diffs kept elsewhere.
     ///
     /// [`StageRootfs::end_layer`]: crate::StageRootfs::end_layer
+    /// Every lower counts as made by the build, the careful choice: an
+    /// unchanged-looking file is then always compared by content.
     #[must_use]
     pub fn new(upper: PathBuf, lowers: Vec<PathBuf>) -> Self {
-        Self { upper, lowers }
+        let built = lowers.len();
+        Self {
+            upper,
+            lowers,
+            built,
+        }
     }
 
     /// The upper directory, for messages.
@@ -131,7 +142,7 @@ impl LayerDiff {
                 bytes_compared = tracing::field::Empty,
             );
             let _entered = diff.enter();
-            let mut walk = Walk::new(&upper, &lowers);
+            let mut walk = Walk::new(&upper, &lowers, self.built);
             walk.run()?;
             diff.record("files_added", walk.counts.files_added);
             diff.record("whiteouts", walk.counts.whiteouts);
@@ -172,7 +183,7 @@ impl LayerDiff {
         let lowers = Lowers {
             layers: &lower_roots,
         };
-        let mut walk = Walk::new(&upper, &lowers);
+        let mut walk = Walk::new(&upper, &lowers, self.built);
         walk.run()?;
         let mut entries = walk.entries;
         entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -215,6 +226,8 @@ struct Walk<'a> {
     /// links (continuity's `ChangeKindUnmodified`): written after the walk,
     /// and only as links to a changed name of the same inode.
     linked: Vec<Entry>,
+    /// How many of the topmost lowers this build made.
+    built: usize,
 }
 
 /// The longest path below a layer root the exporter walks to (`PATH_MAX`
@@ -227,13 +240,14 @@ const PATH_MAX: usize = 4095;
 const COMPARE_BUF: usize = 32 * 1024;
 
 impl<'a> Walk<'a> {
-    fn new(upper: &'a RootPath, lowers: &'a Lowers<'a>) -> Self {
+    fn new(upper: &'a RootPath, lowers: &'a Lowers<'a>, built: usize) -> Self {
         Self {
             upper,
             lowers,
             entries: Vec::new(),
             counts: DiffCounts::default(),
             linked: Vec::new(),
+            built,
         }
     }
 
@@ -273,16 +287,7 @@ impl<'a> Walk<'a> {
             }
             return Ok(None);
         }
-        let all = self.upper.xattrs(p)?;
-        if all
-            .iter()
-            .any(|(n, _)| n == REDIRECT || n == "trusted.overlay.redirect")
-        {
-            return Err(Error::Export {
-                path: p.to_owned(),
-                reason: "an overlay redirect, which redirect_dir=nofollow never creates",
-            });
-        }
+        let all = no_redirect(self.upper.xattrs(p)?, p)?;
         let opaque = all.iter().any(|(n, v)| n == OPAQUE && v.as_slice() == b"y");
         let xattrs = lowers::layer_xattrs(all);
         let same = match &lower {
@@ -343,7 +348,7 @@ impl<'a> Walk<'a> {
                     self.add_tree(&p, &st)?;
                     continue;
                 };
-                let xattrs = lowers::layer_xattrs(self.upper.xattrs(&p)?);
+                let xattrs = lowers::layer_xattrs(no_redirect(self.upper.xattrs(&p)?, &p)?);
                 let lower_dir = lower.stat.file_type() == FileType::Directory;
                 let is_dir = st.file_type() == FileType::Directory;
                 if self.same_dirent(&st, &xattrs, &lower, &p)? {
@@ -373,7 +378,7 @@ impl<'a> Walk<'a> {
     /// Feeds `p` and, for a directory, everything below it in the upper,
     /// whiteouts left out: names the lower stack does not show there.
     fn add_tree(&mut self, p: &Path, st: &Stat) -> Result<()> {
-        let xattrs = lowers::layer_xattrs(self.upper.xattrs(p)?);
+        let xattrs = lowers::layer_xattrs(no_redirect(self.upper.xattrs(p)?, p)?);
         if !self.push(p, st, xattrs)? {
             return Ok(());
         }
@@ -385,7 +390,7 @@ impl<'a> Walk<'a> {
                 if lowers::is_whiteout(&st) {
                     continue;
                 }
-                let xattrs = lowers::layer_xattrs(self.upper.xattrs(&q)?);
+                let xattrs = lowers::layer_xattrs(no_redirect(self.upper.xattrs(&q)?, &q)?);
                 if self.push(&q, &st, xattrs)? {
                     todo.push(q);
                 }
@@ -483,9 +488,14 @@ impl<'a> Walk<'a> {
     /// bits, owner, device numbers and `security.capability`, and for a
     /// non-directory the same size and modification second. When both
     /// times have zero nanoseconds, as a file from a tar does, the
-    /// nanoseconds prove nothing, so a symlink's target or a file's content
-    /// decides (an empty file is equal); otherwise the nanoseconds must
-    /// match and the content is not read.
+    /// nanoseconds prove nothing, so a symlink's target or a regular file's
+    /// content decides (an empty file is equal); otherwise the nanoseconds
+    /// must match.
+    ///
+    /// One deviation from BuildKit (ADR-0034): when the lower entry comes
+    /// from a diff this build made, matching nanoseconds prove nothing
+    /// either (two `COPY`s in one clock tick, `cp -a`, `touch -r`), so the
+    /// symlink target or content is compared then too.
     fn same_dirent(
         &mut self,
         st: &Stat,
@@ -507,31 +517,41 @@ impl<'a> Walk<'a> {
         if st.size != l.size || st.mtime.secs != l.mtime.secs {
             return Ok(false);
         }
-        if st.mtime.nanos != 0 || l.mtime.nanos != 0 {
-            return Ok(st.mtime.nanos == l.mtime.nanos);
+        let truncated = st.mtime.nanos == 0 && l.mtime.nanos == 0;
+        if !truncated && st.mtime.nanos != l.mtime.nanos {
+            return Ok(false);
         }
-        if st.file_type() == FileType::Symlink {
-            return Ok(self.upper.read_link(p)? == lower.layer.read_link(p)?);
-        }
-        if st.size == 0 {
+        if !truncated && lower.index >= self.built {
+            // An image layer's nanoseconds, kept by the copy-up: trusted.
             return Ok(true);
         }
-        self.same_content(lower.layer, p)
+        match st.file_type() {
+            FileType::Symlink => Ok(self.upper.read_link(p)? == lower.layer.read_link(p)?),
+            _ if st.size == 0 => Ok(true),
+            FileType::Regular => self.same_content(st, lower.layer, l, p),
+            // A node or FIFO with a size: not something to read.
+            _ => Ok(false),
+        }
     }
 
     /// Whether the regular file `p` has the same bytes in the upper and in
     /// `lower`, read through both roots in 32 KiB blocks and stopped at the
-    /// first difference (continuity's `compareFileContent`). Both were
-    /// checked to have the same size, so this reads at most that much from
-    /// each, unless a file grows meanwhile.
-    fn same_content(&mut self, lower: &RootPath, p: &Path) -> Result<bool> {
+    /// first difference (continuity's `compareFileContent`). Each opened
+    /// file must be the inode `statx` saw (`st` and `l`): one swapped in
+    /// meanwhile counts as changed. Both have the same size, so this reads
+    /// at most that much from each, unless a file grows meanwhile.
+    fn same_content(&mut self, st: &Stat, lower: &RootPath, l: &Stat, p: &Path) -> Result<bool> {
         let io_err = |source: io::Error| Error::Io {
             op: "compare file contents",
             path: p.to_owned(),
             source,
         };
-        let mut a = File::from(self.upper.open_regular(p)?);
-        let mut b = File::from(lower.open_regular(p)?);
+        let a = self.upper.open_regular(p)?;
+        let b = lower.open_regular(p)?;
+        if !same_inode(&a, st).map_err(io_err)? || !same_inode(&b, l).map_err(io_err)? {
+            return Ok(false);
+        }
+        let (mut a, mut b) = (File::from(a), File::from(b));
         let mut buf_a = vec![0; COMPARE_BUF];
         let mut buf_b = vec![0; COMPARE_BUF];
         loop {
@@ -546,6 +566,29 @@ impl<'a> Walk<'a> {
             }
         }
     }
+}
+
+/// Whether the open file `fd` is the inode of `st`.
+fn same_inode(fd: &std::os::fd::OwnedFd, st: &Stat) -> io::Result<bool> {
+    let got = rustix::fs::fstat(fd).map_err(io::Error::from)?;
+    Ok(got.st_ino == st.ino
+        && rustix::fs::major(got.st_dev) == st.dev_major
+        && rustix::fs::minor(got.st_dev) == st.dev_minor)
+}
+
+/// `all`, the xattrs of `p` in the upper, unless one is an overlay
+/// redirect, which `redirect_dir=nofollow` never creates.
+fn no_redirect(all: Vec<(OsString, Vec<u8>)>, p: &Path) -> Result<Vec<(OsString, Vec<u8>)>> {
+    if all
+        .iter()
+        .any(|(n, _)| n == REDIRECT || n == "trusted.overlay.redirect")
+    {
+        return Err(Error::Export {
+            path: p.to_owned(),
+            reason: "an overlay redirect, which redirect_dir=nofollow never creates",
+        });
+    }
+    Ok(all)
 }
 
 /// `dir/name`, refused past [`PATH_MAX`].

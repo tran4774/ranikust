@@ -91,7 +91,8 @@ pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused 
 - Exporter: whiteouts are converted before hardlinks are found by
   `(dev, ino)`; `.wh.<name>` only where the lower stack shows the name,
   with time 0; an entry unchanged by BuildKit's `sameDirent` is left out
-  (ADR-0034; contents compared when both times are whole seconds), yet
+  (ADR-0034; contents compared when both times are whole seconds, and
+  over this build's own diffs whenever the stat matches), yet
   every emitted entry's ancestors are emitted; an opaque directory over a
   lower one becomes whiteouts of what it hides, never `.wh..wh..opq`; `*.overlay.*` xattrs are stripped,
   `security.capability` kept; a redirect is an error; modes are raw; the

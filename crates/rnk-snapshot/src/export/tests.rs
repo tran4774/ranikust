@@ -97,11 +97,31 @@ impl Fixture {
         self.mtime(&format!("upper/{rel}"), secs, nanos);
     }
 
+    /// The diff over `l1`, `l2` as extracted image layers.
     fn diff(&self) -> LayerDiff {
+        self.diff_over(&["l1", "l2"], 0)
+    }
+
+    /// The diff over `lowers` (topmost first, made if missing), the first
+    /// `built` of them diffs of this build.
+    fn diff_over(&self, lowers: &[&str], built: usize) -> LayerDiff {
+        for l in lowers {
+            fs::create_dir_all(self.p(l)).unwrap();
+        }
         LayerDiff {
             upper: self.p("upper"),
-            lowers: vec![self.p("l1"), self.p("l2")],
+            lowers: lowers.iter().map(|l| self.p(l)).collect(),
+            built,
         }
+    }
+
+    fn names_over(&self, lowers: &[&str], built: usize) -> Vec<String> {
+        self.diff_over(lowers, built)
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.path.to_string())
+            .collect()
     }
 
     fn entries(&self) -> Vec<(String, EntryKind)> {
@@ -203,6 +223,69 @@ fn below_a_name_the_lowers_show_as_a_non_dir_nothing_is_compared() {
     f.mtime("upper/t/y", 1_000, 0);
     f.whiteout("upper/t/x");
     assert_eq!(names(&f.entries()), ["t", "t/y"]);
+}
+
+#[test]
+fn over_a_diff_of_this_build_equal_nanoseconds_still_compare_contents() {
+    // Two `COPY`s of same-size files within one clock tick, or `cp -a`:
+    // the stat is identical to the nanosecond, the content is not.
+    let f = Fixture::new();
+    f.pair("app/f", b"one", b"two", 1_000, 7);
+    f.pair("app/g", b"same", b"same", 1_000, 7);
+    // `l1` made by this build: compared, `f` kept, `g` dropped.
+    assert_eq!(f.names_over(&["l1", "l2"], 1), ["app/f"]);
+    // `l1` an image layer: its nanoseconds are trusted, as BuildKit.
+    assert!(f.names_over(&["l1", "l2"], 0).is_empty());
+}
+
+#[test]
+fn a_deep_stack_with_an_opaque_middle_layer_and_whiteouts_below() {
+    // l1/d has x; l2/d is opaque with y, and whites out w; l3/d has z and
+    // w, both hidden by l2. The new opaque upper/d hides x and y only.
+    let f = Fixture::new();
+    f.file("l1/d/x", b"x");
+    f.file("l2/d/y", b"y");
+    f.xattr("l2/d", OPAQUE, b"y");
+    f.whiteout("l2/d/w");
+    f.file("l3/d/z", b"z");
+    f.file("l3/d/w", b"w");
+    f.dir("l4/d/deep/er");
+    f.dir("upper/d");
+    f.xattr("upper/d", OPAQUE, b"y");
+    let got = f.names_over(&["l1", "l2", "l3", "l4"], 0);
+    assert_eq!(got, ["d/x", "d/y"]);
+    // A whiteout below the opaque path, in a middle layer, hides a name of
+    // the layers below it even without an opaque upper.
+    let g = Fixture::new();
+    g.file("l3/e/gone", b"g");
+    g.dir("l2/e");
+    g.whiteout("l2/e/gone");
+    g.dir("upper/e");
+    g.whiteout("upper/e/gone");
+    assert!(g.names_over(&["l1", "l2", "l3"], 0).is_empty());
+}
+
+#[test]
+fn a_symlink_in_a_lower_is_never_followed() {
+    // `l1/d` is a symlink looping on itself, hiding `l2/d/q`: the opaque
+    // upper `d` is written as new, with no whiteout and no ELOOP.
+    let f = Fixture::new();
+    symlink("d", f.p("l1/d")).unwrap();
+    f.file("l2/d/q", b"q");
+    f.file("upper/d/new", b"n");
+    f.xattr("upper/d", OPAQUE, b"y");
+    assert_eq!(f.names_over(&["l1", "l2"], 0), ["d", "d/new"]);
+}
+
+#[test]
+fn a_redirect_under_an_opaque_dir_is_an_error() {
+    let f = Fixture::new();
+    f.dir("l1/d");
+    f.dir("upper/d/moved");
+    f.xattr("upper/d", OPAQUE, b"y");
+    f.xattr("upper/d/moved", REDIRECT, b"/old");
+    let e = f.diff().entries().unwrap_err();
+    assert!(matches!(e, Error::Export { .. }), "{e}");
 }
 
 #[test]
