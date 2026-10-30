@@ -143,6 +143,18 @@ pub(crate) struct BuildArgs {
     )]
     pub(crate) reproducible: bool,
 
+    /// A registry reached over plain HTTP when HTTPS fails, as kaniko's
+    /// `--insecure-registry`: `host[:port]`. Repeat for several.
+    // [open: Q-200] interim (a), and one flag of Q-023's list: kaniko's name
+    // and meaning, through rnk-registry's `ClientOptions::insecure`.
+    #[arg(
+        long = "insecure-registry",
+        value_name = "REGISTRY",
+        value_parser = parse_registry_host,
+        help_heading = "Output"
+    )]
+    pub(crate) insecure_registries: Vec<String>,
+
     /// Extra CA certificate for one registry. Repeat for several.
     #[arg(
         long = "registry-certificate",
@@ -269,7 +281,6 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("image-name-tag-with-digest-file", Refusal::NotYet(Q023)),
     ("insecure", Refusal::NotYet(Q023)),
     ("insecure-pull", Refusal::NotYet(Q023)),
-    ("insecure-registry", Refusal::NotYet(Q023)),
     ("skip-tls-verify", Refusal::NotYet(Q023)),
     ("skip-tls-verify-pull", Refusal::NotYet(Q023)),
     ("skip-tls-verify-registry", Refusal::NotYet(Q023)),
@@ -387,6 +398,17 @@ fn parse_registry_certificate(value: &str) -> Result<(String, PathBuf), String> 
         }
         _ => Err(format!("expected REGISTRY=PATH, got {value:?}")),
     }
+}
+
+/// An `--insecure-registry` value: a registry host, with a port or not; no
+/// scheme or path.
+fn parse_registry_host(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.contains('/') || value.contains(char::is_whitespace) {
+        return Err(format!(
+            "expected a registry host such as registry:5000, got {value:?}"
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 /// A `--secret` value as kaniko parses it (`pkg/config/options.go`), file

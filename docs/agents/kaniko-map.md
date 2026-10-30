@@ -65,6 +65,7 @@ naming the reason, never silently ignored.
 | `--compression` | `:357` | unset (gzip) | accept (gzip, zstd) | parsed |
 | `--cache`, `--cache-repo` | `:360`, `:351` | false; inferred from destination, `oci:` prefix = layout | accept; behaviour before Phase 4 `[open: Q-021]` | refused until Phase 4 (Q-021 interim) |
 | `--registry-certificate` | `:402` | none | accept; added to host CAs plus embedded roots (`ADR-0024`) | parsed (`REGISTRY=PATH`) |
+| `--insecure-registry` | `:399` | none | accept: plain HTTP to push and pull, HTTPS tried first (`ClientOptions::insecure`); `[open: Q-200]` interim (a) | accepted, repeatable |
 | `--ignore-path` | `:371` | none | accept | refused until Phase 2 (kaniko mode) |
 | `--kaniko-dir` | `:345` | `/kaniko` | renamed `--state-dir` (`ADR-0011`); default `/ranikust/state` in kaniko mode, `<workdir>/.ranikust` in overlay mode (`ADR-0022`) | refused, naming `--state-dir`; `--state-dir` parsed |
 | `--snapshot-mode` | `:341` | `full` (`full\|redo\|time`, `build.go:2474`) | accept, kaniko's meaning: what the kaniko-mode walk compares; ignored with a warning in overlay mode (`ADR-0023`) | parsed; warning with `--mode=overlay` |
@@ -79,7 +80,7 @@ naming the reason, never silently ignored.
 `[open: Q-023]`, decided with the list: `--verbosity`, `--log-format`,
 `--log-timestamp`, `--label`, `--annotation`, `--image-format`,
 `--compression-level`, `--digest-file`, `--image-name-with-digest-file`,
-`--image-name-tag-with-digest-file`, `--insecure*`, `--skip-tls-verify*`,
+`--image-name-tag-with-digest-file`, `--insecure`, `--insecure-pull`, `--skip-tls-verify*`,
 `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-retry`,
 `--push-ignore-immutable-tag-errors`, `--image-download-retry`,
 `--image-fs-extract-retry`, `--context-sub-path`, `--single-snapshot`,

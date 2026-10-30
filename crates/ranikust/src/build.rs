@@ -193,6 +193,7 @@ fn prepare(
 
     let mut options = ClientOptions::default();
     options.registry_certificates = config.registry_certificates.clone();
+    options.insecure = config.insecure_registries.iter().cloned().collect();
     let credentials = credentials()?;
     let client = Client::new(options, TrustStore::load(), credentials)
         .map_err(|e| format!("setting up the registry client: {e}"))?;

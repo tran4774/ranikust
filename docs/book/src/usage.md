@@ -47,6 +47,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--compression=gzip\|zstd` | Layer compression, gzip by default. zstd cannot go into a `--tar-path` tarball. |
 | `--reproducible` | Fixed timestamps, for byte-identical images. |
 | `--registry-certificate=REGISTRY=PATH` | An extra CA certificate for one registry. Repeatable. |
+| `--insecure-registry=REGISTRY` | Reach this registry (`host[:port]`) over plain HTTP when HTTPS fails, as kaniko. Repeatable. |
 | `--snapshot-mode=full\|redo\|time` | What kaniko mode compares between snapshots, as in kaniko; ignored, with a warning, in overlay mode. |
 
 ## ranikust's own flags
@@ -81,7 +82,7 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
 - **Not planned:** `--bucket` (`-b`), GCS build contexts.
 - **Undecided:** the remaining kaniko flags, among them `--force`,
   `--cache-dir`, `--verbosity`, `--label`, `--image-format`,
-  `--digest-file`, `--insecure` and `--skip-tls-verify`; and kaniko's
+  `--digest-file`, `--insecure`, `--insecure-pull` and `--skip-tls-verify`; and kaniko's
   deprecated spellings, which the message points to the current name.
 
 The `KANIKO_*` environment variables (`KANIKO_NO_PUSH`,

@@ -95,6 +95,9 @@ pub(crate) struct BuildConfig {
     pub(crate) compression: Compression,
     /// Fixed timestamps.
     pub(crate) reproducible: bool,
+    /// Registries reached over plain HTTP when HTTPS fails
+    /// (`--insecure-registry`) [open: Q-200].
+    pub(crate) insecure_registries: Vec<String>,
     /// Extra CA certificates per registry, paths absolute.
     pub(crate) registry_certificates: Vec<(String, PathBuf)>,
     /// What the kaniko-mode walk compares.
@@ -170,6 +173,7 @@ impl BuildConfig {
             oci_layout_path: args.oci_layout_path.as_deref().map(absolute),
             compression,
             reproducible: args.reproducible,
+            insecure_registries: args.insecure_registries.clone(),
             registry_certificates: args
                 .registry_certificates
                 .iter()

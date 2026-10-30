@@ -371,7 +371,8 @@ Entry format:
 - **Blocks:** Phase 1 tasks 8, 13; **Area:** `ranikust`
 - **Context:** about 30 kaniko flags are still to be decided with the list
   ([kaniko-map](agents/kaniko-map.md#flags): `--verbosity`, `--log-format`,
-  `--label`, `--image-format`, `--digest-file`, `--insecure*`,
+  `--label`, `--image-format`, `--digest-file`, `--insecure`,
+  `--insecure-pull` (`--insecure-registry` is accepted, Q-200),
   `--push-retry`, `--single-snapshot`, `--cleanup`, `--dryrun`, deprecated
   forms…), plus `--force` (replaced by the workdir checks), `--cache-dir`
   (the store replaces it) and `KANIKO_REGISTRY_MIRROR`, `KANIKO_NO_PUSH`,
@@ -1066,7 +1067,10 @@ Entry format:
   changes the reference setup of experiments 07 and 08.
 - **Recommendation:** (a): the references and the bench harness use it, and
   the client already implements it.
-- **Interim:** the suite passes kaniko's flag and waits.
+- **Interim:** (a), on branch `feat/rnk-builder-executors`:
+  `--insecure-registry <host>` (repeatable) with kaniko's meaning, wired
+  to `ClientOptions::insecure` (HTTPS first, plain HTTP when it fails).
+  Reversible: one flag. `--insecure` and `--insecure-pull` stay refused.
 - **Raised:** 2026-10-30
 
 ### Q-034: When must a lazily skipped stage still be snapshotted?
