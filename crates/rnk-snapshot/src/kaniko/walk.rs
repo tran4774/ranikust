@@ -703,11 +703,14 @@ impl<'a> Ctx<'a> {
             shown,
         ) {
             Ok(st) => st,
-            // Removed since `getdents64`: not in this walk.
+            // Removed since `getdents64`: the root changed during the walk,
+            // which fails it, as kaniko's walk fails when it cannot stat or
+            // hash an entry it listed (`kaniko@44aa7ddc0
+            // pkg/util/fs_util.go:1688-1691`, `pkg/snapshot/layered_map.go:160-163`).
             Err(Error::Walk {
                 errno: Errno::NOENT,
                 ..
-            }) => return Ok(None),
+            }) => return Err(changed(shown)),
             Err(e) => return Err(e),
         };
         if st.stx_mnt_id != self.root_mnt || st.stx_attributes.contains(StatxAttributes::MOUNT_ROOT)
@@ -738,9 +741,7 @@ impl<'a> Ctx<'a> {
                         self.cache_hits.fetch_add(1, Ordering::Relaxed);
                     }
                     _ => {
-                        let Some(fd) = self.open_file(dir, name, &st, shown)? else {
-                            return Ok(None);
-                        };
+                        let fd = self.open_file(dir, name, &st, shown)?;
                         let (hash, read) = hash_content(fd.as_fd(), st.stx_size, shown)?;
                         rec.content = hash;
                         rec.xattrs = xattr_hash(fd.as_fd(), shown)?;
@@ -752,7 +753,7 @@ impl<'a> Ctx<'a> {
             FileType::Symlink if self.mode == SnapshotMode::Full => {
                 let target = match rustix::fs::readlinkat(dir, name, Vec::new()) {
                     Ok(t) => t,
-                    Err(Errno::NOENT) => return Ok(None),
+                    Err(Errno::NOENT) => return Err(changed(shown)),
                     Err(errno) => return Err(walk_err("readlinkat", shown, errno)),
                 };
                 rec.content = xxhash_rust::xxh3::xxh3_128(target.as_bytes());
@@ -774,14 +775,14 @@ impl<'a> Ctx<'a> {
     /// inode reopened for reading through `/proc/self/fd`, so a FIFO or a
     /// device node swapped in meanwhile is never opened, and no driver's
     /// `open` runs as root. `O_NOATIME` where the caller owns the file.
-    /// `None` when it is gone.
+    /// Gone is [`Error::Changed`].
     fn open_file(
         &self,
         dir: BorrowedFd<'_>,
         name: &[u8],
         st: &Statx,
         shown: &Path,
-    ) -> Result<Option<OwnedFd>> {
+    ) -> Result<OwnedFd> {
         let Some(proc) = &self.proc else {
             return Err(walk_err("open", shown, Errno::NOTSUP));
         };
@@ -796,17 +797,25 @@ fn open_regular(
     name: &[u8],
     st: &Statx,
     shown: &Path,
-) -> Result<Option<OwnedFd>> {
+) -> Result<OwnedFd> {
     let pinned = match open_beneath(dir, name, OFlags::PATH, shown) {
         Ok(fd) => fd,
         Err(Error::Walk {
             errno: Errno::NOENT,
             ..
-        }) => return Ok(None),
+        }) => return Err(changed(shown)),
         Err(e) => return Err(e),
     };
     same_inode(pinned.as_fd(), st, shown)?;
-    reopen_regular(proc, pinned.as_fd(), shown).map(Some)
+    reopen_regular(proc, pinned.as_fd(), shown)
+}
+
+/// An entry listed by the walk that is gone or swapped: the root changed
+/// while it was walked.
+fn changed(shown: &Path) -> Error {
+    Error::Changed {
+        path: shown.to_path_buf(),
+    }
 }
 
 fn now() -> FileTime {
@@ -913,11 +922,7 @@ fn open_dir(dir: BorrowedFd<'_>, name: &[u8], st: &Statx, shown: &Path) -> Resul
         Err(Error::Walk {
             errno: Errno::NOENT | Errno::XDEV | Errno::NOTDIR | Errno::LOOP,
             ..
-        }) => {
-            return Err(Error::Changed {
-                path: shown.to_path_buf(),
-            });
-        }
+        }) => return Err(changed(shown)),
         Err(e) => return Err(e),
     };
     same_inode(fd.as_fd(), st, shown)?;

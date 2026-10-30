@@ -1,7 +1,7 @@
 //! Per-stage root filesystems and their per-instruction diffs.
 //!
-//! Defines the [`Snapshotter`] and [`StageRootfs`] traits ([open: Q-024],
-//! interim signature from Phase 1 task 9) and their overlay implementation,
+//! Defines the [`Snapshotter`] and [`StageRootfs`] traits (ADR-0046) and
+//! their overlay implementation,
 //! [`Overlay`]: base layers extracted into the store's `layers/` in the
 //! overlay form, one overlay mount per layer with a fresh upper directory
 //! (`ADR-0016` options), and the exporter that turns an upper directory
@@ -9,8 +9,8 @@
 //! mode's walk is [`Walker`]: a parallel walk and hash of a root, diffed
 //! against the previous walk while walking ([`WalkDiff`], ADR-0039), and
 //! [`WalkDiff::export`], which writes that diff as a layer through the same
-//! writer; its stage roots and deletion implement the same traits later in
-//! Phase 2.
+//! writer; its stage roots on the one shared root, [`Kaniko`] and
+//! [`KanikoRoot`], implement the same traits.
 //!
 //! Also probes its own capability, which the binary runs at start-up:
 //! [`probe`], the overlay mount with the ADR-0016 options, with
@@ -38,10 +38,10 @@ mod stage;
 pub use error::{Error, Result};
 pub use export::{DiffCounts, LayerDiff};
 pub use kaniko::{
-    Change, Changed, DEFAULT_WALK_WORKERS, EntryMeta, SnapshotMode, WalkDiff, WalkOptions,
-    WalkStats, Walker,
+    Change, Changed, DEFAULT_WALK_WORKERS, EntryMeta, Kaniko, KanikoDiff, KanikoLayer, KanikoRoot,
+    SnapshotMode, WalkDiff, WalkOptions, WalkStats, Walker,
 };
 pub use layer::LayerDir;
 pub use mount::{MAX_LOWERS, MountApi, OVERLAY_OPTIONS};
 pub use probe::{OverlayCaps, probe};
-pub use stage::{Base, Overlay, OverlayStage, Snapshotter, StageRootfs};
+pub use stage::{Base, ExportLayer, Overlay, OverlayStage, Snapshotter, StageRootfs};

@@ -166,10 +166,12 @@ with `mknod` `/dev` nodes, the static fake `/proc` and `/sys`, and the
 ### `rnk-snapshot`
 
 Per-stage roots and per-instruction diffs: the `StageRootfs` and
-`Snapshotter` traits with two implementations (an interim signature from
-Phase 1 task 9, [open: Q-024]: `begin_layer`/`end_layer` around each
-instruction that changes files, giving a `LayerDiff`; a read-only `view`
-between layers; the stage's host mount point only for the sandbox). Overlay
+`Snapshotter` traits with two implementations
+([ADR-0046](docs/adr/0046-snapshotter-signature.md): `begin_layer`/`end_layer`
+around each instruction that changes files, giving the mode's diff, an
+`ExportLayer`; the mode's base-layer type; `set_layers_needed` for lazy
+snapshots; a read-only `view` between layers; the stage's host mount point
+only for the sandbox). Overlay
 (`Overlay`, `OverlayStage`, Phase 1): mounts with the
 [ADR-0016](docs/adr/0016-overlay-mount-options.md) options, one upper
 directory per instruction, overlay/OCI whiteout conversion, extraction of
@@ -181,7 +183,9 @@ a `rayon` pool over `openat2` and `getdents64`, xxh3-128, a stat cache, the
 diff computed while walking over a path arena, kaniko's `LayeredMap`;
 [ADR-0039](docs/adr/0039-kaniko-mode-walk-and-hash-crates.md)), its exporter
 (`WalkDiff::export`, built: the walk's diff fed to `rnk-layer`'s writer, as
-kaniko's `writeToTar`), path resolution, filesystem deletion.
+kaniko's `writeToTar`), and its stage roots on the one shared root
+(`Kaniko`, `KanikoRoot`, built: base layers kept as blobs and extracted
+live, the root emptied between units with the ignore list).
 **Must not** run instructions, encode diffs as layers itself, own the store
 (`rnk-store`), or expose a stage root as anything but a `RootPath`.
 

@@ -534,7 +534,8 @@ const IGNORED: &[(&str, bool, &str)] = &[
     (
         "cleanup",
         false,
-        "overlay mode leaves no build filesystem on /; the store in --state-dir is kept on purpose",
+        "overlay mode leaves no build filesystem on /, kaniko mode leaves / as kaniko does \
+         without it and empties a --workdir itself; the store in --state-dir is kept on purpose",
     ),
     (
         "pre-cleanup",

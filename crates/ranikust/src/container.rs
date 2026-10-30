@@ -117,6 +117,12 @@ impl Host for Real {
 
 /// The runtime ranikust runs in, `None` outside a container: kaniko's
 /// `GetContainerRuntime(0, 0)` checks, in its order.
+///
+/// Now that kaniko mode builds, this heuristic is what keeps a build on the
+/// host's `/` (which it extracts over, and empties between stages) from
+/// running outside a container without `--force`, as in kaniko. The
+/// recommendation is an explicit opt-in instead of trusting it alone
+/// [open: Q-321].
 pub(crate) fn detect(host: &impl Host) -> Option<Runtime> {
     // Container-specific files.
     for (runtime, file) in [

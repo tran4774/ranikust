@@ -34,6 +34,29 @@ Entry format:
 
 <!-- Entries are added below this line. -->
 
+### Q-321: Is the container check enough to guard a kaniko-mode build on `/`?
+
+- **Blocks:** nothing yet; **Area:** `ranikust`
+- **Context:** kaniko mode without `--workdir` builds on `/`: it extracts
+  the base over it and empties it between stages. Outside a container only
+  `--force` lets it run (ADR-0040), and whether ranikust is in a container
+  is kaniko's heuristic (`container::detect`: marker files, cgroup names,
+  the `container` variable, an overlay `/`), which a host can match by
+  accident (an overlay root, a leftover `/.dockerenv`).
+- **Options:** (a) keep kaniko's heuristic and `--force`, as kaniko; (b)
+  also require an explicit flag naming `/` (for example `--workdir=/`) when
+  the heuristic is the only evidence; (c) a first-run confirmation, which
+  does not fit an unattended CI job.
+- **Recommendation:** (b), under the maintainer's priorities (security
+  first, then performance; kaniko drop-in parity is not a goal): require
+  an explicit opt-in to build on `/` (`--workdir=/`, or `--force` as the
+  only switch) and never trust the container heuristic alone before
+  extracting over or emptying `/`. Option (a), kaniko's behaviour, is
+  weaker: a host that happens to match the heuristic loses its `/`
+  without any flag.
+- **Interim:** (a), unchanged until the maintainer decides.
+- **Raised:** 2026-10-31
+
 ### Q-008: What does a repeated target flag mean?
 
 - **Blocks:** Phase 1 tasks 2, 8; **Area:** `rnk-dockerfile`, `ranikust`
@@ -172,24 +195,6 @@ Entry format:
 - **Interim:** (a), on `feat/ranikust-setup`: without either flag, overlay
   mode (and `auto`, whose only Phase 1 outcome is overlay) stops with a
   usage error, exit code 2. Reversible: one check in `main.rs`.
-- **Raised:** 2026-10-30
-
-### Q-024: What is the Snapshotter signature?
-
-- **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
-- **Context:** `ADR-0002` names the trait; its signature is designed in
-  task 9 ([rnk-snapshot](agents/crates/rnk-snapshot.md#api),
-  [glossary](agents/glossary.md#terms),
-  [ARCHITECTURE.md](../ARCHITECTURE.md#rnk-snapshot)).
-- **Options:** the card's sketch (`prepare(base, parent)`, `final_root`),
-  or the shape task 9 arrives at.
-- **Recommendation:** none
-- **Interim:** task 9's shape (`feat/rnk-snapshot`):
-  `Snapshotter::{base_layer, prepare(Base::Scratch | Image | Stage)}` and
-  `StageRootfs::{root, mount_point, begin_layer, end_layer -> LayerDiff,
-  view, release}`; `final_root` became `view` (a read-only mount between
-  layers), and `sharing` waits for kaniko mode (Phase 2). Reversible: one
-  implementation, and no caller until `rnk-builder` (task 11).
 - **Raised:** 2026-10-30
 
 ### Q-152: How are read-only layer roots published without root?
@@ -628,6 +633,24 @@ Entry format:
 - **Answer (2026-10-31):** option (a), kaniko's `SaveStage` behaviour:
   every unit with `save_image` is walked. Recorded in
   [ADR-0044](adr/0044-kaniko-mode-walks-every-kept-stage.md).
+
+### Q-024: What is the Snapshotter signature?
+
+- **Answer (2026-10-31):** the interim shape, with associated types:
+  `Snapshotter::Layer` (a base layer as the mode keeps it) and
+  `StageRootfs::Diff: ExportLayer` (a closed layer), and
+  `StageRootfs::set_layers_needed` for lazy snapshots, so overlay and kaniko
+  mode share one builder. Recorded in
+  [ADR-0046](adr/0046-snapshotter-signature.md).
+
+### Q-320: What keeps a kaniko-mode host workdir out of other users' reach?
+
+- **Answer (2026-10-31):** option (a), chosen by the maintainer: a real
+  parent of the workdir that group and others cannot search, and it and
+  everything below it down to the workdir owned by root and not writable
+  by others; directories above it may belong to anyone; a missing
+  `nosuid,nodev` is warned about. Recorded in
+  [ADR-0047](adr/0047-kaniko-workdir-chain-is-private.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

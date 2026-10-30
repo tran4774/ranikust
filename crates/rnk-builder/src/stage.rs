@@ -22,8 +22,8 @@ use rnk_dockerfile::{
 };
 use rnk_oci::{CommandLine, ConfigEdit, HealthConfig, ImageConfig, ImageFormat, Platform};
 use rnk_rootfs::{Chmod, CopyOpts, Meta, OpenHow, Owner, RootPath};
-use rnk_sandbox::{BindMount, MountKind, Network, RunSpec, Sandbox};
-use rnk_snapshot::{Base, LayerDiff, Snapshotter, StageRootfs};
+use rnk_sandbox::{BindMount, Isolation, MountKind, Network, RunSpec, Sandbox};
+use rnk_snapshot::{Base, ExportLayer, Snapshotter, StageRootfs};
 use rnk_store::Store;
 use tracing::{debug_span, info, info_span};
 
@@ -60,6 +60,9 @@ pub struct BuildCx<'a, S> {
     pub snapshotter: &'a S,
     /// Runs `RUN`.
     pub sandbox: &'a Sandbox,
+    /// How `RUN` is isolated: the full sandbox in overlay mode,
+    /// `Isolation::Direct` on kaniko mode's shared root (ADR-0043).
+    pub isolation: Isolation,
     /// Cache mount directories.
     pub store: &'a Store,
     /// The build context.
@@ -118,22 +121,22 @@ impl<R: StageRootfs> SourceRoot<R> {
 /// An image read by `COPY --from=<image>`: pulled, with a root on it, made
 /// by the stage that reads it (preparation touches no root).
 #[derive(Debug)]
-pub struct ImageSource<R> {
+pub struct ImageSource<R, L> {
     /// The pulled image.
-    pub image: std::sync::Arc<PulledImage>,
+    pub image: std::sync::Arc<PulledImage<L>>,
     /// A root on its layers.
     pub root: SourceRoot<R>,
 }
 
-impl<R: StageRootfs> ImageSource<R> {
+impl<R: StageRootfs, L> ImageSource<R, L> {
     /// A root on `image`'s layers.
     ///
     /// # Errors
     ///
     /// As `Snapshotter::prepare`.
-    pub fn new<S: Snapshotter<Root = R>>(
+    pub fn new<S: Snapshotter<Root = R, Layer = L>>(
         snapshotter: &S,
-        image: std::sync::Arc<PulledImage>,
+        image: std::sync::Arc<PulledImage<L>>,
     ) -> Result<Self> {
         let root = snapshotter.prepare(Base::Image(&image.layers))?;
         Ok(Self {
@@ -144,17 +147,17 @@ impl<R: StageRootfs> ImageSource<R> {
 }
 
 /// What a stage starts from.
-pub enum StageBase<'a, R> {
+pub enum StageBase<'a, R, L> {
     /// `FROM scratch`.
     Scratch,
     /// `FROM <image>`.
-    Image(&'a PulledImage),
+    Image(&'a PulledImage<L>),
     /// `FROM <stage>`.
     Stage(&'a StageDone<R>),
 }
 
 /// One stage to build.
-pub struct StageInput<'a, R> {
+pub struct StageInput<'a, R, L> {
     /// The stage's index in the graph.
     pub index: usize,
     /// The stage graph.
@@ -162,11 +165,11 @@ pub struct StageInput<'a, R> {
     /// The stage's instructions, as parsed.
     pub stage: &'a Stage,
     /// Its base.
-    pub base: StageBase<'a, R>,
+    pub base: StageBase<'a, R, L>,
     /// Finished stages it reads with `COPY --from`, by index.
     pub stages: BTreeMap<usize, &'a StageDone<R>>,
     /// Images it reads with `COPY --from`, by reference as written.
-    pub images: BTreeMap<String, &'a ImageSource<R>>,
+    pub images: BTreeMap<String, &'a ImageSource<R, L>>,
     /// Which of its layers are encoded.
     pub demand: LayerDemand,
     /// kaniko's `--label`s, set on the stage's config before its first
@@ -204,7 +207,7 @@ pub struct StageDone<R> {
 /// [`Error::Cancelled`], or the error of preparing the base.
 pub fn build_stage<S: Snapshotter>(
     cx: &BuildCx<'_, S>,
-    input: StageInput<'_, S::Root>,
+    input: StageInput<'_, S::Root, S::Layer>,
 ) -> Result<StageDone<S::Root>> {
     let node = &input.graph.stages[input.index];
     let span = info_span!(
@@ -280,6 +283,8 @@ pub fn build_stage<S: Snapshotter>(
             )
         }
     };
+    let mut root = root;
+    root.set_layers_needed(input.demand.needed());
     let mut config = config;
     with_default_path(&mut config);
     let mut b = Builder {
@@ -323,7 +328,7 @@ pub fn build_stage<S: Snapshotter>(
 
 struct Builder<'c, 'i, S: Snapshotter> {
     cx: &'c BuildCx<'c, S>,
-    input: &'i StageInput<'i, S::Root>,
+    input: &'i StageInput<'i, S::Root, S::Layer>,
     name: String,
     root: S::Root,
     scope: StageScope,
@@ -622,6 +627,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 b.root.mount_point(),
                 argv.into_iter().map(OsString::from).collect(),
             );
+            spec.isolation = b.cx.isolation;
             spec.env = env;
             spec.user = user;
             spec.workdir = workdir;
@@ -810,7 +816,7 @@ enum CopySource<'a, R> {
 }
 
 /// The root `COPY --from` at instruction `index` reads.
-fn copy_from<'i, R>(input: &'i StageInput<'i, R>, index: usize) -> Result<CopySource<'i, R>> {
+fn copy_from<'i, R, L>(input: &'i StageInput<'i, R, L>, index: usize) -> Result<CopySource<'i, R>> {
     let node = &input.graph.stages[input.index];
     let reference = node
         .references
@@ -831,10 +837,11 @@ fn copy_from<'i, R>(input: &'i StageInput<'i, R>, index: usize) -> Result<CopySo
     }
 }
 
-/// A closed layer as a [`LayerSource`]: the overlay upper, exported.
-struct DiffLayer(LayerDiff);
+/// A closed layer as a [`LayerSource`]: an overlay upper or a kaniko-mode
+/// walk diff, exported.
+struct DiffLayer<D>(D);
 
-impl LayerSource for DiffLayer {
+impl<D: ExportLayer> LayerSource for DiffLayer<D> {
     fn encode(
         self: Box<Self>,
         options: rnk_layer::EncodeOptions,

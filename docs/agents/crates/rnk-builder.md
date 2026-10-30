@@ -85,8 +85,10 @@ destination, and later destinations are not tried.
 Built, the stage executor (blocking: call it on a thread of its own):
 
 ```rust
-pub fn build_stage<S: Snapshotter>(cx: &BuildCx<'_, S>, input: StageInput<'_, S::Root>) -> Result<StageDone<S::Root>>;
-pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox, pub store: &'a Store,
+pub fn build_stage<S: Snapshotter>(cx: &BuildCx<'_, S>, input: StageInput<'_, S::Root, S::Layer>) -> Result<StageDone<S::Root>>;
+pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox,
+    pub isolation: Isolation,                            // Full, or Direct on kaniko mode's shared root (ADR-0043)
+    pub store: &'a Store,
     pub context: &'a Context, pub context_files: &'a ContextFiles, pub exporter: &'a LayerExporter,
     pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, Secret>,
     pub allow_network_host: bool,                        // --allow network.host
@@ -94,18 +96,19 @@ pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox, pu
 pub enum Secret { File(PathBuf), Env(OsString) }         // a --secret, read when a RUN mounts it
 pub const MAX_SECRET_SIZE: u64;                          // 500 KiB, as BuildKit
 pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
-pub struct StageInput<'a, R> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R>,
-    pub stages: BTreeMap<usize, &StageDone<R>>, pub images: BTreeMap<String, &ImageSource<R>>, pub demand: LayerDemand }
-pub enum StageBase<'a, R> { Scratch, Image(&'a PulledImage), Stage(&'a StageDone<R>) }
+pub struct StageInput<'a, R, L> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R, L>,
+    pub stages: BTreeMap<usize, &StageDone<R>>, pub images: BTreeMap<String, &ImageSource<R, L>>, pub demand: LayerDemand }
+// build_stage calls root.set_layers_needed(demand.needed()) once after prepare (ADR-0046)
+pub enum StageBase<'a, R, L> { Scratch, Image(&'a PulledImage<L>), Stage(&'a StageDone<R>) }
 pub struct StageDone<R> { pub root: SourceRoot<R>, pub scope: StageScope, pub config: ImageConfig,
     pub layers: Vec<BlobLayer>, pub complete: bool, pub base_format: Option<ImageFormat> }
 pub struct SourceRoot<R>;                                // a root behind a mutex; release() once, children first
-pub struct ImageSource<R> { pub image: PulledImage, pub root: SourceRoot<R> }  // COPY --from=<image>
+pub struct ImageSource<R, L> { pub image: Arc<PulledImage<L>>, pub root: SourceRoot<R> }  // COPY --from=<image>
 pub struct ContextFiles;                                 // ContextFiles::load(&Context, Option<&Matcher>)
 pub async fn pull_image<S>(client: &Arc<Client>, store: &Arc<Store>, snapshotter: &Arc<S>,
-    reference: &str, platform: &Platform) -> Result<PulledImage>;  // blobs into the store, layers extracted
-pub struct PulledImage { pub reference, pub config: ImageConfig, pub format: ImageFormat,
-    pub blobs: Vec<BlobLayer>, pub layers: Vec<LayerDir> }
+    reference: &str, platform: &Platform) -> Result<PulledImage<S::Layer>>;  // blobs into the store, base layers by the snapshotter
+pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, pub format: ImageFormat,
+    pub blobs: Vec<BlobLayer>, pub layers: Vec<L> }
 ```
 
 `RUN`, `COPY`, `ADD` and a `WORKDIR` other than `/` each run in a layer

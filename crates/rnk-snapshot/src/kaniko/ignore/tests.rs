@@ -25,6 +25,9 @@ fn mountinfo_is_parsed_with_escapes_and_optional_fields() {
     assert_eq!((mounts[1].mount_id, mounts[1].parent_id), (1288, 1287));
     assert_eq!(mounts[9].mount_point, Path::new("/data/my vol\tx"));
     assert_eq!(mounts[9].fs_type, "ext4");
+    assert_eq!(mounts[9].fs_root, Path::new("/home/u/my vol"));
+    assert_eq!(mounts[9].device, "259:2");
+    assert_eq!(mounts[0].fs_root, Path::new("/"));
 }
 
 #[test]

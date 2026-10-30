@@ -1,17 +1,19 @@
 //! Stage roots: the `Snapshotter` and `StageRootfs` traits and their overlay
 //! implementation (`design/overlay-snapshot.md#one-layer-per-instruction`).
 
-use std::io::Read;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rnk_layer::{EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
 use rnk_rootfs::{IgnoreList, RootPath, delete_contents};
 use rnk_store::Store;
 
 use crate::error::{Error, Result};
-use crate::export::LayerDiff;
+use crate::export::{DiffCounts, LayerDiff};
 use crate::layer::{self, LayerDir};
 use crate::mount::{self, MountApi, Spec};
 use crate::probe::OverlayCaps;
@@ -21,23 +23,59 @@ const PRIVATE: u32 = 0o700;
 
 /// What a stage starts from.
 #[derive(Debug)]
-pub enum Base<'a, R> {
+pub enum Base<'a, R, L> {
     /// `FROM scratch`: nothing.
     Scratch,
-    /// `FROM <image>`: its layers, extracted, in image order (the
-    /// config's `diff_ids` order, bottom first).
-    Image(&'a [LayerDir]),
+    /// `FROM <image>`: its layers as the snapshotter keeps them
+    /// ([`Snapshotter::Layer`]), in image order (the config's `diff_ids`
+    /// order, bottom first).
+    Image(&'a [L]),
     /// `FROM <stage>`: the root another stage ended with. That stage must
     /// not be released while this one runs.
     Stage(&'a R),
 }
 
-/// One stage's root filesystem, changed one layer at a time.
-///
-/// [open: Q-024] Interim signature, designed at Phase 1 task 9: a layer is
-/// opened before an instruction that changes files and closed after it,
-/// which gives its diff; between layers the root is only read.
+/// A closed layer, ready to be encoded: an overlay upper directory
+/// ([`LayerDiff`]) or a kaniko-mode walk diff (`KanikoDiff`).
+pub trait ExportLayer: Send {
+    /// Writes the layer to `out` and returns its digests and counts. The
+    /// bytes depend only on the layer's content and `options` other than
+    /// its thread count.
+    ///
+    /// # Errors
+    ///
+    /// As the mode's exporter: [`Error::Layer`] when encoding fails,
+    /// [`Error::Rootfs`] or [`Error::Export`] when an entry cannot be read.
+    fn export(
+        self,
+        options: EncodeOptions,
+        out: &mut dyn Write,
+    ) -> Result<(LayerDigests, DiffCounts)>;
+}
+
+impl ExportLayer for LayerDiff {
+    fn export(
+        self,
+        options: EncodeOptions,
+        out: &mut dyn Write,
+    ) -> Result<(LayerDigests, DiffCounts)> {
+        LayerDiff::export(&self, options, out)
+    }
+}
+
+/// One stage's root filesystem, changed one layer at a time (ADR-0046): a
+/// layer is opened before an instruction that changes files and closed
+/// after it, which gives its diff; between layers the root is only read.
+/// A needed diff is encoded before the next layer opens.
 pub trait StageRootfs {
+    /// A closed layer.
+    type Diff: ExportLayer + 'static;
+
+    /// Whether the stage's layers are needed (lazy snapshots, ADR-0038):
+    /// called once after `prepare`, before the first layer. Kaniko mode
+    /// walks only when they are; overlay mode ignores it. Default: needed.
+    fn set_layers_needed(&mut self, _needed: bool) {}
+
     /// The writable root while a layer is open, for `COPY`, `ADD` and
     /// `WORKDIR`.
     ///
@@ -65,7 +103,7 @@ pub trait StageRootfs {
     /// # Errors
     ///
     /// [`Error::State`] when no layer is open; [`Error::Unmount`].
-    fn end_layer(&mut self) -> Result<LayerDiff>;
+    fn end_layer(&mut self) -> Result<Self::Diff>;
 
     /// The root as the next layer would see it, read-only, for reading
     /// between layers (`USER` lookups, `COPY --from` sources). A layer
@@ -87,34 +125,37 @@ pub trait StageRootfs {
     fn release(self) -> Result<()>;
 }
 
-/// Makes stage roots and fills the store with base layers.
-///
-/// [open: Q-024] Interim signature (see [`StageRootfs`]); kaniko mode
-/// implements it in Phase 2.
+/// Makes stage roots and keeps base layers as its stage roots take them
+/// (ADR-0046).
 pub trait Snapshotter {
     /// The stage roots it makes.
     type Root: StageRootfs;
 
-    /// Extracts the layer blob `blob` as `diff_id` above `below` (image
-    /// order), unless the store has it, and returns it.
+    /// A base layer as this snapshotter keeps it: extracted in the store
+    /// ([`LayerDir`]) or its blob (`KanikoLayer`).
+    type Layer: Clone + std::fmt::Debug + Send + Sync;
+
+    /// Makes the layer blob at `blob` (in the store), whose uncompressed
+    /// tar is `diff_id`, a base layer above `below` (image order).
     ///
     /// # Errors
     ///
     /// A store, decoding, diff ID or extraction error.
-    fn base_layer<R: Read>(
+    fn base_layer(
         &self,
         diff_id: &Digest,
-        blob: R,
-        below: &[LayerDir],
-    ) -> Result<LayerDir>;
+        blob: &Path,
+        below: &[Self::Layer],
+    ) -> Result<Self::Layer>;
 
     /// A new stage root on `base`. No layer is open yet.
     ///
     /// # Errors
     ///
-    /// [`Error::State`] when the parent stage has a layer open;
-    /// [`Error::Rootfs`] when the stage directory cannot be made.
-    fn prepare(&self, base: Base<'_, Self::Root>) -> Result<Self::Root>;
+    /// [`Error::State`] when the parent stage has a layer open or, in
+    /// kaniko mode, no longer holds the root; [`Error::Rootfs`] when the
+    /// stage directory cannot be made.
+    fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;
 }
 
 /// Overlay mode: one overlay mount per layer over the store's extracted
@@ -150,21 +191,37 @@ impl Overlay {
     pub fn store(&self) -> &Arc<Store> {
         &self.store
     }
-}
 
-impl Snapshotter for Overlay {
-    type Root = OverlayStage;
-
-    fn base_layer<R: Read>(
+    /// [`Snapshotter::base_layer`] from a reader instead of a blob in the
+    /// store.
+    ///
+    /// # Errors
+    ///
+    /// As [`Snapshotter::base_layer`].
+    pub fn base_layer_from(
         &self,
         diff_id: &Digest,
-        blob: R,
+        blob: impl std::io::Read,
         below: &[LayerDir],
     ) -> Result<LayerDir> {
         layer::extract_layer(&self.store, diff_id, blob, below)
     }
+}
 
-    fn prepare(&self, base: Base<'_, OverlayStage>) -> Result<OverlayStage> {
+impl Snapshotter for Overlay {
+    type Root = OverlayStage;
+    type Layer = LayerDir;
+
+    fn base_layer(&self, diff_id: &Digest, blob: &Path, below: &[LayerDir]) -> Result<LayerDir> {
+        let file = File::open(blob).map_err(|source| Error::Io {
+            op: "open",
+            path: blob.to_owned(),
+            source,
+        })?;
+        layer::extract_layer(&self.store, diff_id, file, below)
+    }
+
+    fn prepare(&self, base: Base<'_, OverlayStage, LayerDir>) -> Result<OverlayStage> {
         let (lowers, built, parent): (Vec<PathBuf>, _, _) = match base {
             Base::Scratch => (Vec::new(), 0, None),
             Base::Image(layers) => (
@@ -332,6 +389,8 @@ impl OverlayStage {
 }
 
 impl StageRootfs for OverlayStage {
+    type Diff = LayerDiff;
+
     fn root(&self) -> Result<&RootPath> {
         self.open.as_ref().ok_or(Error::State("no layer is open"))
     }

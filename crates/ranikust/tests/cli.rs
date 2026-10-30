@@ -102,25 +102,36 @@ fn overlay_mode_needs_a_workdir_or_state_dir() {
 }
 
 #[test]
-fn kaniko_mode_is_not_built_yet() {
+fn kaniko_mode_needs_root_and_on_slash_a_container() {
+    if running_as_root() {
+        // As root this would build on the host's `/`: never in a test.
+        eprintln!("skipped: kaniko mode on / as root runs only in the VM");
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
-    // With `--force`, the root `/` passes inside or outside a container.
+    // With `--force`, the root `/` passes inside or outside a container,
+    // and the build stops for want of root.
     let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko", "--force"], &[]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("Phase 2"), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("needs root"), "{}", stderr(&out));
     // Without it, only inside a container (ADR-0040); the tests run on a
     // host or in one, so either answer is checked for its message.
     let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko"], &[]);
     let err = stderr(&out);
-    match out.status.code() {
-        Some(1) => assert!(err.contains("only inside a container"), "{err}"),
-        Some(2) => assert!(err.contains("Phase 2"), "{err}"),
-        code => panic!("exit {code:?}: {err}"),
-    }
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("only inside a container") || err.contains("needs root"),
+        "{err}"
+    );
 }
 
 #[test]
 fn kaniko_mode_flags_are_checked_against_the_mode() {
+    if running_as_root() {
+        // `--mode=kaniko --force` as root would build on the host's `/`.
+        eprintln!("skipped: kaniko mode on / as root runs only in the VM");
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
     let out = ranikust(
         tmp.path(),
@@ -177,15 +188,14 @@ fn kaniko_mode_checks_its_workdir_before_stopping() {
     assert!(!workdir.join(".ranikust-root").exists());
 
     fs::remove_file(workdir.join("precious")).expect("remove");
-    let out = ranikust(tmp.path(), &args, &[]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("passed its checks"),
-        "{}",
-        stderr(&out)
-    );
-    // The marker comes right before the first write, which this stop precedes.
-    assert!(!workdir.join(".ranikust-root").exists());
+    if !running_as_root() {
+        let out = ranikust(tmp.path(), &args, &[]);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        assert!(stderr(&out).contains("needs root"), "{}", stderr(&out));
+        // The marker comes right before the first write, which this
+        // refusal precedes.
+        assert!(!workdir.join(".ranikust-root").exists());
+    }
 
     let out = ranikust(
         tmp.path(),
@@ -361,12 +371,12 @@ fn a_relative_metrics_file_is_relative_to_the_working_directory() {
 }
 
 /// kaniko's logging flags (ADR-0036), on a run that stops after validation
-/// (`--mode=kaniko` is Phase 2): `--verbosity` shows or hides lines,
+/// (overlay mode without `--workdir`): `--verbosity` shows or hides lines,
 /// `--log-format=json` writes JSON, and no timestamp by default.
 #[test]
 fn logging_flags_change_what_is_written() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let base = ["--no-push", "--mode=kaniko", "--force", "--cleanup"];
+    let base = ["--no-push", "--mode=overlay", "--cleanup"];
     let run = |extra: &[&str]| {
         let mut args: Vec<&str> = base.iter().chain(extra).copied().collect();
         if !extra.iter().any(|a| a.starts_with("--log-format")) {
@@ -375,7 +385,10 @@ fn logging_flags_change_what_is_written() {
         let out = ranikust(tmp.path(), &args, &[]);
         assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
         let err = stderr(&out);
-        assert!(err.contains("Phase 2"), "stopped at --mode=kaniko: {err}");
+        assert!(
+            err.contains("--workdir"),
+            "stopped for want of --workdir: {err}"
+        );
         err
     };
     // `text` is logrus's plain formatter: time, level, msg, never colored.

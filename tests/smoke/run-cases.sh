@@ -24,14 +24,31 @@ mkdir -p "$WORK" && chmod 700 "$WORK"
 printf %s "$SMOKE_CASE_SECRET" >"$SECRET"
 
 # The workdir is a volume: overlay refuses an upper directory on the
-# container's own overlay root.
+# container's own overlay root. RANIKUST_CASE_MODE=kaniko builds in kaniko
+# mode instead, in a default (unprivileged) container where root may not
+# mount, so RUN runs `Direct` in a chroot (ADR-0043), on a workdir and a
+# state directory of its own.
+PODMAN_ARGS=(--privileged)
+MODE_ARGS=()
+WORKDIR_IN=/w
+if [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; then
+  PODMAN_ARGS=()
+  WORK="$CASES_OUT/.kaniko-work"
+  STATE="$CASES_OUT/.kaniko-state"
+  mkdir -p "$WORK" "$STATE" && chmod 700 "$WORK" "$STATE"
+  # The workdir sits in a 0700 directory, which ADR-0047 requires.
+  PODMAN_ARGS=(--tmpfs /k:mode=0700 -v "$STATE:/s")
+  MODE_ARGS=(--mode=kaniko --state-dir /s)
+  WORKDIR_IN=/k/w
+fi
+
 rnk_run() {
   local ctx="$1" o="$2"
   shift 2
-  podman run --rm --privileged -v "$RNK:/ranikust:ro" -v "$ctx:/ctx:ro" -v "$WORK:/w" \
-    -v "$o:/out" -v "$SECRET:/secret:ro" "$BASE" \
-    /ranikust --context /ctx --workdir /w --no-push --oci-layout-path /out/oci \
-    --tar-path /out/image.tar --secret id=tok,src=/secret "$@"
+  podman run --rm "${PODMAN_ARGS[@]}" -v "$RNK:/ranikust:ro" -v "$ctx:/ctx:ro" \
+    -v "$WORK:$WORKDIR_IN" -v "$o:/out" -v "$SECRET:/secret:ro" "$BASE" \
+    /ranikust --context /ctx --workdir "$WORKDIR_IN" "${MODE_ARGS[@]}" --no-push \
+    --oci-layout-path /out/oci --tar-path /out/image.tar --secret id=tok,src=/secret "$@"
 }
 
 # Not `smoke_cases || rc=$?`: that would turn errexit off inside every case.

@@ -31,6 +31,12 @@ pub struct MountInfo {
     pub mount_id: u64,
     /// Field 2, the parent's mount id.
     pub parent_id: u64,
+    /// Field 3, the filesystem's device, `major:minor` as written.
+    pub device: String,
+    /// Field 4, the directory of the filesystem mounted here: `/` for a
+    /// whole filesystem, a subdirectory for a bind mount; unescaped, and not
+    /// a path for some pseudo filesystems (`mnt:[…]` for nsfs).
+    pub fs_root: PathBuf,
     /// Field 5, the mount point relative to the process's root, unescaped.
     pub mount_point: PathBuf,
     /// The filesystem type, after the `-` separator.
@@ -65,19 +71,22 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
     let mut fields = line.split(|b| *b == b' ');
     let mount_id = number(fields.next()?)?;
     let parent_id = number(fields.next()?)?;
-    let _dev = fields.next()?;
-    let _root = fields.next()?;
+    let device = String::from_utf8_lossy(fields.next()?).into_owned();
+    let fs_root = unescape(fields.next()?)?;
     let mount_point = unescape(fields.next()?)?;
     let _options = fields.next()?;
     // Optional fields, then the separator.
     fields.by_ref().find(|f| *f == b"-")?;
     let fs_type = String::from_utf8_lossy(&unescape(fields.next()?)?).into_owned();
+    // `fs_root` is not always a path (`mnt:[4026533352]` for nsfs).
     if !mount_point.starts_with(b"/") {
         return None;
     }
     Some(MountInfo {
         mount_id,
         parent_id,
+        device,
+        fs_root: PathBuf::from(OsString::from_vec(fs_root)),
         mount_point: PathBuf::from(OsString::from_vec(mount_point)),
         fs_type,
     })
@@ -130,10 +139,11 @@ pub fn read_mountinfo() -> Result<Vec<MountInfo>> {
 ///
 /// `root` and `state_dir` are compared with mount points and with the
 /// physical paths `rnk_rootfs::extract_live` reaches, byte for byte: they
-/// must be the kernel's own names for the directories actually used. The
-/// caller derives them from the open fds (`readlink` of `/proc/self/fd/N`
-/// of the workdir's and the state directory's fds), never from the flags as
-/// typed; a path that is not normalized is refused.
+/// must be the kernel's own names for the directories actually used: the
+/// caller passes canonical paths it has opened without following a
+/// symlink (`RESOLVE_NO_SYMLINKS`), as `ranikust` does with the claimed
+/// workdir and the state directory, never the flags as typed; a path that
+/// is not normalized is refused.
 #[derive(Clone, Copy, Debug)]
 pub struct IgnoreSpec<'a> {
     /// The build root on the host, physical: `/` in a container, the

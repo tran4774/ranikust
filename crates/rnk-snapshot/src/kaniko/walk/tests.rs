@@ -475,6 +475,17 @@ fn a_fifo_swapped_in_for_a_regular_file_is_never_opened() {
 }
 
 #[test]
+fn a_file_gone_since_it_was_listed_fails_the_walk() {
+    let f = Fixture::new();
+    f.write("x", b"data");
+    let (dir, st) = stat_in(&f.host, "x");
+    fs::remove_file(f.p("x")).unwrap();
+    let proc = proc_fd_dir().unwrap();
+    let r = open_regular(proc.as_fd(), dir.as_fd(), b"x", &st, Path::new("x"));
+    assert!(is_changed(r), "gone is a change of the root, as in kaniko");
+}
+
+#[test]
 fn a_regular_file_swapped_for_another_is_refused() {
     let f = Fixture::new();
     f.write("x", b"data");
@@ -486,9 +497,7 @@ fn a_regular_file_swapped_for_another_is_refused() {
     assert!(is_changed(r));
     // Unchanged, it opens and reads.
     let (dir, st) = stat_in(&f.host, "x");
-    let fd = open_regular(proc.as_fd(), dir.as_fd(), b"x", &st, Path::new("x"))
-        .unwrap()
-        .unwrap();
+    let fd = open_regular(proc.as_fd(), dir.as_fd(), b"x", &st, Path::new("x")).unwrap();
     assert_eq!(hash_content(fd.as_fd(), 5, Path::new("x")).unwrap().1, 5);
 }
 

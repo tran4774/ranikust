@@ -176,6 +176,98 @@ pub(crate) fn set_up(
     })
 }
 
+/// What kaniko mode's set-up hands to the build.
+pub(crate) struct KanikoSetup {
+    /// The store in the state directory, open for this build.
+    pub(crate) store: Arc<Store>,
+    /// The spawner thread every `RUN` is cloned from.
+    pub(crate) sandbox: Sandbox,
+    /// How `RUN` is isolated: the full sandbox on a host workdir where
+    /// mounting works, else `Direct` (ADR-0043).
+    pub(crate) isolation: rnk_sandbox::Isolation,
+}
+
+/// Guidance where kaniko mode runs without root.
+const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switching users), as \
+     kaniko does: run ranikust as root in the container or VM that builds";
+
+/// Sets kaniko mode up, once the root is claimed (a host workdir, locked
+/// and marked, or `/` in a container): the state directory's check, the
+/// store, and the spawner. `can_mount` is whether the build's mount
+/// namespace could be entered: then, on a host workdir, `RUN` gets the
+/// full sandbox, probed here; anywhere else it runs `Direct`, which on a
+/// workdir enters it with `chroot` (ADR-0043). `nofile` is the
+/// `RLIMIT_NOFILE` ranikust started with, given back to every `RUN`.
+///
+/// # Errors
+///
+/// A [`Refusal`]: not root, an unsafe state directory, the store, a probe.
+pub(crate) fn set_up_kaniko(
+    state_dir: &Path,
+    claimed: Option<&crate::workdir::Workdir>,
+    can_mount: bool,
+    nofile: rnk_sandbox::NofileLimit,
+) -> Result<KanikoSetup, Refusal> {
+    let euid = rustix::process::geteuid().as_raw();
+    let workdir = claimed.map(crate::workdir::Workdir::path);
+    if euid != 0 {
+        return Err(Refusal {
+            reason: format!("kaniko mode cannot run as uid {euid}"),
+            guidance: KANIKO_NEEDS_ROOT,
+        });
+    }
+    prepare_state_dir(state_dir, workdir, euid)?;
+    let store =
+        Store::open(&BuildPaths::new(workdir.unwrap_or(state_dir), state_dir)).map_err(|e| {
+            Refusal {
+                reason: format!("cannot open the store in {}: {e}", state_dir.display()),
+                guidance: "",
+            }
+        })?;
+    let sandbox_dir = state_dir.join("sandbox");
+    let caps = match workdir {
+        Some(_) if can_mount => {
+            let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
+            let _entered = span.enter();
+            let caps = rnk_sandbox::probe(&sandbox_dir).map_err(|e| Refusal {
+                reason: format!("the RUN sandbox cannot run here: {e}"),
+                guidance: "",
+            })?;
+            span.record("steps", 1_u64);
+            Some(caps)
+        }
+        Some(_) | None => None,
+    };
+    let isolation = if caps.is_some() {
+        rnk_sandbox::Isolation::Full
+    } else {
+        rnk_sandbox::Isolation::Direct
+    };
+    let started = match claimed {
+        Some(w) => Sandbox::start_with_root(caps, &sandbox_dir, w.path(), w.root()),
+        None => Sandbox::start(caps, &sandbox_dir),
+    };
+    let mut sandbox = started.map_err(|e| Refusal {
+        reason: e.to_string(),
+        guidance: "",
+    })?;
+    sandbox.set_nofile_limit(nofile);
+    tracing::info!(
+        "ranikust: kaniko mode on {}, RUN {}",
+        workdir.map_or_else(|| "/".to_owned(), |w| w.display().to_string()),
+        if caps.is_some() {
+            "in the full sandbox"
+        } else {
+            "directly, as kaniko"
+        }
+    );
+    Ok(KanikoSetup {
+        store: Arc::new(store),
+        sandbox,
+        isolation,
+    })
+}
+
 /// `rnk-snapshot`'s overlay probe (steps 1 and 4), in a directory of this
 /// build: on the state directory's filesystem, where the upper directories
 /// will be, and removed with the build.

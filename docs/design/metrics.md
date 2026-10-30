@@ -202,7 +202,8 @@ attempts.
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_snapshot.prepare` | `layers` | A stage root: overlay mount over the store, or extraction plus baseline (extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`). |
+| `rnk_snapshot.prepare` | `layers` | A stage root: overlay mount over the store, or, in kaniko mode, emptying the root and extracting the base (extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`); the baseline walk is its own `rnk_snapshot.walk`. |
+| `rnk_snapshot.empty` | | Kaniko mode: the shared root emptied (before a base, on release, at the end of the build), `rnk_rootfs.delete` inside. |
 | `rnk_snapshot.mount` | `lowers` | One instruction's overlay mount; with `umount`, the cost overlay adds per instruction (`exp-06`; mount reuse, `Q-245`). |
 | `rnk_snapshot.umount` | | One instruction's unmount. |
 | `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs` (always 0 since ADR-0034), `bytes`, `unchanged`, `bytes_compared` | Record: one instruction's diff; kaniko's `snapshot.command`. `exp-06`: 0.51–0.58 s overlay against 2.3–3.7 s walk for five steps. |

@@ -86,9 +86,25 @@ and goes to kaniko mode, else continues as overlay mode. Kaniko mode:
 with `--workdir`, `workdir::claim` (the checks and lock of `ADR-0038`,
 below); without, the root `/`, refused outside a container
 (`container::detect`) unless `--force`, with kaniko's warning; then its
-state directory is named (`/ranikust/state` on `/`, `<cwd>/.ranikust`
-with a workdir), `raise_nofile_limit`, and a stop with exit code 2 before
-anything is written. Overlay mode: the state directory, `--state-dir` or
+root is required, `RLIMIT_NOFILE` raised (`NofileLimit::current()` read
+before, for `RUN`), `--jobs` ignored with a warning, `--single-snapshot`
+refused, the workdir's chain checked private (`workdir::check_private`,
+ADR-0047: the real parents walked from the workdir's descriptor with
+`..`; a parent without group/other search, and it and everything below it
+root's and not writable by others; a warning without `nosuid,nodev`), the workdir marked (`Workdir::mark`) before anything is
+written,
+the state directory (`/ranikust/state` on `/`, `<cwd>/.ranikust` with a
+workdir) set up by `setup::set_up_kaniko` (store; on a host workdir where
+the namespace could be entered, the sandbox probe and `RUN` in the full
+sandbox, else `Isolation::Direct`; `Sandbox::start_with_root` on a
+workdir), the ignore list built (`kaniko_snapshotter`: mountinfo, the
+flags, the state directory, physical paths; a state directory that is a
+directory of the root reached through another mount refused, by
+mountinfo's device and `fs_root` (`same_mount_only_inside`); the context, outputs and file secrets refused in
+the root unless ignored, `paths_outside_the_root`), then `build::run` with
+`Snapshots::Kaniko`: kaniko's squashed units one at a time on the shared
+root (`kaniko_units`, refusing a plan whose later unit reads an emptied
+one), the root emptied after each unit and at the end. Overlay mode: the state directory, `--state-dir` or
 `<workdir>/.ranikust`, else a usage error [open: Q-110] →
 `setup::enter_namespace` (`rnk_sandbox::enter_build_namespace`: refuses in
 a plain `chroot`, then `unshare(CLONE_NEWNS)`, `/` rslave) →
@@ -101,8 +117,7 @@ owned by the effective uid, or group/world-writable) → `rnk_store::Store::open
 replay, spawner thread) → the store is closed → stop with exit code 2,
 "set up for …, but building is not implemented yet". Still to
 come [design]: `rnk-store` open and clean-up before the spawner (task 7) (Q-111) →
-kaniko mode: the store in its state directory and the "can mount" probe
-(Phase 2 tasks 6, 9) → tokio runtime → `rnk-sched`.
+per-stage directories (Phase 2 task 9).
 
 Kaniko-mode workdir checks (`src/workdir.rs`, `ADR-0038`), before anything
 is written: canonicalize; refuse `/` and any of the 30 `SYSTEM_DIRS` or
@@ -150,6 +165,15 @@ error, a refused kaniko flag, an invalid combination, and for now every
 
 ## Tests
 
+- Kaniko-mode builds (Phase 2 task 6), measured 2026-10-31: T2
+  `RANIKUST_QUICK_MODE=kaniko just test-vm quick` (VM root, full sandbox
+  on the workdir) builds and runs `minimal`, `copy`, `metadata` and `run`,
+  and refuses `multistage`, `reproducible` and `scratch` (`COPY --from`);
+  T1 `RANIKUST_CASE_MODE=kaniko just smoke-case` (default rootless
+  podman, `RUN` `Direct` in a chroot) builds `minimal`, `copy` and
+  `metadata`, `run` stopping at its `#!` heredoc. T0: `workdir/tests.rs`
+  each ADR-0047 refusal, `main.rs` operator paths in the root and the
+  state directory bound from inside it, `build.rs` `kaniko_units`.
 - T0 built, `src/cli/tests.rs`: kaniko spellings per accepted flag
   (short forms, `=` and separate values, pflag booleans, `--target` lists),
   ranikust's flags, refused flags with their reasons (all reported at once,

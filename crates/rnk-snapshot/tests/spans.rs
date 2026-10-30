@@ -42,7 +42,7 @@ fn prepare_extract_and_release_are_recorded() {
     capture.run(|| {
         let o = overlay(dir.path());
         let (tar, id) = empty_layer();
-        let base = [o.base_layer(&id, tar.as_slice(), &[]).unwrap()];
+        let base = [o.base_layer_from(&id, tar.as_slice(), &[]).unwrap()];
         let stage = o.prepare(Base::Image(&base)).unwrap();
         stage.release().unwrap();
     });

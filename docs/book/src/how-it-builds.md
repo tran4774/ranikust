@@ -55,6 +55,10 @@ privileged container, or as a regular user who may create user namespaces.
 Used when ranikust runs as root but may not mount, as in a Docker container
 with the default security profile or in most Kubernetes pods.
 
+> Built so far: sequential builds on `/` or a `--workdir`. Not yet: a
+> stage that reads an earlier stage with `COPY --from`, `RUN --mount`,
+> `--parallel-stages` and per-stage directories.
+
 - It works the way kaniko does. The build root is the container's own `/`:
   base image layers are unpacked there, `RUN` commands run there, and changes
   are found by walking and hashing the filesystem after each instruction.
@@ -79,7 +83,13 @@ with the default security profile or in most Kubernetes pods.
   so it refuses a directory the host needs: `/`, a system directory such as
   `/usr` or `/home`, or an ancestor of one. A non-empty work directory must
   hold a `.ranikust-root` file, which says its contents may be deleted; an
-  empty one gets it when the build starts writing. Only one build at a time may use a work directory.
+  empty one gets it when the build starts writing. The work directory must be
+  out of other users' reach, since the image's setuid programs land in
+  it: inside a directory that root owns with mode `0700`, everything from
+  there down owned and writable by root only. For example, `sudo install
+  -d -m 0700 /home/<you>/rnk`, then `--workdir=/home/<you>/rnk/w`
+  ([ADR-0047](https://github.com/tran4774/ranikust/blob/main/docs/adr/0047-kaniko-workdir-chain-is-private.md)).
+  The context, the outputs and secret files must not be inside it. Only one build at a time may use a work directory.
 
 ## When no mode works
 

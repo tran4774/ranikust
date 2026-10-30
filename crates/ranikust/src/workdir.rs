@@ -75,10 +75,6 @@ pub(crate) struct Workdir {
     /// The readable fd holding `flock(LOCK_EX)`.
     _lock: OwnedFd,
     /// The workdir was empty: [`Workdir::mark`] gives it the marker.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by `mark`, used from Phase 2 task 6")
-    )]
     unmarked: bool,
 }
 
@@ -92,10 +88,6 @@ impl Workdir {
     }
 
     /// The workdir as a root.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the kaniko-mode root, used from Phase 2 task 6")
-    )]
     pub(crate) fn root(&self) -> &RootPath {
         &self.root
     }
@@ -109,13 +101,6 @@ impl Workdir {
     ///
     /// [`Refused`] when the marker cannot be created or the workdir is no
     /// longer empty.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called before the first write, from Phase 2 task 6"
-        )
-    )]
     pub(crate) fn mark(&mut self) -> Result<(), Refused> {
         if !self.unmarked {
             return Ok(());
@@ -280,6 +265,127 @@ fn dir_id(dir: &Path) -> Option<Id> {
     let md = std::fs::metadata(dir).ok()?;
     let dev = md.dev();
     Some((rustix::fs::major(dev), rustix::fs::minor(dev), md.ino()))
+}
+
+/// Whether a build as root may fill the workdir: an image can bring setuid
+/// and setgid files, which must stay out of other users' reach
+/// (ADR-0047). Run as root on the claimed workdir before anything is
+/// written; refuses unless [`check_chain`] passes on the workdir's real
+/// parents, walked from its locked descriptor with `..` (each opened
+/// `O_PATH`), never by path. Warns when the workdir's filesystem honours
+/// setuid bits or device nodes.
+///
+/// # Errors
+///
+/// [`Refused`] naming the directory and the rule it breaks.
+pub(crate) fn check_private(w: &Workdir) -> Result<(), Refused> {
+    use rustix::fs::{Mode, OFlags};
+    let stat_err = |e: rustix::io::Errno| {
+        Refused(format!(
+            "cannot walk the parents of the workdir {}: {e}",
+            w.path.display()
+        ))
+    };
+    // Names for messages only: the workdir's path and its ancestors, in
+    // the order the walk meets them.
+    let mut names = w.path.ancestors();
+    let mut chain = Vec::new();
+    let mut at: OwnedFd = rustix::fs::openat(
+        &w._lock,
+        ".",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(stat_err)?;
+    loop {
+        let st = rustix::fs::fstat(&at).map_err(stat_err)?;
+        chain.push(ChainDir {
+            path: names
+                .next()
+                .map_or_else(|| PathBuf::from("?"), Path::to_owned),
+            uid: st.st_uid,
+            mode: st.st_mode & 0o7777,
+        });
+        let parent = rustix::fs::openat(
+            &at,
+            "..",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(stat_err)?;
+        let up = rustix::fs::fstat(&parent).map_err(stat_err)?;
+        // `/`'s `..` is itself.
+        if (up.st_dev, up.st_ino) == (st.st_dev, st.st_ino) {
+            break;
+        }
+        at = parent;
+    }
+    check_chain(&chain)?;
+    match rustix::fs::fstatvfs(&w._lock) {
+        Ok(vfs) => {
+            use rustix::fs::StatVfsMountFlags as F;
+            if !vfs.f_flag.contains(F::NOSUID | F::NODEV) {
+                tracing::warn!(
+                    "the workdir {} is on a filesystem mounted without nosuid,nodev: setuid \
+                     files the image brings work there while the build runs",
+                    w.path.display()
+                );
+            }
+        }
+        Err(e) => tracing::warn!("cannot statvfs the workdir {}: {e}", w.path.display()),
+    }
+    Ok(())
+}
+
+/// The owner and mode of one directory of a workdir's chain.
+#[derive(Clone, Debug)]
+pub(crate) struct ChainDir {
+    pub(crate) path: PathBuf,
+    pub(crate) uid: u32,
+    /// The raw `st_mode` permission bits, sticky included.
+    pub(crate) mode: u32,
+}
+
+/// What a refused workdir chain should become.
+const PRIVATE_CHAIN: &str = "put the workdir in a directory that root owns and only root can \
+     enter, e.g. `sudo install -d -m 0700 /home/<user>/rnk` and --workdir=/home/<user>/rnk/w";
+
+/// ADR-0047's rule on `chain`, the workdir first, then each real parent up
+/// to `/`: some ancestor lets neither group nor others search it (the
+/// private one), and it and every directory between it and the workdir,
+/// the workdir included, are owned by root and not writable by group or
+/// others. Directories above the private one may belong to anyone: no one
+/// but root gets past it.
+///
+/// # Errors
+///
+/// [`Refused`] naming the first directory that breaks the rule.
+pub(crate) fn check_chain(chain: &[ChainDir]) -> Result<(), Refused> {
+    let refuse = |d: &ChainDir, why: &str| {
+        Refused(format!(
+            "the workdir is not out of other users' reach: {} {why}; kaniko mode fills the \
+             workdir with the image's files, setuid ones included (ADR-0047); {PRIVATE_CHAIN}",
+            d.path.display()
+        ))
+    };
+    for (i, d) in chain.iter().enumerate() {
+        if d.uid != 0 {
+            return Err(refuse(d, &format!("is owned by uid {}, not root", d.uid)));
+        }
+        if d.mode & 0o022 != 0 {
+            return Err(refuse(d, "is writable by group or others"));
+        }
+        if i > 0 && d.mode & 0o011 == 0 {
+            return Ok(());
+        }
+    }
+    let first = chain
+        .first()
+        .map_or_else(String::new, |d| d.path.display().to_string());
+    Err(Refused(format!(
+        "the workdir is not out of other users' reach: no directory above {first} keeps group \
+         and others out (ADR-0047); {PRIVATE_CHAIN}"
+    )))
 }
 
 /// Raises `RLIMIT_NOFILE`'s soft limit to its hard limit: the kaniko-mode
