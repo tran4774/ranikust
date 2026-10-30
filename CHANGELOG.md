@@ -19,7 +19,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   aarch64 check, cargo-deny, docs), architecture decision records, the
   research that preceded the code, a user guide skeleton, and contributor
   and security policies.
-- Opt-in build metrics: with `RANIKUST_METRICS_FILE=<path>` set, ranikust
+- Opt-in build metrics: with `--metrics-file=<path>`, ranikust
   writes one JSON report when it exits, also after an error or a panic:
   time, counts and bytes per build phase, per stage, per instruction and
   per snapshot, bytes per registry host, CPU and peak memory of ranikust and
@@ -135,3 +135,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   These land in the releases that follow; the decisions are recorded now.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main
+### Removed
+
+- `RANIKUST_METRICS_FILE`: the metrics report is asked for with
+  `--metrics-file` only, which now works with every subcommand; a warning
+  names the flag when the variable is set.
+

@@ -235,7 +235,7 @@ tarball).
 ### `rnk-metrics`
 
 The process's `tracing` subscriber: logs to stderr and, opt-in through
-`RANIKUST_METRICS_FILE`, a layer that aggregates every crate's spans into
+`--metrics-file`, a layer that aggregates every crate's spans into
 one JSON report at exit (totals per span name, records per stage,
 instruction and snapshot, bytes per registry host, `getrusage` and cgroup
 v2 counters), shaped like kaniko's `metrics.json`
@@ -379,7 +379,7 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
   `<crate>.<operation>`, one per layer, blob, instruction or stage, never
   per file, with numeric fields that carry their unit; the list is
   [metrics](docs/design/metrics.md#spans-per-crate).
-- Metrics are opt-in (`RANIKUST_METRICS_FILE`); off, no metrics layer is
+- Metrics are opt-in (`--metrics-file`, ADR-0037); off, no metrics layer is
   installed. Logs and metrics are separate layers, so a log level never
   hides a metric.
 - Metrics never reach an image: the report is written at exit only, and no

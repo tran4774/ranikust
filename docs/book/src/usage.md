@@ -81,7 +81,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--jobs=N` | Stages built at once. Default: the number of CPUs available. |
 | `--network=host\|none` | The network `RUN` gets. Default `host`. |
 | `--platform=linux/amd64` | The image platform; `--custom-platform` is the same flag. Only `linux/amd64` for now. |
-| `--metrics-file=PATH` | Write the build metrics report there; takes the place of `RANIKUST_METRICS_FILE`. |
+| `--metrics-file=PATH` | Write the metrics report there when ranikust exits, also after an error; works with `version` too. The only way to ask for it: `RANIKUST_METRICS_FILE` is not read (a warning says so). |
 | `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. Kept out of every layer, the config and the logs; at most 500 KiB. kaniko's and buildctl's syntax. Repeat for several. |
 | `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
 | `--allow=network.none-userns` | Where ranikust lacks `CAP_NET_ADMIN` (a container with only `SYS_ADMIN` added), lets `RUN --network=none` get loopback through a user namespace; without it such a `RUN` is refused. A root `RUN` there holds `CAP_NET_ADMIN` over its own network namespace, and a seccomp filter closes: joining or creating user namespaces, `io_uring`, PF_KEY, netlink other than route, sock_diag, audit and uevent (nf_tables, xfrm, generic netlink), the iptables, ip6tables, arptables, ebtables, IPVS, IPsec-policy and multicast-routing socket options, and `TCP_REPAIR`. Everything else `CAP_NET_ADMIN` allows in that namespace stays open, rtnetlink included: `ip link add type <kind>` can load a kernel module on the host ([ADR-0033](https://github.com/tran4774/ranikust/blob/main/docs/adr/0033-network-none-loopback-through-a-user-namespace.md)). ranikust's own. |
@@ -139,7 +139,7 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
   ignored with a warning naming `--state-dir`.
 - Any other `KANIKO_*` or `FF_KANIKO_*` variable that is set is named in one
   warning at start-up. `KANIKO_METRICS_FILE` is one of them: use
-  `--metrics-file` or `RANIKUST_METRICS_FILE`.
+  `--metrics-file`.
 
 kaniko's feature flags (`FF_KANIKO_*`) are not read: ranikust has one
 behaviour, which for most of them is what the flag turns on.

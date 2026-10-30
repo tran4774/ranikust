@@ -133,7 +133,7 @@ Environment variables:
 - Every other set `KANIKO_*` or `FF_KANIKO_*` variable is named in one
   start-up warning, as kaniko warns about unknown feature flags. In
   particular there is **no `KANIKO_METRICS_FILE` alias**: the report path is
-  `--metrics-file` or `RANIKUST_METRICS_FILE` (`ADR-0025`).
+  `--metrics-file` (`ADR-0025`, `ADR-0037`).
 
 ### Consequences
 

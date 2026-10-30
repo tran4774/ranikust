@@ -71,7 +71,7 @@ Set-up order, built so far: parse the flags (no I/O; refused kaniko flags
 reported first, so `--help` works on any kernel) → the Linux 5.8 check
 (`rnk_rootfs::probe_support`, ADR-0028; skipped by `version`) →
 `rnk_metrics::init` (starts no thread), `--metrics-file` over
-`RANIKUST_METRICS_FILE` → `BuildConfig::from_args` → `--mode=kaniko`
+`--metrics-file` (ADR-0037) → `BuildConfig::from_args` → `--mode=kaniko`
 stops (Phase 2) → the overlay-mode state directory, `--state-dir` or
 `<workdir>/.ranikust`, else a usage error [open: Q-110] → `setup::set_up`:
 `rnk_sandbox::enter_build_namespace` (refuses in a plain `chroot`, then

@@ -23,17 +23,14 @@ fn fake_host(dir: &Path) -> HostPaths {
 
 #[test]
 fn config_reads_the_environment_values() {
-    assert!(!Config::from_vars(None, None).is_enabled());
-    assert!(!Config::from_vars(Some("".into()), Some("0".into())).is_enabled());
-    assert!(!Config::from_vars(None, Some("".into())).is_enabled());
+    assert!(!Config::from_vars(None).is_enabled());
+    assert!(!Config::from_vars(Some("0".into())).is_enabled());
+    assert!(!Config::from_vars(Some("".into())).is_enabled());
 
-    let summary = Config::from_vars(None, Some("1".into()));
+    // The summary only: the report path never comes from the environment
+    // (ADR-0037).
+    let summary = Config::from_vars(Some("1".into()));
     assert_eq!((summary.file, summary.summary), (None, true));
-
-    let relative = Config::from_vars(Some("out/m.json".into()), None);
-    let file = relative.file.expect("file");
-    assert!(file.is_absolute());
-    assert!(file.ends_with("out/m.json"));
 }
 
 #[test]

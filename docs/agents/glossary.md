@@ -36,7 +36,7 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | marker file | `.ranikust-root`; a non-empty workdir without it is refused | `design/kaniko-mode.md#host-safety-checks` |
 | metacopy | Overlay option to copy up only metadata; ranikust mounts with `metacopy=off` | `ADR-0016` |
 | metric span | `tracing` span named `<crate>.<operation>` at `debug` level, one per layer, blob, instruction or stage (never per file), with unit-named numeric fields; what `rnk-metrics` aggregates | `design/metrics.md#emitting-spans` |
-| metrics report | Opt-in JSON file (`RANIKUST_METRICS_FILE`, schema `ranikust.metrics/v1`) written at exit: phases, records, network, resources; shaped like kaniko's `metrics.json` | `ADR-0025`, `design/metrics.md#the-report` |
+| metrics report | Opt-in JSON file (`--metrics-file`, schema `ranikust.metrics/v1`) written at exit: phases, records, network, resources; shaped like kaniko's `metrics.json` | `ADR-0025`, `design/metrics.md#the-report` |
 | `mnt_id` | Mount id from `statx`; deletion stops where it changes (`st_dev` misses binds of the same filesystem) | `exp-09` |
 | `--mode` | Selects the snapshot mode: `auto` (probe, default), `overlay` or `kaniko`; a forced mode still runs its checks | `ADR-0023` |
 | `MS_MOVE` | Mount move; `mount(root, "/", MS_MOVE)` + `chroot(".")` replaces `pivot_root` where seccomp blocks it | `design/sandbox.md#per-run-sequence` |

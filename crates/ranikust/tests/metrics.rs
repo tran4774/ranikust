@@ -12,11 +12,20 @@ use serde_json::Value;
 
 const SIGABRT: i32 = 6;
 
-/// Runs `ranikust version` in `cwd` with a clean metrics environment plus
-/// `env`: the shortest command that sets up metrics and succeeds.
-fn ranikust(cwd: &Path, env: &[(&str, &OsStr)], fault: Option<&str>) -> Output {
+/// Runs `ranikust version` in `cwd`, with `--metrics-file=<report>` when
+/// given, a clean metrics environment plus `env`: the shortest command that
+/// sets up metrics and succeeds.
+fn ranikust(
+    cwd: &Path,
+    report: Option<&Path>,
+    env: &[(&str, &OsStr)],
+    fault: Option<&str>,
+) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ranikust"));
     cmd.arg("version").current_dir(cwd);
+    if let Some(report) = report {
+        cmd.arg(format!("--metrics-file={}", report.display()));
+    }
     cmd.env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")
@@ -38,11 +47,7 @@ fn read(path: &Path) -> Value {
 fn success_writes_the_report() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("out/metrics.json");
-    let out = ranikust(
-        tmp.path(),
-        &[("RANIKUST_METRICS_FILE", path.as_os_str())],
-        None,
-    );
+    let out = ranikust(tmp.path(), Some(&path), &[], None);
     assert_eq!(out.status.code(), Some(0));
 
     let report = read(&path);
@@ -68,11 +73,7 @@ fn success_writes_the_report() {
 fn error_keeps_its_exit_code_and_is_reported() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("metrics.json");
-    let out = ranikust(
-        tmp.path(),
-        &[("RANIKUST_METRICS_FILE", path.as_os_str())],
-        Some("error"),
-    );
+    let out = ranikust(tmp.path(), Some(&path), &[], Some("error"));
     assert_eq!(out.status.code(), Some(1));
 
     let report = read(&path);
@@ -90,11 +91,7 @@ fn error_keeps_its_exit_code_and_is_reported() {
 fn panic_hook_writes_the_report_before_the_abort() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("metrics.json");
-    let out = ranikust(
-        tmp.path(),
-        &[("RANIKUST_METRICS_FILE", path.as_os_str())],
-        Some("panic"),
-    );
+    let out = ranikust(tmp.path(), Some(&path), &[], Some("panic"));
     // Killed by SIGABRT, as `panic = "abort"` does: nothing after the hook ran.
     assert_eq!(out.status.signal(), Some(SIGABRT), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -117,14 +114,7 @@ fn unwritable_report_only_warns() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let blocker = tmp.path().join("file");
     fs::write(&blocker, b"").expect("write");
-    let out = ranikust(
-        tmp.path(),
-        &[(
-            "RANIKUST_METRICS_FILE",
-            blocker.join("metrics.json").as_os_str(),
-        )],
-        None,
-    );
+    let out = ranikust(tmp.path(), Some(&blocker.join("metrics.json")), &[], None);
     assert_eq!(out.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("warning: metrics: writing"), "{stderr}");
@@ -135,6 +125,7 @@ fn summary_goes_to_stderr() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let out = ranikust(
         tmp.path(),
+        None,
         &[("RANIKUST_METRICS_SUMMARY", OsStr::new("1"))],
         None,
     );
@@ -151,13 +142,30 @@ fn summary_goes_to_stderr() {
 #[test]
 fn metrics_off_writes_nothing() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let out = ranikust(
-        tmp.path(),
-        &[("RANIKUST_METRICS_FILE", OsStr::new(""))],
-        Some("error"),
-    );
+    let out = ranikust(tmp.path(), None, &[], Some("error"));
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("metrics"), "{stderr}");
     assert_eq!(fs::read_dir(tmp.path()).expect("read_dir").count(), 0);
+}
+
+/// ADR-0037: the variable no longer names the report; it is named in a
+/// warning instead, and no file is written.
+#[test]
+fn the_old_variable_writes_nothing_and_warns() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("metrics.json");
+    let out = ranikust(
+        tmp.path(),
+        None,
+        &[("RANIKUST_METRICS_FILE", path.as_os_str())],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("RANIKUST_METRICS_FILE is ignored") && stderr.contains("--metrics-file"),
+        "{stderr}"
+    );
+    assert!(!path.exists());
 }

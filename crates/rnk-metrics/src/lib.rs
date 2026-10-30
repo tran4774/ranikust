@@ -4,8 +4,8 @@
 //! `<crate>.<operation>` (`rnk_layer.encode`), with numeric fields that carry
 //! their unit (`bytes_in`, `files`, `user_ns`), recorded once per span. This
 //! crate installs the subscriber that turns them into logs and, when
-//! `RANIKUST_METRICS_FILE` is set, into one JSON report written when the
-//! process ends: totals per span name, one record per stage, instruction and
+//! [`Config::file`] is set (`ranikust --metrics-file`, ADR-0037), into one
+//! JSON report written when the process ends: totals per span name, one record per stage, instruction and
 //! snapshot, bytes per registry host, `getrusage` and cgroup v2 counters. The
 //! report follows kaniko's `KANIKO_METRICS_FILE` report where the meaning
 //! matches. Which span each crate emits is in `docs/design/metrics.md`; the
@@ -27,8 +27,8 @@
 //!   with [`Capture`].
 //! - Never influences a build: nothing here reaches a layer, a config, a
 //!   cache key or a digest. The only file it writes is the report, at exit.
-//! - Off means off: without `RANIKUST_METRICS_FILE` or
-//!   `RANIKUST_METRICS_SUMMARY`, neither the metrics layer nor the panic hook
+//! - Off means off: without a report file or `RANIKUST_METRICS_SUMMARY`,
+//!   neither the metrics layer nor the panic hook
 //!   is installed, and spans cost tracing's disabled-callsite check.
 //! - Aggregates only: no state per file or tar entry, no timer finer than a
 //!   span, no thread of its own (the process must stay single-threaded until
@@ -61,11 +61,8 @@ use crate::layer::{MetricsLayer, Shared, is_metric_span};
 pub use crate::report::{Outcome, SCHEMA};
 use crate::resources::HostPaths;
 
-/// Path of the JSON report; unset or empty, metrics are off.
-pub const FILE_ENV: &str = "RANIKUST_METRICS_FILE";
-
 /// Set to anything but empty or `0`, prints a short summary to stderr at
-/// exit (and turns metrics on even without [`FILE_ENV`]).
+/// exit (and turns metrics on even without a report file).
 pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY";
 
 /// What to collect and where to write it.
@@ -117,22 +114,16 @@ pub enum LogFormat {
 }
 
 impl Config {
-    /// Reads [`FILE_ENV`] and [`SUMMARY_ENV`]. A relative report path is made
-    /// absolute now, against the current directory at start-up.
+    /// Reads [`SUMMARY_ENV`]. The report path has no variable: the caller
+    /// sets [`Config::file`] from its flag (ADR-0037).
     pub fn from_env() -> Self {
-        Self::from_vars(std::env::var_os(FILE_ENV), std::env::var_os(SUMMARY_ENV))
+        Self::from_vars(std::env::var_os(SUMMARY_ENV))
     }
 
-    fn from_vars(file: Option<OsString>, summary: Option<OsString>) -> Self {
-        let file = file.filter(|f| !f.is_empty()).map(|f| {
-            let path = PathBuf::from(f);
-            // `absolute` only fails without a current directory; the
-            // relative path is then the best there is.
-            std::path::absolute(&path).unwrap_or(path)
-        });
+    fn from_vars(summary: Option<OsString>) -> Self {
         let summary = summary.is_some_and(|s| !s.is_empty() && s != "0");
         Self {
-            file,
+            file: None,
             summary,
             logs: LogOptions::default(),
         }

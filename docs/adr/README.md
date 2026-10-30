@@ -107,3 +107,4 @@ when new measurements contradict its evidence.
 | [0034](0034-unchanged-copy-ups-left-out-of-layers.md) | Unchanged copy-ups are left out of a layer, as BuildKit's overlay differ | Accepted | 2026-10-30 | Q-049, BuildKit source |
 | [0035](0035-git-contexts-built-in-or-external-git.md) | Git contexts use a built-in git by default, an external `git` on request, with its flags configurable | Accepted | 2026-10-30 | Q-045, kaniko and BuildKit source |
 | [0036](0036-kaniko-flags-in-phase-1.md) | Kaniko flags in Phase 1: accepted, ignored with a warning, or refused with the phase | Accepted | 2026-10-30 | Q-023, Q-020, Q-021, Q-031, kaniko source |
+| [0037](0037-metrics-report-path-from-the-flag-only.md) | The metrics report path comes only from `--metrics-file` | Accepted | 2026-10-30 | maintainer, partly supersedes ADR-0025 |

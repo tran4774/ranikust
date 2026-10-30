@@ -8,7 +8,7 @@
 
 use std::ffi::OsString;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -34,6 +34,11 @@ pub(crate) struct Cli {
 
     #[command(flatten)]
     build: BuildArgs,
+
+    /// Write the metrics report (JSON) to this path when ranikust exits,
+    /// also after an error or a panic (ADR-0025, ADR-0037). Any subcommand.
+    #[arg(long, global = true, value_name = "PATH", help_heading = "ranikust")]
+    metrics_file: Option<PathBuf>,
 }
 
 /// The subcommands.
@@ -46,6 +51,11 @@ pub(crate) enum Command {
 }
 
 impl Cli {
+    /// `--metrics-file`, the only way to ask for the report file.
+    pub(crate) fn metrics_file(&self) -> Option<&Path> {
+        self.metrics_file.as_deref()
+    }
+
     /// The subcommand to run: `build` with the top-level flags when none is
     /// given.
     pub(crate) fn into_command(self) -> Command {
@@ -379,11 +389,6 @@ pub(crate) struct BuildArgs {
         help_heading = "ranikust"
     )]
     pub(crate) allow: Vec<Entitlement>,
-
-    /// Write the build metrics report (JSON) to this path; overrides
-    /// `RANIKUST_METRICS_FILE`.
-    #[arg(long, value_name = "PATH", help_heading = "ranikust")]
-    pub(crate) metrics_file: Option<PathBuf>,
 }
 
 /// Why a kaniko flag is refused (ADR-0036).

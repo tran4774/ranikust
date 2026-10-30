@@ -4,7 +4,7 @@
 > **Depends on:** — (`tracing`, `tracing-subscriber`, `serde_json`, `libc`) · **Used by:** `ranikust` only · **Path:** `crates/rnk-metrics/`
 
 **TL;DR:** The process's `tracing` subscriber: logs to stderr, plus, when
-`RANIKUST_METRICS_FILE` is set, a layer that aggregates every crate's spans
+a report file is asked for (`--metrics-file`, ADR-0037), a layer that aggregates every crate's spans
 into one kaniko-shaped JSON report at exit. Off means off; never per file;
 never reaches the image.
 
@@ -35,7 +35,6 @@ never reaches the image.
 ## API
 
 ```rust
-pub const FILE_ENV: &str = "RANIKUST_METRICS_FILE";      // [decided] ADR-0025
 pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY"; // [design]
 pub const SCHEMA: &str = "ranikust.metrics/v1";            // [decided]
 pub struct Config { pub file: Option<PathBuf>, pub summary: bool }  // from_env(), is_enabled()

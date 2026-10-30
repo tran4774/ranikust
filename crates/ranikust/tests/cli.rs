@@ -216,7 +216,7 @@ fn version_works_on_any_kernel() {
 }
 
 #[test]
-fn metrics_file_flag_overrides_the_environment() {
+fn the_report_path_comes_from_the_flag_only() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let from_flag = tmp.path().join("flag.json");
     let from_env = tmp.path().join("env.json");

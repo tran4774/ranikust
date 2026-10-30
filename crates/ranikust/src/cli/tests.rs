@@ -109,7 +109,6 @@ fn ranikust_flags_are_accepted() {
         "--jobs=4",
         "--network=none",
         "--platform=linux/amd64",
-        "--metrics-file=/m.json",
     ]);
     assert_eq!(args.mode, Mode::Overlay);
     assert_eq!(args.workdir.as_deref(), Some(Path::new("/w")));
@@ -117,7 +116,6 @@ fn ranikust_flags_are_accepted() {
     assert_eq!(args.jobs.map(NonZeroUsize::get), Some(4));
     assert_eq!(args.network, Network::None);
     assert_eq!(args.platform.as_deref(), Some("linux/amd64"));
-    assert_eq!(args.metrics_file.as_deref(), Some(Path::new("/m.json")));
     assert_eq!(build(&["--mode", "kaniko"]).mode, Mode::Kaniko);
 }
 
@@ -138,6 +136,30 @@ fn version_is_a_subcommand() {
         .cli
         .into_command();
     assert!(matches!(command, Command::Version));
+}
+
+/// `--metrics-file` is the only way to ask for the report (ADR-0037), with
+/// any subcommand.
+#[test]
+fn metrics_file_is_a_flag_of_every_subcommand() {
+    for argv in [
+        &["ranikust", "version", "--metrics-file=/m.json"][..],
+        &["ranikust", "--no-push", "--metrics-file=/m.json"],
+        &[
+            "ranikust",
+            "build",
+            "--no-push",
+            "--metrics-file",
+            "/m.json",
+        ],
+    ] {
+        let parsed = parse(argv.iter().copied()).expect("parses");
+        assert_eq!(
+            parsed.cli.metrics_file(),
+            Some(Path::new("/m.json")),
+            "{argv:?}"
+        );
+    }
 }
 
 #[test]
