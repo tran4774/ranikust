@@ -82,8 +82,8 @@ impl LayerDiff {
     /// name; a directory copied up unchanged is not written by itself
     /// (BuildKit's `sameDirent`), but the writer still writes it as the
     /// parent of a changed entry, with its metadata from this exporter.
-    /// Overlay's own xattrs are left out and escaped content xattrs
-    /// restored; every other xattr is kept [open: Q-025].
+    /// Of the xattrs, only `security.capability` is kept, as BuildKit
+    /// (ADR-0032, Q-025); overlay's own never reach a layer.
     ///
     /// # Errors
     ///
@@ -270,7 +270,7 @@ impl Walk<'_> {
             });
         }
         let opaque = all.iter().any(|(n, v)| n == OPAQUE && v.as_slice() == b"y");
-        let xattrs = lowers::content_xattrs(all);
+        let xattrs = lowers::layer_xattrs(all);
         let kind = match st.file_type() {
             FileType::Directory => {
                 let lower = self.lowers.lookup(p)?;
@@ -322,9 +322,9 @@ impl Walk<'_> {
     }
 }
 
-/// Whether the upper directory `st` with content xattrs `xattrs` equals the
+/// Whether the upper directory `st` with layer xattrs `xattrs` equals the
 /// lower directory `lower` (BuildKit's `sameDirent`): mode, owner,
-/// modification time to the nanosecond and content xattrs.
+/// modification time to the nanosecond and capabilities.
 fn same_dir(
     st: &Stat,
     xattrs: &[(OsString, Vec<u8>)],
@@ -338,7 +338,7 @@ fn same_dir(
     if (st.mode, st.uid, st.gid, st.mtime) != (l.mode, l.uid, l.gid, l.mtime) {
         return Ok(false);
     }
-    Ok(lowers::content_xattrs(lower.layer.xattrs(p)?) == xattrs)
+    Ok(lowers::layer_xattrs(lower.layer.xattrs(p)?) == xattrs)
 }
 
 fn dev(st: &Stat) -> u64 {
@@ -392,7 +392,7 @@ impl EntrySource for Source<'_> {
             uid: u64::from(st.uid),
             gid: u64::from(st.gid),
             mtime: st.mtime.secs,
-            xattrs: lowers::content_xattrs(xattrs)
+            xattrs: lowers::layer_xattrs(xattrs)
                 .into_iter()
                 .map(|(n, v)| (n.into_vec(), v))
                 .collect(),

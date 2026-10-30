@@ -157,16 +157,17 @@ fn a_copied_up_dir_with_changed_metadata_is_written() {
 }
 
 #[test]
-fn overlay_xattrs_are_dropped_and_escaped_ones_restored() {
+fn only_security_capability_reaches_a_layer() {
+    // `security.capability` needs CAP_SETFCAP to set; `layer_xattrs`'s own
+    // test covers it being kept.
     let f = Fixture::new();
     f.file("upper/f", b"");
     f.xattr("upper/f", "user.overlay.origin", b"x");
     f.xattr("upper/f", "user.overlay.overlay.mine", b"m");
-    f.xattr("upper/f", "user.kept", b"k");
+    f.xattr("upper/f", "user.other", b"k");
     let diff = f.diff();
     let e = diff.entries().unwrap();
-    let names: Vec<&[u8]> = e[0].xattrs.keys().map(Vec::as_slice).collect();
-    assert_eq!(names, [b"user.kept".as_slice(), b"user.overlay.mine"]);
+    assert!(e[0].xattrs.is_empty(), "{:?}", e[0].xattrs);
 }
 
 #[test]
