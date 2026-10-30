@@ -113,7 +113,13 @@ once when the stage's `LayerDemand` needs it, and gets a history entry
 Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
 or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
 --link/--parents/--exclude`, `RUN --mount` other than `cache` and
-`secret`, `RUN --security=insecure` and `--device`, a `#!` `RUN` heredoc.
+`secret`, `RUN --security=insecure` and `--device`, `RUN --network=host`
+under the operator's `--network=none` [open: Q-184], a heredoc name with
+`/`. A `#!` `RUN` heredoc runs as a script, bound read-only from the build
+directory at `/dev/pipes/<name>`. A symlinked context source is followed
+only through kept entries; a copy onto a symlink to a directory goes
+inside it, as BuildKit. A cache mount's `mode`, `uid` and `gid` are set
+through a descriptor of its directory.
 
 ## Invariants
 
@@ -129,8 +135,9 @@ or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
 - Same inputs, same bytes: layer order is instruction order whatever order
   exports finish in; timestamps are fixed under `--reproducible`; nothing
   depends on `--jobs`, thread count or the host's users.
-- A failed `RUN` fails the stage with its exit status and is never retried;
-  an `EXDEV` failure in overlay mode suggests rerunning with `--mode=kaniko`.
+- A failed `RUN` fails the stage with its exit status and is never retried.
+  (An `EXDEV` hint towards `--mode=kaniko` is not built: the failing
+  program reports `EXDEV` itself, which the builder cannot see.)
 - A `RUN` that changes nothing gives an empty layer, with a test. Stage
   squashing exists only in sequential kaniko mode.
 

@@ -845,7 +845,11 @@ Entry format:
   at a time, at the pattern's own depth; `COPY --from` sources are matched
   by listing the stage's root. Reversible: one module,
   `crates/rnk-builder/src/sources.rs`; the golden against BuildKit is
-  still to do.
+  still to do. A symlinked source is followed inside the context through
+  kept entries only (an ignored target is "not found"). The error rules
+  follow kaniko's `IsSrcsValid` (`kaniko@44aa7ddc0
+  pkg/util/command_util.go:259`): a missing source fails, and several sources
+  need a destination ending in `/`.
 - **Raised:** 2026-10-30
 
 ### Q-180: Does VOLUME create its directories?
@@ -909,6 +913,47 @@ Entry format:
 - **Recommendation:** none
 - **Interim:** (a); the VM's `SYS_ADMIN` variant adds `NET_ADMIN` for
   the e2e build. Reversible: one step of the child's set-up.
+- **Raised:** 2026-10-30
+
+### Q-184: May a Dockerfile's `RUN --network=host` lift `--network=none`?
+
+- **Blocks:** nothing yet; **Area:** `rnk-builder`, `ranikust`
+- **Context:** the operator's `--network=none` cuts every `RUN` off the
+  network; `RUN --network=host` in the Dockerfile would reach it again,
+  the cloud metadata service and the host's loopback included. BuildKit
+  needs the `network.host` entitlement (`--allow`) for it [inferred].
+- **Options:** (a) refuse it under `--network=none`; (b) an entitlement
+  flag, as BuildKit's `--allow network.host`.
+- **Recommendation:** none
+- **Interim:** (a): the build fails with a message naming the flag.
+  Reversible: one match in `stage.rs`, `run_command`.
+- **Raised:** 2026-10-30
+
+### Q-185: Does an image without `PATH` get one in its config?
+
+- **Blocks:** Phase 1 task 13 (config comparison); **Area:** `rnk-builder`
+- **Context:** `FROM scratch` gets `PATH` in kaniko
+  (`ScratchEnvVars`) and BuildKit; ranikust does the same. For a base
+  image whose config has no `PATH`, BuildKit adds it to the config,
+  kaniko does not [inferred for BuildKit]. A `RUN` gets Docker's default
+  `PATH` either way (`rnk-sandbox`).
+- **Options:** (a) kaniko: the config stays without; (b) BuildKit: add it.
+- **Recommendation:** none
+- **Interim:** (a). Reversible: one line in `build_stage`.
+- **Raised:** 2026-10-30
+
+### Q-186: Does a cancel kill a running `RUN`?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, `ranikust`
+- **Context:** the first SIGINT or SIGTERM cancels the build: stages stop
+  between instructions, but a `RUN` already running finishes first, which
+  may take long. A second signal exits at once, and the `RUN`s die with
+  their parent thread (`PR_SET_PDEATHSIG`). `rnk_sandbox::Sandbox::run`
+  has no way to stop a `RUN` it started.
+- **Options:** (a) as now; (b) a cancel in `Sandbox` that kills the
+  `RUN`'s PID 1, which takes its PID namespace with it.
+- **Recommendation:** none
+- **Interim:** (a). Reversible: a new `Sandbox` call.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?

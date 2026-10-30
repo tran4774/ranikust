@@ -109,7 +109,7 @@ with `rnk_metrics::Capture`; a task is not done without it.
 | 2 | kaniko mode: walk and hash, stat cache, `LayeredMap`, safe filesystem deletion, per-stage directories, `--parallel-stages`, fake `/proc`, `JAVA_TOOL_OPTIONS` |
 | 3 | Rootless overlay, the full probe and refusal guidance, AppArmor sample profile, privilege matrix, `--seccomp`, `--userns` |
 | 4 | `rnk-cache`: registry layer cache with own versioned keys, lookahead, skipping cached stages, W2 warm and partial |
-| 5 | `ADD` URL/git/tar, `RUN --mount=type=bind`, `ONBUILD`, `COPY --link`/`--parents`/`--exclude`, mirrors, credential helpers, tar/git/HTTPS contexts, `prune` |
+| 5 | `ADD` URL/git/tar, `ADD --checksum`/`--keep-git-dir`/`--unpack`, `RUN --mount=type=bind\|tmpfs\|ssh`, `RUN --mount=type=cache,from=`, `ONBUILD`, `COPY --link`/`--parents`/`--exclude`, mirrors, credential helpers, tar/git/HTTPS contexts, `prune` |
 | 6 | 200 integration Dockerfiles in every mode, fuzzing, the host-safety attack suite, user docs, packaging |
 | never | bake, the warmer, cloud contexts, multi-platform builds (`ADR-0008`) |
 

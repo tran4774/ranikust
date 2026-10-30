@@ -213,7 +213,13 @@ error, a refused kaniko flag, an invalid combination, and for now every
   a `--jobs` permit per `RUN` over a channel; then the outputs in
   kaniko's order (OCI layout, Docker tar, push) and the digest on stdout.
   Roots are released children first, then the store closed, on success
-  and failure alike. `--secret id=ID,src=PATH` [open: Q-022].
+  and failure alike. `--secret id=ID,src=PATH` [open: Q-022], ids unique.
+  The roots of `COPY --from=<image>` are made by the stage's thread, not
+  the preparation, which only pulls. A Dockerfile not found as given is
+  read inside the context through its `RootPath`, never by a host path.
+  The first SIGINT or SIGTERM cancels the build, a second exits at once
+  [open: Q-186]. A release that fails leaves the stages below it to the
+  next build's clean-up.
 - Left: the workdir checks [open: Q-011], the kaniko-mode lock
   (Phase 2), the acceptance runs (task 13).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
