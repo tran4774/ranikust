@@ -39,7 +39,7 @@ pub enum MountApi {
     /// length limit.
     LowerdirPlus,
     /// `mount(2)` with one option string of short `l/<name>` paths: at most
-    /// [`MOUNT_DATA_MAX`] bytes.
+    /// `MOUNT_DATA_MAX` bytes.
     Mount2,
 }
 

@@ -360,9 +360,10 @@ Entry format:
 - **Options:** (a) kaniko's syntax, file and env sources; (b) a subset in
   Phase 1, the rest later.
 - **Recommendation:** none
-- **Interim:** `feat/ranikust-cli` refuses `--secret` with a message
-  naming this question. Reversible: accepting it is one more flag, and no
-  build runs yet.
+- **Interim:** (b), on branch `feat/rnk-builder-executors`: kaniko's
+  syntax for file secrets, `id=ID,src=PATH` (`type=file` optional);
+  `type=env` and `RUN --mount=type=secret,env=` are refused. Reversible:
+  more fields of the same syntax.
 - **Raised:** 2026-10-30
 
 ### Q-023: Which other kaniko flags and variables are accepted?
@@ -836,9 +837,78 @@ Entry format:
   BuildKit's) is part of either.
 - **Recommendation:** (a), which the card's boundary already implies;
   the dialect needs a golden against BuildKit.
-- **Interim:** `rnk-context` exposes the filtered walk and `root()` only
-  (`feat/rnk-context`); nothing resolves globs yet. Reversible: adding a
-  resolver to either crate later is additive.
+- **Interim:** (a), on branch `feat/rnk-builder-executors`:
+  `rnk_builder::ContextFiles` keeps the walk's entries and resolves a
+  source against them, so an ignored file is never named; a directory is
+  copied with `rnk_rootfs::copy_filtered`, which skips the ignored entries
+  below it. Wildcards follow BuildKit: Go's `filepath.Match` one component
+  at a time, at the pattern's own depth; `COPY --from` sources are matched
+  by listing the stage's root. Reversible: one module,
+  `crates/rnk-builder/src/sources.rs`; the golden against BuildKit is
+  still to do.
+- **Raised:** 2026-10-30
+
+### Q-180: Does VOLUME create its directories?
+
+- **Blocks:** Phase 1 task 13 (layer comparison); **Area:** `rnk-builder`
+- **Context:** kaniko's `VOLUME` creates each directory in the root
+  (`kaniko@44aa7ddc0 pkg/commands/volume.go`) and snapshots nothing for it,
+  so a directory it made lands in the next layer that changes files, or
+  nowhere; Docker and BuildKit only record the volume in the config
+  [inferred]. In overlay mode nothing is writable between layers.
+- **Options:** (a) config only; (b) create the directories in a layer of
+  their own; (c) create them in the next changing instruction's layer, as
+  kaniko ends up doing.
+- **Recommendation:** none
+- **Interim:** (a), on branch `feat/rnk-builder-executors`. Reversible:
+  one executor.
+- **Raised:** 2026-10-30
+
+### Q-181: How is `RUN --mount=type=cache,sharing=` enforced?
+
+- **Blocks:** Phase 1 task 13; **Area:** `rnk-builder`, `rnk-store`
+- **Context:** BuildKit's `sharing=shared` (default) lets concurrent
+  `RUN`s use one cache directory, `locked` makes them wait, `private`
+  gives each its own copy. Parallel stages make the difference visible.
+  Cache directories are `rnk_store::Store::cache_dir(id)`; `mode`, `uid`
+  and `gid` are applied to it at each use.
+- **Options:** (a) treat every cache as `shared`; (b) `locked` with a
+  `flock` on the cache directory; (c) also `private`, with a copy per
+  concurrent use.
+- **Recommendation:** none
+- **Interim:** (a), on branch `feat/rnk-builder-executors`. Reversible:
+  the cache mount is built in one place (`stage.rs`, `mounts`).
+- **Raised:** 2026-10-30
+
+### Q-182: Which `RUN --mount=type=secret` options are honoured?
+
+- **Blocks:** nothing yet; **Area:** `rnk-builder`, `rnk-sandbox`
+- **Context:** the secret file is bound read-only from its `--secret`
+  source, so it keeps the host file's mode and owner. BuildKit's `mode`,
+  `uid` and `gid` (default `0400`, root) set what the `RUN` sees, and
+  `env=` exposes the secret as a variable [inferred].
+- **Options:** (a) bind the host file as it is; (b) copy it to a
+  build-private file with the requested mode and owner, then bind that.
+- **Recommendation:** none
+- **Interim:** (a); `env=` is refused. Reversible: one function.
+- **Raised:** 2026-10-30
+
+### Q-183: What does `RUN --network=none` do without `CAP_NET_ADMIN`?
+
+- **Blocks:** Phase 1 acceptance (`--network=none`); Phase 3;
+  **Area:** `rnk-sandbox`
+- **Context:** the sandbox brings up loopback in the `RUN`'s new network
+  namespace, which needs `CAP_NET_ADMIN` over it. In a container with
+  Docker's or podman's default capabilities plus `SYS_ADMIN` (the
+  `MS_MOVE` environment) that step fails with `EPERM`, measured with the
+  e2e build in rootless podman; `--privileged` and real root work.
+- **Options:** (a) refuse, as now (`RUN sandbox: bring up the loopback
+  interface: Operation not permitted`); (b) run with loopback down when
+  it cannot be brought up, with a warning; (c) create the network
+  namespace inside a user namespace, whose root may bring it up.
+- **Recommendation:** none
+- **Interim:** (a); the VM's `SYS_ADMIN` variant adds `NET_ADMIN` for
+  the e2e build. Reversible: one step of the child's set-up.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?

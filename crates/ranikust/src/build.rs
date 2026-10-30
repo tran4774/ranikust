@@ -410,15 +410,23 @@ impl StageRunner for Runner {
             }
             // The registry client's futures are not `Send` for every
             // lifetime, which this future must be: the pulls run on a
-            // blocking thread that drives them.
+            // blocking thread that drives them. They are awaited even
+            // after a cancel: an abandoned pull would still use the
+            // runtime while it shuts down, and the store's fill must end
+            // before the store closes.
             let handle = tokio::runtime::Handle::current();
             let work = tokio::task::spawn_blocking(move || {
-                handle.block_on(prepare_stage(&shared, base, images)).map(Arc::new)
+                handle
+                    .block_on(prepare_stage(&shared, base, images))
+                    .map(Arc::new)
             });
-            tokio::select! {
-                r = work => r.unwrap_or_else(|e| Err(Error::Invalid(format!("pulling: {e}")))),
-                () = cancel.cancelled() => Err(Error::Cancelled),
+            let r = work
+                .await
+                .unwrap_or_else(|e| Err(Error::Invalid(format!("pulling: {e}"))));
+            if cancel.is_cancelled() && r.is_ok() {
+                return Err(Error::Cancelled);
             }
+            r
         }
     }
 
@@ -429,8 +437,11 @@ impl StageRunner for Runner {
         let shared = Arc::clone(&self.shared);
         async move {
             let index = job.stage;
-            let deps: Vec<(usize, Arc<Stage>)> =
-                job.deps.iter().map(|(i, d)| (*i, Arc::clone(&**d))).collect();
+            let deps: Vec<(usize, Arc<Stage>)> = job
+                .deps
+                .iter()
+                .map(|(i, d)| (*i, Arc::clone(&**d)))
+                .collect();
             let (requests, mut asked) = tokio::sync::mpsc::unbounded_channel();
             let (done_tx, mut done) = tokio::sync::oneshot::channel();
             let cancelled = Arc::new(AtomicBool::new(false));

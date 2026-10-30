@@ -96,8 +96,12 @@ e2e() {
     log="$(sudo "$RNK" "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
   else
     smoke_e2e_args /ctx /tmp/w /out /token
+    # `RUN --network=none` brings up loopback in a new network namespace,
+    # which needs CAP_NET_ADMIN: Docker's defaults lack it [open: Q-183].
+    local net=()
+    [ "$name" = sysadmin ] && net=(--cap-add NET_ADMIN)
     # shellcheck disable=SC2046
-    log="$(sudo docker run --rm $(docker_args "$name") -v "$RNK:/ranikust:ro" \
+    log="$(sudo docker run --rm $(docker_args "$name") "${net[@]}" -v "$RNK:/ranikust:ro" \
       -v "$CTX:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" -v "$W/token:/token:ro" \
       "$IMAGE" /ranikust "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
   fi

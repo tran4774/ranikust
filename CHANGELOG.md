@@ -37,8 +37,21 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--mode=auto|overlay|kaniko`, `--workdir`, `--state-dir` (kaniko's
   `--kaniko-dir`), `--jobs`, `--network=host|none`, `--platform` and
   `--metrics-file`. Other kaniko flags are refused with the reason, never
-  ignored. Building itself is not implemented yet: a valid command sets
-  the process up, then stops with exit code 2.
+  ignored.
+- Building: `ranikust` builds a Dockerfile in overlay mode as root, its
+  stages in parallel up to `--jobs`, one layer per `RUN`, `COPY`, `ADD`
+  and directory-creating `WORKDIR`, and writes an OCI layout
+  (`--oci-layout-path`), a Docker tar (`--tar-path`) and pushes to each
+  `--destination`, then prints the image digest. Supported: `FROM` an
+  image, `scratch` or a stage; `ARG`, `ENV`, `LABEL`, `USER`, `WORKDIR`,
+  `EXPOSE`, `VOLUME`, `ENTRYPOINT`, `CMD`, `SHELL`, `STOPSIGNAL`,
+  `HEALTHCHECK`; local `COPY` and `ADD` with wildcards, heredocs,
+  `--from`, `--chown` and octal `--chmod`, `.dockerignore` honoured;
+  `RUN` in shell, exec and heredoc form with `--mount=type=cache`,
+  `--mount=type=secret` and `--network=none`. `--secret id=ID,src=PATH`
+  provides secret files. Features of later phases stop the build with a
+  message naming the phase. `RUN --network=none` needs `CAP_NET_ADMIN`
+  in a container.
 - The start-up probe: `ranikust` checks that it can isolate `RUN` (a
   private mount namespace, `pivot_root`, or `MS_MOVE` under Docker's
   seccomp profile) and mount an overlay where its stage roots will live,

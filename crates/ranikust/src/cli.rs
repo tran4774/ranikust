@@ -179,10 +179,11 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_enum, default_value_t = Network::Host, help_heading = "ranikust")]
     pub(crate) network: Network,
 
-    /// A secret for `RUN --mount=type=secret`: `id=ID,src=PATH`, as
-    /// BuildKit's CLI. Repeat for several.
-    // [open: Q-022] interim: BuildKit's syntax; the file is bound read-only
-    // into the RUN and never reaches a layer, the config or a log.
+    /// A secret file for `RUN --mount=type=secret`: `id=ID,src=PATH`, as
+    /// kaniko's `type=file` secrets. Repeat for several.
+    // [open: Q-022] interim (b): kaniko's syntax for file secrets; `type=env`
+    // is refused. The file is bound read-only into the RUN and never
+    // reaches a layer, the config or a log.
     #[arg(
         long = "secret",
         value_name = "id=ID,src=PATH",
@@ -388,8 +389,8 @@ fn parse_registry_certificate(value: &str) -> Result<(String, PathBuf), String> 
     }
 }
 
-/// A `--secret` value: `id=ID,src=PATH` (`source=` also accepted), in any
-/// order.
+/// A `--secret` value as kaniko parses it (`pkg/config/options.go`), file
+/// secrets only: `id=ID,src=PATH`, `type=file` optional, any order.
 fn parse_secret(value: &str) -> Result<(String, PathBuf), String> {
     let mut id = None;
     let mut src = None;
@@ -397,6 +398,10 @@ fn parse_secret(value: &str) -> Result<(String, PathBuf), String> {
         match field.split_once('=') {
             Some(("id", v)) if !v.is_empty() => id = Some(v.to_owned()),
             Some(("src" | "source", v)) if !v.is_empty() => src = Some(PathBuf::from(v)),
+            Some(("type", "file")) => {}
+            Some(("type", "env")) => {
+                return Err("type=env secrets are not supported yet (Q-022)".to_owned());
+            }
             _ => return Err(format!("expected id=ID,src=PATH, got {value:?}")),
         }
     }

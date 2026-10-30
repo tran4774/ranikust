@@ -47,7 +47,9 @@ subcommands, the common kaniko flags and `--mode=auto|overlay|kaniko`
 single-threaded, it checks the workdir, enters a private mount namespace
 when permitted, runs the privilege probes of `rnk-sandbox` and `rnk-snapshot`
 in order and picks the mode, and in kaniko mode locks the workdir; then it
-hands off to the libraries. `prune` only calls `rnk-store`. Before all
+hands off to the libraries: it starts the async runtime, runs `rnk-sched`
+with its own `StageRunner`, which drives `rnk-builder` one thread per
+stage, and writes the outputs. `prune` only calls `rnk-store`. Before all
 that, it parses the flags (kaniko flags it does not accept are refused by
 name), refuses a kernel older than Linux 5.8 through
 `rnk_rootfs::probe_support`
@@ -214,10 +216,16 @@ keys only, and carry a format version.
 Builds one stage: one executor per instruction (`commands` module), cache
 checks, lazy layer export (a layer is encoded only if pushed, cached or part
 of the target), image config updates, then image assembly and output.
-The output side exists: `LayerExporter` encodes a snapshot's
-`LayerSource` into the build directory when its `LayerDemand` needs it,
-`assemble` writes the canonical config and manifest at one `BuildTime`,
-and `push`, `write_docker_tar` and `write_oci_layout` write the image.
+`build_stage` runs one stage, blocking, on a `Snapshotter`'s root:
+metadata instructions through `rnk_oci::ConfigEdit`, `COPY`/`ADD` through
+`rnk_rootfs::copy` (sources resolved here against the context walk or a
+stage's root [open: Q-080]), `RUN` through `rnk-sandbox`, one layer per
+changing instruction. `pull_image` fills the store with a base image's
+blobs and extracted layers. `LayerExporter` encodes a layer when its
+`LayerDemand` needs it, `assemble` writes the canonical config and
+manifest at one `BuildTime`, and `push`, `write_docker_tar` and
+`write_oci_layout` write the image. It does not depend on `rnk-sched`:
+the binary implements the scheduler's `StageRunner` with it.
 **Must not** keep global state (paths arrive as `rnk-store`'s
 `BuildPaths`, the clock and `SOURCE_DATE_EPOCH` as values), order stages,
 parse flags, or write tar itself (`rnk-layer` writes layers and the Docker
@@ -248,6 +256,10 @@ extraction, writer for export) and `rnk-store`; `rnk-cache` uses
 gets from `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`;
 `rnk-context` uses `rnk-ignore` for its walk (ADR-0027; interim, Q-028);
 `rnk-sched` uses `rnk-dockerfile` for the stage graph (interim, Q-028).
+In the code, `rnk-sched` does not depend on `rnk-builder`: it calls a
+`StageRunner` trait, which `ranikust` implements with `rnk-builder`; the
+binary also builds the registry client, the context and the outputs
+(interim, Q-028).
 `rnk-rootfs` never depends on `rnk-layer`. Lower crates never depend on
 higher ones. `rnk-dockerfile`, `rnk-ignore` and `rnk-oci` stay pure data.
 Only `ranikust` depends on `rnk-metrics`; libraries reach it through

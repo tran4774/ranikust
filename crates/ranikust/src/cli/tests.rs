@@ -238,6 +238,11 @@ fn secrets_take_an_id_and_a_source() {
         parse_secret("source=/a,id=b").unwrap(),
         ("b".to_owned(), PathBuf::from("/a"))
     );
+    assert_eq!(
+        parse_secret("id=c,type=file,src=/c").unwrap(),
+        ("c".to_owned(), PathBuf::from("/c"))
+    );
+    assert!(parse_secret("id=a,type=env,env=A").is_err());
     assert!(parse_secret("id=a").is_err());
     assert!(parse_secret("id=a,src=/a,env=X").is_err());
 }
