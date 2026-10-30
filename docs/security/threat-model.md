@@ -125,6 +125,13 @@ before 1.0:
 - races during extraction and deletion, and concurrent builds on one store,
   including a crash halfway;
 - `--seccomp` and `--userns` end to end;
+- overlay stage roots as real root (T2 VM, `rnk-snapshot`'s
+  `tests/overlay.rs`): mounting, unmounting and releasing leave no mount
+  under the state directory, and the read-only view refuses writes. Not
+  yet tested: an upper directory a hostile `RUN` filled (planted symlinks,
+  FIFOs and devices, deep trees) read by the exporter, whose reads go
+  through `RootPath` without following or opening them; a stage released
+  while a `RUN` still holds files open under its mount (`MNT_DETACH`);
 - the `RUN` sandbox as real root (T2 VM): T8 with a non-root `USER`, T18
   for a layer's device node and `chmod /dev/null`. Checked by `just test-vm
   smoke` on kernels 5.15 and 6.8: T5's `chroot` escapes under `MS_MOVE`

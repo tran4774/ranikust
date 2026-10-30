@@ -185,8 +185,8 @@ fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
 /// real directory, not a symlink, owned by `euid` and not writable by group
 /// or others. The probes run as root in it, and the sandbox replays what its
 /// journals there name. Checked before anything is created, and again
-/// after. A stand-in for the workdir checks (Q-011) and the store's marker
-/// (Q-111).
+/// after. A stand-in for the workdir checks (Q-011); the store's marker
+/// check follows it (`Store::open`, Q-111).
 fn prepare_state_dir(state_dir: &Path, workdir: Option<&Path>, euid: u32) -> Result<(), Refusal> {
     check_state_dir(state_dir, workdir, euid, true)?;
     std::fs::DirBuilder::new()

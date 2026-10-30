@@ -1,6 +1,6 @@
 # rnk-snapshot
 
-> **Status:** skeleton · **Phase:** 1 ·
+> **Status:** overlay mode in progress (Phase 1 task 9) · **Phase:** 1 ·
 > **Depends on:** `rnk-rootfs`, `rnk-layer`, `rnk-store` · **Used by:** `rnk-builder`, `rnk-sched` (root sharing only), `ranikust` (probes) · **Path:** `crates/rnk-snapshot/`
 
 **TL;DR:** Gives each stage a root (`StageRootfs`) and turns each change into
@@ -25,26 +25,51 @@ metadata on the upper root, whiteouts before hardlinks; delete via `rnk-rootfs`.
 - Own the store (`rnk-store`), transfer blobs (`rnk-registry`), compute
   cache keys (`rnk-cache`), or switch modes mid-build.
 
-## API (planned)
+## API
 
 ```rust
-pub trait StageRootfs {                            // [design] survey 06 §5.6
-    fn path(&self) -> &RootPath;
+pub trait StageRootfs {                            // [open: Q-024] interim, task 9
+    fn root(&self) -> Result<&RootPath>;           // writable root of the open layer (COPY, ADD, WORKDIR)
+    fn mount_point(&self) -> &Path;                // host path, only for rnk-sandbox to enter for RUN
     fn begin_layer(&mut self) -> Result<()>;       // overlay: diff-k, work-k, root metadata, mount
-    fn end_layer(&mut self) -> Result<LayerDiff>;  // overlay: unmount, diff-k; kaniko: walk + hash
-    fn release(self) -> Result<()>;                // overlay: delete diff-*; kaniko: safe delete
-    fn sharing(&self) -> RootSharing;              // [design] Shared (`/`, runs alone) | Private
+    fn end_layer(&mut self) -> Result<LayerDiff>;  // overlay: unmount; diff-k becomes the top lower
+    fn view(&mut self) -> Result<&RootPath>;       // read-only between layers (USER lookup, COPY --from)
+    fn release(self) -> Result<()>;                // unmount, delete the stage directory, diffs included
 }
-pub trait Snapshotter {                            // [open: Q-024] named in ADR-0002; signature designed at Phase 1 task 9
+pub trait Snapshotter {                            // [open: Q-024] interim, task 9
     type Root: StageRootfs;
-    fn prepare(&self, base: &[LayerRef], parent: Option<&Self::Root>) -> Result<Self::Root>;
-    fn final_root(&self, stage: &Self::Root) -> Result<RootPath>;  // [design] read-only, for COPY --from
+    fn base_layer<R: Read>(&self, diff_id: &Digest, blob: R, below: &[LayerDir]) -> Result<LayerDir>;
+    fn prepare(&self, base: Base<'_, Self::Root>) -> Result<Self::Root>;  // Scratch | Image(&[LayerDir]) | Stage(&Root)
 }
-pub struct LayerDiff;  // [design] entries with OCI whiteouts, read lazily; rnk-layer sorts and encodes them
-pub fn probe_overlay(dir: &Path) -> OverlayProbe;  // [design] ADR-0016 mount; lowerdir+ by a real create
+impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>; }
+// Overlay: Snapshotter<Root = OverlayStage>
+pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
+pub struct LayerDiff;                              // upper + lowers; lazily exported
+impl LayerDiff {
+    pub fn new(upper: PathBuf, lowers: Vec<PathBuf>) -> Self;
+    pub fn is_empty(&self) -> Result<bool>;
+    pub fn entries(&self) -> Result<Vec<rnk_layer::Entry>>;
+    pub fn export<W: Write>(&self, o: EncodeOptions, out: W) -> Result<(LayerDigests, DiffCounts)>;
+}
+pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check
+pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
 pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
     "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile";
+pub const MAX_LOWERS: usize = 500;                 // [open: Q-026] refused beyond, no merging yet
 ```
+
+- `Base::Image` takes layers in image order (the config's `diff_ids`,
+  bottom first); the lower stack is topmost first. `Base::Stage` shares
+  the parent's diffs: release the parent only after its children.
+- `base_layer` fills `EntryKey::Layer(diff_id)` through `Store::fill`
+  (per-digest lock), checks that the tar hashes to the diff ID, and marks
+  a layer whose tar has no `./` entry with `user.ranikust.inherit-root`,
+  so the stage root takes its metadata from the layers below, as a
+  flattening extractor would ([open: Q-150] the key ignores the stack).
+- The stage directory is `builds/<id>/stages/<n>/` with `rootfs/`,
+  `diff-<k>/`, `work-<k>/` and `empty-<i>/` (a lower for `FROM scratch`
+  and the read-only view, which needs two). `mount(2)` short names are
+  `<state-dir>/l/<12 chars>` symlinks ([open: Q-151]).
 
 ## Invariants
 
@@ -98,6 +123,11 @@ pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
 
 - Record `rnk_snapshot.diff`; `mount`, `export` (`blocks_read`) and more;
   Phase 2 walk spans ([rows](../../design/metrics.md#rnk-snapshot)).
+- Overlay records `rnk_snapshot.diff` inside `export`, which is the walk
+  that classifies the entries, so a diff never exported is not recorded.
+  `blocks_read` is not recorded yet; `rnk_snapshot.extract` is not a span:
+  base layers nest `rnk_store.fill`, `rnk_layer.decode` and
+  `rnk_rootfs.extract`.
 - Walk workers count locally; totals are recorded once per walk.
 
 ## Pitfalls
@@ -123,14 +153,36 @@ pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
 - After a crash the overlay mount is gone, so the sandbox's journal replay
   cannot find stubs left in an upper; that upper must be discarded with its
   build, never reused [inferred].
+- Adding an entry to a copied-up directory moves its mtime, so it is
+  exported as changed; only a copy-up that nothing below changed is
+  skipped. Tests that fake a copy-up must set the times last.
+- The new upper root must not take the lower root's overlay xattrs: a
+  copied `user.overlay.opaque=y` would hide every lower layer.
+- A container's own root is overlayfs, which overlay refuses as an upper
+  directory: overlay mode in a container needs the state directory on a
+  volume (the smoke suites mount one); otherwise the probe refuses and the
+  outcome is kaniko mode.
+- Publishing renames a layer directory to another parent, which needs
+  write permission on it: a `0555` layer root works only as root
+  ([open: Q-152]).
+- Unmounting is `MNT_DETACH`: open descriptors below the mount (a
+  `RootPath`) do not make it busy, and the upper is complete once
+  nothing writes; the sandbox must have reaped the `RUN` first.
 
 ## Phase 1
 
-- Build, in order: traits → `probe_overlay` → extraction into `layers/` via
-  `rnk-store` → lower stack, `begin_layer`/`end_layer` as root → `lowerdir+`,
-  then `mount(2)` with `l/<short>` → exporter → `release` → `final_root`.
+- Done (`feat/rnk-snapshot`): traits, `probe`, extraction into `layers/`
+  via `rnk-store`, lower stack and `begin_layer`/`end_layer` as root with
+  `lowerdir+` and the `mount(2)` fallback, the exporter, `view`,
+  `release`; `ranikust` runs `probe` at set-up. T0 for the exporter,
+  lookups, extraction and spans; T2 (`tests/overlay.rs`) for real mounts.
+- Left: the builder's use (task 11): lazy export, `RUN` in
+  `mount_point`, `COPY` through `root`; `blocks_read` on
+  `rnk_snapshot.export`; the "unchanged `RUN` gives an empty layer" rule
+  against kaniko; T1 mounting in a user namespace (Phase 3).
 - Deferred: the kaniko implementation, per-stage directories and lazy
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
-- [open: Q-024] The `Snapshotter` signature (task 9). [open: Q-026]
-  Merging layers near 500 lowers. [open: Q-049] One mount across
-  instructions; the export-time hash filter.
+- [open: Q-024] The signature (interim above). [open: Q-026] Merging
+  layers near 500 lowers. [open: Q-049] One mount across instructions;
+  the export-time hash filter. [open: Q-150], [open: Q-151],
+  [open: Q-152].

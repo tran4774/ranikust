@@ -102,11 +102,11 @@ fn mount_fsconfig(spec: &Spec<'_>) -> Result<()> {
             Some(v) => rustix::mount::fsconfig_set_string(&fs, k, v),
             None => rustix::mount::fsconfig_set_flag(&fs, k),
         }
-        .map_err(|e| fail(format!("fsconfig {k}"), e))?;
+        .map_err(|e| fail(format!("fsconfig {k}{}", kernel_messages(&fs)), e))?;
     }
     for lower in spec.lowers {
         rustix::mount::fsconfig_set_string(&fs, "lowerdir+", lower)
-            .map_err(|e| fail("fsconfig lowerdir+".into(), e))?;
+            .map_err(|e| fail(format!("fsconfig lowerdir+{}", kernel_messages(&fs)), e))?;
     }
     if let Some((upper, work)) = spec.upper {
         rustix::mount::fsconfig_set_string(&fs, "upperdir", upper)
@@ -115,7 +115,8 @@ fn mount_fsconfig(spec: &Spec<'_>) -> Result<()> {
             .map_err(|e| fail("fsconfig workdir".into(), e))?;
     }
     // Linux 5.15 accepts `lowerdir+` above and refuses only here (exp-13).
-    rustix::mount::fsconfig_create(&fs).map_err(|e| fail("create".into(), e))?;
+    rustix::mount::fsconfig_create(&fs)
+        .map_err(|e| fail(format!("create{}", kernel_messages(&fs)), e))?;
     let attrs = if spec.upper.is_some() {
         MountAttrFlags::empty()
     } else {
@@ -131,6 +132,26 @@ fn mount_fsconfig(spec: &Spec<'_>) -> Result<()> {
         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
     )
     .map_err(|e| fail("move_mount".into(), e))
+}
+
+/// The messages the kernel queued on the filesystem context `fs` (lines
+/// such as `e overlay: ...`, read until it has none), as ` (<msg>; ...)`,
+/// or nothing: they say why a `fsconfig` call failed.
+fn kernel_messages(fs: &impl rustix::fd::AsFd) -> String {
+    let mut msgs = Vec::new();
+    let mut buf = [0u8; 1024];
+    // At most a few messages: the context's log holds eight.
+    for _ in 0..8 {
+        match rustix::io::read(fs, &mut buf) {
+            Ok(n) if n > 0 => msgs.push(String::from_utf8_lossy(&buf[..n]).trim().to_owned()),
+            Ok(_) | Err(_) => break,
+        }
+    }
+    if msgs.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", msgs.join("; "))
+    }
 }
 
 /// The `mount(2)` option string, with the lowers' short names.

@@ -116,7 +116,9 @@ never called. A hand-written reader would repeat that parsing for no gain.
 - **Hardlinks** link the target named in the archive with `linkat(…, 0)`,
   so a symlink target is linked itself. In the overlay form the target may
   be in a lower layer, which `layers/<id>` does not hold:
-  `extract_overlay(dst, tar, lowers)` takes the lower layers' extracted
+  `extract_overlay(dst, tar, lowers)` (which also reports whether the tar
+  had an entry for `./`, so `rnk-snapshot` knows the layer's root
+  metadata is its own) takes the lower layers' extracted
   directories, the nearest first as in `lowerdir=`, and copies the target
   from the first one that shows it (Q-055). "Shows" follows overlay's merged
   view: each layer, this one first, is walked by name without following a

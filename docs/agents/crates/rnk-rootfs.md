@@ -44,11 +44,12 @@ impl RootPath {
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
+    pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // built: every xattr, overlay's too, sorted; no follow, no open of a FIFO or device (rnk-snapshot's exporter)
     // built: create_dir, create_dir_all, symlink, read_link, hard_link,
     // rename, remove_file, remove_dir; mnt_id()
 }
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
-pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<()>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055)
+pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; copy_file_range
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<u32> } // built: None keeps the source's
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)

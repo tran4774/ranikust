@@ -274,7 +274,9 @@ Entry format:
   `None` allowing only `Isolation::Direct` (`feat/rnk-sandbox`).
   Reversible: `ranikust` is the only caller. `feat/ranikust-setup` keeps
   (b): `ranikust`'s own `Outcome` (in `src/setup.rs`) holds each crate's
-  caps, and the overlay part is a placeholder until task 9.
+  caps; since `feat/rnk-snapshot` the overlay part is
+  `rnk_snapshot::OverlayCaps` (the mount API), which
+  `rnk_snapshot::Overlay::new` takes.
 - **Raised:** 2026-10-30
 
 ### Q-018: Where does the probe mount its test overlay?
@@ -292,8 +294,9 @@ Entry format:
 - **Interim:** (a), because Phase 1 has no outcome but overlay mode:
   `feat/ranikust-setup` probes in the overlay-mode state directory
   (`--state-dir` or `<workdir>/.ranikust`); the sandbox probe uses its
-  `sandbox/` subdirectory, and the overlay probe of task 9 gets the same
-  path. Revisit with kaniko mode (Phase 2).
+  `sandbox/` subdirectory, and the overlay probe (`feat/rnk-snapshot`)
+  this build's `builds/<id>/overlay-probe`, deleted with the build.
+  Revisit with kaniko mode (Phase 2).
 - **Raised:** 2026-10-30
 
 ### Q-019: What is the final name of the parallel-stages flag?
@@ -440,10 +443,12 @@ Entry format:
   first, in a probe-only directory; (c) as now, and `Store::open` accepts
   a `sandbox/` it finds without a marker.
 - **Recommendation:** (a), once `rnk-store` exists.
-- **Interim:** (c) until task 7: `feat/ranikust-setup` probes before any
-  store exists; the seam for `Store::open` is marked in
-  `crates/ranikust/src/setup.rs`, after the outcome and before
-  `Sandbox::start`. As a stand-in for the marker and the workdir checks
+- **Interim:** (a) since `feat/rnk-snapshot`: `set_up` opens the store
+  (marker check, start-up clean-up) right after the state directory check
+  and before both probes, and hands it on as `Arc<Store>`. A state
+  directory an earlier build left with `sandbox/` but no marker is now
+  refused as foreign. Before that, (c): `feat/ranikust-setup` probed
+  before any store existed. As a stand-in for the workdir checks
   (Q-011), the set-up creates a missing state directory with mode 0700 and
   refuses one, or any directory above it up to the workdir, that is a
   symlink, not owned by the effective uid, or writable by group or others,
@@ -494,13 +499,18 @@ Entry format:
 
 - **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
 - **Context:** `ADR-0002` names the trait; its signature is designed in
-  task 9 ([rnk-snapshot](agents/crates/rnk-snapshot.md#api-planned),
+  task 9 ([rnk-snapshot](agents/crates/rnk-snapshot.md#api),
   [glossary](agents/glossary.md#terms),
   [ARCHITECTURE.md](../ARCHITECTURE.md#rnk-snapshot)).
 - **Options:** the card's sketch (`prepare(base, parent)`, `final_root`),
   or the shape task 9 arrives at.
 - **Recommendation:** none
-- **Interim:** the card's sketch.
+- **Interim:** task 9's shape (`feat/rnk-snapshot`):
+  `Snapshotter::{base_layer, prepare(Base::Scratch | Image | Stage)}` and
+  `StageRootfs::{root, mount_point, begin_layer, end_layer -> LayerDiff,
+  view, release}`; `final_root` became `view` (a read-only mount between
+  layers), and `sharing` waits for kaniko mode (Phase 2). Reversible: one
+  implementation, and no caller until `rnk-builder` (task 11).
 - **Raised:** 2026-10-30
 
 ### Q-025: Are other user xattrs kept in exported layers?
@@ -514,7 +524,10 @@ Entry format:
   only `security.capability` ([rnk-layer](agents/crates/rnk-layer.md#refs)).
 - **Options:** (a) keep them; (b) strip them, as BuildKit does.
 - **Recommendation:** none
-- **Interim:** kept, as the exporter table says today.
+- **Interim:** kept, as the exporter table says today; implemented in
+  `LayerDiff::export` (`feat/rnk-snapshot`), which drops only overlay's
+  own xattrs and turns escaped `user.overlay.overlay.*` back into
+  `user.overlay.*`. Reversible: one filter, `lowers::content_xattrs`.
 - **Raised:** 2026-10-30
 
 ### Q-026: When and how are layers merged near the 500-lower limit?
@@ -527,7 +540,64 @@ Entry format:
 - **Options:** (a) merge at a fixed threshold below 500; (b) merge only
   when the next mount would exceed it.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** no merging (`feat/rnk-snapshot`): a mount that would need
+  more than 500 lowers fails with `Error::TooManyLowers` before the
+  kernel's `EINVAL`. With `mount(2)` (Linux before 6.8) the one-page
+  option string is the tighter limit (Q-151). Every `end_layer` adds a
+  lower, even for an empty diff. Reversible: the check is in
+  `rnk_snapshot::mount`.
+- **Raised:** 2026-10-30
+
+### Q-150: Is an extracted layer keyed by its diff ID alone?
+
+- **Blocks:** nothing yet; **Area:** `rnk-snapshot`, `rnk-store`
+- **Context:** `rnk-store` keys `layers/` by diff ID (Q-015). Extraction
+  copies a hardlink whose target is in a lower layer from that lower layer
+  (Q-055), so an extracted layer's content depends on the stack below it
+  when it was first extracted; another image with the same layer on
+  another stack reuses that content (`rnk_snapshot` `layer.rs`).
+- **Options:** (a) keep the diff ID key: the same layer on different
+  stacks with a hardlink into a differing lower is rare; (b) key such a
+  layer by diff ID plus the chain of diff IDs below (as containerd's chain
+  IDs); (c) refuse to reuse a layer extracted with copied hardlinks on
+  another stack.
+- **Recommendation:** none
+- **Interim:** (a). Reversible: the key is built in one place.
+- **Raised:** 2026-10-30
+
+### Q-151: How does the mount(2) fallback fit many layers?
+
+- **Blocks:** nothing yet (Linux before 6.8, many layers); **Area:**
+  `rnk-snapshot`
+- **Context:** without `lowerdir+` every lower goes into one `mount(2)`
+  option string of at most 4,095 bytes. The fallback uses absolute short
+  names `<state-dir>/l/<12 chars>`, about 40 bytes each with a short state
+  directory: roughly 90–100 lowers, fewer with a long one. Docker's
+  overlay2 uses relative names after `chdir`, which a multi-threaded
+  process can only do in a forked child.
+- **Options:** (a) absolute short names and a clear error beyond the
+  limit; (b) mount from a forked child that `chdir`s into `l/` and passes
+  relative names (as overlay2); (c) merge layers (Q-026).
+- **Recommendation:** none
+- **Interim:** (a): `Error::OptionsTooLong` before the kernel truncates.
+  The links of a stage's diffs are removed at release; a crashed build's
+  stay in `l/` (names come from the target's hash, so a stale link is
+  never reused for another target).
+- **Raised:** 2026-10-30
+
+### Q-152: How are read-only layer roots published without root?
+
+- **Blocks:** Phase 3 (rootless overlay); **Area:** `rnk-store`,
+  `rnk-snapshot`
+- **Context:** publishing an extracted layer renames its directory from
+  `tmp/` into `layers/`; renaming a directory to another parent needs write
+  permission on it, so a layer whose root is `0555` (some images) fails
+  with `EACCES` without `CAP_DAC_OVERRIDE`. As root (Phase 1) it works.
+- **Options:** (a) give the layer root `u+w` until it is published, then
+  set its mode; (b) extract into the final directory under the lock and
+  publish a marker instead of renaming.
+- **Recommendation:** none
+- **Interim:** none; Phase 1 runs as root.
 - **Raised:** 2026-10-30
 
 ### Q-027: Is the ContextSource trait sync or async?

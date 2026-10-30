@@ -41,11 +41,16 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   the process up, then stops with exit code 2.
 - The start-up probe: `ranikust` checks that it can isolate `RUN` (a
   private mount namespace, `pivot_root`, or `MS_MOVE` under Docker's
-  seccomp profile) and names the outcome. For now it builds only as root
-  in overlay mode, which needs `--workdir` or `--state-dir`; elsewhere it
-  stops with what failed and what to do instead (`sudo`, or a container
-  started with `--privileged`), also when it runs inside a plain `chroot`.
-  `--mode=kaniko` comes later.
+  seccomp profile) and mount an overlay where its stage roots will live,
+  and names the outcome. For now it builds only as root in overlay mode,
+  which needs `--workdir` or `--state-dir`; elsewhere it stops with what
+  failed and what to do instead (`sudo`, or a container started with
+  `--privileged`), also when it runs inside a plain `chroot`. In a
+  container the state directory must be on a volume: overlay cannot use
+  the container's own overlay root. `--mode=kaniko` comes later.
+- The state directory: `ranikust` marks it with `.ranikust-root` and
+  refuses a non-empty directory without that mark, so a mistyped
+  `--state-dir` never gets written to or cleaned up.
 - A start-up check: on a kernel older than Linux 5.8, or where seccomp
   blocks `openat2` or `statx`, ranikust stops at once with a message naming
   the kernel.
