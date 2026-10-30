@@ -79,7 +79,7 @@ with the default security profile or in most Kubernetes pods.
   so it refuses a directory the host needs: `/`, a system directory such as
   `/usr` or `/home`, or an ancestor of one. A non-empty work directory must
   hold a `.ranikust-root` file, which says its contents may be deleted; an
-  empty one gets it. Only one build at a time may use a work directory.
+  empty one gets it when the build starts writing. Only one build at a time may use a work directory.
 
 ## When no mode works
 

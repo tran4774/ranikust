@@ -123,7 +123,8 @@ fn kaniko_mode_checks_its_workdir_before_stopping() {
         "{}",
         stderr(&out)
     );
-    assert!(workdir.join(".ranikust-root").is_file());
+    // The marker comes right before the first write, which this stop precedes.
+    assert!(!workdir.join(".ranikust-root").exists());
 
     let out = ranikust(
         tmp.path(),

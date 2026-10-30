@@ -106,8 +106,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   a system directory such as `/usr` or `/home` or an ancestor of one
   (compared by device and inode, so `//` and symlinks are caught), a
   directory another build has locked, and a non-empty directory without a
-  `.ranikust-root` marker; an empty directory gets the marker. Kaniko-mode
-  builds themselves still stop after these checks.
+  `.ranikust-root` marker. Kaniko-mode builds themselves still stop after
+  these checks, before anything is written.
 
 ### Changed
 

@@ -126,12 +126,16 @@ Before touching a workdir outside a container:
 2. Open the workdir with `openat2(RESOLVE_NO_SYMLINKS)` and take
    `flock(LOCK_EX | LOCK_NB)`: one build per kaniko-mode workdir.
 3. A non-empty workdir without a regular file `.ranikust-root` is refused; a
-   marker that is a symlink is refused; an empty workdir gets a marker. A
-   workdir holding only mount points is not empty: it needs the marker.
+   marker that is a symlink is refused; an empty workdir gets a marker,
+   right before the build first writes to it, and loses it again if
+   anything else appeared meanwhile. A workdir holding only mount points
+   is not empty: it needs the marker.
 
 `ranikust` runs these checks during process set-up and holds the lock for
 the whole build; `rnk-rootfs` provides the primitives (`ADR-0038`). It also
-raises `RLIMIT_NOFILE`'s soft limit to the hard limit for the walk.
+raises `RLIMIT_NOFILE`'s soft limit to the hard limit for the walk; `RUN`
+processes get the original limit back. Every later step reaches the
+workdir through the descriptor that was checked, never by its path.
 
 ## Exporter requirements specific to the walk
 

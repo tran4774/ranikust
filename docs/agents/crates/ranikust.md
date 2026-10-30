@@ -95,8 +95,13 @@ their ancestors, by name and by `(dev, ino)` of the opened workdir against
 each system directory and its ancestors; `RootPath::open`
 (`RESOLVE_NO_SYMLINKS`); `flock(LOCK_EX | LOCK_NB)` on a readable fd held
 by `Workdir` for the build; a non-empty workdir without a regular
-`.ranikust-root` refused, an empty one gets it. `RLIMIT_NOFILE`'s soft
-limit is raised to the hard limit.
+`.ranikust-root` refused. `claim` writes nothing: an empty workdir gets the
+marker from `Workdir::mark` right before the build first writes to it,
+which lists the workdir again and drops the marker if anything else
+appeared. Everything done in the workdir later, deletion above all, goes
+through `Workdir::root()`, never a reopened `path()`. `RLIMIT_NOFILE`'s
+soft limit is raised to the hard limit; `RUN` children must get the
+original back (Phase 2 task 7).
 
 Exit codes: 0 success (`--help`, `--version`, `version` included); 1 a
 runtime error, an unsupported kernel or a refused environment; 2 a usage
@@ -159,11 +164,13 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `smoke_check_setup`).
 - T0 built, `src/workdir/tests.rs`: `/`, `//`, `/usr/../` and system
   directories refused, a symlink to `/usr` refused by its target, an empty
-  workdir marked and locked (a second claim refused), a non-empty one
-  refused without the marker and nothing written, a marker that is a
+  workdir locked (a second claim refused) and marked only by `mark`, a
+  workdir filled before `mark` refused with the marker removed, a non-empty
+  one refused without the marker and nothing written, the name and
+  identity checks as pure functions, a marker that is a
   symlink or directory refused, `RLIMIT_NOFILE` at the hard limit.
-  `tests/cli.rs`: `--mode=kaniko --workdir` refused when unmarked, marked
-  and stopped when empty, `/usr` refused. T3: `just build-static`.
+  `tests/cli.rs`: `--mode=kaniko --workdir` refused when unmarked, stopped
+  with nothing written when empty, `/usr` refused. T3: `just build-static`.
 - T2 only, in the VM: `--workdir` at `/`, `/home`, other system directories
   ([testing](../../testing.md#planned-test-suites)).
 

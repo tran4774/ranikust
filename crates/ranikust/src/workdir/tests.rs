@@ -8,7 +8,27 @@ fn refused(dir: &Path) -> String {
 }
 
 #[test]
-fn the_root_and_system_directories_are_refused() {
+fn system_directories_and_their_ancestors_are_refused_by_name() {
+    for dir in ["/usr", "/usr/local", "/var", "/var/lib", "/tmp", "/home"] {
+        assert!(system_by_name(Path::new(dir)).is_some(), "{dir}");
+    }
+    for dir in ["/home/user/w", "/tmp/w", "/srv/build", "/usr/share"] {
+        assert_eq!(system_by_name(Path::new(dir)), None, "{dir}");
+    }
+}
+
+#[test]
+fn a_system_directory_is_refused_by_identity() {
+    let usr = dir_id(Path::new("/usr")).unwrap();
+    assert_eq!(same_as_system(usr).as_deref(), Some("/usr"));
+    let root = dir_id(Path::new("/")).unwrap();
+    assert!(same_as_system(root).unwrap().starts_with("/ (an ancestor"));
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(same_as_system(dir_id(tmp.path()).unwrap()), None);
+}
+
+#[test]
+fn the_root_and_system_directories_are_refused_without_a_write() {
     for dir in [
         "/", "//", "/usr/../", "/usr", "/usr/", "/etc", "/var", "/var/lib", "/tmp",
     ] {
@@ -22,6 +42,7 @@ fn the_root_and_system_directories_are_refused() {
             "{}: {why}",
             dir.display()
         );
+        assert!(!dir.join(MARKER).exists(), "{}", dir.display());
     }
 }
 
@@ -39,8 +60,10 @@ fn an_empty_workdir_gets_the_marker_and_the_lock() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("w");
     fs::create_dir(&dir).unwrap();
-    let claimed = claim(&dir).unwrap();
+    let mut claimed = claim(&dir).unwrap();
     assert_eq!(claimed.path(), fs::canonicalize(&dir).unwrap());
+    assert!(!dir.join(MARKER).exists(), "claim writes nothing");
+    claimed.mark().unwrap();
     let marker = fs::symlink_metadata(dir.join(MARKER)).unwrap();
     assert!(marker.is_file());
     assert_eq!(claimed.root().read_names("/").unwrap(), [MARKER]);
@@ -91,9 +114,25 @@ fn a_symlinked_workdir_is_resolved_first() {
     fs::create_dir(&real).unwrap();
     let link = tmp.path().join("link");
     symlink(&real, &link).unwrap();
-    let claimed = claim(&link).unwrap();
+    let mut claimed = claim(&link).unwrap();
     assert_eq!(claimed.path(), fs::canonicalize(&real).unwrap());
+    claimed.mark().unwrap();
     assert!(real.join(MARKER).is_file());
+}
+
+#[test]
+fn a_workdir_filled_before_marking_loses_the_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("w");
+    fs::create_dir(&dir).unwrap();
+    let mut claimed = claim(&dir).unwrap();
+    fs::write(dir.join("late"), b"x").unwrap();
+    let why = claimed.mark().unwrap_err().0;
+    assert!(
+        why.contains("was filled") && why.contains("removed again"),
+        "{why}"
+    );
+    assert!(!dir.join(MARKER).exists());
 }
 
 #[test]

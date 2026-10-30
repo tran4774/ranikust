@@ -237,7 +237,7 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
 
 /// Kaniko mode, as far as Phase 2 has built it: on a host `--workdir`, the
 /// workdir checks and lock (ADR-0038) and the raised `RLIMIT_NOFILE`, then
-/// a stop. The root `/` in a container comes with the mode's set-up.
+/// a stop, before the marker: nothing is written. The root `/` in a container comes with the mode's set-up.
 fn kaniko(config: &BuildConfig) -> Result<(), Failure> {
     let Some(dir) = config.workdir.as_deref() else {
         return Err(Failure::usage(

@@ -74,10 +74,19 @@ pub(crate) struct Workdir {
     root: RootPath,
     /// The readable fd holding `flock(LOCK_EX)`.
     _lock: OwnedFd,
+    /// The workdir was empty: [`Workdir::mark`] gives it the marker.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by `mark`, used from Phase 2 task 6")
+    )]
+    unmarked: bool,
 }
 
 impl Workdir {
-    /// The canonical path of the workdir.
+    /// The canonical path of the workdir, for messages only: everything
+    /// done in the workdir, deletion above all, goes through
+    /// [`Workdir::root`], the directory that was checked, never through a
+    /// reopened path.
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
@@ -89,6 +98,48 @@ impl Workdir {
     )]
     pub(crate) fn root(&self) -> &RootPath {
         &self.root
+    }
+
+    /// Gives an empty workdir the marker, right before the build first
+    /// writes to it, so a run that stops earlier leaves nothing behind.
+    /// The workdir is listed again after: anything another process put
+    /// there since the check removes the marker and refuses.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`] when the marker cannot be created or the workdir is no
+    /// longer empty.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "called before the first write, from Phase 2 task 6"
+        )
+    )]
+    pub(crate) fn mark(&mut self) -> Result<(), Refused> {
+        if !self.unmarked {
+            return Ok(());
+        }
+        let shown = self.path.display();
+        self.root
+            .open_at(MARKER, &OpenHow::write().create_new(0o644))
+            .map_err(|e| Refused(format!("cannot create {shown}/{MARKER}: {e}")))?;
+        let names = self
+            .root
+            .read_names("/")
+            .map_err(|e| Refused(format!("cannot list the workdir {shown}: {e}")))?;
+        if names.iter().any(|n| n != OsStr::new(MARKER)) {
+            let removed = self.root.remove_file(MARKER);
+            return Err(Refused(format!(
+                "the workdir {shown} was filled while ranikust checked it; the marker {}",
+                match removed {
+                    Ok(()) => "was removed again".to_owned(),
+                    Err(e) => format!("could not be removed: {e}"),
+                }
+            )));
+        }
+        self.unmarked = false;
+        Ok(())
     }
 }
 
@@ -103,10 +154,10 @@ type Id = (u32, u32, u64);
 /// 2. open it with `RESOLVE_NO_SYMLINKS` and take `flock(LOCK_EX | LOCK_NB)`:
 ///    one build per workdir;
 /// 3. refuse a non-empty workdir without a regular file [`MARKER`] (a
-///    workdir of only mount points is not empty), and give an empty one the
-///    marker.
+///    workdir of only mount points is not empty); an empty one gets the
+///    marker from [`Workdir::mark`].
 ///
-/// `dir` must exist.
+/// `dir` must exist. Nothing is written.
 ///
 /// # Errors
 ///
@@ -127,10 +178,7 @@ pub(crate) fn claim(dir: &Path) -> Result<Workdir, Refused> {
             shown()
         )));
     }
-    if let Some(sys) = SYSTEM_DIRS
-        .iter()
-        .find(|sys| Path::new(sys).starts_with(&path))
-    {
+    if let Some(sys) = system_by_name(&path) {
         return Err(refuse_system(&shown(), sys));
     }
     let root = RootPath::open(&path)
@@ -157,16 +205,27 @@ pub(crate) fn claim(dir: &Path) -> Result<Workdir, Refused> {
             return Err(Refused(format!("cannot lock the workdir {}: {e}", shown())));
         }
     }
-    check_marker(&root, &shown())?;
+    let unmarked = check_marker(&root, &shown())?;
     Ok(Workdir {
         path,
         root,
         _lock: lock,
+        unmarked,
     })
 }
 
-/// Step 3 of [`claim`], with the lock held.
-fn check_marker(root: &RootPath, shown: &str) -> Result<(), Refused> {
+/// The system directory that the canonical `path` is, or is an ancestor
+/// of, by name.
+fn system_by_name(path: &Path) -> Option<&'static str> {
+    SYSTEM_DIRS
+        .iter()
+        .copied()
+        .find(|sys| Path::new(sys).starts_with(path))
+}
+
+/// Step 3 of [`claim`], with the lock held: whether the workdir is empty
+/// and still needs the marker.
+fn check_marker(root: &RootPath, shown: &str) -> Result<bool, Refused> {
     let names = root
         .read_names("/")
         .map_err(|e| Refused(format!("cannot list the workdir {shown}: {e}")))?;
@@ -175,7 +234,7 @@ fn check_marker(root: &RootPath, shown: &str) -> Result<(), Refused> {
             .statx(MARKER)
             .map_err(|e| Refused(format!("cannot stat {shown}/{MARKER}: {e}")))?;
         return match st.file_type() {
-            FileType::Regular => Ok(()),
+            FileType::Regular => Ok(false),
             other => Err(Refused(format!(
                 "{shown}/{MARKER} is a {other:?}, not a regular file"
             ))),
@@ -189,9 +248,7 @@ fn check_marker(root: &RootPath, shown: &str) -> Result<(), Refused> {
             names.len()
         )));
     }
-    root.open_at(MARKER, &OpenHow::write().create_new(0o644))
-        .map(drop)
-        .map_err(|e| Refused(format!("cannot create {shown}/{MARKER}: {e}")))
+    Ok(true)
 }
 
 fn refuse_system(shown: &str, sys: &str) -> Refused {
