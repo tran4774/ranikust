@@ -165,6 +165,15 @@ error, a refused kaniko flag, an invalid combination, and for now every
 
 ## Tests
 
+- Kaniko-mode builds (Phase 2 task 6), measured 2026-10-31: T2
+  `RANIKUST_QUICK_MODE=kaniko just test-vm quick` (VM root, full sandbox
+  on the workdir) builds and runs `minimal`, `copy`, `metadata` and `run`,
+  and refuses `multistage`, `reproducible` and `scratch` (`COPY --from`);
+  T1 `RANIKUST_CASE_MODE=kaniko just smoke-case` (default rootless
+  podman, `RUN` `Direct` in a chroot) builds `minimal`, `copy` and
+  `metadata`, `run` stopping at its `#!` heredoc. T0: `workdir/tests.rs`
+  each ADR-0047 refusal, `main.rs` operator paths in the root and the
+  state directory bound from inside it, `build.rs` `kaniko_units`.
 - T0 built, `src/cli/tests.rs`: kaniko spellings per accepted flag
   (short forms, `=` and separate values, pflag booleans, `--target` lists),
   ranikust's flags, refused flags with their reasons (all reported at once,
