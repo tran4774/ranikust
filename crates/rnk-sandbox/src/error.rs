@@ -81,10 +81,15 @@ pub enum Step {
     SessionKeyring,
     /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
     Secret,
+    /// Creating the network namespace of `--network=none` in the helper
+    /// that holds it, with its own user namespace where needed.
+    NetNamespace,
+    /// Joining that network namespace.
+    JoinNetwork,
 }
 
 impl Step {
-    const ALL: [Step; 34] = [
+    const ALL: [Step; 36] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -119,6 +124,8 @@ impl Step {
         Step::MaskPath,
         Step::SessionKeyring,
         Step::Secret,
+        Step::NetNamespace,
+        Step::JoinNetwork,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -173,6 +180,8 @@ impl Step {
             Step::MaskPath => "mask a /proc or /sys path",
             Step::SessionKeyring => "join a new session keyring",
             Step::Secret => "write and bind a secret file",
+            Step::NetNamespace => "create the network namespace",
+            Step::JoinNetwork => "join the network namespace",
         }
     }
 }
@@ -227,6 +236,20 @@ pub enum Error {
          bind-mount the chroot directory onto itself before entering it"
     )]
     InPlainChroot,
+    /// `RUN --network=none` cannot bring up loopback: the process lacks
+    /// `CAP_NET_ADMIN` over a new network namespace, and cannot create one
+    /// owned by a user namespace either (ADR-0033).
+    #[error(
+        "RUN --network=none: cannot bring up the loopback interface: without \
+         CAP_NET_ADMIN ({direct}) and without a user namespace ({userns}); \
+         give ranikust CAP_NET_ADMIN or allow user namespaces"
+    )]
+    NoLoopback {
+        /// Why the network namespace failed without a user namespace.
+        direct: io::Error,
+        /// Why it failed with one.
+        userns: io::Error,
+    },
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,

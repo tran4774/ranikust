@@ -14,6 +14,8 @@ RUN test -f /ctx/app.txt && test ! -e /ctx/ignored.txt && test -f conf/a.conf &&
 RUN echo "$GREETING from ranikust" > hello && cat app.txt >> hello
 RUN --mount=type=cache,target=/cache echo cached > /cache/stamp && ls /cache > cache-list
 RUN --network=none test "$(ls /sys/class/net)" = lo
+# Loopback is up (IFF_UP), also without CAP_NET_ADMIN (ADR-0033).
+RUN --network=none test $(( $(cat /sys/class/net/lo/flags) & 1 )) = 1
 RUN --mount=type=secret,id=token test "$(cat /run/secrets/token)" = s3cr3t
 # BuildKit's secret file: 0400 and root's unless asked; env= alone gives a
 # variable of this RUN and no file (ADR-0032).

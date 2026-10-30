@@ -245,4 +245,21 @@ mod tests {
         assert_eq!(caps.root_entry, RootEntry::PivotRoot);
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
     }
+
+    /// `--network=none` through a held network namespace, the path of an
+    /// environment without `CAP_NET_ADMIN` (ADR-0033): the child joins it
+    /// and mounts `sysfs` for it, then reaches `execve`.
+    #[test]
+    #[ignore = "T2: creates namespaces and mounts; run as root in the test VM only"]
+    fn a_run_joins_a_held_network_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_dir = create_root(dir.path()).unwrap();
+        let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot)).unwrap();
+        runner.hold_networks();
+        let mut spec = RunSpec::new(&root_dir, vec![PROBE_PROGRAM.into()]);
+        spec.network = crate::spec::Network::None;
+        let parent = ParentPid::new().unwrap();
+        reached_exec(runner.run(spec, None, |job| clone_child(job, parent))).unwrap();
+        assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
 }

@@ -12,7 +12,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -164,6 +164,9 @@ pub(crate) struct Job {
     /// `clone` flags, the exit signal included.
     flags: libc::c_long,
     isolation: Isolation,
+    /// Join a network namespace a [`NetHolder`] creates in its own user
+    /// namespace, instead of cloning one (ADR-0033).
+    hold_network: bool,
     /// Descriptors the child uses (the caller's stdio, mount sources), open
     /// until the clone and closed right after, so that only the child holds
     /// them.
@@ -180,6 +183,9 @@ pub(crate) struct Spawned {
     pid: Pid,
     /// Read end of the error pipe: end-of-file once `execve` succeeded.
     failures: OwnedFd,
+    /// The process holding the child's network namespace, ended once the
+    /// child is reaped.
+    holder: Option<NetHolder>,
 }
 
 /// This process's pid as `/proc` numbers it: the parent pid its children
@@ -222,11 +228,20 @@ fn spawner(requests: &mpsc::Receiver<Request>, parent: ParentPid) {
 /// thread for `PR_SET_PDEATHSIG`.
 pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let Job {
-        args,
+        mut args,
         flags,
         isolation,
+        hold_network,
         fds: keep,
     } = job;
+    let holder = if hold_network {
+        let h =
+            NetHolder::spawn(true).map_err(|e| sys_err("create the RUN's network namespace", e))?;
+        args.netns = Some(h.pidfd.as_raw_fd());
+        Some(h)
+    } else {
+        None
+    };
     let (failures, err_w) =
         rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
     let err_w = above_stdio(err_w)?;
@@ -255,6 +270,9 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     drop(keep);
     if ret < 0 {
         let e = io::Error::last_os_error();
+        if let Some(h) = holder {
+            h.finish();
+        }
         return Err(match e.raw_os_error() {
             Some(libc::EPERM) => Error::Privilege("creating the RUN namespaces"),
             _ => sys_err("clone", e),
@@ -265,7 +283,126 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
         .and_then(Pid::from_raw)
         .ok_or_else(|| sys_err("clone", io::Error::from(io::ErrorKind::InvalidData)))?;
     drop(err_w);
-    Ok(Spawned { pid, failures })
+    Ok(Spawned {
+        pid,
+        failures,
+        holder,
+    })
+}
+
+/// The process that holds a network namespace for `--network=none`
+/// ([`child::hold_network`]), and a pidfd of it the `RUN` child joins the
+/// namespace through. Not reaped until [`NetHolder::finish`], so its pid
+/// stays its own.
+#[derive(Debug)]
+pub(crate) struct NetHolder {
+    pid: Pid,
+    pidfd: OwnedFd,
+}
+
+impl NetHolder {
+    /// Clones the holder and waits until its namespace is ready: in a new
+    /// user namespace with `userns`, else in the caller's (the probe).
+    fn spawn(userns: bool) -> io::Result<Self> {
+        let (ready, err_w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC)?;
+        let err_w = above_stdio(err_w).map_err(|_| io::Error::from_raw_os_error(libc::EMFILE))?;
+        let me = rustix::process::getpid().as_raw_nonzero().get();
+        let null: libc::c_long = 0;
+        // SAFETY: as in `clone_child`: a `fork`-like clone; the child only
+        // makes plain syscalls and never returns.
+        let ret = unsafe {
+            libc::syscall(
+                libc::SYS_clone,
+                libc::c_long::from(libc::SIGCHLD),
+                null,
+                null,
+                null,
+                null,
+            )
+        };
+        if ret == 0 {
+            // SAFETY: the child of that clone, right after it returned 0.
+            unsafe { child::hold_network(err_w.as_raw_fd(), me, userns) }
+        }
+        drop(err_w);
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let pid = i32::try_from(ret)
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        // Ends a holder that is not ready; it is not reaped, so the pid is
+        // its own.
+        let end = |e: io::Error| {
+            // Gone already when it failed: nothing to kill.
+            let _ = rustix::process::kill_process(pid, Signal::KILL);
+            reap_holder(pid);
+            e
+        };
+        match read_failure(&ready) {
+            Ok(None) => {}
+            Ok(Some((_, errno))) => return Err(end(io::Error::from_raw_os_error(errno))),
+            Err(_) => return Err(end(io::Error::from(io::ErrorKind::InvalidData))),
+        }
+        let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
+            .map_err(|e| end(e.into()))?;
+        Ok(Self { pid, pidfd })
+    }
+
+    /// Kills and reaps the holder; the namespace ends with its last member.
+    fn finish(self) {
+        // It waits in `pause` and is not reaped: the pid is its own. Gone
+        // already only if something killed it, which the reap covers.
+        let _ = rustix::process::kill_process(self.pid, Signal::KILL);
+        reap_holder(self.pid);
+    }
+}
+
+/// Reaps a [`NetHolder`] process.
+fn reap_holder(pid: Pid) {
+    loop {
+        match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
+            Err(Errno::INTR) => {}
+            // Reaped, or not a child any more: nothing else to do.
+            _ => return,
+        }
+    }
+}
+
+/// How a `--network=none` `RUN` gets a network namespace with loopback up,
+/// found once by [`probe_network`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NetMode {
+    /// The clone creates it and the child brings up `lo`: the process has
+    /// `CAP_NET_ADMIN`.
+    Clone,
+    /// A [`NetHolder`] creates it in a user namespace of its own (ADR-0033).
+    UserNs,
+    /// Neither works: the errnos of the two attempts.
+    Unavailable { direct: i32, userns: i32 },
+}
+
+/// Tries a network namespace with `lo` up without, then with, a user
+/// namespace, as the `RUN` child would.
+fn probe_network() -> NetMode {
+    let direct = match NetHolder::spawn(false) {
+        Ok(h) => {
+            h.finish();
+            return NetMode::Clone;
+        }
+        Err(e) => e.raw_os_error().unwrap_or(libc::EIO),
+    };
+    match NetHolder::spawn(true) {
+        Ok(h) => {
+            h.finish();
+            NetMode::UserNs
+        }
+        Err(e) => NetMode::Unavailable {
+            direct,
+            userns: e.raw_os_error().unwrap_or(libc::EIO),
+        },
+    }
 }
 
 /// Prepares, runs and cleans up `RUN`s; the cloning is the caller's.
@@ -279,6 +416,8 @@ pub(crate) struct Runner {
     root_entry: Option<RootEntry>,
     drops: ([u32; 64], usize),
     next: AtomicU64,
+    /// Found at the first `--network=none` `RUN`.
+    net_mode: OnceLock<NetMode>,
 }
 
 impl Runner {
@@ -295,6 +434,7 @@ impl Runner {
             root_entry,
             drops: caps::bounding_drops(caps::last_cap()),
             next: AtomicU64::new(0),
+            net_mode: OnceLock::new(),
         })
     }
 
@@ -304,6 +444,14 @@ impl Runner {
 
     pub(crate) fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    /// Makes `--network=none` use a [`NetHolder`] whatever the probe would
+    /// find: the path of an environment without `CAP_NET_ADMIN`, tested
+    /// where the process has it.
+    #[cfg(test)]
+    pub(crate) fn hold_networks(&self) {
+        let _ = self.net_mode.set(NetMode::UserNs);
     }
 
     /// Runs `spec`, cloning through `spawn`. With `running` (a
@@ -457,6 +605,24 @@ impl Runner {
             }
             (Some(dir), false) => Some(child_secrets(dir, &spec.secrets)?),
         };
+        let mut flags = clone_flags(spec);
+        let mut loopback = false;
+        let mut hold_network = false;
+        if spec.isolation == Isolation::Full && spec.network == Network::None {
+            match *self.net_mode.get_or_init(probe_network) {
+                NetMode::Clone => loopback = true,
+                NetMode::UserNs => {
+                    flags &= !libc::CLONE_NEWNET;
+                    hold_network = true;
+                }
+                NetMode::Unavailable { direct, userns } => {
+                    return Err(Error::NoLoopback {
+                        direct: io::Error::from_raw_os_error(direct),
+                        userns: io::Error::from_raw_os_error(userns),
+                    });
+                }
+            }
+        }
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
@@ -465,7 +631,8 @@ impl Runner {
             dev_remount,
             root_entry,
             hostname: hostname(spec).as_bytes().to_vec(),
-            loopback: spec.network == Network::None,
+            loopback,
+            netns: None,
             drops: self.drops,
             keep: caps::docker_default_mask(),
             uid: Uid::from_raw(user.uid),
@@ -484,8 +651,9 @@ impl Runner {
         };
         Ok(Job {
             args,
-            flags: libc::c_long::from(clone_flags(spec)),
+            flags: libc::c_long::from(flags),
             isolation: spec.isolation,
+            hold_network,
             fds: keep,
         })
     }
@@ -788,7 +956,11 @@ fn execute(
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
     }
-    let Spawned { pid, failures } = spawn(job)?;
+    let Spawned {
+        pid,
+        failures,
+        holder,
+    } = spawn(job)?;
     if let Some(r) = running {
         r.add(pid, isolation);
     }
@@ -818,7 +990,12 @@ fn execute(
         // kills the rest.
         (r, _) => r,
     };
-    let (status, usage) = reap(pid)?;
+    let reaped = reap(pid);
+    // The child is reaped, or never joined: the namespace can end.
+    if let Some(h) = holder {
+        h.finish();
+    }
+    let (status, usage) = reaped?;
     killed?;
     if cancelled {
         return Err(Error::Cancelled);
@@ -932,6 +1109,46 @@ fn timeval_ns(t: libc::timeval) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether `pid`'s network namespace has `lo` up: its `127.0.0.1` local
+    /// route, or its `::1` address, exists only then.
+    fn loopback_is_up(pid: Pid) -> bool {
+        let net = PathBuf::from(format!("/proc/{}/net", pid.as_raw_nonzero()));
+        let fib = fs::read_to_string(net.join("fib_trie")).unwrap_or_default();
+        let inet6 = fs::read_to_string(net.join("if_inet6")).unwrap_or_default();
+        fib.contains("127.0.0.1") || inet6.lines().any(|l| l.ends_with(" lo"))
+    }
+
+    /// A held namespace in a user namespace of its own: unprivileged where
+    /// the host allows user namespaces, skipped where it does not.
+    #[test]
+    fn a_held_network_namespace_has_loopback_up_and_ends() {
+        let h = match NetHolder::spawn(true) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("skipped: no user namespace here ({e})");
+                return;
+            }
+        };
+        let pid = h.pid;
+        let mine = fs::read_link("/proc/self/ns/net").unwrap();
+        let held = fs::read_link(format!("/proc/{}/ns/net", pid.as_raw_nonzero())).unwrap();
+        assert_ne!(mine, held);
+        assert!(loopback_is_up(pid));
+        let devs = fs::read_to_string(format!("/proc/{}/net/dev", pid.as_raw_nonzero())).unwrap();
+        assert_eq!(devs.lines().skip(2).count(), 1, "{devs}");
+        h.finish();
+        assert!(!Path::new(&format!("/proc/{}", pid.as_raw_nonzero())).exists());
+    }
+
+    #[test]
+    #[ignore = "T2: creates network namespaces; run as root in the test VM only"]
+    fn root_brings_up_loopback_itself_and_in_a_user_namespace() {
+        assert_eq!(probe_network(), NetMode::Clone);
+        let h = NetHolder::spawn(true).unwrap();
+        assert!(loopback_is_up(h.pid));
+        h.finish();
+    }
 
     #[test]
     fn a_symlinked_sandbox_or_runs_directory_is_refused() {

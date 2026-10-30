@@ -126,7 +126,13 @@ pub(crate) struct ChildArgs {
     pub(crate) dev_remount: [MountFlags; DEV_NODES.len()],
     pub(crate) root_entry: RootEntry,
     pub(crate) hostname: Vec<u8>,
+    /// Bring up `lo` in the network namespace the clone created
+    /// (`--network=none` where the process has `CAP_NET_ADMIN`).
     pub(crate) loopback: bool,
+    /// A pidfd of the [`hold_network`] process whose network namespace,
+    /// owned by a user namespace and with `lo` already up, the child joins
+    /// instead (`--network=none` without `CAP_NET_ADMIN`, ADR-0033).
+    pub(crate) netns: Option<RawFd>,
     /// Capabilities to drop from the bounding set, and how many.
     pub(crate) drops: ([u32; 64], usize),
     /// The capabilities kept (Docker's defaults), as a mask.
@@ -277,6 +283,13 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     let err = fds.err_w;
     let parent = ParentCheck::open(err, fds.parent);
     arm_death_signal(err, parent);
+    // First, so that `sysfs` below is mounted for this namespace.
+    if let Some(fd) = args.netns {
+        // SAFETY: `setns` on a pidfd the parent keeps open across the clone.
+        if unsafe { libc::setns(fd, libc::CLONE_NEWNET) } != 0 {
+            fail(err, Step::JoinNetwork, last_errno());
+        }
+    }
 
     // Nothing mounted from here on propagates to the build's namespace.
     check(
@@ -902,6 +915,83 @@ fn loopback_up(err: RawFd) {
     }
 }
 
+/// The process that holds the network namespace of a `--network=none`
+/// `RUN` without `CAP_NET_ADMIN` (ADR-0033): it creates a user namespace and
+/// a network namespace owned by it, where it has `CAP_NET_ADMIN`, brings up
+/// `lo`, closes `err` to tell the parent it is ready, and waits to be
+/// killed. The `RUN` child joins the namespace through its pidfd and stays
+/// in the build's user namespace, with its uid, gid and capabilities. With
+/// `userns` false it creates the network namespace alone: the probe that
+/// tells whether the clone can do it itself.
+///
+/// # Safety
+///
+/// Call only in the child of a `clone` without `CLONE_VM`, right after it
+/// returned 0: everything here is a plain syscall, with no allocation.
+pub(crate) unsafe fn hold_network(err: RawFd, parent: i32, userns: bool) -> ! {
+    check(
+        err,
+        Step::DeathSignal,
+        rustix::process::set_parent_process_death_signal(Some(Signal::KILL)),
+    );
+    // Not in a new PID namespace: `getppid` is the cloning process, unless it
+    // died before the signal was armed.
+    if rustix::process::getppid().map_or(0, |p| p.as_raw_nonzero().get()) != parent {
+        fail(err, Step::ParentGone, Errno::SRCH);
+    }
+    // A forked copy of every descriptor of the build: closed, so that this
+    // process, which never executes, holds no lock or pipe end of it.
+    close_all_but(err);
+    let mut flags = libc::CLONE_NEWNET;
+    if userns {
+        flags |= libc::CLONE_NEWUSER;
+    }
+    // SAFETY: plain syscall; the process is single-threaded (a clone).
+    if unsafe { libc::unshare(flags) } != 0 {
+        fail(err, Step::NetNamespace, last_errno());
+    }
+    loopback_up(err);
+    // SAFETY: closing the write end of the error pipe: end-of-file tells the
+    // parent the namespace is ready.
+    unsafe { libc::close(err) };
+    loop {
+        // SAFETY: `pause` waits for the parent's SIGKILL or the death signal.
+        unsafe { libc::pause() };
+    }
+}
+
+/// Closes every descriptor except stdio and `keep`, with `close_range` or,
+/// before Linux 5.9, one number at a time up to a bound.
+fn close_all_but(keep: RawFd) {
+    let keep = u32::try_from(keep).unwrap_or(u32::MAX);
+    let ranges = [
+        (3, keep.saturating_sub(1)),
+        (keep.saturating_add(1), u32::MAX),
+    ];
+    for (first, last) in ranges {
+        if first > last {
+            continue;
+        }
+        // SAFETY: plain syscall on a descriptor range.
+        let r = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0u32) };
+        if r == 0 {
+            continue;
+        }
+        let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
+            .current
+            .unwrap_or(1 << 16)
+            .min(1 << 16);
+        let limit = u32::try_from(limit).unwrap_or(1 << 16).min(last);
+        for fd in first..limit {
+            if let Ok(fd) = RawFd::try_from(fd) {
+                // SAFETY: closing a descriptor number; a closed one fails
+                // with EBADF.
+                unsafe { libc::close(fd) };
+            }
+        }
+    }
+}
+
 /// Bounding set to Docker's defaults, ambient set cleared, effective and
 /// permitted set to the defaults (of those the process has), inheritable
 /// empty, as Docker since 20.10.14. Root keeps the defaults through
@@ -1239,6 +1329,7 @@ mod tests {
             root_entry: RootEntry::PivotRoot,
             hostname: Vec::new(),
             loopback: false,
+            netns: None,
             drops: ([0; 64], 0),
             keep: 0,
             uid: Uid::ROOT,
