@@ -53,6 +53,9 @@ Entry format:
   `media_type.rs`): the caller passes the format, so nothing in `rnk-oci`
   depends on the answer. Reversible because the default will live in the
   CLI or `rnk-builder` (task 11); adding it changes no `rnk-oci` type.
+  `rnk_builder::image_format` (branch `feat/rnk-builder-outputs`) takes
+  (a), Docker v2s2 for `FROM scratch` as go-containerregistry's empty
+  image, and OCI whenever layers are zstd. Reversible: one function.
 - **Raised:** 2026-10-30
 
 ### Q-007: Which image-assembly types live in rnk-oci?
@@ -187,7 +190,9 @@ Entry format:
   `push_blob` (plain upload) and `mount_or_push` (mount, and on a `202`
   refusal or any failure an upload, as kaniko); whether task 11 calls the
   mount is left to this answer. Reversible: dropping the mount is not
-  calling `mount_or_push`.
+  calling `mount_or_push`. Task 11 (`rnk_builder::push`, branch
+  `feat/rnk-builder-outputs`) takes (a): a base layer is mounted from its
+  repository, and every blob from the first destination for later ones.
 - **Raised:** 2026-10-30
 
 ### Q-065: Do localhost and private-network registries fall back to HTTP?
@@ -607,7 +612,63 @@ Entry format:
 - **Options:** (a) kaniko's; (b) BuildKit's; (c) BuildKit's entries with
   an author `ranikust`.
 - **Recommendation:** none
-- **Interim:** none; `rnk-builder` decides when it assembles images.
+- **Interim:** a variant of (a), on branch `feat/rnk-builder-outputs`:
+  `rnk_builder::layer_history` gives kaniko's entry for a layer, with the
+  author `ranikust` (`HISTORY_AUTHOR`); metadata instructions get none.
+  Reversible: one function and one constant, and the executors that call
+  them are not written yet.
+- **Raised:** 2026-10-30
+
+### Q-160: Are base layers rewritten under `--reproducible`?
+
+- **Blocks:** Phase 1 task 13 (digests compared with kaniko);
+  **Area:** `rnk-builder`
+- **Context:** kaniko's `--reproducible` runs `mutate.Canonical` over the
+  whole image, which re-encodes every layer, the base image's included,
+  with zero timestamps (`kaniko@44aa7ddc0 pkg/executor/build.go:2104-2127`,
+  `vendor/github.com/google/go-containerregistry/pkg/v1/mutate/mutate.go:674`),
+  unless `FF_KANIKO_REPRODUCIBLE_PRESERVE_BASE_LAYERS`. Base layers are
+  already content-addressed, so keeping them does not make two builds
+  differ; rewriting them costs a decode and an encode of every base layer
+  and a push of all of them.
+- **Options:** (a) keep base layers as pulled (kaniko's feature flag);
+  (b) rewrite them, as kaniko by default.
+- **Recommendation:** none
+- **Interim:** (a), on branch `feat/rnk-builder-outputs`: `assemble` keeps
+  base `BlobLayer`s; only built layers get the fixed mtime. Reversible: (b)
+  is a `LayerSource` over a pulled blob, exported like a built layer.
+- **Raised:** 2026-10-30
+
+### Q-161: Which fixed time does `--reproducible` write?
+
+- **Blocks:** Phase 1 task 13; **Area:** `rnk-builder`
+- **Context:** kaniko's `mutate.Canonical` sets the config's and every
+  history entry's `created` to Go's zero time, written
+  `0001-01-01T00:00:00Z` (`mutate.go:533-536`), and tar mtimes to that
+  time too. ranikust's rule is "a fixed epoch, or `SOURCE_DATE_EPOCH` when
+  set" (`docs/agents/rules.md`), which kaniko never reads.
+- **Options:** (a) the Unix epoch, `1970-01-01T00:00:00Z`, the same as
+  `SOURCE_DATE_EPOCH=0` and as mtime 0 in a tar header; (b) Go's zero time,
+  as kaniko writes.
+- **Recommendation:** none
+- **Interim:** (a), on branch `feat/rnk-builder-outputs`
+  (`BuildTime::reproducible`). Reversible: one constant.
+- **Raised:** 2026-10-30
+
+### Q-162: Where do the blobs of built layers live?
+
+- **Blocks:** nothing in Phase 1; Phase 4 (cache); **Area:** `rnk-builder`,
+  `rnk-store`
+- **Context:** `rnk_store::Store::fill` takes the digest before the content
+  is written, which suits pulled blobs; a built layer's digest is known only
+  after encoding. `LayerExporter` therefore encodes into the build
+  directory, where the blob is deleted with the build.
+- **Options:** (a) the build directory; (b) a store call that publishes a
+  temporary file under the digest computed while writing it, so later
+  builds and the cache reuse it.
+- **Recommendation:** none
+- **Interim:** (a), on branch `feat/rnk-builder-outputs`. Reversible: the
+  exporter's directory and one rename.
 - **Raised:** 2026-10-30
 
 ### Q-132: Are empty values of a base config written back?
@@ -711,7 +772,11 @@ Entry format:
   [rnk-sched](agents/crates/rnk-sched.md#api-planned)).
 - **Options:** (a) `rnk-sched`, which holds the graph; (b) `rnk-builder`.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** both halves, on branch `feat/rnk-builder-outputs`:
+  `rnk-builder` owns the rule, `LayerDemand::for_stage(in_target, outputs,
+  cache)`, and `rnk-sched` (task 12) tells it whether a stage is the target
+  or an ancestor of it through `FROM <stage>`. Reversible: moving the call
+  moves one line.
 - **Raised:** 2026-10-30
 
 ### Q-030: What are the memory-limit algorithm and thresholds?
