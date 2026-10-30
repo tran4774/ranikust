@@ -77,7 +77,12 @@ runs as root on the host:
 2. **Fetch** the Ubuntu cloud image of `RANIKUST_VM_RELEASE` (`noble`,
    kernel 6.8, by default; `jammy`, kernel 5.15) and check its SHA-256
    against the published `SHA256SUMS`. The verified image is cached in
-   `~/.cache/ranikust/vm` (`RANIKUST_VM_CACHE`).
+   `tests/e2e/_vm-image/` of the main checkout (gitignored,
+   `RANIKUST_VM_CACHE`), which every git worktree of it shares. Only one
+   VM runs at a time on the machine: a run holds `flock` on
+   `_vm-image/.vm.lock` from start to teardown, and a second run waits for
+   it (`RANIKUST_VM_LOCK_WAIT`, default an hour) instead of booting
+   another 4–12 GiB VM beside it.
 3. **Prepare** a run directory under `target/vm/`: a copy-on-write qcow2
    overlay on the cached image, a fresh SSH key and a NoCloud seed
    (`tests/vm/cloud-init/user-data`: user `rnk` with passwordless `sudo`,
@@ -147,7 +152,7 @@ host's `nextjs-kaniko` containers:
   `bench/digest-check/check-blobs.py`. The reference images (kaniko
   `localhost/kaniko-bench:stream`, BuildKit `v0.33.1-rootless`,
   `registry:2`, verdaccio 6.1.6) are saved once from the host's podman
-  into `~/.cache/ranikust/vm/e2e/`. About 2.8 GB goes in per run.
+  into `tests/e2e/_vm-image/e2e/`. About 2.8 GB goes in per run.
 - **Services.** A registry (`registry:5000`) and verdaccio
   (`verdaccio:4873`) on an internal Docker network, as
   `docker-compose.yml`, also published on the VM's loopback for
