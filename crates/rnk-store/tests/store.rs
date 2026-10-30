@@ -251,3 +251,135 @@ fn entry_keys_need_their_algorithm_directory() {
     let p = store.fill(&key, |e| write_blob(e, b"512")).unwrap();
     assert_eq!(p.parent().unwrap(), store.state_dir().join("blobs/sha512"));
 }
+
+#[test]
+fn a_new_state_directory_is_private() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let mode = fs::metadata(store.state_dir())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o077, 0, "{mode:o}");
+}
+
+#[test]
+fn a_symlink_planted_as_an_entry_is_refused_not_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let state = store.state_dir().to_owned();
+    let outside = dir.path().join("outside");
+    fs::write(&outside, "host").unwrap();
+    for key in [EntryKey::Blob(digest(8)), EntryKey::Layer(digest(8))] {
+        let kind = if matches!(key, EntryKey::Blob(_)) {
+            "blobs"
+        } else {
+            "layers"
+        };
+        let p = state.join(kind).join("sha256").join(digest(8).encoded());
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &p).unwrap();
+        let err = store.get(&key).unwrap_err();
+        assert!(matches!(err, Error::BadEntry { .. }), "{err}");
+        let err = store
+            .fill(&key, |_| -> io::Result<u64> {
+                panic!("filled over a symlink")
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::BadEntry { .. }), "{err}");
+        assert!(fs::symlink_metadata(&p).unwrap().is_symlink());
+    }
+    assert_eq!(fs::read(&outside).unwrap(), b"host");
+}
+
+#[test]
+fn a_layer_of_the_wrong_type_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let p = store
+        .state_dir()
+        .join("layers/sha256")
+        .join(digest(9).encoded());
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(&p, "not a directory").unwrap();
+    let err = store.get(&EntryKey::Layer(digest(9))).unwrap_err();
+    assert!(matches!(err, Error::BadEntry { .. }), "{err}");
+}
+
+/// Makes a FIFO at `p`, in this process: a spawned `mkfifo` would hold a
+/// copy of every lock until it execs (see `tests/processes.rs`).
+fn mkfifo(p: &Path) {
+    use rustix::fs::{CWD, FileType, Mode, mknodat};
+    mknodat(CWD, p, FileType::Fifo, Mode::from_raw_mode(0o600), 0).unwrap();
+}
+
+#[test]
+fn a_fifo_planted_as_a_lock_file_is_refused_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&paths(dir.path())).unwrap());
+    let lock = store
+        .state_dir()
+        .join("locks/blobs/sha256")
+        .join(digest(10).encoded());
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    mkfifo(&lock);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let s = store.clone();
+    thread::spawn(move || {
+        let r = s.fill(&EntryKey::Blob(digest(10)), |e| write_blob(e, b"x"));
+        tx.send(r.map_err(|e| e.to_string())).unwrap();
+    });
+    let r = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("fill blocked on a FIFO");
+    let err = r.unwrap_err();
+    assert!(err.contains("regular file"), "{err}");
+}
+
+#[test]
+fn a_bad_lock_file_of_a_dead_build_does_not_stop_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join(".ranikust");
+    Store::open(&paths(dir.path())).unwrap().close().unwrap();
+    // A directory and a FIFO where the lock files of two builds go.
+    fs::create_dir_all(state.join("builds/x/stages")).unwrap();
+    fs::create_dir_all(state.join("builds/x.lock")).unwrap();
+    fs::create_dir_all(state.join("tmp/y")).unwrap();
+    mkfifo(&state.join("builds/y.lock"));
+    let store = Store::open(&paths(dir.path())).unwrap();
+    // Left for the maintainer, with a warning.
+    assert!(state.join("builds/x/stages").is_dir());
+    assert!(state.join("tmp/y").is_dir());
+    store
+        .fill(&EntryKey::Blob(digest(11)), |e| write_blob(e, b"ok"))
+        .unwrap();
+}
+
+#[test]
+fn a_symlink_left_as_a_build_directory_is_unlinked_not_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join(".ranikust");
+    let first = Store::open(&paths(dir.path())).unwrap();
+    first
+        .fill(&EntryKey::Blob(digest(12)), |e| write_blob(e, b"kept"))
+        .unwrap();
+    first.close().unwrap();
+    // A dead build whose tmp/ and builds/ entries lead to the state
+    // directory itself and to the host's root.
+    std::os::unix::fs::symlink("/", state.join("tmp/z")).unwrap();
+    std::os::unix::fs::symlink("..", state.join("builds/z")).unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    assert!(!state.join("tmp/z").exists() && fs::symlink_metadata(state.join("tmp/z")).is_err());
+    assert!(fs::symlink_metadata(state.join("builds/z")).is_err());
+    assert_eq!(
+        store.get(&EntryKey::Blob(digest(12))).unwrap(),
+        Some(
+            store
+                .state_dir()
+                .join("blobs/sha256")
+                .join(digest(12).encoded())
+        )
+    );
+    assert!(state.join(".ranikust-root").is_file());
+}

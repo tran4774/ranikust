@@ -5,13 +5,14 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
 use rnk_oci::Digest;
-use rnk_rootfs::{FileType, IgnoreList, OpenHow, RootPath, delete_contents};
+use rnk_rootfs::{FileType, IgnoreList, OpenHow, RootPath, Stat, delete_contents};
 use rustix::io::Errno;
 use sha2::{Digest as _, Sha256};
 use tracing::field::Empty;
@@ -24,8 +25,8 @@ use crate::lock;
 const MARKER: &str = ".ranikust-root";
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
-/// Mode of the store's own directories: image content stays away from
-/// other users of the host.
+/// Mode of the state directory and the store's own directories: image
+/// content stays away from other users of the host.
 const DIR_MODE: u32 = 0o700;
 
 /// The paths handed down to every crate of a build.
@@ -61,7 +62,10 @@ pub struct TmpEntry {
 }
 
 impl TmpEntry {
-    /// The entry's host path, for callers that must reopen it (async I/O).
+    /// The entry's host path, for messages and for callers that cannot use
+    /// a descriptor. Write through [`TmpEntry::file`] or
+    /// [`TmpEntry::root`]: reopening this path by name resolves it again,
+    /// outside the store's checks.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -94,6 +98,8 @@ pub struct Store {
     /// Dropping the store only closes it: a build that did not
     /// [`Store::close`] leaves its directories to the next start.
     _build_lock: OwnedFd,
+    /// The per-digest locks held by this store's threads.
+    held: lock::InProcess,
     next_tmp: AtomicU64,
 }
 
@@ -102,9 +108,10 @@ impl Store {
     /// this build and removes what dead builds left in `tmp/` and
     /// `builds/`.
     ///
-    /// The state directory is created if missing and canonicalized; a new
-    /// or empty directory gets the `.ranikust-root` marker, and a non-empty
-    /// one without it is refused.
+    /// The state directory is created (mode 0700) if missing and
+    /// canonicalized; a new or empty directory gets the `.ranikust-root`
+    /// marker, and a non-empty one without it is refused. A state directory
+    /// owned by another user or writable by others is used with a warning.
     ///
     /// # Errors
     ///
@@ -118,13 +125,18 @@ impl Store {
             path: paths.state.clone(),
             source,
         };
-        fs::create_dir_all(&paths.state).map_err(|e| host_err("create", e))?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(DIR_MODE)
+            .create(&paths.state)
+            .map_err(|e| host_err("create", e))?;
         let state_path = fs::canonicalize(&paths.state).map_err(|e| host_err("resolve", e))?;
         let state = RootPath::open(&state_path)?;
         check_marker(&state, &state_path)?;
         for d in DIRS {
             state.create_dir_all(d, DIR_MODE)?;
         }
+        warn_if_shared(&state, &state_path);
         let (id, build_lock) = register(&state, &state_path)?;
         let store = Self {
             build_dir: state_path.join("builds").join(&id),
@@ -132,6 +144,7 @@ impl Store {
             state_path,
             id,
             _build_lock: build_lock,
+            held: lock::InProcess::default(),
             next_tmp: AtomicU64::new(0),
         };
         store.cleanup()?;
@@ -162,7 +175,9 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::Rootfs`] when the entry cannot be looked up.
+    /// [`Error::BadEntry`] when something else than the entry sits under
+    /// its name (a symlink, the wrong type, a mount); [`Error::Rootfs`]
+    /// when it cannot be looked up.
     pub fn get(&self, key: &EntryKey) -> Result<Option<PathBuf>> {
         Ok(self.published(key)?.map(|_| self.host(&key.path())))
     }
@@ -181,8 +196,9 @@ impl Store {
     /// # Errors
     ///
     /// [`Error::Fill`] when `f` fails, after its temporary entry is removed;
-    /// nothing is published. [`Error::Rootfs`] or [`Error::Io`] when the
-    /// store cannot lock, create or rename.
+    /// nothing is published. [`Error::BadEntry`] as [`Store::get`].
+    /// [`Error::Rootfs`] or [`Error::Io`] when the store cannot lock,
+    /// create or rename.
     pub fn fill<F, E>(&self, key: &EntryKey, f: F) -> Result<PathBuf>
     where
         F: FnOnce(&TmpEntry) -> std::result::Result<u64, E>,
@@ -252,27 +268,29 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::Rootfs`] when a directory cannot be removed, for example
-    /// because a mount is still inside it; the next start retries.
+    /// [`Error::Rootfs`] or [`Error::BadEntry`] when a directory cannot be
+    /// removed, for example because a mount is still inside it or on it;
+    /// the next start retries.
     pub fn close(self) -> Result<()> {
         remove_build(&self.state, &self.id)?;
         Ok(())
     }
 
     /// Removes the `tmp/` and `builds/` directories of every build that no
-    /// longer holds its lock. A directory that cannot be removed is left
-    /// with a warning: it must not stop this build.
+    /// longer holds its lock. Anything that fails for one build (its lock
+    /// file, its directories) is left with a warning: it must not stop
+    /// this build.
     fn cleanup(&self) -> Result<()> {
         let span = tracing::info_span!("rnk_store.cleanup", entries_removed = Empty);
         let _entered = span.enter();
         let mut ids = BTreeSet::new();
-        for name in self.list("builds")? {
+        for name in list(&self.state, Path::new("builds"))? {
             let lock = name.as_encoded_bytes().ends_with(b".lock");
             if !lock {
                 ids.insert(name);
             }
         }
-        ids.extend(self.list("tmp")?);
+        ids.extend(list(&self.state, Path::new("tmp"))?);
         ids.remove(&OsString::from(&self.id));
         let mut removed = 0_u64;
         for id in ids {
@@ -280,12 +298,7 @@ impl Store {
                 tracing::warn!(target: "rnk_store", "state directory: skipping a non-UTF-8 build id {id:?}");
                 continue;
             };
-            let lock_rel = lock_file(id);
-            let fd = lock::open(&self.state, &lock_rel)?;
-            if !lock::try_lock(&fd).map_err(|e| self.io_err("lock", &lock_rel, e))? {
-                continue; // a running build
-            }
-            match remove_build(&self.state, id) {
+            match self.remove_if_dead(id) {
                 Ok(n) => removed += n,
                 Err(e) => {
                     tracing::warn!(target: "rnk_store", "state directory: leftovers of build {id} not removed: {e}");
@@ -296,11 +309,24 @@ impl Store {
         Ok(())
     }
 
-    /// Takes the per-digest lock of `key`, waiting for it.
-    fn lock(&self, key: &EntryKey) -> Result<OwnedFd> {
+    /// Removes the directories of build `id` if its lock is free; returns
+    /// how many there were.
+    fn remove_if_dead(&self, id: &str) -> Result<u64> {
+        let lock_rel = lock_file(id);
+        let fd = lock::open(&self.state, &lock_rel)?;
+        if !lock::try_lock(&fd).map_err(|e| self.io_err("lock", &lock_rel, e))? {
+            return Ok(0); // a running build
+        }
+        remove_build(&self.state, id)
+    }
+
+    /// Takes the per-digest lock of `key`, waiting for it: first among this
+    /// store's threads, then with `flock` among processes.
+    fn lock(&self, key: &EntryKey) -> Result<(lock::Held<'_>, OwnedFd)> {
         let span = tracing::info_span!("rnk_store.lock", contended = Empty);
         let _entered = span.enter();
         let rel = key.lock_path();
+        let (held, waited) = self.held.acquire(&rel);
         if let Some(parent) = rel.parent() {
             self.state.create_dir_all(parent, DIR_MODE)?;
         }
@@ -309,20 +335,33 @@ impl Store {
         if !free {
             lock::lock(&fd).map_err(|e| self.io_err("lock", &rel, e))?;
         }
-        span.record("contended", !free);
-        Ok(fd)
+        span.record("contended", waited || !free);
+        Ok((held, fd))
     }
 
     /// The size of the published entry `key` (0 for a layer), or `None`.
+    /// Only a regular file (blob) or a directory (layer) on the state
+    /// directory's own mount counts; anything else under the name is an
+    /// error, never followed and never replaced.
     fn published(&self, key: &EntryKey) -> Result<Option<u64>> {
-        match self.state.statx(key.path()) {
-            Ok(st) => Ok(Some(match key {
-                EntryKey::Blob(_) => st.size,
-                EntryKey::Layer(_) => 0,
-            })),
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        let rel = key.path();
+        let st = match self.state.statx(&rel) {
+            Ok(st) => st,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let (want, size) = match key {
+            EntryKey::Blob(_) => (FileType::Regular, st.size),
+            EntryKey::Layer(_) => (FileType::Directory, 0),
+        };
+        let reason = if st.file_type() != want {
+            "not a regular file for a blob, or not a directory for a layer"
+        } else if st.mount_root || st.mnt_id != self.state.mnt_id() {
+            "on another mount than the state directory"
+        } else {
+            return Ok(Some(size));
+        };
+        Err(Error::BadEntry { path: rel, reason })
     }
 
     fn create_tmp(&self, key: &EntryKey, tmp: &Path) -> Result<TmpEntry> {
@@ -362,22 +401,6 @@ impl Store {
         }
     }
 
-    /// The names in the store directory `rel`, `.` and `..` excluded.
-    fn list(&self, rel: &str) -> Result<Vec<OsString>> {
-        let fd = self
-            .state
-            .open_at(rel, &OpenHow::read().directory().no_follow())?;
-        let err = |e: Errno| self.io_err("read directory", Path::new(rel), e.into());
-        let mut names = Vec::new();
-        for entry in rustix::fs::Dir::read_from(&fd).map_err(err)? {
-            let name = entry.map_err(err)?.file_name().to_bytes().to_vec();
-            if name != b"." && name != b".." {
-                names.push(OsString::from_vec(name));
-            }
-        }
-        Ok(names)
-    }
-
     fn host(&self, rel: &Path) -> PathBuf {
         self.state_path.join(rel)
     }
@@ -394,6 +417,25 @@ impl Store {
 /// `builds/<id>.lock`, held by the build `id` while it runs.
 fn lock_file(id: &str) -> PathBuf {
     PathBuf::from("builds").join(format!("{id}.lock"))
+}
+
+/// The names in the directory `rel` of the state directory (`.` for the
+/// state directory itself), `.` and `..` excluded. A symlink is refused.
+fn list(state: &RootPath, rel: &Path) -> Result<Vec<OsString>> {
+    let fd = state.open_at(rel, &OpenHow::read().directory().no_follow())?;
+    let err = |e: Errno| Error::Io {
+        op: "read directory",
+        path: rel.to_owned(),
+        source: e.into(),
+    };
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(&fd).map_err(err)? {
+        let name = entry.map_err(err)?.file_name().to_bytes().to_vec();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name));
+        }
+    }
+    Ok(names)
 }
 
 /// Refuses a non-empty state directory without a regular-file marker, and
@@ -414,12 +456,7 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
         Some(false) => return Err(refuse()),
         None => {}
     }
-    let mut entries = fs::read_dir(state_path).map_err(|source| Error::Io {
-        op: "read directory",
-        path: state_path.to_owned(),
-        source,
-    })?;
-    if entries.next().is_some() {
+    if !list(state, Path::new("."))?.is_empty() {
         // A build creating the store concurrently writes the marker first.
         return match marked(state)? {
             Some(true) => Ok(()),
@@ -433,6 +470,27 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
             _ => Err(refuse()),
         },
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Warns when the state directory or one of the store's directories is
+/// owned by another user or writable by group or others: another user
+/// could then plant entries that builds trust. Not an error, because a
+/// shared or pre-created state directory is a deliberate set-up.
+fn warn_if_shared(state: &RootPath, state_path: &Path) {
+    let euid = rustix::process::geteuid().as_raw();
+    for rel in std::iter::once(".").chain(DIRS) {
+        let Ok(st) = state.statx(rel) else { continue };
+        if st.uid != euid || st.mode & 0o022 != 0 {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory: {} is owned by uid {} with mode {:o}; \
+                 other users may be able to change what builds reuse",
+                state_path.join(rel).display(),
+                st.uid,
+                st.permissions(),
+            );
+        }
     }
 }
 
@@ -454,14 +512,23 @@ fn register(state: &RootPath, state_path: &Path) -> Result<(String, OwnedFd)> {
             Ok(true) => {}
             Ok(false) => continue,
             Err(source) => {
+                let _ = state.remove_file(&rel);
                 return Err(Error::NoFlock {
                     path: state_path.to_owned(),
                     source,
                 });
             }
         }
-        state.create_dir(Path::new("builds").join(&id), DIR_MODE)?;
-        state.create_dir(Path::new("tmp").join(&id), DIR_MODE)?;
+        let created = state
+            .create_dir(Path::new("builds").join(&id), DIR_MODE)
+            .and_then(|()| state.create_dir(Path::new("tmp").join(&id), DIR_MODE));
+        if let Err(e) = created {
+            // Leave nothing behind but what the next start removes anyway.
+            if let Err(e) = remove_build(state, &id) {
+                tracing::warn!(target: "rnk_store", "state directory: build {id} not unregistered: {e}");
+            }
+            return Err(e.into());
+        }
         return Ok((id, fd));
     }
     unreachable!("u32 attempts exhausted")
@@ -485,8 +552,12 @@ fn remove_build(state: &RootPath, id: &str) -> Result<u64> {
 }
 
 /// Removes the entry `rel` of the state directory and everything below it,
-/// through `rnk-rootfs`: no symlink followed, no mount crossed. `false` when
-/// it did not exist.
+/// through `rnk-rootfs`: no symlink followed (a symlink is unlinked), no
+/// mount crossed or emptied. `false` when it did not exist.
+///
+/// Not for `caches/`, which `RUN` writes, or anything else a build's
+/// content can reach, until `rnk-rootfs` offers a deletion that opens the
+/// top directory itself without following or crossing.
 fn remove_tree(state: &RootPath, rel: &Path) -> Result<bool> {
     let st = match state.statx(rel) {
         Ok(st) => st,
@@ -494,12 +565,44 @@ fn remove_tree(state: &RootPath, rel: &Path) -> Result<bool> {
         Err(e) => return Err(e.into()),
     };
     if st.file_type() == FileType::Directory {
-        let sub = state.sub_root(rel)?;
-        delete_contents(&sub, &IgnoreList::new())?;
-        drop(sub);
-        state.remove_dir(rel)?;
+        remove_dir_tree(state, rel, &st)?;
     } else {
         state.remove_file(rel)?;
     }
     Ok(true)
 }
+
+/// Removes the directory `rel`, whose `statx` (taken without following)
+/// is `st`, with its contents.
+///
+/// Refuses a mount point. The directory is then opened, and the opened
+/// directory must be the one `st` describes (inode, device, mount): a
+/// swap of `rel` for a symlink (to `/`, the state directory itself) or for
+/// a mount between the two steps is refused instead of emptying what it
+/// points to.
+fn remove_dir_tree(state: &RootPath, rel: &Path, st: &Stat) -> Result<()> {
+    let refuse = |reason| Error::BadEntry {
+        path: rel.to_owned(),
+        reason,
+    };
+    if st.mount_root || st.mnt_id != state.mnt_id() {
+        return Err(refuse("a mount point; not deleted"));
+    }
+    let sub = state.sub_root(rel)?;
+    let now = sub.statx("/")?;
+    let same = now.ino == st.ino
+        && (now.dev_major, now.dev_minor) == (st.dev_major, st.dev_minor)
+        && now.mnt_id == st.mnt_id
+        && sub.mnt_id() == state.mnt_id()
+        && !now.mount_root;
+    if !same {
+        return Err(refuse("changed while it was being deleted; not deleted"));
+    }
+    delete_contents(&sub, &IgnoreList::new())?;
+    drop(sub);
+    state.remove_dir(rel)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

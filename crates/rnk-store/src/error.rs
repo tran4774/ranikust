@@ -49,6 +49,18 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// Something else than the store's own entry sits under a name in the
+    /// state directory: a symlink, the wrong type, a mount point, or a
+    /// directory swapped while it was being deleted. It is neither followed
+    /// nor replaced.
+    #[error("state directory entry {}: {reason}", path.display())]
+    BadEntry {
+        /// The entry, relative to the state directory.
+        path: PathBuf,
+        /// What is wrong with it.
+        reason: &'static str,
+    },
+
     /// An operation inside the state directory failed.
     #[error("state directory: {0}")]
     Rootfs(#[from] rnk_rootfs::Error),
