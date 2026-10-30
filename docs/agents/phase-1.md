@@ -184,10 +184,6 @@ Also open, not blocking a start:
 
 - the final `--parallel-stages` name:
   [Q-019](../open-questions.md#q-019-what-is-the-final-name-of-the-parallel-stages-flag);
-- `--platform` versus kaniko's `--custom-platform`:
-  [Q-020](../open-questions.md#q-020-is-custom-platform-accepted-as-an-alias-of-platform);
-- what `--cache`/`--cache-repo` do before Phase 4:
-  [Q-021](../open-questions.md#q-021-what-do-the-cache-flags-do-before-phase-4);
 - the memory-limit algorithm (`design/scheduler.md#limits`):
   [Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds).
 

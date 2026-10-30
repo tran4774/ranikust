@@ -89,9 +89,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `-v`/`--verbosity`, `--log-format`, `--log-timestamp`, `--label`,
   `--annotation`, `--image-format`, `--compression-level`, the three digest
   files, `--insecure`, `--insecure-pull`, the `--skip-tls-verify` flags,
-  `--push-retry`, `--image-download-retry`, `--custom-platform`,
-  `--cache=false`, and kaniko's deprecated `--tarPath`, `--snapshotMode` and
-  `--customPlatform`. Flags that change nothing in the image built, such as
+  `--push-retry`, `--image-download-retry`, `--context-sub-path` (for
+  `dir://` contexts), `--custom-platform`, `--cache=false`, and kaniko's
+  deprecated `--tarPath`, `--snapshotMode` and `--customPlatform`.
+  Credentials go over plain HTTP only to registries named with
+  `--insecure-registry` or destinations under `--insecure`, never to one a
+  Dockerfile names under `--insecure-pull`. Flags that change nothing in the
+  image built, such as
   `--force`, `--cache-dir` and `--cleanup`, are accepted with a warning;
   the others are refused with the release that brings them.
 - kaniko's variables: `KANIKO_NO_PUSH`, `DOCKER_AUTH_CONFIG` (read before
@@ -101,9 +105,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
-- Log lines carry no timestamp unless `--log-timestamp` is given, as in
-  kaniko.
-
+- Log lines look like kaniko's: `INFO[0005] message` by default, with the
+  full time under `--log-timestamp`; `--log-format=text` and `json` write
+  logrus's plain and JSON forms.
+- Libraries ranikust uses log at `info` at most, whatever `--verbosity`.
 - Layers leave out files a `RUN` copied up without changing them, and
   write an opaque directory as whiteouts of what it hides, as BuildKit's
   overlay differ does (ADR-0034).

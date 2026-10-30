@@ -82,16 +82,17 @@ listed there):
 
 | kaniko flags | ranikust |
 |---|---|
-| `-v`/`--verbosity`, `--log-format`, `--log-timestamp` (`:60-62`) | accepted; `fatal`/`panic` log as `error`; `color` only on a terminal; no timestamp by default, as kaniko |
+| `-v`/`--verbosity`, `--log-format`, `--log-timestamp` (`:60-62`) | accepted, written as logrus (`pkg/logging/logging.go:48-60`): `color` forced with seconds since start, `text` `time=… level=… msg=…`, `json` with `level`/`msg`/`time`; `--log-timestamp` the full time in `color`; level case-insensitive, `warning` accepted, `fatal`/`panic` as `error`; times UTC (logrus: local); other crates at `info` at most |
 | `--label` (`:366`), `--annotation` (`:374`) | accepted: labels on the pushed stage before its first instruction (`build.go:190-191,275-285`), annotations on the manifest |
 | `--image-format` (`:358`) | accepted; default OCI (`ADR-0032`); `docker` with zstd exits 2 (`:178`) |
 | `--compression-level` (`:359`) | accepted: gzip -1 is 6, 0-9; zstd 1-19; gzip -2 and zstd 20-22 refused |
-| `--digest-file`, `--image-name-with-digest-file`, `--image-name-tag-with-digest-file` (`:353-355`) | accepted, kaniko's formats (`push.go:194-256`) |
-| `--insecure`, `--insecure-pull`, `--skip-tls-verify`, `--skip-tls-verify-pull`, `--skip-tls-verify-registry` (`:392-400`) | accepted, as per-registry sets: destinations for the push flags, `FROM` and `COPY --from` registries for the pull flags |
-| `--push-retry`, `--image-download-retry` (`:396`, `:398`) | accepted; replace ranikust's default retry policy only when given, kaniko's backoff (1 s, doubling) |
+| `--digest-file`, `--image-name-with-digest-file`, `--image-name-tag-with-digest-file` (`:353-355`) | accepted, kaniko's formats (`push.go:194-256`); both name files need a destination (`:212-217`); missing parent made `0700`; an `https://` path (kaniko `PUT`s it, `push.go:150-166`) refused |
+| `--insecure`, `--insecure-pull`, `--skip-tls-verify`, `--skip-tls-verify-pull`, `--skip-tls-verify-registry` (`:392-400`) | accepted, as per-registry sets: destinations for the push flags, `FROM` and `COPY --from` registries for the pull flags; credentials go over plain HTTP only to `--insecure-registry` and destinations under `--insecure`, never to a registry only `--insecure-pull` allows (T11); `index.docker.io` is `docker.io` |
+| `--push-retry`, `--image-download-retry` (`:396`, `:398`) | accepted as kaniko's outer loops (`util.go:221`, 1 s doubling, any error) around the client's own retries: the whole push (`push.go:364`), the image manifest fetch (`remote.go:79,121`) |
 | `--skip-push-permission-check` (`:372`), `--preserve-context` (`:375`) | accepted: their meaning holds without code in overlay mode |
-| `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--context-sub-path`, `--force-build-metadata`, `--skip-unused-stages` | accepted and ignored with a warning: the image is the same without them in overlay mode |
-| `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching`, `--no-push-cache` | refused until Phase 4 |
+| `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | accepted and ignored with a warning: the image is the same without them in overlay mode |
+| `--context-sub-path` (`:339`) | joined onto a `dir://` context, inside it (`root.go:599-631`, `buildcontext/dir.go:25`); ignored with a warning for a plain path, as kaniko |
+| `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
 | `--single-snapshot`, `--materialize`, `--ignore-var-run` (Q-035), `--whitelist-var-run` | refused until Phase 2 (kaniko mode) |
 | `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-ignore-immutable-tag-errors` | refused until Phase 5 |
 | `--dryrun` | refused, not scheduled |
@@ -99,7 +100,7 @@ listed there):
 
 Variables: `KANIKO_NO_PUSH` overrides `--no-push` (`:83-89`);
 `KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP` exit 2 (Phase 5);
-`DOCKER_AUTH_CONFIG` is read before `config.json` (`pkg/creds/creds.go:39`);
+`DOCKER_AUTH_CONFIG` is read before `config.json` (`pkg/creds/creds.go:39`), `auths` only;
 `KANIKO_PRESERVE_CONTEXT` is honoured; `KANIKO_DIR` warns naming
 `--state-dir`; every other set `KANIKO_*`/`FF_KANIKO_*` variable, among them
 `KANIKO_METRICS_FILE`, is named in one start-up warning.

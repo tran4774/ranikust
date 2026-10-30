@@ -37,6 +37,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | Flag | Meaning |
 |---|---|
 | `-c`, `--context=DIR` | The build context, a local directory (`dir://` allowed). Default `/workspace/`. git, tar and HTTPS contexts come later; S3, GCS and Azure are not planned. |
+| `--context-sub-path=DIR` | Build from this sub-directory of a `dir://` context (inside it: no `..`). Ignored, with a warning, for a plain path, as kaniko does. |
 | `-f`, `--dockerfile=PATH` | The Dockerfile. Default `Dockerfile`. |
 | `--build-arg=KEY=VALUE` | A build argument; `KEY` alone takes its value from the environment. Repeatable. |
 | `--target=STAGE` | Stages to build, comma-separated or repeated; the first is the image produced. Default: the last stage. |
@@ -55,19 +56,19 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--annotation=KEY=VALUE` | An annotation on the image manifest. Repeatable. The base image's annotations are not carried over. |
 | `--digest-file=PATH` | Write the image digest (`sha256:…`, no newline), also with `--no-push`. |
 | `--image-name-with-digest-file=PATH` | Write `repository@digest`, one line per destination; needs `--destination`. |
-| `--image-name-tag-with-digest-file=PATH` | Write `repository:tag@digest`, one line per destination (`latest` when no tag). Given with the previous flag, both files get this text, as in kaniko. |
-| `--insecure` | Destinations may be plain HTTP. |
-| `--insecure-pull` | The registries of `FROM` and `COPY --from` images may be plain HTTP. |
+| `--image-name-tag-with-digest-file=PATH` | Write `repository:tag@digest`, one line per destination (`latest` when no tag); needs `--destination`. Given with the previous flag, both files get this text, as in kaniko. The three digest files are local paths (a missing directory is made `0700`); kaniko's upload to an `https://` URL is not supported. |
+| `--insecure` | Destinations may be plain HTTP; their credentials may then be sent over it. |
+| `--insecure-pull` | The registries of `FROM` and `COPY --from` images may be plain HTTP. They are reached anonymously over it: a Dockerfile names them, and ranikust sends credentials over plain HTTP only to registries you name (`--insecure-registry`, or destinations under `--insecure`). |
 | `--skip-tls-verify` | Do not verify the TLS certificates of destinations. |
 | `--skip-tls-verify-pull` | Do not verify the TLS certificates of the registries pulled from. |
 | `--skip-tls-verify-registry=REGISTRY` | Do not verify this registry's TLS certificate. Repeatable. These insecure and TLS settings apply per registry, so a registry both pushed to and pulled from gets both. |
-| `--push-retry=N` | Retry a failed push N times, waiting 1 s, then twice as long each time. Without the flag, ranikust's own retry policy applies (three attempts). |
-| `--image-download-retry=N` | The same for pulls of base images. |
-| `-v`, `--verbosity=LEVEL` | `trace`, `debug`, `info` (default), `warn`, `error`; `fatal` and `panic` log as `error`. Never changes the metrics report. |
-| `--log-format=text\|color\|json` | `color` (default) colors lines when stderr is a terminal; `json` writes one JSON object per line. |
-| `--log-timestamp` | A timestamp on each log line; off by default, as in kaniko. |
+| `--push-retry=N` | Start the whole push again up to N times after it failed, waiting 1 s, then twice as long each time, as kaniko. Each request keeps ranikust's own retries inside. |
+| `--image-download-retry=N` | The same for fetching a base image's manifest. |
+| `-v`, `--verbosity=LEVEL` | `trace`, `debug`, `info` (default), `warn` (or `warning`), `error`, in any case; `fatal` and `panic` log as `error`. Other programs' libraries log at `info` at most. Never changes the metrics report. |
+| `--log-format=text\|color\|json` | As kaniko's: `color` (default) colors the level and counts seconds since start (`INFO[0005] message`); `text` writes `time=… level=… msg=…`; `json` one object per line with `level`, `msg` and `time`. Times are UTC. |
+| `--log-timestamp` | In the `color` format, the full time instead of the seconds since start. |
 | `--custom-platform=linux/amd64` | Another name for `--platform` (also `--customPlatform`, with a warning). |
-| `--cache=false` | Accepted: no layer cache is what this version does. `--cache` itself comes later. |
+| `--cache=false` | Accepted: no layer cache is what this version does. `--cache` itself comes later. `--compressed-caching=false` and `--no-push-cache` are accepted with a warning. |
 | `--skip-push-permission-check`, `--preserve-context` | Accepted: ranikust makes no write check before the build, and never touches the context. |
 
 ## ranikust's own flags
@@ -95,7 +96,6 @@ says once, as a warning, that it ignores them:
 | `--force` | ranikust runs on hosts by design and checks `--workdir` instead. |
 | `--cache-dir` | The warmer is not planned; base images are pulled into the store. |
 | `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry` | They tune kaniko's own filesystem handling, which overlay mode does not do. |
-| `--context-sub-path` | It applies only to fetched contexts, which come later. |
 | `--force-build-metadata`, `--skip-unused-stages` | Deprecated in kaniko, which ignores them too. |
 
 ## kaniko flags it refuses
@@ -131,7 +131,8 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
 - `KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP` stop the run with exit
   code 2: mirrors come later, and pulling from another registry than the
   one they name would be wrong.
-- `DOCKER_AUTH_CONFIG` holds a `config.json` inline; it is asked before the
+- `DOCKER_AUTH_CONFIG` holds a `config.json`'s `auths` inline (nothing else:
+  no `credsStore` or `credHelpers`); it is asked before the
   file (`$DOCKER_CONFIG/config.json` or `~/.docker/config.json`), as in
   kaniko.
 - `KANIKO_PRESERVE_CONTEXT` is accepted, as its flag; `KANIKO_DIR` is

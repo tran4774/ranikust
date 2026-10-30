@@ -43,10 +43,10 @@ is named in the start-up warning about unread `KANIKO_*` variables
 format (`--verbosity`, `--log-format`, `--log-timestamp`) apply to the log
 layer only and never change the report.
 
-Logs are a separate layer: stderr, `INFO` until the verbosity and format
-flags are decided ([Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted),
-[Q-031](../open-questions.md#q-031-how-does-per-stage-log-grouping-fit-the-kaniko-log-flags)).
-Each layer has its own filter, so the log level never hides a metric span.
+Logs are a separate layer: stderr, at kaniko's `--verbosity` and written as
+kaniko's `--log-format` and `--log-timestamp` write it, other crates at
+`INFO` at most ([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)). Each
+layer has its own filter, so the log level never hides a metric span.
 
 ## Emitting spans
 
