@@ -162,15 +162,19 @@ fn input_order_does_not_change_the_bytes() {
 }
 
 #[test]
-fn reproducible_mtime_replaces_every_timestamp() {
+fn reproducible_mtime_clamps_later_timestamps() {
+    // As BuildKit's rewrite-timestamp: later times become the epoch,
+    // earlier ones (the sample's -1) are kept.
     let mut opts = plain();
     opts.mtime = Some(1);
     let mut t = sample_tree();
     let bytes = t.encode(opts).unwrap();
     for e in read_tar(&bytes) {
-        assert_eq!(e.mtime, 1, "{}", e.name());
+        assert!(e.mtime <= 1, "{}", e.name());
     }
-    for e in &mut t.entries {
+    assert!(read_tar(&bytes).iter().any(|e| e.mtime == -1));
+    // Any later time gives the same bytes.
+    for e in t.entries.iter_mut().filter(|e| e.mtime > 1) {
         e.mtime += 1000;
     }
     for p in t.source.parents.values_mut() {

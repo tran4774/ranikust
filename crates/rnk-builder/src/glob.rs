@@ -1,9 +1,9 @@
 //! Wildcards in `COPY`/`ADD` sources: Go's `path/filepath.Match`, which
 //! BuildKit applies one path component at a time.
 //!
-//! [open: Q-080] Interim: BuildKit's rules (a pattern matches the entries
-//! at its own depth; `*` and `?` never match `/`); kaniko matches the same
-//! way with `filepath.Match` over the whole path.
+//! BuildKit's rules (Q-080, `ADR-0032`): a pattern matches the entries at
+//! its own depth; `*` and `?` never match `/`. kaniko matches the same way
+//! with `filepath.Match` over the whole path.
 
 /// Whether `s` has a wildcard character Go's `filepath.Match` reads.
 pub(crate) fn has_wildcard(s: &str) -> bool {

@@ -274,8 +274,6 @@ pub(crate) fn reopen(pinned: BorrowedFd<'_>, flags: OFlags, path: &Path) -> Resu
 /// Which extended attributes [`read_xattrs`] returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Xattrs {
-    /// Only `security.capability`, as kaniko's `CopyCapabilities`.
-    Capability,
     /// What overlay's copy-up keeps of an inode in an extracted layer: all
     /// but overlay's own (`trusted.overlay.*`, `user.overlay.*`); the
     /// escaped content xattrs `user.overlay.overlay.*` are kept.
@@ -283,12 +281,14 @@ pub(crate) enum Xattrs {
     /// Every xattr, overlay's own included: for code that reads overlay's
     /// markers (`rnk-snapshot`'s exporter).
     All,
+    /// What `COPY` carries over, as BuildKit copies every xattr (Q-120):
+    /// those of [`Xattrs::Layer`], set best effort ([`apply_lenient`]).
+    Copy,
 }
 
 /// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
 /// `XATTR_SIZE_MAX`).
 const XATTR_MAX: usize = 64 << 10;
-const CAPABILITY: &str = "security.capability";
 
 /// The extended attributes of the pinned entry `fd` of type `file_type`.
 ///
@@ -334,21 +334,18 @@ pub(crate) fn read_xattrs(
         }
     };
     let mut buf = vec![0; XATTR_MAX];
-    let names: Vec<OsString> = match which {
-        Xattrs::Capability => vec![OsString::from(CAPABILITY)],
-        Xattrs::Layer | Xattrs::All => match list(&mut buf[..]) {
-            Ok(n) => buf[..n]
-                .split(|&b| b == 0)
-                .filter(|s| !s.is_empty())
-                .map(|s| OsStr::from_bytes(s).to_owned())
-                .collect(),
-            Err(Errno::NOTSUP) => return Ok(Vec::new()),
-            Err(e) => return Err(io_err("listxattr", path, e)),
-        },
+    let names: Vec<OsString> = match list(&mut buf[..]) {
+        Ok(n) => buf[..n]
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| OsStr::from_bytes(s).to_owned())
+            .collect(),
+        Err(Errno::NOTSUP) => return Ok(Vec::new()),
+        Err(e) => return Err(io_err("listxattr", path, e)),
     };
     let mut out = Vec::new();
     for n in names {
-        if which == Xattrs::Layer && is_overlay_own(n.as_bytes()) {
+        if matches!(which, Xattrs::Layer | Xattrs::Copy) && is_overlay_own(n.as_bytes()) {
             continue;
         }
         match get(n.as_os_str(), &mut buf[..]) {
@@ -385,6 +382,99 @@ fn is_overlay_own(name: &[u8]) -> bool {
 
 /// Applies `m` to the entry behind `h`. `path` is only for error messages.
 pub(crate) fn apply(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
+    apply_with(h, m, path, None)
+}
+
+/// [`apply`], but an xattr the entry refuses (a `security.*` name the
+/// filesystem or the process may not set) is left out and counted in
+/// `skipped`, as BuildKit's copy only logs it (`buildkit@cd8ee244
+/// solver/llbsolver/file/backend.go:262-265`).
+pub(crate) fn apply_lenient(
+    h: &Handle<'_>,
+    m: &Meta,
+    path: &Path,
+    skipped: &SkippedXattrs,
+) -> Result<()> {
+    apply_with(h, m, path, Some(skipped))
+}
+
+/// The xattrs one copy left out, reported once when it ends
+/// ([`SkippedXattrs::warn`]) rather than once per file.
+#[derive(Debug, Default)]
+pub(crate) struct SkippedXattrs {
+    count: std::cell::Cell<u64>,
+    first: std::cell::RefCell<Option<String>>,
+}
+
+impl SkippedXattrs {
+    /// Records one xattr (or one entry's list) that was not copied.
+    pub(crate) fn note(&self, path: &Path, what: &str, e: &dyn std::fmt::Display) {
+        self.count.set(self.count.get() + 1);
+        let mut first = self.first.borrow_mut();
+        if first.is_none() {
+            *first = Some(format!("{}: {what}: {e}", path.display()));
+        }
+    }
+
+    /// One warning for the whole copy, with the count and the first.
+    pub(crate) fn warn(&self) {
+        if let Some(first) = self.first.borrow().as_ref() {
+            tracing::warn!(
+                "{} xattr(s) not copied, as BuildKit leaves them out; the first: {first}",
+                self.count.get()
+            );
+        }
+    }
+}
+
+/// [`read_xattrs`] with [`Xattrs::Copy`], for a copy: an entry whose xattrs
+/// cannot be listed or read has none copied, counted in `skipped`, as
+/// BuildKit only logs it. Any other error, such as a swapped name, stands.
+pub(crate) fn read_xattrs_lenient(
+    fd: BorrowedFd<'_>,
+    file_type: FileType,
+    parent: Option<(BorrowedFd<'_>, &OsStr)>,
+    path: &Path,
+    skipped: &SkippedXattrs,
+) -> Result<Vec<(OsString, Vec<u8>)>> {
+    match read_xattrs(fd, file_type, parent, Xattrs::Copy, path) {
+        Err(
+            e @ Error::Io {
+                op: "listxattr" | "getxattr",
+                ..
+            },
+        ) => {
+            skipped.note(path, "xattrs", &e);
+            Ok(Vec::new())
+        }
+        r => r,
+    }
+}
+
+/// What a refused xattr does: an error when strict (no `skipped`), else it
+/// is counted.
+fn xattr_result(
+    r: rustix::io::Result<()>,
+    name: &OsStr,
+    skipped: Option<&SkippedXattrs>,
+    path: &Path,
+) -> Result<()> {
+    match (r, skipped) {
+        (Ok(()), _) => Ok(()),
+        (Err(e), None) => Err(io_err("setxattr", path, e)),
+        (Err(e), Some(s)) => {
+            s.note(path, &format!("xattr {}", name.to_string_lossy()), &e);
+            Ok(())
+        }
+    }
+}
+
+fn apply_with(
+    h: &Handle<'_>,
+    m: &Meta,
+    path: &Path,
+    skipped: Option<&SkippedXattrs>,
+) -> Result<()> {
     let owner_changes = m.uid.is_some() || m.gid.is_some();
     let uid = m.uid.map(Uid::from_raw);
     let gid = m.gid.map(Gid::from_raw);
@@ -408,8 +498,8 @@ pub(crate) fn apply(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
                 rustix::fs::fchown(fd, uid, gid).map_err(|e| io_err("chown", path, e))?;
             }
             for (name, value) in &m.xattrs {
-                rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty())
-                    .map_err(|e| io_err("setxattr", path, e))?;
+                let r = rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty());
+                xattr_result(r, name, skipped, path)?;
             }
             if let Some(mode) = mode {
                 rustix::fs::fchmod(fd, mode).map_err(|e| io_err("chmod", path, e))?;
@@ -454,7 +544,7 @@ pub(crate) fn apply(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
                     } else {
                         rustix::fs::setxattr(&target, name.as_os_str(), value, XattrFlags::empty())
                     };
-                    r.map_err(|e| io_err("setxattr", path, e))?;
+                    xattr_result(r, name, skipped, path)?;
                 }
             }
             if let Some(mode) = mode
@@ -472,4 +562,21 @@ pub(crate) fn apply(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skipped_xattrs_count_all_and_keep_the_first() {
+        let s = SkippedXattrs::default();
+        s.note(Path::new("a"), "xattr security.selinux", &"EPERM");
+        s.note(Path::new("b"), "xattr trusted.x", &"EPERM");
+        assert_eq!(s.count.get(), 2);
+        assert_eq!(
+            s.first.borrow().as_deref(),
+            Some("a: xattr security.selinux: EPERM")
+        );
+    }
 }

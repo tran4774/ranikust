@@ -51,8 +51,11 @@ pub struct EncodeOptions {
     /// Compression threads; above 1, two more threads hash the tar and the
     /// blob. The output does not depend on it.
     pub threads: NonZeroUsize,
-    /// Under `--reproducible`, the mtime of every header, in seconds since
-    /// the Unix epoch; `None` keeps each entry's own mtime.
+    /// Under `--reproducible`, the latest mtime a header may carry, in
+    /// seconds since the Unix epoch: a later one is clamped to it, an earlier
+    /// one kept, as BuildKit's `rewrite-timestamp` does (`buildkit@cd8ee244
+    /// util/converter/converter.go:76-88`, Q-161). `None` keeps each entry's
+    /// own mtime.
     pub mtime: Option<i64>,
 }
 
@@ -553,11 +556,16 @@ fn entry_header<'a>(
         uid: entry.uid,
         gid: entry.gid,
         size,
-        mtime: mtime.unwrap_or(entry.mtime),
+        mtime: clamp(entry.mtime, mtime),
         linkname,
         device,
         xattrs: (!entry.xattrs.is_empty()).then_some(&entry.xattrs),
     }
+}
+
+/// `mtime`, no later than `limit` when one is set.
+fn clamp(mtime: i64, limit: Option<i64>) -> i64 {
+    limit.map_or(mtime, |l| mtime.min(l))
 }
 
 /// The header of a whiteout or opaque marker: an empty file, mode 0, 0:0,
@@ -570,7 +578,7 @@ fn marker_header(entry: &Entry, mtime: Option<i64>) -> Header<'static> {
         uid: 0,
         gid: 0,
         size: 0,
-        mtime: mtime.unwrap_or(entry.mtime),
+        mtime: clamp(entry.mtime, mtime),
         linkname: b"",
         device: (0, 0),
         xattrs: None,

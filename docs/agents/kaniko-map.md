@@ -143,14 +143,16 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   the current time (`pkg/executor/build.go:2100`); with `--reproducible` it
   rewrites the image through `mutate.Canonical` and switches to Docker v2s2
   unless `FF_KANIKO_REPRODUCIBLE_PRESERVE_FORMAT`
-  (`pkg/executor/build.go:2104-2127`, `canonicalImage` at `:1181`). ranikust
-  follows: current time by default; under `--reproducible` tar headers and
-  config get a fixed epoch, or `SOURCE_DATE_EPOCH` when set (kaniko never
-  reads it: no match in `pkg/` or `cmd/`); same bytes for any thread count.
-  kaniko also rewrites the base image's layers and writes Go's zero time
-  (`0001-01-01T00:00:00Z`); ranikust keeps base layers and writes the Unix
-  epoch, and, as BuildKit, clamps times above `SOURCE_DATE_EPOCH` to it
-  instead of setting every time (`ADR-0032`, Q-160, Q-161).
+  (`pkg/executor/build.go:2104-2127`, `canonicalImage` at `:1181`).
+  ranikust follows BuildKit instead (`ADR-0032`, Q-006, Q-160, Q-161): the
+  current time by default; under `--reproducible` the epoch is
+  `SOURCE_DATE_EPOCH` when set (kaniko never reads it: no match in `pkg/`
+  or `cmd/`), else the Unix epoch (kaniko writes Go's zero time,
+  `0001-01-01T00:00:00Z`); the config's `created` and the build's history
+  entries carry it, the base image's history keeps its times, built-layer
+  mtimes later than it are clamped to it and earlier ones kept, base layers
+  are kept as pulled (kaniko rewrites them), and the image stays OCI (no
+  switch to Docker v2s2). Same bytes for any thread count.
 - **Cache keys.** kaniko chains composite keys
   (`pkg/executor/build.go:322`, `pkg/executor/composite_cache.go:35`).
   ranikust has its own versioned, mode-independent key and neither reads nor

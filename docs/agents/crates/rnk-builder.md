@@ -35,7 +35,7 @@ pub struct BuildTime;                                   // one clock reading per
 impl BuildTime {
     pub fn at(now: SystemTime) -> Self;                 // normal build: config `created`, history
     pub fn reproducible(source_date_epoch: Option<&str>) -> Result<Self>;  // epoch or SOURCE_DATE_EPOCH (Q-161, ADR-0032)
-    pub fn layer_mtime(&self) -> Option<i64>;           // for EncodeOptions::mtime
+    pub fn layer_mtime(&self) -> Option<i64>;           // for EncodeOptions::mtime: later mtimes clamped to it
     pub fn rfc3339(&self) -> String;                    // Go's RFC3339Nano, as kaniko writes
 }
 pub struct LayerDemand { pub push: bool, pub cache: bool, pub target: bool, pub output: bool }
@@ -55,8 +55,9 @@ impl LayerExporter {
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
 }
-pub fn layer_history(created_by: &str, time: &BuildTime) -> History;                       // (Q-131, ADR-0032)
-pub fn image_format(base: Option<ImageFormat>, zstd: bool, reproducible: bool) -> ImageFormat;  // (Q-006, ADR-0032)
+pub const HISTORY_COMMENT: &str = "buildkit.dockerfile.v0";
+pub fn instruction_history(created_by: &str, time: &BuildTime) -> History;  // BuildKit's entry, no author (Q-131)
+pub fn image_format() -> ImageFormat;                   // OCI, as BuildKit (Q-006)
 pub struct Image { pub format: ImageFormat, pub config: Bytes, pub config_descriptor: Descriptor,
                    pub manifest: RawManifest, pub layers: Vec<BlobLayer> }
 pub fn assemble(config: ImageConfig, layers: Vec<BlobLayer>, format: ImageFormat, time: &BuildTime) -> Result<Image>;
@@ -107,11 +108,17 @@ pub struct PulledImage { pub reference, pub config: ImageConfig, pub format: Ima
     pub blobs: Vec<BlobLayer>, pub layers: Vec<LayerDir> }
 ```
 
-`RUN`, `COPY`, `ADD` and a `WORKDIR` that creates its directory each run
-in a layer of their own; the other instructions edit the config through
-`rnk_oci::ConfigEdit` and mount nothing. A closed layer is encoded at
-once when the stage's `LayerDemand` needs it, and gets a history entry
-((Q-131, ADR-0032), kaniko's shape). `ranikust` implements `rnk-sched`'s
+`RUN`, `COPY`, `ADD` and a `WORKDIR` other than `/` each run in a layer
+of their own (`WORKDIR` makes its directory with `mkdir -p`, owned by the
+active user, and gives an empty layer when it exists, as BuildKit); the
+other instructions edit the config through `rnk_oci::ConfigEdit` and
+mount nothing. A closed layer is encoded at once when the stage's
+`LayerDemand` needs it. Every instruction but `ONBUILD` adds a history
+entry as BuildKit writes it (Q-131, `ADR-0032`): `created_by` in
+BuildKit's text (`history.rs`: Go's `%q`/`%v`/`%+v`, `RUN` prefixed with
+the stage's `ARG`s as `|N k=v`, ` # buildkit` after `RUN`, `COPY`, `ADD`),
+`empty_layer` for the others, no author, comment `buildkit.dockerfile.v0`.
+Every non-Windows config without `PATH` gets the default one (Q-185). `ranikust` implements `rnk-sched`'s
 `StageRunner` on top: this crate does not depend on `rnk-sched`.
 Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
 or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
@@ -244,8 +251,12 @@ through a descriptor of its directory.
   `--reproducible`, the three outputs, and the executors (`build_stage`),
   called by `ranikust build`. Left: config goldens against kaniko and
   BuildKit, W1-W3, export overlapped with the next instruction.
-- (Q-080, ADR-0032) Interim (a): sources resolve here, against the context
-  walk (`ContextFiles`) or a stage's root, with BuildKit's wildcards.
+- Q-080 (`ADR-0032`): sources resolve here, against the context walk
+  (`ContextFiles`) or a stage's root, with BuildKit's wildcard and error
+  rules: a wildcard matching nothing copies nothing (its base directory
+  must exist); several sources need no destination ending in `/`.
+- Q-120: a symlinked source is followed inside its root; `--chmod` takes
+  octal or symbolic modes (`rnk_rootfs::Chmod`).
 - (Q-180, ADR-0032) `VOLUME` records the config only.
 - `RUN --mount` (`mounts.rs`), as BuildKit (ADR-0032): a cache mount is
   leased from the store with its `sharing=` (`Store::cache_lease`: shared,
@@ -262,9 +273,11 @@ through a descriptor of its directory.
   regular files. A cancel kills the running `RUN` (`Sandbox::cancel`).
 - [open: Q-029] Interim: `rnk-sched` builds each stage's demand with
   `LayerDemand::for_stage`; the rule lives here.
-- (Q-006, ADR-0032) Interim: kaniko's format rule, `image_format`.
-- (Q-131, ADR-0032) Interim: kaniko's history, author `ranikust`,
-  `layer_history`.
+- Q-006: OCI media types whatever the base and `--reproducible`; a layer
+  without a Docker type still makes an image asked for as Docker OCI.
+- Q-161: under `--reproducible` the config's `created` is the epoch, the
+  build's history entries carry it, the base's keep theirs, and layer
+  mtimes later than it are clamped, as BuildKit.
 - (Q-160, ADR-0032) Under `--reproducible`, base layers are kept as pulled.
 - [open: Q-162] Built layer blobs live in the build directory, not in the
   store's `blobs/`.

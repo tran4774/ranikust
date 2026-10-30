@@ -7,12 +7,14 @@ use std::sync::Arc;
 use std::thread;
 
 use hyper::Method;
-use rnk_builder::{BuildTime, Error, LayerExporter, image_format};
+use rnk_builder::{BuildTime, Error, LayerExporter};
 use rnk_layer::Compression;
 use rnk_oci::{ImageFormat, MediaType, OciLayout, Reference};
 
 use crate::fake::{Auth, FakeRegistry, Fault, sha256};
-use crate::support::{base, client, client_with_basic, image, layer, options, reference, time};
+use crate::support::{
+    base, client, client_with_basic, image, image_in, layer, options, reference, time,
+};
 
 fn names(dir: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
@@ -87,17 +89,26 @@ fn exporters_sharing_a_directory_do_not_collide() {
 }
 
 #[test]
-fn a_reproducible_exporter_writes_the_fixed_mtime() {
+fn a_reproducible_exporter_clamps_mtimes_to_the_fixed_time() {
     let dir = tempfile::tempdir().unwrap();
-    let time = BuildTime::reproducible(Some("1700000123")).unwrap();
-    // `options` leaves `mtime` unset: the exporter takes it from the time.
-    let exporter = LayerExporter::new(dir.path(), options(Compression::None, 2), &time);
-    assert_eq!(exporter.options().mtime, Some(1_700_000_123));
-    let blob = exporter.export(Box::new(layer(1, 4))).unwrap();
-    let tar = std::fs::read(&blob.path).unwrap();
-    let mut archive = tar::Archive::new(&tar[..]);
-    for entry in archive.entries().unwrap() {
-        assert_eq!(entry.unwrap().header().mtime().unwrap(), 1_700_000_123);
+    // The fake layer's entries are dated 1_700_000_000 to 1_700_000_003: an
+    // epoch before them replaces them, one after keeps them, as BuildKit
+    // clamps (Q-161).
+    for (epoch, low, high) in [
+        ("1600000000", 1_600_000_000, 1_600_000_000),
+        ("1700000123", 1_700_000_000, 1_700_000_003),
+    ] {
+        let time = BuildTime::reproducible(Some(epoch)).unwrap();
+        // `options` leaves `mtime` unset: the exporter takes it from the time.
+        let exporter = LayerExporter::new(dir.path(), options(Compression::None, 2), &time);
+        assert_eq!(exporter.options().mtime, time.layer_mtime());
+        let blob = exporter.export(Box::new(layer(1, 4))).unwrap();
+        let tar = std::fs::read(&blob.path).unwrap();
+        let mut archive = tar::Archive::new(&tar[..]);
+        for entry in archive.entries().unwrap() {
+            let mtime = entry.unwrap().header().mtime().unwrap();
+            assert!((low..=high).contains(&mtime), "{epoch}: {mtime}");
+        }
     }
 }
 
@@ -107,13 +118,15 @@ fn a_layer_without_a_docker_type_makes_the_image_oci() {
     let mut base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
     base.layer.blob.media_type = MediaType::OCI_LAYER_ZSTD;
     let time = BuildTime::reproducible(None).unwrap();
-    // Reproducible with gzip layers asks for Docker v2s2 ...
-    assert_eq!(
-        image_format(Some(ImageFormat::Oci), false, true),
-        ImageFormat::Docker
+    // Docker v2s2 asked for, but the base's zstd layer has no Docker media
+    // type.
+    let image = image_in(
+        dir.path(),
+        &base,
+        &time,
+        Compression::Gzip,
+        ImageFormat::Docker,
     );
-    // ... but the base's zstd layer has no Docker media type.
-    let image = image(dir.path(), &base, &time, Compression::Gzip);
     assert_eq!(image.format, ImageFormat::Oci);
     assert_eq!(image.manifest.media_type(), &MediaType::OCI_MANIFEST);
     assert_eq!(image.layers[0].blob.media_type, MediaType::OCI_LAYER_ZSTD);

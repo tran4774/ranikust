@@ -75,6 +75,16 @@ pub enum Error {
     /// an id out of range.
     #[error("{0}")]
     User(String),
+
+    /// A `--chmod` value that is neither an octal mode up to `07777` nor a
+    /// symbolic mode.
+    #[error("invalid mode {mode:?}: {reason}")]
+    InvalidMode {
+        /// The value as given.
+        mode: String,
+        /// Why it is refused.
+        reason: &'static str,
+    },
 }
 
 impl Error {
@@ -88,7 +98,8 @@ impl Error {
             Self::InvalidPath { .. }
             | Self::Entry { .. }
             | Self::Changed { .. }
-            | Self::User(_) => None,
+            | Self::User(_)
+            | Self::InvalidMode { .. } => None,
         }
     }
 

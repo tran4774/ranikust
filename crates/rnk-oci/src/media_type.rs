@@ -242,11 +242,8 @@ impl<'de> Deserialize<'de> for MediaType {
 
 /// The image format ranikust writes: OCI, or Docker v2 schema 2.
 ///
-/// There is deliberately no `Default`: which format a build writes when no
-/// flag says so is undecided, so the caller chooses.
-// [open: Q-006] kaniko follows the base image's format (Docker v2s2 under
-// --reproducible); the alternative is OCI unless --image-format says
-// otherwise.
+/// There is no `Default`: the caller chooses. A build writes OCI whatever
+/// its base, as BuildKit (Q-006, `ADR-0032`; `rnk_builder::image_format`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImageFormat {
     /// The OCI image format.

@@ -40,13 +40,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   ignored.
 - Building: `ranikust` builds a Dockerfile in overlay mode as root, its
   stages in parallel up to `--jobs`, one layer per `RUN`, `COPY`, `ADD`
-  and directory-creating `WORKDIR`, and writes an OCI layout
+  and `WORKDIR` (other than `/`), and writes an OCI layout
   (`--oci-layout-path`), a Docker tar (`--tar-path`) and pushes to each
   `--destination`, then prints the image digest. Supported: `FROM` an
   image, `scratch` or a stage; `ARG`, `ENV`, `LABEL`, `USER`, `WORKDIR`,
   `EXPOSE`, `VOLUME`, `ENTRYPOINT`, `CMD`, `SHELL`, `STOPSIGNAL`,
   `HEALTHCHECK`; local `COPY` and `ADD` with wildcards, heredocs,
-  `--from`, `--chown` and octal `--chmod`, `.dockerignore` honoured;
+  `--from`, `--chown` and octal or symbolic `--chmod`, `.dockerignore`
+  honoured;
   `RUN` in shell, exec and heredoc form with `--mount=type=cache`,
   `--mount=type=secret` and `--network=none`, as BuildKit: cache
   `sharing=shared|locked|private` with `uid`/`gid`/`mode` when a cache is
@@ -59,6 +60,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   kills the running `RUN`s. Features of later phases stop the build with a
   message naming the phase. `RUN --network=none` needs `CAP_NET_ADMIN`
   in a container.
+- Where kaniko and BuildKit build differently, ranikust builds as
+  BuildKit: images use OCI media types whatever the base image; a new
+  `ENTRYPOINT` clears a `CMD` inherited from the base; `EXPOSE` takes
+  `sctp` and port ranges; each instruction gets a history entry as
+  BuildKit writes it; every image has a `PATH`; empty and legacy Docker
+  fields of a base config are dropped; a `COPY` wildcard matching nothing
+  copies nothing; `--reproducible` keeps file times older than the fixed
+  time (`SOURCE_DATE_EPOCH`) and the base image's history times.
 - The start-up probe: `ranikust` checks that it can isolate `RUN` (a
   private mount namespace, `pivot_root`, or `MS_MOVE` under Docker's
   seccomp profile) and mount an overlay where its stage roots will live,

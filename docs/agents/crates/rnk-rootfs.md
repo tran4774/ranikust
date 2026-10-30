@@ -146,7 +146,10 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
   from the lowers (Q-055), plain `extract` refuses it.
 - `copy` follows the source's own symlink and the destination
   directory's, inside their roots, but never one inside the copied tree;
-  where kaniko and BuildKit differ it picks one ((Q-120, ADR-0032)).
+  where kaniko and BuildKit differ it follows BuildKit (Q-120,
+  `ADR-0032`): sockets become empty files, every xattr but overlay's own
+  is copied best effort, `--chmod` may be symbolic (`Chmod`, `mode.rs`,
+  derived from dchapes-mode, BSD, in NOTICE).
 - Source roots never contain live mounts: a rule for the builder. `copy`
   does not cross a mount below the source it is given (`EXDEV` stops it),
   so a `/proc` or `/sys` there is refused rather than read as files.

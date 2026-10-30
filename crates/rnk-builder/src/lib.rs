@@ -25,6 +25,7 @@
 
 mod error;
 mod glob;
+mod history;
 mod image;
 mod layer;
 mod mounts;
@@ -35,7 +36,7 @@ mod stage;
 mod time;
 
 pub use error::{Error, Result};
-pub use image::{HISTORY_AUTHOR, Image, assemble, image_format, layer_history};
+pub use image::{HISTORY_COMMENT, Image, assemble, image_format, instruction_history};
 pub use layer::{BlobLayer, EntriesLayer, LayerDemand, LayerExporter, LayerSource};
 pub use mounts::{MAX_SECRET_SIZE, Secret};
 pub use output::{Outputs, UNSET_DESTINATION, push, write_docker_tar, write_oci_layout};

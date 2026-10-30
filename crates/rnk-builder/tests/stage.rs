@@ -304,7 +304,7 @@ fn metadata_and_copies_build_the_config_and_the_root() {
     let c = b.stages[0].config.config.clone().unwrap();
     let env = c.env.unwrap();
     assert!(env.contains(&"A=1".to_owned()), "{env:?}");
-    // kaniko's `PATH` for `FROM scratch`.
+    // BuildKit's default `PATH`, which `FROM scratch` gets too (Q-185).
     assert!(
         env.contains(&format!("PATH={}", rnk_dockerfile::DEFAULT_PATH)),
         "{env:?}"
@@ -337,12 +337,41 @@ fn metadata_and_copies_build_the_config_and_the_root() {
         "hello 1\n"
     );
 
-    // WORKDIR made /app, and three COPYs: four layers, one history entry
-    // each.
+    // WORKDIR made /app, and three COPYs: four layers. Every instruction
+    // has its history entry, as BuildKit writes it (Q-131).
     let config = &b.stages[0].config;
     assert_eq!(config.rootfs.diff_ids.len(), 4);
     assert_eq!(b.stages[0].layers.len(), 4);
-    assert_eq!(config.history.as_ref().unwrap().len(), 4);
+    let history = config.history.as_ref().unwrap();
+    let texts: Vec<(&str, bool)> = history
+        .iter()
+        .map(|h| {
+            assert_eq!(h.comment.as_deref(), Some(rnk_builder::HISTORY_COMMENT));
+            assert_eq!(h.author, None);
+            (
+                h.created_by.as_deref().unwrap(),
+                h.empty_layer == Some(true),
+            )
+        })
+        .collect();
+    assert_eq!(texts.len(), 12, "{texts:#?}");
+    assert_eq!(texts[0], ("ARG V=1", true));
+    assert_eq!(texts[1], ("ENV A=1 B=two", true));
+    assert_eq!(texts[2], ("LABEL l=1", true));
+    assert_eq!(texts[3], ("WORKDIR /app", false));
+    assert!(
+        texts[4].0.starts_with("COPY --chown=") && texts[4].0.ends_with(" *.txt ./ # buildkit")
+    );
+    assert!(
+        texts[6].0.ends_with(" <<EOF note # buildkit"),
+        "{}",
+        texts[6].0
+    );
+    assert_eq!(texts[7], ("EXPOSE 80/udp 81/tcp", true));
+    assert_eq!(texts[8], (r#"ENTRYPOINT ["/bin/app"]"#, true));
+    assert_eq!(texts[9], (r#"CMD ["/bin/sh" "-c" "run"]"#, true));
+    assert_eq!(texts[10], ("STOPSIGNAL SIGINT", true));
+    assert_eq!(texts[11], ("USER 1234", true));
 
     // The second stage inherits the first and copies from it.
     let r1 = root_of(&b, 1);
@@ -370,10 +399,10 @@ fn later_phase_features_and_bad_sources_are_refused_with_a_reason() {
         ("COPY --link a.txt /", "Phase 5"),
         ("RUN --mount=type=bind,target=/x true", "Phase 5"),
         ("RUN --security=insecure true", "not supported"),
-        ("COPY --chown={ID} a.txt b.txt /dest", "must be a directory"),
         ("COPY missing.txt /", "not found"),
         ("COPY ignored.txt /", "not found"),
-        ("COPY --chmod=u+x a.txt /", "octal"),
+        ("COPY missing/*.txt /", "not found"),
+        ("COPY --chmod=u+q a.txt /", "invalid mode"),
         ("ADD --chown={ID} archive.tgz /", "Phase 5"),
         ("ONBUILD RUN true\nFROM p", "ONBUILD"),
     ];
@@ -382,6 +411,33 @@ fn later_phase_features_and_bad_sources_are_refused_with_a_reason() {
         let e = r.expect_err(instruction).to_string();
         assert!(e.contains(want), "{instruction}: {e}");
     }
+}
+
+#[test]
+fn copy_and_entrypoint_follow_buildkit() {
+    let _capture = Capture::new();
+    let (b, r) = build(
+        "FROM scratch AS base\n\
+         CMD [\"serve\"]\n\
+         FROM base\n\
+         ENTRYPOINT [\"/init\"]\n\
+         COPY --chown={ID} *.rs /none/\n\
+         COPY --chown={ID} --chmod=go-r a.txt b.txt /dest\n",
+        &[("a.txt", b"a"), ("b.txt", b"b")],
+    );
+    r.unwrap();
+    // A new ENTRYPOINT clears the CMD inherited from the base (Q-130).
+    let c = b.stages[1].config.config.clone().unwrap();
+    assert_eq!(c.entrypoint.unwrap(), ["/init"]);
+    assert_eq!(c.cmd, None);
+    let r1 = root_of(&b, 1);
+    // An empty wildcard copies nothing and is no error (Q-080).
+    assert!(!r1.join("none").exists());
+    // Several sources into a destination without `/`: each is copied in
+    // turn, the last one wins; a symbolic --chmod applies (Q-120).
+    assert_eq!(fs::read(r1.join("dest")).unwrap(), b"b");
+    let mode = fs::metadata(r1.join("dest")).unwrap().mode() & 0o777;
+    assert_eq!(mode & 0o044, 0, "{mode:o}");
 }
 
 #[test]

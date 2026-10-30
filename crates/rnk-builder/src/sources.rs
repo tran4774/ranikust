@@ -1,10 +1,15 @@
 //! Which files a `COPY` or `ADD` source names: in the build context,
 //! filtered by `.dockerignore`, or in another stage's root.
 //!
-//! [open: Q-080] Interim, the card's recommendation (a): this crate
-//! resolves sources, against the context walk's entries (so an ignored file
-//! is never named or read, not even through a symlink), with BuildKit's
-//! wildcard rules ([`crate::glob`]).
+//! This crate resolves sources (Q-080, `ADR-0032`), against the context
+//! walk's entries (so an ignored file is never named or read, not even
+//! through a symlink), with BuildKit's wildcard and error rules
+//! ([`crate::glob`]): a plain source that is missing is an error; a
+//! wildcard that matches nothing copies nothing, as BuildKit's
+//! `AllowEmptyWildcard` (`buildkit@cd8ee244
+//! frontend/dockerfile/dockerfile2llb/convert_copy.go:291-292`,
+//! `solver/llbsolver/file/backend.go:309-312`), unless the directory before
+//! the first wildcard is missing, which fsutil's walk reports.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -93,14 +98,16 @@ impl ContextFiles {
     /// context root; `""` is the root.
     ///
     /// A symlink is followed inside the context, as BuildKit follows a
-    /// source symlink [open: Q-120], but only through kept entries: every
+    /// source symlink (Q-120), but only through kept entries: every
     /// link on the way and the target must be kept, so `.dockerignore`
     /// cannot be bypassed by a link to an ignored file or directory.
     ///
     /// # Errors
     ///
-    /// [`Error::Invalid`] when nothing kept matches, a symlink leads to an
-    /// ignored or missing entry or loops, or the pattern is malformed.
+    /// [`Error::Invalid`] when a plain source, or the directory before a
+    /// wildcard, is not kept; a symlink leads to an ignored or missing entry
+    /// or loops; or the pattern is malformed. A wildcard matching nothing is
+    /// no error: the result is empty.
     pub(crate) fn resolve(&self, source: &str) -> Result<Vec<Resolved>> {
         let clean = clean_source(source);
         if clean.as_os_str().is_empty() {
@@ -136,7 +143,15 @@ impl ContextFiles {
             vec![clean.clone()]
         };
         if named.is_empty() {
-            return Err(not_found(source));
+            // The walk's start must exist; a file there, or on the way to
+            // it, matches nothing (`ENOTDIR`), as fsutil's walk.
+            let base = wildcard_base(&text);
+            if let Err(e) = self.follow(&base, source)
+                && !self.under_a_file(&base, source)
+            {
+                return Err(e);
+            }
+            return Ok(Vec::new());
         }
         named
             .into_iter()
@@ -149,6 +164,20 @@ impl ContextFiles {
                 })
             })
             .collect()
+    }
+
+    /// Whether `path`, or a directory on the way to it, is a kept file.
+    fn under_a_file(&self, path: &Path, source: &str) -> bool {
+        let mut prefix = PathBuf::new();
+        for c in path.components() {
+            prefix.push(c);
+            match self.follow(&prefix, source) {
+                Ok((_, false)) => return true,
+                Ok((_, true)) => {}
+                Err(_) => return false,
+            }
+        }
+        false
     }
 
     /// `path` with every symlink in it resolved inside the context, through
@@ -207,8 +236,10 @@ impl ContextFiles {
 ///
 /// # Errors
 ///
-/// [`Error::Invalid`] when nothing matches or the pattern is malformed;
-/// [`Error::Rootfs`] when a directory cannot be listed.
+/// [`Error::Invalid`] when a plain source or the directory before the
+/// first wildcard is missing, or the pattern is malformed; a wildcard
+/// matching nothing gives an empty result. [`Error::Rootfs`] when a
+/// directory cannot be listed.
 pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<Resolved>> {
     let clean = clean_source(source);
     let text = clean.to_string_lossy().into_owned();
@@ -278,9 +309,25 @@ pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<Resol
     }
     out.sort_by(|a, b| a.named.cmp(&b.named));
     if out.is_empty() {
-        return Err(not_found(source));
+        let base = wildcard_base(&text);
+        // A missing start is an error; a file there matches nothing.
+        match root.open_at(&base, &OpenHow::path().directory()) {
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(libc_enotdir()) => {}
+            Err(e) if e.raw_os_error() == Some(libc_enoent()) => return Err(not_found(source)),
+            Err(e) => return Err(e.into()),
+        }
     }
     Ok(out)
+}
+
+/// The components of a cleaned pattern before its first wildcard, as
+/// fsutil's `splitWildcards` (`fsutil copy/copy.go:687-705`).
+fn wildcard_base(pattern: &str) -> PathBuf {
+    pattern
+        .split('/')
+        .take_while(|c| !glob::has_wildcard(c))
+        .collect()
 }
 
 /// The names in the directory `dir` of `root`, sorted.
@@ -401,7 +448,14 @@ mod tests {
         );
         assert_eq!(paths(f.resolve(".").unwrap()), [(String::new(), true)]);
         assert!(matches!(f.resolve("missing"), Err(Error::Invalid(_))));
-        assert!(matches!(f.resolve("*.rs"), Err(Error::Invalid(_))));
+        // An empty wildcard copies nothing, as BuildKit; its base must be
+        // there.
+        assert_eq!(f.resolve("*.rs").unwrap(), []);
+        assert_eq!(f.resolve("src/*.rs").unwrap(), []);
+        assert!(matches!(f.resolve("lib/*.rs"), Err(Error::Invalid(_))));
+        // Under a file: nothing matches, no error (ENOTDIR).
+        assert_eq!(f.resolve("a.js/*").unwrap(), []);
+        assert_eq!(f.resolve("a.js/x/*").unwrap(), []);
         assert!(matches!(f.resolve("[a"), Err(Error::Invalid(_))));
     }
 

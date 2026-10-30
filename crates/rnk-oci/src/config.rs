@@ -2,14 +2,18 @@
 //!
 //! OCI image-spec v1.1.1
 //! [config.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/config.md),
-//! plus the Docker-only fields that go-containerregistry's `v1.ConfigFile`
-//! keeps and kaniko therefore carries from a base image to the result
-//! (`Healthcheck`, `OnBuild`, `Shell`, `ArgsEscaped` and the legacy
-//! container-creation fields). Other unknown properties, such as Docker's
-//! `container_config`, are dropped on parsing, as go-containerregistry does.
+//! plus Docker's extension fields (`Healthcheck`, `OnBuild`, `Shell`), as
+//! BuildKit's `dockerspec.DockerOCIImage` types them
+//! (`buildkit@cd8ee244 vendor/github.com/moby/docker-image-spec/specs-go/v1/image.go`).
+//! Every other property, such as Docker's legacy `Hostname`, `Tty`,
+//! `container` and `container_config`, is dropped on parsing (Q-132,
+//! `ADR-0032`).
 //!
-//! Optional properties follow [`Descriptor`](crate::Descriptor)'s rule:
-//! absent or `null` is `None`, a present value is written back.
+//! Written as BuildKit's typed round trip writes a config: a field Go marks
+//! `omitempty` is left out when absent or empty (`""`, `false`, `0`, `[]`,
+//! `{}`), and `config` is always written, `{}` when empty
+//! (`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert.go:714`,
+//! `vendor/github.com/opencontainers/image-spec/specs-go/v1/config.go`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,17 +22,17 @@ use serde::{Deserialize, Serialize};
 use crate::descriptor::Platform;
 use crate::digest::Digest;
 use crate::error::Error;
-use crate::serde_util::null_as_default;
+use crate::serde_util::{null_as_default, omit_empty};
 
 /// An image config (`application/vnd.oci.image.config.v1+json` or
 /// `application/vnd.docker.container.image.v1+json`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageConfig {
     /// Creation time, RFC 3339. An input: this crate never reads the clock.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub created: Option<String>,
     /// Author of the image.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub author: Option<String>,
     /// CPU architecture (`GOARCH` spelling). Required by OCI; read as empty
     /// when missing, as go-containerregistry does, and always written.
@@ -39,37 +43,34 @@ pub struct ImageConfig {
     #[serde(default)]
     pub os: String,
     /// Operating system version (Windows).
-    #[serde(
-        rename = "os.version",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "os.version", default, skip_serializing_if = "omit_empty")]
     pub os_version: Option<String>,
     /// Required operating system features (Windows).
-    #[serde(
-        rename = "os.features",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "os.features", default, skip_serializing_if = "omit_empty")]
     pub os_features: Option<Vec<String>>,
     /// CPU variant (`v8` for `arm64`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub variant: Option<String>,
-    /// How to run a container from the image.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// How to run a container from the image; written as `{}` when `None`.
+    #[serde(default, serialize_with = "config_or_empty")]
     pub config: Option<ContainerConfig>,
     /// The layers' uncompressed digests.
     #[serde(default)]
     pub rootfs: RootFs,
     /// How each layer was made, base first, including empty layers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub history: Option<Vec<History>>,
-    /// Docker only: the id of the container the image was committed from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub container: Option<String>,
-    /// Docker only: the version of the Docker daemon that built the image.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub docker_version: Option<String>,
+}
+
+/// `config` as Go writes a struct field: always, `{}` when empty.
+fn config_or_empty<S: serde::Serializer>(
+    config: &Option<ContainerConfig>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match config {
+        Some(c) => c.serialize(serializer),
+        None => ContainerConfig::default().serialize(serializer),
+    }
 }
 
 impl ImageConfig {
@@ -100,77 +101,45 @@ impl ImageConfig {
 #[serde(rename_all = "PascalCase")]
 pub struct ContainerConfig {
     /// `USER`: user, or `user:group`, as a name or a number.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub user: Option<String>,
     /// `EXPOSE`: `port/protocol` entries such as `80/tcp`.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "key_set")]
+    #[serde(default, skip_serializing_if = "omit_empty", with = "key_set")]
     pub exposed_ports: Option<BTreeSet<String>>,
     /// `ENV`: `NAME=value` entries, in order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub env: Option<Vec<String>>,
     /// `ENTRYPOINT`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub entrypoint: Option<Vec<String>>,
     /// `CMD`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub cmd: Option<Vec<String>>,
     /// `VOLUME`: mount points.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "key_set")]
+    #[serde(default, skip_serializing_if = "omit_empty", with = "key_set")]
     pub volumes: Option<BTreeSet<String>>,
     /// `WORKDIR`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub working_dir: Option<String>,
     /// `LABEL`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub labels: Option<BTreeMap<String, String>>,
     /// `STOPSIGNAL`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub stop_signal: Option<String>,
-    /// Docker: `HEALTHCHECK`.
+    /// Docker: `HEALTHCHECK`; a pointer in Go, so written whenever set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthcheck: Option<HealthConfig>,
     /// Docker: `ONBUILD` triggers, as instruction text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub on_build: Option<Vec<String>>,
     /// Docker: `SHELL`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub shell: Option<Vec<String>>,
-    /// Docker: whether `Cmd`/`Entrypoint` are already escaped (Windows).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Docker: whether `Cmd`/`Entrypoint` are already escaped (Windows);
+    /// BuildKit sets it with every `CMD`.
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub args_escaped: Option<bool>,
-    /// Docker, legacy: container host name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hostname: Option<String>,
-    /// Docker, legacy: container domain name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub domainname: Option<String>,
-    /// Docker, legacy: attach standard input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attach_stdin: Option<bool>,
-    /// Docker, legacy: attach standard output.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attach_stdout: Option<bool>,
-    /// Docker, legacy: attach standard error.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attach_stderr: Option<bool>,
-    /// Docker, legacy: allocate a terminal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tty: Option<bool>,
-    /// Docker, legacy: keep standard input open.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open_stdin: Option<bool>,
-    /// Docker, legacy: close standard input after one attach.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stdin_once: Option<bool>,
-    /// Docker, legacy: the image the container was created from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-    /// Docker, legacy: disable networking.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network_disabled: Option<bool>,
-    /// Docker, legacy: container MAC address.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mac_address: Option<String>,
 }
 
 /// Docker's `HEALTHCHECK` settings. Durations are integer nanoseconds.
@@ -179,22 +148,22 @@ pub struct ContainerConfig {
 pub struct HealthConfig {
     /// `[]` inherit, `["NONE"]` disable, `["CMD", args…]` or
     /// `["CMD-SHELL", command]`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub test: Option<Vec<String>>,
     /// Time between checks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub interval: Option<i64>,
     /// Time before a check counts as hung.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub timeout: Option<i64>,
     /// Start-up time during which failures do not count.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub start_period: Option<i64>,
     /// Time between checks during the start period.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub start_interval: Option<i64>,
     /// Consecutive failures before the container is unhealthy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub retries: Option<i64>,
 }
 
@@ -206,9 +175,20 @@ pub struct RootFs {
     #[serde(rename = "type")]
     pub kind: String,
     /// Digest of each layer's uncompressed tar, base first. These are not the
-    /// manifest's layer digests, which cover the compressed blobs.
-    #[serde(deserialize_with = "null_as_default")]
+    /// manifest's layer digests, which cover the compressed blobs. Written
+    /// as `null` when empty, as BuildKit writes a nil slice
+    /// (`buildkit@cd8ee244 exporter/containerimage/writer.go:798-807`).
+    #[serde(deserialize_with = "null_as_default", serialize_with = "empty_as_null")]
     pub diff_ids: Vec<Digest>,
+}
+
+/// An empty list as `null`, as Go marshals a nil slice.
+fn empty_as_null<S: serde::Serializer>(v: &[Digest], serializer: S) -> Result<S::Ok, S::Error> {
+    if v.is_empty() {
+        serializer.serialize_none()
+    } else {
+        v.serialize(serializer)
+    }
 }
 
 impl Default for RootFs {
@@ -224,19 +204,19 @@ impl Default for RootFs {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct History {
     /// When the step ran, RFC 3339.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub created: Option<String>,
     /// Author of the step.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub author: Option<String>,
     /// The command that made the step.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub created_by: Option<String>,
     /// A free-form comment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub comment: Option<String>,
     /// Whether the step made no layer (and has no `diff_ids` entry).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "omit_empty")]
     pub empty_layer: Option<bool>,
 }
 
@@ -289,27 +269,11 @@ mod tests {
         items.iter().map(|&s| s.to_owned()).collect()
     }
 
-    /// `value` without object members whose value is `null`, recursively.
-    fn without_nulls(value: Value) -> Value {
-        match value {
-            Value::Object(map) => Value::Object(
-                map.into_iter()
-                    .filter(|(_, v)| !v.is_null())
-                    .map(|(k, v)| (k, without_nulls(v)))
-                    .collect(),
-            ),
-            Value::Array(items) => Value::Array(items.into_iter().map(without_nulls).collect()),
-            other => other,
-        }
-    }
-
     #[test]
     fn docker_config_keeps_docker_fields() {
         let c = ImageConfig::from_json(DOCKER_CONFIG.as_bytes()).unwrap();
         assert_eq!(c.architecture, "amd64");
         assert_eq!(c.os, "linux");
-        assert_eq!(c.docker_version.as_deref(), Some("20.10.24"));
-        assert_eq!(c.container.as_deref(), Some("3a9b8a7c6d5e"));
         let run = c.config.as_ref().unwrap();
         assert_eq!(run.user.as_deref(), Some("nginx:nginx"));
         assert_eq!(
@@ -329,8 +293,6 @@ mod tests {
             Some(strings(&["/bin/bash", "-o", "pipefail", "-c"]))
         );
         assert_eq!(run.args_escaped, Some(true));
-        assert_eq!(run.hostname.as_deref(), Some(""));
-        assert_eq!(run.tty, Some(false));
         let health = run.healthcheck.as_ref().unwrap();
         assert_eq!(health.interval, Some(30_000_000_000));
         assert_eq!(health.start_interval, Some(1_000_000_000));
@@ -362,11 +324,29 @@ mod tests {
     }
 
     #[test]
-    fn docker_config_round_trip_drops_only_unknown_properties() {
+    fn docker_config_round_trip_is_buildkits() {
+        // BuildKit's typed round trip: properties outside the OCI and Docker
+        // extension specs go, and so do empty values (Q-132).
         let c = ImageConfig::from_json(DOCKER_CONFIG.as_bytes()).unwrap();
         let mut original: Value = serde_json::from_str(DOCKER_CONFIG).unwrap();
-        // Unknown to go-containerregistry, so dropped by kaniko too.
-        original.as_object_mut().unwrap().remove("container_config");
+        let top = original.as_object_mut().unwrap();
+        for k in ["container_config", "container", "docker_version"] {
+            top.remove(k);
+        }
+        let run = top["config"].as_object_mut().unwrap();
+        for k in [
+            "Hostname",
+            "Domainname",
+            "AttachStdin",
+            "AttachStdout",
+            "AttachStderr",
+            "Tty",
+            "OpenStdin",
+            "StdinOnce",
+            "Image",
+        ] {
+            run.remove(k);
+        }
         assert_eq!(serde_json::to_value(&c).unwrap(), original);
     }
 
@@ -403,11 +383,50 @@ mod tests {
         assert!(run.env.is_none() && run.volumes.is_none() && run.labels.is_none());
         assert_eq!(run.user.as_deref(), Some(""));
         assert!(c.rootfs.diff_ids.is_empty());
-        assert_eq!(serde_json::to_value(&c).unwrap(), {
-            let mut v = without_nulls(text);
-            v["rootfs"]["diff_ids"] = json!([]);
-            v
-        });
+        // Written back without the empty values.
+        assert_eq!(
+            serde_json::to_value(&c).unwrap(),
+            json!({
+                "architecture": "amd64", "os": "linux", "config": {},
+                "rootfs": {"type": "layers", "diff_ids": null}
+            })
+        );
+    }
+
+    #[test]
+    fn empty_values_are_left_out_as_go_omitempty() {
+        let c = ImageConfig {
+            author: Some(String::new()),
+            config: Some(ContainerConfig {
+                user: Some(String::new()),
+                env: Some(Vec::new()),
+                labels: Some(BTreeMap::new()),
+                exposed_ports: Some(BTreeSet::new()),
+                args_escaped: Some(false),
+                healthcheck: Some(HealthConfig {
+                    test: Some(Vec::new()),
+                    interval: Some(0),
+                    ..HealthConfig::default()
+                }),
+                ..ContainerConfig::default()
+            }),
+            history: Some(vec![History {
+                created_by: Some("RUN x".to_owned()),
+                author: Some(String::new()),
+                empty_layer: Some(false),
+                ..History::default()
+            }]),
+            ..ImageConfig::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&c).unwrap(),
+            json!({
+                "architecture": "", "os": "",
+                "config": {"Healthcheck": {}},
+                "rootfs": {"type": "layers", "diff_ids": null},
+                "history": [{"created_by": "RUN x"}]
+            })
+        );
     }
 
     #[test]
@@ -417,7 +436,10 @@ mod tests {
         assert_eq!(c.rootfs.kind, "layers");
         assert_eq!(
             serde_json::to_value(&c).unwrap(),
-            json!({"architecture": "", "os": "", "rootfs": {"type": "layers", "diff_ids": []}})
+            json!({
+                "architecture": "", "os": "", "config": {},
+                "rootfs": {"type": "layers", "diff_ids": null}
+            })
         );
         let c = ImageConfig::from_json(br#"{"rootfs":{}}"#).unwrap();
         assert_eq!(c.rootfs, RootFs::default());
@@ -434,10 +456,7 @@ mod tests {
         );
         assert_eq!(run.volumes, Some(BTreeSet::new()));
         let back = serde_json::to_value(&run).unwrap();
-        assert_eq!(
-            back,
-            json!({"ExposedPorts": {"53/udp": {}, "80/tcp": {}}, "Volumes": {}})
-        );
+        assert_eq!(back, json!({"ExposedPorts": {"53/udp": {}, "80/tcp": {}}}));
     }
 
     #[test]
