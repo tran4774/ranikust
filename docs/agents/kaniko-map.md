@@ -66,11 +66,11 @@ naming the reason, never silently ignored.
 | `--cache`, `--cache-repo` | `:360`, `:351` | false; inferred from destination, `oci:` prefix = layout | Phase 4; `--cache=false` accepted (Q-021, ADR-0036) | refused until Phase 4; `--cache=false` accepted |
 | `--registry-certificate` | `:402` | none | accept; added to host CAs plus embedded roots (`ADR-0024`) | parsed (`REGISTRY=PATH`) |
 | `--insecure-registry` | `:399` | none | accept: plain HTTP to push and pull, HTTPS tried first (`ClientOptions::insecure`); `(Q-200)` interim (a) | accepted, repeatable |
-| `--ignore-path` | `:371` | none | accept | refused until Phase 2 (kaniko mode) |
+| `--ignore-path` | `:371` | none | accept; absolute, cleaned as `filepath.Clean` (`pkg/util/fs_util.go:144-149`) | accepted, repeatable (ADR-0040); a relative path refused; refused in overlay mode `[open: Q-260]` |
 | `--kaniko-dir` | `:345` | `/kaniko` | renamed `--state-dir` (`ADR-0011`); default `/ranikust/state` in kaniko mode, `<workdir>/.ranikust` in overlay mode (`ADR-0022`) | refused, naming `--state-dir`; `--state-dir` parsed |
 | `--snapshot-mode` | `:341` | `full` (`full\|redo\|time`, `build.go:2474`) | accept, kaniko's meaning: what the kaniko-mode walk compares; ignored with a warning in overlay mode (`ADR-0023`) | parsed; warning with `--mode=overlay`; `--snapshotMode` an alias with kaniko's warning |
 | `--custom-platform` | `:342` | host | alias of `--platform`, `linux/amd64` only at first (`ADR-0009`; Q-020, ADR-0036) | alias; `--customPlatform` too, with kaniko's warning |
-| `--force` | `:63` | false | ignored with a warning: ranikust runs on hosts and checks `--workdir` (ADR-0036) | accepted, warning |
+| `--force` | `:63` | false | kaniko's meaning: kaniko mode builds on `/` outside a container (`:240-245`); no effect with `--workdir` (ADR-0040) | accepted; container check ported from `pkg/util/proc/proc.go` |
 | `--secret` | `:378` | none | kaniko's and buildctl's syntax (ADR-0032): `type=file\|env`, `src=`, `env=`, the id as variable or file by default | accepted, same meaning |
 | `--registry-mirror`, `--registry-map`, `--credential-helpers` | `:407`, `:406`, `:409` | none; helpers: all | Phase 5 (mirrors, helpers); names `[open: Q-047]` | refused (Phase 5) |
 | `--cache-dir` | `:352` | `/cache` | warmer's base-image cache; the warmer is out of scope, the store replaces it; ignored with a warning (ADR-0036) | accepted, warning |
@@ -93,7 +93,7 @@ listed there):
 | `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | accepted and ignored with a warning: the image is the same without them in overlay mode |
 | `--context-sub-path` (`:339`) | joined onto a `dir://` context, inside it (`root.go:599-631`, `buildcontext/dir.go:25`); ignored with a warning for a plain path, as kaniko |
 | `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
-| `--single-snapshot`, `--materialize`, `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | refused until Phase 2 (kaniko mode) |
+| `--single-snapshot`, `--materialize`, `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | accepted with kaniko's meaning in kaniko mode (ADR-0040), `--whitelist-var-run` as a deprecated alias with kaniko's warning; in overlay mode `--single-snapshot` and `--ignore-var-run=false` refused `[open: Q-260]`, `--materialize` and `--ignore-var-run=true` warned about; wired to the walk by Phase 2 tasks 3–6 |
 | `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-ignore-immutable-tag-errors` | refused until Phase 5 |
 | `--dryrun` | refused, not scheduled |
 | `--azure-container-registry-config` (hidden, `:413`), `bake` | refused for good (`ADR-0008`) |
@@ -180,7 +180,9 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   `os.RemoveAll` (`pkg/util/fs_util.go:292-324`), which crosses mounts;
   kaniko refuses to run outside a container without `--force`
   (`cmd/executor/cmd/root.go:240`). ranikust deletes by descriptor and mount
-  id, and requires a safe `--workdir` instead.
+  id; it builds on `/` only where kaniko would (its container check, or
+  `--force`), and anywhere else in a `--workdir` that passes the workdir
+  checks (ADR-0038, ADR-0040).
 - **Parent directories.** kaniko writes ancestor directory headers
   (`pkg/snapshot/snapshot.go:432`); ranikust's exporter must too
   (`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`).

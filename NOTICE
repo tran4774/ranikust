@@ -96,6 +96,13 @@ Source:    pkg/dockerfile/dockerfile.go (MakeKanikoStages and Squash),
 Copyright: Copyright 2018 Google LLC
 License:   Apache License, Version 2.0 (LICENSE-APACHE)
 
+File:      crates/ranikust/src/container.rs
+Source:    pkg/util/proc/proc.go (GetContainerRuntime), commit 44aa7ddc0
+           (osscontainertools/kaniko 34ba9eadf plus local commits); kaniko
+           ported that file from genuinetools/bpfd
+Copyright: Copyright 2022 Google LLC
+License:   Apache License, Version 2.0 (LICENSE-APACHE)
+
 kaniko (https://github.com/osscontainertools/kaniko, originally
 https://github.com/GoogleContainerTools/kaniko) is licensed under the Apache
 License, Version 2.0, and its files carry "Copyright <year> Google LLC". The

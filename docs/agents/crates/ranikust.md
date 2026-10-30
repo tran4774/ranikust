@@ -42,12 +42,17 @@ struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, d
     tar_path, oci_layout_path, compression, compression_level, image_format, label, annotation,
     digest files, insecure*, skip_tls_verify*, push_retry, image_download_retry, verbosity,
     log_format, log_timestamp, reproducible, registry_certificate, snapshot_mode (ADR-0036);
-    ours: mode, workdir, state_dir, jobs, network, secret, allow, metrics_file.
-    Planned: cache, cache_repo (4), ignore_path (2), parallel_stages (2), seccomp, userns (3) */ }
+    kaniko mode (ADR-0040): ignore_paths, ignore_var_run (whitelist-var-run an alias),
+    single_snapshot, materialize, force;
+    ours: mode, workdir, state_dir, jobs, network, secret, allow, metrics_file, snapshot_workers.
+    Planned: cache, cache_repo (4), parallel_stages (2), seccomp, userns (3) */ }
 fn cli::parse(args) -> Result<Parsed, ParseError>;  // refused kaniko flags first; ignored ones
     // taken out and old spellings renamed, each with a warning (Parsed::warnings); then clap
 fn config::apply_env(&mut BuildArgs, vars) -> Result<Vec<String>, Invalid>;  // KANIKO_* (ADR-0036)
 struct BuildConfig { /* built: the flags validated, paths absolute, enums resolved */ }
+fn config::overlay_mode_flags(&BuildArgs) -> Result<Vec<String>, Invalid>; // kaniko flags in overlay mode: refused if they change the image [open: Q-260], else warnings
+fn setup::enter_namespace() -> Result<(), Refusal>;   // first set-up step; Refusal::needs_kaniko_mode() → auto picks kaniko mode
+fn container::detect(&impl Host) -> Option<Runtime>;  // kaniko's GetContainerRuntime, ported (ADR-0040)
 impl BuildConfig {
     fn from_args(&BuildArgs) -> Result<Self, Invalid>;       // built: kaniko's checks, no I/O
     fn state_dir_for(&self, Mode) -> Option<PathBuf>;        // built: ADR-0022 defaults
@@ -71,13 +76,23 @@ Set-up order, built so far: parse the flags (no I/O; refused kaniko flags
 reported first, so `--help` works on any kernel) → the Linux 5.8 check
 (`rnk_rootfs::probe_support`, ADR-0028; skipped by `version`) →
 `rnk_metrics::init` (starts no thread), `--metrics-file` over
-`--metrics-file` (ADR-0037) → `BuildConfig::from_args` → `--mode=kaniko`:
-without `--workdir` it stops (Phase 2); with it, `workdir::claim` (the
-checks and lock of `ADR-0038`, below) and `raise_nofile_limit`, then it
-stops with exit code 2 → the overlay-mode state directory, `--state-dir` or
-`<workdir>/.ranikust`, else a usage error [open: Q-110] → `setup::set_up`:
-`rnk_sandbox::enter_build_namespace` (refuses in a plain `chroot`, then
-`unshare(CLONE_NEWNS)`, `/` rslave) → `prepare_state_dir` (created 0700;
+`--metrics-file` (ADR-0037) → `BuildConfig::from_args` → the mode
+(ADR-0040): `--mode=kaniko` goes to kaniko mode; `--mode=overlay` checks
+the kaniko-mode flags (`overlay_mode_flags`) and its state directory, then
+enters the namespace; `--mode=auto` enters the namespace first and, where
+the namespace is refused to root for lack of privilege
+(`needs_kaniko_mode`), logs why
+and goes to kaniko mode, else continues as overlay mode. Kaniko mode:
+with `--workdir`, `workdir::claim` (the checks and lock of `ADR-0038`,
+below); without, the root `/`, refused outside a container
+(`container::detect`) unless `--force`, with kaniko's warning; then its
+state directory is named (`/ranikust/state` on `/`, `<cwd>/.ranikust`
+with a workdir), `raise_nofile_limit`, and a stop with exit code 2 before
+anything is written. Overlay mode: the state directory, `--state-dir` or
+`<workdir>/.ranikust`, else a usage error [open: Q-110] →
+`setup::enter_namespace` (`rnk_sandbox::enter_build_namespace`: refuses in
+a plain `chroot`, then `unshare(CLONE_NEWNS)`, `/` rslave) →
+`setup::set_up`: `prepare_state_dir` (created 0700;
 refused if it or a directory above it up to the workdir is a symlink, not
 owned by the effective uid, or group/world-writable) → `rnk_store::Store::open`
 (marker, start-up clean-up; (Q-111) interim (a)) →
@@ -86,8 +101,8 @@ owned by the effective uid, or group/world-writable) → `rnk_store::Store::open
 replay, spawner thread) → the store is closed → stop with exit code 2,
 "set up for …, but building is not implemented yet". Still to
 come [design]: `rnk-store` open and clean-up before the spawner (task 7) (Q-111) →
-kaniko mode: its state directory, probes and outcome after the workdir
-lock (Phase 2 task 2) → tokio runtime → `rnk-sched`.
+kaniko mode: the store in its state directory and the "can mount" probe
+(Phase 2 tasks 6, 9) → tokio runtime → `rnk-sched`.
 
 Kaniko-mode workdir checks (`src/workdir.rs`, `ADR-0038`), before anything
 is written: canonicalize; refuse `/` and any of the 30 `SYSTEM_DIRS` or
@@ -162,6 +177,16 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `--privileged` (`pivot_root`) and with `SYS_ADMIN` under Docker's seccomp
   (`MS_MOVE`); refused inside a plain `chroot` (`tests/smoke/lib.bash`
   `smoke_check_setup`).
+- T0 built, `src/container/tests.rs`: every signal of kaniko's container
+  check on a fake host, in kaniko's order (first runtime named wins,
+  OpenVZ host vs container, the overlay `/` only on the first mount line).
+  `src/config/tests.rs`: the kaniko-mode state directory per root, the
+  kaniko flags' defaults and cleaned paths, a relative `--ignore-path`
+  refused, the overlay-mode refusals and warnings (Q-260).
+  `src/cli/tests.rs`: the flags, `--whitelist-var-run` as an alias.
+  `tests/cli.rs`: `--mode=kaniko` with `--force` stops at Phase 2, without
+  it refused outside a container (either answer checked), the kaniko flags
+  in kaniko and overlay mode.
 - T0 built, `src/workdir/tests.rs`: `/`, `//`, `/usr/../` and system
   directories refused, a symlink to `/usr` refused by its target, an empty
   workdir locked (a second claim refused) and marked only by `mark`, a

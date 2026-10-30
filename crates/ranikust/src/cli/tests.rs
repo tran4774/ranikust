@@ -200,10 +200,6 @@ fn refused_kaniko_flags_say_why() {
         (&["--cache-repo", "r/cache"], "Phase 4"),
         (&["--cache-ttl=1h"], "Phase 4"),
         (&["--compressed-caching"], "Phase 4"),
-        (&["--ignore-path=/var"], "Phase 2"),
-        (&["--single-snapshot"], "Phase 2"),
-        (&["--ignore-var-run=false"], "Q-035"),
-        (&["--whitelist-var-run=false"], "use --ignore-var-run"),
         (&["--bucket=b"], "out of scope"),
         (&["-b", "b"], "out of scope"),
         (&["-bbucket"], "out of scope"),
@@ -226,7 +222,7 @@ fn refused_kaniko_flags_say_why() {
 
 #[test]
 fn every_refused_flag_is_reported_at_once() {
-    let lines = refused(&["--cache=true", "-d", "r/a:1", "--materialize"]);
+    let lines = refused(&["--cache=true", "-d", "r/a:1", "--cache-repo=r/c"]);
     assert_eq!(lines.len(), 2, "{lines:?}");
 }
 
@@ -245,7 +241,6 @@ fn warnings(args: &[&str]) -> (BuildArgs, Vec<String>) {
 #[test]
 fn flags_that_change_nothing_are_ignored_with_a_warning() {
     let (args, w) = warnings(&[
-        "--force",
         "--cache-dir",
         "/cache",
         "--use-new-run",
@@ -256,7 +251,7 @@ fn flags_that_change_nothing_are_ignored_with_a_warning() {
         "--skip-unused-stages",
         "--no-push",
     ]);
-    assert_eq!(w.len(), 8, "{w:?}");
+    assert_eq!(w.len(), 7, "{w:?}");
     assert!(w.iter().all(|l| l.contains("is ignored")), "{w:?}");
     assert!(args.no_push, "the flag after a consumed value still parses");
     // `--cache=false` asks for what Phase 1 does: no warning, no refusal.
@@ -266,6 +261,46 @@ fn flags_that_change_nothing_are_ignored_with_a_warning() {
     let (_, w) = warnings(&["--compressed-caching=false", "--no-push-cache", "--no-push"]);
     assert_eq!(w.len(), 2, "{w:?}");
     assert!(w.iter().all(|l| l.contains("Phase 4")), "{w:?}");
+}
+
+/// The kaniko-mode flags of Phase 2 (ADR-0040), with kaniko's defaults and
+/// `--whitelist-var-run` as the deprecated name of `--ignore-var-run`.
+#[test]
+fn kaniko_mode_flags_parse_with_kanikos_defaults() {
+    let (args, w) = warnings(&["--no-push"]);
+    assert!(w.is_empty(), "{w:?}");
+    assert!(args.ignore_paths.is_empty());
+    assert_eq!(args.ignore_var_run, None);
+    assert!(!args.single_snapshot && !args.materialize && !args.force);
+    assert_eq!(args.snapshot_workers, None);
+    let (args, w) = warnings(&[
+        "--ignore-path=/a",
+        "--ignore-path",
+        "/b/../c",
+        "--ignore-var-run=false",
+        "--single-snapshot",
+        "--materialize=true",
+        "--snapshot-workers=3",
+        "--force",
+        "--no-push",
+    ]);
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(
+        args.ignore_paths,
+        [PathBuf::from("/a"), PathBuf::from("/b/../c")]
+    );
+    assert_eq!(args.ignore_var_run, Some(false));
+    assert!(args.single_snapshot && args.materialize && args.force);
+    assert_eq!(args.snapshot_workers.map(NonZeroUsize::get), Some(3));
+    let (args, w) = warnings(&["--whitelist-var-run=false", "--no-push"]);
+    assert_eq!(args.ignore_var_run, Some(false));
+    assert!(w[0].contains("use --ignore-var-run"), "{w:?}");
+    let lines = refused(&["--whitelist-var-run", "--ignore-var-run", "--no-push"]);
+    assert!(lines[0].contains("name the same setting"), "{lines:?}");
+    assert_eq!(
+        clap_error(&["--snapshot-workers=0", "--no-push"]).exit_code(),
+        2
+    );
 }
 
 #[test]

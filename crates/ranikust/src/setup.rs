@@ -3,7 +3,9 @@
 //! spawner thread (`design/sandbox.md#process-set-up-once-per-build`,
 //! `design/modes-and-detection.md#probe-order---modeauto`).
 //!
-//! Phase 1 builds one outcome, overlay mode as root; every other
+//! Overlay mode as root is the one outcome built so far. `--mode=auto`
+//! enters the namespace first ([`enter_namespace`]): where root may not
+//! mount, the binary picks kaniko mode instead (ADR-0040); every other
 //! environment is refused with the probe's diagnosis.
 
 use std::fmt;
@@ -57,6 +59,14 @@ pub(crate) struct Refusal {
     pub(crate) guidance: &'static str,
 }
 
+impl Refusal {
+    /// Whether this environment needs kaniko mode: root that may not mount
+    /// or cannot use overlay, what `--mode=auto` turns into kaniko mode.
+    pub(crate) fn needs_kaniko_mode(&self) -> bool {
+        self.guidance == NEEDS_KANIKO_MODE
+    }
+}
+
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.reason)?;
@@ -75,8 +85,8 @@ const NEEDS_ROOT: &str = "ranikust builds as root only for now (rootless overlay
 
 /// Guidance where root cannot use the sandbox or overlay: the outcome that
 /// would run here is kaniko mode.
-const NEEDS_KANIKO_MODE: &str = "this environment needs kaniko mode, which comes in Phase 2; \
-     a container started with --privileged can build in overlay mode";
+const NEEDS_KANIKO_MODE: &str = "this environment needs kaniko mode: use --mode=kaniko or \
+     --mode=auto; a container started with --privileged can build in overlay mode";
 
 /// A build environment, set up: what the build hands to the libraries.
 pub(crate) struct Setup {
@@ -97,9 +107,22 @@ const UNSAFE_STATE_DIR: &str = "the state directory and the workdir above it mus
      directories (no symlink), owned by the user running ranikust and not writable by group or \
      others; pass another --workdir or --state-dir";
 
+/// Enters the build's private mount namespace (`rnk_sandbox`), the first
+/// step of every set-up and the one that tells whether root may mount. Call
+/// while single-threaded.
+///
+/// # Errors
+///
+/// A [`Refusal`]; [`Refusal::needs_kaniko_mode`] where root lacks the
+/// privilege to mount.
+pub(crate) fn enter_namespace() -> Result<(), Refusal> {
+    let euid = rustix::process::geteuid().as_raw();
+    rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))
+}
+
 /// Sets the process up for a build whose state directory is `state_dir`, in
-/// `workdir` if given: a private mount namespace, the state directory's
-/// check, the store (marker check, start-up clean-up), the probes of
+/// `workdir` if given, once [`enter_namespace`] succeeded: the state
+/// directory's check, the store (marker check, start-up clean-up), the probes of
 /// `rnk-sandbox` and `rnk-snapshot`, the outcome, then the spawner thread.
 /// Before the spawner, the only other thread is the overlay probe's
 /// `mount(2)` attempt, which it joins: the process is single-threaded
@@ -115,8 +138,6 @@ pub(crate) fn set_up(
     userns_network: bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
-    // Workdir checks (Q-011) come first, once designed.
-    rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))?;
     prepare_state_dir(state_dir, workdir, euid)?;
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).

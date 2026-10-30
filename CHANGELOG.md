@@ -96,7 +96,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--insecure-registry` or destinations under `--insecure`, never to one a
   Dockerfile names under `--insecure-pull`. Flags that change nothing in the
   image built, such as
-  `--force`, `--cache-dir` and `--cleanup`, are accepted with a warning;
+  `--cache-dir` and `--cleanup`, are accepted with a warning;
   the others are refused with the release that brings them.
 - kaniko's variables: `KANIKO_NO_PUSH`, `DOCKER_AUTH_CONFIG` (read before
   `config.json`), and a warning naming every other `KANIKO_*` or
@@ -112,6 +112,16 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   kaniko's stage squashing on the shared root, which stages are walked for
   layers, what later stages read from each, and a scheduler mode that runs
   stages on the shared root one at a time in a fixed order.
+- Kaniko mode is reachable: `--mode=auto` picks it where root may not mount
+  (Docker's default, most Kubernetes pods) and says why. Without
+  `--workdir` it builds on `/`, only inside a container as kaniko detects
+  one, or with kaniko's `--force`. Its state directory defaults to
+  `/ranikust/state` on `/` and `.ranikust` in the current directory with a
+  `--workdir`. kaniko's `--ignore-path`, `--ignore-var-run` (and the old
+  `--whitelist-var-run`), `--single-snapshot` and `--materialize` are
+  accepted with kaniko's meaning; in overlay mode those that would change
+  the image are refused. New flag `--snapshot-workers` (default 8) sizes
+  kaniko mode's walk. Kaniko-mode builds still stop after the set-up.
 
 ### Changed
 

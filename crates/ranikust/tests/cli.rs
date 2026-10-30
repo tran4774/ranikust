@@ -90,7 +90,13 @@ fn running_as_root() -> bool {
 #[test]
 fn overlay_mode_needs_a_workdir_or_state_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let out = ranikust(tmp.path(), &["--no-push", "--context", "."], &[]);
+    // `--mode=auto` first asks whether root may mount (ADR-0040), so the
+    // usage error is checked with the mode forced.
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context", ".", "--mode=overlay"],
+        &[],
+    );
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("--workdir"), "{}", stderr(&out));
 }
@@ -98,9 +104,64 @@ fn overlay_mode_needs_a_workdir_or_state_dir() {
 #[test]
 fn kaniko_mode_is_not_built_yet() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko"], &[]);
-    assert_eq!(out.status.code(), Some(2));
+    // With `--force`, the root `/` passes inside or outside a container.
+    let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko", "--force"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("Phase 2"), "{}", stderr(&out));
+    // Without it, only inside a container (ADR-0040); the tests run on a
+    // host or in one, so either answer is checked for its message.
+    let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko"], &[]);
+    let err = stderr(&out);
+    match out.status.code() {
+        Some(1) => assert!(err.contains("only inside a container"), "{err}"),
+        Some(2) => assert!(err.contains("Phase 2"), "{err}"),
+        code => panic!("exit {code:?}: {err}"),
+    }
+}
+
+#[test]
+fn kaniko_mode_flags_are_checked_against_the_mode() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(
+        tmp.path(),
+        &[
+            "--no-push",
+            "--mode=kaniko",
+            "--force",
+            "--ignore-path=var/cache",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("absolute path"), "{}", stderr(&out));
+    let out = ranikust(
+        tmp.path(),
+        &[
+            "--no-push",
+            "--mode=kaniko",
+            "--force",
+            "--ignore-path=/var/cache",
+            "--single-snapshot",
+            "--ignore-var-run=false",
+            "--snapshot-workers=4",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Phase 2"), "{}", stderr(&out));
+    // In overlay mode they would change the image: refused before the
+    // set-up (Q-260).
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--mode=overlay", "--single-snapshot"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("kaniko mode only"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -119,7 +180,7 @@ fn kaniko_mode_checks_its_workdir_before_stopping() {
     let out = ranikust(tmp.path(), &args, &[]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("passed kaniko mode's checks"),
+        stderr(&out).contains("passed its checks"),
         "{}",
         stderr(&out)
     );
@@ -259,7 +320,13 @@ fn the_report_path_comes_from_the_flag_only() {
     let flag = format!("--metrics-file={}", from_flag.display());
     let out = ranikust(
         tmp.path(),
-        &["-d", "registry.example/team/app:1", "--jobs=2", &flag],
+        &[
+            "-d",
+            "registry.example/team/app:1",
+            "--jobs=2",
+            "--mode=overlay",
+            &flag,
+        ],
         &[(
             "RANIKUST_METRICS_FILE",
             from_env.to_str().expect("utf-8 path"),
@@ -270,7 +337,7 @@ fn the_report_path_comes_from_the_flag_only() {
     let report: Value =
         serde_json::from_slice(&fs::read(&from_flag).expect("report")).expect("json");
     assert_eq!(report["exit"]["code"], 2);
-    assert_eq!(report["meta"]["mode"], "auto");
+    assert_eq!(report["meta"]["mode"], "overlay");
     assert_eq!(report["meta"]["options"]["jobs"], 2);
     assert_eq!(report["meta"]["options"]["outputs"]["destinations"], 1);
     assert_eq!(report["phases"]["ranikust.build"]["count"], 1);
@@ -284,7 +351,11 @@ fn the_report_path_comes_from_the_flag_only() {
 #[test]
 fn a_relative_metrics_file_is_relative_to_the_working_directory() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let out = ranikust(tmp.path(), &["--no-push", "--metrics-file=out/m.json"], &[]);
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--mode=overlay", "--metrics-file=out/m.json"],
+        &[],
+    );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(tmp.path().join("out/m.json").is_file());
 }
@@ -295,7 +366,7 @@ fn a_relative_metrics_file_is_relative_to_the_working_directory() {
 #[test]
 fn logging_flags_change_what_is_written() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let base = ["--no-push", "--mode=kaniko", "--force"];
+    let base = ["--no-push", "--mode=kaniko", "--force", "--cleanup"];
     let run = |extra: &[&str]| {
         let mut args: Vec<&str> = base.iter().chain(extra).copied().collect();
         if !extra.iter().any(|a| a.starts_with("--log-format")) {
@@ -309,7 +380,7 @@ fn logging_flags_change_what_is_written() {
     };
     // `text` is logrus's plain formatter: time, level, msg, never colored.
     let info = run(&[]);
-    assert!(info.contains("--force is ignored"), "{info}");
+    assert!(info.contains("--cleanup is ignored"), "{info}");
     assert!(!info.contains("build settings validated"), "{info}");
     let first = info.lines().next().expect("a line");
     assert!(first.starts_with("time="), "{first}");
@@ -318,8 +389,8 @@ fn logging_flags_change_what_is_written() {
     let debug = run(&["-v", "DEBUG"]);
     assert!(debug.contains("build settings validated"), "{debug}");
     let quiet = run(&["--verbosity=error"]);
-    assert!(!quiet.contains("--force is ignored"), "{quiet}");
-    assert!(run(&["-v", "warning"]).contains("--force is ignored"));
+    assert!(!quiet.contains("--cleanup is ignored"), "{quiet}");
+    assert!(run(&["-v", "warning"]).contains("--cleanup is ignored"));
     // `color`, kaniko's default, forces colors and counts seconds since
     // start; `--log-timestamp` gives the full time instead.
     let color = run(&["--log-format=color"]);
@@ -338,7 +409,7 @@ fn logging_flags_change_what_is_written() {
         .expect("the warning");
     let value: Value = serde_json::from_str(line).expect("a JSON line");
     assert_eq!(value["level"], "warning");
-    assert!(value["msg"].as_str().unwrap().contains("--force"));
+    assert!(value["msg"].as_str().unwrap().contains("--cleanup"));
     assert!(value["time"].is_string());
 }
 

@@ -504,6 +504,22 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-260: Should overlay mode honour kaniko's snapshot flags?
+
+- **Blocks:** nothing yet; **Area:** `ranikust`, `rnk-snapshot`
+- **Context:** `--ignore-path`, `--single-snapshot` and
+  `--ignore-var-run=false` change the image kaniko builds. Kaniko mode
+  takes them ([ADR-0040](adr/0040-kaniko-mode-selection-container-check-and-flags.md));
+  overlay mode could too (filter the upper directory's diff, squash the
+  layers, keep `/var/run`), but nothing is designed.
+- **Options:** (a) refuse them in overlay mode; (b) implement them in
+  overlay mode's exporter; (c) ignore them with a warning (breaks
+  `ADR-0036`'s rule that a flag changing the image is never dropped).
+- **Recommendation:** none
+- **Interim:** (a): exit code 2 naming the flags and `--mode=kaniko`.
+  Reversible: one function, `config::overlay_mode_flags`.
+- **Raised:** 2026-10-31
+
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?
