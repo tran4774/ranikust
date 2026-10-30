@@ -68,8 +68,9 @@ capability drop it installs a seccomp filter that refuses `setns`,
 than route, sock_diag and kobject_uevent, and any syscall of another
 architecture, with `EPERM`, and `clone3` with `ENOSYS`. rtnetlink stays
 open. The holder closes every descriptor it inherited, stdio included,
-clears `PR_SET_DUMPABLE`, dies with the spawner thread, and is killed and
-reaped after the `RUN`.
+dies with the spawner thread, and is killed and reaped after the `RUN`. It
+stays dumpable: `setns` on its pidfd needs ptrace read access, which a
+non-dumpable process grants only to `CAP_SYS_PTRACE`.
 
 1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check that the parent process
    did not die before: `getppid()` is 0 in a new PID namespace, so the child

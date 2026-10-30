@@ -951,9 +951,10 @@ pub(crate) unsafe fn hold_network(err: RawFd, parent: i32, userns: bool) -> ! {
     if rustix::process::getppid().map_or(0, |p| p.as_raw_nonzero().get()) != parent {
         fail(err, Step::ParentGone, Errno::SRCH);
     }
-    // No core dump and no ptrace by its uid's other processes.
-    // SAFETY: plain `prctl`.
-    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    // Stays dumpable: `setns` on its pidfd needs ptrace read access to it,
+    // which a non-dumpable process grants only to `CAP_SYS_PTRACE`, not in
+    // Docker's defaults. Its memory is a copy of ranikust's, which the
+    // `RUN` cannot reach: it is in another PID namespace.
     // A forked copy of every descriptor of the build, stdio included:
     // closed, so that this process, which never executes, holds no lock,
     // pipe end or terminal of it.
