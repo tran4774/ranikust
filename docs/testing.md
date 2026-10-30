@@ -96,7 +96,7 @@ runs as root on the host:
 | Suite | What it runs |
 |---|---|
 | `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass |
-| `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` runs inside a plain `chroot` in both Docker variants, where `/` is not a mount root: it must refuse before any `RUN`, as it does at its first step, making `/` a slave mount (`EINVAL`) Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
+| `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image, and the `ranikust` binary's set-up (`--no-push --workdir`) must reach overlay mode as root with the same root entry and stop with exit code 2. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
 
 Not covered yet: cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a
 reboot), Docker's default profile and `--cap-add SYS_ADMIN` alone (they
@@ -159,7 +159,9 @@ reaches the host as root. It strings the finished crates together:
 
 The recipe then checks that the sandbox's stubs did not reach the layer
 (`/etc/resolv.conf` not at all, `/etc/hosts` and `/etc/hostname` not with
-the host name `ranikust`), loads the layout into podman as an OCI archive (`podman load`; not
+the host name `ranikust`), runs the `ranikust` binary's set-up in the same
+container (it must pick overlay mode as root with `pivot_root` and stop
+with exit code 2), loads the layout into podman as an OCI archive (`podman load`; not
 `skopeo`, which calls `unshare` itself and is refused where AppArmor
 restricts unprivileged user namespaces, as on Ubuntu 24.04) and runs it.
 It is not a

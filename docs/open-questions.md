@@ -272,7 +272,9 @@ Entry format:
 - **Interim:** (b) for the sandbox: `rnk_sandbox::probe` returns its own
   `Caps` (the root entry), and `Sandbox::start` takes `Option<Caps>`,
   `None` allowing only `Isolation::Direct` (`feat/rnk-sandbox`).
-  Reversible: `ranikust` is the only caller.
+  Reversible: `ranikust` is the only caller. `feat/ranikust-setup` keeps
+  (b): `ranikust`'s own `Outcome` (in `src/setup.rs`) holds each crate's
+  caps, and the overlay part is a placeholder until task 9.
 - **Raised:** 2026-10-30
 
 ### Q-018: Where does the probe mount its test overlay?
@@ -287,7 +289,11 @@ Entry format:
 - **Options:** (a) under the overlay-mode default `<workdir>/.ranikust`;
   (b) in a probe-only temporary directory in the workdir.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** (a), because Phase 1 has no outcome but overlay mode:
+  `feat/ranikust-setup` probes in the overlay-mode state directory
+  (`--state-dir` or `<workdir>/.ranikust`); the sandbox probe uses its
+  `sandbox/` subdirectory, and the overlay probe of task 9 gets the same
+  path. Revisit with kaniko mode (Phase 2).
 - **Raised:** 2026-10-30
 
 ### Q-019: What is the final name of the parallel-stages flag?
@@ -398,6 +404,54 @@ Entry format:
 - **Interim:** `rnk-context` offers `Context::sub_context` for any context
   (`feat/rnk-context`), confined to the context with `..` clamped; the CLI
   decides when to call it. Reversible: no caller yet.
+- **Raised:** 2026-10-30
+
+### Q-110: What is the overlay-mode state directory without `--workdir`?
+
+- **Blocks:** Phase 1 task 8; **Area:** `ranikust`
+- **Context:** the overlay-mode default is `<workdir>/.ranikust`
+  (ADR-0022), and `--workdir` defaults to `/` only inside a container
+  ([modes-and-detection](design/modes-and-detection.md#workdir-rules)),
+  which needs a container check that is not built (Q-011). In a container,
+  `/.ranikust` usually sits on the container's overlay root, which cannot
+  hold an upper directory, so the overlay probe would fail there anyway.
+- **Options:** (a) require `--workdir` or `--state-dir` in overlay mode;
+  (b) default the workdir to `/` in a container, as designed, and let the
+  probe refuse; (c) a temporary directory.
+- **Recommendation:** none
+- **Interim:** (a), on `feat/ranikust-setup`: without either flag, overlay
+  mode (and `auto`, whose only Phase 1 outcome is overlay) stops with a
+  usage error, exit code 2. Reversible: one check in `main.rs`.
+- **Raised:** 2026-10-30
+
+### Q-111: Does the store open before or after the probes?
+
+- **Blocks:** Phase 1 tasks 7, 8; **Area:** `ranikust`, `rnk-store`,
+  `rnk-sandbox`
+- **Context:** the card's order runs the probes, then opens the store
+  (marker check, start-up clean-up), then starts the spawner. But the
+  sandbox probe already creates `<state-dir>/sandbox/runs` and replays its
+  journals, so a state directory gets written before its `.ranikust-root`
+  marker is checked, and a non-empty directory without a marker would be
+  refused only afterwards ([ranikust](agents/crates/ranikust.md#api),
+  [cache-and-store](design/cache-and-store.md#store-layout)).
+- **Options:** (a) open the store first (in overlay mode the state
+  directory is known before the probes, Q-018), then probe; (b) probe
+  first, in a probe-only directory; (c) as now, and `Store::open` accepts
+  a `sandbox/` it finds without a marker.
+- **Recommendation:** (a), once `rnk-store` exists.
+- **Interim:** (c) until task 7: `feat/ranikust-setup` probes before any
+  store exists; the seam for `Store::open` is marked in
+  `crates/ranikust/src/setup.rs`, after the outcome and before
+  `Sandbox::start`. As a stand-in for the marker and the workdir checks
+  (Q-011), the set-up creates a missing state directory with mode 0700 and
+  refuses one, or any directory above it up to the workdir, that is a
+  symlink, not owned by the effective uid, or writable by group or others,
+  before the probe writes there (`prepare_state_dir`). The sandbox does not
+  trust the directory either: journals and the run directories are opened
+  without following symlinks, a journal's root must lie below the state
+  directory, and a symlinked `sandbox/` or `sandbox/runs` is refused.
+  Reversible: one function in `setup.rs`, replaced by the store's checks.
 - **Raised:** 2026-10-30
 
 ### Q-077: How is the MS_MOVE fallback kept from a chroot escape?

@@ -145,6 +145,22 @@ instead of producing a broken image. The message offers, in order:
    the binary.
 3. Run ranikust inside a container.
 
+Inside a plain `chroot`, `/` is not a mount root: the build namespace
+cannot make it a slave mount, and `MS_MOVE` would let `..` climb out of a
+stage root ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)).
+ranikust refuses there before changing anything, and says to run on the
+host or in a container, or to bind-mount the chroot directory onto itself
+first. Where the kernel does not report whether `/` is a mount root
+(`STATX_ATTR_MOUNT_ROOT` missing from the mask), it does not refuse on that
+ground and does not fall back to `MS_MOVE`.
+
+Phase 1 builds only the "overlay, root" outcome: every other environment
+gets the failing probe step with its errno and the way out: `sudo` or a
+`--privileged` container without root; kaniko mode (Phase 2) for root the
+environment still refuses, as with Docker's defaults; nothing extra for a
+host-side failure such as an unwritable state directory
+(`crates/ranikust/src/setup.rs`).
+
 ## Failure handling
 
 - A probe step that fails with an unexpected errno is reported verbatim; the

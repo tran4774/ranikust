@@ -69,9 +69,9 @@ if wants unit; then
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
 if wants smoke; then
-  log "building the smoke-build example"
-  (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build)
-  cp "$TARGET/$MUSL/release/examples/smoke-build" "$STAGE/bin/"
+  log "building the smoke-build example and the ranikust binary"
+  (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
+  cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
 fi
 
 # --- Image: fetch and verify against SHA256SUMS ------------------------------

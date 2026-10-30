@@ -36,3 +36,16 @@ smoke_check_no_stub_leak() {
     done
   done
 }
+
+# The `ranikust` binary's process set-up: with `--no-push --workdir`, it
+# must reach the outcome, overlay mode as root entering roots with $2
+# (`pivot_root` or `MS_MOVE`), and stop before building with exit code 2.
+# $1 is its stderr, $3 its exit code.
+smoke_check_setup() {
+  if [ "$3" != 2 ] ||
+    ! grep -q "set up for overlay mode as root, RUN enters its root with $2" <<<"$1"; then
+    echo "error: ranikust's set-up: expected $2 and exit code 2, got $3:" >&2
+    echo "$1" >&2
+    return 1
+  fi
+}

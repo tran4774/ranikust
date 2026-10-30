@@ -51,9 +51,16 @@ impl BuildConfig {
     fn meta_options(&self) -> serde_json::Value;             // built: no name, path or argument
 }
 enum Mode { Auto, Overlay, Kaniko }                          // built: --mode, ADR-0023
-enum Outcome { OverlayRoot, OverlayRootless, KanikoCanMount, KanikoCannotMount, Refuse(Guidance) }
-    // [decided] ADR-0002, ADR-0004; picked here from the crates' probe reports [design]; the type
-    // the libraries receive [open: Q-017]
+// src/setup.rs, built (task 8): Phase 1 has one outcome; the others refuse.
+enum Outcome { OverlayRoot { sandbox: rnk_sandbox::Caps, overlay: OverlayCaps } }
+    // planned: OverlayRootless (3), KanikoCanMount, KanikoCannotMount (2) [decided] ADR-0002,
+    // ADR-0004; each library receives only its own part [open: Q-017]
+struct OverlayCaps { probed: bool }   // placeholder for rnk-snapshot's caps; seam for task 9
+struct Refusal { reason: String, guidance: &'static str }        // what failed, what to do
+struct Setup { outcome: Outcome, state_dir: PathBuf, sandbox: rnk_sandbox::Sandbox }  // the hand-off
+fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal>;  // namespace → state dir → probes → outcome → spawner
+fn prepare_state_dir(state_dir, workdir, euid) -> Result<(), Refusal>; // 0700; no symlink, owner euid, no g/o write up to the workdir [open: Q-111]
+fn probe_overlay(state_dir: &Path) -> Result<OverlayCaps, Refusal>; // seam: rnk_snapshot::probe (task 9)
 struct PushArgs { path: PathBuf, destination: Vec<String> } // [open: Q-048] kaniko pushes a docker-save tar or OCI layout
 ```
 
@@ -61,16 +68,24 @@ Set-up order, built so far: parse the flags (no I/O; refused kaniko flags
 reported first, so `--help` works on any kernel) → the Linux 5.8 check
 (`rnk_rootfs::probe_support`, ADR-0028; skipped by `version`) →
 `rnk_metrics::init` (starts no thread), `--metrics-file` over
-`RANIKUST_METRICS_FILE` → `BuildConfig::from_args` → stop with exit code 2,
-"not implemented yet". Still to come [design]: workdir checks [open: Q-011]
-→ `unshare(CLONE_NEWNS)`, `/` rslave → probes of `rnk-sandbox` and
-`rnk-snapshot` in forked children → outcome → `rnk-store` open and
-clean-up → kaniko mode: `flock` the workdir → spawner thread, stub-journal
-replay → tokio runtime → `rnk-sched`.
+`RANIKUST_METRICS_FILE` → `BuildConfig::from_args` → `--mode=kaniko`
+stops (Phase 2) → the overlay-mode state directory, `--state-dir` or
+`<workdir>/.ranikust`, else a usage error [open: Q-110] → `setup::set_up`:
+`rnk_sandbox::enter_build_namespace` (refuses in a plain `chroot`, then
+`unshare(CLONE_NEWNS)`, `/` rslave) → `prepare_state_dir` (created 0700;
+refused if it or a directory above it up to the workdir is a symlink, not
+owned by the effective uid, or group/world-writable) → `rnk_sandbox::probe` in
+`<state-dir>/sandbox` → the overlay probe seam → outcome →
+`Sandbox::start` (stub-journal replay, spawner thread) → stop with exit
+code 2, "set up for …, but building is not implemented yet". Still to
+come [design]: workdir checks [open: Q-011] before the namespace →
+`rnk-store` open and clean-up before the spawner (task 7) [open: Q-111] →
+kaniko mode: `flock` the workdir → tokio runtime → `rnk-sched`.
 
 Exit codes: 0 success (`--help`, `--version`, `version` included); 1 a
-runtime error or an unsupported kernel; 2 a usage error, a refused kaniko
-flag, an invalid combination, and for now every valid `build`.
+runtime error, an unsupported kernel or a refused environment; 2 a usage
+error, a refused kaniko flag, an invalid combination, and for now every
+`build` that gets through the set-up.
 
 ## Invariants
 
@@ -110,6 +125,22 @@ flag, an invalid combination, and for now every valid `build`.
   and the seccomp message through `RANIKUST_DEBUG_FAULT=kernel-missing` and
   `kernel-blocked`; `--metrics-file` over the variable. `tests/metrics.rs`: the report on
   every exit path, panic included (`RANIKUST_DEBUG_FAULT=panic|error`).
+- T0 built, `src/setup/tests.rs`: the outcome from the probes' results
+  (both succeed; no privileges, as root and not; a failed step reported
+  verbatim with kaniko mode as the way; a host-side failure without it; a
+  failed overlay probe), the plain-chroot refusal's message, and the
+  state-directory check (created 0700; a symlinked state dir or workdir,
+  a group- or world-writable one, another owner refused, nothing created
+  through a symlink; only the chain up to the workdir checked).
+  `tests/cli.rs`: overlay mode without `--workdir`/`--state-dir`,
+  `--mode=kaniko`, and, unless the tests run as root, the refusal before
+  the namespace with the workdir left empty and `ranikust.setup` in the
+  report.
+- T1 built, `just smoke`, and T2 built, `just test-vm smoke`: the release
+  binary's set-up in rootless podman, on the VM as root, in Docker
+  `--privileged` (`pivot_root`) and with `SYS_ADMIN` under Docker's seccomp
+  (`MS_MOVE`); refused inside a plain `chroot` (`tests/smoke/lib.bash`
+  `smoke_check_setup`).
 - To do: refusal of a non-empty unmarked `--workdir` under a fresh temp dir
   (with Q-011). T3: `just build-static`.
 - T2 only, in the VM: `--workdir` at `/`, `/home`, other system directories
@@ -117,8 +148,11 @@ flag, an invalid combination, and for now every valid `build`.
 
 ## Metrics
 
-- Emits `ranikust.run` (the process) and `ranikust.build` (from flag
-  validation on); later `ranikust.setup` and `ranikust.probe`
+- Emits `ranikust.run` (the process), `ranikust.build` (from flag
+  validation on), `ranikust.setup` (namespace, probes, spawner; the store
+  open joins it with task 7) and inside it `ranikust.probe` with `steps`,
+  the crates' probes that really ran (the sandbox's; the overlay seam does
+  not count until task 9)
   ([design/metrics.md](../../design/metrics.md#ranikust)).
 - `Telemetry::finish` on every way out that returns. `--metrics-file` fills
   `Config::file`. `set_meta`: `ranikust_version`; for `build`, `mode` and
@@ -134,8 +168,12 @@ flag, an invalid combination, and for now every valid `build`.
   allocation at 16 threads on musl ([exp-05](../../research/experiments/05-rust-ecosystem.md#q2-allocator)).
 - `--snapshot-mode` is kaniko's (`full|redo|time`, default `full`,
   `root.go:341`) and keeps that meaning; the mode is `--mode`. In overlay
-  mode warn and ignore it (ADR-0023). Built for `--mode=overlay`; with
-  `auto`, the warning waits for the probe to pick overlay [design].
+  mode warn and ignore it (ADR-0023): built, after the set-up picked
+  overlay mode.
+- `rnk_sandbox::Caps` is `#[non_exhaustive]`: `setup::pick` is generic
+  over the caps so its tests need no real probe.
+- The sandbox probe creates `<state-dir>/sandbox` before `rnk-store` has
+  checked the state directory's marker [open: Q-111].
 - kaniko requires `--destination` unless `--no-push` (`root.go:200-202`),
   rejects zstd with `--tar-path` or `--image-format=docker` (`:177-188`), and
   refuses to run outside a container without `--force` (`:240-245`).
@@ -160,11 +198,13 @@ flag, an invalid combination, and for now every valid `build`.
   and the `--parallel-stages` name (ADR-0011, ADR-0014).
 - Done (task 8a): those flags and `--platform` parsed and validated into
   `BuildConfig`, the other kaniko flags refused with a reason, the Linux
-  5.8 check, `meta.mode` and `meta.options`. `build` stops after
-  validation with exit code 2 until the builder exists (task 11).
-- Left: the workdir checks [open: Q-011], the mount namespace, the probes
-  and the outcome (with `rnk-sandbox`, task 8b, and `rnk-snapshot`, task
-  9), the kaniko-mode lock, the hand-off, `mimalloc` (task 5a).
+  5.8 check, `meta.mode` and `meta.options`.
+- Done (task 8b): the mount namespace, the sandbox probe, the outcome
+  (overlay mode as root), refusals with guidance, the spawner thread; `build`
+  stops after the set-up with exit code 2 until the builder exists (task 11).
+- Left: the overlay probe behind `setup::probe_overlay` (task 9), the store
+  open (task 7), the workdir checks [open: Q-011], the kaniko-mode lock
+  (Phase 2), the tokio runtime and the hand-off to `rnk-sched` (tasks 11, 12).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push` and

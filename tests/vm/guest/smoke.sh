@@ -3,14 +3,17 @@
 # one-layer OCI layout) as real root, in each environment below, with the
 # checks of `just smoke` plus those only real root can make: writes to the
 # host's /proc/sys (T17), device nodes (T18) and the chroot escapes of
-# Q-077, with a plain chroot as their control, and the probe's refusal when
-# ranikust itself runs in a plain chroot. Docker then runs each image, and the VM is checked for leftovers.
+# Q-077, with a plain chroot as their control, and the refusal when
+# ranikust itself runs in a plain chroot. Docker then runs each image, and
+# the VM is checked for leftovers. The `ranikust` binary's set-up (namespace,
+# probes, outcome, spawner) runs in each environment too.
 set -euo pipefail
 cd "$HOME/rnk"
 source guest/smoke-lib.bash
 
 IMAGE=docker.io/library/python:3.13-alpine
 BIN="$HOME/rnk/bin/smoke-build"
+RNK="$HOME/rnk/bin/ranikust"
 W=/var/tmp/rnk-smoke
 MARKER=/rnk-escape-marker
 
@@ -65,6 +68,14 @@ runs+=(
 
 for m in "${ESCAPE_MODES[@]}"; do runs+=(--run "python3 -c '$ESCAPE' $m"); done # Q-077
 
+# Docker's own pull, retried: Docker Hub's CDN resets connections now and
+# then, and `docker run` gives up on the first.
+for i in 1 2 3 4 5; do
+  sudo docker pull -q "$IMAGE" && break
+  [ "$i" = 5 ] && { echo "error: docker pull $IMAGE failed 5 times" >&2; exit 1; }
+  sleep $((i * 10))
+done
+
 sudo rm -rf "$W" && sudo mkdir -p "$W"
 sudo touch "$MARKER" "$W/marker"
 trap 'sudo rm -f "$MARKER"' EXIT
@@ -95,6 +106,18 @@ for v in "${VARIANTS[@]}"; do
   [[ "$got" == "hello from ranikust"$'\n'jq-* ]] ||
     { echo "error: $name: the image does not run as built: $got" >&2; exit 1; }
   sudo docker rmi -f "$loaded" >/dev/null
+  # The real binary's set-up in the same environment.
+  case "$entry" in PivotRoot) syscall=pivot_root ;; MoveMount) syscall=MS_MOVE ;; esac
+  rc=0
+  if [ "$name" = host ]; then
+    log="$(sudo "$RNK" --no-push --workdir "$dir/rnk" 2>&1)" || rc=$?
+  else
+    # shellcheck disable=SC2046
+    log="$(sudo docker run --rm $(docker_args "$name") -v "$RNK:/ranikust:ro" "$IMAGE" \
+      /ranikust --no-push --workdir /tmp/w 2>&1)" || rc=$?
+  fi
+  echo "$log"
+  smoke_check_setup "$log" "$syscall" "$rc"
   echo "$name: ok"
 done
 
@@ -109,28 +132,36 @@ for m in "${ESCAPE_MODES[@]}"; do
 done
 
 # ranikust itself in a plain chroot, where / is not a mount root: it must
-# refuse before any RUN (Q-077: MS_MOVE would leave ".." climbing out). /proc comes in for the thread count and the probe.
+# refuse before any RUN (Q-077: MS_MOVE would leave ".." climbing out), and
+# say why. /proc comes in for the thread count and the probe. Both the
+# smoke-build example and the binary.
 for name in privileged sysadmin; do
-  echo "=== $name, ranikust inside a plain chroot (expect a refusal)"
-  # shellcheck disable=SC2046
-  set +e
-  out="$(sudo docker run --rm $(docker_args "$name") -v "$BIN:/smoke-build:ro" "$IMAGE" sh -c '
-    mkdir -p /outer/proc /outer/tmp && cp /smoke-build /outer/ &&
-    { mount -t proc proc /outer/proc || mount --rbind /proc /outer/proc; } &&
-    exec chroot /outer /smoke-build --image '"$IMAGE"' --work /tmp/work --out /tmp/out --run true' 2>&1)"
-  rc=$?
-  set -e
-  echo "$out"
-  if [ "$rc" = 0 ] || grep -q '^probe: Caps' <<<"$out" || grep -q '^RUN ' <<<"$out"; then
-    echo "error: $name: the probe did not refuse inside a plain chroot" >&2
-    exit 1
-  fi
-  # Refused for / not being a mount: measured at the build namespace's
-  # first step (making / a slave mount), before the probe; the probe's own
-  # guard (no MS_MOVE, pivot_root needs a mounted root) is the next line.
-  grep -Eq '^smoke-build: (make / a recursive slave mount: Invalid argument|RUN sandbox: pivot_root: )' <<<"$out" ||
-    { echo "error: $name: refused for another reason" >&2; exit 1; }
-  echo "$name in a chroot: refused, as expected"
+  for prog in smoke-build ranikust; do
+    echo "=== $name, $prog inside a plain chroot (expect a refusal)"
+    case "$prog" in
+      smoke-build) args="--image $IMAGE --work /tmp/work --out /tmp/out --run true" ;;
+      ranikust) args="--no-push --workdir /tmp/w" ;;
+    esac
+    # shellcheck disable=SC2046
+    set +e
+    out="$(sudo docker run --rm $(docker_args "$name") -v "$HOME/rnk/bin/$prog:/$prog:ro" "$IMAGE" sh -c '
+      mkdir -p /outer/proc /outer/tmp && cp /'"$prog"' /outer/ &&
+      { mount -t proc proc /outer/proc || mount --rbind /proc /outer/proc; } &&
+      exec chroot /outer /'"$prog $args" 2>&1)"
+    rc=$?
+    set -e
+    echo "$out"
+    if [ "$rc" = 0 ] || grep -q '^probe: Caps' <<<"$out" || grep -q '^RUN ' <<<"$out" ||
+      grep -q 'set up for' <<<"$out"; then
+      echo "error: $name: $prog did not refuse inside a plain chroot" >&2
+      exit 1
+    fi
+    # Refused for / not being a mount, before the build namespace
+    # changes anything (`rnk_sandbox::enter_build_namespace`).
+    grep -q '^'"$prog"': .*/ is not a mount point: ranikust runs inside a plain chroot' <<<"$out" ||
+      { echo "error: $name: $prog refused for another reason" >&2; exit 1; }
+    echo "$name, $prog in a chroot: refused, as expected"
+  done
 done
 
 echo "=== the VM after the runs"
@@ -138,5 +169,6 @@ echo "=== the VM after the runs"
   { echo "error: the VM's domainname changed" >&2; exit 1; }
 ! grep -q "$W" /proc/self/mountinfo || { echo "error: mounts left under $W" >&2; exit 1; }
 ! pgrep -f smoke-build >/dev/null || { echo "error: smoke-build processes left" >&2; exit 1; }
+! pgrep -x ranikust >/dev/null || { echo "error: ranikust processes left" >&2; exit 1; }
 sudo rm -rf "$W"
 echo "smoke: ok"

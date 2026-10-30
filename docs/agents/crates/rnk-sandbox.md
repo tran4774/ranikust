@@ -36,7 +36,7 @@ where mounting is possible; no `RUN` process outlives the build.
 ## API
 
 ```rust
-pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads
+pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]; what the probe found
 pub enum RootEntry { PivotRoot, MoveMount }
@@ -113,7 +113,12 @@ from `rnk-store`, secret file) and passes `--network`.
   journal is locked before it gets its name, so a replay never takes a live
   one) and removed before the diff; the parent's mtime returns to m0 only if it still
   shows m1, the value right after placing. Journals no process holds are
-  replayed by `probe` and `Sandbox::start`.
+  replayed by `probe` and `Sandbox::start`. The replay runs as root on a
+  directory others may have written: journals and run directories are
+  opened with `O_NOFOLLOW` and the scratch files removed with `unlinkat`
+  through descriptors, a journal's root must resolve strictly below the
+  state directory (the parent of `dir`), and `dir` or `dir/runs` being a
+  symlink is an error. A journal failing a check is left with a warning.
 - The probe performs the real sequence, in the configuration that will be
   used, never by kernel version; a command that does not exist fails at
   `execve` with `ENOENT`, which proves every step before it.

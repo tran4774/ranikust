@@ -1,9 +1,13 @@
 # Command line
 
 > **ranikust cannot build images yet.** The command line below exists: it
-> checks the kernel, reads the flags and validates them, then stops with
-> "building is not implemented yet" and exit code 2. This page describes
-> what it accepts today, so a pipeline can be prepared for it.
+> checks the kernel, reads the flags and validates them, probes what the
+> environment allows, then stops with "building is not implemented yet"
+> and exit code 2. For now the probe accepts only root (on a host with
+> `sudo`, or in a `--privileged` container) and needs `--workdir` or
+> `--state-dir`; elsewhere it stops with exit code 1, the step that failed
+> and what to do instead. This page describes what it accepts today, so a
+> pipeline can be prepared for it.
 
 ## Running it
 

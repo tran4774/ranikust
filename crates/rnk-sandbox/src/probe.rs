@@ -52,7 +52,7 @@ const PROBE_ROOT_PREFIX: &str = "probe-";
 /// error.
 pub fn probe(dir: &Path) -> Result<Caps> {
     let runner = Runner::new(dir, None)?;
-    journal::replay(runner.runs_dir())?;
+    journal::replay(runner.runs_dir(), runner.state_dir())?;
     remove_stale_roots(dir);
     let root_dir = create_root(dir)?;
     let parent = ParentPid::new()?;
@@ -67,9 +67,9 @@ pub fn probe(dir: &Path) -> Result<Caps> {
 fn attempts(dir: &Path, root_dir: &Path, parent: ParentPid) -> Result<Caps> {
     let mut last = None;
     for root_entry in [RootEntry::PivotRoot, RootEntry::MoveMount] {
-        if root_entry == RootEntry::MoveMount && !slash_is_mount_root()? {
+        if root_entry == RootEntry::MoveMount && slash_is_mount_root()? != Some(true) {
             // The moved root would sit on a plain directory, which `..`
-            // climbs out of: no fallback.
+            // climbs out of, or nobody knows: no fallback.
             break;
         }
         let span = tracing::debug_span!("rnk_sandbox.probe", ok = Empty);
@@ -103,8 +103,13 @@ fn is_seccomp_refusal(e: &Error) -> bool {
 /// Whether this process's `/` is the root of a mount. `MS_MOVE` puts the
 /// stage root on top of `/`; `..` stops there only if `/` is a mount root
 /// (`follow_dotdot` in `fs/namei.c`), otherwise it climbs into the
-/// directory above [inferred].
-fn slash_is_mount_root() -> Result<bool> {
+/// directory above (measured by the VM smoke suite). In a plain `chroot`, `/`
+/// is not a mount root.
+///
+/// `None` when the kernel does not report the attribute (it is missing from
+/// `stx_attributes_mask`, as in some gVisor versions): unknown, so neither
+/// a refusal nor a reason to trust `MS_MOVE`.
+pub(crate) fn slash_is_mount_root() -> Result<Option<bool>> {
     let st = rustix::fs::statx(
         rustix::fs::CWD,
         c"/",
@@ -112,8 +117,16 @@ fn slash_is_mount_root() -> Result<bool> {
         rustix::fs::StatxFlags::BASIC_STATS,
     )
     .map_err(|e| io_err("statx", "/", e.into()))?;
+    Ok(mount_root_attr(st.stx_attributes_mask, st.stx_attributes))
+}
+
+/// [`slash_is_mount_root`] from the raw `statx` fields.
+fn mount_root_attr(
+    mask: rustix::fs::StatxAttributes,
+    attributes: rustix::fs::StatxAttributes,
+) -> Option<bool> {
     let attr = rustix::fs::StatxAttributes::MOUNT_ROOT;
-    Ok(st.stx_attributes_mask.contains(attr) && st.stx_attributes.contains(attr))
+    mask.contains(attr).then(|| attributes.contains(attr))
 }
 
 /// Success when the child got as far as `execve`.
@@ -167,6 +180,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_mount_root_attribute_is_unknown_unless_in_the_mask() {
+        use rustix::fs::StatxAttributes as A;
+        assert_eq!(mount_root_attr(A::empty(), A::MOUNT_ROOT), None);
+        assert_eq!(mount_root_attr(A::MOUNT_ROOT, A::MOUNT_ROOT), Some(true));
+        assert_eq!(mount_root_attr(A::MOUNT_ROOT, A::empty()), Some(false));
+    }
+
+    #[test]
     fn reaching_exec_is_success() {
         let enoent = Error::Exec {
             program: PROBE_PROGRAM.into(),
@@ -194,13 +215,6 @@ mod tests {
         assert!(is_seccomp_refusal(&setup(Step::PivotRoot, libc::EPERM)));
         assert!(!is_seccomp_refusal(&setup(Step::PivotRoot, libc::EINVAL)));
         assert!(!is_seccomp_refusal(&setup(Step::MountProc, libc::EPERM)));
-    }
-
-    #[test]
-    fn the_test_process_root_is_a_mount_root() {
-        // Linux >= 5.8 reports the attribute; outside a plain `chroot`, `/`
-        // is a mount root.
-        assert!(slash_is_mount_root().unwrap());
     }
 
     #[test]

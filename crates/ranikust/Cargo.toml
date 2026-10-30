@@ -14,6 +14,9 @@ clap.workspace = true
 mimalloc.workspace = true
 rnk-metrics.workspace = true
 rnk-rootfs.workspace = true
+rnk-sandbox.workspace = true
+# `geteuid` for the set-up's guidance and state-directory check.
+rustix = { workspace = true, features = ["fs", "process"] }
 serde_json.workspace = true
 tracing.workspace = true
 
@@ -23,8 +26,6 @@ tracing.workspace = true
 rnk-layer.workspace = true
 rnk-oci.workspace = true
 rnk-registry.workspace = true
-rnk-sandbox.workspace = true
-rustix = { workspace = true, features = ["fs"] }
 sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }

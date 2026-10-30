@@ -17,11 +17,18 @@ use crate::error::{Error, Result, sys_err};
 /// # Errors
 ///
 /// [`Error::NotSingleThreaded`] when other threads exist,
+/// [`Error::InPlainChroot`] when `/` is not the root of a mount,
 /// [`Error::Privilege`] without `CAP_SYS_ADMIN`, [`Error::Sys`] otherwise.
 pub fn enter_build_namespace() -> Result<()> {
     let threads = thread_count()?;
     if threads != 1 {
         return Err(Error::NotSingleThreaded { threads });
+    }
+    // In a plain `chroot`, making `/` a slave mount fails with `EINVAL`
+    // after the `unshare`: say why before changing anything. Only a definite
+    // "no"; where the kernel does not tell, the `mount_change` below decides.
+    if crate::probe::slash_is_mount_root()? == Some(false) {
+        return Err(Error::InPlainChroot);
     }
     // SAFETY: `NEWNS` does not unshare the descriptor table, the only flag
     // `unshare_unsafe` is unsafe for; the process is single-threaded.
@@ -69,6 +76,13 @@ mod tests {
         let status = "Name:\tranikust\nPid:\t1\nThreads:\t3\nVmRSS:\t1 kB\n";
         assert_eq!(parse_threads(status), Some(3));
         assert_eq!(parse_threads("Name:\tx\n"), None);
+    }
+
+    #[test]
+    fn the_mount_root_check_works_here() {
+        // What it answers depends on where the tests run; the chroot
+        // refusal itself is checked in the VM smoke suite.
+        crate::probe::slash_is_mount_root().unwrap();
     }
 
     #[test]
