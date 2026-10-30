@@ -35,8 +35,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--no-push`, `--tar-path`, `--oci-layout-path`, `--compression`,
   `--reproducible`, `--registry-certificate`, `--snapshot-mode`. New flags:
   `--mode=auto|overlay|kaniko`, `--workdir`, `--state-dir` (kaniko's
-  `--kaniko-dir`), `--jobs`, `--network=host|none`, `--platform` and
-  `--metrics-file`. Other kaniko flags are refused with the reason, never
+  `--kaniko-dir`), `--jobs`, `--network=host|none`, `--platform`,
+  `--secret`, `--allow` and `--metrics-file`. Other kaniko flags are refused with the reason, never
   ignored.
 - Building: `ranikust` builds a Dockerfile in overlay mode as root, its
   stages in parallel up to `--jobs`, one layer per `RUN`, `COPY`, `ADD`
@@ -48,8 +48,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `HEALTHCHECK`; local `COPY` and `ADD` with wildcards, heredocs,
   `--from`, `--chown` and octal `--chmod`, `.dockerignore` honoured;
   `RUN` in shell, exec and heredoc form with `--mount=type=cache`,
-  `--mount=type=secret` and `--network=none`. `--secret id=ID,src=PATH`
-  provides secret files. Features of later phases stop the build with a
+  `--mount=type=secret` and `--network=none`, as BuildKit: cache
+  `sharing=shared|locked|private` with `uid`/`gid`/`mode` when a cache is
+  made, secrets as a `0400` root file (or the requested mode and owner)
+  or with `env=` as a variable of that `RUN`. `--secret` takes kaniko's
+  and buildctl's syntax: a file (`src=`) or a variable (`env=`,
+  `type=env`). `RUN --network=host` under `--network=none` needs
+  `--allow network.host`. A cancel (SIGINT, SIGTERM or a failed stage)
+  kills the running `RUN`s. Features of later phases stop the build with a
   message naming the phase. `RUN --network=none` needs `CAP_NET_ADMIN`
   in a container.
 - The start-up probe: `ranikust` checks that it can isolate `RUN` (a

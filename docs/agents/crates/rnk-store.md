@@ -47,13 +47,19 @@ impl Store {
         where F: FnOnce(&TmpEntry) -> std::result::Result<u64, E>,    //   tmp/<id>/<n> → f (bytes written)
               E: Into<Box<dyn std::error::Error + Send + Sync>>;      //   → fsync a blob → rename
     pub fn cache_dir(&self, id: &str) -> Result<PathBuf>;  // caches/<sha256(id)>, created if missing
+    pub fn cache_lease(&self, key: &str, sharing: CacheSharing, cancelled: &dyn Fn() -> bool)
+        -> Result<CacheLease>;  // a cache directory held for one RUN, as BuildKit's sharing=
+}
+pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked: wait for EX; private: new dir
+impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  // flock held until dropped
+impl Store {
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>
     pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport>; // [design] Phase 5, [open: Q-043]
 }
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by diff ID [open: Q-015]; digest() -> &Digest
-pub enum Error { NotAStateDir, NoFlock, Io, BadEntry, Rootfs, Fill }
+pub enum Error { NotAStateDir, NoFlock, Io, BadEntry, Cancelled, Rootfs, Fill }
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a
