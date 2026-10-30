@@ -43,7 +43,9 @@ Entry format:
   `Option<&str>` ([rnk-dockerfile](agents/crates/rnk-dockerfile.md#api-planned)).
 - **Options:** (a) kaniko's list: build every listed stage, push the first;
   (b) one target, a repeated flag rejected with a message (`ADR-0011`).
-- **Recommendation:** none
+- **Recommendation:** (b), one target: the stages after the first in
+  kaniko's list are built and thrown away, work no output needs;
+  compatibility with kaniko's list is not a goal (2026-10-31).
 - **Interim:** in `feat/rnk-dockerfile-parser`, `stage_graph()` takes
   `GraphOptions::targets: Vec<String>`: every listed stage is built, the
   first is the result (`StageGraph::primary_target`), and `TARGETSTAGE` is
@@ -61,7 +63,9 @@ Entry format:
   ([rnk-ignore](agents/crates/rnk-ignore.md#api),
   [Phase 1](agents/crates/rnk-ignore.md#phase-1)).
 - **Options:** (a) `&str`; (b) bytes, matched with `regex::bytes`.
-- **Recommendation:** none
+- **Recommendation:** (b), bytes, as the interim: a file whose name is
+  not UTF-8 must still match an exclude, or it slips into the context
+  (a secret, a key) unseen (2026-10-31).
 - **Interim:** bytes, on branch `feat/rnk-ignore-matcher`: patterns and
   paths are `impl AsRef<[u8]>` (so `&str` callers need no change) and
   `read_patterns` returns `Vec<Vec<u8>>`. Go strings are bytes too, so this
@@ -102,7 +106,9 @@ Entry format:
 - **Options:** (a) the T0 multi-process and T2 `SIGKILL` tests planned on
   the [card](agents/crates/rnk-store.md#tests), in task 7; (b) the race
   cases left to the Phase 6 host-safety suite.
-- **Recommendation:** none
+- **Recommendation:** (a): a lock race or a crash mid-extraction can
+  publish a partial layer that later builds trust; proven when the store
+  is built, not left for Phase 6 (2026-10-31).
 - **Interim:** none
 - **Raised:** 2026-10-30
 
@@ -159,7 +165,10 @@ Entry format:
 - **Options:** (a) require `--workdir` or `--state-dir` in overlay mode;
   (b) default the workdir to `/` in a container, as designed, and let the
   probe refuse; (c) a temporary directory.
-- **Recommendation:** none
+- **Recommendation:** (a): an explicit `--workdir` or `--state-dir`, never
+  an implicit `/` chosen by a heuristic, and never a temporary directory
+  that loses the store between builds; the design's container default
+  was for kaniko compatibility, which is not a goal (2026-10-31).
 - **Interim:** (a), on `feat/ranikust-setup`: without either flag, overlay
   mode (and `auto`, whose only Phase 1 outcome is overlay) stops with a
   usage error, exit code 2. Reversible: one check in `main.rs`.
@@ -250,7 +259,9 @@ Entry format:
 - **Options:** (a) the build directory; (b) a store call that publishes a
   temporary file under the digest computed while writing it, so later
   builds and the cache reuse it.
-- **Recommendation:** none
+- **Recommendation:** (b): a built layer published once in the store is
+  reused by later builds and the cache instead of encoded again; the
+  digest is verified as it is written (2026-10-31).
 - **Interim:** (a), on branch `feat/rnk-builder-outputs`. Reversible: the
   exporter's directory and one rename.
 - **Raised:** 2026-10-30
@@ -354,7 +365,10 @@ Entry format:
   [open questions](design/modes-and-detection.md#open-questions)).
 - **Options:** (a) refuse images with several owners; (b) an
   `ignore_chown_errors`-style flag, as podman offers.
-- **Recommendation:** none
+- **Recommendation:** (a): (b) silently gives files the wrong owner, so a
+  file meant for a service user becomes the build user's, a change of
+  permissions nobody reviewed; podman's flag is not a reason to copy it
+  (2026-10-31).
 - **Interim:** none
 - **Raised:** 2026-10-30
 
@@ -410,8 +424,12 @@ Entry format:
   BuildKit's is `#ref:subdir` (`buildkit@cd8ee244
   util/gitutil/git_url.go:71-79`). `ADR-0035` accepts both.
 - **Options:** (a) refuse a `:subdir` with kaniko's form; (b) accept
-  `#ref:subdir#commit`; (c) use `--context-sub-path` only.
-- **Recommendation:** none
+  `#ref:subdir#commit`; (c) use `--context-sub-path` only; (d) drop
+  kaniko's `#ref#commit` form and accept BuildKit's `#ref:subdir` only,
+  pinning by a full commit hash as the ref.
+- **Recommendation:** (d): one fragment grammar, so no URL is read two
+  ways; a full commit hash pins the source as kaniko's second part did.
+  Accepting kaniko's form only served compatibility (2026-10-31).
 - **Interim:** none
 - **Raised:** 2026-10-30
 
@@ -436,8 +454,12 @@ Entry format:
   for kaniko's `--registry-mirror`, `--registry-map` and
   `--credential-helpers` are open ([kaniko-map](agents/kaniko-map.md#flags)).
 - **Options:** (a) kaniko's names and meanings (`ADR-0011`); (b) other
-  names.
-- **Recommendation:** none
+  names; (c) names chosen with the semantics, set first by which
+  credentials each registry receives.
+- **Recommendation:** (c): decide first that a mirror or mapped registry
+  never receives another registry's credentials and never serves a push,
+  then name the flags; kaniko's names only where its meaning is exactly
+  that. Compatibility is not a goal (2026-10-31).
 - **Interim:** none
 - **Raised:** 2026-10-30
 
@@ -453,7 +475,11 @@ Entry format:
   ([rnk-registry](agents/crates/rnk-registry.md#pitfalls)).
 - **Options:** phase: none listed; `push` input: (a) both formats, as
   kaniko; (b) one format.
-- **Recommendation:** none
+- **Recommendation:** `push` input (b), an OCI layout only: one parser
+  for untrusted input instead of two, and the layout is what
+  `--oci-layout-path` writes; the docker-save tar only served kaniko
+  compatibility. `login` not at all: it writes credentials to disk, which
+  a tool that reads existing ones does not need. Phase: none (2026-10-31).
 - **Interim:** `feat/ranikust-cli` has `build` and `version` only;
   `ranikust push` and `ranikust login` are clap errors (exit code 2).
 - **Raised:** 2026-10-30
@@ -467,7 +493,9 @@ Entry format:
   ([overlay-snapshot](design/overlay-snapshot.md#the-volatile-lifecycle)).
   BuildKit mounts per exec, so it has no counterpart. Split out of Q-049.
 - **Options:** (a) build it after Phase 1; (b) drop it.
-- **Recommendation:** none
+- **Recommendation:** (a), behind a measurement: time the mount and
+  unmount per instruction on W1–W3; build it if it is a visible share of
+  a build, with the `volatile` rules unchanged (2026-10-31).
 - **Interim:** none
 - **Raised:** 2026-10-30
 
@@ -514,8 +542,16 @@ Entry format:
   layers, keep `/var/run`), but nothing is designed.
 - **Options:** (a) refuse them in overlay mode; (b) implement them in
   overlay mode's exporter; (c) ignore them with a warning (breaks
-  `ADR-0036`'s rule that a flag changing the image is never dropped).
-- **Recommendation:** none
+  `ADR-0036`'s rule that a flag changing the image is never dropped);
+  (d) refuse them in overlay mode for good, and in kaniko mode keep only
+  what safety or performance needs.
+- **Recommendation:** (d): overlay mode needs none of them: its layers
+  hold only what `RUN` wrote, never container mounts or `/var/run`, and
+  squashing costs a full re-encode for no safety gain. In kaniko mode
+  mounts are already ignored through mountinfo, so `--ignore-path` and
+  `--ignore-var-run=false` stay only if a case needs them;
+  `--single-snapshot` only if measured faster. They existed for kaniko
+  compatibility, which is not a goal (2026-10-31).
 - **Interim:** (a): exit code 2 naming the flags and `--mode=kaniko`.
   Reversible: one function, `config::overlay_mode_flags`.
 - **Raised:** 2026-10-31
