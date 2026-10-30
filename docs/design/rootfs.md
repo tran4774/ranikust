@@ -133,7 +133,7 @@ never called. A hand-written reader would repeat that parsing for no gain.
   lower inode link to that copy, so the bytes written stay bounded by the
   lower layers' size, however many names a layer links. Only the
   `user.overlay.opaque=y` form ranikust writes is recognised
-  ([open: Q-121]). A target in no layer, hidden, or a directory is an
+  ((Q-121)). A target in no layer, hidden, or a directory is an
   `Error::Entry`; so is any missing target for plain `extract`. Lower
   layers are only read.
 - **`Whiteouts::Overlay`** (`layers/<id>`, mounted with `userxattr`,
@@ -164,7 +164,7 @@ is `extract`.
 - **Source.** `from` is resolved in `src` following symlinks there, the
   last one included, as BuildKit's `FollowSymlinks` copy does [inferred];
   kaniko copies a symlinked source as a symlink
-  (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`) [open: Q-120]. A
+  (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`) (Q-120, ADR-0032). A
   directory has its contents copied; anything else is copied to exactly
   `to`.
 - **Reading.** The source tree is walked by `(directory fd, name)`: each
@@ -191,7 +191,7 @@ is `extract`.
   (`--chmod`, octal, directories included, not symlinks; `None` keeps the
   raw bits), the source's mtime as mtime and atime, and
   `security.capability`, the only xattr kaniko copies
-  (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1533`) [open: Q-120]. Hardlinks
+  (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1533`) (Q-120, ADR-0032). Hardlinks
   inside the copied tree stay hardlinks. Directories the copy creates
   above `to`, and `to` itself for a directory's contents, are `0755`,
   owned by `opts.owner` (`to`: else the source directory's owner, with its

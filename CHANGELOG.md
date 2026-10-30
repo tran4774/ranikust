@@ -73,5 +73,23 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - Building the static musl binary from source needs zig 0.16.0 and
   cargo-zigbuild 0.24.0, which compile its C dependencies; see
   `CONTRIBUTING.md`.
+- Where kaniko and BuildKit differ, image and `RUN` behaviour now follows
+  BuildKit (ADR-0032):
+  - OCI media types by default;
+  - a new `ENTRYPOINT` clears an inherited `CMD`;
+  - BuildKit's `EXPOSE` rules;
+  - one history entry per instruction;
+  - a default `PATH` in every config;
+  - empty base-config fields dropped;
+  - layers carry only `security.capability`;
+  - loopback registries over plain HTTP;
+  - `COPY` wildcards that match nothing are no error;
+  - `--secret` with `type=env`;
+  - cache `sharing=` enforced;
+  - `RUN --network=host` only with `--allow network.host`;
+  - a cancel kills a running `RUN`;
+  - times clamped to `SOURCE_DATE_EPOCH`.
+
+  These land in the releases that follow; the decisions are recorded now.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main

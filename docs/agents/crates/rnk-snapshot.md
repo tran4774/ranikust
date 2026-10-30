@@ -55,7 +55,7 @@ pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ 
 pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
 pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
     "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile";
-pub const MAX_LOWERS: usize = 500;                 // [open: Q-026] refused beyond, no merging yet
+pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused beyond, no merging yet
 ```
 
 - `Base::Image` takes layers in image order (the config's `diff_ids`,
@@ -65,11 +65,11 @@ pub const MAX_LOWERS: usize = 500;                 // [open: Q-026] refused beyo
   (per-digest lock), checks that the tar hashes to the diff ID, and marks
   a layer whose tar has no `./` entry with `user.ranikust.inherit-root`,
   so the stage root takes its metadata from the layers below, as a
-  flattening extractor would ([open: Q-150] the key ignores the stack).
+  flattening extractor would ((Q-150, ADR-0032) the key ignores the stack).
 - The stage directory is `builds/<id>/stages/<n>/` with `rootfs/`,
   `diff-<k>/`, `work-<k>/` and `empty-<i>/` (a lower for `FROM scratch`
   and the read-only view, which needs two). `mount(2)` short names are
-  `<state-dir>/l/<12 chars>` symlinks ([open: Q-151]).
+  `<state-dir>/l/<12 chars>` symlinks ((Q-151, ADR-0032)).
 
 ## Invariants
 
@@ -199,7 +199,7 @@ pub const MAX_LOWERS: usize = 500;                 // [open: Q-026] refused beyo
   against kaniko; T1 mounting in a user namespace (Phase 3).
 - Deferred: the kaniko implementation, per-stage directories and lazy
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
-- [open: Q-024] The signature (interim above). [open: Q-026] Merging
+- [open: Q-024] The signature (interim above). (Q-026, ADR-0032) Merging
   layers near 500 lowers. [open: Q-049] One mount across instructions;
-  the export-time hash filter. [open: Q-150], [open: Q-151],
+  the export-time hash filter. (Q-150, ADR-0032), (Q-151, ADR-0032),
   [open: Q-152].

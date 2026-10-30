@@ -34,6 +34,14 @@ gets.
 - ranikust accepts kaniko's common command-line flags, so that existing
   pipelines can switch with few changes
   ([ADR-0011](https://github.com/tran4774/ranikust/blob/main/docs/adr/0011-accept-common-kaniko-flags.md)).
+- Where kaniko and BuildKit build a Dockerfile differently, the image
+  follows BuildKit (`docker build`), as the Dockerfile reference describes.
+  Images are written with OCI media types by default. A new `ENTRYPOINT`
+  clears a `CMD` inherited from the base image. History has one entry per
+  instruction. Every config gets a default `PATH`, and empty fields of the
+  base config are dropped. So the config bytes, and the image digest,
+  differ from kaniko's even when the files are the same
+  ([ADR-0032](https://github.com/tran4774/ranikust/blob/main/docs/adr/0032-observable-behaviour-follows-buildkit.md)).
 - Its layer cache is its own and is not shared with kaniko's
   ([ADR-0005](https://github.com/tran4774/ranikust/blob/main/docs/adr/0005-own-versioned-cache-key.md)).
 - It does not include kaniko's `bake`, the cache warmer, or S3, GCS and
