@@ -1,6 +1,6 @@
 # rnk-oci
 
-> **Status:** in progress · **Phase:** 1 ·
+> **Status:** done for Phase 1 (open: Q-007, Q-130 to Q-132) · **Phase:** 1 ·
 > **Depends on:** — (`serde`, `serde_json`, `thiserror`) · **Used by:** `rnk-registry`, `rnk-layer`, `rnk-cache`, `rnk-builder`, `rnk-store` (`Digest`) · **Path:** `crates/rnk-oci/`
 
 **TL;DR:** OCI and Docker manifests, indexes, image configs and media types,
@@ -55,14 +55,40 @@ Canonical JSON is OLPC's, as OCI [considerations.md](https://github.com/opencont
 asks: every object's keys sorted by UTF-8 bytes, struct fields included; no
 whitespace; integers only; `serde_json`'s string escaping.
 
-Planned:
+Config edits and output index files (pure; [open: Q-007] here rather than
+in `rnk-builder`):
 
 ```rust
-pub struct RawManifest { pub bytes: Vec<u8>, pub digest: Digest, pub media_type: MediaType } // [design] never re-serialized
-pub fn select_platform<'a>(i: &'a ImageIndex, p: &Platform) -> Option<&'a Descriptor>; // [design]
-pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: here or in rnk-builder
-// [open: Q-007] docker-save `manifest.json` and OCI layout `index.json`/`oci-layout` types: here or in rnk-builder
+pub enum CommandLine { Exec(Vec<String>), Shell(String) }   // CMD/ENTRYPOINT; shell form uses config Shell or DEFAULT_SHELL
+pub enum ConfigEdit { Env(Vec<(String, String)>), Label(..), User(String), Workdir(String), Expose(Vec<String>),
+    Volume(Vec<String>), Entrypoint(CommandLine), Cmd(CommandLine), Shell(Vec<String>), StopSignal(String),
+    Healthcheck(HealthConfig), OnBuild(String) }       // values already expanded
+impl ConfigEdit { pub fn apply(&self, c: &mut ImageConfig) -> Result<(), Error>; pub fn instruction(&self) -> &'static str }
+impl ImageConfig {
+    pub fn push_layer(&mut self, diff_id: Digest, h: History);  // diff_ids + history, empty_layer unset
+    pub fn push_history(&mut self, h: History);                 // empty_layer: true
+}
+pub struct DockerTarImage { config, repo_tags, layers, layer_sources } // one entry of manifest.json (a JSON array)
+    // config_path(&Digest) = "sha256:<hex>", layer_path(&Digest, Compression) = "<hex>.tar.gz|.tar.zst|.tar"
+pub struct OciLayout { image_layout_version }          // `oci-layout`; FILE, INDEX_FILE, VERSION, REF_NAME_ANNOTATION, blob_path
 ```
+
+`apply` follows kaniko's `ExecuteCommand`s (`pkg/commands/*.go`): an
+empty `ENV`, `LABEL`, `EXPOSE`, `VOLUME` or `SHELL` list is refused; `ENV`
+replaces a key in place or appends, rewriting every entry as `key=value`;
+`USER` keeps two `:`-separated parts; `HEALTHCHECK` zeros become `None`;
+`WORKDIR` keeps an absolute path as written and joins and cleans a relative
+one; `EXPOSE` adds `/tcp` and accepts only `tcp` and `udp`; `STOPSIGNAL` is
+checked as moby's `ParseSignal` and stored as written; `CMD` drops
+`ArgsEscaped`; an empty exec form clears the field. Where BuildKit differs
+(`ENTRYPOINT` resetting an inherited `CMD`, `sctp` and port ranges,
+`--start-interval`): [open: Q-130]. Which instructions get a history entry:
+[open: Q-131]. On error the config is unchanged. Creating the `WORKDIR`
+and `VOLUME` directories is `rnk-builder`'s, through `RootPath`.
+
+`RawManifest` and `select_platform` live in `rnk-registry` (`client.rs`,
+`platform.rs`): platform matching is kaniko's pull rule, not a property of
+the format.
 
 ## Invariants
 
@@ -93,7 +119,12 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   manifest, artifact manifest, index, config) serialize back to the same
   JSON value. Canonical JSON: golden bytes, `HashMap` order never shows over
   100 runs, proptest on insertion order, any JSON value, random documents.
-- Planned: platform selection; config fields compared with kaniko's (T1/T2).
+- T0: every `ConfigEdit` against kaniko's rules (ENV order, WORKDIR joins,
+  EXPOSE and STOPSIGNAL validation, shell form), history and `diff_ids`
+  appends in canonical bytes; `manifest.json` and layout files as
+  go-containerregistry and the image-spec write them.
+- Planned: config fields compared with kaniko's and BuildKit's (T1/T2, with
+  `rnk-builder`).
 
 ## Metrics
 
@@ -141,6 +172,7 @@ pub struct ConfigEdit;   // [open: Q-007] ENV, LABEL, USER, … and history: her
   layouts with gzip or zstd and `--reproducible` ([survey 04 §2](../../research/survey/04-risks-and-roadmap.md#2-mvp-and-10-scope)).
 - Order: `Digest` and media types → raw manifest, index and config parsing,
   platform selection → canonical serialization and config edits → tar and
-  layout index types. Left: `RawManifest`, platform selection, and
-  `ConfigEdit` and the tar and layout types once Q-007 is answered.
+  layout index types. All built (`RawManifest` and platform selection in
+  `rnk-registry`); left: the comparison with kaniko's and BuildKit's configs,
+  which needs `rnk-builder`, and Q-130 to Q-132.
 - Nothing deferred; multi-platform output is out of scope ([ADR-0008](../../adr/0008-out-of-scope-bake-warmer-cloud-contexts.md)).

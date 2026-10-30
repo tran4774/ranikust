@@ -95,7 +95,11 @@ types are owned here, not taken from `oci-spec`: `oci-spec` 0.10 serializes
 labels, annotations, `ExposedPorts` and `Volumes` from hash maps, whose
 order would change the digest, and drops Docker-only config fields such as
 `Healthcheck` and `OnBuild`. `oci-spec` still comes in with `oci-client`,
-inside `rnk-registry`.
+inside `rnk-registry`. It also holds, as pure data, the config edits of the
+metadata instructions (`ConfigEdit`: `ENV`, `LABEL`, `USER`, `WORKDIR`…),
+history and `diff_ids` appends, and the file names and index types of a
+docker-save tarball and an OCI layout; `rnk-builder` writes the files
+[open: Q-007].
 **Must not** access the network or filesystem.
 
 ### `rnk-registry`

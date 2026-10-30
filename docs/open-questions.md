@@ -66,12 +66,11 @@ Entry format:
 - **Options:** (a) `rnk-oci`: pure types, no I/O, tested at T0;
   (b) `rnk-builder`, next to assembly and output.
 - **Recommendation:** none
-- **Interim:** neither yet (branch `feat/rnk-oci-types`, marked
-  `[open: Q-007]` in `crates/rnk-oci/src/lib.rs`): `rnk-oci` has the data
-  types only, `ImageConfig` with public fields that either crate can edit
-  and `ImageIndex`, which is also a layout's `index.json`. Reversible
-  because nothing uses the assembly types yet; task 11 adds them to
-  whichever crate the answer names.
+- **Interim:** (a), on branch `feat/rnk-oci-finish`: `ConfigEdit`,
+  `ImageConfig::push_layer`/`push_history`, `DockerTarImage` and
+  `OciLayout` are pure types in `rnk-oci` (`edit.rs`, `layout.rs`), marked
+  `[open: Q-007]` in `crates/rnk-oci/src/lib.rs`; `rnk-builder` writes the
+  files. Reversible: moving them changes import paths only.
 - **Raised:** 2026-10-30
 
 ### Q-008: What does a repeated target flag mean?
@@ -491,6 +490,66 @@ Entry format:
   the walk, so routing through `rnk-builder` would move the walk there.
   Reversible: one dependency line, and `rnk-ignore` is pure data. The other
   edges are still undeclared.
+- **Raised:** 2026-10-30
+
+### Q-130: Where kaniko and BuildKit differ on a config edit, which one wins?
+
+- **Blocks:** Phase 1 task 11 (config goldens); **Area:** `rnk-oci`, `rnk-builder`
+- **Context:** `ConfigEdit::apply` (`crates/rnk-oci/src/edit.rs`) follows
+  kaniko's `ExecuteCommand`s. BuildKit differs [inferred, from its
+  `dockerfile2llb` dispatchers, not checked at a pinned commit]: (1) a new
+  `ENTRYPOINT` resets a `CMD` inherited from the base unless the stage set
+  one, as the Dockerfile reference documents; kaniko keeps it
+  (`kaniko@44aa7ddc0 pkg/commands/entrypoint.go`); (2) `EXPOSE` accepts
+  `sctp`, lower-cases the protocol and expands ranges (`nat.ParsePortSpecs`);
+  kaniko accepts only `tcp`/`udp` and keeps `8000-8001/tcp` as one key
+  (`pkg/commands/expose.go:47-62`); (3) `HEALTHCHECK --start-interval` is
+  kept; kaniko drops it (go-containerregistry's `HealthConfig` has no such
+  field, `pkg/commands/healthcheck.go:26-34`); (4) an absolute `WORKDIR`
+  is cleaned (`/a/../b/` becomes `/b`) [inferred]; kaniko keeps it as
+  written (`pkg/commands/workdir.go:39-51`).
+- **Options:** (a) kaniko for each, for users migrating from kaniko;
+  (b) BuildKit for each, the documented Dockerfile behaviour (as Q-051 and
+  `ADR-0027` chose for the front end); (c) per item.
+- **Recommendation:** none; (1) changes what a container runs, so it
+  deserves a decision before the config goldens.
+- **Interim:** (a) for (1), (2) and (4); `HealthConfig::start_interval` is kept
+  when the builder sets it, so (3) is the builder's choice. Reversible: (1)
+  needs a per-stage "CMD set" bit in `rnk-builder`, (2) a port parser,
+  (4) one call to the cleaning `WORKDIR` already does for relative paths.
+- **Raised:** 2026-10-30
+
+### Q-131: Which instructions get a history entry, with which fields?
+
+- **Blocks:** Phase 1 task 11; **Area:** `rnk-builder`
+- **Context:** kaniko appends a history entry only with a layer, `author:
+  "kaniko"`, `created_by` the instruction's text
+  (`kaniko@44aa7ddc0 pkg/executor/build.go:1398-1405`,
+  `pkg/constants/constants.go:25`); BuildKit writes one per instruction,
+  `empty_layer: true` for metadata ones, with a `buildkit.dockerfile.v0`
+  comment [inferred]. `rnk-oci` offers both through
+  `ImageConfig::push_layer` and `push_history`.
+- **Options:** (a) kaniko's; (b) BuildKit's; (c) BuildKit's entries with
+  an author `ranikust`.
+- **Recommendation:** none
+- **Interim:** none; `rnk-builder` decides when it assembles images.
+- **Raised:** 2026-10-30
+
+### Q-132: Are empty values of a base config written back?
+
+- **Blocks:** Phase 1 task 13 (config comparison); **Area:** `rnk-oci`
+- **Context:** `ImageConfig` writes back any present value, even `"User":
+  ""` or `"Tty": false` from a base built by the classic Docker builder.
+  kaniko re-serializes the base through go-containerregistry, whose fields
+  are `omitempty` (`kaniko@44aa7ddc0
+  vendor/github.com/google/go-containerregistry/pkg/v1/config.go:31-140`),
+  so such fields disappear and the config digest differs from ranikust's.
+  `ConfigEdit` already leaves out an empty `Cmd`/`Entrypoint` and a false
+  `ArgsEscaped`.
+- **Options:** (a) keep present values (today); (b) drop empty strings,
+  `false`, empty lists and maps on writing, as Go's `omitempty`.
+- **Recommendation:** none
+- **Interim:** (a).
 - **Raised:** 2026-10-30
 
 ### Q-080: Who resolves COPY sources against the context, and how?
