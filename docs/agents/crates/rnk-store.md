@@ -52,7 +52,7 @@ impl Store {
 }
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
-pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by diff ID [open: Q-015]; digest() -> &Digest
+pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, Q-150) [open: Q-015]; digest() -> &Digest
 pub enum Error { NotAStateDir, NoFlock, Io, BadEntry, Rootfs, Fill }
 ```
 
@@ -176,7 +176,8 @@ on a blocking thread, because the lock may wait.
   caller (`ranikust`, task 8) still has to open the store at set-up and
   `close` it at the end.
 - Deferred: `prune` (Phase 5).
-- [open: Q-015] Interim: layers named by diff ID, lock files under
+- [open: Q-015] Interim: layers named by the digest the caller gives
+  (`rnk-snapshot` uses the chain ID, Q-150), lock files under
   `locks/`. [open: Q-100] Durability: a blob is `fsync`ed before its
   rename, a layer is not. [open: Q-011] The owner of the workdir checks
   and the kaniko-mode workdir lock (`ranikust` or `rnk-rootfs`); not here.

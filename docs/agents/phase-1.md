@@ -41,7 +41,7 @@ the code.
 | [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `RANIKUST_METRICS_FILE`, `--metrics-file`, `meta.mode` and `meta.options` (done); every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
 | [x] | Build toolchain: cargo-zigbuild with zig in the `justfile` and CI for the musl x86_64 and aarch64 builds (`ADR-0020`, Q-052); zig compiles every C dependency, rustc links x86_64 with `cc` to keep static-pie; mimalloc is the binary's allocator | build, CI, `ranikust` |
 | [x] | Start-up check for Linux 5.8 (`openat2` with `RESOLVE_IN_ROOT`, `statx` mount id), with a clear refusal (`ADR-0028`) | `ranikust`; probe in `rnk-rootfs` |
-| [x] | Base-layer extraction in the overlay form: a hardlink into a lower layer is copied from the lower layers as a regular file (Q-055; `rnk_rootfs::extract_overlay`, called by `rnk_snapshot`'s `base_layer`; the store's key ignores the stack below, [open: Q-150]) | `rnk-rootfs`, `rnk-snapshot` |
+| [x] | Base-layer extraction in the overlay form: a hardlink into a lower layer is copied from the lower layers as a regular file (Q-055; `rnk_rootfs::extract_overlay`, called by `rnk_snapshot`'s `base_layer`; keyed by chain ID, as BuildKit, ADR-0032) | `rnk-rootfs`, `rnk-snapshot` |
 
 ## Task order
 
