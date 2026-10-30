@@ -187,7 +187,7 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   listed and never opened, a FIFO or another file swapped in for a regular
   file refused on the pinned fd, the read bounded by `statx`'s size
   (`/dev/zero` included), 3,000 subdirectories in one directory, arena
-  offsets beyond `u32`; T2 (VM): a device node swapped in is never opened;
+  offsets beyond `u32`; T2 (VM): a device node swapped in is never opened (passed, kernel 6.8, 2026-10-31);
   `tests/spans.rs` the walk spans. To do: property `apply(base, diff) ==
   tree` (with the exporter, task 5), an unchanged `RUN` giving an empty
   layer (task 6).

@@ -208,8 +208,8 @@ from `rnk-store`, secret file) and passes `--network`.
 - **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`);
   `direct_runs_in_a_chroot_with_placed_files_as_root` (`#[ignore]`: a
   shell copied into a temp workdir sees the placed files and nodes, no
-  `/proc`, `ulimit -n` 777; the root is as before after) [written, not run
-  yet]; real root;
+  `/proc`, `ulimit -n` 777; the root is as before after) [measured: passed
+  in the VM, Ubuntu 24.04, kernel 6.8, 2026-10-31]; real root;
   escapes (`chroot` + `chdir("..")` under `pivot_root` and `MS_MOVE`,
   `umount /etc/resolv.conf`, a setuid binary) fail; writes to `/proc/sys`
   and `/proc/sysrq-trigger` fail; `mknod` + open and `chmod /dev/null`
