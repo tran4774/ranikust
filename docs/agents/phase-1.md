@@ -26,7 +26,7 @@ the code.
 | [~] | Process set-up: flags (`--mode`, `ADR-0023`) and validation into `BuildConfig`; private mount namespace (refused in a plain `chroot`), the store opened before the probes (marker, start-up clean-up; Q-111), the probes in order, the outcome, spawner thread, all while single-threaded (done; T0, T1 `just smoke`, T2 `just test-vm smoke`); left: workdir checks [open: Q-011], workdir `flock` in kaniko mode | `ranikust` |
 | [~] | Overlay-root probe (steps 1, 3, 4 of `design/modes-and-detection.md`): namespaces, `proc`, `pivot_root`, `sysfs`; overlay mount and `lowerdir+`; refusal with the diagnosis `[inferred]` (the sandbox's step 3 is done: the real sequence, `pivot_root` else `MS_MOVE`; the overlay steps 1 and 4 are done: `rnk_snapshot::probe` mounts with `lowerdir+`, else `mount(2)`, and checks a write through it; `ranikust` runs both and refuses with guidance; left: the user-namespace steps, Phase 3) | `rnk-sandbox`, `rnk-snapshot`; run by `ranikust` |
 | [~] | `RUN` sandbox: namespaces, mounts, `pivot_root`/`MS_MOVE`, capability drop, `USER` from the root, stubs and journal, PDEATHSIG (done; runs in rootless podman, `just smoke`, and as real root in the VM, `just test-vm`, on kernels 5.15 and 6.8: `pivot_root` on the host and in `docker run --privileged`, `MS_MOVE` under Docker's seccomp profile) | `rnk-sandbox` |
-| [~] | `RUN --mount=type=cache\|secret`; `--network=none` (done, as BuildKit (ADR-0032): cache mounts leased from the store with `sharing=`, secrets as a private `0400` file or `env=`, `--secret` in kaniko's and buildctl's syntax, `RUN --network=none` and `--network=none`, `--allow network.host`; the e2e build checks loopback only, the secret file's mode and owner, and that the secret reaches no blob; left: the acceptance check that a cache persists across builds) | `rnk-sandbox`, `rnk-builder` |
+| [~] | `RUN --mount=type=cache\|secret`; `--network=none` (done, as BuildKit (ADR-0032): cache mounts leased from the store with `sharing=`, secrets as a private `0400` file or `env=`, `--secret` in kaniko's and buildctl's syntax, `RUN --network=none` and `--network=none`, `--allow network.host`; the e2e build checks loopback only, the secret file's mode and owner, and that the secret reaches no blob; a cache persists across builds, `just test-vm smoke`) | `rnk-sandbox`, `rnk-builder` |
 | [x] | Overlay stage roots: `StageRootfs`/`Snapshotter` (interim signature, [open: Q-024]), `fsconfig(lowerdir+)` with `mount(2)` fallback, `ADR-0016` options, one upper per instruction, root metadata from the lower; base-layer extraction into the store (`rnk-layer` decoder → `rnk-rootfs::extract_overlay`) (done, T0 and T2 `just test-vm unit`; no merging near 500 lowers, [open: Q-026]) | `rnk-snapshot` |
 | [x] | Upperdir → OCI layer exporter, `WriteUpperdir`-style: whiteouts first, raw modes, overlay xattrs stripped; entries fed to the `rnk-layer` writer, which sorts them and adds parent headers (done, T0; `blocks_read` not recorded yet) | `rnk-snapshot` → `rnk-layer` |
 | [~] | Executors: `FROM` (also `<stage>`), `ARG` (also before `FROM`), `ENV`, `RUN` (shell, exec, heredoc), local `COPY`/`ADD` (`--chown`, `--chmod`, `--from`), `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `VOLUME`, `ENTRYPOINT`, `CMD`, `SHELL`, `STOPSIGNAL`, `HEALTHCHECK` (done: `build_stage`, T0 on a fake snapshotter, T1 `just smoke` and T2 `just test-vm smoke` build `tests/smoke/e2e`; left: config goldens against kaniko and BuildKit, W1–W3) | `rnk-builder` |
@@ -90,12 +90,29 @@ with `rnk_metrics::Capture`; a task is not done without it.
       differences, plus W1's 1,654 non-deterministic files (`exp-07` §3).
 - [ ] Push to a loopback and a real network registry; `--tar-path` loads in
       podman or docker; `--oci-layout-path` is a valid layout.
-- [ ] gzip and zstd run in parallel, tar streamed into the compressor, and
-      give the same bytes at 1 and N threads.
-- [ ] `--reproducible`: two builds at different times, same digest.
-- [ ] `RUN --mount=type=cache` persists across builds; `type=secret` never
+- [x] gzip and zstd run in parallel, tar streamed into the compressor, and
+      give the same bytes at 1 and N threads. T0 (2026-10-30): `rnk-layer`
+      `parallel::tests::blocks_are_compressed_on_several_threads_at_once`
+      and `output_is_written_while_input_still_arrives`; the
+      `thread_count_never_changes_the_bytes` and property tests of
+      `gzip_layer.rs` and `zstd_layer.rs`; `digests_do_not_depend_on_threads`.
+- [x] `--reproducible`: two builds at different times, same digest.
+      `just test-vm smoke`, host (2026-10-30, kernels 6.8 and 5.15): one
+      digest with `--jobs 1`, the default, and 2 s later.
+- [x] `RUN --mount=type=cache` persists across builds; `type=secret` never
       reaches a layer, the config, a log or the environment.
-- [ ] `--network=none`: `RUN` sees only loopback.
+      `just test-vm smoke`, host (2026-10-30, kernels 6.8 and 5.15): a cache
+      written by one build is read by the next with the same state
+      directory, not by a fresh one; the secret is in no blob (layers,
+      config, manifests: `smoke_check_no_secret`), no build log and no
+      metrics report (`smoke_check_no_secret_in`), only in the RUN that
+      mounts it (`tests/smoke/e2e/Dockerfile`), and never on a disk, also
+      after SIGINT and SIGKILL.
+- [x] `--network=none`: `RUN` sees only loopback. `tests/smoke/e2e/Dockerfile`,
+      built by `just smoke` and `just test-vm smoke` in every variant
+      (2026-10-30): only `lo` in `/sys/class/net` and `/proc/net/dev`, `lo`
+      up, nothing outside reachable; without `CAP_NET_ADMIN` refused unless
+      `--allow network.none-userns` (ADR-0033).
 - [ ] Common kaniko flags: list fixed ([kaniko-map.md](kaniko-map.md#flags)),
       each accepted flag tested for its meaning, mapping in the book.
 - [x] aarch64 in CI: `just check-aarch64` plus the static build and the
@@ -104,7 +121,11 @@ with `rnk_metrics::Capture`; a task is not done without it.
       41056969633 (2026-10-30). The binary is not static-pie yet [open: Q-140].
 - [ ] W1 and W3 metrics reports compared with kaniko's by the bench harness
       ([phase map](../design/metrics.md#comparing-with-kaniko)); with
-      `--reproducible`, the same digests with metrics on and off.
+      `--reproducible`, the same digests with metrics on and off. The
+      second half is done (2026-10-30): T0
+      `metrics_do_not_change_reproducible_digests` (`rnk-builder`) and the
+      host build of `just test-vm smoke` with `--metrics-file`; the comparison
+      with kaniko's reports is left.
 
 ## Deferred
 
