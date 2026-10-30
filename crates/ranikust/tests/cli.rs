@@ -241,3 +241,57 @@ fn a_relative_metrics_file_is_relative_to_the_working_directory() {
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(tmp.path().join("out/m.json").is_file());
 }
+
+/// kaniko's logging flags (ADR-0036), on a run that stops after validation
+/// (`--mode=kaniko` is Phase 2): `--verbosity` shows or hides lines,
+/// `--log-format=json` writes JSON, and no timestamp by default.
+#[test]
+fn logging_flags_change_what_is_written() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = ["--no-push", "--mode=kaniko", "--force"];
+    let run = |extra: &[&str]| {
+        let mut args: Vec<&str> = base.iter().chain(extra).copied().collect();
+        if !extra.iter().any(|a| a.starts_with("--log-format")) {
+            args.push("--log-format=text");
+        }
+        let out = ranikust(tmp.path(), &args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        let err = stderr(&out);
+        assert!(err.contains("Phase 2"), "stopped at --mode=kaniko: {err}");
+        err
+    };
+    let info = run(&[]);
+    assert!(info.contains("--force is ignored"), "{info}");
+    assert!(!info.contains("build settings validated"), "{info}");
+    // No timestamp: the line starts with the level.
+    let first = info.lines().next().expect("a line");
+    assert!(first.trim_start().starts_with("WARN"), "{first}");
+    let debug = run(&["-v", "debug"]);
+    assert!(debug.contains("build settings validated"), "{debug}");
+    let quiet = run(&["--verbosity=error"]);
+    assert!(!quiet.contains("--force is ignored"), "{quiet}");
+    let stamped = run(&["--log-timestamp"]);
+    let first = stamped.lines().next().expect("a line");
+    assert!(first.starts_with(|c: char| c.is_ascii_digit()), "{first}");
+    assert!(!info.contains('\u{1b}'), "text is never colored");
+    let json = run(&["--log-format=json"]);
+    let line = json
+        .lines()
+        .find(|l| l.contains("is ignored"))
+        .expect("the warning");
+    let value: Value = serde_json::from_str(line).expect("a JSON line");
+    assert_eq!(value["level"], "WARN");
+}
+
+/// kaniko's variables (ADR-0036): mirrors are refused before anything runs.
+#[test]
+fn a_registry_mirror_variable_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push"],
+        &[("KANIKO_REGISTRY_MIRROR", "mirror.example")],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("Phase 5"), "{}", stderr(&out));
+}

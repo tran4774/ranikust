@@ -800,12 +800,18 @@ impl Client {
     /// back over plain HTTP (see [`Client::connect`]) how to send them.
     /// The retry policy of a pull: `--image-download-retry`'s when given.
     fn pull_policy(&self) -> &RetryPolicy {
-        self.options.pull_retry.as_ref().unwrap_or(&self.options.retry)
+        self.options
+            .pull_retry
+            .as_ref()
+            .unwrap_or(&self.options.retry)
     }
 
     /// The retry policy of a push: `--push-retry`'s when given.
     fn push_policy(&self) -> &RetryPolicy {
-        self.options.push_retry.as_ref().unwrap_or(&self.options.retry)
+        self.options
+            .push_retry
+            .as_ref()
+            .unwrap_or(&self.options.retry)
     }
 
     async fn hint<T>(&self, registry: &str, r: Result<T, Error>) -> Result<T, Error> {

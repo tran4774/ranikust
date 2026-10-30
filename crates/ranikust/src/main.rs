@@ -79,8 +79,8 @@ impl Failure {
 }
 
 fn main() -> ExitCode {
-    let command = match cli::parse(std::env::args_os()) {
-        Ok(cli) => cli.into_command(),
+    let (mut command, mut warnings) = match cli::parse(std::env::args_os()) {
+        Ok(parsed) => (parsed.cli.into_command(), parsed.warnings),
         Err(ParseError::Clap(err)) => {
             // Prints usage errors to stderr and `--help`/`--version` to
             // stdout; a closed stream is no reason to panic.
@@ -94,6 +94,17 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
     };
+    // kaniko's environment variables (ADR-0036), before anything reads the
+    // flags they stand for.
+    if let Command::Build(args) = &mut command {
+        match config::apply_env(args, std::env::vars_os()) {
+            Ok(more) => warnings.extend(more),
+            Err(invalid) => {
+                report(&invalid.0);
+                return ExitCode::from(EXIT_USAGE);
+            }
+        }
+    }
     let fault = std::env::var(DEBUG_FAULT_ENV).ok();
 
     // ADR-0028: before any other work. `version` needs no filesystem access
@@ -107,6 +118,9 @@ fn main() -> ExitCode {
 
     let telemetry = rnk_metrics::init(metrics_config(&command));
     telemetry.set_meta("ranikust_version", env!("CARGO_PKG_VERSION"));
+    for warning in &warnings {
+        tracing::warn!("{warning}");
+    }
     let result = tracing::debug_span!("ranikust.run")
         .in_scope(|| run(&command, &telemetry, fault.as_deref()));
     let (code, outcome) = match &result {
@@ -133,10 +147,11 @@ fn report(message: &str) {
 /// report path's place.
 fn metrics_config(command: &Command) -> Config {
     let mut config = Config::from_env();
-    if let Command::Build(args) = command
-        && let Some(file) = &args.metrics_file
-    {
-        config.file = Some(std::path::absolute(file).unwrap_or_else(|_| file.clone()));
+    if let Command::Build(args) = command {
+        config.logs = config::log_options(args);
+        if let Some(file) = &args.metrics_file {
+            config.file = Some(std::path::absolute(file).unwrap_or_else(|_| file.clone()));
+        }
     }
     config
 }

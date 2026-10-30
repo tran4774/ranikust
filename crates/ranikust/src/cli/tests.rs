@@ -5,7 +5,7 @@ use super::*;
 /// Parses `args` (without the program name) into `build`'s flags.
 fn build(args: &[&str]) -> BuildArgs {
     let argv = std::iter::once("ranikust").chain(args.iter().copied());
-    match parse(argv).expect("parses").into_command() {
+    match parse(argv).expect("parses").cli.into_command() {
         Command::Build(args) => *args,
         Command::Version => panic!("expected build"),
     }
@@ -124,7 +124,7 @@ fn ranikust_flags_are_accepted() {
 #[test]
 fn the_build_subcommand_takes_the_same_flags() {
     let argv = ["ranikust", "build", "-d", "r/a:1", "--mode=kaniko"];
-    let Command::Build(args) = parse(argv).expect("parses").into_command() else {
+    let Command::Build(args) = parse(argv).expect("parses").cli.into_command() else {
         panic!("expected build");
     };
     assert_eq!(args.destinations, ["r/a:1"]);
@@ -135,6 +135,7 @@ fn the_build_subcommand_takes_the_same_flags() {
 fn version_is_a_subcommand() {
     let command = parse(["ranikust", "version"])
         .expect("parses")
+        .cli
         .into_command();
     assert!(matches!(command, Command::Version));
 }
@@ -172,25 +173,24 @@ fn help_and_version_flags_exit_zero() {
 fn refused_kaniko_flags_say_why() {
     let cases: &[(&[&str], &str)] = &[
         (&["--kaniko-dir=/kaniko"], "use --state-dir"),
-        (&["--custom-platform=linux/arm64"], "use --platform"),
         (&["--cache=true"], "Phase 4"),
+        (&["--cache"], "Phase 4"),
         (&["--cache-repo", "r/cache"], "Phase 4"),
+        (&["--cache-ttl=1h"], "Phase 4"),
+        (&["--no-push-cache"], "Phase 4"),
         (&["--ignore-path=/var"], "Phase 2"),
+        (&["--single-snapshot"], "Phase 2"),
+        (&["--ignore-var-run=false"], "Q-035"),
+        (&["--whitelist-var-run=false"], "use --ignore-var-run"),
         (&["--bucket=b"], "out of scope"),
         (&["-b", "b"], "out of scope"),
         (&["-bbucket"], "out of scope"),
+        (&["--azure-container-registry-config=x"], "out of scope"),
         (&["--git=branch=main"], "Phase 5"),
         (&["--registry-mirror=m.example"], "Phase 5"),
-        (&["--force"], "workdir"),
-        (&["--cache-dir=/cache"], "--state-dir"),
-        (&["--verbosity=debug"], "Q-023"),
-        (&["--label", "a=b"], "Q-023"),
-        (&["--image-format=oci"], "Q-023"),
-        (&["--skip-tls-verify"], "Q-023"),
-        (&["--use-new-run"], "Q-023"),
-        (&["--snapshotMode=redo"], "use --snapshot-mode"),
-        (&["--tarPath=/x"], "use --tar-path"),
-        (&["--skip-unused-stages"], "deprecated in kaniko: drop it"),
+        (&["--registry-client-cert=r=a,b"], "Phase 5"),
+        (&["--push-ignore-immutable-tag-errors"], "Phase 5"),
+        (&["--dryrun"], "not scheduled"),
     ];
     for (args, reason) in cases {
         let lines = refused(args);
@@ -198,12 +198,95 @@ fn refused_kaniko_flags_say_why() {
         assert!(lines[0].contains(reason), "{args:?}: {}", lines[0]);
         assert!(lines[0].starts_with("kaniko's --"), "{}", lines[0]);
     }
+    let bake = refused(&["bake", "--set", "x"]);
+    assert!(bake[0].contains("bake is out of scope"), "{bake:?}");
 }
 
 #[test]
 fn every_refused_flag_is_reported_at_once() {
-    let lines = refused(&["--cache=true", "-d", "r/a:1", "--verbosity=info"]);
+    let lines = refused(&["--cache=true", "-d", "r/a:1", "--materialize"]);
     assert_eq!(lines.len(), 2, "{lines:?}");
+}
+
+/// Parses `args` and returns the warnings.
+fn warnings(args: &[&str]) -> (BuildArgs, Vec<String>) {
+    let argv = std::iter::once("ranikust").chain(args.iter().copied());
+    let parsed = parse(argv).expect("parses");
+    let Command::Build(build) = parsed.cli.into_command() else {
+        panic!("expected build");
+    };
+    (*build, parsed.warnings)
+}
+
+/// ADR-0036: flags whose absence leaves the image's bytes unchanged are
+/// accepted with one warning each, their values taken out with them.
+#[test]
+fn flags_that_change_nothing_are_ignored_with_a_warning() {
+    let (args, w) = warnings(&[
+        "--force",
+        "--cache-dir",
+        "/cache",
+        "--use-new-run",
+        "--cleanup=true",
+        "--pre-cleanup",
+        "--image-fs-extract-retry=3",
+        "--context-sub-path",
+        "sub",
+        "--force-build-metadata",
+        "--skip-unused-stages",
+        "--no-push",
+    ]);
+    assert_eq!(w.len(), 9, "{w:?}");
+    assert!(w.iter().all(|l| l.contains("is ignored")), "{w:?}");
+    assert!(args.no_push, "the flag after a consumed value still parses");
+    // `--cache=false` asks for what Phase 1 does: no warning, no refusal.
+    let (_, w) = warnings(&["--cache=false", "--no-push"]);
+    assert!(w.is_empty(), "{w:?}");
+}
+
+/// kaniko's deprecated spellings and `--custom-platform` (Q-020).
+#[test]
+fn old_spellings_and_custom_platform_are_aliases() {
+    let (args, w) = warnings(&[
+        "--tarPath=/t.tar",
+        "--snapshotMode",
+        "redo",
+        "--customPlatform=linux/amd64",
+        "--no-push",
+    ]);
+    assert_eq!(args.tar_path.as_deref(), Some(Path::new("/t.tar")));
+    assert_eq!(args.snapshot_mode, Some(SnapshotMode::Redo));
+    assert_eq!(args.platform.as_deref(), Some("linux/amd64"));
+    assert_eq!(w.len(), 3, "{w:?}");
+    assert!(w[0].contains("use --tar-path"), "{w:?}");
+    let (args, w) = warnings(&["--custom-platform", "linux/amd64", "--no-push"]);
+    assert_eq!(args.platform.as_deref(), Some("linux/amd64"));
+    assert!(w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn logging_flags_take_kanikos_values() {
+    let a = build(&[
+        "-v",
+        "debug",
+        "--log-format=json",
+        "--log-timestamp",
+        "--no-push",
+    ]);
+    assert_eq!(a.verbosity, Verbosity::Debug);
+    assert_eq!(a.log_format, LogFormatArg::Json);
+    assert!(a.log_timestamp);
+    let a = build(&["--no-push"]);
+    assert_eq!(a.verbosity, Verbosity::Info);
+    assert_eq!(a.log_format, LogFormatArg::Color);
+    assert!(!a.log_timestamp, "off by default, as kaniko");
+    assert_eq!(clap_error(&["--verbosity=loud"]).exit_code(), 2);
+}
+
+#[test]
+fn compression_level_takes_negative_numbers() {
+    let a = build(&["--compression-level", "-1", "--no-push"]);
+    assert_eq!(a.compression_level, Some(-1));
 }
 
 #[test]
@@ -239,8 +322,17 @@ fn insecure_registries_are_hosts() {
     assert_eq!(a.insecure_registries, ["registry:5000", "r.example"]);
     assert!(parse_registry_host("http://r.example").is_err());
     assert!(parse_registry_host("").is_err());
-    // kaniko's other insecure flags stay refused.
-    assert_eq!(refused(&["--insecure"]).len(), 1);
+    // kaniko's other insecure and TLS flags (ADR-0036).
+    let a = build(&[
+        "--no-push",
+        "--insecure",
+        "--insecure-pull=true",
+        "--skip-tls-verify",
+        "--skip-tls-verify-pull",
+        "--skip-tls-verify-registry=r.example:5443",
+    ]);
+    assert!(a.insecure && a.insecure_pull && a.skip_tls_verify && a.skip_tls_verify_pull);
+    assert_eq!(a.skip_tls_verify_registries, ["r.example:5443"]);
 }
 
 fn secret(id: &str, src: Option<&str>, env: Option<&str>) -> SecretArg {

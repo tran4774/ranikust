@@ -12,7 +12,9 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::config::{Compression, Mode, Network, SnapshotMode};
+use crate::config::{
+    Compression, ImageFormatArg, LogFormatArg, Mode, Network, SnapshotMode, Verbosity,
+};
 
 /// Container image builder that ships as one static binary and runs inside
 /// or outside containers.
@@ -130,6 +132,164 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_enum, help_heading = "Output")]
     pub(crate) compression: Option<Compression>,
 
+    /// Compression level: gzip -1 to 9 (-1 is 6), zstd 1 to 19.
+    #[arg(
+        long,
+        value_name = "LEVEL",
+        allow_negative_numbers = true,
+        help_heading = "Output"
+    )]
+    pub(crate) compression_level: Option<i32>,
+
+    /// Media types of the image [default: oci].
+    #[arg(long, value_enum, help_heading = "Output")]
+    pub(crate) image_format: Option<ImageFormatArg>,
+
+    /// A label `KEY=VALUE` on the pushed image's config; a `LABEL` of the
+    /// same key in its stage wins. Repeat for several.
+    #[arg(long = "label", value_name = "KEY=VALUE", help_heading = "Output")]
+    pub(crate) labels: Vec<String>,
+
+    /// An annotation `KEY=VALUE` on the image manifest. Repeat for several.
+    #[arg(long = "annotation", value_name = "KEY=VALUE", help_heading = "Output")]
+    pub(crate) annotations: Vec<String>,
+
+    /// Write the image digest to this file.
+    #[arg(long, value_name = "PATH", help_heading = "Output")]
+    pub(crate) digest_file: Option<PathBuf>,
+
+    /// Write `repository@digest`, one line per destination, to this file.
+    #[arg(long, value_name = "PATH", help_heading = "Output")]
+    pub(crate) image_name_with_digest_file: Option<PathBuf>,
+
+    /// Write `repository:tag@digest`, one line per destination, to this file.
+    #[arg(long, value_name = "PATH", help_heading = "Output")]
+    pub(crate) image_name_tag_with_digest_file: Option<PathBuf>,
+
+    /// Retries of a failed push, waiting 1 s, then twice as long each time
+    /// [default: ranikust's retry policy].
+    #[arg(long, value_name = "N", help_heading = "Output")]
+    pub(crate) push_retry: Option<u32>,
+
+    /// Retries of a failed base image pull, as --push-retry.
+    #[arg(long, value_name = "N", help_heading = "Input")]
+    pub(crate) image_download_retry: Option<u32>,
+
+    /// Destinations may be plain HTTP.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Output"
+    )]
+    pub(crate) insecure: bool,
+
+    /// Images pulled may come over plain HTTP.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Input"
+    )]
+    pub(crate) insecure_pull: bool,
+
+    /// Do not verify the TLS certificates of destinations.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Output"
+    )]
+    pub(crate) skip_tls_verify: bool,
+
+    /// Do not verify the TLS certificates of registries pulled from.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Input"
+    )]
+    pub(crate) skip_tls_verify_pull: bool,
+
+    /// Do not verify the TLS certificate of this registry, pushing or
+    /// pulling. Repeat for several.
+    #[arg(
+        long = "skip-tls-verify-registry",
+        value_name = "REGISTRY",
+        value_parser = parse_registry_host,
+        help_heading = "Output"
+    )]
+    pub(crate) skip_tls_verify_registries: Vec<String>,
+
+    /// Accepted: ranikust makes no write check before the build.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Output"
+    )]
+    pub(crate) skip_push_permission_check: bool,
+
+    /// Accepted: overlay mode never touches the context.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Input"
+    )]
+    pub(crate) preserve_context: bool,
+
+    /// Log level: trace, debug, info, warn, error, fatal, panic.
+    #[arg(
+        short = 'v',
+        long,
+        value_enum,
+        default_value_t = Verbosity::Info,
+        help_heading = "Logging"
+    )]
+    pub(crate) verbosity: Verbosity,
+
+    /// Log format: text, color (when stderr is a terminal), json.
+    #[arg(long, value_enum, default_value_t = LogFormatArg::Color, help_heading = "Logging")]
+    pub(crate) log_format: LogFormatArg,
+
+    /// A timestamp on each log line.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Logging"
+    )]
+    pub(crate) log_timestamp: bool,
+
     /// Fixed timestamps, for byte-identical images.
     #[arg(
         long,
@@ -221,12 +381,12 @@ pub(crate) struct BuildArgs {
     pub(crate) metrics_file: Option<PathBuf>,
 }
 
-/// Why a kaniko flag is refused.
+/// Why a kaniko flag is refused (ADR-0036).
 #[derive(Clone, Copy, Debug)]
 enum Refusal {
     /// The flag has a new name in ranikust.
     Renamed(&'static str),
-    /// The flag comes in a later phase or waits for a decision.
+    /// The flag comes in a later phase.
     NotYet(&'static str),
     /// The feature is out of scope (ADR-0008).
     OutOfScope(&'static str),
@@ -234,103 +394,129 @@ enum Refusal {
     Deprecated(&'static str),
 }
 
+const PHASE_2: &str = "it belongs to kaniko mode, which comes in Phase 2";
+const PHASE_4: &str = "the layer cache comes in Phase 4 (Q-021)";
+const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential helpers (Q-047)";
+
 /// kaniko executor flags that ranikust recognises but does not accept
-/// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go`, `docs/agents/kaniko-map.md`).
+/// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go`, ADR-0036). `--cache` is
+/// here for `--cache` and `--cache=true`; `--cache=false` is accepted.
 const REFUSED: &[(&str, Refusal)] = &[
     ("kaniko-dir", Refusal::Renamed("use --state-dir")),
+    ("cache", Refusal::NotYet(PHASE_4)),
+    ("cache-repo", Refusal::NotYet(PHASE_4)),
+    ("cache-ttl", Refusal::NotYet(PHASE_4)),
+    ("cache-copy-layers", Refusal::NotYet(PHASE_4)),
+    ("cache-run-layers", Refusal::NotYet(PHASE_4)),
+    ("compressed-caching", Refusal::NotYet(PHASE_4)),
+    ("no-push-cache", Refusal::NotYet(PHASE_4)),
+    ("ignore-path", Refusal::NotYet(PHASE_2)),
+    ("single-snapshot", Refusal::NotYet(PHASE_2)),
+    ("materialize", Refusal::NotYet(PHASE_2)),
     (
-        "custom-platform",
-        Refusal::Renamed("use --platform (Q-020 in docs/open-questions.md)"),
+        "ignore-var-run",
+        Refusal::NotYet("it belongs to kaniko mode, which comes in Phase 2 (Q-035)"),
     ),
     (
-        "cache",
-        Refusal::NotYet("the layer cache comes in Phase 4 (Q-021)"),
+        "whitelist-var-run",
+        Refusal::Deprecated("use --ignore-var-run, which comes with kaniko mode in Phase 2"),
     ),
     (
-        "cache-repo",
-        Refusal::NotYet("the layer cache comes in Phase 4 (Q-021)"),
+        "git",
+        Refusal::NotYet("git contexts come in Phase 5 (ADR-0035)"),
     ),
+    ("registry-mirror", Refusal::NotYet(PHASE_5)),
+    ("registry-map", Refusal::NotYet(PHASE_5)),
+    ("credential-helpers", Refusal::NotYet(PHASE_5)),
+    ("skip-default-registry-fallback", Refusal::NotYet(PHASE_5)),
+    ("registry-client-cert", Refusal::NotYet(PHASE_5)),
+    ("push-ignore-immutable-tag-errors", Refusal::NotYet(PHASE_5)),
     (
-        "ignore-path",
-        Refusal::NotYet("ignore paths matter in kaniko mode, which comes in Phase 2"),
+        "dryrun",
+        Refusal::NotYet("not scheduled yet; the stage plan output comes in a later phase"),
     ),
     (
         "bucket",
         Refusal::OutOfScope("GCS contexts are out of scope (ADR-0008)"),
     ),
-    ("git", Refusal::NotYet("git contexts come in Phase 5")),
     (
-        "registry-mirror",
-        Refusal::NotYet("registry mirrors come in Phase 5 (Q-047)"),
-    ),
-    (
-        "registry-map",
-        Refusal::NotYet("registry maps come in Phase 5 (Q-047)"),
-    ),
-    (
-        "credential-helpers",
-        Refusal::NotYet("credential helpers come in Phase 5 (Q-047)"),
-    ),
-    (
-        "force",
-        Refusal::NotYet("ranikust checks the workdir instead (Q-023)"),
-    ),
-    (
-        "cache-dir",
-        Refusal::NotYet("the store in --state-dir replaces it (Q-023)"),
-    ),
-    // Waiting for the flag list (Q-023).
-    ("verbosity", Refusal::NotYet(Q023)),
-    ("log-format", Refusal::NotYet(Q023)),
-    ("log-timestamp", Refusal::NotYet(Q023)),
-    ("label", Refusal::NotYet(Q023)),
-    ("annotation", Refusal::NotYet(Q023)),
-    ("image-format", Refusal::NotYet(Q023)),
-    ("compression-level", Refusal::NotYet(Q023)),
-    ("digest-file", Refusal::NotYet(Q023)),
-    ("image-name-with-digest-file", Refusal::NotYet(Q023)),
-    ("image-name-tag-with-digest-file", Refusal::NotYet(Q023)),
-    ("insecure", Refusal::NotYet(Q023)),
-    ("insecure-pull", Refusal::NotYet(Q023)),
-    ("skip-tls-verify", Refusal::NotYet(Q023)),
-    ("skip-tls-verify-pull", Refusal::NotYet(Q023)),
-    ("skip-tls-verify-registry", Refusal::NotYet(Q023)),
-    ("registry-client-cert", Refusal::NotYet(Q023)),
-    ("skip-default-registry-fallback", Refusal::NotYet(Q023)),
-    ("push-retry", Refusal::NotYet(Q023)),
-    ("push-ignore-immutable-tag-errors", Refusal::NotYet(Q023)),
-    ("image-download-retry", Refusal::NotYet(Q023)),
-    ("image-fs-extract-retry", Refusal::NotYet(Q023)),
-    ("context-sub-path", Refusal::NotYet(Q023)),
-    ("single-snapshot", Refusal::NotYet(Q023)),
-    ("use-new-run", Refusal::NotYet(Q023)),
-    ("cleanup", Refusal::NotYet(Q023)),
-    ("pre-cleanup", Refusal::NotYet(Q023)),
-    ("preserve-context", Refusal::NotYet(Q023)),
-    ("materialize", Refusal::NotYet(Q023)),
-    ("ignore-var-run", Refusal::NotYet(Q023)),
-    ("cache-ttl", Refusal::NotYet(Q023)),
-    ("cache-copy-layers", Refusal::NotYet(Q023)),
-    ("cache-run-layers", Refusal::NotYet(Q023)),
-    ("compressed-caching", Refusal::NotYet(Q023)),
-    ("no-push-cache", Refusal::NotYet(Q023)),
-    ("skip-push-permission-check", Refusal::NotYet(Q023)),
-    ("dryrun", Refusal::NotYet(Q023)),
-    // kaniko's deprecated spellings.
-    ("snapshotMode", Refusal::Deprecated("use --snapshot-mode")),
-    ("customPlatform", Refusal::Deprecated("use --platform")),
-    ("tarPath", Refusal::Deprecated("use --tar-path")),
-    ("force-build-metadata", Refusal::Deprecated("drop it")),
-    (
-        "skip-unused-stages",
-        Refusal::Deprecated("drop it; ranikust always skips unused stages"),
+        "azure-container-registry-config",
+        Refusal::OutOfScope("cloud-specific registry configuration is out of scope (ADR-0008)"),
     ),
 ];
 
-const Q023: &str = "not accepted yet; the kaniko flag list is decided in Phase 1 (Q-023)";
-
 /// kaniko's short flags among [`REFUSED`].
 const REFUSED_SHORT: &[(char, &str)] = &[('b', "bucket")];
+
+/// kaniko subcommands ranikust refuses, with the reason.
+const REFUSED_COMMANDS: &[(&str, &str)] = &[(
+    "bake",
+    "kaniko's bake is out of scope (ADR-0008); run one build per image",
+)];
+
+/// kaniko flags accepted and ignored with a warning, because ignoring them
+/// leaves the image's bytes unchanged in overlay mode (ADR-0036, which
+/// extends ADR-0023's rule for `--snapshot-mode`): `(name, takes a value,
+/// why)`. A flag taking a value consumes the next argument when it has no
+/// `=`; a boolean never does, as in pflag.
+const IGNORED: &[(&str, bool, &str)] = &[
+    (
+        "force",
+        false,
+        "ranikust runs on hosts by design and checks --workdir instead",
+    ),
+    (
+        "cache-dir",
+        true,
+        "the warmer is out of scope (ADR-0008); base images are pulled into the store",
+    ),
+    (
+        "use-new-run",
+        false,
+        "overlay mode captures each RUN without a walk",
+    ),
+    (
+        "cleanup",
+        false,
+        "overlay mode leaves no build filesystem on /; the store in --state-dir is kept on purpose",
+    ),
+    (
+        "pre-cleanup",
+        false,
+        "overlay mode leaves no build filesystem on /",
+    ),
+    (
+        "image-fs-extract-retry",
+        true,
+        "layers are extracted from the store; pulls are retried by --image-download-retry",
+    ),
+    (
+        "context-sub-path",
+        true,
+        "it applies only to fetched contexts, which come in Phase 5 (Q-081)",
+    ),
+    (
+        "force-build-metadata",
+        false,
+        "deprecated in kaniko, which ignores it too",
+    ),
+    (
+        "skip-unused-stages",
+        false,
+        "deprecated in kaniko; unused stages are always skipped",
+    ),
+];
+
+/// kaniko's deprecated spellings, accepted with kaniko's warning
+/// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:456-466`), and aliases:
+/// `(old, new, warn)`.
+const RENAMED: &[(&str, &str, bool)] = &[
+    ("tarPath", "tar-path", true),
+    ("snapshotMode", "snapshot-mode", true),
+    ("customPlatform", "platform", true),
+    // Q-020: kaniko's name for --platform.
+    ("custom-platform", "platform", false),
+];
 
 /// A parse failure: kaniko flags refused with a reason, or clap's own error.
 #[derive(Debug)]
@@ -341,59 +527,135 @@ pub(crate) enum ParseError {
     Clap(clap::Error),
 }
 
+/// The parsed command line, and the warnings parsing it gave: ignored and
+/// deprecated kaniko flags, to log once logging is set up.
+#[derive(Debug)]
+pub(crate) struct Parsed {
+    pub(crate) cli: Cli,
+    pub(crate) warnings: Vec<String>,
+}
+
 /// Parses the command line. Refused kaniko flags are reported, all of them,
-/// before clap sees the arguments.
-pub(crate) fn parse<I, T>(args: I) -> Result<Cli, ParseError>
+/// before clap sees the arguments; ignored ones and deprecated spellings are
+/// taken out or renamed, each with a warning.
+pub(crate) fn parse<I, T>(args: I) -> Result<Parsed, ParseError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    let refused = refused_flags(args.iter().skip(1));
-    if !refused.is_empty() {
-        return Err(ParseError::Refused(refused));
+    let pass = prepass(&args);
+    if !pass.refused.is_empty() {
+        return Err(ParseError::Refused(pass.refused));
     }
-    Cli::try_parse_from(args).map_err(ParseError::Clap)
+    Cli::try_parse_from(pass.args)
+        .map(|cli| Parsed {
+            cli,
+            warnings: pass.warnings,
+        })
+        .map_err(ParseError::Clap)
 }
 
-/// One line per refused kaniko flag among `args` (the program name already
-/// skipped). Scanning stops at `--`.
-fn refused_flags<'a>(args: impl Iterator<Item = &'a OsString>) -> Vec<String> {
-    let mut lines = Vec::new();
-    for arg in args {
-        let Some(arg) = arg.to_str() else { continue };
-        if arg == "--" {
-            break;
-        }
-        let name = if let Some(long) = arg.strip_prefix("--") {
-            long.split_once('=').map_or(long, |(name, _)| name)
-        } else if let Some(short) = arg.strip_prefix('-') {
-            let Some(first) = short.chars().next() else {
-                continue;
-            };
-            match REFUSED_SHORT.iter().find(|(c, _)| *c == first) {
-                Some((_, long)) => long,
-                None => continue,
-            }
-        } else {
+/// What [`prepass`] made of the arguments.
+struct Prepass {
+    /// The arguments for clap: ignored flags taken out, old spellings
+    /// renamed.
+    args: Vec<OsString>,
+    refused: Vec<String>,
+    warnings: Vec<String>,
+}
+
+/// Sorts kaniko's flags before clap sees them (the program name kept, the
+/// rest after `--` untouched).
+fn prepass(all: &[OsString]) -> Prepass {
+    let mut out = Prepass {
+        args: Vec::with_capacity(all.len()),
+        refused: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let mut iter = all.iter();
+    if let Some(program) = iter.next() {
+        out.args.push(program.clone());
+    }
+    let mut first = true;
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.to_str() else {
+            out.args.push(arg.clone());
+            first = false;
             continue;
         };
+        if text == "--" {
+            out.args.push(arg.clone());
+            out.args.extend(iter.cloned());
+            break;
+        }
+        if first && let Some((_, why)) = REFUSED_COMMANDS.iter().find(|(c, _)| *c == text) {
+            out.refused
+                .push(format!("kaniko's {text} is not supported: {why}"));
+        }
+        first = false;
+        let (name, value) = if let Some(long) = text.strip_prefix("--") {
+            match long.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (long, None),
+            }
+        } else if let Some(short) = text.strip_prefix('-') {
+            match short
+                .chars()
+                .next()
+                .and_then(|c| REFUSED_SHORT.iter().find(|(s, _)| *s == c))
+            {
+                Some((_, long)) => (*long, None),
+                None => {
+                    out.args.push(arg.clone());
+                    continue;
+                }
+            }
+        } else {
+            out.args.push(arg.clone());
+            continue;
+        };
+        // `--cache=false` asks for exactly what Phase 1 does (Q-021).
+        if name == "cache" && value.is_some_and(|v| parse_bool(v) == Ok(false)) {
+            continue;
+        }
         if let Some((name, refusal)) = REFUSED.iter().find(|(n, _)| *n == name) {
             let reason = match refusal {
                 Refusal::Renamed(why) => format!("renamed in ranikust: {why}"),
-                Refusal::NotYet(why) => (*why).to_owned(),
-                Refusal::OutOfScope(why) => (*why).to_owned(),
+                Refusal::NotYet(why) | Refusal::OutOfScope(why) => (*why).to_owned(),
                 Refusal::Deprecated(why) => format!("deprecated in kaniko: {why}"),
             };
-            lines.push(format!("kaniko's --{name} is not supported: {reason}"));
+            out.refused
+                .push(format!("kaniko's --{name} is not supported: {reason}"));
+            continue;
         }
+        if let Some((name, takes_value, why)) = IGNORED.iter().find(|(n, _, _)| *n == name) {
+            if *takes_value && value.is_none() {
+                // The value is the next argument.
+                iter.next();
+            }
+            out.warnings.push(format!("--{name} is ignored: {why}"));
+            continue;
+        }
+        if let Some((old, new, warn)) = RENAMED.iter().find(|(o, _, _)| *o == name) {
+            if *warn {
+                out.warnings
+                    .push(format!("--{old} is deprecated in kaniko, use --{new}"));
+            }
+            out.args.push(match value {
+                Some(v) => OsString::from(format!("--{new}={v}")),
+                None => OsString::from(format!("--{new}")),
+            });
+            continue;
+        }
+        out.args.push(arg.clone());
     }
-    lines
+    out
 }
 
 /// pflag's boolean spellings (`strconv.ParseBool`), so `--no-push=true` and
 /// `--no-push=1` mean what they mean to kaniko.
-fn parse_bool(value: &str) -> Result<bool, String> {
+pub(crate) fn parse_bool(value: &str) -> Result<bool, String> {
     match value {
         "1" | "t" | "T" | "true" | "TRUE" | "True" => Ok(true),
         "0" | "f" | "F" | "false" | "FALSE" | "False" => Ok(false),
