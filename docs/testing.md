@@ -12,7 +12,7 @@ than a regular user never run on a developer's machine.
 |---|---|---|---|---|---|
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
-| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit` and `smoke` suites |
+| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit`, `smoke` and `e2e` suites |
 | T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, aarch64 T0 under qemu-user, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
 
 ### Rules
@@ -84,7 +84,8 @@ runs as root on the host:
    Docker from the Ubuntu archive).
 4. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
    ACL, never `sudo`), user-mode networking, SSH forwarded to a free port
-   on `127.0.0.1` only.
+   on `127.0.0.1` only. The disk is 20 GB (`RANIKUST_VM_DISK`) and the
+   memory 4 GiB (`RANIKUST_VM_MEM`), more for `e2e`.
 5. **Copy in** the binaries and `tests/vm/guest/`, **run** the suites over
    SSH (`guest/run.sh`), **copy out** `target/vm/results/<release>/`:
    `env.txt` (kernel, Docker, cgroup), one log per suite, `summary.txt`
@@ -97,6 +98,79 @@ runs as root on the host:
 |---|---|
 | `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass |
 | `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image, and the `ranikust` binary's set-up (`--no-push --workdir`, the workdir a volume in Docker, since overlay refuses an upper directory on the container's own overlay root) must reach overlay mode as root with the same root entry and a real overlay probe (either mount API), and stop with exit code 2. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
+| `e2e` | The Phase 1 workloads of `nextjs-kaniko` ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust`; times, image comparison, metrics. Not part of the default `just test-vm` |
+
+### End-to-end workloads (`e2e`)
+
+`just test-vm e2e` (`tests/vm/guest/e2e.sh`) runs the acceptance
+workloads of [Phase 1](agents/phase-1.md#acceptance-criteria) in the VM, the
+way `nextjs-kaniko/bench/run-fair.sh` runs them, without touching the
+host's `nextjs-kaniko` containers:
+
+- **Seed.** `tests/vm/e2e-seed.py` streams in, read-only from the
+  `nextjs-kaniko` checkout next to the main checkout
+  (`RANIKUST_NEXTJS_KANIKO`): W1 `app`, W2 `app-cache`, W3 `app-par`;
+  the base and tools images that the workloads name by digest, copied from
+  the host registry's storage with their blobs so the digests hold; the
+  verdaccio storage, so pnpm installs without npmjs; and
+  `bench/digest-check/check-blobs.py`. The reference images (kaniko
+  `localhost/kaniko-bench:stream`, BuildKit `v0.33.1-rootless`,
+  `registry:2`, verdaccio 6.1.6) are saved once from the host's podman
+  into `~/.cache/ranikust/vm/e2e/`. About 2.8 GB goes in per run.
+- **Services.** A registry (`registry:5000`) and verdaccio
+  (`verdaccio:4873`) on an internal Docker network, as
+  `docker-compose.yml`, also published on the VM's loopback for
+  `ranikust`, whose `RUN` shares the VM's network.
+- **Builds.** kaniko with `cfg-final-opt.env` and
+  `FF_KANIKO_STREAM_TAR_COMPRESS` (experiment 07's `k-stream`), BuildKit
+  as `run-fair.sh`'s `bk` (zstd), each in `docker run --cpus=4
+  --memory=8g`; `ranikust build` as root in a systemd scope with the same
+  CPU quota and memory limit, a fresh `--workdir` each time. W2 is built
+  cold, without a cache. On W3 `ranikust` runs once per `--jobs` value
+  (`1 2 default`) with `--reproducible`. Every build starts from an empty
+  `e2e/` namespace in a restarted registry. Time is taken as
+  `run-fair.sh` takes it: start of the build container (or process) to its
+  exit. One discarded kaniko build per workload warms the page cache and
+  verdaccio first.
+- **Checks** on the first round: each image is flattened from the registry
+  (`guest/e2e/flatten.py`: path, type, mode, owner, size, sha256, link
+  target, hardlink, xattrs; whiteouts applied; gzip and zstd) and
+  compared pairwise (`guest/e2e/compare.py`), with experiment 07's
+  non-deterministic W1 files counted as noise and hardlinked entries apart
+  (ADR-0012); configs are compared field by field. `check-blobs.py` checks
+  that every gzip layer describes itself. The W3 digests at each `--jobs`
+  value must be equal. kaniko's `metrics.json` and `ranikust`'s report are
+  put side by side through the phase map of
+  [metrics](design/metrics.md#comparing-with-kaniko)
+  (`guest/e2e/metrics.py`).
+- **Results** in `target/vm/results/<release>/e2e/`: `report.md`, and per
+  workload and build `run.json`, `build.log`, metrics, the listing and
+  config, `compare-*.txt`.
+
+A `ranikust` build that stops because a part is not built yet (`not
+implemented`, a flag refused until a later phase) is recorded as
+`pending` and does not fail the suite; any other failure does. Options:
+`RANIKUST_E2E_WORKLOADS`, `_BUILDERS`, `_ROUNDS` (default 1; use 3 or more
+for the acceptance timings), `_WARMUP`, `_CPUS`, `_MEMORY`, `_JOBS`. The
+VM gets 12 GiB and an 80 GB disk unless `RANIKUST_VM_MEM`/`_DISK` say
+otherwise. A run of one round took about 15 minutes on noble, most of it
+the seed copy, the builds and flattening W1's images.
+
+First run (2026-10-30, noble, 4 vCPUs, one round, so indicative only):
+kaniko W1 22.4 s, W2 16.3 s, W3 29.7 s; BuildKit W1 48.4 s, W2 13.2 s,
+W3 15.3 s; every `ranikust` build pending on `--insecure-registry`
+([Q-200](open-questions.md#q-200-how-does-the-e2e-suites-ranikust-reach-a-plain-http-registry)).
+The references already differ from each other, which a `ranikust`
+comparison has to read against:
+
+- BuildKit (rootless, in rootful Docker) gives the directories that a
+  `RUN` or `WORKDIR` creates the setgid bit (`2755` where kaniko has
+  `755`): 13,045 directories on W1, 3,585 on W2.
+- kaniko's W3 image has no `/out/all.txt`, which the last `RUN` writes,
+  and its `/out` is `1000:1000 775` where BuildKit's is `0:0`; the
+  `/out/c.txt` contents differ too. Not investigated yet.
+- W1's non-deterministic files of experiment 07 (1,650) show up as noise,
+  as expected.
 
 Not covered yet: cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a
 reboot), Docker's default profile and `--cap-add SYS_ADMIN` alone (they
