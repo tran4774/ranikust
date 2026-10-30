@@ -215,7 +215,18 @@ smoke image="docker.io/library/alpine:3.20":
     [ "$a" = "$b" ] || { echo "error: --reproducible digests differ: $a, $b" >&2; exit 1; }
     echo "smoke: ok"
 
-# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker; `e2e`, only when named: the nextjs-kaniko workloads against kaniko and BuildKit; `push`, only when named: pushes to a loopback and the host's test registries, needs `just registry-up`) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
+# The quick smoke cases of tests/smoke/cases (T1, rootless podman): small Dockerfiles, one concern each, a few seconds per build. Names pick cases; none runs them all. Requires zig, cargo-zigbuild, rootless podman, python3.
+smoke-case *names:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(id -u)" = 0 ] || [ "$(podman info --format '{{{{.Host.Security.Rootless}}')" != true ]; then
+      echo "error: run as a normal user with rootless podman (T1); real root belongs in the VM (T2)" >&2
+      exit 1
+    fi
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust --bin ranikust
+    tests/smoke/run-cases.sh "${CARGO_TARGET_DIR:-$PWD/target}/{{ musl_target }}/release/ranikust" {{ names }}
+
+# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker; `quick`: the quick smoke cases as real root; `e2e`, only when named, a large benchmark: the nextjs-kaniko workloads against kaniko and BuildKit; `push`, only when named: pushes to a loopback and the host's test registries, needs `just registry-up`) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
 test-vm *suites:
     tests/vm/vm.sh {{ suites }}
 
