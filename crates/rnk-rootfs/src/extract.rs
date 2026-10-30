@@ -97,6 +97,11 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// - a whiteout of an ignored path or of a directory holding one, as
 ///   kaniko skips it (`:248-266`).
 ///
+/// Device nodes and FIFOs are not created at all, as kaniko's `ExtractFile`
+/// creates none (`:440-575`, ADR-0041); they are counted as
+/// `nodes_skipped`. The image keeps them: its base layers are reused
+/// unchanged.
+///
 /// An opaque whiteout empties its directory of everything the layer did not
 /// put there, except ignored paths and mounts.
 ///
@@ -169,6 +174,7 @@ fn extract_with(
         hardlinks = tracing::field::Empty,
         hardlinks_copied = tracing::field::Empty,
         nodes = tracing::field::Empty,
+        nodes_skipped = tracing::field::Empty,
         whiteouts = tracing::field::Empty,
         ignored = tracing::field::Empty,
         bytes_in = tracing::field::Empty,
@@ -223,6 +229,7 @@ struct Stats {
     hardlinks: u64,
     hardlinks_copied: u64,
     nodes: u64,
+    nodes_skipped: u64,
     whiteouts: u64,
     ignored: u64,
     bytes_in: u64,
@@ -238,6 +245,7 @@ impl Stats {
         span.record("hardlinks", self.hardlinks);
         span.record("hardlinks_copied", self.hardlinks_copied);
         span.record("nodes", self.nodes);
+        span.record("nodes_skipped", self.nodes_skipped);
         span.record("whiteouts", self.whiteouts);
         span.record("ignored", self.ignored);
         span.record("bytes_in", self.bytes_in);
@@ -350,6 +358,11 @@ impl Extractor<'_> {
         };
         let meta = self.header_meta(entry, &raw)?;
 
+        // kaniko creates no device node or FIFO in its root (ADR-0041).
+        if self.live.is_some() && matches!(kind, Kind::Node(..)) {
+            self.stats.nodes_skipped += 1;
+            return Ok(());
+        }
         if let Some(live) = &self.live
             && (live.keep.covers(&path)
                 || matches!(&kind, Kind::Hardlink(t) if live.keep.covers(t)))
@@ -443,8 +456,6 @@ impl Extractor<'_> {
             Kind::Hardlink(target) => {
                 self.hardlink(&target, checked_target, pfd.as_fd(), &name, &path, &raw)?;
             }
-            // A device node from the image is created in a live root too,
-            // also on a host workdir; kaniko skips it [open: Q-270].
             Kind::Node(t, major, minor) => {
                 rustix::fs::mknodat(
                     &pfd,

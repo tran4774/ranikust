@@ -124,8 +124,10 @@ entry is then written through: missing directories are created one name
 at a time relative to it, without following a symlink or leaving the
 mount, so a concurrent swap of a name for a symlink into an ignored path
 cannot redirect a write; directory metadata set at the end re-checks the
-parent's physical path. Device nodes from the image are still created,
-where kaniko skips them [open: Q-270].
+parent's physical path. Device nodes and FIFOs are not created, as
+kaniko creates none
+([ADR-0041](../adr/0041-live-root-extraction-skips-device-nodes.md)); the
+image keeps them through its unchanged base layers.
 
 The root and state directory handed to the list must be the kernel's
 names for the directories in use (`readlink` of their fds), absolute and

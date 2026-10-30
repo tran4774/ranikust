@@ -429,29 +429,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-270: Are device nodes from an image created in a host-workdir root?
-
-- **Blocks:** Phase 2 task 6; **Area:** `rnk-rootfs`, `rnk-snapshot`
-- **Context:** `rnk_rootfs::extract_live` creates block and character
-  device nodes and FIFOs from a base layer with `mknod`. kaniko does not:
-  its `ExtractFile` handles regular files, directories, hardlinks and
-  symlinks only and skips every other type without a word
-  (kaniko@44aa7ddc0 `pkg/util/fs_util.go:440-575`). On a host workdir a
-  node with a real device number, created as root, gives whoever can reach
-  the workdir access to a host device; in a container the root is the
-  container's own `/`. Overlay mode's extraction into the store creates
-  them too.
-- **Options:** (a) refuse device nodes other than the 0/0 character
-  device when the root is a host workdir; (b) skip them in a live root,
-  as kaniko does, with a count in the span; (c) create them, as today.
-- **Recommendation:** (b): it is kaniko's behaviour, a base image's own
-  `/dev` nodes are on the ignore list anyway, and a host workdir never
-  needs a usable device node. FIFOs could keep being created (no host
-  access), at the cost of differing from kaniko.
-- **Interim:** (c), unchanged: `extract_live` creates them (marked in
-  `crates/rnk-rootfs/src/extract.rs`).
-- **Raised:** 2026-10-31
-
 ### Q-047: What are the mirror, registry-map and helper flags called?
 
 - **Blocks:** Phase 5; **Area:** `ranikust`, `rnk-registry`
@@ -583,6 +560,16 @@ Entry format:
   The walk runs on 8 workers by default; the maintainer asked for a flag to
   change it, `--snapshot-workers`. Recorded in
   [ADR-0039](adr/0039-kaniko-mode-walk-and-hash-crates.md).
+
+### Q-270: Are device nodes from an image created in a host-workdir root?
+
+- **Answer (2026-10-31):** option (b), by the rule to follow kaniko:
+  `extract_live` creates no block or character device node and no FIFO in a
+  live root, `/` and host workdirs alike, as kaniko's `ExtractFile`
+  (kaniko@44aa7ddc0 `pkg/util/fs_util.go:440-575`); they are counted as
+  `nodes_skipped`, and the image keeps them through its unchanged base
+  layers. Recorded in
+  [ADR-0041](adr/0041-live-root-extraction-skips-device-nodes.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

@@ -113,8 +113,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   below `/tmp/apt-key-gpghome`, `/var/run`), `/proc`, `/sys`, `/dev`,
   `/ranikust` and the state directory; `--ignore-path` entries match as
   globs, as in kaniko. Base layers can be extracted into a live root
-  without writing an ignored path or below a mount point. Not yet used by
-  a build.
+  without writing an ignored path or below a mount point, and, as kaniko,
+  without creating device nodes or FIFOs. Not yet used by a build.
 
 ### Changed
 

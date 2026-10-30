@@ -1095,3 +1095,21 @@ fn a_racing_swap_never_leads_a_live_extraction_into_an_ignored_path() {
         assert_eq!(mode_of(&f.host("ranikust/state")), state_mode);
     }
 }
+
+/// As kaniko (ADR-0041): no device node or FIFO in a live root, whatever
+/// the numbers; the other entries of the layer are written.
+#[test]
+fn live_extraction_creates_no_device_node_or_fifo() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.node("fifo", EntryType::Fifo, 0, 0)
+        .node("null", EntryType::Char, 1, 3)
+        .node("wh", EntryType::Char, 0, 0)
+        .node("sda", EntryType::Block, 8, 0)
+        .file("kept", 0o644, b"ok");
+    extract_live(&f.root, t.bytes().as_slice(), &IgnoreList::new()).unwrap();
+    for name in ["fifo", "null", "wh", "sda"] {
+        assert!(fs::symlink_metadata(f.host(name)).is_err(), "{name}");
+    }
+    assert_eq!(fs::read(f.host("kept")).unwrap(), b"ok");
+}
