@@ -158,11 +158,13 @@ while streaming.
 | In `diff-k` | In the OCI tar |
 |---|---|
 | character device 0/0 (overlay whiteout) | `.wh.<name>` if a lower layer has `<name>`; otherwise dropped |
-| directory with `user.overlay.opaque=y` | directory plus `.wh..wh..opq` if a lower layer has that directory; otherwise a plain directory (overlay also marks new directories that were renamed) |
-| directory present in a lower layer with identical metadata (copied-up parent) | not a change in itself (BuildKit's `sameDirent`) |
+| directory with `user.overlay.opaque=y` over a lower one | walked against the lower stack (continuity's double walk, as BuildKit): `.wh.<name>` for each name below that the upper lacks (one for a whole directory), the rest compared as any entry; never `.wh..wh..opq`, which containerd's writer never writes |
+| directory with `user.overlay.opaque=y` and nothing below | a plain directory (overlay also marks new directories that were renamed) |
+| any entry the lower stack also shows, unchanged by BuildKit's `sameDirent` | left out (ADR-0034): same inode, or same type and permission bits, owner, device numbers and `security.capability`; a non-directory also needs the same size and second, then, with zero nanoseconds on both sides, the same symlink target or bytes, else the same nanoseconds; a directory's time is not compared |
 | xattrs | only `security.capability` kept, as BuildKit and kaniko (ADR-0032, Q-025); overlay's own (`origin`, `impure`, `uuid`, `opaque`) and every other one stripped, POSIX ACLs, SELinux labels and IMA/EVM signatures included |
 | `user.overlay.redirect` or `trusted.overlay.redirect` | error: cannot occur with `redirect_dir=nofollow` |
-| files, symlinks, hardlinks within the same upper | kept |
+| files, symlinks, hardlinks within the same upper | kept when changed; under an opaque directory an unchanged name sharing an inode with a changed one is written as a link to it (containerd's `inodeRefs`) |
+| whiteout time | 0, as containerd 2's `ChangeWriter` |
 
 Requirements found by comparing images:
 
@@ -178,6 +180,10 @@ Requirements found by comparing images:
   The `sameDirent` rule only stops an unchanged directory from being emitted
   on its own: the exporter skips it, and the writer adds it back through the
   lookup when a descendant is emitted (same interim).
+- **Content comparison.** For a copied-up file whose metadata, size and
+  whole-second time equal the lower one's, both copies are read through
+  their `RootPath`s in 32 KiB blocks up to the first difference
+  (`bytes_compared` on `rnk_snapshot.diff`).
 - **Raw mode bits.** Read and set modes with the raw `st_mode` bits
   (`fchmodat` with the full value) so sticky, setuid and setgid survive;
   `/tmp` must stay 1777.
@@ -188,9 +194,6 @@ Requirements found by comparing images:
   time later than the fixed epoch (`SOURCE_DATE_EPOCH` when set, else
   1970-01-01) is clamped to it, as BuildKit's `rewrite-timestamp` does
   (Q-161, `ADR-0032`).
-
-Optionally, the exporter can compare copied-up files with their lower version
-and drop unchanged ones; BuildKit does not, and it is off by default.
 
 **The reverse direction**, extracting a base or cache layer into
 `layers/<id>`: `.wh.<name>` becomes `mknod c 0 0`; `.wh..wh..opq` becomes the
@@ -223,7 +226,7 @@ limit on compression threads keeps export from starving `RUN`.
 | Upper/work cannot be on overlayfs | The probe detects it; the result is kaniko mode. |
 | Nesting depth is at most 2 | A container on nested overlay fails the probe. |
 | Upper filesystems: ext4, xfs, btrfs, tmpfs behave identically; NFS cannot be an upper | Probe. |
-| Copy-up of unchanged files and of `chmod`/`touch`ed files (whole 8 MB file copied) | Accepted, as in BuildKit; optional hash filter at export. |
+| Copy-up of unchanged files and of `chmod`/`touch`ed files (whole 8 MB file copied) | Accepted on disk, as in BuildKit; the exporter leaves unchanged ones out of the layer (ADR-0034). |
 | Copy-up splits hardlinks | Accepted difference ([ADR-0012](../adr/0012-accept-divergence-between-modes.md)). |
 | `rename(2)` of a lower directory returns `EXDEV` | Accepted ([ADR-0016](../adr/0016-overlay-mount-options.md)); on failure, hint "rerun with `--mode=kaniko`" ([ADR-0023](../adr/0023-mode-flag.md)). |
 | `trusted.*` xattrs need `CAP_SYS_ADMIN` in the initial user namespace | Always `userxattr`. |
@@ -244,7 +247,7 @@ stages as in kaniko.
 
 ## Open questions
 
-- [Q-049](../open-questions.md#q-049-which-overlay-optimizations-come-after-phase-1) Which overlay optimizations come after Phase 1?
+- [Q-245](../open-questions.md#q-245-should-one-overlay-mount-serve-consecutive-instructions) Should one overlay mount serve consecutive instructions?
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
 - [Q-026](../open-questions.md#q-026-when-and-how-are-layers-merged-near-the-500-lower-limit) When and how are layers merged near the 500-lower limit?
 - [Q-152](../open-questions.md#q-152-how-are-read-only-layer-roots-published-without-root) How are read-only layer roots published without root?

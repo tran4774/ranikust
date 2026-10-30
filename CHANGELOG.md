@@ -86,6 +86,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
+- Layers leave out files a `RUN` copied up without changing them, and
+  write an opaque directory as whiteouts of what it hides, as BuildKit's
+  overlay differ does (ADR-0034).
 - Building the static musl binary from source needs zig 0.16.0 and
   cargo-zigbuild 0.24.0, which compile its C dependencies; see
   `CONTRIBUTING.md`.
