@@ -66,7 +66,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 10 | `rnk-context` local directory (done); `COPY` sources are resolved in 11 (Q-080, `ADR-0032`) | 3 | |
 | 11 | `rnk-builder`: executors, lazy export, assembly, outputs and push (done; config goldens and W1–W3 left) | 1, 2, 6, 8, 9, 10 | |
 | 12 | `rnk-sched`: DAG, `--jobs`, cancellation (done behind the `StageRunner` trait, tested with fakes; the builder's runner comes with 11) | 2, 11 | |
-| 13 | CLI end to end, outputs, acceptance runs (`ranikust build` builds end to end; the acceptance runs are left) | all | |
+| 13 | CLI end to end, outputs, acceptance runs (done: every acceptance criterion below is ticked with its test or run, 2026-10-30) | all | |
 
 Any time: the VM harness (before 8 and 9 can be
 tested as root).
@@ -82,12 +82,26 @@ with `rnk_metrics::Capture`; a task is not done without it.
       Built by `just test-vm e2e` on noble, one round (2026-10-30); the W3
       digest across `--jobs` is to be compared by content without the
       workload's `du` files ([Q-187](../open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output)).
-- [ ] `--jobs 1`, `2` and default measured on W3 with `run-fair.sh`
+- [x] `--jobs 1`, `2` and default measured on W3 with `run-fair.sh`
       (`exp-08` at 32 CPUs, lazy: 8.44, 6.52, 6.02 s); peak memory recorded;
       with `--reproducible`, `--jobs 1` and default give identical digests.
-- [ ] Flattened content `(path, type, mode, uid, gid, size, sha256, link,
+      `just test-vm e2e`, 3 rounds, noble, 4 vCPUs (2026-10-30), median
+      (min–max), peak `memory.peak`: `--jobs 1` 15.04 s (14.95–15.11),
+      3.3 GiB; `2` 13.34 s (13.06–14.25), 3.7 GiB; default 13.48 s
+      (13.23–14.04), 4.7 GiB. Identical by content at every `--jobs`
+      (`other=0`); raw digests differ only through the workload's own
+      `du -sk` output (Q-187).
+- [x] Flattened content `(path, type, mode, uid, gid, size, sha256, link,
       xattrs)` and config compared with kaniko and BuildKit: only `ADR-0012`
       differences, plus W1's 1,654 non-deterministic files (`exp-07` §3).
+      Same run: configs equal everywhere (`config=0`). Against kaniko: W1
+      `other=3` (a pnpm state file and two npm debug logs named by build
+      time), W2 `other=0`, W3 `other=3` (the `du`-derived `/out/a.txt`, and
+      kaniko's own image lacking `/out/all.txt` with `/out` at `1000:1000
+      775`). Against BuildKit the counts equal kaniko's against BuildKit
+      (W1 13,048, W2 3,585: BuildKit's rootless setgid directories), so
+      ranikust adds none. Per-file classification from the first e2e run
+      on `feat/rnk-builder-executors`, whose counts this run repeats.
 - [x] Push to a loopback and a real network registry; `--tar-path` loads in
       podman or docker; `--oci-layout-path` is a valid layout. `just
       test-vm push` on noble (2026-10-30): one build as real root pushed to
@@ -138,10 +152,13 @@ with `rnk_metrics::Capture`; a task is not done without it.
       unit tests of `ADR-0009` (`just test-aarch64`), natively on the
       `ubuntu-24.04-arm` runner with nothing skipped; green in CI run
       41056969633 (2026-10-30). The binary is not static-pie yet [open: Q-140].
-- [ ] W1 and W3 metrics reports compared with kaniko's by the bench harness
+- [x] W1 and W3 metrics reports compared with kaniko's by the bench harness
       ([phase map](../design/metrics.md#comparing-with-kaniko)); with
-      `--reproducible`, the same digests with metrics on and off. The
-      second half is done (2026-10-30): T0
+      `--reproducible`, the same digests with metrics on and off. Same
+      run: totals W1 kaniko 24.77 s / ranikust 23.03 s, W2 17.23 / 8.49 s,
+      W3 29.55 / 13.46 s; per phase e.g. W1 `run.child` 10.16 s against
+      `rnk_sandbox.run` 9.47 s, `snapshot.command` 11.64 s against
+      `rnk_snapshot.diff` 2.91 s. The second half (2026-10-30): T0
       `metrics_do_not_change_reproducible_digests` (`rnk-builder`) and the
       host build of `just test-vm smoke` with `--metrics-file`; the comparison
       with kaniko's reports is left.
