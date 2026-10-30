@@ -20,6 +20,7 @@ fn metrics_on_collects_spans_and_reports_panics() {
     let telemetry = rnk_metrics::init(rnk_metrics::Config {
         file: Some(path.clone()),
         summary: false,
+        ..rnk_metrics::Config::default()
     });
     assert!(telemetry.is_enabled());
     telemetry.set_meta("ranikust_version", "test");

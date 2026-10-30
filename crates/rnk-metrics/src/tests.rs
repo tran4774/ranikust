@@ -44,10 +44,31 @@ fn disabled_path_installs_nothing() {
     assert!(dispatch.downcast_ref::<MetricsLayer>().is_none());
     // `build` returns `logs_only()` when disabled. Its level hint is the log
     // layer's: tracing rejects `debug_span!` with one comparison against it.
-    assert_eq!(logs_only().max_level_hint(), Some(LevelFilter::INFO));
+    assert_eq!(
+        logs_only(LogOptions::default()).max_level_hint(),
+        Some(LevelFilter::INFO)
+    );
     // Whether a `debug_span!` is then disabled depends on the process-wide
     // callsite cache, which the other tests' subscribers share: checked in
     // `tests/init_disabled.rs`, a process of its own.
+}
+
+#[test]
+fn the_log_level_is_the_log_layers_hint_in_every_format() {
+    for format in [LogFormat::Text, LogFormat::Color, LogFormat::Json] {
+        for (level, timestamp) in [(LevelFilter::DEBUG, true), (LevelFilter::ERROR, false)] {
+            let options = LogOptions {
+                level,
+                format,
+                timestamp,
+            };
+            assert_eq!(
+                logs_only(options).max_level_hint(),
+                Some(level),
+                "{options:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -56,6 +77,7 @@ fn log_level_never_hides_a_metric_span() {
     let config = Config {
         file: Some(tmp.path().join("m.json")),
         summary: false,
+        ..Config::default()
     };
     let (dispatch, collector) = build(&config, fake_host(tmp.path()));
     let collector = collector.expect("collector");

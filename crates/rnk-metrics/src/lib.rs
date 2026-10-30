@@ -73,6 +73,44 @@ pub struct Config {
     pub file: Option<PathBuf>,
     /// Print a short summary to stderr at exit.
     pub summary: bool,
+    /// How logs are written.
+    pub logs: LogOptions,
+}
+
+/// The log layer's settings: kaniko's `--verbosity`, `--log-format` and
+/// `--log-timestamp` (ADR-0036). They never change what the metrics layer
+/// sees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogOptions {
+    /// The most detailed level written; kaniko's default is `info`.
+    pub level: LevelFilter,
+    /// The format.
+    pub format: LogFormat,
+    /// A timestamp on each line; off by default, as in kaniko.
+    pub timestamp: bool,
+}
+
+impl Default for LogOptions {
+    fn default() -> Self {
+        Self {
+            level: LevelFilter::INFO,
+            format: LogFormat::Color,
+            timestamp: false,
+        }
+    }
+}
+
+/// kaniko's `--log-format`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Plain text, never colored.
+    Text,
+    /// Text, colored when stderr is a terminal, as logrus does: kaniko's
+    /// default.
+    #[default]
+    Color,
+    /// One JSON object per line.
+    Json,
 }
 
 impl Config {
@@ -90,7 +128,11 @@ impl Config {
             std::path::absolute(&path).unwrap_or(path)
         });
         let summary = summary.is_some_and(|s| !s.is_empty() && s != "0");
-        Self { file, summary }
+        Self {
+            file,
+            summary,
+            logs: LogOptions::default(),
+        }
     }
 
     /// Whether anything is collected.
@@ -149,32 +191,47 @@ pub fn init(config: Config) -> Telemetry {
     Telemetry { collector }
 }
 
-/// The log layer: stderr, `INFO` [open: Q-023] [open: Q-031]. Its per-layer
-/// filter keeps its level from hiding spans from the metrics layer.
-fn logs<S>() -> impl tracing_subscriber::Layer<S>
+/// The log layer: stderr, at `options.level`, in `options.format`
+/// (ADR-0036; per-stage grouping stays apart from the format, Q-031). Its
+/// per-layer filter keeps its level from hiding spans from the metrics
+/// layer.
+fn logs<S>(options: LogOptions) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_filter(LevelFilter::INFO)
+    use std::io::IsTerminal as _;
+    let base = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let level = options.level;
+    match (options.format, options.timestamp) {
+        (LogFormat::Json, true) => base.json().with_filter(level).boxed(),
+        (LogFormat::Json, false) => base.json().without_time().with_filter(level).boxed(),
+        (format, timestamp) => {
+            let ansi = format == LogFormat::Color && std::io::stderr().is_terminal();
+            let base = base.with_ansi(ansi);
+            if timestamp {
+                base.with_filter(level).boxed()
+            } else {
+                base.without_time().with_filter(level).boxed()
+            }
+        }
+    }
 }
 
-/// The subscriber with metrics off: the log layer alone, whose `INFO` level
-/// hint lets tracing reject `debug_span!` with one comparison.
-fn logs_only() -> impl tracing::Subscriber + Send + Sync {
-    Registry::default().with(logs())
+/// The subscriber with metrics off: the log layer alone, whose level hint
+/// lets tracing reject `debug_span!` with one comparison at `INFO`.
+fn logs_only(options: LogOptions) -> impl tracing::Subscriber + Send + Sync {
+    Registry::default().with(logs(options))
 }
 
 /// Builds the subscriber without installing it.
 fn build(config: &Config, paths: HostPaths) -> (Dispatch, Option<Arc<Collector>>) {
     if !config.is_enabled() {
-        return (Dispatch::new(logs_only()), None);
+        return (Dispatch::new(logs_only(config.logs)), None);
     }
     let collector = Arc::new(Collector::new(config.file.clone(), config.summary, paths));
     let metrics =
         MetricsLayer::new(Arc::clone(&collector.shared)).with_filter(filter_fn(is_metric_span));
-    let subscriber = Registry::default().with(logs()).with(metrics);
+    let subscriber = Registry::default().with(logs(config.logs)).with(metrics);
     (Dispatch::new(subscriber), Some(collector))
 }
 
