@@ -120,9 +120,9 @@ impl Host for Real {
 ///
 /// Now that kaniko mode builds, this heuristic is what keeps a build on the
 /// host's `/` (which it extracts over, and empties between stages) from
-/// running outside a container without `--force`, as in kaniko. The
-/// recommendation is an explicit opt-in instead of trusting it alone
-/// [open: Q-321].
+/// running outside a container without `--force`, as in kaniko
+/// (ADR-0048: no extra flag in a container, accepting that a host matching
+/// the heuristic by accident is not protected).
 pub(crate) fn detect(host: &impl Host) -> Option<Runtime> {
     // Container-specific files.
     for (runtime, file) in [

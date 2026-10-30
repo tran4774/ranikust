@@ -52,7 +52,7 @@ Three tracks after task 0: set-up (1, 2), the snapshot (3–6) and execution
 | 3 | Ignore list from mountinfo and the fixed paths; extraction into a live root (done, `ADR-0041`) | 1 | |
 | 4 | Parallel walk, hash, stat cache, diff during the walk (done) | 0, 3 | |
 | 5 | Walk diff → layer exporter (done, `ADR-0045`) | 4 | |
-| 6 | `KanikoRoot` (`StageRootfs`, `Snapshotter`) on `/` and per-stage directories; safe deletion between stages (done on the shared root: `ADR-0046`, `ADR-0047`; follow-ups: refuse a mount change between the workdir and its private ancestor, an error instead of a silent skip when the workdir's owner and mode cannot be read, a refusal message saying how to repair a workdir left by a crash; Q-321 open) | 3, 4, 5 | |
+| 6 | `KanikoRoot` (`StageRootfs`, `Snapshotter`) on `/` and per-stage directories; safe deletion between stages (done on the shared root: `ADR-0046`, `ADR-0047`; follow-ups: refuse a mount change between the workdir and its private ancestor, an error instead of a silent skip when the workdir's owner and mode cannot be read, a refusal message saying how to repair a workdir left by a crash) | 3, 4, 5 | |
 | 7 | `RUN` with `Isolation::Direct` on the shared root; placed files and mtime restore | 6 | |
 | 8 | Sequential flow: squashing, kept stage outputs, shared-`/` exclusivity in `rnk-sched`, lazy snapshots | 6, 7 | |
 | 9 | Per-stage directories with the full sandbox | 6, 8 | |

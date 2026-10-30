@@ -34,29 +34,6 @@ Entry format:
 
 <!-- Entries are added below this line. -->
 
-### Q-321: Is the container check enough to guard a kaniko-mode build on `/`?
-
-- **Blocks:** nothing yet; **Area:** `ranikust`
-- **Context:** kaniko mode without `--workdir` builds on `/`: it extracts
-  the base over it and empties it between stages. Outside a container only
-  `--force` lets it run (ADR-0040), and whether ranikust is in a container
-  is kaniko's heuristic (`container::detect`: marker files, cgroup names,
-  the `container` variable, an overlay `/`), which a host can match by
-  accident (an overlay root, a leftover `/.dockerenv`).
-- **Options:** (a) keep kaniko's heuristic and `--force`, as kaniko; (b)
-  also require an explicit flag naming `/` (for example `--workdir=/`) when
-  the heuristic is the only evidence; (c) a first-run confirmation, which
-  does not fit an unattended CI job.
-- **Recommendation:** (b), under the maintainer's priorities (security
-  first, then performance; kaniko drop-in parity is not a goal): require
-  an explicit opt-in to build on `/` (`--workdir=/`, or `--force` as the
-  only switch) and never trust the container heuristic alone before
-  extracting over or emptying `/`. Option (a), kaniko's behaviour, is
-  weaker: a host that happens to match the heuristic loses its `/`
-  without any flag.
-- **Interim:** (a), unchanged until the maintainer decides.
-- **Raised:** 2026-10-31
-
 ### Q-008: What does a repeated target flag mean?
 
 - **Blocks:** Phase 1 tasks 2, 8; **Area:** `rnk-dockerfile`, `ranikust`
@@ -651,6 +628,13 @@ Entry format:
   by others; directories above it may belong to anyone; a missing
   `nosuid,nodev` is warned about. Recorded in
   [ADR-0047](adr/0047-kaniko-workdir-chain-is-private.md).
+
+### Q-321: Is the container check enough to guard a kaniko-mode build on `/`?
+
+- **Answer (2026-10-31):** option (a), by the maintainer: kaniko's
+  container heuristic and `--force`, so a container build needs no extra
+  flag; revisit with (b) if a host is seen to match the heuristic.
+  Recorded in [ADR-0048](adr/0048-container-heuristic-guards-the-root.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 
