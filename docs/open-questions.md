@@ -72,30 +72,6 @@ Entry format:
   signatures.
 - **Raised:** 2026-10-30
 
-### Q-011: Who owns the workdir checks, and what counts as empty?
-
-- **Blocks:** Phase 1 tasks 4, 8; **Area:** `rnk-rootfs`, `ranikust`,
-  `rnk-store`
-- **Context:** `check_workdir` sits in `rnk-rootfs` "here or `ranikust`"
-  ([rnk-rootfs](agents/crates/rnk-rootfs.md#api-planned),
-  [ranikust](agents/crates/ranikust.md#must-not)); the owner of the
-  kaniko-mode workdir lock is open too
-  ([rnk-store](agents/crates/rnk-store.md#phase-1)).
-  A workdir holding only mount points has no marker and is refused
-  ([kaniko-mode](design/kaniko-mode.md#open-questions)).
-- **Options:** owner (a) `rnk-rootfs` or (b) `ranikust`; a workdir of pure
-  mount points (c) counts as empty or (d) is refused.
-- **Recommendation:** none
-- **Interim:** a workdir of pure mount points is refused, as designed today.
-  Owner: `feat/rnk-rootfs-rootpath` does not build `check_workdir` in
-  `rnk-rootfs`; it only provides the primitives either owner needs
-  (`RootPath::open` with `RESOLVE_NO_SYMLINKS`, `statx` with `dev`, `ino`
-  and `mnt_id`). Reversible because nothing calls a workdir check yet.
-  `feat/ranikust-cli` (task 8a) does not check the workdir either: it only
-  makes `--workdir` and `--state-dir` absolute, without touching the
-  filesystem; the build stops before any use of them.
-- **Raised:** 2026-10-30
-
 ### Q-015: Which digest names an extracted layer, and where do locks live?
 
 - **Blocks:** Phase 1 task 7; **Area:** `rnk-store`
@@ -169,20 +145,6 @@ Entry format:
   `sandbox/` subdirectory, and the overlay probe (`feat/rnk-snapshot`)
   this build's `builds/<id>/overlay-probe`, deleted with the build.
   Revisit with kaniko mode (Phase 2).
-- **Raised:** 2026-10-30
-
-### Q-019: What is the final name of the parallel-stages flag?
-
-- **Blocks:** Phase 1 task 8; **Area:** `ranikust`
-- **Context:** `--parallel-stages` is a placeholder, fixed with the flag
-  list ([ADR-0011](adr/0011-accept-common-kaniko-flags.md#decision-outcome),
-  [ADR-0014](adr/0014-kaniko-mode-sequential-by-default.md#decision-outcome),
-  [ADR-0023](adr/0023-mode-flag.md#more-information),
-  [phase-1.md](agents/phase-1.md#open-questions-blocking-phase-1)); the flag
-  itself lands in Phase 2 ([ranikust](agents/crates/ranikust.md#phase-1)).
-- **Options:** (a) keep `--parallel-stages`; (b) another name.
-- **Recommendation:** none
-- **Interim:** the placeholder `--parallel-stages`.
 - **Raised:** 2026-10-30
 
 ### Q-110: What is the overlay-mode state directory without `--workdir`?
@@ -369,65 +331,9 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-034: When must a lazily skipped stage still be snapshotted?
-
-- **Blocks:** Phase 2; **Area:** `rnk-snapshot`, `rnk-sched`
-- **Context:** kaniko mode does not snapshot a stage used only through
-  `COPY --from` or `FROM <stage>`; a stage skipped this way that later needs
-  a layer must still detect deletions, and `--cache` changes which layers
-  are needed ([kaniko-mode](design/kaniko-mode.md#lazy-snapshots),
-  [open questions](design/kaniko-mode.md#open-questions),
-  [rnk-sched](agents/crates/rnk-sched.md#pitfalls)).
-- **Options:** none listed.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-035: What does the kaniko-mode ignore list hold?
-
-- **Blocks:** Phase 2; **Area:** `rnk-snapshot`, `rnk-rootfs`
-- **Context:** besides mount points, `--ignore-path`, `/proc`, `/sys`,
-  `/dev` and the state directory: all of `/ranikust` (an image may keep the
-  binary there, as kaniko keeps `/kaniko/executor`) or only
-  `/ranikust/state` ([kaniko-mode](design/kaniko-mode.md#open-questions));
-  and kaniko's `/etc/mtab`, `/tmp/apt-key-gpghome` and `/var/run`
-  ([kaniko-map](agents/kaniko-map.md#behaviour-to-match)).
-- **Options:** (a) all of `/ranikust` or (b) only `/ranikust/state`;
-  (c) add kaniko's three paths or (d) leave them out.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-036: What is the state directory default for kaniko mode on a host?
-
-- **Blocks:** Phase 2; **Area:** `rnk-store`, `ranikust`
-- **Context:** the kaniko-mode default `/ranikust/state` fits a container;
-  for kaniko mode outside one (per-stage directories on a host) the default
-  is open ([ADR-0022](adr/0022-common-state-dir.md#more-information),
-  [cache-and-store](design/cache-and-store.md#open-questions),
-  [overview](agents/overview.md#where-state-lives)).
-- **Options:** (a) keep `/ranikust/state`; (b) require `--state-dir`.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-037: What else must the fake proc cover?
-
-- **Blocks:** Phase 2; **Area:** kaniko mode, `--parallel-stages`
-- **Context:** on Kubernetes with cgroup v1 and the limit only on a parent
-  cgroup, the fake `/proc` may need `memory.stat` as a fifteenth file;
-  long-running `RUN`s see stale values; other `$ORIGIN` users (conda, .NET)
-  and cargo, go and Python builds were not tried on this path
-  ([kaniko-mode](design/kaniko-mode.md#open-questions)).
-- **Options:** (a) add `memory.stat`; (b) keep fourteen files until a case
-  fails. The other items need tests.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
 ### Q-038: Which crates fill the Phase 2 dependency picks?
 
-- **Blocks:** Phase 2; **Area:** dependencies
+- **Blocks:** Phase 2 tasks 0, 4; **Area:** dependencies
 - **Context:** survey 03 §3 leaves the snapshot hash and the parallel walk
   open ([phase-1.md](agents/phase-1.md#open-questions-blocking-phase-1) O5,
   [refs.md](agents/refs.md#crates)); the hash choice barely matters
@@ -435,7 +341,9 @@ Entry format:
 - **Options:** hash: (a) `highway` or (b) `xxhash-rust`; walk: (c) `jwalk`
   or (d) `rayon` + `getdents64`.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** the maintainer asked for a benchmark first (2026-10-30):
+  Phase 2 task 0 ([phase-2](agents/phase-2.md#task-order)) measures each
+  candidate on a node rootfs, and the picks go into an ADR.
 - **Raised:** 2026-10-30
 
 ### Q-039: Which environments must the probe be tested in?
@@ -612,6 +520,52 @@ Entry format:
 - **Raised:** 2026-10-30
 
 ## Answered
+
+### Q-011: Who owns the workdir checks, and what counts as empty?
+
+- **Answer (2026-10-30):** options (b) and (d): `ranikust` runs the workdir
+  checks during process set-up and holds the kaniko-mode workdir `flock` for
+  the build; `rnk-rootfs` provides the primitives only. A workdir of only
+  mount points is refused. Recorded in
+  [ADR-0038](adr/0038-kaniko-mode-settings-for-phase-2.md).
+
+### Q-019: What is the final name of the parallel-stages flag?
+
+- **Answer (2026-10-30):** option (a): `--parallel-stages` is the final
+  name. Recorded in
+  [ADR-0038](adr/0038-kaniko-mode-settings-for-phase-2.md).
+
+### Q-034: When must a lazily skipped stage still be snapshotted?
+
+- **Answer (2026-10-30):** the maintainer took the recommendation: decided
+  once from the stage graph before the build. A stage's layers are needed
+  when it is the target or a stage whose layers are needed builds `FROM` it;
+  any other stage is not walked. Nothing is decided later, so no deletion
+  has to be found after the fact; `--cache` (Phase 4) only adds inputs to
+  the rule (Q-042). Recorded in
+  [ADR-0038](adr/0038-kaniko-mode-settings-for-phase-2.md).
+
+### Q-035: What does the kaniko-mode ignore list hold?
+
+- **Answer (2026-10-30):** options (a) and (c): all of `/ranikust`, and
+  kaniko's `/etc/mtab`, `/tmp/apt-key-gpghome` and `/var/run` (while
+  `--ignore-var-run` is true), besides mount points, `--ignore-path`,
+  `/proc`, `/sys`, `/dev` and the state directory. Recorded in
+  [ADR-0038](adr/0038-kaniko-mode-settings-for-phase-2.md).
+
+### Q-036: What is the state directory default for kaniko mode on a host?
+
+- **Answer (2026-10-30):** a third option from the maintainer: with the root
+  `/` the default stays `/ranikust/state`; with any other root it is
+  `<cwd>/.ranikust`, a hidden directory in the directory ranikust was
+  started in, ignored whenever it lies inside the root. Recorded in
+  [ADR-0038](adr/0038-kaniko-mode-settings-for-phase-2.md).
+
+### Q-037: What else must the fake proc cover?
+
+- **Answer (2026-10-30):** option (b): keep the fourteen files until a build
+  fails without `memory.stat`; the untried tools get tests in Phase 2 task
+  10. Recorded in [ADR-0038](adr/0038-kaniko-mode-settings-for-phase-2.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

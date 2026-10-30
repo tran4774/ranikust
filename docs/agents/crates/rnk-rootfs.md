@@ -57,7 +57,6 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // bu
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
 pub fn probe_support() -> Result<(), Unsupported>;             // built: start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
-pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011] here or `ranikust`
 ```
 
 ## Invariants
@@ -171,13 +170,14 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
 - Deferred to Phase 2: `Whiteouts::Apply` into a live root (built and T0
   tested, not yet used with mounts in the root), the mountinfo ignore list,
   `delete_contents` on `/`, `FICLONE` stage copies.
-- [open: Q-011] Owner of `check_workdir` open; not built here.
-  `RootPath::open` and `statx` (`dev`, `ino`, `mnt_id`) are its primitives.
+- The workdir checks belong to `ranikust` (`ADR-0038`, Q-011); this crate
+  provides their primitives, `RootPath::open` and `statx` (`dev`, `ino`,
+  `mnt_id`).
 - Needs Linux 5.8; `Error::Unsupported`, no fallback. The binary checks
   it at start-up (ADR-0028).
 - Done: `RootPath`, `extract` and `extract_overlay` (Q-055),
   `lookup_user`/`lookup_owner` (`USER` and `--chown` default the gid
   differently), `delete_contents` (built before `extract`, which reuses
-  its walker), `copy`. Left: `check_workdir` (Q-011). The builder still
+  its walker), `copy`. The builder still
   resolves `COPY` sources and the destination name (Q-080) and extracts
   `ADD` archives.

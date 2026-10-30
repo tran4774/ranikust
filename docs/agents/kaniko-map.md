@@ -93,7 +93,7 @@ listed there):
 | `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | accepted and ignored with a warning: the image is the same without them in overlay mode |
 | `--context-sub-path` (`:339`) | joined onto a `dir://` context, inside it (`root.go:599-631`, `buildcontext/dir.go:25`); ignored with a warning for a plain path, as kaniko |
 | `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
-| `--single-snapshot`, `--materialize`, `--ignore-var-run` (Q-035), `--whitelist-var-run` | refused until Phase 2 (kaniko mode) |
+| `--single-snapshot`, `--materialize`, `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | refused until Phase 2 (kaniko mode) |
 | `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-ignore-immutable-tag-errors` | refused until Phase 5 |
 | `--dryrun` | refused, not scheduled |
 | `--azure-container-registry-config` (hidden, `:413`), `bake` | refused for good (`ADR-0008`) |
@@ -108,7 +108,7 @@ Variables: `KANIKO_NO_PUSH` overrides `--no-push` (`:83-89`);
 ranikust-only flags: `--workdir`, `--state-dir`,
 `--mode=auto|overlay|kaniko` (new, `ADR-0023`), `--jobs`, `--network`,
 `--metrics-file` and `--platform`, all parsed; `--parallel-stages`
-(placeholder name, Phase 2), `--seccomp`, `--userns` (Phase 3) not yet.
+(Phase 2, `ADR-0038`), `--seccomp`, `--userns` (Phase 3) not yet.
 Subcommands: `build` (the default) and `version` exist; `push`, `prune`
 and `login` do not (Q-048, Phase 5).
 
@@ -149,8 +149,9 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   `--ignore-path`. ranikust's kaniko mode takes mount points under the root,
   `--ignore-path`, `/proc`, `/sys`, `/dev` and the state directory
   (`/ranikust/state` in a container, `ADR-0022`;
-  `design/kaniko-mode.md#ignore-list`); `/etc/mtab`, `/tmp/apt-key-gpghome`
-  and `/var/run` are `[open: Q-035]`. Overlay mode needs no list: mounts
+  `design/kaniko-mode.md#ignore-list`), and, as kaniko, all of
+  `/ranikust`, `/etc/mtab`, `/tmp/apt-key-gpghome` and `/var/run` while
+  `--ignore-var-run` is true (`ADR-0038`). Overlay mode needs no list: mounts
   live in `RUN`'s namespace.
 - **Timestamps and `--reproducible`.** kaniko stamps the pushed image with
   the current time (`pkg/executor/build.go:2100`); with `--reproducible` it

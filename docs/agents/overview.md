@@ -2,7 +2,7 @@
 
 **TL;DR:** ranikust builds OCI images from Dockerfiles like kaniko, as one
 static binary: overlayfs snapshots when it may mount, a kaniko-style walk and
-hash otherwise. Pre-alpha: Phase 1 is in progress; crates are skeletons.
+hash otherwise. Pre-alpha: Phase 1 is done; Phase 2 (kaniko mode) is in progress.
 
 ## What ranikust is
 
@@ -102,25 +102,23 @@ ADR-0027 puts the matcher inside the walk).
 | Metrics report | `--metrics-file` (opt-in, `ADR-0037`) | one JSON file written at exit, never during the build (`ADR-0025`) |
 
 One state directory serves every mode (`ADR-0022`); the default for kaniko
-mode outside a container is `[open: Q-036]`
-(`design/cache-and-store.md#open-questions`).
+mode outside a container is `<cwd>/.ranikust`, `/ranikust/state` when
+the root is `/` (`ADR-0038`).
 
 ## Phase status
 
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Spike: sandbox, overlay, detection | mostly done by the experiments (`docs/research/`, frozen 2026-10-29) |
-| 1 | MVP: overlay mode as root, parallel stages, outputs | in progress on branch `phase-1`; [phase-1.md](phase-1.md) |
-| 2 | kaniko mode | not started |
+| 1 | MVP: overlay mode as root, parallel stages, outputs | done (acceptance runs 2026-10-30); [phase-1.md](phase-1.md) |
+| 2 | kaniko mode | in progress; [phase-2.md](phase-2.md) |
 | 3 | Rootless overlay, full probe, `--seccomp`, `--userns` | not started |
 | 4 | Registry layer cache | not started |
 | 5 | Feature completion (`ADD` URL/git, more mounts, mirrors, `prune`) | not started |
 | 6 | Hardening and release | not started |
 
-Code today: 15 crates. Implemented (Phase 1, in progress where the card
-says so): `rnk-oci`, `rnk-dockerfile`, `rnk-ignore`, `rnk-rootfs`,
-`rnk-layer` and `rnk-metrics`; the others have docs-only `lib.rs`
-(`skeleton`). The binary parses kaniko's executor flags, refuses a
-kernel older than 5.8, and stops after validating a build; on request it
-writes the metrics report. CI runs what `just ci` runs. 1.0 needs all three
+Code today: 15 crates, each card giving its status. The binary builds
+Dockerfiles in overlay mode as root and pushes or writes the image;
+`--mode=kaniko` is refused until Phase 2 lands; `rnk-cache` is a
+skeleton (Phase 4). CI runs what `just ci` runs. 1.0 needs all three
 paths: overlay root, rootless overlay, kaniko mode.

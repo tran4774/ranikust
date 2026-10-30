@@ -187,5 +187,5 @@ on a blocking thread, because the lock may wait.
 - [open: Q-015] Interim: layers named by the digest the caller gives
   (`rnk-snapshot` uses the chain ID, Q-150), lock files under
   `locks/`. (Q-100, ADR-0032) Durability: a blob is `fsync`ed before its
-  rename, a layer is not. [open: Q-011] The owner of the workdir checks
-  and the kaniko-mode workdir lock (`ranikust` or `rnk-rootfs`); not here.
+  rename, a layer is not. The workdir checks and the kaniko-mode workdir
+  lock belong to `ranikust` (`ADR-0038`); not here.

@@ -11,7 +11,7 @@ source; do not load the long documents unless a card sends you there.
 |---|---|
 | First time in the repo | [overview.md](overview.md), [rules.md](rules.md) |
 | Work on a crate | [rules.md](rules.md), [crates/\<crate\>.md](crates/), then the design doc the card links |
-| Pick the next Phase 1 task | [phase-1.md](phase-1.md), then the crate card |
+| Pick the next Phase 2 task | [phase-2.md](phase-2.md), then the crate card; Phase 1 history in [phase-1.md](phase-1.md) |
 | Match kaniko behaviour, port a kaniko feature or flag | [kaniko-map.md](kaniko-map.md), then `kaniko-oracle` / the `kaniko-parity` skill |
 | Build, test, commit, open a PR | [workflow.md](workflow.md) |
 | Unknown term (whiteout, copy-up, lazy export, W3…) | [glossary.md](glossary.md) |
@@ -28,7 +28,8 @@ source; do not load the long documents unless a card sends you there.
 | [overview.md](overview.md) | What ranikust is, the build pipeline, the two modes, the crate graph, where state lives | 110 lines |
 | [rules.md](rules.md) | Host safety, code traps, determinism, writing rules: the must-follow list | 112 lines |
 | [workflow.md](workflow.md) | Dev loop, `just` recipes, test tiers, adding a crate/dependency/ADR, commits, keep-in-sync matrix | 126 lines |
-| [phase-1.md](phase-1.md) | Phase 1 (MVP) scope, task order, owners, acceptance criteria, what is deferred | 128 lines |
+| [phase-1.md](phase-1.md) | Phase 1 (MVP) scope, task order, owners, acceptance criteria, what is deferred (done) | 220 lines |
+| [phase-2.md](phase-2.md) | Phase 2 (kaniko mode) scope, task order, owners, acceptance criteria | 125 lines |
 | [kaniko-map.md](kaniko-map.md) | kaniko packages and flags → ranikust crates, with source references | 140 lines |
 | [glossary.md](glossary.md) | Terms used across code and docs | 69 lines |
 | [refs.md](refs.md) | Specs, upstream code, chosen crates and their docs | 93 lines |
@@ -80,7 +81,7 @@ source; do not load the long documents unless a card sends you there.
 These files are cheap to read only if they stay accurate and short.
 
 - Change a crate's API, status or boundaries → update its card in the same PR.
-- Finish a Phase 1 task → tick it in [phase-1.md](phase-1.md).
+- Finish a Phase 2 task → tick it in [phase-2.md](phase-2.md).
 - A card or file grows past ~140 lines → move detail into `docs/design/` and
   link it.
 - Never copy long passages from ADRs, design docs or research; summarize in a

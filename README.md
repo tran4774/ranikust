@@ -130,7 +130,7 @@ buildable from day one. ranikust requires Linux 5.8 or later
 ## Roadmap
 
 - [x] **Phase 0, survey:** feasibility, design and 16 experiments
-- [ ] **Phase 1, MVP:** overlay mode as root, parallel stages, lazy layer
+- [x] **Phase 1, MVP:** overlay mode as root, parallel stages, lazy layer
       export, push to registries, `RUN --mount=type=cache|secret`
 - [ ] **Phase 2, kaniko mode:** parallel walk and hash, safe workdir handling
 - [ ] **Phase 3, rootless and probing:** user-namespace overlay, automatic
