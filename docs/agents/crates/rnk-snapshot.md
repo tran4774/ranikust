@@ -56,6 +56,10 @@ pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, M
 pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
     "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile";
 pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused beyond, no merging yet
+// kaniko mode (Phase 2), module `kaniko`:
+pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf], pub ignore_var_run: bool }
+pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>; // mounts below the root, kaniko's defaults, /proc /sys /dev /ranikust, the state dir, a host workdir's marker; root and state_dir physical and normalized
+pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // octal escapes, optional fields; a malformed line is an error
 
 // kaniko mode, built (Phase 2 task 4, src/kaniko/walk.rs, ADR-0039)
 pub const DEFAULT_WALK_WORKERS: NonZeroUsize;      // 8
@@ -111,8 +115,9 @@ impl WalkDiff {
   `trusted.*` can sit there, and a relabel alone is not a change kaniko
   sees either]; each directory task copies its path, so path bytes grow
   with depth squared on very deep trees.
-- `IgnoreList::contains` is an exact match; once `feat/kaniko-ignore-list`
-  lands, the walk switches to `covers` (an ignored ancestor or glob).
+- The walk skips an entry, with everything below it, when
+  `IgnoreList::covers` matches it (a literal entry, an `--ignore-path`
+  glob, or kaniko's below-only entries); `contains` is an exact match only.
 
 - `Base::Image` takes layers in image order (the config's `diff_ids`,
   bottom first); the lower stack is topmost first. `Base::Stage` shares

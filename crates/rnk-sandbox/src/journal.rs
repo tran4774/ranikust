@@ -11,13 +11,21 @@
 //! - `root <path>`: the host path of the root, first.
 //! - `stub <d|f> <path> <atime> <mtime>`: written and synced *before* the
 //!   stub exists, with the times its parent had before.
+//! - `swap <path> <aside|-> <atime> <mtime>`: a file ranikust puts at a
+//!   fixed path of an [`Isolation::Direct`](crate::Isolation::Direct) root
+//!   other than `/` (one of [`PLACEABLE`]: `resolv.conf`, `hosts`,
+//!   `hostname`, the `/dev` nodes), written and synced *before* anything
+//!   changes. An existing entry is first renamed aside in the same
+//!   directory, to `aside` ([`ASIDE_PREFIX`]); `-` when there was none.
 //! - `placed <path> <mtime>`: the parent's mtime just after; all `placed`
 //!   records are synced before the `RUN` starts.
 //!
-//! Stubs are removed after the `RUN`, newest first, while still empty; the
-//! parent's times go back to the old ones only if its mtime still is the
-//! `placed` one (no `placed` record: the build died before the `RUN`). At
-//! start-up, journals no live process holds are replayed the same way.
+//! Entries are undone after the `RUN`, newest first: a stub is removed while
+//! still empty; a swapped path gets its aside entry back by `rename`, or,
+//! without one, the placed file is removed. The parent's times go back to
+//! the old ones only if its mtime still is the `placed` one (no `placed`
+//! record: the build died before the `RUN`). At start-up, journals no live
+//! process holds are replayed the same way.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -45,10 +53,47 @@ const NEW_EXT: &str = "journal-new";
 /// Scratch files of a run, removed by name, never recursively.
 pub(crate) const SCRATCH_FILES: [&str; 3] = ["resolv.conf", "hosts", "hostname"];
 
-/// One stub as journaled.
+/// The only paths a `swap` record may name: a planted journal cannot make a
+/// replay remove or replace anything else.
+pub(crate) const PLACEABLE: [&str; 9] = [
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/hostname",
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+];
+
+/// How the name of an entry renamed aside starts; the journal's id and the
+/// entry's name follow.
+pub(crate) const ASIDE_PREFIX: &str = ".ranikust-aside-";
+
+/// What a journal entry undoes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Placed {
+    /// An empty mount target that did not exist.
+    Stub(MountKind),
+    /// A file or node put at one of [`PLACEABLE`]; `aside` is what was there
+    /// before, renamed in the same directory.
+    Swap { aside: Option<PathBuf> },
+}
+
+/// What to put at a [`PLACEABLE`] path.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Content<'a> {
+    /// A regular file, mode 0644.
+    File(&'a [u8]),
+    /// A character device, mode 0666.
+    CharDev { major: u32, minor: u32 },
+}
+
+/// One journaled entry: a stub, or a swapped path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StubRecord {
-    pub(crate) kind: MountKind,
+    pub(crate) kind: Placed,
     /// Absolute path inside the root.
     pub(crate) path: PathBuf,
     /// The parent's times before the stub was created.
@@ -62,6 +107,7 @@ pub(crate) struct StubRecord {
 #[derive(Debug)]
 pub(crate) struct Journal {
     file: File,
+    id: String,
     path: PathBuf,
     scratch: PathBuf,
     root: RootPath,
@@ -105,9 +151,12 @@ impl Journal {
             .map_err(|e| io_err("sync", runs_dir, e))?;
         let mut journal = Self {
             file,
+            id: id.to_owned(),
             scratch: runs_dir.join(id),
             path,
-            root,
+            // What the journal places and undoes stays on the root's own
+            // mount: a mount below it is never written through.
+            root: root.stay_on_mount(),
             stubs: Vec::new(),
             unsynced: false,
         };
@@ -205,34 +254,145 @@ impl Journal {
                     .open_at(path, &OpenHow::write().create_new(mode))?,
             ),
         }
-        let mut record = StubRecord {
-            kind,
+        // The record is complete before anything else can fail, so cleanup
+        // finds the stub.
+        self.stubs.push(StubRecord {
+            kind: Placed::Stub(kind),
             path: path.to_owned(),
             parent_atime: before.atime,
             parent_mtime: before.mtime,
             placed_mtime: None,
-        };
-        // The record is complete before anything else can fail, so cleanup
-        // finds the stub.
-        self.stubs.push(record.clone());
+        });
         // The umask must not decide whether a non-root `USER` can traverse a
         // stub directory.
-        self.root.set_meta(
+        self.chmod(path, mode)?;
+        self.record_placed(parent, path)
+    }
+
+    /// Puts `content` at `path`, one of [`PLACEABLE`], for the `RUN`: what is
+    /// there is renamed aside first, and both steps are journaled before
+    /// either happens. `false`, with everything undone, when the kernel
+    /// refuses to create a device node (`EPERM` in a user namespace): the
+    /// `RUN` then runs without it.
+    pub(crate) fn swap_in(&mut self, path: &Path, content: Content<'_>) -> Result<bool> {
+        const OP: &str = "place a file for the RUN";
+        let invalid = || io_err(OP, path, io::Error::from(io::ErrorKind::InvalidInput));
+        if !is_placeable(path) {
+            return Err(invalid());
+        }
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return Err(invalid());
+        };
+        // Not followed: through a symlinked `/etc`, the aside and its restore
+        // would land elsewhere.
+        let before = self.root.statx(parent)?;
+        if before.file_type() != FileType::Directory {
+            return Err(io_err(
+                OP,
+                parent,
+                io::Error::from_raw_os_error(libc::ENOTDIR),
+            ));
+        }
+        let aside = match self.root.statx(path) {
+            Ok(st) if st.file_type() == FileType::Directory => {
+                return Err(io_err(OP, path, io::Error::from_raw_os_error(libc::EISDIR)));
+            }
+            Ok(_) => {
+                let mut aside = OsString::from(format!("{ASIDE_PREFIX}{}-", self.id));
+                aside.push(name);
+                Some(parent.join(aside))
+            }
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => None,
+            Err(e) => return Err(e.into()),
+        };
+        self.append(&format!(
+            "swap\t{}\t{}\t{}\t{}\n",
+            hex(path.as_os_str().as_bytes()),
+            aside
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |a| hex(a.as_os_str().as_bytes())),
+            time(before.atime),
+            time(before.mtime),
+        ))?;
+        self.sync()?;
+        self.stubs.push(StubRecord {
+            kind: Placed::Swap {
+                aside: aside.clone(),
+            },
+            path: path.to_owned(),
+            parent_atime: before.atime,
+            parent_mtime: before.mtime,
+            placed_mtime: None,
+        });
+        if let Some(aside) = &aside
+            && let Err(e) = self.root.rename_noreplace(path, aside)
+        {
+            // Nothing moved: an undo would only see the aside name missing.
+            self.stubs.pop();
+            return Err(e.into());
+        }
+        match content {
+            Content::File(data) => {
+                let fd = self
+                    .root
+                    .open_at(path, &OpenHow::write().no_follow().create_new(0o644))?;
+                File::from(fd)
+                    .write_all(data)
+                    .map_err(|e| io_err("write", path, e))?;
+                self.chmod(path, 0o644)?;
+            }
+            Content::CharDev { major, minor } => {
+                let dir = self.root.open_at(parent, &OpenHow::path().directory())?;
+                match rustix::fs::mknodat(
+                    &dir,
+                    name,
+                    rustix::fs::FileType::CharacterDevice,
+                    rustix::fs::Mode::from_raw_mode(0o666),
+                    rustix::fs::makedev(major, minor),
+                ) {
+                    Ok(()) => self.chmod(path, 0o666)?,
+                    Err(Errno::PERM) => {
+                        self.undo_last()?;
+                        return Ok(false);
+                    }
+                    Err(e) => return Err(io_err("mknod", path, e.into())),
+                }
+            }
+        }
+        self.record_placed(parent, path)?;
+        Ok(true)
+    }
+
+    /// Sets the permission bits whatever the umask was.
+    fn chmod(&self, path: &Path, mode: u32) -> Result<()> {
+        Ok(self.root.set_meta(
             path,
             &Meta {
                 mode: Some(mode),
                 ..Meta::default()
             },
-        )?;
+        )?)
+    }
+
+    /// Undoes and forgets the newest entry: a swap that could not complete.
+    fn undo_last(&mut self) -> Result<()> {
+        if let Some(last) = self.stubs.last() {
+            undo(&self.root, last)?;
+        }
+        self.stubs.pop();
+        Ok(())
+    }
+
+    /// Journals the parent's mtime right after placing the newest entry.
+    fn record_placed(&mut self, parent: &Path, path: &Path) -> Result<()> {
         let after = self.root.statx(parent)?;
         self.append(&format!(
             "placed\t{}\t{}\n",
             hex(path.as_os_str().as_bytes()),
             time(after.mtime)
         ))?;
-        record.placed_mtime = Some(after.mtime);
         if let Some(last) = self.stubs.last_mut() {
-            *last = record;
+            last.placed_mtime = Some(after.mtime);
         }
         self.unsynced = true;
         Ok(())
@@ -285,8 +445,15 @@ pub(crate) struct Replayed {
 /// opened without following a symlink, its root must lie below `confine`
 /// (the state directory, where every root of a build lives), and its scratch
 /// directory is removed through descriptors, never through a symlink. A
-/// journal that fails these checks is left in place with a warning.
-pub(crate) fn replay(runs_dir: &Path, confine: &Path) -> Result<Replayed> {
+/// journal that fails these checks is left in place with a warning. The one
+/// exception is `shared_root`, the kaniko-mode workdir the caller locked and
+/// checked: a journal of an [`Isolation::Direct`](crate::Isolation::Direct)
+/// `RUN` on it is replayed too, never one naming `/`.
+pub(crate) fn replay(
+    runs_dir: &Path,
+    confine: &Path,
+    shared_root: Option<&RootPath>,
+) -> Result<Replayed> {
     let mut done = Replayed::default();
     let entries = match fs::read_dir(runs_dir) {
         Ok(entries) => entries,
@@ -309,7 +476,7 @@ pub(crate) fn replay(runs_dir: &Path, confine: &Path) -> Result<Replayed> {
         if ext != JOURNAL_EXT {
             continue;
         }
-        match replay_one(&path, confine) {
+        match replay_one(&path, confine, shared_root) {
             Ok(Some(stubs)) => {
                 done.journals += 1;
                 done.stubs += stubs;
@@ -337,7 +504,11 @@ fn remove_unlocked(path: &Path) {
 }
 
 /// Replays one journal; `None` when a live run still holds it.
-fn replay_one(path: &Path, confine: &Path) -> Result<Option<usize>> {
+fn replay_one(
+    path: &Path,
+    confine: &Path,
+    shared_root: Option<&RootPath>,
+) -> Result<Option<usize>> {
     let mut file = File::options()
         .read(true)
         .write(true)
@@ -349,9 +520,25 @@ fn replay_one(path: &Path, confine: &Path) -> Result<Option<usize>> {
         Err(Errno::WOULDBLOCK) => return Ok(None),
         Err(e) => return Err(io_err("lock the stub journal", path, e.into())),
     }
+    let replayed = replay_locked(&mut file, path, confine, shared_root);
+    // Released explicitly, not only by closing: the lock belongs to the open
+    // file description, which a child cloned meanwhile by another thread
+    // shares until it executes or exits; a journal left behind would then
+    // look live to the next replay. The unlock cannot fail on a lock held.
+    let _ = rustix::fs::flock(&file, FlockOperation::Unlock);
+    replayed
+}
+
+/// [`replay_one`] with the journal locked.
+fn replay_locked(
+    file: &mut File,
+    path: &Path,
+    confine: &Path,
+    shared_root: Option<&RootPath>,
+) -> Result<Option<usize>> {
     // Its owner removed it between our open and our lock: already clean.
     let st =
-        rustix::fs::fstat(&file).map_err(|e| io_err("stat the stub journal", path, e.into()))?;
+        rustix::fs::fstat(&*file).map_err(|e| io_err("stat the stub journal", path, e.into()))?;
     if st.st_nlink == 0 {
         return Ok(None);
     }
@@ -360,14 +547,31 @@ fn replay_one(path: &Path, confine: &Path) -> Result<Option<usize>> {
         .map_err(|e| io_err("read the stub journal", path, e))?;
     let (root_dir, stubs) = parse(&text);
     let mut removed = 0;
-    if let Some(root_dir) = root_dir
-        // `None`: the root is gone, and its stubs with it.
-        && let Some(root_dir) = confined_root(&root_dir, confine)?
-    {
-        match RootPath::open(&root_dir) {
-            Ok(root) => removed = remove_stubs(&root, &stubs)?,
-            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
-            Err(e) => return Err(e.into()),
+    if let Some(root_dir) = root_dir {
+        if let Some(shared) = shared_root
+            && is_shared_root(&root_dir, shared)
+        {
+            // The checked descriptor, never the journal's path reopened. On
+            // it only what `place_direct` makes: swaps and the `/etc` and
+            // `/dev` stubs.
+            let stubs: Vec<StubRecord> = stubs
+                .into_iter()
+                .filter(|s| match &s.kind {
+                    Placed::Swap { .. } => true,
+                    Placed::Stub(MountKind::Directory) => {
+                        s.path == Path::new("/etc") || s.path == Path::new("/dev")
+                    }
+                    Placed::Stub(MountKind::File) => false,
+                })
+                .collect();
+            removed = remove_stubs(shared, &stubs)?;
+        } else if let Some(root_dir) = confined_root(&root_dir, confine)? {
+            // `None` above: the root is gone, and its stubs with it.
+            match RootPath::open(&root_dir) {
+                Ok(root) => removed = remove_stubs(&root.stay_on_mount(), &stubs)?,
+                Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
     }
     remove_scratch(&path.with_extension(""))?;
@@ -375,46 +579,115 @@ fn replay_one(path: &Path, confine: &Path) -> Result<Option<usize>> {
     Ok(Some(removed))
 }
 
-/// Removes the stubs newest first and restores their parents' times.
+/// Undoes the entries newest first and restores their parents' times.
 fn remove_stubs(root: &RootPath, stubs: &[StubRecord]) -> Result<usize> {
     let mut removed = 0;
     for stub in stubs.iter().rev() {
-        let parent = stub.path.parent().unwrap_or(Path::new("/"));
-        let parent_mtime = root.statx(parent).ok().map(|st| st.mtime);
-        let gone = match stub.kind {
-            MountKind::Directory => ok_unless(
-                root.remove_dir(&stub.path),
-                &[libc::ENOENT, libc::ENOTEMPTY, libc::ENOTDIR, libc::EEXIST],
-            )?,
-            MountKind::File => match root.statx(&stub.path) {
-                Ok(st) if st.file_type() == FileType::Regular && st.size == 0 => {
-                    ok_unless(root.remove_file(&stub.path), &[libc::ENOENT])?
-                }
-                // Gone, or no longer the empty file placed: leave it.
-                _ => false,
-            },
-        };
-        if !gone {
-            continue;
-        }
-        removed += 1;
-        let restore = match stub.placed_mtime {
-            Some(placed) => parent_mtime == Some(placed),
-            // Never placed: the build died before the `RUN` started.
-            None => true,
-        };
-        if restore {
-            root.set_meta(
-                parent,
-                &Meta {
-                    atime: Some(stub.parent_atime),
-                    mtime: Some(stub.parent_mtime),
-                    ..Meta::default()
-                },
-            )?;
+        if undo(root, stub)? {
+            removed += 1;
         }
     }
     Ok(removed)
+}
+
+/// Undoes one entry; `true` when something was removed or put back, after
+/// which the parent's times are restored unless something else changed
+/// them.
+fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
+    let parent = stub.path.parent().unwrap_or(Path::new("/"));
+    // `root` stays on its mount, so no parent below another mount resolves
+    // (`EXDEV`); an entry that is itself a mount point (a mount root, or on
+    // another mount) is left alone.
+    let parent_st = match root.statx(parent) {
+        Ok(st) => Some(st),
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => return Ok(false),
+        Err(_) => None,
+    };
+    if parent_st.is_some_and(|st| st.mnt_id != root.mnt_id()) {
+        return Ok(false);
+    }
+    let on_root_mount = |p: &Path| {
+        root.statx(p)
+            .is_ok_and(|st| st.mnt_id == root.mnt_id() && !st.mount_root)
+    };
+    let mut targets = vec![stub.path.as_path()];
+    if let Placed::Swap { aside: Some(aside) } = &stub.kind {
+        targets.push(aside);
+    }
+    if targets
+        .iter()
+        .any(|p| root.statx(p).is_ok() && !on_root_mount(p))
+    {
+        return Ok(false);
+    }
+    let parent_mtime = parent_st.map(|st| st.mtime);
+    let gone = match &stub.kind {
+        Placed::Stub(MountKind::Directory) => ok_unless(
+            root.remove_dir(&stub.path),
+            &[libc::ENOENT, libc::ENOTEMPTY, libc::ENOTDIR, libc::EEXIST],
+        )?,
+        Placed::Stub(MountKind::File) => match root.statx(&stub.path) {
+            Ok(st) if st.file_type() == FileType::Regular && st.size == 0 => {
+                ok_unless(root.remove_file(&stub.path), &[libc::ENOENT])?
+            }
+            // Gone, or no longer the empty file placed: leave it.
+            _ => false,
+        },
+        // The original goes back over whatever is there now: `rename`
+        // replaces a file, a node or a symlink. No aside: never moved, or
+        // already back.
+        Placed::Swap { aside: Some(aside) } => match root.statx(aside) {
+            Ok(_) => {
+                root.rename(aside, &stub.path)?;
+                true
+            }
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => false,
+            Err(e) => return Err(e.into()),
+        },
+        // Nothing was there before: what is there now is what ranikust
+        // placed, or what the `RUN` made of it, and goes. A directory stays.
+        Placed::Swap { aside: None } => match root.statx(&stub.path) {
+            Ok(st) if st.file_type() != FileType::Directory => {
+                ok_unless(root.remove_file(&stub.path), &[libc::ENOENT])?
+            }
+            _ => false,
+        },
+    };
+    if !gone {
+        return Ok(false);
+    }
+    let restore = match stub.placed_mtime {
+        Some(placed) => parent_mtime == Some(placed),
+        // Never placed: the build died before the `RUN` started.
+        None => true,
+    };
+    if restore {
+        root.set_meta(
+            parent,
+            &Meta {
+                atime: Some(stub.parent_atime),
+                mtime: Some(stub.parent_mtime),
+                ..Meta::default()
+            },
+        )?;
+    }
+    Ok(true)
+}
+
+/// Whether `path` is one of [`PLACEABLE`].
+fn is_placeable(path: &Path) -> bool {
+    PLACEABLE.iter().any(|p| Path::new(p) == path)
+}
+
+/// Whether `aside` is a name [`Journal::swap_in`] gives what was at `path`:
+/// in the same directory, [`ASIDE_PREFIX`] first and the name last.
+fn is_aside_of(aside: &Path, path: &Path) -> bool {
+    let (Some(a), Some(p)) = (aside.file_name(), path.file_name()) else {
+        return false;
+    };
+    aside.parent() == path.parent()
+        && a.as_bytes().starts_with(ASIDE_PREFIX.as_bytes())
+        && a.as_bytes().ends_with(p.as_bytes())
 }
 
 /// `Ok(true)` on success, `Ok(false)` for an errno in `expected`.
@@ -424,6 +697,48 @@ fn ok_unless(r: rnk_rootfs::Result<()>, expected: &[i32]) -> Result<bool> {
         Err(e) if e.raw_os_error().is_some_and(|n| expected.contains(&n)) => Ok(false),
         Err(e) => Err(Error::Rootfs(e)),
     }
+}
+
+/// Whether the journal's root, opened without following a symlink, is the
+/// directory `shared` holds: same device, inode and mount.
+fn is_shared_root(root_dir: &Path, shared: &RootPath) -> bool {
+    let (Ok(root), Ok(want)) = (
+        RootPath::open(root_dir).and_then(|r| r.statx("/")),
+        shared.statx("/"),
+    ) else {
+        return false;
+    };
+    identity(&root) == identity(&want) && root.mnt_id == want.mnt_id
+}
+
+/// `(dev major, dev minor, ino)`: what identifies a directory whatever path
+/// or bind mount reaches it.
+fn identity(st: &rnk_rootfs::Stat) -> (u32, u32, u64) {
+    (st.dev_major, st.dev_minor, st.ino)
+}
+
+/// Refuses a root that is the host's `/`, `/etc` or `/dev` by device and
+/// inode, through whatever path or bind mount (`/proc/1/root` included) it
+/// was opened: placing files there would rename and replace the host's.
+pub(crate) fn refuse_host_system_dir(root: &RootPath, shown: &Path) -> Result<()> {
+    let st = root.statx("/")?;
+    for host in ["/", "/etc", "/dev"] {
+        let Ok(h) = rustix::fs::statx(
+            rustix::fs::CWD,
+            host,
+            rustix::fs::AtFlags::empty(),
+            rustix::fs::StatxFlags::BASIC_STATS,
+        ) else {
+            continue;
+        };
+        if (h.stx_dev_major, h.stx_dev_minor, h.stx_ino) == identity(&st) {
+            return Err(Error::InvalidSpec(format!(
+                "{} is the host's {host}: nothing is placed there",
+                shown.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The journal's root, resolved, if it still exists and lies strictly below
@@ -504,8 +819,35 @@ fn parse(text: &[u8]) -> (Option<PathBuf>, Vec<StubRecord>) {
                     continue;
                 };
                 stubs.push(StubRecord {
-                    kind,
+                    kind: Placed::Stub(kind),
                     path: path_from(path),
+                    parent_atime,
+                    parent_mtime,
+                    placed_mtime: None,
+                });
+            }
+            ["swap", path, aside, atime, mtime] => {
+                let (Some(path), Some(parent_atime), Some(parent_mtime)) =
+                    (unhex(path), parse_time(atime), parse_time(mtime))
+                else {
+                    continue;
+                };
+                let path = path_from(path);
+                let aside = match *aside {
+                    "-" => None,
+                    a => match unhex(a) {
+                        Some(a) => Some(path_from(a)),
+                        None => continue,
+                    },
+                };
+                // Only what `swap_in` writes: a planted record naming any
+                // other path is skipped.
+                if !is_placeable(&path) || aside.as_ref().is_some_and(|a| !is_aside_of(a, &path)) {
+                    continue;
+                }
+                stubs.push(StubRecord {
+                    kind: Placed::Swap { aside },
+                    path,
                     parent_atime,
                     parent_mtime,
                     placed_mtime: None,
@@ -639,7 +981,7 @@ mod tests {
         let victim = victim();
         fs::write(f.runs.join("x.journal"), b"").unwrap();
         std::os::unix::fs::symlink(victim.path(), f.runs.join("x")).unwrap();
-        replay(&f.runs, f.base()).unwrap();
+        replay(&f.runs, f.base(), None).unwrap();
         assert_untouched(&victim);
         // Left for a human: the journal could not be replayed.
         assert!(f.runs.join("x.journal").exists());
@@ -670,7 +1012,10 @@ mod tests {
             hex(b"/empty"),
         );
         fs::write(f.runs.join("z.journal"), text.as_bytes()).unwrap();
-        assert_eq!(replay(&f.runs, f.base()).unwrap(), Replayed::default());
+        assert_eq!(
+            replay(&f.runs, f.base(), None).unwrap(),
+            Replayed::default()
+        );
         assert_untouched(&victim);
         assert!(victim.path().join("empty").exists());
         for j in ["x", "y", "z"] {
@@ -685,7 +1030,7 @@ mod tests {
         let target = victim.path().join("hosts");
         std::os::unix::fs::symlink(&target, f.runs.join("x.journal")).unwrap();
         std::os::unix::fs::symlink(&target, f.runs.join(format!("y.{NEW_EXT}"))).unwrap();
-        replay(&f.runs, f.base()).unwrap();
+        replay(&f.runs, f.base(), None).unwrap();
         assert_untouched(&victim);
     }
 
@@ -820,6 +1165,41 @@ mod tests {
         assert!(f.root_dir.join("data/x").is_file());
     }
 
+    /// A crash of the journal's owner: the journal is never finished and its
+    /// lock goes away. Unlocked explicitly, not only closed: a `flock`
+    /// belongs to the open file description, and a child another test
+    /// clones meanwhile shares it until it executes or exits, so closing
+    /// this descriptor alone may leave the lock held (a dead process's lock
+    /// is gone with every copy).
+    fn crash(journal: Journal) {
+        let Journal { file, .. } = journal;
+        rustix::fs::flock(&file, FlockOperation::Unlock).unwrap();
+        drop(file);
+    }
+
+    /// Why [`crash`] unlocks: a copy of the description, as a cloned child
+    /// holds, keeps the lock after the owner's descriptor is closed, and the
+    /// journal counts as live; `LOCK_UN` releases it for every copy.
+    #[test]
+    fn a_shared_description_keeps_the_lock_until_unlocked() {
+        let f = fixture();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let mut dead = Journal::create(&f.runs, "dead", &f.root_dir, root).unwrap();
+        dead.ensure(Path::new("/etc/hostname"), MountKind::File)
+            .unwrap();
+        let Journal { file, .. } = dead;
+        let copy = file.try_clone().unwrap();
+        drop(file);
+        assert_eq!(
+            replay(&f.runs, f.base(), None).unwrap(),
+            Replayed::default()
+        );
+        assert!(f.root_dir.join("etc/hostname").exists());
+        rustix::fs::flock(&copy, FlockOperation::Unlock).unwrap();
+        assert_eq!(replay(&f.runs, f.base(), None).unwrap().journals, 1);
+        assert!(!f.root_dir.join("etc/hostname").exists());
+    }
+
     #[test]
     fn replay_removes_stubs_of_dead_runs_only() {
         let f = fixture();
@@ -829,16 +1209,14 @@ mod tests {
         dead.ensure(Path::new("/etc/hostname"), MountKind::File)
             .unwrap();
         fs::write(dead.scratch().join("hosts"), b"h").unwrap();
-        // A crash: the journal is never finished and its lock goes away.
-        let Journal { file, .. } = dead;
-        drop(file);
+        crash(dead);
 
         let root = RootPath::open(&f.root_dir).unwrap();
         let mut live = Journal::create(&f.runs, "live", &f.root_dir, root).unwrap();
         live.ensure(Path::new("/srv"), MountKind::Directory)
             .unwrap();
 
-        let done = replay(&f.runs, f.base()).unwrap();
+        let done = replay(&f.runs, f.base(), None).unwrap();
         assert_eq!(
             done,
             Replayed {
@@ -865,7 +1243,10 @@ mod tests {
         let live = f.runs.join(format!("live.{NEW_EXT}"));
         let held = File::create(&live).unwrap();
         rustix::fs::flock(&held, FlockOperation::LockExclusive).unwrap();
-        assert_eq!(replay(&f.runs, f.base()).unwrap(), Replayed::default());
+        assert_eq!(
+            replay(&f.runs, f.base(), None).unwrap(),
+            Replayed::default()
+        );
         assert!(!dead.exists());
         assert!(live.exists());
         // Published names never collide.
@@ -891,7 +1272,7 @@ mod tests {
         assert_eq!(
             stubs,
             [StubRecord {
-                kind: MountKind::File,
+                kind: Placed::Stub(MountKind::File),
                 path: "/etc/hosts".into(),
                 parent_atime: FileTime { secs: 1, nanos: 2 },
                 parent_mtime: FileTime { secs: 3, nanos: 4 },
@@ -902,5 +1283,249 @@ mod tests {
         assert_eq!(unhex("2f"), Some(b"/".to_vec()));
         assert_eq!(parse_time("-1.5"), Some(FileTime { secs: -1, nanos: 5 }));
         assert_eq!(parse_time("1.1000000000"), None);
+    }
+
+    /// Names of the entries of `dir` that ranikust renamed aside.
+    fn asides(dir: &Path) -> Vec<OsString> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n.as_bytes().starts_with(ASIDE_PREFIX.as_bytes()))
+            .collect()
+    }
+
+    #[test]
+    fn swapped_files_are_put_back_with_their_inode_and_parent_times() {
+        use std::os::unix::fs::MetadataExt as _;
+        let f = fixture();
+        fs::write(f.root_dir.join("etc/hosts"), b"image").unwrap();
+        std::os::unix::fs::symlink("../run/resolv.conf", f.root_dir.join("etc/resolv.conf"))
+            .unwrap();
+        let ino = fs::metadata(f.root_dir.join("etc/hosts")).unwrap().ino();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let old = set_old_times(&root, "/etc");
+        let mut j = Journal::create(&f.runs, "7", &f.root_dir, root).unwrap();
+        for (path, data) in [
+            ("/etc/hosts", b"ours-h".as_slice()),
+            ("/etc/resolv.conf", b"ours-r"),
+            ("/etc/hostname", b"ours-n"),
+        ] {
+            assert!(j.swap_in(Path::new(path), Content::File(data)).unwrap());
+        }
+        j.commit().unwrap();
+        // What the `RUN` sees: ranikust's files, regular, 0644.
+        assert_eq!(fs::read(f.root_dir.join("etc/hosts")).unwrap(), b"ours-h");
+        let resolv = fs::symlink_metadata(f.root_dir.join("etc/resolv.conf")).unwrap();
+        assert!(resolv.is_file());
+        assert_eq!(resolv.mode() & 0o777, 0o644);
+        assert_eq!(asides(&f.root_dir.join("etc")).len(), 2);
+        // The `RUN` rewrites a placed file; it is ranikust's, and goes.
+        fs::write(f.root_dir.join("etc/hostname"), b"changed").unwrap();
+
+        assert_eq!(j.finish().unwrap(), 3);
+        let hosts = fs::symlink_metadata(f.root_dir.join("etc/hosts")).unwrap();
+        assert_eq!(hosts.ino(), ino);
+        assert_eq!(fs::read(f.root_dir.join("etc/hosts")).unwrap(), b"image");
+        assert_eq!(
+            fs::read_link(f.root_dir.join("etc/resolv.conf")).unwrap(),
+            Path::new("../run/resolv.conf")
+        );
+        assert!(!f.root_dir.join("etc/hostname").exists());
+        assert!(asides(&f.root_dir.join("etc")).is_empty());
+        let root = RootPath::open(&f.root_dir).unwrap();
+        assert_eq!(root.statx("/etc").unwrap().mtime, old);
+        assert_eq!(fs::read_dir(&f.runs).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_parent_the_run_changed_keeps_its_new_times() {
+        let f = fixture();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let old = set_old_times(&root, "/etc");
+        let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        j.swap_in(Path::new("/etc/hosts"), Content::File(b"h"))
+            .unwrap();
+        j.commit().unwrap();
+        fs::write(f.root_dir.join("etc/new"), b"x").unwrap();
+        j.finish().unwrap();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        assert_ne!(root.statx("/etc").unwrap().mtime, old);
+        assert!(f.root_dir.join("etc/new").exists());
+    }
+
+    #[test]
+    fn only_placeable_paths_under_a_real_directory_are_swapped() {
+        let f = fixture();
+        fs::write(f.root_dir.join("passwd"), b"p").unwrap();
+        fs::create_dir(f.root_dir.join("real")).unwrap();
+        std::os::unix::fs::symlink("real", f.root_dir.join("dev")).unwrap();
+        fs::create_dir(f.root_dir.join("etc/hostname")).unwrap();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        for path in ["/passwd", "/etc/passwd", "/etc/../passwd"] {
+            assert!(
+                j.swap_in(Path::new(path), Content::File(b"x")).is_err(),
+                "{path}"
+            );
+        }
+        // A symlinked `/dev` and a directory in the way are refused.
+        let null = Content::CharDev { major: 1, minor: 3 };
+        assert!(j.swap_in(Path::new("/dev/null"), null).is_err());
+        assert!(
+            j.swap_in(Path::new("/etc/hostname"), Content::File(b"x"))
+                .is_err()
+        );
+        assert_eq!(j.stub_count(), 0);
+        j.finish().unwrap();
+        assert_eq!(fs::read(f.root_dir.join("passwd")).unwrap(), b"p");
+        assert_eq!(fs::read_dir(f.root_dir.join("real")).unwrap().count(), 0);
+    }
+
+    /// As a normal user `mknod` is refused: the original entry is back at
+    /// once and the `RUN` goes without the node. As root (the VM) the node
+    /// is made and removed after.
+    #[test]
+    fn a_refused_device_node_is_undone_at_once() {
+        use std::os::unix::fs::FileTypeExt as _;
+        let f = fixture();
+        fs::create_dir(f.root_dir.join("dev")).unwrap();
+        fs::write(f.root_dir.join("dev/null"), b"image").unwrap();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        let null = Content::CharDev { major: 1, minor: 3 };
+        let made = j.swap_in(Path::new("/dev/null"), null).unwrap();
+        let now = fs::symlink_metadata(f.root_dir.join("dev/null")).unwrap();
+        if made {
+            assert!(now.file_type().is_char_device());
+            assert_eq!(j.stub_count(), 1);
+        } else {
+            assert!(now.is_file());
+            assert_eq!(j.stub_count(), 0);
+        }
+        j.finish().unwrap();
+        assert_eq!(fs::read(f.root_dir.join("dev/null")).unwrap(), b"image");
+        assert!(asides(&f.root_dir.join("dev")).is_empty());
+    }
+
+    #[test]
+    fn replay_puts_swapped_files_back_on_the_shared_root_only() {
+        let f = fixture();
+        // The kaniko-mode workdir: outside the state directory.
+        let workdir = tempfile::tempdir().unwrap();
+        let wd = workdir.path().canonicalize().unwrap();
+        fs::create_dir(wd.join("etc")).unwrap();
+        fs::write(wd.join("etc/hosts"), b"image").unwrap();
+        let root = RootPath::open(&wd).unwrap();
+        let old = set_old_times(&root, "/etc");
+        let mut dead = Journal::create(&f.runs, "dead", &wd, root).unwrap();
+        dead.swap_in(Path::new("/etc/hosts"), Content::File(b"ours"))
+            .unwrap();
+        dead.swap_in(Path::new("/etc/resolv.conf"), Content::File(b"r"))
+            .unwrap();
+        dead.commit().unwrap();
+        crash(dead);
+
+        // Without the shared root, it stays for a start that has it.
+        assert_eq!(
+            replay(&f.runs, f.base(), None).unwrap(),
+            Replayed::default()
+        );
+        assert_eq!(fs::read(wd.join("etc/hosts")).unwrap(), b"ours");
+        // Another directory is not the journal's root, whatever its name.
+        let other = tempfile::tempdir().unwrap();
+        let other = RootPath::open(other.path()).unwrap();
+        replay(&f.runs, f.base(), Some(&other)).unwrap();
+        assert!(f.runs.join("dead.journal").exists());
+        // `/` is refused before any replay, by identity.
+        let host = RootPath::open("/").unwrap();
+        assert!(refuse_host_system_dir(&host, Path::new("/")).is_err());
+        let etc = RootPath::open("/etc").unwrap();
+        assert!(refuse_host_system_dir(&etc, Path::new("/etc")).is_err());
+
+        let shared = RootPath::open(&wd).unwrap().stay_on_mount();
+        assert!(refuse_host_system_dir(&shared, &wd).is_ok());
+        let done = replay(&f.runs, f.base(), Some(&shared)).unwrap();
+        assert_eq!(
+            done,
+            Replayed {
+                journals: 1,
+                stubs: 2
+            }
+        );
+        assert_eq!(fs::read(wd.join("etc/hosts")).unwrap(), b"image");
+        assert!(!wd.join("etc/resolv.conf").exists());
+        assert!(asides(&wd.join("etc")).is_empty());
+        let root = RootPath::open(&wd).unwrap();
+        assert_eq!(root.statx("/etc").unwrap().mtime, old);
+        assert!(!f.runs.join("dead.journal").exists());
+    }
+
+    #[test]
+    fn planted_swap_records_cannot_name_other_paths() {
+        let f = fixture();
+        fs::write(f.root_dir.join("etc/passwd"), b"p").unwrap();
+        fs::write(f.root_dir.join("etc/shadow"), b"s").unwrap();
+        let text = format!(
+            "root\t{}\nswap\t{}\t-\t1.0\t2.0\nswap\t{}\t{}\t1.0\t2.0\nswap\t{}\t{}\t1.0\t2.0\n",
+            hex(f.root_dir.as_os_str().as_bytes()),
+            hex(b"/etc/passwd"),
+            hex(b"/etc/hosts"),
+            hex(b"/etc/shadow"),
+            hex(b"/etc/hostname"),
+            hex(b"/dev/.ranikust-aside-x-hostname"),
+        );
+        let (_, stubs) = parse(text.as_bytes());
+        assert!(stubs.is_empty(), "{stubs:?}");
+        fs::write(f.runs.join("x.journal"), text.as_bytes()).unwrap();
+        replay(&f.runs, f.base(), None).unwrap();
+        assert_eq!(fs::read(f.root_dir.join("etc/passwd")).unwrap(), b"p");
+        assert_eq!(fs::read(f.root_dir.join("etc/shadow")).unwrap(), b"s");
+        assert!(!f.root_dir.join("etc/hosts").exists());
+    }
+
+    /// On a shared root a replay undoes only what `place_direct` makes: a
+    /// planted stub record elsewhere is skipped.
+    #[test]
+    fn replay_on_the_shared_root_skips_other_stub_records() {
+        let f = fixture();
+        let workdir = tempfile::tempdir().unwrap();
+        let wd = workdir.path().canonicalize().unwrap();
+        fs::create_dir(wd.join("keep")).unwrap();
+        fs::write(wd.join("empty"), b"").unwrap();
+        fs::create_dir(wd.join("etc")).unwrap();
+        let text = format!(
+            "root\t{}\nstub\td\t{}\t1.0\t2.0\nstub\tf\t{}\t1.0\t2.0\nstub\td\t{}\t1.0\t2.0\n",
+            hex(wd.as_os_str().as_bytes()),
+            hex(b"/keep"),
+            hex(b"/empty"),
+            hex(b"/etc"),
+        );
+        fs::write(f.runs.join("x.journal"), text.as_bytes()).unwrap();
+        let shared = RootPath::open(&wd).unwrap().stay_on_mount();
+        let done = replay(&f.runs, f.base(), Some(&shared)).unwrap();
+        assert_eq!(done.journals, 1);
+        assert!(wd.join("keep").is_dir());
+        assert!(wd.join("empty").is_file());
+        assert!(!wd.join("etc").exists(), "the empty /etc stub goes");
+    }
+
+    /// A swap whose rename aside fails leaves no entry behind.
+    #[test]
+    fn a_failed_rename_aside_is_forgotten() {
+        let f = fixture();
+        fs::write(f.root_dir.join("etc/hosts"), b"image").unwrap();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        // The aside name is taken: `RENAME_NOREPLACE` refuses.
+        let aside = format!("etc/{ASIDE_PREFIX}1-hosts");
+        fs::write(f.root_dir.join(&aside), b"taken").unwrap();
+        assert!(
+            j.swap_in(Path::new("/etc/hosts"), Content::File(b"x"))
+                .is_err()
+        );
+        assert_eq!(j.stub_count(), 0);
+        j.finish().unwrap();
+        assert_eq!(fs::read(f.root_dir.join("etc/hosts")).unwrap(), b"image");
+        assert_eq!(fs::read(f.root_dir.join(&aside)).unwrap(), b"taken");
     }
 }

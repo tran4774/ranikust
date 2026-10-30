@@ -123,7 +123,8 @@ symlinks cannot escape. Built on it: layer extraction from an already
 decompressed tar stream, writing whiteouts in the form the caller asks for;
 copy, ownership, xattrs; `USER` and `--chown` name lookup in the root's
 `/etc/passwd` and `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the
-ignore list; safe deletion. `rnk-rootfs` provides the deletion mechanism
+ignore list's matching (kaniko's, which `rnk-snapshot` fills from mountinfo);
+extraction into a live root that skips it; safe deletion. `rnk-rootfs` provides the deletion mechanism
 (mount points compared by `mnt_id`); `rnk-snapshot` decides what to delete in
 a build root and when, `rnk-store` in the store.
 **Must not** reach a root path by joining strings onto a host path, follow

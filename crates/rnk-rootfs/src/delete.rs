@@ -5,7 +5,6 @@
 //! This is the mechanism only; `rnk-snapshot` and `rnk-store` decide what to
 //! delete and when.
 
-use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
@@ -15,72 +14,9 @@ use rustix::fs::{AtFlags, Mode, OFlags};
 use rustix::io::Errno;
 
 use crate::error::{Error, Result, io_err};
+use crate::ignore::IgnoreList;
 use crate::meta::{self, FileType, Stat};
-use crate::path;
 use crate::root::{Mounts, RootPath, open_name};
-
-/// Paths inside a root that [`delete_contents`] keeps, with everything below
-/// them. Matching is exact, on lexically cleaned paths: `/a/./b/` keeps
-/// `a/b`, not `a/bc`. Their ancestors survive because they are not empty.
-///
-/// Paths are physical: they are compared with the path the walk reaches,
-/// and the walk never follows a symlink. With `/var/run -> /run`, keeping
-/// `/var/run` keeps the symlink, not `/run`; list `/run` (mountinfo gives
-/// physical paths).
-#[derive(Clone, Debug, Default)]
-pub struct IgnoreList {
-    paths: HashSet<PathBuf>,
-}
-
-impl IgnoreList {
-    /// An empty list.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Adds `p`, a path inside the root, absolute or relative.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidPath`] when `p` names the root itself or climbs above
-    /// it with `..`.
-    pub fn insert(&mut self, p: impl AsRef<Path>) -> Result<()> {
-        let p = p.as_ref();
-        match path::clean(p) {
-            Some(c) if !c.as_os_str().is_empty() => {
-                self.paths.insert(c);
-                Ok(())
-            }
-            Some(_) => Err(Error::InvalidPath {
-                path: p.to_owned(),
-                reason: "an ignore-list entry cannot be the root itself",
-            }),
-            None => Err(Error::InvalidPath {
-                path: p.to_owned(),
-                reason: "an ignore-list entry cannot leave the root",
-            }),
-        }
-    }
-
-    /// Whether `p` (cleaned the same way) is on the list.
-    #[must_use]
-    pub fn contains(&self, p: impl AsRef<Path>) -> bool {
-        path::clean(p.as_ref()).is_some_and(|c| self.paths.contains(&c))
-    }
-
-    /// Number of entries.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.paths.len()
-    }
-
-    /// Whether the list is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.paths.is_empty()
-    }
-}
 
 /// Deletes everything inside `root`, keeping the root directory itself, the
 /// entries on `keep` (and their ancestors), every entry on another mount and
@@ -109,7 +45,7 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
     let _entered = span.enter();
     let mut counts = Counts::default();
     let mut decide = |p: &Path, _: FileType| {
-        if keep.paths.contains(p) {
+        if keep.covers(p) {
             Keep::Whole
         } else {
             Keep::Remove

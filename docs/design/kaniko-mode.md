@@ -18,7 +18,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 
 | Variant | When | Stage root | `RUN` | Stages |
 |---|---|---|---|---|
-| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | the workdir: `/` in a container, `--workdir` on a host | directly on the root, real `/proc` and `/dev` (`rnk-sandbox`'s `Isolation::Direct`) | one at a time, `--jobs` ignored |
+| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | the workdir: `/` in a container, `--workdir` on a host | directly on the root (`rnk-sandbox`'s `Isolation::Direct`): on `/`, the container's real `/proc`, `/dev` and network files; on a host `--workdir`, a `chroot` with ranikust's `hosts`, `resolv.conf`, `hostname` and `/dev` nodes placed and journaled, no `/proc` (`ADR-0043`) | one at a time, `--jobs` ignored |
 | **Per-stage, sandboxed** | root, can mount, overlay unusable | one directory per stage | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
 | **Per-stage, bare chroot** | as Sequential, plus `--parallel-stages` | one directory per stage | bare `chroot`, no `/proc` | DAG, `--jobs` |
 
@@ -110,9 +110,46 @@ root itself), plus `--ignore-path`, plus the state directory when it lies
 inside the root, plus, as kaniko (`ADR-0038`), all of `/ranikust` (an image
 may keep the binary there, as kaniko keeps `/kaniko/executor`),
 `/etc/mtab`, `/tmp/apt-key-gpghome` and, while `--ignore-var-run` is true
-(the default), `/var/run`. Matching is by exact physical path; the walk
-never descends into an ignored path. `/proc`, `/sys` and `/dev` are always
-ignored.
+(the default), `/var/run`. `/proc`, `/sys` and `/dev` are always
+ignored. Built in `rnk_snapshot::kaniko::ignore_list` on
+`rnk_rootfs::IgnoreList`.
+
+Matching is kaniko's (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1261-1281`): a
+path is ignored when its leading components match an entry, so the walk
+never descends into an ignored path; `--ignore-path` entries are globs per
+component, as Go's `filepath.Match` (`/var/cache/*` ignores what is in
+`/var/cache`, not the directory); `/tmp/apt-key-gpghome` ignores only what
+is below it (kaniko's `PrefixMatchOnly`). Paths are physical: with
+`/var/run -> /run`, `/var/run` ignores the symlink, not `/run`, which is
+ignored only when it is a mount point, as in kaniko. The parents of an
+ignored path get no special treatment: kaniko writes a parent directory
+only when it changed itself or holds an added file
+(`pkg/snapshot/snapshot.go:340-445`), and the walk does the same.
+
+Extraction of base layers into the live root (`rnk_rootfs::extract_live`)
+checks each entry at its name and at its physical path, so a symlink in the
+image cannot lead a layer into the state directory: kaniko resolves only
+the physical path (`securejoin`, `fs_util.go:410-433`), so an entry named
+below `/var/run` is skipped here while kaniko writes it through the
+symlink. Ignored entries and entries on another mount are skipped; a
+whiteout of an ignored path, or of a directory holding one, is skipped as
+kaniko skips it (`:248-266`); an entry replacing a directory holding an
+ignored path removes the rest and is skipped (`FF_KANIKO_PRESERVE_MOUNTED_PATHS`,
+`:343-370`); an opaque whiteout keeps ignored paths and mounts. The
+physical path is read from `/proc/self/fd` of the directory fd that the
+entry is then written through: missing directories are created one name
+at a time relative to it, without following a symlink or leaving the
+mount, so a concurrent swap of a name for a symlink into an ignored path
+cannot redirect a write; directory metadata set at the end re-checks the
+parent's physical path. Device nodes and FIFOs are not created, as
+kaniko creates none
+([ADR-0041](../adr/0041-live-root-extraction-skips-device-nodes.md)); the
+image keeps them through its unchanged base layers.
+
+The root and state directory handed to the list must be the kernel's
+names for the directories in use (`readlink` of their fds), absolute and
+normalized; a state directory that is the root or an ancestor of it is
+refused. A host workdir's `.ranikust-root` marker is on the list.
 On a host the mount part is usually empty. Inside a container it covers
 `/proc`, `/dev`, `/sys` and their submounts, `/etc/hosts`, `/etc/hostname`,
 `/etc/resolv.conf` and volumes.
@@ -151,7 +188,8 @@ Before touching a workdir outside a container:
 `ranikust` runs these checks during process set-up and holds the lock for
 the whole build; `rnk-rootfs` provides the primitives (`ADR-0038`). It also
 raises `RLIMIT_NOFILE`'s soft limit to the hard limit for the walk; `RUN`
-processes get the original limit back. Every later step reaches the
+processes get the original limit back (`NofileLimit::current()` read before
+the raise, `Sandbox::set_nofile_limit`, `ADR-0043`). Every later step reaches the
 workdir through the descriptor that was checked, never by its path.
 
 ## Exporter requirements specific to the walk
@@ -207,7 +245,10 @@ kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
 - **Placed files**: `hosts`, `resolv.conf`, stub mount points and `/dev`
   nodes change the mtime of their parent, so `/etc` would enter every layer.
   Record the parent's mtime before placing (m0) and after (m1); after `RUN`,
-  if it is still m1, restore m0, otherwise keep what `RUN` set.
+  if it is still m1, restore m0, otherwise keep what `RUN` set. Built for
+  the sequential `Direct` `RUN` on a host workdir (`rnk-sandbox`'s `swap`
+  journal records, `ADR-0043`): the image's entry is renamed aside in the
+  same directory and back after, never rewritten.
 
 ## The `--parallel-stages` path (bare `chroot`)
 

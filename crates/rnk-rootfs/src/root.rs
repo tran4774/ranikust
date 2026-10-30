@@ -166,6 +166,9 @@ impl OpenHow {
 pub struct RootPath {
     fd: OwnedFd,
     mnt_id: u64,
+    /// Every resolution stays on the root's own mount
+    /// ([`RootPath::stay_on_mount`]).
+    stay: bool,
 }
 
 impl RootPath {
@@ -205,7 +208,19 @@ impl RootPath {
         Ok(Self {
             fd,
             mnt_id: st.mnt_id,
+            stay: false,
         })
+    }
+
+    /// The same root, with every later resolution of a path in it kept on
+    /// the root's own mount (`RESOLVE_NO_XDEV`): a path that would enter
+    /// another mount below the root fails with `EXDEV` instead. For callers
+    /// that undo their own changes in a root where something else may have
+    /// mounted (`rnk-sandbox`'s journal on a shared kaniko-mode root).
+    #[must_use]
+    pub fn stay_on_mount(mut self) -> Self {
+        self.stay = true;
+        self
     }
 
     /// The mount id of the root directory.
@@ -243,8 +258,8 @@ impl RootPath {
     ) -> Result<OwnedFd> {
         let rel = path::relative(p);
         let resolve = match mounts {
-            Mounts::Cross => IN_ROOT,
-            Mounts::Stay => IN_ROOT.union(ResolveFlags::NO_XDEV),
+            Mounts::Cross if !self.stay => IN_ROOT,
+            Mounts::Cross | Mounts::Stay => IN_ROOT.union(ResolveFlags::NO_XDEV),
         };
         let flags = flags | OFlags::CLOEXEC;
         openat2_retry(self.fd(), rel.as_os_str(), flags, mode, resolve).map_err(|e| match e {
@@ -322,7 +337,9 @@ impl RootPath {
     pub fn sub_root(&self, p: impl AsRef<Path>) -> Result<RootPath> {
         let p = p.as_ref();
         let fd = self.resolve_dir(p)?;
-        Self::from_dir_fd(fd, p)
+        let mut sub = Self::from_dir_fd(fd, p)?;
+        sub.stay = self.stay;
+        Ok(sub)
     }
 
     /// The parent directory of `p` (an `O_PATH` fd) and the last name.
