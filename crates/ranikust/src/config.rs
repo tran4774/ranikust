@@ -129,6 +129,10 @@ pub(crate) struct BuildArg {
 /// The only platform accepted for now (ADR-0009).
 pub(crate) const PLATFORM: &str = "linux/amd64";
 
+/// Workers of the kaniko-mode walk without `--snapshot-workers`: 16 and 32
+/// were slower than 8 on every hash (ADR-0039).
+pub(crate) const SNAPSHOT_WORKERS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
 /// The validated settings of `build`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BuildConfig {
@@ -161,6 +165,19 @@ pub(crate) struct BuildConfig {
     pub(crate) registry_certificates: Vec<(String, PathBuf)>,
     /// What the kaniko-mode walk compares.
     pub(crate) snapshot_mode: SnapshotMode,
+    /// `--ignore-path`s, absolute and cleaned as kaniko's `filepath.Clean`.
+    pub(crate) ignore_paths: Vec<PathBuf>,
+    /// `--ignore-var-run`, kaniko's default `true`.
+    pub(crate) ignore_var_run: bool,
+    /// `--single-snapshot`.
+    pub(crate) single_snapshot: bool,
+    /// `--materialize`; no effect without a layer cache (Phase 4).
+    pub(crate) materialize: bool,
+    /// Workers of the kaniko-mode walk (ADR-0039).
+    pub(crate) snapshot_workers: NonZeroUsize,
+    /// `--force`: kaniko mode may build on `/` outside a container
+    /// (ADR-0040).
+    pub(crate) force: bool,
     /// The requested mode.
     pub(crate) mode: Mode,
     /// The work directory, absolute, if given.
@@ -403,6 +420,15 @@ impl BuildConfig {
         if args.targets.iter().any(String::is_empty) {
             return Err(Invalid("--target names an empty stage".to_owned()));
         }
+        // kaniko keeps a relative `--ignore-path`, which then never matches
+        // the absolute paths of its walk; ranikust says so instead.
+        if let Some(path) = args.ignore_paths.iter().find(|p| !p.is_absolute()) {
+            return Err(Invalid(format!(
+                "--ignore-path={}: give an absolute path in the image; kaniko would never \
+                 match a relative one",
+                path.display()
+            )));
+        }
         Ok(Self {
             context: absolute(&context_with_sub_path(args)?),
             dockerfile: args.dockerfile.clone(),
@@ -426,6 +452,12 @@ impl BuildConfig {
                 .map(|(registry, path)| (registry.clone(), absolute(path)))
                 .collect(),
             snapshot_mode: args.snapshot_mode.unwrap_or_default(),
+            ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
+            ignore_var_run: args.ignore_var_run.unwrap_or(true),
+            single_snapshot: args.single_snapshot,
+            materialize: args.materialize,
+            snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
+            force: args.force,
             mode: args.mode,
             workdir: args.workdir.as_deref().map(absolute),
             state_dir: args.state_dir.as_deref().map(absolute),
@@ -464,16 +496,19 @@ impl BuildConfig {
         })
     }
 
-    /// The state directory for `mode` (ADR-0022): `--state-dir`, or
-    /// `<workdir>/.ranikust` in overlay mode and `/ranikust/state` in kaniko
-    /// mode. `None` in overlay mode without a workdir, and for
-    /// [`Mode::Auto`] without `--state-dir`: the default is known only once
-    /// the probe has picked a mode.
+    /// The state directory for `mode` (ADR-0022, ADR-0038): `--state-dir`,
+    /// or `<workdir>/.ranikust` in overlay mode; in kaniko mode
+    /// `/ranikust/state` when the root is `/` (no `--workdir`), and
+    /// `<cwd>/.ranikust`, in the directory ranikust was started in, when the
+    /// root is a `--workdir`. `None` in overlay mode without a workdir, and
+    /// for [`Mode::Auto`] without `--state-dir`: the default is known only
+    /// once the probe has picked a mode.
     pub(crate) fn state_dir_for(&self, mode: Mode) -> Option<PathBuf> {
         if let Some(dir) = &self.state_dir {
             return Some(dir.clone());
         }
         match mode {
+            Mode::Kaniko if self.workdir.is_some() => Some(absolute(Path::new(".ranikust"))),
             Mode::Kaniko => Some(PathBuf::from("/ranikust/state")),
             Mode::Overlay => self.workdir.as_ref().map(|w| w.join(".ranikust")),
             Mode::Auto => None,
@@ -495,10 +530,58 @@ impl BuildConfig {
                 "tar": self.tar_path.is_some(),
             },
             "reproducible": self.reproducible,
+            "single_snapshot": self.single_snapshot,
             "snapshot_mode": name(self.snapshot_mode),
+            "snapshot_workers": self.snapshot_workers.get(),
             "targets": self.targets.len(),
         })
     }
+}
+
+/// What overlay mode makes of the kaniko-mode flags given in `args`
+/// (ADR-0040): the warnings for those that change nothing there
+/// (`--snapshot-mode`, `--snapshot-workers`, `--materialize`,
+/// `--ignore-var-run=true`).
+///
+/// # Errors
+///
+/// [`Invalid`] for those that would change the image: `--ignore-path`,
+/// `--single-snapshot` and `--ignore-var-run=false` take effect in kaniko
+/// mode only for now [open: Q-260].
+pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
+    let mut changes = Vec::new();
+    if !args.ignore_paths.is_empty() {
+        changes.push("--ignore-path");
+    }
+    if args.single_snapshot {
+        changes.push("--single-snapshot");
+    }
+    if args.ignore_var_run == Some(false) {
+        changes.push("--ignore-var-run=false");
+    }
+    if !changes.is_empty() {
+        return Err(Invalid(format!(
+            "{} take effect in kaniko mode only (Q-260); overlay mode would build a \
+             different image: drop them, or use --mode=kaniko",
+            changes.join(", ")
+        )));
+    }
+    let mut warnings = Vec::new();
+    if args.snapshot_mode.is_some() {
+        warnings.push("--snapshot-mode is ignored in overlay mode (ADR-0023)".to_owned());
+    }
+    for (given, flag) in [
+        (args.snapshot_workers.is_some(), "--snapshot-workers"),
+        (args.materialize, "--materialize"),
+        (args.ignore_var_run == Some(true), "--ignore-var-run"),
+    ] {
+        if given {
+            warnings.push(format!(
+                "{flag} is ignored in overlay mode, where it changes nothing"
+            ));
+        }
+    }
+    Ok(warnings)
 }
 
 /// A value enum's command-line name.
@@ -582,6 +665,24 @@ fn build_arg(arg: &str) -> Result<BuildArg, Invalid> {
         name: name.to_owned(),
         value,
     })
+}
+
+/// `path` cleaned lexically, as Go's `filepath.Clean`: no `.`, no repeated
+/// `/`, `..` resolved against the parent (never above `/`).
+fn clean(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::RootDir | Component::Prefix(_) => out.push(c),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(name) => out.push(name),
+        }
+    }
+    out
 }
 
 /// `path` made absolute against the current directory, without touching the

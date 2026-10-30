@@ -344,6 +344,72 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_enum, help_heading = "Snapshots")]
     pub(crate) snapshot_mode: Option<SnapshotMode>,
 
+    /// A path kept out of every kaniko-mode snapshot, as in kaniko; absolute.
+    /// Repeat for several. Refused in overlay mode (Q-260).
+    #[arg(long = "ignore-path", value_name = "PATH", help_heading = "Snapshots")]
+    pub(crate) ignore_paths: Vec<PathBuf>,
+
+    /// Keep `/var/run` out of kaniko-mode snapshots, as in kaniko
+    /// [default: true]; `false` is refused in overlay mode (Q-260).
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = parse_bool,
+        help_heading = "Snapshots"
+    )]
+    pub(crate) ignore_var_run: Option<bool>,
+
+    /// Take one snapshot at the end of the build, as in kaniko; refused in
+    /// overlay mode (Q-260).
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Snapshots"
+    )]
+    pub(crate) single_snapshot: bool,
+
+    /// Make the final filesystem match the target even on full cache hits,
+    /// as in kaniko; without a layer cache (Phase 4) it changes nothing.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "Snapshots"
+    )]
+    pub(crate) materialize: bool,
+
+    /// Workers of the kaniko-mode walk (ADR-0039); ignored in overlay mode
+    /// [default: 8].
+    #[arg(long, value_name = "N", help_heading = "Snapshots")]
+    pub(crate) snapshot_workers: Option<NonZeroUsize>,
+
+    /// Build on the root `/` even outside a container, as kaniko's
+    /// `--force`: kaniko mode then empties this machine's `/` (ADR-0040).
+    /// Changes nothing with `--workdir`, whose checks apply instead.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = parse_bool,
+        help_heading = "ranikust"
+    )]
+    pub(crate) force: bool,
+
     /// Snapshot mode: probe and choose, or force one.
     #[arg(long, value_enum, default_value_t = Mode::Auto, help_heading = "ranikust")]
     pub(crate) mode: Mode,
@@ -400,11 +466,8 @@ enum Refusal {
     NotYet(&'static str),
     /// The feature is out of scope (ADR-0008).
     OutOfScope(&'static str),
-    /// kaniko itself deprecated the flag.
-    Deprecated(&'static str),
 }
 
-const PHASE_2: &str = "it belongs to kaniko mode, which comes in Phase 2";
 const PHASE_4: &str = "the layer cache comes in Phase 4 (Q-021)";
 const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential helpers (Q-047)";
 
@@ -419,17 +482,6 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("cache-copy-layers", Refusal::NotYet(PHASE_4)),
     ("cache-run-layers", Refusal::NotYet(PHASE_4)),
     ("compressed-caching", Refusal::NotYet(PHASE_4)),
-    ("ignore-path", Refusal::NotYet(PHASE_2)),
-    ("single-snapshot", Refusal::NotYet(PHASE_2)),
-    ("materialize", Refusal::NotYet(PHASE_2)),
-    (
-        "ignore-var-run",
-        Refusal::NotYet("it belongs to kaniko mode, which comes in Phase 2 (Q-035)"),
-    ),
-    (
-        "whitelist-var-run",
-        Refusal::Deprecated("use --ignore-var-run, which comes with kaniko mode in Phase 2"),
-    ),
     (
         "git",
         Refusal::NotYet("git contexts come in Phase 5 (ADR-0035)"),
@@ -469,11 +521,6 @@ const REFUSED_COMMANDS: &[(&str, &str)] = &[(
 /// why)`. A flag taking a value consumes the next argument when it has no
 /// `=`; a boolean never does, as in pflag.
 const IGNORED: &[(&str, bool, &str)] = &[
-    (
-        "force",
-        false,
-        "ranikust runs on hosts by design and checks --workdir instead",
-    ),
     (
         "cache-dir",
         true,
@@ -518,6 +565,8 @@ const RENAMED: &[(&str, &str, bool)] = &[
     ("tarPath", "tar-path", true),
     ("snapshotMode", "snapshot-mode", true),
     ("customPlatform", "platform", true),
+    // `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:67-68`.
+    ("whitelist-var-run", "ignore-var-run", true),
     // Q-020: kaniko's name for --platform.
     ("custom-platform", "platform", false),
 ];
@@ -641,7 +690,6 @@ fn prepass(all: &[OsString]) -> Prepass {
             let reason = match refusal {
                 Refusal::Renamed(why) => format!("renamed in ranikust: {why}"),
                 Refusal::NotYet(why) | Refusal::OutOfScope(why) => (*why).to_owned(),
-                Refusal::Deprecated(why) => format!("deprecated in kaniko: {why}"),
             };
             out.refused
                 .push(format!("kaniko's --{name} is not supported: {reason}"));

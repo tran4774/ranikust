@@ -89,7 +89,10 @@ Test data from kaniko
 Code derived from kaniko
 ------------------------
 
-None yet.
+  crates/ranikust/src/container.rs            pkg/util/proc/proc.go
+      at 44aa7ddc0 (osscontainertools/kaniko 34ba9eadf plus local
+      commits); kaniko ported that file from genuinetools/bpfd.
+      "Copyright 2022 Google LLC"; Apache License, Version 2.0.
 
 kaniko (https://github.com/osscontainertools/kaniko, originally
 https://github.com/GoogleContainerTools/kaniko) is licensed under the Apache

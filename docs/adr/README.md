@@ -111,3 +111,4 @@ when new measurements contradict its evidence.
 | [0037](0037-metrics-report-path-from-the-flag-only.md) | The metrics report path comes only from `--metrics-file` | Accepted | 2026-10-30 | maintainer, partly supersedes ADR-0025 |
 | [0038](0038-kaniko-mode-settings-for-phase-2.md) | Kaniko-mode settings for Phase 2: workdir checks in `ranikust`, state directory, ignore list, lazy snapshots, fake `/proc`, `--parallel-stages` | Accepted | 2026-10-30 | Q-011, Q-019, Q-034, Q-035, Q-036, Q-037 |
 | [0039](0039-kaniko-mode-walk-and-hash-crates.md) | The kaniko-mode walk uses rayon over `getdents64` and hashes with xxh3-128 | Accepted | 2026-10-30 | Q-038, `tests/bench/walk-hash` |
+| [0040](0040-kaniko-mode-selection-container-check-and-flags.md) | Kaniko mode is picked when root may not mount, builds on `/` only in a container unless `--force`, and takes kaniko's snapshot flags | Accepted | 2026-10-31 | Q-260, kaniko `pkg/util/proc/proc.go` |

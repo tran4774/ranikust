@@ -284,13 +284,21 @@ fn state_dir_defaults_per_mode() {
         with_workdir.state_dir_for(Mode::Overlay),
         Some(PathBuf::from("/w/.ranikust"))
     );
+    // Kaniko mode on a host workdir: next to where ranikust was started
+    // (ADR-0038, Q-036).
+    let cwd = std::env::current_dir().expect("cwd");
     assert_eq!(
         with_workdir.state_dir_for(Mode::Kaniko),
-        Some(PathBuf::from("/ranikust/state"))
+        Some(cwd.join(".ranikust"))
     );
     assert_eq!(with_workdir.state_dir_for(Mode::Auto), None);
     let bare = config(&["--no-push"]).expect("no workdir");
     assert_eq!(bare.state_dir_for(Mode::Overlay), None);
+    // Kaniko mode on the root `/`: inside it, as kaniko's `/kaniko`.
+    assert_eq!(
+        bare.state_dir_for(Mode::Kaniko),
+        Some(PathBuf::from("/ranikust/state"))
+    );
     let explicit = config(&["--no-push", "--workdir=/w", "--state-dir=/s"]).expect("state dir");
     for mode in [Mode::Auto, Mode::Overlay, Mode::Kaniko] {
         assert_eq!(explicit.state_dir_for(mode), Some(PathBuf::from("/s")));
@@ -368,4 +376,59 @@ fn secrets_are_absolute_and_ids_unique() {
         "id=a,src=/b",
     ]);
     assert!(twice.unwrap_err().0.contains("twice"));
+}
+
+/// The kaniko-mode flags (ADR-0040): kaniko's defaults, cleaned paths, a
+/// relative `--ignore-path` refused.
+#[test]
+fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
+    let plain = config(&["--no-push"]).expect("plain");
+    assert!(plain.ignore_paths.is_empty());
+    assert!(plain.ignore_var_run);
+    assert!(!plain.single_snapshot && !plain.materialize && !plain.force);
+    assert_eq!(plain.snapshot_workers.get(), 8);
+    let set = config(&[
+        "--no-push",
+        "--ignore-path=/var//cache/./x/../y/",
+        "--ignore-path=/..",
+        "--ignore-var-run=false",
+        "--snapshot-workers=2",
+    ])
+    .expect("set");
+    assert_eq!(
+        set.ignore_paths,
+        [PathBuf::from("/var/cache/y"), PathBuf::from("/")]
+    );
+    assert!(!set.ignore_var_run);
+    assert_eq!(set.snapshot_workers.get(), 2);
+    let err = config(&["--no-push", "--ignore-path=var/cache"]).expect_err("relative");
+    assert!(err.0.contains("absolute path"), "{}", err.0);
+}
+
+/// In overlay mode, the kaniko-mode flags that would change the image are
+/// refused [open: Q-260]; the others are warned about.
+#[test]
+fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
+    for flag in [
+        "--ignore-path=/x",
+        "--single-snapshot",
+        "--ignore-var-run=false",
+    ] {
+        let err = overlay_mode_flags(&args(&["--no-push", flag])).expect_err(flag);
+        assert!(err.0.contains("kaniko mode only"), "{flag}: {}", err.0);
+    }
+    let warnings = overlay_mode_flags(&args(&[
+        "--no-push",
+        "--snapshot-mode=redo",
+        "--snapshot-workers=4",
+        "--materialize",
+        "--ignore-var-run",
+    ]))
+    .expect("warnings only");
+    assert_eq!(warnings.len(), 4, "{warnings:?}");
+    assert!(
+        overlay_mode_flags(&args(&["--no-push"]))
+            .unwrap()
+            .is_empty()
+    );
 }

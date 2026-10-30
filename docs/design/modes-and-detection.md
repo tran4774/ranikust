@@ -111,6 +111,15 @@ Q-111).
 6. **Log the reason** for the chosen outcome, including each failed step and
    its errno (`ranikust`).
 
+Built so far (ADR-0040): `ranikust` enters the build's mount namespace
+first, before anything is written; root refused there for lack of privilege
+gets kaniko mode ("cannot mount"), with the reason logged. Otherwise the
+overlay probes run as in Phase 1, and their refusal stands until the
+"kaniko, can mount" variant (Phase 2 task 9). Kaniko mode's flags
+(`--ignore-path`, `--ignore-var-run`, `--single-snapshot`, `--materialize`)
+are refused in overlay mode where they would change the image
+[open: Q-260].
+
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode
 that cannot work fails with the probe's diagnosis
 ([ADR-0023](../adr/0023-mode-flag.md)). `--snapshot-mode=full|redo|time`
@@ -119,11 +128,17 @@ it is accepted and ignored with a warning.
 
 ## Workdir rules
 
-- Inside a container, `--workdir` defaults to `/` and kaniko mode behaves
-  like kaniko. Outside a container, `--workdir` is required and must not be
-  `/` or a system directory ([kaniko-mode](kaniko-mode.md#host-safety-checks)).
-- The state directory defaults to `<workdir>/.ranikust` in overlay mode and
-  to `/ranikust/state` in kaniko mode; `--state-dir` replaces either
+- Without `--workdir`, kaniko mode builds on `/`, like kaniko, and only
+  where kaniko's container check finds a container (`ranikust`'s
+  `container.rs`, ported from `kaniko@44aa7ddc0 pkg/util/proc/proc.go`), or
+  with `--force`, kaniko's meaning
+  ([ADR-0040](../adr/0040-kaniko-mode-selection-container-check-and-flags.md)).
+  A `--workdir` must not be `/` or a system directory
+  ([kaniko-mode](kaniko-mode.md#host-safety-checks)); it needs no
+  container.
+- The state directory defaults to `<workdir>/.ranikust` in overlay mode; in
+  kaniko mode to `/ranikust/state` on `/` and `<cwd>/.ranikust` with a
+  `--workdir` (`ADR-0038`); `--state-dir` replaces either
   ([cache-and-store](cache-and-store.md#store-layout)).
 - Only kaniko mode locks the workdir (`flock`), because there it is the root
   being built. Overlay-mode builds may share a workdir and its store.
