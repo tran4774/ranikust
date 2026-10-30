@@ -154,6 +154,10 @@ other and carry that mode's accepted differences
   pull; nothing is published.
 - A lock that cannot be taken because the store is on a filesystem without
   `flock` support is a start-up error that asks for a local `--state-dir`.
+- Something else than the store's own entry under an entry's name (a
+  symlink, the wrong type, a mount) is an error, never followed or
+  replaced; clean-up refuses to empty a mount point or a directory that
+  changed between its `statx` and its opening.
 - A filler that fails leaves nothing: its temporary entry is removed and
   the lock released; a build killed while filling leaves `tmp/<id>`, which
   the next start removes.

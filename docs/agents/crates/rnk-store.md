@@ -50,9 +50,10 @@ impl Store {
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>
     pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport>; // [design] Phase 5, [open: Q-043]
 }
-pub struct TmpEntry;  // path() -> &Path; file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer)
+pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
+                      // path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by diff ID [open: Q-015]; digest() -> &Digest
-pub enum Error { NotAStateDir, NoFlock, Io, Rootfs, Fill }
+pub enum Error { NotAStateDir, NoFlock, Io, BadEntry, Rootfs, Fill }
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a
@@ -79,7 +80,20 @@ on a blocking thread, because the lock may wait.
   never reused.
 - A non-empty state directory without a regular `.ranikust-root` file is
   refused, so clean-up never runs in a directory the user pointed at by
-  mistake.
+  mistake. A new state directory is `0700`; one owned by another user or
+  writable by others is used with a warning.
+- Only the store's own kind of entry counts as published: a regular file
+  for a blob, a directory for a layer, on the state directory's mount.
+  A symlink, another type or a mount under an entry's name is
+  `Error::BadEntry`, never followed or replaced. Lock files must be
+  regular files too, checked before they are opened for I/O (a FIFO would
+  block, a device would be opened as root).
+- Deletion (`remove_tree`, clean-up and `close`) unlinks a symlink at the
+  top, refuses a mount point there, and deletes only the directory it
+  stat'ed: the opened directory's inode, device and mount must match.
+- Per-digest locks hold twice: an in-process lock among the store's
+  threads, then `flock` among processes, because NFS, CIFS and some FUSE
+  filesystems emulate `flock` per process.
 - `prune` takes the same locks as a build and never removes an entry a
   running build uses [inferred: in-use tracking is not designed].
 - In kaniko mode the state directory (`/ranikust/state` in a container) is
@@ -106,10 +120,16 @@ on a blocking thread, because the lock may wait.
   of a dead build removed and a running build's kept, `close`, `cache_dir`;
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock;
-  `tests/spans.rs`. To come with Phase 5: `prune` by size and age.
-- **T2** (VM only): two builds as real root sharing one store, with a
-  layer extracted through `rnk-rootfs::extract` (device nodes, foreign
-  owners); comes with `rnk-snapshot` (task 9), which fills layers.
+  `tests/spans.rs`; planted symlinks as entries or build directories, a
+  FIFO as a lock file, a directory as a dead build's lock file; in
+  `src/store/tests.rs`, a directory swapped for a symlink or another
+  directory between `statx` and open. To come with Phase 5: `prune` by
+  size and age.
+- **T2** (VM only): `a_mount_where_clean_up_deletes_is_not_emptied` (a
+  bind mount on a dead build's `tmp/<id>` and on `builds/<id>` keeps its
+  contents). To come with `rnk-snapshot` (task 9), which fills layers: two
+  builds as real root sharing one store, with a layer extracted through
+  `rnk-rootfs::extract` (device nodes, foreign owners).
 
 ## Metrics
 
@@ -131,10 +151,16 @@ on a blocking thread, because the lock may wait.
   (the `RUN` spawner, a test spawning processes), a dead build's lock can
   look held, and clean-up skips that build until the next start. Harmless
   (it only delays clean-up), but it made a clean-up test flaky beside a
-  test that spawns processes; those live in their own test binary.
-- Each lock gets its own descriptor: two threads of one process exclude
-  each other only because their `flock`s are on different open file
-  descriptions.
+  test that spawns processes; those live in their own test binary, and
+  the other tests make FIFOs with `mknodat`, not a spawned `mkfifo`.
+- Each lock gets its own descriptor: on a local filesystem two threads of
+  one process exclude each other because their `flock`s are on different
+  open file descriptions; elsewhere only the in-process lock does.
+- `remove_tree` checks the top directory inside `rnk-store` (`statx`,
+  then `sub_root`, then compare). `prune` must not reuse it for
+  `caches/`, which `RUN` writes, or for anything else build content can
+  reach, until `rnk-rootfs` offers a deletion that opens the top itself
+  with `O_NOFOLLOW` and without crossing a mount (a `delete_tree`).
 - Layer entries hold image content that may be unwritable to an
   unprivileged user (a `0555` directory); deletion then fails with
   `EACCES`, and clean-up warns and leaves the build for the next start.
