@@ -34,48 +34,6 @@ Entry format:
 
 <!-- Entries are added below this line. -->
 
-### Q-006: Which image format does ranikust write by default?
-
-- **Blocks:** Phase 1 tasks 1, 11; **Area:** `rnk-oci`, `rnk-builder`
-- **Context:** `ImageFormat`'s default is open
-  ([rnk-oci](agents/crates/rnk-oci.md#api)): kaniko's
-  `--image-format` follows the base image
-  ([pitfalls](agents/crates/rnk-oci.md#pitfalls)), and under
-  `--reproducible` kaniko switches to Docker v2s2 unless
-  `FF_KANIKO_REPRODUCIBLE_PRESERVE_FORMAT`
-  ([kaniko-map](agents/kaniko-map.md#behaviour-to-match)). zstd needs OCI.
-- **Options:** (a) follow kaniko: the base's format, Docker v2s2 under
-  `--reproducible`; (b) the base's format in both cases; (c) OCI unless
-  `--image-format` says otherwise.
-- **Recommendation:** none
-- **Interim:** `rnk-oci` defines `ImageFormat { Oci, Docker }` without a
-  `Default` (branch `feat/rnk-oci-types`, marked `[open: Q-006]` in
-  `media_type.rs`): the caller passes the format, so nothing in `rnk-oci`
-  depends on the answer. Reversible because the default will live in the
-  CLI or `rnk-builder` (task 11); adding it changes no `rnk-oci` type.
-  `rnk_builder::image_format` (branch `feat/rnk-builder-outputs`) takes
-  (a), Docker v2s2 for `FROM scratch` as go-containerregistry's empty
-  image, and OCI whenever layers are zstd. Reversible: one function.
-- **Raised:** 2026-10-30
-
-### Q-007: Which image-assembly types live in rnk-oci?
-
-- **Blocks:** Phase 1 task 1; **Area:** `rnk-oci`, `rnk-builder`
-- **Context:** `ConfigEdit` (`ENV`, `LABEL`, `USER`… and history) and the
-  docker-save `manifest.json` and OCI layout `index.json`/`oci-layout` types
-  sit "here or in rnk-builder"
-  ([rnk-oci](agents/crates/rnk-oci.md#api)); the card's Phase 1
-  order already lists config edits and tar and layout index types.
-- **Options:** (a) `rnk-oci`: pure types, no I/O, tested at T0;
-  (b) `rnk-builder`, next to assembly and output.
-- **Recommendation:** none
-- **Interim:** (a), on branch `feat/rnk-oci-finish`: `ConfigEdit`,
-  `ImageConfig::push_layer`/`push_history`, `DockerTarImage` and
-  `OciLayout` are pure types in `rnk-oci` (`edit.rs`, `layout.rs`), marked
-  `[open: Q-007]` in `crates/rnk-oci/src/lib.rs`; `rnk-builder` writes the
-  files. Reversible: moving them changes import paths only.
-- **Raised:** 2026-10-30
-
 ### Q-008: What does a repeated target flag mean?
 
 - **Blocks:** Phase 1 tasks 2, 8; **Area:** `rnk-dockerfile`, `ranikust`
@@ -93,23 +51,6 @@ Entry format:
   option (b) only needs the CLI (task 8) to reject a repeated flag. The CLI
   (`feat/ranikust-cli`) follows: `--target` takes a list, comma-separated
   or repeated, an empty name refused.
-- **Raised:** 2026-10-30
-
-### Q-009: Does the parser accept instructions deferred to Phase 5?
-
-- **Blocks:** Phase 1 task 2; **Area:** `rnk-dockerfile`
-- **Context:** `ONBUILD` execution, `--mount=type=bind`,
-  `COPY --link/--parents/--exclude` and `ADD <url>`/git are Phase 5, but
-  kaniko's 200 Dockerfiles are Phase 1 goldens
-  ([rnk-dockerfile](agents/crates/rnk-dockerfile.md#phase-1)).
-- **Options:** (a) parse them so all 200 goldens pass, and let
-  `rnk-builder` reject them; (b) reject them in the parser until Phase 5.
-- **Recommendation:** (a), as the crate card proposes.
-- **Interim:** followed the recommendation in `feat/rnk-dockerfile-parser`:
-  `rnk-dockerfile` parses every instruction and flag BuildKit v0.34.0
-  parses, and all 200 goldens pass. Reversible because rejecting them later
-  is a check in the builder (or in `rnk-dockerfile`) on parsed values; no
-  type or format depends on the choice.
 - **Raised:** 2026-10-30
 
 ### Q-010: Which path type does rnk-ignore match on?
@@ -155,64 +96,6 @@ Entry format:
   filesystem; the build stops before any use of them.
 - **Raised:** 2026-10-30
 
-### Q-013: How does the layer writer learn missing parent metadata?
-
-- **Blocks:** Phase 1 tasks 5, 9; **Area:** `rnk-layer`, `rnk-snapshot`
-- **Context:** the writer adds missing parent directory headers, but how it
-  gets their metadata from the exporter, and how that combines with the
-  `sameDirent` rule, is `[inferred]`
-  ([overlay-snapshot](design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer),
-  [rnk-layer](agents/crates/rnk-layer.md#phase-1)).
-- **Options:** (a) the exporter hands the writer a metadata lookup;
-  (b) the exporter emits every ancestor itself and the writer only sorts.
-- **Recommendation:** none
-- **Interim:** (a), in `feat/rnk-layer-encode`: `LayerWriter::finish` takes
-  an `EntrySource` whose `parent(path)` gives a directory entry for each
-  ancestor that was not fed; the writer asks once per missing ancestor,
-  outermost first, and fails with `Error::MissingParent` on `None`. With the
-  `sameDirent` rule the exporter skips an unchanged directory on its own and
-  the writer adds it back as a parent. Reversible: (b) is the case where the
-  lookup is never called.
-- **Raised:** 2026-10-30
-
-### Q-014: Are cross-repository mounts part of Phase 1?
-
-- **Blocks:** Phase 1 tasks 6, 11; **Area:** `rnk-registry`
-- **Context:** the [rnk-registry](agents/crates/rnk-registry.md#phase-1) card
-  leaves them for now or later (0.04 s each in `exp-05`), while
-  [phase-1.md](agents/phase-1.md#scope) lists "parallel push with
-  cross-repository mount and upload fallback". A refused mount needs the
-  upload fallback that `oci-client` lacks.
-- **Options:** (a) Phase 1, with the upload fallback; (b) later, plain
-  uploads only.
-- **Recommendation:** none
-- **Interim:** task 6, in `feat/rnk-registry`: the client offers both
-  `push_blob` (plain upload) and `mount_or_push` (mount, and on a `202`
-  refusal or any failure an upload, as kaniko); whether task 11 calls the
-  mount is left to this answer. Reversible: dropping the mount is not
-  calling `mount_or_push`. Task 11 (`rnk_builder::push`, branch
-  `feat/rnk-builder-outputs`) takes (a): a base layer is mounted from its
-  repository, and every blob from the first destination for later ones.
-- **Raised:** 2026-10-30
-
-### Q-065: Do localhost and private-network registries fall back to HTTP?
-
-- **Blocks:** Phase 1 tasks 8, 13; **Area:** `rnk-registry`, `ranikust`
-- **Context:** kaniko's go-containerregistry tries HTTPS, then plain HTTP,
-  for registries named with `--insecure`/`--insecure-registry` and also,
-  unasked, for `localhost:*`, loopback, `*.local` and RFC 1918 addresses
-  (`kaniko@44aa7ddc0 vendor/github.com/google/go-containerregistry/pkg/name/registry.go:88-108`,
-  `pkg/v1/remote/transport/ping.go:47-58`). A pull or push to
-  `10.0.0.5:5000` therefore works in kaniko without a flag, but may go out
-  in clear text.
-- **Options:** (a) the same heuristic, for parity; (b) only registries
-  the user lists fall back to HTTP.
-- **Recommendation:** none
-- **Interim:** (b), in `feat/rnk-registry`: `ClientOptions::insecure`
-  lists the registries that may fall back; others are HTTPS only.
-  Reversible: (a) adds a host test where the client decides the scheme.
-- **Raised:** 2026-10-30
-
 ### Q-015: Which digest names an extracted layer, and where do locks live?
 
 - **Blocks:** Phase 1 task 7; **Area:** `rnk-store`
@@ -229,22 +112,6 @@ Entry format:
   `locks/{blobs,layers}/<algorithm>/<hex>`, never removed, so a waiter never
   locks an unlinked file. Reversible: only `EntryKey`'s paths change, and
   nothing has published layers yet.
-- **Raised:** 2026-10-30
-
-### Q-100: How durable is a published store entry after a power loss?
-
-- **Blocks:** nothing yet; **Area:** `rnk-store`, `rnk-snapshot`
-- **Context:** an entry is published by `rename` from `tmp/`. Without a
-  sync, a crash of the host (not of ranikust) can leave a renamed blob
-  empty or short, or a layer missing files, and later builds would trust it
-  (ADR-0006, threat T13). `syncfs` after each extraction costs time on
-  large layers ([cache-and-store](design/cache-and-store.md#atomic-publication)).
-- **Options:** (a) `fsync` blobs only, check nothing at start-up; (b) also
-  `syncfs` the state directory after each layer; (c) record entries in a
-  journal and re-verify the unjournaled ones at start-up; (d) no sync.
-- **Recommendation:** none
-- **Interim:** (a) on `feat/rnk-store` (`Store::fill`). Reversible: one
-  call in `fill`.
 - **Raised:** 2026-10-30
 
 ### Q-016: How is the store lock protocol proven under crashes and races?
@@ -350,22 +217,6 @@ Entry format:
   `--cache=false`. Reversible: accepting them is two flags.
 - **Raised:** 2026-10-30
 
-### Q-022: What format does the secret flag take?
-
-- **Blocks:** Phase 1 tasks 8, 11; **Area:** `ranikust`, `rnk-sandbox`
-- **Context:** `RUN --mount=type=secret` is Phase 1, so `--secret` is
-  needed ([kaniko-map](agents/kaniko-map.md#flags)). kaniko parses
-  `id=…,type=file|env,src=…,env=…`
-  (`kaniko@44aa7ddc0 pkg/config/options.go:271`).
-- **Options:** (a) kaniko's syntax, file and env sources; (b) a subset in
-  Phase 1, the rest later.
-- **Recommendation:** none
-- **Interim:** (b), on branch `feat/rnk-builder-executors`: kaniko's
-  syntax for file secrets, `id=ID,src=PATH` (`type=file` optional);
-  `type=env` and `RUN --mount=type=secret,env=` are refused. Reversible:
-  more fields of the same syntax.
-- **Raised:** 2026-10-30
-
 ### Q-023: Which other kaniko flags and variables are accepted?
 
 - **Blocks:** Phase 1 tasks 8, 13; **Area:** `ranikust`
@@ -399,23 +250,6 @@ Entry format:
   a table row.
 - **Raised:** 2026-10-30
 
-### Q-081: Does the context sub-path flag apply to a local directory?
-
-- **Blocks:** Phase 1 task 8, if the flag is accepted (Q-023); **Area:**
-  `ranikust`, `rnk-context`
-- **Context:** kaniko joins `--context-sub-path` to a fetched context only:
-  a `--context` without `://` returns before that line, so the flag is
-  silently ignored for a bare path, while `dir://` reaches it
-  (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:599-601`, `:625-630`;
-  [rnk-context](agents/crates/rnk-context.md#pitfalls)).
-- **Options:** (a) as kaniko: ignore it for a bare path; (b) apply it to
-  every context; (c) reject a sub-path with a bare path, with a message.
-- **Recommendation:** none
-- **Interim:** `rnk-context` offers `Context::sub_context` for any context
-  (`feat/rnk-context`), confined to the context with `..` clamped; the CLI
-  decides when to call it. Reversible: no caller yet.
-- **Raised:** 2026-10-30
-
 ### Q-110: What is the overlay-mode state directory without `--workdir`?
 
 - **Blocks:** Phase 1 task 8; **Area:** `ranikust`
@@ -434,74 +268,6 @@ Entry format:
   usage error, exit code 2. Reversible: one check in `main.rs`.
 - **Raised:** 2026-10-30
 
-### Q-111: Does the store open before or after the probes?
-
-- **Blocks:** Phase 1 tasks 7, 8; **Area:** `ranikust`, `rnk-store`,
-  `rnk-sandbox`
-- **Context:** the card's order runs the probes, then opens the store
-  (marker check, start-up clean-up), then starts the spawner. But the
-  sandbox probe already creates `<state-dir>/sandbox/runs` and replays its
-  journals, so a state directory gets written before its `.ranikust-root`
-  marker is checked, and a non-empty directory without a marker would be
-  refused only afterwards ([ranikust](agents/crates/ranikust.md#api),
-  [cache-and-store](design/cache-and-store.md#store-layout)).
-- **Options:** (a) open the store first (in overlay mode the state
-  directory is known before the probes, Q-018), then probe; (b) probe
-  first, in a probe-only directory; (c) as now, and `Store::open` accepts
-  a `sandbox/` it finds without a marker.
-- **Recommendation:** (a), once `rnk-store` exists.
-- **Interim:** (a) since `feat/rnk-snapshot`: `set_up` opens the store
-  (marker check, start-up clean-up) right after the state directory check
-  and before both probes, and hands it on as `Arc<Store>`. A state
-  directory an earlier build left with `sandbox/` but no marker is now
-  refused as foreign. Before that, (c): `feat/ranikust-setup` probed
-  before any store existed. As a stand-in for the workdir checks
-  (Q-011), the set-up creates a missing state directory with mode 0700 and
-  refuses one, or any directory above it up to the workdir, that is a
-  symlink, not owned by the effective uid, or writable by group or others,
-  before the probe writes there (`prepare_state_dir`). The sandbox does not
-  trust the directory either: journals and the run directories are opened
-  without following symlinks, a journal's root must lie below the state
-  directory, and a symlinked `sandbox/` or `sandbox/runs` is refused.
-  Reversible: one function in `setup.rs`, replaced by the store's checks.
-- **Raised:** 2026-10-30
-
-### Q-077: How is the MS_MOVE fallback kept from a chroot escape?
-
-- **Blocks:** Phase 3 (the fallbacks); **Area:** `rnk-sandbox`
-- **Context:** where seccomp blocks `pivot_root` (Docker's default profile),
-  the child moves the stage root onto `/` and `chroot`s into it, as runc's
-  `--no-pivot`. The old root stays mounted underneath, and root in `RUN`
-  keeps `CAP_SYS_CHROOT` (a Docker default), so the classic escape is
-  `chroot` into a subdirectory, then `chdir("..")` up. The kernel's `..`
-  (`follow_dotdot`, `choose_mountpoint` in `fs/namei.c`) does not stop on a
-  mount point that is itself a mount root, so when `/` is a mount root the
-  walk stays at the moved root; when `/` is a plain directory (ranikust
-  inside a `chroot`), it climbs into ranikust's filesystem, with the state
-  directory and registry credentials [inferred]
-  ([sandbox](design/sandbox.md#variants-by-environment)). Measured with
-  `just test-vm smoke` on kernels 5.15 and 6.8
-  ([testing](testing.md#the-vm-harness-tier-t2)): under Docker's seccomp
-  with `CAP_SYS_ADMIN` the probe picks `MS_MOVE`, and the `..` escape,
-  its `O_PATH` + `fchdir` and nested-chroot forms, and `/proc/1/root` and
-  `/proc/self/root/..` all stay inside the stage root, as under
-  `pivot_root`; the same three escapes leave a plain `chroot` of that root.
-  ranikust run inside a plain `chroot` refuses before any `RUN`, already
-  at making `/` a slave mount (`EINVAL`), with an error that does not say
-  why.
-- **Options:** (a) drop `CAP_SYS_CHROOT` from the bounding set under
-  `MS_MOVE` (a `RUN` that runs `chroot` fails); (b) keep Docker's defaults,
-  and use `MS_MOVE` only where `/` is a mount root; (c) refuse the full
-  sandbox under `MS_MOVE` and run `Isolation::Direct`, kaniko's level of
-  isolation.
-- **Recommendation:** (b): the VM tests above confirm that `..` stops at
-  the moved root.
-- **Interim:** (b): the probe falls back to `MS_MOVE` only when
-  `pivot_root` fails with `EPERM` and `statx` reports `/` as a mount root;
-  both root entries keep the 14 defaults (`crates/rnk-sandbox/src/probe.rs`,
-  `child.rs`, `feat/rnk-sandbox`). Reversible: one bit in the drop list.
-- **Raised:** 2026-10-30
-
 ### Q-024: What is the Snapshotter signature?
 
 - **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
@@ -518,78 +284,6 @@ Entry format:
   view, release}`; `final_root` became `view` (a read-only mount between
   layers), and `sharing` waits for kaniko mode (Phase 2). Reversible: one
   implementation, and no caller until `rnk-builder` (task 11).
-- **Raised:** 2026-10-30
-
-### Q-025: Are other user xattrs kept in exported layers?
-
-- **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`, `rnk-layer`
-- **Context:** the exporter strips `*.overlay.*` and keeps
-  `security.capability` and other xattrs, so digests differ from BuildKit,
-  which strips other `user.*` xattrs
-  ([overlay-snapshot](design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer),
-  [open questions](design/overlay-snapshot.md#open-questions)). kaniko writes
-  only `security.capability` ([rnk-layer](agents/crates/rnk-layer.md#refs)).
-- **Options:** (a) keep them; (b) strip them, as BuildKit does.
-- **Recommendation:** none
-- **Interim:** kept, as the exporter table says today; implemented in
-  `LayerDiff::export` (`feat/rnk-snapshot`), which drops only overlay's
-  own xattrs and turns escaped `user.overlay.overlay.*` back into
-  `user.overlay.*`. Reversible: one filter, `lowers::content_xattrs`.
-- **Raised:** 2026-10-30
-
-### Q-026: When and how are layers merged near the 500-lower limit?
-
-- **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
-- **Context:** overlay takes at most 500 lower directories; the design says
-  to merge the oldest diffs into one temporary layer close to the limit, but
-  not when or how ([overlay-snapshot](design/overlay-snapshot.md#mounting),
-  [rnk-snapshot](agents/crates/rnk-snapshot.md#phase-1)).
-- **Options:** (a) merge at a fixed threshold below 500; (b) merge only
-  when the next mount would exceed it.
-- **Recommendation:** none
-- **Interim:** no merging (`feat/rnk-snapshot`): a mount that would need
-  more than 500 lowers fails with `Error::TooManyLowers` before the
-  kernel's `EINVAL`. With `mount(2)` (Linux before 6.8) the one-page
-  option string is the tighter limit (Q-151). Every `end_layer` adds a
-  lower, even for an empty diff. Reversible: the check is in
-  `rnk_snapshot::mount`.
-- **Raised:** 2026-10-30
-
-### Q-150: Is an extracted layer keyed by its diff ID alone?
-
-- **Blocks:** nothing yet; **Area:** `rnk-snapshot`, `rnk-store`
-- **Context:** `rnk-store` keys `layers/` by diff ID (Q-015). Extraction
-  copies a hardlink whose target is in a lower layer from that lower layer
-  (Q-055), so an extracted layer's content depends on the stack below it
-  when it was first extracted; another image with the same layer on
-  another stack reuses that content (`rnk_snapshot` `layer.rs`).
-- **Options:** (a) keep the diff ID key: the same layer on different
-  stacks with a hardlink into a differing lower is rare; (b) key such a
-  layer by diff ID plus the chain of diff IDs below (as containerd's chain
-  IDs); (c) refuse to reuse a layer extracted with copied hardlinks on
-  another stack.
-- **Recommendation:** none
-- **Interim:** (a). Reversible: the key is built in one place.
-- **Raised:** 2026-10-30
-
-### Q-151: How does the mount(2) fallback fit many layers?
-
-- **Blocks:** nothing yet (Linux before 6.8, many layers); **Area:**
-  `rnk-snapshot`
-- **Context:** without `lowerdir+` every lower goes into one `mount(2)`
-  option string of at most 4,095 bytes. The fallback uses absolute short
-  names `<state-dir>/l/<12 chars>`, about 40 bytes each with a short state
-  directory: roughly 90–100 lowers, fewer with a long one. Docker's
-  overlay2 uses relative names after `chdir`, which a multi-threaded
-  process can only do in a forked child.
-- **Options:** (a) absolute short names and a clear error beyond the
-  limit; (b) mount from a forked child that `chdir`s into `l/` and passes
-  relative names (as overlay2); (c) merge layers (Q-026).
-- **Recommendation:** none
-- **Interim:** (a): `Error::OptionsTooLong` before the kernel truncates.
-  The links of a stage's diffs are removed at release; a crashed build's
-  stay in `l/` (names come from the target's hash, so a stale link is
-  never reused for another target).
 - **Raised:** 2026-10-30
 
 ### Q-152: How are read-only layer roots published without root?
@@ -648,93 +342,6 @@ Entry format:
   undeclared.
 - **Raised:** 2026-10-30
 
-### Q-130: Where kaniko and BuildKit differ on a config edit, which one wins?
-
-- **Blocks:** Phase 1 task 11 (config goldens); **Area:** `rnk-oci`, `rnk-builder`
-- **Context:** `ConfigEdit::apply` (`crates/rnk-oci/src/edit.rs`) follows
-  kaniko's `ExecuteCommand`s. BuildKit differs [inferred, from its
-  `dockerfile2llb` dispatchers, not checked at a pinned commit]: (1) a new
-  `ENTRYPOINT` resets a `CMD` inherited from the base unless the stage set
-  one, as the Dockerfile reference documents; kaniko keeps it
-  (`kaniko@44aa7ddc0 pkg/commands/entrypoint.go`); (2) `EXPOSE` accepts
-  `sctp`, lower-cases the protocol and expands ranges (`nat.ParsePortSpecs`);
-  kaniko accepts only `tcp`/`udp` and keeps `8000-8001/tcp` as one key
-  (`pkg/commands/expose.go:47-62`); (3) `HEALTHCHECK --start-interval` is
-  kept; kaniko drops it (go-containerregistry's `HealthConfig` has no such
-  field, `pkg/commands/healthcheck.go:26-34`); (4) an absolute `WORKDIR`
-  is cleaned (`/a/../b/` becomes `/b`) [inferred]; kaniko keeps it as
-  written (`pkg/commands/workdir.go:39-51`).
-- **Options:** (a) kaniko for each, for users migrating from kaniko;
-  (b) BuildKit for each, the documented Dockerfile behaviour (as Q-051 and
-  `ADR-0027` chose for the front end); (c) per item.
-- **Recommendation:** none; (1) changes what a container runs, so it
-  deserves a decision before the config goldens.
-- **Interim:** (a) for (1), (2) and (4); `HealthConfig::start_interval` is kept
-  when the builder sets it, so (3) is the builder's choice. Reversible: (1)
-  needs a per-stage "CMD set" bit in `rnk-builder`, (2) a port parser,
-  (4) one call to the cleaning `WORKDIR` already does for relative paths.
-- **Raised:** 2026-10-30
-
-### Q-131: Which instructions get a history entry, with which fields?
-
-- **Blocks:** Phase 1 task 11; **Area:** `rnk-builder`
-- **Context:** kaniko appends a history entry only with a layer, `author:
-  "kaniko"`, `created_by` the instruction's text
-  (`kaniko@44aa7ddc0 pkg/executor/build.go:1398-1405`,
-  `pkg/constants/constants.go:25`); BuildKit writes one per instruction,
-  `empty_layer: true` for metadata ones, with a `buildkit.dockerfile.v0`
-  comment [inferred]. `rnk-oci` offers both through
-  `ImageConfig::push_layer` and `push_history`.
-- **Options:** (a) kaniko's; (b) BuildKit's; (c) BuildKit's entries with
-  an author `ranikust`.
-- **Recommendation:** none
-- **Interim:** a variant of (a), on branch `feat/rnk-builder-outputs`:
-  `rnk_builder::layer_history` gives kaniko's entry for a layer, with the
-  author `ranikust` (`HISTORY_AUTHOR`); metadata instructions get none.
-  Reversible: one function and one constant, and the executors that call
-  them are not written yet.
-- **Raised:** 2026-10-30
-
-### Q-160: Are base layers rewritten under `--reproducible`?
-
-- **Blocks:** Phase 1 task 13 (digests compared with kaniko);
-  **Area:** `rnk-builder`
-- **Context:** kaniko's `--reproducible` runs `mutate.Canonical` over the
-  whole image, which re-encodes every layer, the base image's included,
-  with zero timestamps (`kaniko@44aa7ddc0 pkg/executor/build.go:2104-2127`,
-  `vendor/github.com/google/go-containerregistry/pkg/v1/mutate/mutate.go:674`),
-  unless `FF_KANIKO_REPRODUCIBLE_PRESERVE_BASE_LAYERS`. Base layers are
-  already content-addressed, so keeping them does not make two builds
-  differ; rewriting them costs a decode and an encode of every base layer
-  and a push of all of them.
-- **Options:** (a) keep base layers as pulled (kaniko's feature flag);
-  (b) rewrite them, as kaniko by default.
-- **Recommendation:** none
-- **Interim:** (a), on branch `feat/rnk-builder-outputs`: `assemble` keeps
-  base `BlobLayer`s; only built layers get the fixed mtime. Reversible: (b)
-  is a `LayerSource` over a pulled blob, exported like a built layer.
-  Because a kept base layer keeps its compression, a zstd base layer has no
-  Docker media type: `assemble` then writes OCI although `--reproducible`
-  asks for Docker v2s2 (Q-006). Under (b) the layer would be re-encoded
-  and Docker would hold.
-- **Raised:** 2026-10-30
-
-### Q-161: Which fixed time does `--reproducible` write?
-
-- **Blocks:** Phase 1 task 13; **Area:** `rnk-builder`
-- **Context:** kaniko's `mutate.Canonical` sets the config's and every
-  history entry's `created` to Go's zero time, written
-  `0001-01-01T00:00:00Z` (`mutate.go:533-536`), and tar mtimes to that
-  time too. ranikust's rule is "a fixed epoch, or `SOURCE_DATE_EPOCH` when
-  set" (`docs/agents/rules.md`), which kaniko never reads.
-- **Options:** (a) the Unix epoch, `1970-01-01T00:00:00Z`, the same as
-  `SOURCE_DATE_EPOCH=0` and as mtime 0 in a tar header; (b) Go's zero time,
-  as kaniko writes.
-- **Recommendation:** none
-- **Interim:** (a), on branch `feat/rnk-builder-outputs`
-  (`BuildTime::reproducible`). Reversible: one constant.
-- **Raised:** 2026-10-30
-
 ### Q-162: Where do the blobs of built layers live?
 
 - **Blocks:** nothing in Phase 1; Phase 4 (cache); **Area:** `rnk-builder`,
@@ -749,153 +356,6 @@ Entry format:
 - **Recommendation:** none
 - **Interim:** (a), on branch `feat/rnk-builder-outputs`. Reversible: the
   exporter's directory and one rename.
-- **Raised:** 2026-10-30
-
-### Q-132: Are empty values of a base config written back?
-
-- **Blocks:** Phase 1 task 13 (config comparison); **Area:** `rnk-oci`
-- **Context:** `ImageConfig` writes back any present value, even `"User":
-  ""` or `"Tty": false` from a base built by the classic Docker builder.
-  kaniko re-serializes the base through go-containerregistry, whose fields
-  are `omitempty` (`kaniko@44aa7ddc0
-  vendor/github.com/google/go-containerregistry/pkg/v1/config.go:31-140`),
-  so such fields disappear and the config digest differs from ranikust's.
-  `ConfigEdit` already leaves out an empty `Cmd`/`Entrypoint` and a false
-  `ArgsEscaped`.
-- **Options:** (a) keep present values (today); (b) drop empty strings,
-  `false`, empty lists and maps on writing, as Go's `omitempty`.
-- **Recommendation:** none
-- **Interim:** (a).
-- **Raised:** 2026-10-30
-
-### Q-120: Where kaniko and BuildKit copy differently, which does `copy` follow?
-
-- **Blocks:** Phase 1 task 11; **Area:** `rnk-rootfs`, `rnk-builder`
-- **Context:** `rnk_rootfs::copy` copies one resolved `COPY`/`ADD`
-  source ([rootfs](design/rootfs.md#copy)). Where the two differ: (1) a
-  symlinked source: kaniko copies the link
-  (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`), BuildKit follows it
-  [inferred]; (2) xattrs: kaniko copies only `security.capability`
-  (`pkg/util/fs_util.go:1533`), BuildKit all of them [inferred];
-  (3) an existing destination directory: kaniko chowns it and sets its
-  times (`pkg/util/fs_util.go:871-888`), BuildKit leaves it [inferred];
-  (4) special files: kaniko reads device nodes and sockets as files unless
-  `FF_KANIKO_COPY_SKIP_SPECIAL_FILES` (`pkg/commands/copy.go:170`) and
-  recreates FIFOs; (5) `--chmod` on directories: kaniko applies it to every
-  copied directory (`pkg/util/fs_util.go:898`); (6) symbolic `--chmod`
-  (`u+x`): kaniko accepts it (`pkg/util/command_util.go:447`).
-- **Options:** per item, (a) kaniko or (b) BuildKit, settled by a golden
-  against both (`kaniko-parity`).
-- **Recommendation:** none
-- **Interim:** on branch `feat/rnk-rootfs-copy`: (1) BuildKit, followed
-  inside the source root; (2) kaniko, which also keeps host labels such as
-  `security.selinux` out of layers; (3) BuildKit, left as it is; (4)
-  sockets skipped, FIFOs and device nodes recreated, never opened; (5)
-  kaniko; (6) octal only (`CopyOpts::chmod: Option<u32>`). Reversible:
-  each is one branch in `crates/rnk-rootfs/src/copy.rs` and its tests;
-  nothing calls `copy` yet.
-- **Raised:** 2026-10-30
-
-### Q-121: Which overlay forms does the lower-layer lookup recognise?
-
-- **Blocks:** Phase 1 task 9; **Area:** `rnk-rootfs`, `rnk-snapshot`
-- **Context:** `extract_overlay` finds a hardlink target in the lower
-  layers as overlay's merged view would
-  ([rootfs](design/rootfs.md#extraction)). It recognises the form
-  ranikust's own extraction writes for a `userxattr` mount (`ADR-0016`):
-  whiteouts as the device 0/0, opaque directories as
-  `user.overlay.opaque=y`. Overlay also knows `trusted.overlay.opaque`
-  (mounts without `userxattr`), the value `x` (Linux 6.7: a directory
-  holding "xwhiteouts", regular files marked `overlay.whiteout`, which is
-  not opaque) and redirects. A `layers/<id>` written by anything else, or
-  a later switch to `trusted.*`, would be misread.
-- **Options:** (a) only ranikust's own form, `layers/` being written by
-  ranikust alone; (b) also `trusted.overlay.opaque=y`; (c) the full set,
-  xwhiteouts and redirects included.
-- **Recommendation:** (a) while `rnk-store` holds the only writers.
-- **Interim:** (a), on branch `feat/rnk-rootfs-copy`; overlay's own
-  xattrs (`trusted.overlay.*`, `user.overlay.*` but the escaped
-  `user.overlay.overlay.*`) are never copied up. Reversible: one function,
-  `walk_layer` in `crates/rnk-rootfs/src/extract.rs`.
-- **Raised:** 2026-10-30
-
-### Q-080: Who resolves COPY sources against the context, and how?
-
-- **Blocks:** Phase 1 task 11; **Area:** `rnk-builder`, `rnk-context`
-- **Context:** `rnk-context` must not decide which files an instruction
-  copies ([rnk-context](agents/crates/rnk-context.md#must-not)), but
-  something must expand `COPY` source globs and keep ignored files out.
-  kaniko lists the whole context and matches each source with Go's
-  `filepath.Match` (`kaniko@44aa7ddc0 pkg/util/command_util.go:145-185`),
-  then drops excluded files; BuildKit only ever sees the files its
-  filtered walk transferred and resolves wildcards in its copy backend.
-  `Context::root()` sees ignored files too.
-- **Options:** (a) `rnk-builder` resolves sources against the walk's
-  entries (or `root()` plus the same `Matcher`), with BuildKit's wildcard
-  rules; (b) `rnk-context` gains a resolver, e.g.
-  `resolve_sources(&[pattern], &Matcher) -> Vec<Entry>`, and the builder
-  only copies; which glob dialect (`filepath.Match` as kaniko, or
-  BuildKit's) is part of either.
-- **Recommendation:** (a), which the card's boundary already implies;
-  the dialect needs a golden against BuildKit.
-- **Interim:** (a), on branch `feat/rnk-builder-executors`:
-  `rnk_builder::ContextFiles` keeps the walk's entries and resolves a
-  source against them, so an ignored file is never named; a directory is
-  copied with `rnk_rootfs::copy_filtered`, which skips the ignored entries
-  below it. Wildcards follow BuildKit: Go's `filepath.Match` one component
-  at a time, at the pattern's own depth; `COPY --from` sources are matched
-  by listing the stage's root. Reversible: one module,
-  `crates/rnk-builder/src/sources.rs`; the golden against BuildKit is
-  still to do. A symlinked source is followed inside the context through
-  kept entries only (an ignored target is "not found"). The error rules
-  follow kaniko's `IsSrcsValid` (`kaniko@44aa7ddc0
-  pkg/util/command_util.go:259`): a missing source fails, and several sources
-  need a destination ending in `/`.
-- **Raised:** 2026-10-30
-
-### Q-180: Does VOLUME create its directories?
-
-- **Blocks:** Phase 1 task 13 (layer comparison); **Area:** `rnk-builder`
-- **Context:** kaniko's `VOLUME` creates each directory in the root
-  (`kaniko@44aa7ddc0 pkg/commands/volume.go`) and snapshots nothing for it,
-  so a directory it made lands in the next layer that changes files, or
-  nowhere; Docker and BuildKit only record the volume in the config
-  [inferred]. In overlay mode nothing is writable between layers.
-- **Options:** (a) config only; (b) create the directories in a layer of
-  their own; (c) create them in the next changing instruction's layer, as
-  kaniko ends up doing.
-- **Recommendation:** none
-- **Interim:** (a), on branch `feat/rnk-builder-executors`. Reversible:
-  one executor.
-- **Raised:** 2026-10-30
-
-### Q-181: How is `RUN --mount=type=cache,sharing=` enforced?
-
-- **Blocks:** Phase 1 task 13; **Area:** `rnk-builder`, `rnk-store`
-- **Context:** BuildKit's `sharing=shared` (default) lets concurrent
-  `RUN`s use one cache directory, `locked` makes them wait, `private`
-  gives each its own copy. Parallel stages make the difference visible.
-  Cache directories are `rnk_store::Store::cache_dir(id)`; `mode`, `uid`
-  and `gid` are applied to it at each use.
-- **Options:** (a) treat every cache as `shared`; (b) `locked` with a
-  `flock` on the cache directory; (c) also `private`, with a copy per
-  concurrent use.
-- **Recommendation:** none
-- **Interim:** (a), on branch `feat/rnk-builder-executors`. Reversible:
-  the cache mount is built in one place (`stage.rs`, `mounts`).
-- **Raised:** 2026-10-30
-
-### Q-182: Which `RUN --mount=type=secret` options are honoured?
-
-- **Blocks:** nothing yet; **Area:** `rnk-builder`, `rnk-sandbox`
-- **Context:** the secret file is bound read-only from its `--secret`
-  source, so it keeps the host file's mode and owner. BuildKit's `mode`,
-  `uid` and `gid` (default `0400`, root) set what the `RUN` sees, and
-  `env=` exposes the secret as a variable [inferred].
-- **Options:** (a) bind the host file as it is; (b) copy it to a
-  build-private file with the requested mode and owner, then bind that.
-- **Recommendation:** none
-- **Interim:** (a); `env=` is refused. Reversible: one function.
 - **Raised:** 2026-10-30
 
 ### Q-183: What does `RUN --network=none` do without `CAP_NET_ADMIN`?
@@ -914,68 +374,10 @@ Entry format:
 - **Recommendation:** none
 - **Interim:** (a); the VM's `SYS_ADMIN` variant adds `NET_ADMIN` for
   the e2e build. Reversible: one step of the child's set-up.
-- **Raised:** 2026-10-30
-
-### Q-187: How does the W3 digest check treat the workload's `du` output?
-
-- **Blocks:** Phase 1 acceptance (W3 digests across `--jobs`); **Area:**
-  tests, `nextjs-kaniko`
-- **Context:** `just test-vm e2e` requires one W3 digest for `--jobs 1`, 2
-  and the default under `--reproducible`. On 2026-10-30 (noble) `--jobs 1`
-  and the default matched, `--jobs 2` did not; every diff ID but two was
-  equal, and the files that differ are `/out/a.txt` and `/out/all.txt`
-  built from it. Each stage's `summary.txt` records `du -sk node_modules`,
-  the disk usage of a pnpm install, which depends on block allocation
-  while other stages write at the same time; kaniko's and BuildKit's
-  images differ there too. The layer bytes do not depend on `--jobs`.
-- **Options:** (a) drop `du -sk` from the workload, as `nextjs-kaniko`'s
-  own change; (b) compare the W3 images across `--jobs` with the
-  workload's noise list instead of by digest; (c) accept a digest
-  mismatch confined to `/out`.
-- **Recommendation:** (a): the acceptance criterion is about ranikust's
-  bytes, and the workload's output should not vary by itself.
-- **Interim:** none; the suite reports the mismatch and fails.
-- **Raised:** 2026-10-30
-
-### Q-184: May a Dockerfile's `RUN --network=host` lift `--network=none`?
-
-- **Blocks:** nothing yet; **Area:** `rnk-builder`, `ranikust`
-- **Context:** the operator's `--network=none` cuts every `RUN` off the
-  network; `RUN --network=host` in the Dockerfile would reach it again,
-  the cloud metadata service and the host's loopback included. BuildKit
-  needs the `network.host` entitlement (`--allow`) for it [inferred].
-- **Options:** (a) refuse it under `--network=none`; (b) an entitlement
-  flag, as BuildKit's `--allow network.host`.
-- **Recommendation:** none
-- **Interim:** (a): the build fails with a message naming the flag.
-  Reversible: one match in `stage.rs`, `run_command`.
-- **Raised:** 2026-10-30
-
-### Q-185: Does an image without `PATH` get one in its config?
-
-- **Blocks:** Phase 1 task 13 (config comparison); **Area:** `rnk-builder`
-- **Context:** `FROM scratch` gets `PATH` in kaniko
-  (`ScratchEnvVars`) and BuildKit; ranikust does the same. For a base
-  image whose config has no `PATH`, BuildKit adds it to the config,
-  kaniko does not [inferred for BuildKit]. A `RUN` gets Docker's default
-  `PATH` either way (`rnk-sandbox`).
-- **Options:** (a) kaniko: the config stays without; (b) BuildKit: add it.
-- **Recommendation:** none
-- **Interim:** (a). Reversible: one line in `build_stage`.
-- **Raised:** 2026-10-30
-
-### Q-186: Does a cancel kill a running `RUN`?
-
-- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, `ranikust`
-- **Context:** the first SIGINT or SIGTERM cancels the build: stages stop
-  between instructions, but a `RUN` already running finishes first, which
-  may take long. A second signal exits at once, and the `RUN`s die with
-  their parent thread (`PR_SET_PDEATHSIG`). `rnk_sandbox::Sandbox::run`
-  has no way to stop a `RUN` it started.
-- **Options:** (a) as now; (b) a cancel in `Sandbox` that kills the
-  `RUN`'s PID 1, which takes its PID namespace with it.
-- **Recommendation:** none
-- **Interim:** (a). Reversible: a new `Sandbox` call.
+- **Escalated:** to the maintainer under the ADR-0032 rule (B1: BuildKit
+  always has loopback up through runc, inside a user namespace when
+  rootless, while the `MS_MOVE` environment may deny `CAP_NET_ADMIN` and
+  user namespaces).
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?
@@ -1067,31 +469,6 @@ Entry format:
 - **Options:** none listed.
 - **Recommendation:** none
 - **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-200: How does the e2e suite's `ranikust` reach a plain-HTTP registry?
-
-- **Blocks:** Phase 1 task 13 (the `ranikust` leg of `just test-vm e2e`);
-  **Area:** `ranikust`, tests
-- **Context:** the acceptance workloads push to, and pull their base and
-  tools images from, a plain-HTTP registry (`registry:5000`, as
-  `nextjs-kaniko`'s compose file and `run-fair.sh`), which kaniko reaches
-  with `--insecure-registry` and BuildKit with `http = true` in
-  `buildkitd.toml`. `rnk-registry` already supports insecure registries
-  (`ClientOptions::insecure`), but the CLI refuses `--insecure*` until the
-  flag list is fixed ([Q-023](#q-023-which-other-kaniko-flags-and-variables-are-accepted)).
-  `tests/vm/guest/e2e.sh` passes `--insecure-registry=registry:5000`; the
-  refusal is recorded as `pending`.
-- **Options:** (a) accept `--insecure-registry` with kaniko's meaning in
-  Phase 1, as part of Q-023; (b) serve the e2e registry over TLS with a
-  self-signed CA and pass `--registry-certificate` to every builder, which
-  changes the reference setup of experiments 07 and 08.
-- **Recommendation:** (a): the references and the bench harness use it, and
-  the client already implements it.
-- **Interim:** (a), on branch `feat/rnk-builder-executors`:
-  `--insecure-registry <host>` (repeatable) with kaniko's meaning, wired
-  to `ClientOptions::insecure` (HTTPS first, plain HTTP when it fails).
-  Reversible: one flag. `--insecure` and `--insecure-pull` stay refused.
 - **Raised:** 2026-10-30
 
 ### Q-034: When must a lazily skipped stage still be snapshotted?
@@ -1220,33 +597,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-043: What are the prune defaults?
-
-- **Blocks:** Phase 5; **Area:** `rnk-store`
-- **Context:** `prune` removes entries by total size and age under the
-  build locks; the defaults, the age measure, in-use tracking and size
-  accounting for reflinked copies are open
-  ([cache-and-store](design/cache-and-store.md#prune),
-  [open questions](design/cache-and-store.md#open-questions),
-  [rnk-store](agents/crates/rnk-store.md#api-planned)).
-- **Options:** age by (a) last use or (b) creation; defaults: none listed.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-044: How do remote ONBUILD triggers reach the stage graph?
-
-- **Blocks:** Phase 5; **Area:** `rnk-dockerfile`
-- **Context:** `rnk-dockerfile` does no I/O and takes remote `ONBUILD`
-  triggers from the caller, while kaniko fetches them during planning
-  (`kaniko@44aa7ddc0 pkg/dockerfile/dockerfile.go:354`;
-  [rnk-dockerfile](agents/crates/rnk-dockerfile.md#api-planned)).
-- **Options:** (a) an extra input to `stage_graph()`, filled after base
-  configs are pulled; (b) a separate step that extends the graph.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
 ### Q-045: How are git contexts fetched and addressed?
 
 - **Blocks:** Phase 5; **Area:** `rnk-context`
@@ -1254,23 +604,15 @@ Entry format:
   `git://` reads `#ref#commit`, Docker uses `#ref:dir`; the git tests depend
   on the choice ([rnk-context](agents/crates/rnk-context.md#pitfalls),
   [tests](agents/crates/rnk-context.md#tests)).
-- **Options:** (a) a Rust git implementation or (b) an external `git`;
-  fragments (c) kaniko's, (d) Docker's, or both.
+- **Options:** (a) a Rust git implementation (`gix`), with TLS through
+  `rnk-registry`; (b) an external `git` when present, else refuse; (c) both,
+  preferring the built-in. Fragments: Docker's `#ref:subdir` as BuildKit
+  (`buildkit@cd8ee244 util/gitutil/git_url.go:69-78`), and kaniko's
+  `#ref#commit` kept for `ADR-0011`; the two forms can be told apart.
 - **Recommendation:** none
 - **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-046: What happens to HTTPS contexts on Azure Blob hosts?
-
-- **Blocks:** Phase 5; **Area:** `rnk-context`
-- **Context:** kaniko sends `https://` contexts on Azure Blob hosts to an
-  Azure source (`kaniko@44aa7ddc0 pkg/buildcontext/buildcontext.go:63-65`),
-  which ranikust does not have (`ADR-0008`;
-  [rnk-context](agents/crates/rnk-context.md#pitfalls)).
-- **Options:** (a) reject them with a message; (b) fetch them as plain
-  HTTPS.
-- **Recommendation:** none
-- **Interim:** none
+- **Escalated:** to the maintainer under the ADR-0032 rule (B1: BuildKit
+  runs the `git` binary, which a static ranikust in `scratch` lacks).
 - **Raised:** 2026-10-30
 
 ### Q-047: What are the mirror, registry-map and helper flags called?
@@ -1307,14 +649,22 @@ Entry format:
 - **Blocks:** nothing yet; **Area:** `rnk-snapshot`
 - **Context:** keeping one mount for consecutive instructions (its gain
   against the `volatile` remount rules), and an export-time filter dropping
-  copied-up files identical to their lower version (off by default; BuildKit
-  does not filter)
+  copied-up files identical to their lower version. BuildKit does filter:
+  its overlay differ skips any upper entry equal to its lower, comparing
+  stat fields and capabilities and, when both mtimes are whole seconds, the
+  contents (`buildkit@cd8ee244 util/overlay/overlay_linux.go:233-241`,
+  `:348-445`); ranikust filters directories only
   ([overlay-snapshot](design/overlay-snapshot.md#the-volatile-lifecycle),
   [open questions](design/overlay-snapshot.md#open-questions),
   [rnk-snapshot](agents/crates/rnk-snapshot.md#phase-1)).
-- **Options:** for each, (a) build it later; (b) drop it.
+- **Options:** for the filter, (a) BuildKit's full rule (layer parity,
+  extra reads); (b) the stat-only part (cheap, differs when only content
+  equality would drop a file); (c) directories only, as now. Keeping one
+  mount for consecutive instructions has no BuildKit counterpart.
 - **Recommendation:** none
 - **Interim:** none
+- **Escalated:** to the maintainer under the ADR-0032 rule (B2: BuildKit's
+  full filter reads both files when only content can tell them apart).
 - **Raised:** 2026-10-30
 
 ### Q-057: Does ranikust offer CPU and heap profiling?
@@ -1491,3 +841,262 @@ Entry format:
   plus the host name, as BuildKit. Implemented in `rnk-sandbox`
   (`plan.rs`, `hosts_file`). Recorded in
   [ADR-0031](adr/0031-run-host-name-and-hosts-file.md).
+
+### Q-006: Which image format does ranikust write by default?
+
+- **Answer (2026-10-30):** OCI media types by default, whatever the base
+  image's format and `--reproducible`, with gzip layers; `--image-format`
+  (Q-023) is the override. BuildKit's exporter defaults to OCI and converts
+  base layers' media types. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-007: Which image-assembly types live in rnk-oci?
+
+- **Answer (2026-10-30):** option (a): `ConfigEdit`,
+  `ImageConfig::push_layer`/`push_history`, `DockerTarImage` and `OciLayout`
+  stay pure types in `rnk-oci`; `rnk-builder` writes the files. An internal
+  split with no BuildKit counterpart, so the interim is adopted.
+
+### Q-009: Does the parser accept instructions deferred to Phase 5?
+
+- **Answer (2026-10-30):** option (a): the parser accepts every instruction
+  and flag BuildKit parses; the builder refuses what it cannot run yet,
+  naming the phase. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-013: How does the layer writer learn missing parent metadata?
+
+- **Answer (2026-10-30):** option (a): the writer takes each missing
+  parent's metadata from the merged view, as containerd's `includeParents`
+  does for BuildKit. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-014: Are cross-repository mounts part of Phase 1?
+
+- **Answer (2026-10-30):** yes: push mounts blobs across repositories and
+  falls back to an upload when the mount is refused, as containerd's pusher.
+  Implemented in `rnk_builder::push`. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-022: What format does the secret flag take?
+
+- **Answer (2026-10-30):** the full buildctl/kaniko syntax: `id=`,
+  `type=file|env`, `src=`/`source=`, `env=`; with no source, the environment
+  variable named by the id if set, else the file named by the id; a secret
+  is at most 500 KiB. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-025: Are other user xattrs kept in exported layers?
+
+- **Answer (2026-10-30):** no: exported layers carry only
+  `security.capability`, as BuildKit's (containerd's) layer writer. The
+  entry's claim that BuildKit strips only other `user.*` xattrs was wrong.
+  Recorded in [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-026: When and how are layers merged near the 500-lower limit?
+
+- **Answer (2026-10-30):** no merging: a stage that needs more lowers than
+  the kernel allows fails with a clear error, as BuildKit's overlay
+  snapshotter. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-043: What are the prune defaults?
+
+- **Answer (2026-10-30):** age by last use (option a), with BuildKit's tiers
+  as defaults: cache mounts and contexts dropped after 48 h unused beyond
+  512 MB, anything unused for 60 days, and size caps of 10% reserved, 20%
+  minimum free, 80% maximum used. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-044: How do remote ONBUILD triggers reach the stage graph?
+
+- **Answer (2026-10-30):** option (b): a separate step extends the graph
+  once base configs are fetched, repeated until no new dependency appears,
+  as BuildKit's `initOnBuildTriggers`. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-046: What happens to HTTPS contexts on Azure Blob hosts?
+
+- **Answer (2026-10-30):** option (b): fetch them as plain HTTPS, as
+  BuildKit does for any `https://` context (an archive is unpacked, anything
+  else is the Dockerfile). Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-065: Do localhost and private-network registries fall back to HTTP?
+
+- **Answer (2026-10-30):** loopback registries (`localhost`, `127.0.0.0/8`,
+  `::1`) use plain HTTP without a flag, as BuildKit; other hosts, RFC 1918
+  and `*.local` included, fall back to HTTP only when listed with
+  `--insecure-registry`. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-077: How is the MS_MOVE fallback kept from a chroot escape?
+
+- **Answer (2026-10-30):** option (b), the recommendation, confirmed by the
+  VM escapes: `MS_MOVE` only where `/` is a mount root, keeping Docker's 14
+  capabilities; ranikust inside a plain chroot refuses. Measured with `just
+  test-vm smoke` on kernels 5.15 and 6.8
+  ([testing](testing.md#the-vm-harness-tier-t2)).
+
+### Q-080: Who resolves COPY sources against the context, and how?
+
+- **Answer (2026-10-30):** option (a) with BuildKit's rules: `rnk-builder`
+  resolves sources against the context and stage roots; a wildcard that
+  matches nothing copies nothing and is not an error; there is no "several
+  sources need a trailing `/`" rule. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-081: Does the context sub-path flag apply to a local directory?
+
+- **Answer (2026-10-30):** option (a): the sub-path applies only to fetched
+  (git, HTTPS, tar) contexts and is ignored for a local directory, as both
+  BuildKit and kaniko do. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-100: How durable is a published store entry after a power loss?
+
+- **Answer (2026-10-30):** option (a): blobs are fsynced before publication;
+  extracted layers are not synced, as containerd's defaults under BuildKit.
+  Recorded in [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-111: Does the store open before or after the probes?
+
+- **Answer (2026-10-30):** option (a), the recommendation: `set_up` opens
+  the store (marker check, start-up clean-up) right after the state
+  directory check and before both probes (`feat/rnk-snapshot`).
+
+### Q-120: Where kaniko and BuildKit copy differently, which does `copy` follow?
+
+- **Answer (2026-10-30):** BuildKit's copy, item by item: (1) a symlinked
+  source is followed; (2) all xattrs are copied (layers still keep only
+  `security.capability`, Q-025); (3) an existing top-level destination keeps
+  its metadata, existing directories below it take the source's; (4) devices
+  and FIFOs are recreated and sockets become empty regular files; (5)
+  `--chmod` applies to directories too; (6) symbolic `--chmod` (`u+x`) is
+  accepted. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-121: Which overlay forms does the lower-layer lookup recognise?
+
+- **Answer (2026-10-30):** option (a), the recommendation: only ranikust's
+  own form (`user.overlay.opaque=y`, 0/0 whiteouts), `layers/` being written
+  by ranikust alone.
+
+### Q-130: Where kaniko and BuildKit differ on a config edit, which one wins?
+
+- **Answer (2026-10-30):** BuildKit for each: (1) a new `ENTRYPOINT` clears
+  an inherited `CMD` unless the stage set one; (2) `EXPOSE` takes
+  `tcp|udp|sctp` in any case, writes it in lower case and expands ranges
+  into one key per port; (3) `HEALTHCHECK --start-interval` is kept; (4) an
+  absolute `WORKDIR` stays as written, which BuildKit does too (the entry's
+  claim that it cleans it was wrong). Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-131: Which instructions get a history entry, with which fields?
+
+- **Answer (2026-10-30):** BuildKit's: one entry per instruction,
+  `empty_layer: true` for metadata instructions, a layer for `RUN`, `COPY`,
+  `ADD` and `WORKDIR` other than `/`, no entry for `FROM` and `ONBUILD`, no
+  author; `RUN`'s `created_by` carries the build args. The `comment` string
+  is the implementing branch's choice. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-132: Are empty values of a base config written back?
+
+- **Answer (2026-10-30):** option (b), plus BuildKit's spec round-trip:
+  empty strings, `false`, empty lists and maps are dropped, and so are
+  fields outside the OCI and Docker image specs (`Hostname`, `Domainname`,
+  `Tty`, `AttachStd*`, `OpenStdin`, `StdinOnce`, `Image`, `container`,
+  `container_config`, `docker_version`). Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-150: Is an extracted layer keyed by its diff ID alone?
+
+- **Answer (2026-10-30):** option (b): a layer whose extraction copied a
+  hardlink target from a lower is keyed by its diff ID and the chain below
+  it; other layers keep the diff-ID key. BuildKit keys every unpacked layer
+  by chain ID. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-151: How does the mount(2) fallback fit many layers?
+
+- **Answer (2026-10-30):** option (b), the containerd way: mount from a
+  short-lived thread that does `unshare(CLONE_FS)` and `chdir` into `l/`,
+  with relative lower names; no child process. The entry's "only in a forked
+  child" was wrong. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-160: Are base layers rewritten under `--reproducible`?
+
+- **Answer (2026-10-30):** option (a): base layers are kept as pulled, and
+  their history keeps its times; only the layers built after the base are
+  rewritten, as BuildKit's `rewriteRemoteWithEpoch`. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-161: Which fixed time does `--reproducible` write?
+
+- **Answer (2026-10-30):** option (a): `SOURCE_DATE_EPOCH` when set, else
+  the Unix epoch (equal to `SOURCE_DATE_EPOCH=0`). As BuildKit, times above
+  that epoch are clamped to it and older ones are kept, instead of every
+  time being set. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-180: Does VOLUME create its directories?
+
+- **Answer (2026-10-30):** option (a): `VOLUME` only records the config, and
+  an empty name is refused, as BuildKit. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-181: How is `RUN --mount=type=cache,sharing=` enforced?
+
+- **Answer (2026-10-30):** enforce `sharing=` as BuildKit: `shared` is one
+  cache for all; `locked` waits until the cache is free; `private` takes a
+  new empty cache when the existing one is busy (not a copy). `uid`, `gid`
+  and `mode` apply when the cache is created and are part of its key. The
+  entry's "private = own copy" was wrong. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-182: Which `RUN --mount=type=secret` options are honoured?
+
+- **Answer (2026-10-30):** a build-private copy of the secret, mode `0400`
+  owned by root by default, with `mode`, `uid` and `gid` honoured, and
+  `env=` supported, as BuildKit. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-184: May a Dockerfile's `RUN --network=host` lift `--network=none`?
+
+- **Answer (2026-10-30):** no, unless the operator allows it: `RUN
+  --network=host` needs `--allow network.host` (BuildKit's entitlement),
+  which then lifts `--network=none`. Under the default host network
+  (`ADR-0010`) nothing extra is needed. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-185: Does an image without `PATH` get one in its config?
+
+- **Answer (2026-10-30):** yes: any Linux config without `PATH` gets
+  `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, as
+  BuildKit; this replaces the interim that added it only for `scratch`.
+  Recorded in [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-186: Does a cancel kill a running `RUN`?
+
+- **Answer (2026-10-30):** yes: a cancel kills the running `RUN` with
+  SIGKILL (its PID 1, and with it the PID namespace), as BuildKit's
+  executor. Recorded in
+  [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+
+### Q-187: How does the W3 digest check treat the workload's `du` output?
+
+- **Answer (2026-10-30):** option (b): the acceptance criterion compares
+  `--jobs 1` with the default (equal on 2026-10-30); the e2e suite compares
+  the W3 images across `--jobs` by flattened content with the workload's
+  `du`-derived files (`/out/a.txt`, `/out/all.txt`) on its noise list,
+  because those files depend on disk block allocation, not on ranikust.
+  `nextjs-kaniko` is a separate project and is not changed here.
+
+### Q-200: How does the e2e suite's `ranikust` reach a plain-HTTP registry?
+
+- **Answer (2026-10-30):** option (a), the recommendation:
+  `--insecure-registry <host>` (repeatable) with kaniko's meaning
+  (`ADR-0011`), HTTPS first and plain HTTP when it fails
+  (`feat/rnk-builder-executors`).

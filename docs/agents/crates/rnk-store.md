@@ -48,7 +48,7 @@ impl Store {
               E: Into<Box<dyn std::error::Error + Send + Sync>>;      //   → fsync a blob → rename
     pub fn cache_dir(&self, id: &str) -> Result<PathBuf>;  // caches/<sha256(id)>, created if missing
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>
-    pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport>; // [design] Phase 5, [open: Q-043]
+    pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport>; // [design] Phase 5, (Q-043, ADR-0032)
 }
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
@@ -177,6 +177,6 @@ on a blocking thread, because the lock may wait.
   `close` it at the end.
 - Deferred: `prune` (Phase 5).
 - [open: Q-015] Interim: layers named by diff ID, lock files under
-  `locks/`. [open: Q-100] Durability: a blob is `fsync`ed before its
+  `locks/`. (Q-100, ADR-0032) Durability: a blob is `fsync`ed before its
   rename, a layer is not. [open: Q-011] The owner of the workdir checks
   and the kaniko-mode workdir lock (`ranikust` or `rnk-rootfs`); not here.

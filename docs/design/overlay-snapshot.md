@@ -164,7 +164,7 @@ Requirements found by comparing images:
 - **Parent directory headers.** Every emitted entry's ancestor directories
   are emitted too, with their current metadata, even when unchanged; the
   `rnk-layer` writer adds the missing ones, asking the exporter for their
-  metadata through a lookup ([open: Q-013], interim).
+  metadata through a lookup ((Q-013, ADR-0032), interim).
   Otherwise extractors such as containers-storage create missing parents as
   0755 and mask the real mode below (`/root` 700 → 755, `/tmp` 1777 → 755).
   The `sameDirent` rule only stops an unchanged directory from being emitted

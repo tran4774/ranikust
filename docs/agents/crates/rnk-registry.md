@@ -172,8 +172,8 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   manifest, index and blob pulls with platform selection; one-PUT blob and
   raw manifest pushes; `blob_exists`; mounts; retries; spans.
 - Deferred: mirrors, credential helpers (phase 5); cache-repo use by
-  `rnk-cache` (phase 4). [open: Q-014] Task 11 mounts (interim, on
+  `rnk-cache` (phase 4). (Q-014, ADR-0032) Task 11 mounts (interim, on
   `feat/rnk-builder-outputs`).
-  [open: Q-065] HTTP fallback for local registries. [open: Q-048] `login`.
+  (Q-065, ADR-0032) HTTP fallback for local registries. [open: Q-048] `login`.
   Only a loopback registry was measured
   ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).

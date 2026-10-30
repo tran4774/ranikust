@@ -51,7 +51,7 @@ pub struct StageNode { pub base: Base, pub platform, pub triggers, pub reference
 pub struct StageScope { .. } // [done] apply(&Located<Instruction>) -> expanded; env(), config_env(), args()
 pub struct Error { kind: ErrorKind, lines: Option<Lines>, message } // [done] Syntax|Instruction|Expansion|Graph
 pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [design] phase 2
-// [open: Q-044] how remote base ONBUILD triggers enter stage_graph() without I/O
+// (Q-044, ADR-0032) how remote base ONBUILD triggers enter stage_graph() without I/O
 ```
 
 ## Invariants

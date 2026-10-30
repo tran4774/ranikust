@@ -34,7 +34,7 @@ Built, the output side:
 pub struct BuildTime;                                   // one clock reading per build
 impl BuildTime {
     pub fn at(now: SystemTime) -> Self;                 // normal build: config `created`, history
-    pub fn reproducible(source_date_epoch: Option<&str>) -> Result<Self>;  // epoch or SOURCE_DATE_EPOCH [open: Q-161]
+    pub fn reproducible(source_date_epoch: Option<&str>) -> Result<Self>;  // epoch or SOURCE_DATE_EPOCH (Q-161, ADR-0032)
     pub fn layer_mtime(&self) -> Option<i64>;           // for EncodeOptions::mtime
     pub fn rfc3339(&self) -> String;                    // Go's RFC3339Nano, as kaniko writes
 }
@@ -55,8 +55,8 @@ impl LayerExporter {
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
 }
-pub fn layer_history(created_by: &str, time: &BuildTime) -> History;                       // [open: Q-131]
-pub fn image_format(base: Option<ImageFormat>, zstd: bool, reproducible: bool) -> ImageFormat;  // [open: Q-006]
+pub fn layer_history(created_by: &str, time: &BuildTime) -> History;                       // (Q-131, ADR-0032)
+pub fn image_format(base: Option<ImageFormat>, zstd: bool, reproducible: bool) -> ImageFormat;  // (Q-006, ADR-0032)
 pub struct Image { pub format: ImageFormat, pub config: Bytes, pub config_descriptor: Descriptor,
                    pub manifest: RawManifest, pub layers: Vec<BlobLayer> }
 pub fn assemble(config: ImageConfig, layers: Vec<BlobLayer>, format: ImageFormat, time: &BuildTime) -> Result<Image>;
@@ -87,7 +87,7 @@ Built, the stage executor (blocking: call it on a thread of its own):
 pub fn build_stage<S: Snapshotter>(cx: &BuildCx<'_, S>, input: StageInput<'_, S::Root>) -> Result<StageDone<S::Root>>;
 pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox, pub store: &'a Store,
     pub context: &'a Context, pub context_files: &'a ContextFiles, pub exporter: &'a LayerExporter,
-    pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, PathBuf>,  // [open: Q-022]
+    pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, PathBuf>,  // (Q-022, ADR-0032)
     pub platform: &'a Platform, pub run_gate: &'a dyn RunGate, pub cancelled: &'a (dyn Fn() -> bool + Sync) }
 pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
 pub struct StageInput<'a, R> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R>,
@@ -108,13 +108,13 @@ pub struct PulledImage { pub reference, pub config: ImageConfig, pub format: Ima
 in a layer of their own; the other instructions edit the config through
 `rnk_oci::ConfigEdit` and mount nothing. A closed layer is encoded at
 once when the stage's `LayerDemand` needs it, and gets a history entry
-([open: Q-131], kaniko's shape). `ranikust` implements `rnk-sched`'s
+((Q-131, ADR-0032), kaniko's shape). `ranikust` implements `rnk-sched`'s
 `StageRunner` on top: this crate does not depend on `rnk-sched`.
 Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
 or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
 --link/--parents/--exclude`, `RUN --mount` other than `cache` and
 `secret`, `RUN --security=insecure` and `--device`, `RUN --network=host`
-under the operator's `--network=none` [open: Q-184], a heredoc name with
+under the operator's `--network=none` (Q-184, ADR-0032), a heredoc name with
 `/`. A `#!` `RUN` heredoc runs as a script, bound read-only from the build
 directory at `/dev/pipes/<name>`. A symlinked context source is followed
 only through kept entries; a copy onto a symlink to a directory goes
@@ -240,16 +240,16 @@ through a descriptor of its directory.
   `--reproducible`, the three outputs, and the executors (`build_stage`),
   called by `ranikust build`. Left: config goldens against kaniko and
   BuildKit, W1-W3, export overlapped with the next instruction.
-- [open: Q-080] Interim (a): sources resolve here, against the context
+- (Q-080, ADR-0032) Interim (a): sources resolve here, against the context
   walk (`ContextFiles`) or a stage's root, with BuildKit's wildcards.
-- [open: Q-180] `VOLUME` records the config only. [open: Q-181] cache
-  mounts are all `shared`. [open: Q-182] a secret keeps its host file's
+- (Q-180, ADR-0032) `VOLUME` records the config only. (Q-181, ADR-0032) cache
+  mounts are all `shared`. (Q-182, ADR-0032) a secret keeps its host file's
   mode and owner.
 - [open: Q-029] Interim: `rnk-sched` builds each stage's demand with
   `LayerDemand::for_stage`; the rule lives here.
-- [open: Q-006] Interim: kaniko's format rule, `image_format`.
-- [open: Q-131] Interim: kaniko's history, author `ranikust`,
+- (Q-006, ADR-0032) Interim: kaniko's format rule, `image_format`.
+- (Q-131, ADR-0032) Interim: kaniko's history, author `ranikust`,
   `layer_history`.
-- [open: Q-160] Under `--reproducible`, base layers are kept as pulled.
+- (Q-160, ADR-0032) Under `--reproducible`, base layers are kept as pulled.
 - [open: Q-162] Built layer blobs live in the build directory, not in the
   store's `blobs/`.

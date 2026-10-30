@@ -34,7 +34,7 @@ pub struct Digest;  // "sha256:<64 hex>" | "sha512:<128 hex>", validated; Ord = 
 pub enum DigestAlgorithm { Sha256, Sha512 }
 pub struct MediaType; // any string; consts OCI_* / DOCKER_*: manifest, index, config, layers, foreign layers, schema 1
     // format() by vendor prefix, is_manifest/is_index/is_config/is_layer/is_foreign_layer, layer_compression, to_format
-pub enum ImageFormat { Oci, Docker } // no Default [open: Q-006]: kaniko follows the base image's format; or OCI
+pub enum ImageFormat { Oci, Docker } // no Default (Q-006, ADR-0032): kaniko follows the base image's format; or OCI
     // manifest_media_type, index_media_type, config_media_type, layer_media_type(Compression) (Docker + zstd: Err)
 pub enum Compression { Uncompressed, Gzip, Zstd }
 pub struct Descriptor; pub struct Platform;     // Platform keeps "os.version" / "os.features"
@@ -55,7 +55,7 @@ Canonical JSON is OLPC's, as OCI [considerations.md](https://github.com/opencont
 asks: every object's keys sorted by UTF-8 bytes, struct fields included; no
 whitespace; integers only; `serde_json`'s string escaping.
 
-Config edits and output index files (pure; [open: Q-007] here rather than
+Config edits and output index files (pure; (Q-007) here rather than
 in `rnk-builder`):
 
 ```rust
@@ -82,8 +82,8 @@ one; `EXPOSE` adds `/tcp` and accepts only `tcp` and `udp`; `STOPSIGNAL` is
 checked as moby's `ParseSignal` and stored as written; `CMD` drops
 `ArgsEscaped`; an empty exec form clears the field. Where BuildKit differs
 (`ENTRYPOINT` resetting an inherited `CMD`, `sctp` and port ranges,
-`--start-interval`): [open: Q-130]. Which instructions get a history entry:
-[open: Q-131]. On error the config is unchanged. Creating the `WORKDIR`
+`--start-interval`): (Q-130, ADR-0032). Which instructions get a history entry:
+(Q-131, ADR-0032). On error the config is unchanged. Creating the `WORKDIR`
 and `VOLUME` directories is `rnk-builder`'s, through `RootPath`.
 
 `RawManifest` and `select_platform` live in `rnk-registry` (`client.rs`,
@@ -152,7 +152,7 @@ the format.
 - Docker schema 2 has no zstd layer type: zstd needs OCI; kaniko rejects
   zstd with `--image-format=docker` or `--tar-path` (`root.go:177-188`).
 - kaniko's `--image-format` defaults to the base's format (`root.go:358`)
-  [open: Q-006], converts layer media types and asserts no mixing
+  (Q-006, ADR-0032), converts layer media types and asserts no mixing
   (`build.go:1237-1268`, `transform.go:141-148`); its table maps OCI zstd to
   Docker gzip and Docker foreign gzip to uncompressed OCI, mislabeling the
   blob. `MediaType::to_format` follows the OCI matrix instead.

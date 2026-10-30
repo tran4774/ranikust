@@ -16,32 +16,32 @@ the code.
 
 | | Item | Owner |
 |---|---|---|
-| [x] | OCI and Docker v2s2 manifests, index, config, media types; config edits of the metadata instructions, history and `diff_ids` appends, docker-save `manifest.json` and OCI layout types (Q-007 interim; kaniko/BuildKit differences Q-130 to Q-132) | `rnk-oci` |
+| [x] | OCI and Docker v2s2 manifests, index, config, media types; config edits of the metadata instructions, history and `diff_ids` appends, docker-save `manifest.json` and OCI layout types (Q-007; config edits, history and empty fields follow BuildKit, `ADR-0032`, code to follow) | `rnk-oci` |
 | [x] | Dockerfile front end: lexer, directives, heredocs, `ARG`/`ENV` expansion, instructions, stage DAG; BuildKit goldens on kaniko's 200 Dockerfiles | `rnk-dockerfile` |
 | [x] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
 | [~] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion (done; the workdir checks wait for Q-011) | `rnk-rootfs` |
 | [x] | Deterministic tar (the writer sorts entries and adds missing parent headers), pigz-style parallel gzip, parallel zstd as independent 1 MiB frames, gzip/zstd decoder for pulled blobs, streaming digests | `rnk-layer` |
 | [x] | Pulls from public registries and with docker `config.json` auth; rustls with `ring`, trusting host CAs plus webpki roots (`ADR-0024`); `--registry-certificate` (the client; the flags come with task 8) | `rnk-registry` |
 | [x] | Persistent store in `--state-dir`: `blobs/`, `layers/`, `caches/`, `tmp/`, per-digest `flock`, atomic rename, start-up cleanup; `BuildPaths` (`ADR-0006`, `ADR-0021`, `ADR-0022`); T0 across threads, processes and `SIGKILL` (`ranikust` still has to open and close it) | `rnk-store` |
-| [~] | Process set-up: flags (`--mode`, `ADR-0023`) and validation into `BuildConfig`; private mount namespace (refused in a plain `chroot`), the store opened before the probes (marker, start-up clean-up; [open: Q-111], interim (a)), the probes in order, the outcome, spawner thread, all while single-threaded (done; T0, T1 `just smoke`, T2 `just test-vm smoke`); left: workdir checks [open: Q-011], workdir `flock` in kaniko mode | `ranikust` |
+| [~] | Process set-up: flags (`--mode`, `ADR-0023`) and validation into `BuildConfig`; private mount namespace (refused in a plain `chroot`), the store opened before the probes (marker, start-up clean-up; Q-111), the probes in order, the outcome, spawner thread, all while single-threaded (done; T0, T1 `just smoke`, T2 `just test-vm smoke`); left: workdir checks [open: Q-011], workdir `flock` in kaniko mode | `ranikust` |
 | [~] | Overlay-root probe (steps 1, 3, 4 of `design/modes-and-detection.md`): namespaces, `proc`, `pivot_root`, `sysfs`; overlay mount and `lowerdir+`; refusal with the diagnosis `[inferred]` (the sandbox's step 3 is done: the real sequence, `pivot_root` else `MS_MOVE`; the overlay steps 1 and 4 are done: `rnk_snapshot::probe` mounts with `lowerdir+`, else `mount(2)`, and checks a write through it; `ranikust` runs both and refuses with guidance; left: the user-namespace steps, Phase 3) | `rnk-sandbox`, `rnk-snapshot`; run by `ranikust` |
 | [~] | `RUN` sandbox: namespaces, mounts, `pivot_root`/`MS_MOVE`, capability drop, `USER` from the root, stubs and journal, PDEATHSIG (done; runs in rootless podman, `just smoke`, and as real root in the VM, `just test-vm`, on kernels 5.15 and 6.8: `pivot_root` on the host and in `docker run --privileged`, `MS_MOVE` under Docker's seccomp profile) | `rnk-sandbox` |
-| [~] | `RUN --mount=type=cache\|secret`; `--network=none` (done: cache directories in the store, `--secret id=ID,src=PATH` [open: Q-022], `RUN --network=none` and `--network=none`; the e2e build checks loopback only and that the secret reaches no blob; left: `sharing=` [open: Q-181], the acceptance check that a cache persists across builds) | `rnk-sandbox`, `rnk-builder` |
-| [x] | Overlay stage roots: `StageRootfs`/`Snapshotter` (interim signature, [open: Q-024]), `fsconfig(lowerdir+)` with `mount(2)` fallback, `ADR-0016` options, one upper per instruction, root metadata from the lower; base-layer extraction into the store (`rnk-layer` decoder → `rnk-rootfs::extract_overlay`) (done, T0 and T2 `just test-vm unit`; no merging near 500 lowers, [open: Q-026]) | `rnk-snapshot` |
+| [~] | `RUN --mount=type=cache\|secret`; `--network=none` (done: cache directories in the store, `--secret id=ID,src=PATH`, `RUN --network=none` and `--network=none`; the e2e build checks loopback only and that the secret reaches no blob; left: BuildKit's `--secret` syntax and secret files, `sharing=` and `--allow network.host` (`ADR-0032`), the acceptance check that a cache persists across builds) | `rnk-sandbox`, `rnk-builder` |
+| [x] | Overlay stage roots: `StageRootfs`/`Snapshotter` (interim signature, [open: Q-024]), `fsconfig(lowerdir+)` with `mount(2)` fallback, `ADR-0016` options, one upper per instruction, root metadata from the lower; base-layer extraction into the store (`rnk-layer` decoder → `rnk-rootfs::extract_overlay`) (done, T0 and T2 `just test-vm unit`; no merging near 500 lowers, as BuildKit, Q-026) | `rnk-snapshot` |
 | [x] | Upperdir → OCI layer exporter, `WriteUpperdir`-style: whiteouts first, raw modes, overlay xattrs stripped; entries fed to the `rnk-layer` writer, which sorts them and adds parent headers (done, T0; `blocks_read` not recorded yet) | `rnk-snapshot` → `rnk-layer` |
 | [~] | Executors: `FROM` (also `<stage>`), `ARG` (also before `FROM`), `ENV`, `RUN` (shell, exec, heredoc), local `COPY`/`ADD` (`--chown`, `--chmod`, `--from`), `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `VOLUME`, `ENTRYPOINT`, `CMD`, `SHELL`, `STOPSIGNAL`, `HEALTHCHECK` (done: `build_stage`, T0 on a fake snapshotter, T1 `just smoke` and T2 `just test-vm smoke` build `tests/smoke/e2e`; left: config goldens against kaniko and BuildKit, W1–W3) | `rnk-builder` |
 | [x] | Local directory context; locating the ignore file (`<Dockerfile>.dockerignore` first); the context walk as BuildKit's filtered walk (`ADR-0027`) | `rnk-context` |
 | [x] | Lazy export, config updates, image assembly; canonical JSON with sorted keys (`LayerDemand`, `LayerExporter` over the snapshot's diff, `assemble`; a layer is encoded right after its instruction, not overlapped with the next one yet) | `rnk-builder`, `rnk-oci` |
-| [~] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` (done and called by `ranikust build`; the OCI layout and Docker tar load in podman and Docker; one digest with `--jobs 1` and the default under `--reproducible`; left: a push to a real registry in an end-to-end run; base layers under `--reproducible` [open: Q-160]) | `rnk-builder`, `rnk-registry`, `rnk-layer` |
+| [~] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` (done and called by `ranikust build`; the OCI layout and Docker tar load in podman and Docker; one digest with `--jobs 1` and the default under `--reproducible`; left: a push to a real registry in an end-to-end run; OCI by default and clamped times under `SOURCE_DATE_EPOCH`, `ADR-0032`) | `rnk-builder`, `rnk-registry`, `rnk-layer` |
 | [~] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix (done; `ranikust`'s runner builds each stage on a thread of its own and takes a `--jobs` permit per `RUN`; left: the W3 digest test, the memory thresholds [open: Q-030]) | `rnk-sched` |
-| [~] | Common kaniko flags and the subcommands (`ADR-0011`): `build` and `version`, accepted flags parsed and validated, the others refused with a reason (done); final list [open: Q-023], `--cache` [open: Q-021], `--secret id=ID,src=PATH` [open: Q-022], interim, `push`/`login` [open: Q-048] | `ranikust` |
+| [~] | Common kaniko flags and the subcommands (`ADR-0011`): `build` and `version`, accepted flags parsed and validated, the others refused with a reason (done); final list [open: Q-023], `--cache` [open: Q-021], `--secret` (Q-022, `ADR-0032`), `push`/`login` [open: Q-048] | `ranikust` |
 | [~] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests under qemu-user 10.0 (`ADR-0009`; `just test-aarch64` passes locally; CI job `test-aarch64` has not run yet); the release binary is static but not static-pie [open: Q-140] | CI |
 | [~] | T2 VM harness `just test-vm` (`docs/testing.md`): `unit` and `smoke` suites on Ubuntu 22.04 and 24.04 (done); cgroup v1, kernels before 5.11, the host-safety attack suite and a CI job with KVM to come | tests |
-| [~] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) (the `e2e` VM suite, `just test-vm e2e`: W1–W3 built by kaniko and BuildKit as `run-fair.sh` does, flattened-image and config comparison, `check-blobs.py`, metrics side by side; the `ranikust` leg waits for `ranikust build` and a way to reach a plain-HTTP registry, [open: Q-200]) | tests |
+| [~] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) (the `e2e` VM suite, `just test-vm e2e`: W1–W3 built by kaniko and BuildKit as `run-fair.sh` does, flattened-image and config comparison, `check-blobs.py`, metrics side by side; the `ranikust` leg waits for `ranikust build` and a way to reach a plain-HTTP registry, (Q-200)) | tests |
 | [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `RANIKUST_METRICS_FILE`, `--metrics-file`, `meta.mode` and `meta.options` (done); every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
 | [x] | Build toolchain: cargo-zigbuild with zig in the `justfile` and CI for the musl x86_64 and aarch64 builds (`ADR-0020`, Q-052); zig compiles every C dependency, rustc links x86_64 with `cc` to keep static-pie; mimalloc is the binary's allocator | build, CI, `ranikust` |
 | [x] | Start-up check for Linux 5.8 (`openat2` with `RESOLVE_IN_ROOT`, `statx` mount id), with a clear refusal (`ADR-0028`) | `ranikust`; probe in `rnk-rootfs` |
-| [x] | Base-layer extraction in the overlay form: a hardlink into a lower layer is copied from the lower layers as a regular file (Q-055; `rnk_rootfs::extract_overlay`, called by `rnk_snapshot`'s `base_layer`; the store's key ignores the stack below, [open: Q-150]) | `rnk-rootfs`, `rnk-snapshot` |
+| [x] | Base-layer extraction in the overlay form: a hardlink into a lower layer is copied from the lower layers as a regular file (Q-055; `rnk_rootfs::extract_overlay`, called by `rnk_snapshot`'s `base_layer`; keyed by the chain when the stack below matters, Q-150, `ADR-0032`, code to follow) | `rnk-rootfs`, `rnk-snapshot` |
 
 ## Task order
 
@@ -63,7 +63,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 7 | `rnk-store`: layout, locks, publication, start-up clean-up (`ADR-0021`, `ADR-0022`) (done; `prune` is Phase 5) | 4, 5, 6 | |
 | 8 | `ranikust` set-up and flags (`ADR-0023`), the Linux 5.8 check (`ADR-0028`); `rnk-sandbox` sandbox and its probes; `ranikust` runs them, opens the store and picks the outcome (done) | 4 | |
 | 9 | `rnk-snapshot` overlay roots, overlay probes, extraction (hardlinks into lower layers copied, Q-055) and exporter; design the `Snapshotter` signature (done; interim signature, Q-024) | 4, 5, 7 | |
-| 10 | `rnk-context` local directory (done); `COPY` sources are resolved in 11 (Q-080) | 3 | |
+| 10 | `rnk-context` local directory (done); `COPY` sources are resolved in 11 (Q-080, `ADR-0032`) | 3 | |
 | 11 | `rnk-builder`: executors, lazy export, assembly, outputs and push (done; config goldens and W1–W3 left) | 1, 2, 6, 8, 9, 10 | |
 | 12 | `rnk-sched`: DAG, `--jobs`, cancellation (done behind the `StageRunner` trait, tested with fakes; the builder's runner comes with 11) | 2, 11 | |
 | 13 | CLI end to end, outputs, acceptance runs (`ranikust build` builds end to end; the acceptance runs are left) | all | |
@@ -80,7 +80,8 @@ with `rnk_metrics::Capture`; a task is not done without it.
 - [x] Builds W1 (`nextjs-kaniko/app`), W2 cold (`nextjs-kaniko/app-cache`;
       it needs `COPY --from=<image>`) and W3 (`nextjs-kaniko/app-par`).
       Built by `just test-vm e2e` on noble, one round (2026-10-30); the W3
-      digest across `--jobs` waits on [Q-187](../open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output).
+      digest across `--jobs` is to be compared by content without the
+      workload's `du` files ([Q-187](../open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output)).
 - [ ] `--jobs 1`, `2` and default measured on W3 with `run-fair.sh`
       (`exp-08` at 32 CPUs, lazy: 8.44, 6.52, 6.02 s); peak memory recorded;
       with `--reproducible`, `--jobs 1` and default give identical digests.
@@ -148,6 +149,15 @@ Also open, not blocking a start:
   [Q-021](../open-questions.md#q-021-what-do-the-cache-flags-do-before-phase-4);
 - the memory-limit algorithm (`design/scheduler.md#limits`):
   [Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds).
+
+Settled by following BuildKit
+([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): the
+config, history, `COPY`, `RUN --mount` and registry questions; the code
+changes land in follow-up branches. Escalated to the maintainer under that
+rule: `RUN --network=none` without `CAP_NET_ADMIN`
+([Q-183](../open-questions.md#q-183-what-does-run---networknone-do-without-cap_net_admin)),
+remote repository contexts (Q-045, Phase 5) and filtering unchanged
+copied-up files (Q-049, after Phase 1).
 
 Every open question, in task order, is in
 [open-questions.md](../open-questions.md#open).

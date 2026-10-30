@@ -41,7 +41,7 @@ enum Command { Build(Box<BuildArgs>), Version }                  // built (clap,
 struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, destination, no_push,
     tar_path, oci_layout_path, compression, reproducible, registry_certificate, snapshot_mode;
     ours: mode, workdir, state_dir, jobs, network, metrics_file.
-    Planned: secret [open: Q-022], cache, cache_repo [open: Q-021], ignore_path (2),
+    Planned: secret (Q-022, ADR-0032), cache, cache_repo [open: Q-021], ignore_path (2),
     parallel_stages (2), seccomp, userns (3) */ }
 fn cli::parse(args) -> Result<Cli, ParseError>;  // built: refused kaniko flags first, then clap
 struct BuildConfig { /* built: the flags validated, paths absolute, enums resolved */ }
@@ -75,13 +75,13 @@ stops (Phase 2) → the overlay-mode state directory, `--state-dir` or
 `unshare(CLONE_NEWNS)`, `/` rslave) → `prepare_state_dir` (created 0700;
 refused if it or a directory above it up to the workdir is a symlink, not
 owned by the effective uid, or group/world-writable) → `rnk_store::Store::open`
-(marker, start-up clean-up; [open: Q-111] interim (a)) →
+(marker, start-up clean-up; (Q-111) interim (a)) →
 `rnk_sandbox::probe` in `<state-dir>/sandbox` → `rnk_snapshot::probe` in
 `builds/<id>/overlay-probe` → outcome → `Sandbox::start` (stub-journal
 replay, spawner thread) → the store is closed → stop with exit code 2,
 "set up for …, but building is not implemented yet". Still to
 come [design]: workdir checks [open: Q-011] before the namespace →
-`rnk-store` open and clean-up before the spawner (task 7) [open: Q-111] →
+`rnk-store` open and clean-up before the spawner (task 7) (Q-111) →
 kaniko mode: `flock` the workdir → tokio runtime → `rnk-sched`.
 
 Exit codes: 0 success (`--help`, `--version`, `version` included); 1 a
@@ -174,7 +174,7 @@ error, a refused kaniko flag, an invalid combination, and for now every
 - `rnk_sandbox::Caps` is `#[non_exhaustive]`: `setup::pick` is generic
   over the caps so its tests need no real probe.
 - The sandbox probe creates `<state-dir>/sandbox` before `rnk-store` has
-  checked the state directory's marker [open: Q-111].
+  checked the state directory's marker (Q-111).
 - kaniko requires `--destination` unless `--no-push` (`root.go:200-202`),
   rejects zstd with `--tar-path` or `--image-format=docker` (`:177-188`), and
   refuses to run outside a container without `--force` (`:240-245`).
@@ -213,12 +213,12 @@ error, a refused kaniko flag, an invalid combination, and for now every
   a `--jobs` permit per `RUN` over a channel; then the outputs in
   kaniko's order (OCI layout, Docker tar, push) and the digest on stdout.
   Roots are released children first, then the store closed, on success
-  and failure alike. `--secret id=ID,src=PATH` [open: Q-022], ids unique.
+  and failure alike. `--secret id=ID,src=PATH` (Q-022, ADR-0032), ids unique.
   The roots of `COPY --from=<image>` are made by the stage's thread, not
   the preparation, which only pulls. A Dockerfile not found as given is
   read inside the context through its `RootPath`, never by a host path.
   The first SIGINT or SIGTERM cancels the build, a second exits at once
-  [open: Q-186]. A release that fails leaves the stages below it to the
+  (Q-186, ADR-0032). A release that fails leaves the stages below it to the
   next build's clean-up.
 - Left: the workdir checks [open: Q-011], the kaniko-mode lock
   (Phase 2), the acceptance runs (task 13).

@@ -27,6 +27,8 @@ blocked Phase 1 ([phase-1](../agents/phase-1.md)); they were accepted on
 2026-10-30. ADR-0025 records how builds are measured (`rnk-metrics`);
 ADR-0026 to ADR-0029 record decisions made while implementing Phase 1;
 ADR-0030 and ADR-0031 answer open questions Q-012, Q-075 and Q-076.
+ADR-0032 settles the remaining questions about observable behaviour by
+following BuildKit.
 
 ## Status lifecycle
 
@@ -100,3 +102,4 @@ when new measurements contradict its evidence.
 | [0029](0029-zstd-layers-as-independent-1-mib-frames.md) | zstd layers are written as independent 1 MiB frames | Accepted | 2026-10-30 | Exp 05 Q3, `rnk-layer` tests |
 | [0030](0030-phase-1-dependency-picks.md) | Phase 1 dependencies: rustix, sha2, gzip by hand, reqwest, own config.json reader, clap | Accepted | 2026-10-30 | Q-012 (Phase 1 O5), Exp 05 |
 | [0031](0031-run-host-name-and-hosts-file.md) | A RUN sees the fixed host name `ranikust` and the host's /etc/hosts, or loopback without network | Accepted | 2026-10-30 | Q-075, Q-076, kaniko source |
+| [0032](0032-observable-behaviour-follows-buildkit.md) | Observable build behaviour follows BuildKit | Accepted | 2026-10-30 | 28 open questions, BuildKit source |

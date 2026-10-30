@@ -65,13 +65,13 @@ naming the reason, never silently ignored.
 | `--compression` | `:357` | unset (gzip) | accept (gzip, zstd) | parsed |
 | `--cache`, `--cache-repo` | `:360`, `:351` | false; inferred from destination, `oci:` prefix = layout | accept; behaviour before Phase 4 `[open: Q-021]` | refused until Phase 4 (Q-021 interim) |
 | `--registry-certificate` | `:402` | none | accept; added to host CAs plus embedded roots (`ADR-0024`) | parsed (`REGISTRY=PATH`) |
-| `--insecure-registry` | `:399` | none | accept: plain HTTP to push and pull, HTTPS tried first (`ClientOptions::insecure`); `[open: Q-200]` interim (a) | accepted, repeatable |
+| `--insecure-registry` | `:399` | none | accept: plain HTTP to push and pull, HTTPS tried first (`ClientOptions::insecure`); `(Q-200)` interim (a) | accepted, repeatable |
 | `--ignore-path` | `:371` | none | accept | refused until Phase 2 (kaniko mode) |
 | `--kaniko-dir` | `:345` | `/kaniko` | renamed `--state-dir` (`ADR-0011`); default `/ranikust/state` in kaniko mode, `<workdir>/.ranikust` in overlay mode (`ADR-0022`) | refused, naming `--state-dir`; `--state-dir` parsed |
 | `--snapshot-mode` | `:341` | `full` (`full\|redo\|time`, `build.go:2474`) | accept, kaniko's meaning: what the kaniko-mode walk compares; ignored with a warning in overlay mode (`ADR-0023`) | parsed; warning with `--mode=overlay` |
 | `--custom-platform` | `:342` | host | `--platform`, `linux/amd64` only at first (`ADR-0009`); alias `[open: Q-020]` | refused, naming `--platform` (Q-020 interim); `--platform` parsed |
 | `--force` | `:63` | false | replaced by the workdir checks; accept or reject `[open: Q-023]` | refused (Q-023 interim) |
-| `--secret` | `:378` | none | needed for `type=secret` in Phase 1; format `[open: Q-022]` | refused until the format is decided (Q-022 interim) |
+| `--secret` | `:378` | none | needed for `type=secret` in Phase 1; format `(Q-022, ADR-0032)` | refused until the format is decided (Q-022 interim) |
 | `--registry-mirror`, `--registry-map`, `--credential-helpers` | `:407`, `:406`, `:409` | none; helpers: all | Phase 5 (mirrors, helpers); names `[open: Q-047]` | refused (Phase 5) |
 | `--cache-dir` | `:352` | `/cache` | warmer's base-image cache; the store replaces it `[inferred]`; `[open: Q-023]` | refused (Q-023 interim) |
 | `--git`, `--bucket` | `:368`, `:340` | none | git context Phase 5; GCS out of scope | refused (`-b` too) |
@@ -125,9 +125,10 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
 - **`MAINTAINER`.** kaniko skips it with a warning
   (`pkg/commands/commands.go:115-117`); ranikust sets the config's
   `author`, as BuildKit does.
-- **`FROM scratch`.** Both give the config `PATH` (`ScratchEnvVars`); an
-  image without `PATH` keeps none in kaniko and in ranikust, where BuildKit
-  adds it [open: Q-185].
+- **`PATH`.** kaniko gives `FROM scratch` a `PATH` (`ScratchEnvVars`)
+  and leaves any other image without one as it is; ranikust adds the
+  default `PATH` to every config that lacks it, as BuildKit (`ADR-0032`,
+  Q-185).
 - **Ignore list.** kaniko ignores `/kaniko`, `/etc/mtab` and
   `/tmp/apt-key-gpghome` (`pkg/util/fs_util.go:72-89`), `/var/run` while
   `--ignore-var-run` is true (`cmd/executor/cmd/root.go:155-165`), every
@@ -146,10 +147,10 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   follows: current time by default; under `--reproducible` tar headers and
   config get a fixed epoch, or `SOURCE_DATE_EPOCH` when set (kaniko never
   reads it: no match in `pkg/` or `cmd/`); same bytes for any thread count.
-  The media type under `--reproducible` is `[open: Q-006]`. kaniko also
-  rewrites the base image's layers and writes Go's zero time
-  (`0001-01-01T00:00:00Z`); ranikust keeps base layers `[open: Q-160]` and
-  writes the Unix epoch `[open: Q-161]`.
+  kaniko also rewrites the base image's layers and writes Go's zero time
+  (`0001-01-01T00:00:00Z`); ranikust keeps base layers and writes the Unix
+  epoch, and, as BuildKit, clamps times above `SOURCE_DATE_EPOCH` to it
+  instead of setting every time (`ADR-0032`, Q-160, Q-161).
 - **Cache keys.** kaniko chains composite keys
   (`pkg/executor/build.go:322`, `pkg/executor/composite_cache.go:35`).
   ranikust has its own versioned, mode-independent key and neither reads nor
@@ -167,6 +168,28 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
 - **Parent directories.** kaniko writes ancestor directory headers
   (`pkg/snapshot/snapshot.go:432`); ranikust's exporter must too
   (`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`).
+- **Following BuildKit** (`ADR-0032`). Where kaniko and BuildKit differ
+  on what the image or a `RUN` sees, ranikust does what BuildKit does:
+  - OCI media types by default, whatever the base and `--reproducible`
+    (kaniko: the base's format, Docker v2s2 under `--reproducible`; Q-006).
+  - A new `ENTRYPOINT` clears an inherited `CMD`; `EXPOSE` takes `sctp`
+    and expands ranges; `HEALTHCHECK --start-interval` is kept (Q-130).
+  - One history entry per instruction, `empty_layer` for metadata, no
+    author (kaniko: one per layer, author `kaniko`; Q-131).
+  - Empty values and non-spec fields of the base config are dropped
+    (kaniko keeps the go-containerregistry fields; Q-132).
+  - Loopback registries are reached over plain HTTP without a flag (Q-065).
+  - Layers carry only the `security.capability` xattr (Q-025).
+  - A `COPY` wildcard that matches nothing is no error, and several
+    sources need no trailing `/` (kaniko's `IsSrcsValid`; Q-080);
+    sockets become empty files and `--chmod` takes symbolic modes (Q-120).
+  - `--secret` takes `type=env`; a secret is a private `0400` file
+    (Q-022, Q-182); cache `sharing=` is enforced (Q-181);
+    `RUN --network=host` needs `--allow network.host` (Q-184); a cancel
+    kills a running `RUN` (Q-186).
+
+  The code for these lands in follow-up branches; until then the interims
+  noted in each Q entry apply.
 - **Accepted differences** between overlay and kaniko mode (`ADR-0012`):
   hardlink splitting on in-place writes, metadata changes on hardlinked
   files, link-count-only changes, copied-up but unchanged files.
