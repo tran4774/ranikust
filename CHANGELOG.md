@@ -102,6 +102,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `config.json`), and a warning naming every other `KANIKO_*` or
   `FF_KANIKO_*` variable that is set. `KANIKO_REGISTRY_MIRROR` and
   `KANIKO_REGISTRY_MAP` stop the build until mirrors are supported.
+- Kaniko mode's workdir checks: `--mode=kaniko --workdir DIR` refuses `/`,
+  a system directory such as `/usr` or `/home` or an ancestor of one
+  (compared by device and inode, so `//` and symlinks are caught), a
+  directory another build has locked, and a non-empty directory without a
+  `.ranikust-root` marker; an empty directory gets the marker. Kaniko-mode
+  builds themselves still stop after these checks.
 
 ### Changed
 

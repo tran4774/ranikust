@@ -121,7 +121,7 @@ Before touching a workdir outside a container:
 
 1. Canonicalize, then refuse `/` and any directory that is, or is an
    ancestor of, a system directory (`/usr`, `/etc`, `/home`, `/var/lib`, …,
-   30 in total). Compare **`(dev, ino)`** of the directory and each of its
+   30 in total, `SYSTEM_DIRS` in `crates/ranikust/src/workdir.rs`). Compare **`(dev, ino)`** of the directory and each of its
    ancestors, not strings: `//` passes a string comparison.
 2. Open the workdir with `openat2(RESOLVE_NO_SYMLINKS)` and take
    `flock(LOCK_EX | LOCK_NB)`: one build per kaniko-mode workdir.
@@ -130,7 +130,8 @@ Before touching a workdir outside a container:
    workdir holding only mount points is not empty: it needs the marker.
 
 `ranikust` runs these checks during process set-up and holds the lock for
-the whole build; `rnk-rootfs` provides the primitives (`ADR-0038`).
+the whole build; `rnk-rootfs` provides the primitives (`ADR-0038`). It also
+raises `RLIMIT_NOFILE`'s soft limit to the hard limit for the walk.
 
 ## Exporter requirements specific to the walk
 

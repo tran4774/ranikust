@@ -13,10 +13,9 @@
 //! validation into a `BuildConfig` → the process set-up of `setup`: a
 //! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`
 //! (the latter a seam until task 9), the outcome, the spawner thread →
-//! hand-off. Still to come in later tasks: the workdir checks (Q-011), the
-//! store (task 7), kaniko mode and its workdir lock (Phase 2), and the
-//! hand-off to the library crates. Until the builder exists, `build` stops
-//! after the set-up with exit code 2.
+//! hand-off. In kaniko mode, the set-up so far is the workdir checks and
+//! lock of `workdir` (ADR-0038); kaniko-mode builds stop there with exit
+//! code 2 until the rest of Phase 2 lands.
 //!
 //! The metrics report is written on every way out.
 //!
@@ -32,6 +31,7 @@ mod cli;
 mod config;
 mod setup;
 mod startup;
+mod workdir;
 
 use std::io::Write as _;
 use std::path::Path;
@@ -203,9 +203,7 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
         "build settings validated"
     );
     if config.mode == config::Mode::Kaniko {
-        return Err(Failure::usage(
-            "--mode=kaniko is not implemented yet (Phase 2); use --mode=overlay as root",
-        ));
+        return kaniko(&config);
     }
     // Overlay mode is the only outcome of Phase 1, so its state directory
     // is the one the probes use (Q-018, Q-110).
@@ -235,6 +233,31 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
     // The digest is the build's result: failing to print it fails the run.
     writeln!(std::io::stdout(), "{}", built.digest)
         .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
+}
+
+/// Kaniko mode, as far as Phase 2 has built it: on a host `--workdir`, the
+/// workdir checks and lock (ADR-0038) and the raised `RLIMIT_NOFILE`, then
+/// a stop. The root `/` in a container comes with the mode's set-up.
+fn kaniko(config: &BuildConfig) -> Result<(), Failure> {
+    let Some(dir) = config.workdir.as_deref() else {
+        return Err(Failure::usage(
+            "--mode=kaniko is not implemented yet (Phase 2); use --mode=overlay as root",
+        ));
+    };
+    let claimed = tracing::debug_span!("ranikust.workdir")
+        .in_scope(|| workdir::claim(dir))
+        .map_err(|refused| Failure::error(refused.to_string()))?;
+    match workdir::raise_nofile_limit() {
+        Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
+        // The walk still runs, with fewer descriptors to hold directories.
+        Err(e) => tracing::warn!("cannot raise RLIMIT_NOFILE to its hard limit: {e}"),
+    }
+    tracing::debug!(workdir = %claimed.path().display(), "kaniko-mode workdir locked");
+    Err(Failure::usage(format!(
+        "the workdir {} passed kaniko mode's checks, but kaniko-mode builds are not \
+         implemented yet (Phase 2); use --mode=overlay as root",
+        claimed.path().display()
+    )))
 }
 
 /// Panics, then aborts. Release builds abort inside the panic, right after

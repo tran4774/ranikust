@@ -104,6 +104,41 @@ fn kaniko_mode_is_not_built_yet() {
 }
 
 #[test]
+fn kaniko_mode_checks_its_workdir_before_stopping() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workdir = tmp.path().join("work");
+    fs::create_dir(&workdir).expect("workdir");
+    fs::write(workdir.join("precious"), b"x").expect("file");
+    let args = ["--no-push", "--mode=kaniko", "--workdir=work"];
+    let out = ranikust(tmp.path(), &args, &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("not empty"), "{}", stderr(&out));
+    assert!(!workdir.join(".ranikust-root").exists());
+
+    fs::remove_file(workdir.join("precious")).expect("remove");
+    let out = ranikust(tmp.path(), &args, &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("passed kaniko mode's checks"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(workdir.join(".ranikust-root").is_file());
+
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--mode=kaniko", "--workdir=/usr"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("system directory"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn without_root_the_set_up_refuses_before_touching_the_workdir() {
     if running_as_root() {
         // As root the set-up really runs: T2, in the VM smoke suite.
