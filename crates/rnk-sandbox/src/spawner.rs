@@ -5,7 +5,7 @@
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, Permissions};
 use std::io::{self, Write as _};
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
@@ -174,7 +174,7 @@ pub(crate) struct Job {
     /// `clone` flags, the exit signal included.
     flags: libc::c_long,
     isolation: Isolation,
-    /// Join a network namespace a [`NetHolder`] creates in its own user
+    /// Join a network namespace [`NetNs::create`] makes in its own user
     /// namespace, instead of cloning one (ADR-0033).
     hold_network: bool,
     /// Descriptors the child uses (the caller's stdio, mount sources), open
@@ -193,9 +193,8 @@ pub(crate) struct Spawned {
     pid: Pid,
     /// Read end of the error pipe: end-of-file once `execve` succeeded.
     failures: OwnedFd,
-    /// The process holding the child's network namespace, ended once the
-    /// child is reaped.
-    holder: Option<NetHolder>,
+    /// The network namespace the child joined, closed once it is reaped.
+    holder: Option<NetNs>,
 }
 
 /// This process's pid as `/proc` numbers it: the parent pid its children
@@ -250,10 +249,10 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     // Last before the clone: nothing can fail between it and the clone
     // without ending it.
     let holder = if hold_network {
-        let h =
-            NetHolder::spawn(true).map_err(|e| sys_err("create the RUN's network namespace", e))?;
-        args.netns = Some(h.pidfd.as_raw_fd());
-        Some(h)
+        let ns =
+            NetNs::create(true).map_err(|e| sys_err("create the RUN's network namespace", e))?;
+        args.netns = Some(ns.fd.as_raw_fd());
+        Some(ns)
     } else {
         None
     };
@@ -282,9 +281,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     drop(keep);
     if ret < 0 {
         let e = io::Error::last_os_error();
-        if let Some(h) = holder {
-            h.finish();
-        }
+        drop(holder);
         return Err(match e.raw_os_error() {
             Some(libc::EPERM) => Error::Privilege("creating the RUN namespaces"),
             _ => sys_err("clone", e),
@@ -302,76 +299,76 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     })
 }
 
-/// The process that holds a network namespace for `--network=none`
-/// ([`child::hold_network`]), and a pidfd of it the `RUN` child joins the
-/// namespace through. Not reaped until [`NetHolder::finish`], so its pid
-/// stays its own.
+/// A network namespace for `--network=none` without `CAP_NET_ADMIN`
+/// (ADR-0033): a descriptor of it, which keeps it alive, made by a helper
+/// ([`child::create_network`]) that has exited. The `RUN` child joins it
+/// with `setns`.
 #[derive(Debug)]
-pub(crate) struct NetHolder {
-    pid: Pid,
-    pidfd: OwnedFd,
+pub(crate) struct NetNs {
+    fd: OwnedFd,
 }
 
-impl NetHolder {
-    /// Clones the holder and waits until its namespace is ready: in a new
-    /// user namespace with `userns`, else in the caller's (the probe).
-    fn spawn(userns: bool) -> io::Result<Self> {
+/// `NSFS_MAGIC`: the file system of `/proc/<pid>/ns/*`.
+const NSFS_MAGIC: i64 = 0x6e73_6673;
+
+impl NetNs {
+    /// A new network namespace with `lo` up: in a new user namespace with
+    /// `userns`, else in the caller's (the probe).
+    fn create(userns: bool) -> io::Result<Self> {
         let me = rustix::process::getpid().as_raw_nonzero().get();
-        let pid = clone_helper(|err| {
+        let fd = run_helper(|chan| {
             // SAFETY: the child of the helper's clone, right after it.
-            unsafe { child::hold_network(err, me, userns) }
-        })?;
-        let pidfd = rustix::process::pidfd_open(pid.pid, rustix::process::PidfdFlags::empty())
-            .map_err(|e| pid.end(e.into()))?;
-        Ok(Self {
-            pid: pid.pid,
-            pidfd,
-        })
+            unsafe { child::create_network(chan, me, userns) }
+        })?
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        // A namespace descriptor, not something else the helper opened.
+        let st = rustix::fs::fstatfs(&fd)?;
+        #[allow(
+            clippy::useless_conversion,
+            reason = "f_type's integer type differs between targets"
+        )]
+        let fs_type = i64::from(st.f_type);
+        if fs_type != NSFS_MAGIC {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        Ok(Self { fd })
     }
 
-    /// Whether a child can join this namespace through the pidfd, as the
-    /// `RUN` child will: a process that joins it and exits.
+    /// Whether a child can join this namespace, as the `RUN` child will: a
+    /// helper that joins it and exits.
     fn check_join(&self) -> io::Result<()> {
-        let pidfd = self.pidfd.as_raw_fd();
-        let joiner = clone_helper(|err| {
+        let ns = self.fd.as_raw_fd();
+        run_helper(|chan| {
             // SAFETY: the child of the helper's clone, right after it.
-            unsafe { child::try_join(err, pidfd) }
-        })?;
-        reap_helper(joiner.pid);
-        Ok(())
-    }
-
-    /// Kills and reaps the holder; the namespace ends with its last member.
-    fn finish(self) {
-        // It waits in `pause` and is not reaped: the pid is its own. Gone
-        // already only if something killed it, which the reap covers.
-        let _ = rustix::process::kill_process(self.pid, Signal::KILL);
-        reap_helper(self.pid);
+            unsafe { child::try_join(chan, ns) }
+        })
+        .map(drop)
     }
 }
 
-/// A helper process cloned by [`clone_helper`] that reported ready.
-struct Helper {
-    pid: Pid,
-}
-
-impl Helper {
-    /// Kills and reaps the helper after `e`, and returns `e`.
-    fn end(&self, e: io::Error) -> io::Error {
-        // Not reaped yet: the pid is the helper's.
-        let _ = rustix::process::kill_process(self.pid, Signal::KILL);
-        reap_helper(self.pid);
-        e
+/// Clones a helper running `body` (which never returns) with its end of a
+/// close-on-exec `SOCK_SEQPACKET` pair, waits for its one message, then
+/// kills (it has nothing left to do) and reaps it. The message is
+/// [`child::READY`], with the descriptor it sent if any, or an 8-byte
+/// failure record, whose errno is returned; end-of-file (a helper killed
+/// early) is an error, never readiness.
+fn run_helper(body: impl FnOnce(RawFd)) -> io::Result<Option<OwnedFd>> {
+    let mut pair = [-1; 2];
+    // SAFETY: `socketpair` writes two descriptors into `pair`, owned below.
+    if unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+            0,
+            pair.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
     }
-}
-
-/// Clones a helper running `body` (which never returns) with a close-on-exec
-/// pipe whose write end it gets, and waits for its [`child::READY`] byte or
-/// its failure record. A helper that fails, or ends without the byte, is
-/// reaped and its errno returned.
-fn clone_helper(body: impl FnOnce(RawFd)) -> io::Result<Helper> {
-    let (ready, err_w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC)?;
-    let err_w = above_stdio(err_w).map_err(|_| io::Error::from_raw_os_error(libc::EMFILE))?;
+    // SAFETY: both are new descriptors this function owns.
+    let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1])) };
+    let theirs = above_stdio(theirs).map_err(|_| io::Error::from_raw_os_error(libc::EMFILE))?;
     let null: libc::c_long = 0;
     // SAFETY: as in `clone_child`: a `fork`-like clone; the child only makes
     // plain syscalls and never returns from `body`.
@@ -386,49 +383,76 @@ fn clone_helper(body: impl FnOnce(RawFd)) -> io::Result<Helper> {
         )
     };
     if ret == 0 {
-        body(err_w.as_raw_fd());
+        body(theirs.as_raw_fd());
         // SAFETY: `body` does not return; `_exit` if it ever did.
         unsafe { libc::_exit(127) }
     }
-    drop(err_w);
+    drop(theirs);
     if ret < 0 {
         return Err(io::Error::last_os_error());
     }
-    let helper = Helper {
-        pid: i32::try_from(ret)
-            .ok()
-            .and_then(Pid::from_raw)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?,
-    };
-    match read_ready(&ready) {
-        Ok(()) => Ok(helper),
-        Err(e) => Err(helper.end(e)),
-    }
+    let pid = i32::try_from(ret)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    let answer = receive(&ours);
+    // Not reaped yet: the pid is the helper's. Done or failed, it has
+    // nothing left to do.
+    let _ = rustix::process::kill_process(pid, Signal::KILL);
+    reap_helper(pid);
+    answer
 }
 
-/// Reads a helper's answer: the single [`child::READY`] byte, or an 8-byte
-/// failure record, whose errno is returned. End-of-file before either (a
-/// helper killed early) is an error, never readiness.
-fn read_ready(fd: &OwnedFd) -> io::Result<()> {
-    let mut record = [0u8; 8];
-    let mut len = 0;
-    loop {
-        if len == 1 && record[0] == child::READY {
-            return Ok(());
-        }
-        let Some(rest) = record.get_mut(len..).filter(|r| !r.is_empty()) else {
-            break;
+/// Receives a helper's message on `chan`: see [`run_helper`].
+fn receive(chan: &OwnedFd) -> io::Result<Option<OwnedFd>> {
+    let mut data = [0u8; 8];
+    let mut control = [0u64; 4];
+    // SAFETY: `msghdr` and `iovec` are plain integers and pointers; all-zero
+    // is valid. The pointers refer to `data` and `control`, which live
+    // across `recvmsg`; the `CMSG_*` helpers walk only `control`.
+    unsafe {
+        let mut iov = libc::iovec {
+            iov_base: data.as_mut_ptr().cast(),
+            iov_len: data.len(),
         };
-        match rustix::io::read(fd, rest) {
-            Ok(0) => break,
-            Ok(n) => len += n,
-            Err(Errno::INTR) => {}
-            Err(e) => return Err(e.into()),
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = size_of_val(&control) as _;
+        let n = loop {
+            let n = libc::recvmsg(chan.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC);
+            if n >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                break n;
+            }
+        };
+        // Every descriptor received, owned at once so that none leaks.
+        let mut fds = Vec::new();
+        let mut cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                let data = libc::CMSG_DATA(cmsg).cast::<libc::c_int>();
+                let len = (*cmsg).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
+                for i in 0..len / size_of::<libc::c_int>() {
+                    fds.push(OwnedFd::from_raw_fd(data.add(i).read_unaligned()));
+                }
+            }
+            cmsg = libc::CMSG_NXTHDR(&raw const msg, cmsg);
         }
-    }
-    match (len, child::decode_failure(record)) {
-        (8, Some((_, errno))) => Err(io::Error::from_raw_os_error(errno)),
-        _ => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if msg.msg_flags & libc::MSG_CTRUNC != 0 || fds.len() > 1 {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        match (n, data) {
+            (1, [child::READY, ..]) => Ok(fds.pop()),
+            (8, record) => match child::decode_failure(record) {
+                Some((_, errno)) => Err(io::Error::from_raw_os_error(errno)),
+                None => Err(io::Error::from(io::ErrorKind::InvalidData)),
+            },
+            _ => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+        }
     }
 }
 
@@ -450,7 +474,7 @@ enum NetMode {
     /// The clone creates it and the child brings up `lo`: the process has
     /// `CAP_NET_ADMIN`.
     Clone,
-    /// A [`NetHolder`] creates it in a user namespace of its own, and the
+    /// [`NetNs::create`] makes it in a user namespace of its own, and the
     /// child runs under [`crate::seccomp::userns_network`] (ADR-0033).
     UserNs,
     /// The process lacks `CAP_NET_ADMIN` and the user-namespace path is not
@@ -461,14 +485,11 @@ enum NetMode {
 }
 
 /// Tries a network namespace with `lo` up without a user namespace, then,
-/// when `userns` allows it, with one (and a child joining it by pidfd), as
-/// the `RUN` child would.
+/// when `userns` allows it, with one (and a child joining it), as the `RUN`
+/// child would.
 fn probe_network(userns: bool) -> NetMode {
-    let direct = match NetHolder::spawn(false) {
-        Ok(h) => {
-            h.finish();
-            return NetMode::Clone;
-        }
+    let direct = match NetNs::create(false) {
+        Ok(_) => return NetMode::Clone,
         Err(e) => e.raw_os_error().unwrap_or(libc::EIO),
     };
     if !userns {
@@ -480,11 +501,7 @@ fn probe_network(userns: bool) -> NetMode {
             userns: libc::ENOSYS,
         };
     }
-    let held = NetHolder::spawn(true).and_then(|h| {
-        let joined = h.check_join();
-        h.finish();
-        joined
-    });
+    let held = NetNs::create(true).and_then(|ns| ns.check_join());
     match held {
         Ok(()) => NetMode::UserNs,
         Err(e) => NetMode::Unavailable {
@@ -539,7 +556,7 @@ impl Runner {
         &self.state_dir
     }
 
-    /// Makes `--network=none` use a [`NetHolder`] whatever the probe would
+    /// Makes `--network=none` use a [`NetNs`] whatever the probe would
     /// find: the path of an environment without `CAP_NET_ADMIN`, tested
     /// where the process has it.
     #[cfg(test)]
@@ -724,6 +741,18 @@ impl Runner {
                 }
             }
         }
+        // A `RUN` in a user namespace's network namespace never runs
+        // without its filter.
+        let seccomp = if hold_network {
+            Some(
+                seccomp::userns_network().ok_or_else(|| Error::NoLoopbackUserns {
+                    direct: io::Error::from_raw_os_error(libc::EPERM),
+                    userns: io::Error::from_raw_os_error(libc::ENOSYS),
+                })?,
+            )
+        } else {
+            None
+        };
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
@@ -734,12 +763,8 @@ impl Runner {
             hostname: hostname(spec).as_bytes().to_vec(),
             loopback,
             netns: None,
-            // Only with the holder; `probe_network` checked it exists.
-            seccomp: if hold_network {
-                seccomp::userns_network()
-            } else {
-                None
-            },
+            // Only with a `NetNs`; `probe_network` checked it exists.
+            seccomp,
             drops: self.drops,
             keep: caps::docker_default_mask(),
             uid: Uid::from_raw(user.uid),
@@ -1098,10 +1123,8 @@ fn execute(
         (r, _) => r,
     };
     let reaped = reap(pid);
-    // The child is reaped, or never joined: the namespace can end.
-    if let Some(h) = holder {
-        h.finish();
-    }
+    // The child is reaped: its namespace can end with this descriptor.
+    drop(holder);
     let (status, usage) = reaped?;
     killed?;
     if cancelled {
@@ -1217,44 +1240,70 @@ fn timeval_ns(t: libc::timeval) -> u64 {
 mod tests {
     use super::*;
 
-    /// Whether `pid`'s network namespace has `lo` up: its `127.0.0.1` local
-    /// route, or its `::1` address, exists only then.
-    fn loopback_is_up(pid: Pid) -> bool {
-        let net = PathBuf::from(format!("/proc/{}/net", pid.as_raw_nonzero()));
-        let fib = fs::read_to_string(net.join("fib_trie")).unwrap_or_default();
-        let inet6 = fs::read_to_string(net.join("if_inet6")).unwrap_or_default();
-        fib.contains("127.0.0.1") || inet6.lines().any(|l| l.ends_with(" lo"))
+    /// The inode of the network namespace `fd` refers to.
+    fn ns_inode(fd: &OwnedFd) -> u64 {
+        rustix::fs::fstat(fd).unwrap().st_ino
     }
 
-    /// A held namespace in a user namespace of its own: unprivileged where
-    /// the host allows user namespaces, skipped where it does not.
+    /// A namespace in a user namespace of its own: unprivileged where the
+    /// host allows user namespaces, skipped where it does not. The helper
+    /// is gone; the descriptor alone keeps the namespace.
     #[test]
-    fn a_held_network_namespace_has_loopback_up_and_ends() {
-        let h = match NetHolder::spawn(true) {
-            Ok(h) => h,
+    fn a_created_network_namespace_outlives_its_helper() {
+        let ns = match NetNs::create(true) {
+            Ok(ns) => ns,
             Err(e) => {
                 eprintln!("skipped: no user namespace here ({e})");
                 return;
             }
         };
-        let pid = h.pid;
-        let mine = fs::read_link("/proc/self/ns/net").unwrap();
-        let held = fs::read_link(format!("/proc/{}/ns/net", pid.as_raw_nonzero())).unwrap();
-        assert_ne!(mine, held);
-        assert!(loopback_is_up(pid));
-        let devs = fs::read_to_string(format!("/proc/{}/net/dev", pid.as_raw_nonzero())).unwrap();
-        assert_eq!(devs.lines().skip(2).count(), 1, "{devs}");
-        h.finish();
-        assert!(!Path::new(&format!("/proc/{}", pid.as_raw_nonzero())).exists());
+        let mine = rustix::fs::open(
+            "/proc/self/ns/net",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        assert_ne!(ns_inode(&ns.fd), ns_inode(&mine));
+    }
+
+    /// Joins `ns` in a forked child and reports whether `lo` is up there:
+    /// its `127.0.0.1` local route exists only then.
+    fn loopback_is_up_in(ns: &NetNs) -> bool {
+        let fd = ns.fd.as_raw_fd();
+        // SAFETY: the child only makes syscalls on stack buffers and exits
+        // with `_exit`.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: as above.
+            unsafe {
+                if libc::setns(fd, libc::CLONE_NEWNET) != 0 {
+                    libc::_exit(2);
+                }
+                let f = libc::open(c"/proc/self/net/fib_trie".as_ptr(), libc::O_RDONLY);
+                let mut buf = [0u8; 8192];
+                let n = libc::read(f, buf.as_mut_ptr().cast(), buf.len());
+                let n = usize::try_from(n).unwrap_or(0);
+                let up = buf[..n].windows(9).any(|w| w == b"127.0.0.1");
+                libc::_exit(if up { 0 } else { 1 });
+            }
+        }
+        let mut status = 0;
+        // SAFETY: reaping the child forked above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
     }
 
     #[test]
     #[ignore = "T2: creates network namespaces; run as root in the test VM only"]
     fn root_brings_up_loopback_itself_and_in_a_user_namespace() {
         assert_eq!(probe_network(false), NetMode::Clone);
-        let h = NetHolder::spawn(true).unwrap();
-        assert!(loopback_is_up(h.pid));
-        h.finish();
+        assert_eq!(probe_network(true), NetMode::Clone);
+        let ns = NetNs::create(true).unwrap();
+        ns.check_join().unwrap();
+        assert!(loopback_is_up_in(&ns));
+        let plain = NetNs::create(false).unwrap();
+        assert!(loopback_is_up_in(&plain));
     }
 
     #[test]

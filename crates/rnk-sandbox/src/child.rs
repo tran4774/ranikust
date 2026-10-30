@@ -129,8 +129,8 @@ pub(crate) struct ChildArgs {
     /// Bring up `lo` in the network namespace the clone created
     /// (`--network=none` where the process has `CAP_NET_ADMIN`).
     pub(crate) loopback: bool,
-    /// A pidfd of the [`hold_network`] process whose network namespace,
-    /// owned by a user namespace and with `lo` already up, the child joins
+    /// A descriptor of the network namespace [`create_network`] made, owned
+    /// by a user namespace and with `lo` already up, which the child joins
     /// instead (`--network=none` without `CAP_NET_ADMIN`, ADR-0033).
     pub(crate) netns: Option<RawFd>,
     /// The seccomp filter installed before the capability drop: with
@@ -288,7 +288,8 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     arm_death_signal(err, parent);
     // First, so that `sysfs` below is mounted for this namespace.
     if let Some(fd) = args.netns {
-        // SAFETY: `setns` on a pidfd the parent keeps open across the clone.
+        // SAFETY: `setns` on a namespace descriptor the parent keeps open
+        // across the clone.
         if unsafe { libc::setns(fd, libc::CLONE_NEWNET) } != 0 {
             fail(err, Step::JoinNetwork, last_errno());
         }
@@ -923,85 +924,118 @@ fn loopback_up(err: RawFd) {
     }
 }
 
-/// The byte a [`hold_network`] or [`try_join`] process writes when it is
+/// The byte a [`create_network`] or [`try_join`] helper sends when it is
 /// ready: anything else, end-of-file included, is a failure.
 pub(crate) const READY: u8 = b'R';
 
-/// The process that holds the network namespace of a `--network=none`
+/// The helper that creates the network namespace of a `--network=none`
 /// `RUN` without `CAP_NET_ADMIN`, under `--allow network.none-userns`
-/// (ADR-0033): it creates a user namespace and a network namespace owned
-/// by it, where it has `CAP_NET_ADMIN`, brings up `lo`, writes [`READY`] on
-/// `err` and waits to be killed. The `RUN` child joins the namespace
-/// through its pidfd and stays in the build's user namespace, under the
-/// filter of [`crate::seccomp`]. With `userns` false it creates the network
-/// namespace alone: the probe that tells whether the clone can do it itself.
+/// (ADR-0033): it creates a user namespace and a network namespace owned by
+/// it, where it has `CAP_NET_ADMIN`, brings up `lo`, sends [`READY`] with a
+/// descriptor of the namespace (`/proc/self/ns/net`) on `chan`, a
+/// `SOCK_SEQPACKET` socket, and exits: the descriptor keeps the namespace
+/// alive. The `RUN` child joins it with `setns` and stays in the build's
+/// user namespace, under the filter of [`crate::seccomp`]. With `userns`
+/// false it creates the network namespace alone: the probe that tells
+/// whether the clone can do it itself.
 ///
 /// # Safety
 ///
 /// Call only in the child of a `clone` without `CLONE_VM`, right after it
 /// returned 0: everything here is a plain syscall, with no allocation.
-pub(crate) unsafe fn hold_network(err: RawFd, parent: i32, userns: bool) -> ! {
+pub(crate) unsafe fn create_network(chan: RawFd, parent: i32, userns: bool) -> ! {
     check(
-        err,
+        chan,
         Step::DeathSignal,
         rustix::process::set_parent_process_death_signal(Some(Signal::KILL)),
     );
     // Not in a new PID namespace: `getppid` is the cloning process, unless it
     // died before the signal was armed.
     if rustix::process::getppid().map_or(0, |p| p.as_raw_nonzero().get()) != parent {
-        fail(err, Step::ParentGone, Errno::SRCH);
+        fail(chan, Step::ParentGone, Errno::SRCH);
     }
-    // Stays dumpable: `setns` on its pidfd needs ptrace read access to it,
-    // which a non-dumpable process grants only to `CAP_SYS_PTRACE`, not in
-    // Docker's defaults. Its memory is a copy of ranikust's, which the
-    // `RUN` cannot reach: it is in another PID namespace.
     // A forked copy of every descriptor of the build, stdio included:
-    // closed, so that this process, which never executes, holds no lock,
-    // pipe end or terminal of it.
-    close_all_but(err);
+    // closed, so that the helper holds no lock, pipe end or terminal of it.
+    close_all_but(chan);
     let mut flags = libc::CLONE_NEWNET;
     if userns {
         flags |= libc::CLONE_NEWUSER;
     }
     // SAFETY: plain syscall; the process is single-threaded (a clone).
     if unsafe { libc::unshare(flags) } != 0 {
-        fail(err, Step::NetNamespace, last_errno());
+        fail(chan, Step::NetNamespace, last_errno());
     }
-    loopback_up(err);
-    ready_and_close(err);
-    loop {
-        // SAFETY: `pause` waits for the parent's SIGKILL or the death signal.
-        unsafe { libc::pause() };
-    }
-}
-
-/// Joins the network namespace of the [`hold_network`] process `pidfd`
-/// refers to, then exits: the probe's check that `setns` on a pidfd works
-/// here, as the `RUN` child will need.
-///
-/// # Safety
-///
-/// As [`hold_network`].
-pub(crate) unsafe fn try_join(err: RawFd, pidfd: RawFd) -> ! {
-    // SAFETY: `setns` on a pidfd the parent keeps open across the clone.
-    if unsafe { libc::setns(pidfd, libc::CLONE_NEWNET) } != 0 {
-        fail(err, Step::JoinNetwork, last_errno());
-    }
-    ready_and_close(err);
+    loopback_up(chan);
+    let ns = check(
+        chan,
+        Step::NetNamespace,
+        rustix::fs::openat(
+            CWD,
+            c"/proc/self/ns/net",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ),
+    );
+    send_ready(chan, Some(ns.as_raw_fd()));
     // SAFETY: `_exit` without handlers, as in `fail`.
     unsafe { libc::_exit(0) }
 }
 
-/// Writes [`READY`] on `err` and closes it.
-fn ready_and_close(err: RawFd) {
-    // SAFETY: `err` is this process's write end of the parent's pipe; one
-    // byte is written atomically.
-    let fd = unsafe { BorrowedFd::borrow_raw(err) };
-    if rustix::io::write(fd, &[READY]) != Ok(1) {
-        fail(err, Step::NetNamespace, Errno::IO);
+/// Joins the network namespace `ns` (from [`create_network`]), then exits:
+/// the probe's check that a child can, as the `RUN` child will need.
+///
+/// # Safety
+///
+/// As [`create_network`].
+pub(crate) unsafe fn try_join(chan: RawFd, ns: RawFd) -> ! {
+    // SAFETY: `setns` on a namespace descriptor the parent keeps open
+    // across the clone.
+    if unsafe { libc::setns(ns, libc::CLONE_NEWNET) } != 0 {
+        fail(chan, Step::JoinNetwork, last_errno());
     }
-    // SAFETY: closing that write end, which nothing uses after.
-    unsafe { libc::close(err) };
+    send_ready(chan, None);
+    // SAFETY: `_exit` without handlers, as in `fail`.
+    unsafe { libc::_exit(0) }
+}
+
+/// Sends [`READY`] on `chan`, with `fd` as `SCM_RIGHTS` when given, in one
+/// message; buffers on the stack.
+fn send_ready(chan: RawFd, fd: Option<RawFd>) {
+    let mut data = [READY];
+    // Room for one `cmsghdr` and one descriptor, aligned for `cmsghdr`.
+    let mut control = [0u64; 4];
+    // SAFETY: `msghdr` and `iovec` are plain integers and pointers; all-zero
+    // is valid. The pointers refer to `data` and `control`, which live
+    // across `sendmsg`; the `CMSG_*` helpers only compute addresses inside
+    // `control`, which has room for one descriptor.
+    let sent = unsafe {
+        let mut iov = libc::iovec {
+            iov_base: data.as_mut_ptr().cast(),
+            iov_len: data.len(),
+        };
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        if let Some(fd) = fd {
+            let int = u32::try_from(size_of::<libc::c_int>()).unwrap_or(4);
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = libc::CMSG_SPACE(int) as _;
+            let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
+            if cmsg.is_null() {
+                fail(chan, Step::NetNamespace, Errno::INVAL);
+            }
+            (*cmsg).cmsg_level = libc::SOL_SOCKET;
+            (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(int) as _;
+            libc::CMSG_DATA(cmsg)
+                .cast::<libc::c_int>()
+                .write_unaligned(fd);
+        }
+        libc::sendmsg(chan, &raw const msg, libc::MSG_NOSIGNAL)
+    };
+    if sent != 1 {
+        fail(chan, Step::NetNamespace, last_errno());
+    }
 }
 
 /// Closes every descriptor except `keep`, from 0: with `close_range`, else
