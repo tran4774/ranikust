@@ -421,9 +421,10 @@ fn kaniko_snapshotter(
         .map_err(|e| fail(&format!("resolving {}", state_dir.display()), &e))?;
     let state_root = rnk_rootfs::RootPath::open(&state)
         .map_err(|e| fail(&format!("opening {}", state.display()), &e))?;
-    same_mount_only_inside(&root, root_path, &state_root, &state)?;
+
     let mounts =
         rnk_snapshot::kaniko::read_mountinfo().map_err(|e| fail("reading mountinfo", &e))?;
+    same_mount_only_inside(&root, root_path, &state_root, &state, &mounts)?;
     let spec = rnk_snapshot::kaniko::IgnoreSpec {
         root: root_path,
         state_dir: Some(&state),
@@ -449,36 +450,58 @@ fn kaniko_snapshotter(
     ))
 }
 
-/// A state directory outside the root by path but on the root's
-/// filesystem through another mount (a bind mount of a directory inside the
-/// root, say) is refused: the ignore list knows it by path only, and
-/// emptying the root would delete the live store.
+/// A state directory inside the root's tree on its filesystem, reached
+/// through another mount (a bind mount of a directory inside the root), is
+/// refused: the ignore list knows it by path only, and emptying the root
+/// would delete the live store. Each path is placed in its filesystem with
+/// its mount's `fs_root` from mountinfo; two volumes of sibling directories
+/// on one filesystem pass.
 fn same_mount_only_inside(
     root: &rnk_rootfs::RootPath,
     root_path: &Path,
     state: &rnk_rootfs::RootPath,
     state_path: &Path,
+    mounts: &[rnk_snapshot::kaniko::MountInfo],
 ) -> Result<(), Failure> {
-    if state_path.starts_with(root_path) {
-        return Ok(());
-    }
-    let (r, s) = match (root.statx("/"), state.statx("/")) {
-        (Ok(r), Ok(s)) => (r, s),
-        (Err(e), _) | (_, Err(e)) => {
-            return Err(Failure::error(format!("checking the state directory: {e}")));
-        }
-    };
-    let same_fs = (r.dev_major, r.dev_minor) == (s.dev_major, s.dev_minor);
-    if same_fs && root.mnt_id() != state.mnt_id() {
-        return Err(Failure::usage(format!(
-            "the state directory {} is on the root's filesystem through another mount (a bind \
-             mount?): emptying {} could delete it; pass a --state-dir on another filesystem \
-             or inside the root",
+    match state_in_root(
+        mounts,
+        (root.mnt_id(), root_path),
+        (state.mnt_id(), state_path),
+    ) {
+        Some(false) => Ok(()),
+        None => Err(Failure::error(format!(
+            "cannot place the root {} and the state directory {} in /proc/self/mountinfo",
+            root_path.display(),
+            state_path.display()
+        ))),
+        Some(true) => Err(Failure::usage(format!(
+            "the state directory {} is a directory of the root {} reached through another \
+             mount (a bind mount?): emptying the root would delete it; pass a --state-dir \
+             outside the root",
             state_path.display(),
             root_path.display()
-        )));
+        ))),
     }
-    Ok(())
+}
+
+/// Whether the state directory (its mount id and path) lies in the root's
+/// tree on the root's filesystem; `None` when mountinfo lacks either mount.
+fn state_in_root(
+    mounts: &[rnk_snapshot::kaniko::MountInfo],
+    (root_mnt, root_path): (u64, &Path),
+    (state_mnt, state_path): (u64, &Path),
+) -> Option<bool> {
+    if state_path.starts_with(root_path) || root_mnt == state_mnt {
+        return Some(false);
+    }
+    let in_fs = |mnt_id: u64, path: &Path| {
+        let m = mounts.iter().find(|m| m.mount_id == mnt_id)?;
+        let rel = path.strip_prefix(&m.mount_point).ok()?;
+        Some((m.device.clone(), m.fs_root.join(rel)))
+    };
+    let (rdev, rfs) = in_fs(root_mnt, root_path)?;
+    let (sdev, sfs) = in_fs(state_mnt, state_path)?;
+    Some(rdev == sdev && sfs.starts_with(&rfs))
 }
 
 /// The operator's paths that the build reads or writes while the root
@@ -622,7 +645,41 @@ mod tests {
             std::fs::create_dir(base.join(d)).unwrap();
         }
         let open = |d: &str| rnk_rootfs::RootPath::open(base.join(d)).unwrap();
-        same_mount_only_inside(&open("w"), &base.join("w"), &open("s"), &base.join("s")).unwrap();
-        // A bind mount of `w/x` at `s` is refused (T2: it needs a mount).
+        let mounts = rnk_snapshot::kaniko::read_mountinfo().unwrap();
+        let check = |state: &rnk_rootfs::RootPath, path: &Path, mounts: &[_]| {
+            same_mount_only_inside(&open("w"), &base.join("w"), state, path, mounts)
+        };
+        check(&open("s"), &base.join("s"), &mounts).unwrap();
+    }
+
+    #[test]
+    fn a_state_directory_bound_from_inside_the_root_is_refused() {
+        // `/srv/w` is the root; `/data` holds two sibling volumes of one
+        // filesystem, and `/state` binds `/srv/w/x` from the same one.
+        let mounts = rnk_snapshot::kaniko::parse_mountinfo(
+            b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+              2 1 8:1 /vols/a /data/a rw - ext4 /dev/sda1 rw\n\
+              3 1 8:1 /vols/b /data/b rw - ext4 /dev/sda1 rw\n\
+              4 1 8:1 /srv/w/x /state rw - ext4 /dev/sda1 rw\n\
+              5 1 8:2 /srv/w /other rw - ext4 /dev/sdb1 rw\n",
+        )
+        .unwrap();
+        let check = |root: (u64, &str), state: (u64, &str)| {
+            state_in_root(
+                &mounts,
+                (root.0, Path::new(root.1)),
+                (state.0, Path::new(state.1)),
+            )
+        };
+        assert_eq!(check((1, "/srv/w"), (4, "/state")), Some(true));
+        assert_eq!(check((1, "/srv/w"), (4, "/state/sub")), Some(true));
+        assert_eq!(check((2, "/data/a"), (3, "/data/b")), Some(false));
+        assert_eq!(
+            check((1, "/srv/w"), (5, "/other")),
+            Some(false),
+            "another device"
+        );
+        assert_eq!(check((1, "/srv/w"), (1, "/srv/w/.ranikust")), Some(false));
+        assert_eq!(check((1, "/srv/w"), (9, "/nowhere")), None);
     }
 }

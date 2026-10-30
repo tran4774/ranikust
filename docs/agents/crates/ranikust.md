@@ -98,9 +98,9 @@ workdir) set up by `setup::set_up_kaniko` (store; on a host workdir where
 the namespace could be entered, the sandbox probe and `RUN` in the full
 sandbox, else `Isolation::Direct`; `Sandbox::start_with_root` on a
 workdir), the ignore list built (`kaniko_snapshotter`: mountinfo, the
-flags, the state directory, physical paths; a state directory on the
-root's filesystem through another mount refused,
-`same_mount_only_inside`; the context, outputs and file secrets refused in
+flags, the state directory, physical paths; a state directory that is a
+directory of the root reached through another mount refused, by
+mountinfo's device and `fs_root` (`same_mount_only_inside`); the context, outputs and file secrets refused in
 the root unless ignored, `paths_outside_the_root`), then `build::run` with
 `Snapshots::Kaniko`: kaniko's squashed units one at a time on the shared
 root (`kaniko_units`, refusing a plan whose later unit reads an emptied

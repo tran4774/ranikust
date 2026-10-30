@@ -95,9 +95,10 @@ settles them (Q-024):
   workdir's canonical path, which `claim` opened without following a
   symlink, and the state directory's canonical path, opened the same way.
   It is used by extraction, the walk and deletion alike. A state directory
-  outside the root by path but on its filesystem through another mount (a
-  bind mount of a directory inside it) is refused, since the list knows it
-  by path only.
+  outside the root by path that is a directory of the root reached through
+  another mount (a bind mount of a directory inside it, found by the
+  mounts' device and `fs_root` in mountinfo) is refused, since the list
+  knows it by path only.
 - **The operator's paths stay out of the root.** The context, the outputs
   (`--tar-path`, `--oci-layout-path`, the digest files) and file secrets
   are refused before the root changes when they lie in it, unless the
