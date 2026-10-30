@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::io::Read as _;
 use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rnk_dockerfile::{Mount, MountType, Sharing};
 use rnk_sandbox::{BindMount, MountKind, SecretFile};
@@ -143,6 +144,9 @@ pub(crate) fn run_mounts(
 ) -> Result<RunMounts> {
     let mut out = RunMounts::default();
     let mut caches: Vec<(String, &Mount)> = Vec::new();
+    // Each secret is read once per RUN and shared by all its mounts, which
+    // share one file on the RUN's tmpfs.
+    let mut read: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
     for m in mounts {
         match m.kind {
             MountType::Cache => {
@@ -158,7 +162,7 @@ pub(crate) fn run_mounts(
                 }
                 caches.push((cache_key(m), m));
             }
-            MountType::Secret => secret_mount(m, workdir, secrets, &mut out)?,
+            MountType::Secret => secret_mount(m, workdir, secrets, &mut read, &mut out)?,
             MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
                 return Err(Error::Invalid(format!(
                     "RUN --mount=type={} is not supported yet (Phase 5)",
@@ -263,6 +267,7 @@ fn secret_mount(
     m: &Mount,
     workdir: &Path,
     secrets: &BTreeMap<String, Secret>,
+    read: &mut BTreeMap<String, Arc<[u8]>>,
     out: &mut RunMounts,
 ) -> Result<()> {
     let id = if !m.source.is_empty() {
@@ -288,7 +293,14 @@ fn secret_mount(
         }
         return Ok(());
     };
-    let data = secret.read(&id)?;
+    let data = match read.get(&id) {
+        Some(data) => Arc::clone(data),
+        None => {
+            let data: Arc<[u8]> = secret.read(&id)?.into();
+            read.insert(id.clone(), Arc::clone(&data));
+            data
+        }
+    };
     if let Some(name) = &m.env {
         if name.is_empty() || name.contains(['=', '\0']) {
             return Err(Error::Invalid(format!(
@@ -302,7 +314,7 @@ fn secret_mount(
             )));
         }
         out.env
-            .push((name.into(), OsString::from_vec(data.clone())));
+            .push((name.into(), OsString::from_vec(data.to_vec())));
         if m.target.is_empty() {
             return Ok(());
         }

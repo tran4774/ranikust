@@ -68,8 +68,9 @@ pub struct BindMount {
 /// child's memory until the `RUN` ends.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretFile {
-    /// The secret.
-    pub data: Vec<u8>,
+    /// The secret. Mounts sharing one allocation (and owner and mode) share
+    /// one file on the tmpfs.
+    pub data: std::sync::Arc<[u8]>,
     /// Absolute path inside the root. Created as a journaled stub when
     /// missing.
     pub target: PathBuf,
@@ -330,7 +331,7 @@ mod tests {
         assert!(e.contains("TOKEN"), "{e}");
         assert!(!e.contains("Zq9val"), "{e}");
         s.secrets.push(SecretFile {
-            data: b"Zq9bytes".to_vec(),
+            data: b"Zq9bytes".as_slice().into(),
             target: "/run/secrets/t".into(),
             uid: 0,
             gid: 0,
@@ -341,7 +342,7 @@ mod tests {
         // A secret needs the full sandbox and a clean target.
         let mut s = spec();
         s.secrets.push(SecretFile {
-            data: Vec::new(),
+            data: Vec::new().into(),
             target: "/a/../b".into(),
             uid: 0,
             gid: 0,

@@ -681,28 +681,35 @@ fn cstring(s: impl AsRef<OsStr>) -> Result<CString> {
         .map_err(|_| Error::InvalidSpec(format!("contains a NUL byte: {s:?}")))
 }
 
-/// The child's secrets: files `0`, `1`… on a tmpfs over `dir`, sized for
-/// them plus a page each, mode 0700.
+/// The child's secrets: files `0`, `1`… on a tmpfs over `dir`, one per
+/// secret allocation, owner and mode, each bound at all its targets; the
+/// tmpfs is sized for them plus a page each, mode 0700.
 fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
-    let bytes: usize = secrets.iter().map(|s| s.data.len() + 4096).sum();
+    let mut files: Vec<ChildSecret> = Vec::new();
+    for s in secrets {
+        let (uid, gid) = (Uid::from_raw(s.uid), Gid::from_raw(s.gid));
+        let mode = Mode::from_raw_mode(s.mode & 0o777);
+        let target = cstring(&s.target)?;
+        match files.iter_mut().find(|f| {
+            std::sync::Arc::ptr_eq(&f.data, &s.data) && (f.uid, f.gid, f.mode) == (uid, gid, mode)
+        }) {
+            Some(f) => f.targets.push(target),
+            None => files.push(ChildSecret {
+                name: cstring(files.len().to_string())?,
+                data: std::sync::Arc::clone(&s.data),
+                uid,
+                gid,
+                mode,
+                targets: vec![target],
+            }),
+        }
+    }
+    let bytes: usize = files.iter().map(|f| f.data.len() + 4096).sum();
     let options = format!("size={},mode=0700", bytes.max(16 * 1024));
     Ok(ChildSecrets {
         dir: cstring(dir)?,
         options: cstring(options)?,
-        files: secrets
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                Ok(ChildSecret {
-                    name: cstring(i.to_string())?,
-                    data: s.data.clone(),
-                    target: cstring(&s.target)?,
-                    uid: Uid::from_raw(s.uid),
-                    gid: Gid::from_raw(s.gid),
-                    mode: Mode::from_raw_mode(s.mode & 0o777),
-                })
-            })
-            .collect::<Result<_>>()?,
+        files,
     })
 }
 
@@ -795,9 +802,14 @@ fn execute(
     // child running after `run` returns (its writes would reach the layer):
     // kill it while it is still registered, and wait again. A second failure
     // fails the RUN, and so the build.
-    let exited = wait_exited(pid).or_else(|e| {
-        kill_run(pid, isolation);
-        wait_exited(pid).map_err(|_| e)
+    let exited = wait_exited(pid).or_else(|e| match &e {
+        // Not our child (any more): its pid may be another process's now,
+        // so nothing is killed.
+        Error::Sys { source, .. } if source.raw_os_error() == Some(libc::ECHILD) => Err(e),
+        _ => {
+            kill_run(pid, isolation);
+            wait_exited(pid).map_err(|_| e)
+        }
     });
     let cancelled = running.is_some_and(|r| r.remove(pid));
     let killed = match (exited, isolation) {
@@ -1102,6 +1114,31 @@ mod tests {
         assert!(running.remove(pid));
         assert_eq!(reap(pid).unwrap().0.signal(), Some(libc::SIGKILL));
         assert!(child.wait().is_err(), "already reaped");
+    }
+
+    /// Mounts of one secret allocation, owner and mode share one tmpfs
+    /// file; the tmpfs is sized by the files, not the mounts.
+    #[test]
+    fn one_secret_mounted_many_times_is_one_file() {
+        let data: std::sync::Arc<[u8]> = vec![7u8; 1000].into();
+        let file = |target: &str, mode| SecretFile {
+            data: std::sync::Arc::clone(&data),
+            target: target.into(),
+            uid: 0,
+            gid: 0,
+            mode,
+        };
+        let many: Vec<SecretFile> = (0..1000).map(|i| file(&format!("/s{i}"), 0o400)).collect();
+        let s = child_secrets(Path::new("/scratch"), &many).unwrap();
+        assert_eq!(s.files.len(), 1);
+        assert_eq!(s.files[0].targets.len(), 1000);
+        assert_eq!(s.options.as_bytes(), b"size=16384,mode=0700");
+        let s = child_secrets(
+            Path::new("/scratch"),
+            &[file("/a", 0o400), file("/b", 0o440)],
+        )
+        .unwrap();
+        assert_eq!(s.files.len(), 2, "another mode, another file");
     }
 
     #[test]

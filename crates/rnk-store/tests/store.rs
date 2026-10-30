@@ -513,3 +513,26 @@ fn a_new_cache_gets_its_owner_and_mode_once() {
             .all(|n| !n.starts_with('.'))
     );
 }
+
+/// A cache that cannot be made leaves no temporary directory and no cache:
+/// as a regular user, giving it to root fails.
+#[test]
+fn a_failed_new_cache_leaves_nothing() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("skipped: root can give a directory to root");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let owner = rnk_store::CacheOwner {
+        uid: 0,
+        gid: 0,
+        mode: 0o755,
+    };
+    let r = store.cache_lease("k", CacheSharing::Shared, Some(owner), &never);
+    assert!(r.is_err(), "{r:?}");
+    assert!(names(store.state_dir().join("caches")).is_empty());
+    // The next attempt is not blocked by a leftover.
+    let ok = store.cache_lease("k", CacheSharing::Shared, None, &never);
+    assert!(ok.unwrap().created());
+}

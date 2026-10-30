@@ -416,7 +416,11 @@ impl Store {
         loop {
             // The pool lock orders the scan and the creation of a new
             // directory between builds; it is held only for that.
-            let pool = lock::open(&self.state, &locks.join(format!("{base}.pool")))?;
+            // In this process too: where flock is per process (NFS,
+            // CIFS), two stages of one build would both hold it.
+            let pool_rel = locks.join(format!("{base}.pool"));
+            let (pool_held, _) = self.held.acquire(&pool_rel);
+            let pool = lock::open(&self.state, &pool_rel)?;
             lock::lock(&pool).map_err(|e| self.io_err("flock", &locks, e))?;
             let mut n = 0;
             let mut any = false;
@@ -428,7 +432,7 @@ impl Store {
                 n += 1;
             }
             if sharing == CacheSharing::Locked && any {
-                drop(pool);
+                drop((pool, pool_held));
                 if cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -438,7 +442,7 @@ impl Store {
             let Some(lease) = self.try_cache(&locks, &name(n), exclusive, true)? else {
                 // A lock file kept by a cache removed under it, still held:
                 // wait for its holder as for a locked cache.
-                drop(pool);
+                drop((pool, pool_held));
                 if cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -489,10 +493,24 @@ impl Store {
             remove_tree(&self.state, &tmp)?;
         }
         self.state.create_dir_all(&tmp, 0o700)?;
+        let made = self.fill_cache(&tmp, name, owner);
+        if made.is_err() {
+            // Whatever failed, the temporary directory goes; the error to
+            // report is the first one.
+            if let Err(e) = remove_tree(&self.state, &tmp) {
+                tracing::warn!("rnk-store: cannot remove {}: {e}", tmp.display());
+            }
+        }
+        made
+    }
+
+    /// Gives the new cache `tmp` its owner and mode through its descriptor,
+    /// then renames it to `caches/<name>`, never over an existing entry.
+    fn fill_cache(&self, tmp: &Path, name: &str, owner: Option<CacheOwner>) -> Result<()> {
         let fd = self
             .state
-            .open_at(&tmp, &OpenHow::read().directory().no_follow())?;
-        let st = rustix::fs::fstat(&fd).map_err(|e| self.io_err("stat", &tmp, e.into()))?;
+            .open_at(tmp, &OpenHow::read().directory().no_follow())?;
+        let st = rustix::fs::fstat(&fd).map_err(|e| self.io_err("stat", tmp, e.into()))?;
         // Without one, the process's own ids: root's in a build.
         let owner = owner.unwrap_or(CacheOwner {
             uid: st.st_uid,
@@ -505,12 +523,13 @@ impl Store {
                 Some(rustix::fs::Uid::from_raw(owner.uid)),
                 Some(rustix::fs::Gid::from_raw(owner.gid)),
             )
-            .map_err(|e| self.io_err("chown", &tmp, e.into()))?;
+            .map_err(|e| self.io_err("chown", tmp, e.into()))?;
         }
         rustix::fs::fchmod(&fd, rustix::fs::Mode::from_raw_mode(owner.mode & 0o1777))
-            .map_err(|e| self.io_err("chmod", &tmp, e.into()))?;
+            .map_err(|e| self.io_err("chmod", tmp, e.into()))?;
         drop(fd);
-        self.state.rename(&tmp, Path::new("caches").join(name))?;
+        self.state
+            .rename_noreplace(tmp, Path::new("caches").join(name))?;
         Ok(())
     }
 

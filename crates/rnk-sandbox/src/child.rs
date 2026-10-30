@@ -69,15 +69,16 @@ pub(crate) enum ChildMount {
     },
 }
 
-/// A `RUN --mount=type=secret` file, written by the child on its tmpfs.
+/// A secret file the child writes on its tmpfs, bound at every target of
+/// the `RUN` that mounts it.
 pub(crate) struct ChildSecret {
     /// The file's name on the tmpfs.
     pub(crate) name: CString,
-    pub(crate) data: Vec<u8>,
-    pub(crate) target: CString,
+    pub(crate) data: std::sync::Arc<[u8]>,
     pub(crate) uid: Uid,
     pub(crate) gid: Gid,
     pub(crate) mode: Mode,
+    pub(crate) targets: Vec<CString>,
 }
 
 impl std::fmt::Debug for ChildSecret {
@@ -85,7 +86,7 @@ impl std::fmt::Debug for ChildSecret {
         f.debug_struct("ChildSecret")
             .field("name", &self.name)
             .field("data", &format_args!("<{} bytes hidden>", self.data.len()))
-            .field("target", &self.target)
+            .field("targets", &self.targets)
             .finish_non_exhaustive()
     }
 }
@@ -593,28 +594,30 @@ fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets) {
         }
         check(err, step, rustix::fs::fchown(&f, Some(s.uid), Some(s.gid)));
         check(err, step, rustix::fs::fchmod(&f, s.mode));
-        let t = resolve(err, root, &s.target);
-        check(
-            err,
-            step,
-            rustix::mount::mount_bind(fd_path(err, &f).path(), fd_path(err, &t).path()),
-        );
-        drop((f, t));
-        // Resolved again, it is the bind, not the stub under it.
-        let t = resolve(err, root, &s.target);
-        check(
-            err,
-            Step::Remount,
-            rustix::mount::mount_remount(
-                fd_path(err, &t).path(),
-                MountFlags::BIND
-                    | MountFlags::RDONLY
-                    | MountFlags::NOSUID
-                    | MountFlags::NODEV
-                    | MountFlags::NOEXEC,
-                c"",
-            ),
-        );
+        for target in &s.targets {
+            let t = resolve(err, root, target);
+            check(
+                err,
+                step,
+                rustix::mount::mount_bind(fd_path(err, &f).path(), fd_path(err, &t).path()),
+            );
+            drop(t);
+            // Resolved again, it is the bind, not the stub under it.
+            let t = resolve(err, root, target);
+            check(
+                err,
+                Step::Remount,
+                rustix::mount::mount_remount(
+                    fd_path(err, &t).path(),
+                    MountFlags::BIND
+                        | MountFlags::RDONLY
+                        | MountFlags::NOSUID
+                        | MountFlags::NODEV
+                        | MountFlags::NOEXEC,
+                    c"",
+                ),
+            );
+        }
     }
     drop(d);
     check(err, step, rustix::mount::unmount(dir, UnmountFlags::DETACH));

@@ -185,7 +185,7 @@ fn secret_mounts_follow_buildkit_defaults() {
     assert_eq!(
         r.secrets,
         vec![SecretFile {
-            data: b"s3cret".to_vec(),
+            data: b"s3cret".as_slice().into(),
             target: "/etc/token".into(),
             uid: 0,
             gid: 0,
@@ -326,4 +326,23 @@ fn owners_apply_to_new_caches_only() {
     let mode = fs::metadata(&path).unwrap().permissions().mode();
     assert_eq!(mode & 0o7777, 0o750, "not applied again");
     r.finish();
+}
+
+/// One secret mounted many times is read once and shared, so the sandbox
+/// writes one file for all its targets.
+#[test]
+fn a_secret_mounted_twice_is_read_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let host = dir.path().join("token");
+    fs::write(&host, b"s").unwrap();
+    let secrets: BTreeMap<String, Secret> = [("token".to_owned(), Secret::File(host))].into();
+    let mut a = mount(MountType::Secret);
+    a.cache_id = "token".into();
+    a.target = "/a".into();
+    let mut b = a.clone();
+    b.target = "/b".into();
+    let r = run_mounts(&[a, b], Path::new("/"), &store, &secrets, &never).unwrap();
+    assert_eq!(r.secrets.len(), 2);
+    assert!(Arc::ptr_eq(&r.secrets[0].data, &r.secrets[1].data));
 }
