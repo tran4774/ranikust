@@ -34,7 +34,7 @@ pub struct Entry { pub path: EntryPath, pub kind: EntryKind, pub mode: u32 /* ra
 pub enum EntryKind { File { size: u64 }, Dir, Symlink(Vec<u8>), Char(u32, u32), Block(u32, u32), Fifo,
     Whiteout /* path = the deleted path */, OpaqueDir }  // [design]
 pub enum Compression { None, Gzip, Zstd }  // [design] level: gzip 0..=9, zstd 1..=19
-pub struct EncodeOptions { pub compression: Compression, pub level: i32, pub threads: NonZeroUsize, pub mtime: Option<i64> } // [design] mtime: --reproducible
+pub struct EncodeOptions { pub compression: Compression, pub level: i32, pub threads: NonZeroUsize, pub mtime: Option<i64> } // mtime: --reproducible, later mtimes clamped to it (BuildKit, Q-161)
 pub trait EntrySource {            // [design] implemented by the exporter
     fn open(&mut self, e: &Entry) -> io::Result<Box<dyn Read + '_>>;            // file content, read once in layer order
     fn parent(&mut self, p: &EntryPath) -> io::Result<Option<Entry>>;          // [open: Q-013] interim: missing parents

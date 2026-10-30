@@ -162,11 +162,12 @@ for `--from`. The builder expands wildcards and `.dockerignore` and derives
 is `extract`.
 
 - **Source.** `from` is resolved in `src` following symlinks there, the
-  last one included, as BuildKit's `FollowSymlinks` copy does [inferred];
+  last one included, as BuildKit's `FollowSymlinks` copy does
+  (`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert_copy.go:283-293`);
   kaniko copies a symlinked source as a symlink
-  (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`) [open: Q-120]. A
-  directory has its contents copied; anything else is copied to exactly
-  `to`.
+  (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`). Where the two differ,
+  `copy` follows BuildKit (Q-120, `ADR-0032`). A directory has its
+  contents copied; anything else is copied to exactly `to`.
 - **Reading.** The source tree is walked by `(directory fd, name)`: each
   entry is pinned with `O_PATH | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, so the
   walk never enters another mount below `from` (source roots must not hold
@@ -175,7 +176,9 @@ is `extract`.
   Only a pinned regular file or directory is reopened, through ranikust's
   own `/proc/self/fd`, for reading; a FIFO or device node is recreated with
   `mknodat`, never opened; a symlink is copied with `readlinkat` on the
-  pinned fd; a socket is skipped. Names are sorted, so neither the copy nor
+  pinned fd; a socket becomes an empty regular file with its mode, as
+  BuildKit's `copyDevice` clears the socket bit (`fsutil
+  copy/copy_nowindows.go:33-45`). Names are sorted, so neither the copy nor
   which name of a hardlinked inode comes first depends on directory order.
 - **Writing.** As extraction writes: parents resolved in `dst` with
   `RESOLVE_NO_XDEV`, entries created with `O_EXCL`, `mkdirat`, `symlinkat`,
@@ -188,16 +191,21 @@ is `extract`.
   (`std::io::copy`), which reflinks where the filesystem shares extents.
 - **Metadata.** Every copied entry gets `opts.owner` (`--chown`; `None`
   keeps the source's, as `COPY --from` without `--chown`), `opts.chmod`
-  (`--chmod`, octal, directories included, not symlinks; `None` keeps the
-  raw bits), the source's mtime as mtime and atime, and
-  `security.capability`, the only xattr kaniko copies
-  (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1533`) [open: Q-120]. Hardlinks
-  inside the copied tree stay hardlinks. Directories the copy creates
-  above `to`, and `to` itself for a directory's contents, are `0755`,
-  owned by `opts.owner` (`to`: else the source directory's owner, with its
-  times), as kaniko's `MkdirAllWithPermissions` and
-  `createParentDirectory` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1287`,
-  `:1562`); an existing `to` keeps its metadata. A directory's mode and
+  (`--chmod`, directories included, not symlinks: an octal mode replaces
+  the bits, a symbolic one such as `go+rX` changes each entry's own, as
+  BuildKit parses it with dchapes-mode; `None` keeps the raw bits), the
+  source's mtime as mtime and atime, and its xattrs: BuildKit copies them
+  all and only logs a failure (`fsutil copy/copy_nowindows.go:15-31`,
+  `solver/llbsolver/file/backend.go:262-265`), so does `copy`, except
+  overlay's own (`trusted.overlay.*`, `user.overlay.*`), with a warning
+  for one the destination refuses. kaniko copies only
+  `security.capability` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1533`);
+  layers carry only that one either way (Q-025). Hardlinks inside the
+  copied tree stay hardlinks. Directories the copy creates above `to`, and
+  `to` itself for a directory's contents, get an octal `--chmod`, else
+  `0755` (BuildKit's `MkdirAll` in `fsutil copy/copy.go:85-89`), owned by
+  `opts.owner` (`to`: else the source directory's owner, with its times);
+  an existing `to` keeps its metadata. A directory's mode and
   times are set through the fd it was written through when its entries
   are done, deepest first; nothing is re-resolved by path, and memory and
   fds stay bounded by the depth (two fds per level: the caller raises

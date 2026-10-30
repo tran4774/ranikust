@@ -219,7 +219,8 @@ of the target), image config updates, then image assembly and output.
 `build_stage` runs one stage, blocking, on a `Snapshotter`'s root:
 metadata instructions through `rnk_oci::ConfigEdit`, `COPY`/`ADD` through
 `rnk_rootfs::copy` (sources resolved here against the context walk or a
-stage's root [open: Q-080]), `RUN` through `rnk-sandbox`, one layer per
+stage's root, with BuildKit's rules, Q-080), `RUN` through `rnk-sandbox`,
+one layer per
 changing instruction. `pull_image` fills the store with a base image's
 blobs and extracted layers. `LayerExporter` encodes a layer when its
 `LayerDemand` needs it, `assemble` writes the canonical config and

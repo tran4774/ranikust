@@ -175,10 +175,11 @@ Requirements found by comparing images:
   `/tmp` must stay 1777.
 - **Root directory metadata** comes from the lower root (step 2 above).
 - **Deterministic output.** Sorted entries, in the order the OCI layer
-  specification recommends (Q-053); same bytes for any thread count. Timestamps follow
-  kaniko: files keep the times they have on disk by default; under
-  `--reproducible` every timestamp is a fixed epoch, or `SOURCE_DATE_EPOCH`
-  when set.
+  specification recommends (Q-053); same bytes for any thread count. Files
+  keep the times they have on disk by default; under `--reproducible` a
+  time later than the fixed epoch (`SOURCE_DATE_EPOCH` when set, else
+  1970-01-01) is clamped to it, as BuildKit's `rewrite-timestamp` does
+  (Q-161, `ADR-0032`).
 
 Optionally, the exporter can compare copied-up files with their lower version
 and drop unchanged ones; BuildKit does not, and it is off by default.
