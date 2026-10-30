@@ -108,6 +108,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   directory another build has locked, and a non-empty directory without a
   `.ranikust-root` marker. Kaniko-mode builds themselves still stop after
   these checks, before anything is written.
+- The sandbox can run a kaniko-mode `RUN` on a host work directory without
+  mounting: it enters the directory with `chroot`, with ranikust's
+  `/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname` and `/dev` nodes put in
+  place for the command and the image's own entries put back afterwards,
+  also after a crash; `RUN` commands keep the open-file limit ranikust
+  started with. Not used by a build yet.
 
 ### Changed
 

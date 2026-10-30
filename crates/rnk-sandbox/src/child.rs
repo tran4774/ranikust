@@ -147,6 +147,11 @@ pub(crate) struct ChildArgs {
     pub(crate) gid: Gid,
     pub(crate) groups: Vec<Gid>,
     pub(crate) workdir: CString,
+    /// `Isolation::Direct` on a root other than `/`: `chroot` into
+    /// `root_dir` first.
+    pub(crate) chroot: bool,
+    /// The `RLIMIT_NOFILE` the command starts with; `None` keeps ranikust's.
+    pub(crate) nofile: Option<rustix::process::Rlimit>,
     pub(crate) stdio: [ChildStdio; 3],
     pub(crate) argv: Vec<CString>,
     pub(crate) envp: Vec<CString>,
@@ -471,6 +476,15 @@ pub(crate) fn switch_user_and_exec(
 
     set_stdio(err, &args.stdio);
     reset_process_state();
+    // After the close-on-exec pass, which may count descriptors up to the
+    // current limit.
+    if let Some(limit) = args.nofile {
+        check(
+            err,
+            Step::FileLimit,
+            rustix::process::setrlimit(rustix::process::Resource::Nofile, limit),
+        );
+    }
     exec(err, args, ptrs)
 }
 
@@ -1494,6 +1508,8 @@ mod tests {
             gid: Gid::ROOT,
             groups: Vec::new(),
             workdir: c"/".into(),
+            chroot: false,
+            nofile: None,
             stdio: [ChildStdio::Inherit; 3],
             argv: vec![c"sh".into(), c"-c".into()],
             envp: vec![c"A=1".into()],

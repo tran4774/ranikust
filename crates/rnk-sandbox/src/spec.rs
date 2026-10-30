@@ -29,10 +29,39 @@ pub enum Isolation {
     #[default]
     Full,
     /// Sequential kaniko mode where nothing can be mounted: the command runs
-    /// on `/` as a plain child process, like kaniko. `root_dir` must be `/`.
-    /// No namespaces and no capability changes: the container ranikust runs
-    /// in is the only isolation.
+    /// as a plain child process, like kaniko. On the root `/` (in a
+    /// container) nothing is placed: the command sees the container's own
+    /// `/proc`, `/dev`, `/etc/hosts` and `resolv.conf`. On any other root
+    /// (a host `--workdir`) the child `chroot`s into it, with ranikust's
+    /// `resolv.conf`, `hosts` and `hostname` and the `/dev` nodes put in
+    /// place and journaled for the `RUN`, and no `/proc`. No namespaces and
+    /// no capability changes: the container or host ranikust runs in is
+    /// the only isolation.
     Direct,
+}
+
+/// The `RLIMIT_NOFILE` a `RUN` starts with; `None` is unlimited. ranikust
+/// raises its own soft limit for the kaniko-mode walk, so the limit it
+/// started with is captured first ([`NofileLimit::current`]) and given back
+/// to every `RUN` ([`crate::Sandbox::set_nofile_limit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NofileLimit {
+    /// The soft limit.
+    pub soft: Option<u64>,
+    /// The hard limit.
+    pub hard: Option<u64>,
+}
+
+impl NofileLimit {
+    /// This process's limit now.
+    #[must_use]
+    pub fn current() -> Self {
+        let l = rustix::process::getrlimit(rustix::process::Resource::Nofile);
+        Self {
+            soft: l.current,
+            hard: l.maximum,
+        }
+    }
 }
 
 /// Whether a bind mount's target is a directory or a file.
@@ -257,18 +286,14 @@ impl RunSpec {
                 )));
             }
         }
-        if self.isolation == Isolation::Direct {
-            if self.root_dir != Path::new("/") {
-                return Err(Error::InvalidSpec(
-                    "Isolation::Direct runs on / only; root_dir must be /".into(),
-                ));
-            }
-            if !self.mounts.is_empty() || !self.secrets.is_empty() || self.network == Network::None
-            {
-                return Err(Error::InvalidSpec(
-                    "Isolation::Direct cannot mount or create a network namespace".into(),
-                ));
-            }
+        if self.isolation == Isolation::Direct
+            && (!self.mounts.is_empty()
+                || !self.secrets.is_empty()
+                || self.network == Network::None)
+        {
+            return Err(Error::InvalidSpec(
+                "Isolation::Direct cannot mount or create a network namespace".into(),
+            ));
         }
         Ok(())
     }
@@ -393,13 +418,34 @@ mod tests {
     }
 
     #[test]
-    fn direct_runs_on_slash_only() {
+    fn direct_runs_on_any_root_without_mounts() {
         let mut s = spec();
         s.isolation = Isolation::Direct;
-        assert!(s.validate().is_err());
+        assert!(s.validate().is_ok());
         s.root_dir = "/".into();
         assert!(s.validate().is_ok());
         s.network = Network::None;
         assert!(s.validate().is_err());
+        let mut s = spec();
+        s.isolation = Isolation::Direct;
+        s.mounts.push(BindMount {
+            source: "/state/caches/x".into(),
+            target: "/cache".into(),
+            kind: MountKind::Directory,
+            read_only: false,
+        });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn the_nofile_limit_is_read_from_the_process() {
+        let l = rustix::process::getrlimit(rustix::process::Resource::Nofile);
+        assert_eq!(
+            NofileLimit::current(),
+            NofileLimit {
+                soft: l.current,
+                hard: l.maximum
+            }
+        );
     }
 }

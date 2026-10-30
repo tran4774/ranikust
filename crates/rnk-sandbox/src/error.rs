@@ -88,10 +88,14 @@ pub enum Step {
     JoinNetwork,
     /// Installing the seccomp filter of a `RUN` in such a namespace.
     Seccomp,
+    /// `chroot` into a root other than `/` (`Isolation::Direct`).
+    Chroot,
+    /// Giving the command the `RLIMIT_NOFILE` ranikust started with.
+    FileLimit,
 }
 
 impl Step {
-    const ALL: [Step; 37] = [
+    const ALL: [Step; 39] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -129,6 +133,8 @@ impl Step {
         Step::NetNamespace,
         Step::JoinNetwork,
         Step::Seccomp,
+        Step::Chroot,
+        Step::FileLimit,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -186,6 +192,8 @@ impl Step {
             Step::NetNamespace => "create the network namespace",
             Step::JoinNetwork => "join the network namespace",
             Step::Seccomp => "install the seccomp filter",
+            Step::Chroot => "chroot into the root",
+            Step::FileLimit => "set RLIMIT_NOFILE",
         }
     }
 }

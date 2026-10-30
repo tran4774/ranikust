@@ -17,7 +17,8 @@ where mounting is possible; no `RUN` process outlives the build.
   bind mounts, `mknod`. `ranikust` runs them, with `rnk-snapshot`'s.
 - Per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop, the
   `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`; and
-  `Isolation::Direct`: sequential kaniko-mode `RUN` on `/`.
+  `Isolation::Direct`: sequential kaniko-mode `RUN` on `/`, or in a
+  `chroot` of a host workdir with journaled placed files (`ADR-0043`).
 - The no-mount `--parallel-stages` path: bare `chroot`, `mknod` `/dev`
   nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`.
 
@@ -43,6 +44,8 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
+    pub fn start_with_root(caps, dir, shared_root: &Path) -> Result<Self>; // also replays journals of that workdir (outside the state dir; never /)
+    pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
 }
@@ -53,6 +56,7 @@ pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mod
 pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; BareChroot { fake_proc } [design], Phase 2
+pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
 pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, .. }
 ```
 
@@ -121,7 +125,16 @@ from `rnk-store`, secret file) and passes `--network`.
 - `Direct`: no namespace, mount or capability change; the command gets its
   own session, whose process group is killed with `SIGKILL` once the
   command exits (waited with `WNOWAIT`, so the group id cannot be reused),
-  as kaniko does.
+  as kaniko does. On `/` nothing is placed. On another root the child
+  `chroot`s into it first (`Step::Chroot`), after the parent swapped in
+  ranikust's `resolv.conf`, `hosts` (real host name: no UTS namespace),
+  `hostname` and `mknod` `/dev` nodes (a refused node left out), each
+  journaled as a `swap` before the image's entry is renamed aside to
+  `.ranikust-aside-<id>-<name>`; `Stdio::Null` is the host's `/dev/null`,
+  opened by the parent. No `/proc` (`ADR-0043`).
+- Every `RUN` (`Full` or `Direct`) gets the `RLIMIT_NOFILE` of
+  `Sandbox::set_nofile_limit`, set after the close-on-exec pass, right
+  before `execve` (`Step::FileLimit`); unset, it inherits ranikust's.
 - Stubs are journaled in `<state-dir>/sandbox/runs` before they exist (the
   journal is locked before it gets its name, so a replay never takes a live
   one) and removed before the diff; the parent's mtime returns to m0 only if it still
@@ -130,8 +143,14 @@ from `rnk-store`, secret file) and passes `--network`.
   directory others may have written: journals and run directories are
   opened with `O_NOFOLLOW` and the scratch files removed with `unlinkat`
   through descriptors, a journal's root must resolve strictly below the
-  state directory (the parent of `dir`), and `dir` or `dir/runs` being a
-  symlink is an error. A journal failing a check is left with a warning.
+  state directory (the parent of `dir`) or be the workdir given to
+  `Sandbox::start_with_root` (never `/`), a `swap` record must name one of
+  the nine `PLACEABLE` paths and an aside of the `.ranikust-aside-` form,
+  and `dir` or `dir/runs` being a symlink is an error. A journal failing a
+  check is left with a warning. Replay and crash unlock the journal's
+  `flock` explicitly before closing it: the lock belongs to the open file
+  description, which a child cloned meanwhile shares until it executes or
+  exits.
 - The probe performs the real sequence, in the configuration that will be
   used, never by kernel version; a command that does not exist fails at
   `execve` with `ENOENT`, which proves every step before it.
@@ -159,9 +178,14 @@ from `rnk-store`, secret file) and passes `--network`.
 - **T0** (any user, `cargo test`): spec validation; mount plan order,
   environment defaults, `PATH` candidates, `/etc/hosts`; capability lists;
   failure records; the stub journal (placement through symlinks, removal,
-  parent times, replay of dead journals only); `Direct` children cloned
+  parent times, replay of dead journals only, a lock kept by a shared
+  description); swaps (the image's entry back with its inode, a symlink
+  kept, parent times, a parent the `RUN` changed kept, a refused node
+  undone at once, only placeable paths under a real directory, replay on
+  the shared root only, planted records skipped); `Direct` children cloned
   through the spawner thread that fail before executing anything (missing
-  `WORKDIR`, then `setgroups` or a missing program); mount sources
+  `WORKDIR`, then `setgroups` or a missing program; on a temp workdir,
+  `chroot` refused as a normal user with every placed file undone); mount sources
   (symlink and type refused); remount flags (`nodev`, read-only `/dev`
   nodes); the probe's `EPERM`-only fallback and the mount-root check; the
   spans (`tests/spans.rs`).
@@ -172,7 +196,11 @@ from `rnk-store`, secret file) and passes `--network`.
   and `/dev/null` read-only, `/proc/kcore` and the other paths masked, no
   terminal, only stdio fds; no stub in the layer [measured]. To add: the
   fallbacks; `SIGKILL` during `RUN sleep 1000` leaves nothing.
-- **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`); real root;
+- **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`);
+  `direct_runs_in_a_chroot_with_placed_files_as_root` (`#[ignore]`: a
+  shell copied into a temp workdir sees the placed files and nodes, no
+  `/proc`, `ulimit -n` 777; the root is as before after) [written, not run
+  yet]; real root;
   escapes (`chroot` + `chdir("..")` under `pivot_root` and `MS_MOVE`,
   `umount /etc/resolv.conf`, a setuid binary) fail; writes to `/proc/sys`
   and `/proc/sysrq-trigger` fail; `mknod` + open and `chmod /dev/null`
@@ -230,6 +258,12 @@ from `rnk-store`, secret file) and passes `--network`.
 - A hard-coded cgroup file set fixes neither v1 nor v2 (exp-13, exp-16);
   never fake `/proc/self/{exe,fd,maps,status}` (exp-12a).
 - An unrestored parent mtime put `/etc` in every layer (exp-12, bugs found).
+- Closing a `flock`ed file does not release the lock while a child cloned
+  by another thread still shares its description (until `execve` or exit):
+  a replay then saw a dead journal as live (a flaky T0 test). Unlock
+  explicitly.
+- A `Direct` `RUN` in a `chroot` has no `/proc`; on a host that can mount,
+  the caller should run that workdir with `Isolation::Full` instead.
 
 ## Phase 1
 

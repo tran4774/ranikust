@@ -52,7 +52,7 @@ const PROBE_ROOT_PREFIX: &str = "probe-";
 /// error.
 pub fn probe(dir: &Path) -> Result<Caps> {
     let runner = Runner::new(dir, None)?;
-    journal::replay(runner.runs_dir(), runner.state_dir())?;
+    journal::replay(runner.runs_dir(), runner.state_dir(), None)?;
     remove_stale_roots(dir);
     let root_dir = create_root(dir)?;
     let parent = ParentPid::new()?;
