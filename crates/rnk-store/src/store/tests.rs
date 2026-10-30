@@ -38,8 +38,11 @@ fn a_directory_swapped_for_another_is_not_emptied() {
     let state = s.state_dir().to_owned();
     fs::create_dir_all(state.join("tmp/dead")).unwrap();
     let st = s.state.statx("tmp/dead").unwrap();
+    // The replacement exists before the original goes, so it cannot reuse
+    // its inode number (some filesystems hand a freed one straight back).
+    fs::create_dir_all(state.join("tmp/other/precious")).unwrap();
     fs::remove_dir(state.join("tmp/dead")).unwrap();
-    fs::create_dir_all(state.join("tmp/dead/precious")).unwrap();
+    fs::rename(state.join("tmp/other"), state.join("tmp/dead")).unwrap();
 
     let err = remove_dir_tree(&s.state, Path::new("tmp/dead"), &st).unwrap_err();
     assert!(matches!(err, Error::BadEntry { .. }), "{err}");

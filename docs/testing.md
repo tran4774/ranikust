@@ -228,13 +228,17 @@ QEMU 9.1 or later is needed, and the recipe refuses an older one: QEMU
 qemu-user` (if the distribution's is 9.1 or later) or the Debian 13 package
 CI pins, unpacked with `dpkg -x`, gives one without installing it. The
 recipe prints the binfmt entry's interpreter; CI points the entry at the
-same binary as cargo's runner. Two exceptions, both from emulation:
+same binary as cargo's runner. Three exceptions, all from emulation:
 
 - `root::tests::open_gives_cloexec_path_fd_and_mount_id` is skipped:
   qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so
   other mount-id comparisons pass only because both sides are 0. The
   mount-ID checks that guard deletion (T4 of the threat model) are
   therefore not exercised on aarch64.
+- `without_root_the_set_up_refuses_before_touching_the_workdir` is
+  skipped: qemu-user runs a thread of its own, so the set-up stops at its
+  single-thread check before the privilege refusal the test expects. Seen
+  first in CI with binfmt registered; the x86_64 job still runs it.
 - ranikust's `cli` and `metrics` tests spawn the binary; without a
   binfmt_misc entry for aarch64 the kernel cannot execute it, so the
   recipe skips them with a warning. CI registers the entry and requires it.
