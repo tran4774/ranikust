@@ -239,14 +239,17 @@ impl<'a> Walk<'a> {
 
     /// Walks the whole upper directory with an explicit stack of the
     /// directories still to list, so a deep tree costs memory, never stack.
+    /// Each directory carries whether the lower stack shows it as a
+    /// directory: below one it does not, the lower stack shows nothing
+    /// either (overlay's lookup stops there), so new trees cost no lookup.
     fn run(&mut self) -> Result<()> {
-        let mut todo = vec![PathBuf::new()];
-        while let Some(dir) = todo.pop() {
+        let mut todo = vec![(PathBuf::new(), !self.lowers.layers.is_empty())];
+        while let Some((dir, below)) = todo.pop() {
             for name in list(self.upper, &dir)? {
                 let p = child(&dir, &name)?;
                 let st = self.upper.statx(&p)?;
-                if self.entry(&p, &st)? {
-                    todo.push(p);
+                if let Some(below) = self.entry(&p, &st, below)? {
+                    todo.push((p, below));
                 }
             }
         }
@@ -254,18 +257,21 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
-    /// Classifies one entry and feeds it, or not; `true` when the walk must
-    /// go into it (a directory, whether it is fed or an unchanged copy-up).
+    /// Classifies one entry and feeds it, or not; `below` is whether the
+    /// lower stack shows its parent as a directory. Returns, for a
+    /// directory the walk must go into (fed or an unchanged copy-up),
+    /// whether the lower stack shows it as a directory too.
     /// As BuildKit's overlay differ (`util/overlay/overlay_linux.go`
     /// `Changes`): an entry the lower stack also shows is left out when
     /// `sameDirent` finds it unchanged, and an opaque directory over a
     /// lower entry is walked against it instead of written as opaque.
-    fn entry(&mut self, p: &Path, st: &Stat) -> Result<bool> {
+    fn entry(&mut self, p: &Path, st: &Stat, below: bool) -> Result<Option<bool>> {
+        let lower = if below { self.lowers.lookup(p)? } else { None };
         if lowers::is_whiteout(st) {
-            if self.lowers.lookup(p)?.is_some() {
+            if lower.is_some() {
                 self.whiteout(p)?;
             }
-            return Ok(false);
+            return Ok(None);
         }
         let all = self.upper.xattrs(p)?;
         if all
@@ -279,12 +285,14 @@ impl<'a> Walk<'a> {
         }
         let opaque = all.iter().any(|(n, v)| n == OPAQUE && v.as_slice() == b"y");
         let xattrs = lowers::layer_xattrs(all);
-        let lower = self.lowers.lookup(p)?;
         let same = match &lower {
             Some(l) => self.same_dirent(st, &xattrs, l, p)?,
             None => false,
         };
         let is_dir = st.file_type() == FileType::Directory;
+        let lower_dir = lower
+            .as_ref()
+            .is_some_and(|l| l.stat.file_type() == FileType::Directory);
         if opaque && is_dir && lower.is_some() {
             if same {
                 self.counts.unchanged += 1;
@@ -292,13 +300,14 @@ impl<'a> Walk<'a> {
                 self.push(p, st, xattrs)?;
             }
             self.opaque_dir(p)?;
-            return Ok(false);
+            return Ok(None);
         }
         if same {
             self.counts.unchanged += 1;
-            return Ok(is_dir);
+        } else if !self.push(p, st, xattrs)? {
+            return Ok(None);
         }
-        self.push(p, st, xattrs)
+        Ok(is_dir.then_some(lower_dir))
     }
 
     /// The children of the opaque directory `dir` against what the lower

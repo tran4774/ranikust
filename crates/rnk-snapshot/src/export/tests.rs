@@ -189,6 +189,23 @@ fn an_opaque_dir_is_written_as_whiteouts_of_what_it_hides() {
 }
 
 #[test]
+fn below_a_name_the_lowers_show_as_a_non_dir_nothing_is_compared() {
+    // `l1/t` is a file hiding `l2/t/x` and `l2/t/y`: the new directory
+    // `upper/t` needs no whiteout for `x`, and its `y` is new, not a
+    // copy-up of the hidden one.
+    let f = Fixture::new();
+    f.pair("t", b"file", b"file", 1_000, 0);
+    fs::remove_file(f.p("upper/t")).unwrap();
+    f.file("l2/t/x", b"x");
+    f.file("l2/t/y", b"same");
+    f.mtime("l2/t/y", 1_000, 0);
+    f.file("upper/t/y", b"same");
+    f.mtime("upper/t/y", 1_000, 0);
+    f.whiteout("upper/t/x");
+    assert_eq!(names(&f.entries()), ["t", "t/y"]);
+}
+
+#[test]
 fn an_unchanged_copied_up_file_is_dropped() {
     let f = Fixture::new();
     f.pair("etc/f", b"abc", b"abc", 1_000, 0);
