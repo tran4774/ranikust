@@ -331,26 +331,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-038: Which crates fill the Phase 2 dependency picks?
-
-- **Blocks:** Phase 2 tasks 0, 4; **Area:** dependencies
-- **Context:** survey 03 §3 leaves the snapshot hash and the parallel walk
-  open ([phase-1.md](agents/phase-1.md#open-questions-blocking-phase-1) O5,
-  [refs.md](agents/refs.md#crates)); the hash choice barely matters
-  ([kaniko-mode](design/kaniko-mode.md#walk-hash-and-diff)).
-- **Options:** hash: (a) `highway` or (b) `xxhash-rust`; walk: (c) `jwalk`
-  or (d) `rayon` + `getdents64`.
-- **Recommendation:** (b) and (d), from the benchmark: the fd walk is the
-  fastest measured and the only one that meets the walk's invariants
-  (`jwalk` 0.9.0 reads by full path and is unmaintained); xxh3 is 2.5
-  times as fast as HighwayHash on one thread. Proposed in
-  [ADR-0039](adr/0039-kaniko-mode-walk-and-hash-crates.md), waiting for the
-  maintainer.
-- **Interim:** the maintainer asked for a benchmark first (2026-10-30):
-  Phase 2 task 0 ([phase-2](agents/phase-2.md#task-order)) measures each
-  candidate on a node rootfs, and the picks go into an ADR.
-- **Raised:** 2026-10-30
-
 ### Q-039: Which environments must the probe be tested in?
 
 - **Blocks:** Phase 3; **Area:** `ranikust`, `rnk-sandbox`, `rnk-snapshot`
@@ -571,6 +551,15 @@ Entry format:
 - **Answer (2026-10-30):** option (b): keep the fourteen files until a build
   fails without `memory.stat`; the untried tools get tests in Phase 2 task
   10. Recorded in [ADR-0038](adr/0038-kaniko-mode-settings-for-phase-2.md).
+
+### Q-038: Which crates fill the Phase 2 dependency picks?
+
+- **Answer (2026-10-30):** options (b) and (d), after the benchmark of
+  Phase 2 task 0 (`tests/bench/walk-hash`): the walk is a `rayon` scope over
+  `openat2` and `getdents64`, the content hash xxh3-128 from `xxhash-rust`.
+  The walk runs on 8 workers by default; the maintainer asked for a flag to
+  change it, `--snapshot-workers`. Recorded in
+  [ADR-0039](adr/0039-kaniko-mode-walk-and-hash-crates.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

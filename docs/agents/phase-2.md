@@ -5,8 +5,8 @@ mount (default Docker, ordinary pods): the workdir is the root, each layer
 comes from a parallel walk and hash, the root is emptied safely between
 stages, and stages run one at a time unless per-stage directories are
 possible or `--parallel-stages` asks for them. Measured against kaniko on
-W1–W3. Its open questions are settled (`ADR-0038`) except the dependency
-picks, which wait for the benchmark of task 0 (Q-038).
+W1–W3. Its open questions are settled (`ADR-0038`, `ADR-0039`) except the
+`Snapshotter` signature, revisited at task 6 (Q-024).
 
 Source: survey 04 §3 (5–6 weeks for one person `[inferred]`),
 [design/kaniko-mode.md](../design/kaniko-mode.md), experiments 09, 12, 12a
@@ -19,13 +19,13 @@ the code.
 
 | | Item | Owner |
 |---|---|---|
-| [~] | Benchmark of the snapshot hash (`xxhash-rust` xxh3, `highway`) and the parallel walk (`jwalk`, `rayon` + `getdents64`) on a node rootfs; the picks recorded in an ADR (done: `tests/bench/walk-hash`, ADR-0039 proposed, waiting for acceptance, [open: Q-038]) | `rnk-snapshot`; bench |
+| [x] | Benchmark of the snapshot hash (`xxhash-rust` xxh3, `highway`) and the parallel walk (`jwalk`, `rayon` + `getdents64`) on a node rootfs; the picks recorded in an ADR (`tests/bench/walk-hash`, `ADR-0039`: `rayon` + `getdents64`, xxh3-128, 8 workers by default, `--snapshot-workers`) | `rnk-snapshot`; bench |
 | [ ] | Workdir checks before anything is written: canonicalized, `/` and the 30 system directories and their ancestors refused by `(dev, ino)`, opened with `RESOLVE_NO_SYMLINKS`, `flock(LOCK_EX \| LOCK_NB)` held for the build, the `.ranikust-root` marker (a workdir of only mount points is refused); `RLIMIT_NOFILE` raised to its hard limit (`ADR-0038`, Q-011) | `ranikust`, with `rnk-rootfs` primitives |
 | [ ] | The kaniko-mode state directory: `/ranikust/state` when the root is `/`, otherwise `<cwd>/.ranikust`, the directory ranikust was started in; on the ignore list whenever it lies inside the root (`ADR-0038`, Q-036) | `ranikust`, `rnk-store` |
 | [ ] | `--mode=auto` picks kaniko mode when root may not mount, and says why; the probe's per-stage outcome (can mount, overlay unusable) | `ranikust` |
 | [ ] | Ignore list: mount points under the root from `/proc/self/mountinfo`, `--ignore-path`, `/proc`, `/sys`, `/dev`, all of `/ranikust`, the state directory, `/etc/mtab`, `/tmp/apt-key-gpghome`, and `/var/run` while `--ignore-var-run` is true (`ADR-0038`, Q-035) | `rnk-snapshot`, on `rnk-rootfs::IgnoreList` |
 | [ ] | Base-layer extraction into a live root: whiteouts applied (`Whiteouts::Apply`), ignored paths never written, mount points kept | `rnk-rootfs` |
-| [ ] | Parallel walk relative to each parent fd (`openat2` `RESOLVE_BENEATH \| NO_SYMLINKS \| NO_MAGICLINKS \| NO_XDEV`, `statx` per entry, mount-id guard), about 8 workers; content and xattr hash (`*.overlay.*` excluded); stat cache with the 2 s racy window; the diff computed during the walk over a path arena (kaniko's `LayeredMap`); `--snapshot-mode=full\|redo\|time` | `rnk-snapshot` |
+| [ ] | Parallel walk relative to each parent fd (`openat2` `RESOLVE_BENEATH \| NO_SYMLINKS \| NO_MAGICLINKS \| NO_XDEV`, `statx` per entry, mount-id guard), 8 workers by default, `--snapshot-workers` (`ADR-0039`); content and xattr hash (`*.overlay.*` excluded); stat cache with the 2 s racy window; the diff computed during the walk over a path arena (kaniko's `LayeredMap`); `--snapshot-mode=full\|redo\|time` | `rnk-snapshot` |
 | [ ] | Walk diff → OCI layer: one whiteout at the topmost deleted path, parent headers, a hardlink into a lower layer written as a regular file, an empty layer for a `RUN` that changes nothing | `rnk-snapshot` → `rnk-layer` |
 | [ ] | `StageRootfs`/`Snapshotter` for kaniko mode, on the shared `/` and on a per-stage directory; revisit the interim signature ([open: Q-024]) | `rnk-snapshot` |
 | [ ] | Safe deletion between stages and on release, with the ignore list (mechanism done in `rnk_rootfs::delete_contents`) | `rnk-snapshot` |
@@ -46,7 +46,7 @@ Three tracks after task 0: set-up (1, 2), the snapshot (3–6) and execution
 
 | # | Task | Needs | Blocked by |
 |---|---|---|---|
-| 0 | Hash and walk benchmark; ADR with the picks | | Q-038 (this task answers it) |
+| 0 | Hash and walk benchmark; ADR with the picks (done, `ADR-0039`) | | |
 | 1 | Workdir checks, lock, marker, `RLIMIT_NOFILE` (`ranikust`, `rnk-rootfs`) | | |
 | 2 | State directory default, `--mode=auto` picking kaniko mode, the refused flags accepted | 1 | |
 | 3 | Ignore list from mountinfo and the fixed paths; extraction into a live root | 1 | |
@@ -111,15 +111,13 @@ contexts (Phase 5), hardening (Phase 6).
 
 ## Open questions
 
-- **Q-038 dependency picks.** Task 0 benchmarks the candidates; the answer
-  becomes an ADR:
-  [Q-038](../open-questions.md#q-038-which-crates-fill-the-phase-2-dependency-picks).
 - **Q-024 `Snapshotter` signature.** Revisited at task 6:
   [Q-024](../open-questions.md#q-024-what-is-the-snapshotter-signature).
 
 Settled for Phase 2 by the maintainer (2026-10-30) in
 [ADR-0038](../adr/0038-kaniko-mode-settings-for-phase-2.md): Q-011, Q-019,
-Q-034, Q-035, Q-036, Q-037. Also measured during the phase: the kaniko-mode
+Q-034, Q-035, Q-036, Q-037; in
+[ADR-0039](../adr/0039-kaniko-mode-walk-and-hash-crates.md): Q-038. Also measured during the phase: the kaniko-mode
 items of
 [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured)
 (cold page cache, slow disks, deleting very large roots).

@@ -110,4 +110,4 @@ when new measurements contradict its evidence.
 | [0036](0036-kaniko-flags-in-phase-1.md) | Kaniko flags in Phase 1: accepted, ignored with a warning, or refused with the phase | Accepted | 2026-10-30 | Q-023, Q-020, Q-021, Q-031, kaniko source |
 | [0037](0037-metrics-report-path-from-the-flag-only.md) | The metrics report path comes only from `--metrics-file` | Accepted | 2026-10-30 | maintainer, partly supersedes ADR-0025 |
 | [0038](0038-kaniko-mode-settings-for-phase-2.md) | Kaniko-mode settings for Phase 2: workdir checks in `ranikust`, state directory, ignore list, lazy snapshots, fake `/proc`, `--parallel-stages` | Accepted | 2026-10-30 | Q-011, Q-019, Q-034, Q-035, Q-036, Q-037 |
-| [0039](0039-kaniko-mode-walk-and-hash-crates.md) | The kaniko-mode walk uses rayon over `getdents64` and hashes with xxh3-128 | Proposed | 2026-10-30 | Q-038, `tests/bench/walk-hash` |
+| [0039](0039-kaniko-mode-walk-and-hash-crates.md) | The kaniko-mode walk uses rayon over `getdents64` and hashes with xxh3-128 | Accepted | 2026-10-30 | Q-038, `tests/bench/walk-hash` |

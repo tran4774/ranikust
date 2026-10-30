@@ -75,8 +75,11 @@ squashing, which folds a parent stage into the child that builds on it
 - Compute the diff during the walk (mark entries seen; unseen old entries are
   deletions) rather than comparing two maps afterwards; store entries
   compactly (path arena), since a 269k-entry map took about 200 MB.
-- Cap the walk at about 8 workers: 32 workers were slower than 8
-  [inferred from one machine].
+- The walk is a `rayon` scope over `openat2` and `getdents64`, hashing with
+  xxh3-128 ([ADR-0039](../adr/0039-kaniko-mode-walk-and-hash-crates.md)), on
+  8 workers by default: 16 and 32 were slower than 8 on the benchmark
+  machine. `--snapshot-workers N` changes the count; it never changes a
+  layer.
 - **`--snapshot-mode`** picks what is compared, as in kaniko
   ([ADR-0023](../adr/0023-mode-flag.md)): `full` (default) everything above,
   content included; `redo` mode, mtime, size, uid and gid, without reading
@@ -300,7 +303,6 @@ them. The scheduler's memory limit counts page cache
 ## Open questions
 
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
-- [Q-038](../open-questions.md#q-038-which-crates-fill-the-phase-2-dependency-picks) Which crates fill the Phase 2 dependency picks (benchmark first)?
 
 ## References
 

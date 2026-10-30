@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-10-30
 decision-makers: Tran Nguyen (maintainer)
 ---
@@ -33,15 +33,20 @@ than `PATH_MAX`. It is measured only for comparison.
 
 ## Decision Outcome
 
-Proposed: the walk is our own, a `rayon` scope with one task per directory
-over `openat2` and `getdents64` (`rustix::fs::RawDir`), capped at 8
-workers; the content hash is xxh3-128 from `xxhash-rust` (feature `xxh3`).
+Chosen by the maintainer (2026-10-30): the walk is our own, a `rayon`
+scope with one task per directory over `openat2` and `getdents64`
+(`rustix::fs::RawDir`), on 8 workers by default; the content hash is
+xxh3-128 from `xxhash-rust` (feature `xxh3`).
 
 - The hash never leaves the process: it only tells whether a file changed
   between two walks of one build, so it needs no compatibility with
   kaniko's HighwayHash and no cryptographic strength. 128 bits keep
   accidental collisions out of the question over millions of files.
-- 8 workers is the default cap: 16 and 32 were slower on every hash.
+- 8 workers is the default: 16 and 32 were slower on every hash. The
+  ranikust flag `--snapshot-workers N` changes it (kaniko has no such
+  flag), for machines where the measurement does not hold: few CPUs, slow
+  or network disks, a cold page cache (Q-033). It only sizes the walk's
+  pool, so layer contents and digests never depend on it.
 - New dependencies: `rayon` (MIT OR Apache-2.0) and `xxhash-rust`
   (BSL-1.0, already allowed in `deny.toml`), both pure Rust, so the musl
   and aarch64 builds need nothing new (`ADR-0009`, `ADR-0020`).
@@ -87,8 +92,7 @@ over another as far as known.
 
 ## More Information
 
-Answers [Q-038](../open-questions.md#q-038-which-crates-fill-the-phase-2-dependency-picks)
-once accepted, and completes the Phase 1 dependency picks of
+Answers [Q-038](../open-questions.md#q-038-which-crates-fill-the-phase-2-dependency-picks), and completes the Phase 1 dependency picks of
 [ADR-0030](0030-phase-1-dependency-picks.md). Design:
 [kaniko-mode](../design/kaniko-mode.md#walk-hash-and-diff). Revisit the
 worker cap with a cold-cache measurement (Q-033).

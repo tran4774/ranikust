@@ -47,7 +47,7 @@ licenses are crates.io's latest at that date, not what `Cargo.lock` pins.
 ## Crates
 
 From survey 03 §3 and `exp-05`. Status: **chosen** (an ADR or the survey
-picked it), **candidate** (Phase 2 `[open: Q-038]`, later phases; see [open-questions.md](../open-questions.md#open)),
+picked it), **candidate** (later phases; see [open-questions.md](../open-questions.md#open)),
 **rejected**.
 
 | Crate | Version, license | Role | Status |
@@ -77,7 +77,7 @@ picked it), **candidate** (Phase 2 `[open: Q-038]`, later phases; see [open-ques
 | [bytes](https://crates.io/crates/bytes), [futures-util](https://crates.io/crates/futures-util), [tokio-util](https://crates.io/crates/tokio-util) | 1.12.1, MIT; 0.3.34, MIT OR Apache-2.0; 0.7.20, MIT | Push bodies as the byte streams `oci-client` takes | chosen (`rnk-registry`) |
 | [http-body-util](https://crates.io/crates/http-body-util), [hyper-util](https://crates.io/crates/hyper-util) | 0.1.5, 0.1.21, MIT | The fake registry in `rnk-registry`'s tests | chosen (tests) |
 | [tokio](https://crates.io/crates/tokio) | 1.54.1, MIT | Async runtime | chosen |
-| [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, walk | chosen |
+| [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, the kaniko-mode walk (one task per directory over `getdents64`, `--snapshot-workers`, default 8, `ADR-0039`) | chosen |
 | [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | `rustix` chosen (Q-012), `nix` rejected |
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Derives each library crate's `Error` enum; no `anyhow` in libraries | candidate; used by `rnk-rootfs` |
 | [tempfile](https://crates.io/crates/tempfile) | 3.27.0, MIT OR Apache-2.0 | Temp dirs for T0 tests, removed on drop | candidate; used by `rnk-rootfs` tests |
@@ -87,7 +87,7 @@ picked it), **candidate** (Phase 2 `[open: Q-038]`, later phases; see [open-ques
 | [serde_json](https://crates.io/crates/serde_json) | 1.0.154, MIT OR Apache-2.0 | JSON: the metrics report (`rnk-metrics`) | chosen |
 | [libc](https://crates.io/crates/libc) | 0.2.191, MIT OR Apache-2.0 | `getrusage` in `rnk-metrics`, which `rustix` 1.1 lacks | chosen |
 | [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03); derive, no colour | chosen for `ranikust` (Q-012) |
-| [highway](https://crates.io/crates/highway), [xxhash-rust](https://crates.io/crates/xxhash-rust), [jwalk](https://crates.io/crates/jwalk) | 1.3.0, MIT; 0.8.19, BSL-1.0; 0.9.0, MIT | Snapshot hash, parallel walk (Phase 2) | candidate |
+| [xxhash-rust](https://crates.io/crates/xxhash-rust) | 0.8.19, BSL-1.0 | xxh3-128 content and xattr hash of the kaniko-mode walk; feature `xxh3` only | chosen (`ADR-0039`) |
 | [regex](https://crates.io/crates/regex) | 1.13.1, MIT OR Apache-2.0 | `rnk-ignore`'s compiled patterns (Go regexps translated; no Unicode tables) | chosen |
 | [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Library `Error` enums | chosen |
 | [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only, `std` feature) | chosen |
