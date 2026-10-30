@@ -147,6 +147,10 @@ impl BuildConfig {
                 "--platform={platform} is not supported yet: only {PLATFORM} (ADR-0009)"
             )));
         }
+        let mut ids = std::collections::BTreeSet::new();
+        if let Some((id, _)) = args.secrets.iter().find(|(id, _)| !ids.insert(id.as_str())) {
+            return Err(Invalid(format!("--secret id={id} is given twice")));
+        }
         if args.targets.iter().any(String::is_empty) {
             return Err(Invalid("--target names an empty stage".to_owned()));
         }

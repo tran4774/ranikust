@@ -118,9 +118,14 @@ fn prepare(
     sandbox: Sandbox,
     overlay_caps: rnk_snapshot::OverlayCaps,
 ) -> Result<Shared, String> {
-    let dockerfile_path = dockerfile_path(&config.dockerfile, &config.context);
-    let text = std::fs::read_to_string(&dockerfile_path)
-        .map_err(|e| format!("reading the Dockerfile {}: {e}", dockerfile_path.display()))?;
+    let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
+        .map_err(|e| format!("opening the build context: {e}"))?;
+    let source = dockerfile_source(&config.dockerfile);
+    let text = read_dockerfile(&source, &context)?;
+    let dockerfile_path = match &source {
+        DockerfileSource::Host(p) => p.clone(),
+        DockerfileSource::Context(rel) => context.origin().join(rel),
+    };
     let dockerfile = rnk_dockerfile::parse(&text).map_err(|e| e.to_string())?;
     let (os, arch) = config
         .platform
@@ -131,19 +136,21 @@ fn prepare(
         build_args: config
             .build_args
             .iter()
-            .filter_map(|a| {
-                let value = a.value.clone().or_else(|| std::env::var(&a.name).ok())?;
-                Some((a.name.clone(), value))
+            .filter_map(|a| match &a.value {
+                Some(v) => Some(Ok((a.name.clone(), v.clone()))),
+                // kaniko: `--build-arg NAME` takes the value from the
+                // environment, and an unset variable leaves it unset.
+                None => env_var(&a.name)
+                    .transpose()
+                    .map(|v| v.map(|v| (a.name.clone(), v))),
             })
-            .collect(),
+            .collect::<Result<_, String>>()?,
         build_platform: df_platform.clone(),
         target_platform: df_platform,
         targets: config.targets.clone(),
     };
     let graph = rnk_dockerfile::stage_graph(&dockerfile, &options).map_err(|e| e.to_string())?;
 
-    let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
-        .map_err(|e| format!("opening the build context: {e}"))?;
     let ignore = context
         .find_dockerignore(Some(&dockerfile_path))
         .map_err(|e| e.to_string())?;
@@ -163,7 +170,7 @@ fn prepare(
     )
     .map_err(|e| e.to_string())?;
     let time = if config.reproducible {
-        BuildTime::reproducible(std::env::var("SOURCE_DATE_EPOCH").ok().as_deref())
+        BuildTime::reproducible(env_var("SOURCE_DATE_EPOCH")?.as_deref())
             .map_err(|e| e.to_string())?
     } else {
         BuildTime::at(SystemTime::now())
@@ -177,7 +184,7 @@ fn prepare(
         compression,
         level: match compression {
             Compression::Zstd => 3,
-            _ => 6,
+            Compression::Gzip | Compression::None => 6,
         },
         threads,
         mtime: None,
@@ -221,13 +228,76 @@ fn prepare(
     })
 }
 
+/// Where the Dockerfile is read from.
+#[derive(Debug, PartialEq, Eq)]
+enum DockerfileSource {
+    /// A path the operator gave that exists as given: read on the host.
+    Host(PathBuf),
+    /// Inside the context, relative to its root: read through it, so a
+    /// symlink there never leaves the context.
+    Context(PathBuf),
+}
+
 /// kaniko's `--dockerfile`: as given when it exists, else inside the
 /// context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go` `resolveDockerfilePath`).
-fn dockerfile_path(dockerfile: &Path, context: &Path) -> PathBuf {
+fn dockerfile_source(dockerfile: &Path) -> DockerfileSource {
     if dockerfile.is_absolute() || dockerfile.exists() {
-        return std::path::absolute(dockerfile).unwrap_or_else(|_| dockerfile.to_owned());
+        return DockerfileSource::Host(
+            std::path::absolute(dockerfile).unwrap_or_else(|_| dockerfile.to_owned()),
+        );
     }
-    context.join(dockerfile)
+    DockerfileSource::Context(rnk_dockerfile_rel(dockerfile))
+}
+
+/// A relative Dockerfile path inside the context, `..` clamped.
+fn rnk_dockerfile_rel(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::Normal(n) => out.push(n),
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::RootDir
+            | std::path::Component::CurDir
+            | std::path::Component::Prefix(_) => {}
+        }
+    }
+    out
+}
+
+/// The Dockerfile's text.
+fn read_dockerfile(source: &DockerfileSource, context: &Context) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    match source {
+        DockerfileSource::Host(p) => std::fs::File::open(p)
+            .and_then(|mut f| f.read_to_string(&mut text))
+            .map_err(|e| format!("reading the Dockerfile {}: {e}", p.display()))?,
+        DockerfileSource::Context(rel) => {
+            let fd = context.root().open_regular(rel).map_err(|e| {
+                format!(
+                    "reading the Dockerfile {} in the context: {e}",
+                    rel.display()
+                )
+            })?;
+            std::fs::File::from(fd)
+                .read_to_string(&mut text)
+                .map_err(|e| format!("reading the Dockerfile {}: {e}", rel.display()))?
+        }
+    };
+    Ok(text)
+}
+
+/// An environment variable: `None` when unset, an error when not Unicode.
+fn env_var(name: &str) -> Result<Option<String>, String> {
+    match std::env::var_os(name) {
+        None => Ok(None),
+        Some(v) => v
+            .into_string()
+            .map(Some)
+            .map_err(|_| format!("the environment variable {name} is not valid UTF-8")),
+    }
 }
 
 /// The docker CLI's `config.json`, as kaniko reads it; none when missing.
@@ -252,7 +322,7 @@ fn in_target(graph: &StageGraph) -> Vec<bool> {
         out[s] = true;
         at = match graph.stages[s].base {
             rnk_dockerfile::Base::Stage(b) => Some(b),
-            _ => None,
+            rnk_dockerfile::Base::Scratch | rnk_dockerfile::Base::Image(_) => None,
         };
     }
     out
@@ -264,10 +334,12 @@ async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, Stri
         shared: Arc::clone(shared),
     };
     let cancel = CancellationToken::new();
+    let signals = tokio::spawn(cancel_on_signals(cancel.clone()));
     let summary = Scheduler::new(config.jobs)
         .run(&shared.graph, &runner, &cancel)
-        .await
-        .map_err(|e| e.to_string())?;
+        .await;
+    signals.abort();
+    let summary = summary.map_err(|e| e.to_string())?;
     let target = summary
         .stages
         .iter()
@@ -309,15 +381,58 @@ async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, Stri
     })
 }
 
+/// Cancels the build on the first SIGINT or SIGTERM: stages stop between
+/// instructions, a running `RUN` finishes first [open: Q-186]. A second
+/// signal exits at once: the `RUN`s die with their parent thread
+/// (`PR_SET_PDEATHSIG`), the mounts with the private mount namespace, and
+/// the next build cleans the store.
+async fn cancel_on_signals(cancel: CancellationToken) {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut int), Ok(mut term)) = (
+        signal(SignalKind::interrupt()),
+        signal(SignalKind::terminate()),
+    ) else {
+        tracing::warn!("cannot handle SIGINT and SIGTERM; they end the build at once");
+        return;
+    };
+    for n in 0..2 {
+        tokio::select! {
+            _ = int.recv() => {}
+            _ = term.recv() => {}
+        }
+        if n == 0 {
+            tracing::warn!("cancelling the build; a second signal stops at once");
+            cancel.cancel();
+        } else {
+            tracing::warn!("stopping at once");
+            std::process::exit(130);
+        }
+    }
+}
+
 /// Releases every root, children before parents: later stages first, the
 /// roots of `COPY --from` images last.
 fn release_all(shared: &Shared) {
     let mut stages =
         std::mem::take(&mut *shared.stages.lock().unwrap_or_else(PoisonError::into_inner));
     stages.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
+    // A stage whose child could not be released still has that child's
+    // overlay on its diffs: it is left to the next build's clean-up.
+    let mut keep = std::collections::BTreeSet::new();
     for (i, stage) in stages {
+        if keep.contains(&i) {
+            tracing::warn!(
+                "leaving stage {i} to the next build: a stage built on it is still mounted"
+            );
+            continue;
+        }
         if let Err(e) = stage.root.release() {
             tracing::warn!("releasing stage {i}: {e}");
+            let mut at = shared.graph.stages[i].base.clone();
+            while let rnk_dockerfile::Base::Stage(b) = at {
+                keep.insert(b);
+                at = shared.graph.stages[b].base.clone();
+            }
         }
     }
     let images = std::mem::take(&mut *shared.images.lock().unwrap_or_else(PoisonError::into_inner));
@@ -332,14 +447,13 @@ struct Runner {
     shared: Arc<Shared>,
 }
 
-/// What a stage's preparation pulled.
+/// What a stage's preparation pulled; no root is made yet.
 struct Prepared {
     base: Option<Arc<PulledImage>>,
-    images: BTreeMap<String, Arc<ImageRoot>>,
+    images: BTreeMap<String, Arc<PulledImage>>,
 }
 
-/// Pulls a stage's base image and the images its `COPY --from` reads,
-/// with a root on each of the latter.
+/// Pulls a stage's base image and the images its `COPY --from` reads.
 async fn prepare_stage(
     shared: &Arc<Shared>,
     base: Option<String>,
@@ -369,15 +483,26 @@ async fn prepare_stage(
             &shared.platform,
         )
         .await?;
-        let root = Arc::new(ImageSource::new(&*shared.overlay, image)?);
-        shared
-            .images
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Arc::clone(&root));
-        prepared.images.insert(r, root);
+        prepared.images.insert(r, Arc::new(image));
     }
     Ok(prepared)
+}
+
+/// Waits for a stage's pulls to end, even once `cancel` fires: the pull
+/// runs on a blocking thread that keeps using the runtime and the store,
+/// so returning early would leave it running while both shut down. A
+/// cancel is reported once it ends.
+async fn await_pulls<T>(
+    work: tokio::task::JoinHandle<Result<T, Error>>,
+    cancel: &CancellationToken,
+) -> Result<T, Error> {
+    let r = work
+        .await
+        .unwrap_or_else(|e| Err(Error::Invalid(format!("pulling: {e}"))));
+    if cancel.is_cancelled() && r.is_ok() {
+        return Err(Error::Cancelled);
+    }
+    r
 }
 
 impl StageRunner for Runner {
@@ -394,7 +519,7 @@ impl StageRunner for Runner {
         let cancel = job.cancel.clone();
         let base = match &node.base {
             rnk_dockerfile::Base::Image(r) => Some(r.clone()),
-            _ => None,
+            rnk_dockerfile::Base::Scratch | rnk_dockerfile::Base::Stage(_) => None,
         };
         let platform_ok = node
             .platform
@@ -420,13 +545,7 @@ impl StageRunner for Runner {
                     .block_on(prepare_stage(&shared, base, images))
                     .map(Arc::new)
             });
-            let r = work
-                .await
-                .unwrap_or_else(|e| Err(Error::Invalid(format!("pulling: {e}"))));
-            if cancel.is_cancelled() && r.is_ok() {
-                return Err(Error::Cancelled);
-            }
-            r
+            await_pulls(work, &cancel).await
         }
     }
 
@@ -456,6 +575,8 @@ impl StageRunner for Runner {
                     // Let go of the build before reporting, so that the
                     // caller can close the store once every stage is done.
                     drop((s, deps, prepared, gate));
+                    // The receiver is gone only when the build future was
+                    // dropped, which the scheduler never does.
                     let _ = done_tx.send(r);
                 })
                 .map_err(|e| {
@@ -473,12 +594,17 @@ impl StageRunner for Runner {
                         let reply: std::sync::mpsc::SyncSender<Option<tokio::sync::oneshot::Sender<()>>> = reply;
                         match job.run_slot().await {
                             None => {
+                                // A stage thread that stopped waiting has
+                                // nothing to be told.
                                 let _ = reply.send(None);
                             }
                             Some(permit) => {
                                 let (release, released) = tokio::sync::oneshot::channel();
                                 if reply.send(Some(release)).is_ok() {
-                                    // Held until the RUN's process tree exits.
+                                    // Held until the RUN's process tree exits;
+                                    // an error means the thread dropped its
+                                    // permit without sending, which also
+                                    // releases it.
                                     let _ = released.await;
                                 }
                                 drop(permit);
@@ -508,6 +634,8 @@ struct Held(Option<tokio::sync::oneshot::Sender<()>>);
 impl Drop for Held {
     fn drop(&mut self) {
         if let Some(release) = self.0.take() {
+            // The stage's task waits for this; if it is gone, so is the
+            // permit.
             let _ = release.send(());
         }
     }
@@ -547,17 +675,25 @@ fn run_stage(
                 .ok_or_else(|| Error::Invalid(format!("stage {b} is not built")))?,
         ),
     };
+    // The roots of `COPY --from` images are made here, by the stage that
+    // reads them, and released with the build.
+    let mut sources = Vec::with_capacity(prepared.images.len());
+    for (r, image) in &prepared.images {
+        let root = Arc::new(ImageSource::new(&*shared.overlay, Arc::clone(image))?);
+        shared
+            .images
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::clone(&root));
+        sources.push((r.clone(), root));
+    }
     let input = StageInput {
         index,
         graph: &shared.graph,
         stage: &shared.dockerfile.stages[index],
         base,
         stages: deps.iter().map(|(i, d)| (*i, &**d)).collect(),
-        images: prepared
-            .images
-            .iter()
-            .map(|(k, v)| (k.clone(), &**v))
-            .collect(),
+        images: sources.iter().map(|(k, v)| (k.clone(), &**v)).collect(),
         demand: LayerDemand::for_stage(shared.in_target[index], &shared.outputs, false),
     };
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
@@ -599,15 +735,52 @@ mod tests {
     }
 
     #[test]
-    fn a_dockerfile_outside_the_working_directory_is_found_in_the_context() {
+    fn a_dockerfile_not_found_as_given_is_read_inside_the_context() {
+        assert_eq!(
+            dockerfile_source(Path::new("no-such-dir/../x/Dockerfile")),
+            DockerfileSource::Context(PathBuf::from("x/Dockerfile"))
+        );
+        assert_eq!(
+            dockerfile_source(Path::new("/abs/Dockerfile")),
+            DockerfileSource::Host(PathBuf::from("/abs/Dockerfile"))
+        );
         let ctx = tempfile::tempdir().unwrap();
-        assert_eq!(
-            dockerfile_path(Path::new("no-such-dir/Dockerfile"), ctx.path()),
-            ctx.path().join("no-such-dir/Dockerfile")
+        std::fs::write(ctx.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "SECRET first line\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), ctx.path().join("escape")).unwrap();
+        let context = rnk_context::open(&ContextSpec::Dir(ctx.path().to_owned())).unwrap();
+        let ok = DockerfileSource::Context(PathBuf::from("Dockerfile"));
+        assert_eq!(read_dockerfile(&ok, &context).unwrap(), "FROM scratch\n");
+        // A symlink in the context resolves inside it: the host file is
+        // never read.
+        let link = DockerfileSource::Context(PathBuf::from("escape"));
+        let e = read_dockerfile(&link, &context).unwrap_err();
+        assert!(!e.contains("SECRET"), "{e}");
+    }
+
+    #[test]
+    fn a_cancel_waits_for_the_pulls_to_end() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let r = rt.block_on(async {
+            let work = tokio::task::spawn_blocking(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                flag.store(true, Ordering::SeqCst);
+                Ok::<_, Error>(())
+            });
+            await_pulls(work, &cancel).await
+        });
+        assert!(
+            done.load(Ordering::SeqCst),
+            "returned before the pull ended"
         );
-        assert_eq!(
-            dockerfile_path(Path::new("/abs/Dockerfile"), ctx.path()),
-            PathBuf::from("/abs/Dockerfile")
-        );
+        assert!(matches!(r, Err(Error::Cancelled)));
     }
 }

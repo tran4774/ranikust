@@ -3,7 +3,8 @@
 //!
 //! [open: Q-080] Interim, the card's recommendation (a): this crate
 //! resolves sources, against the context walk's entries (so an ignored file
-//! is never named or read), with BuildKit's wildcard rules ([`crate::glob`]).
+//! is never named or read, not even through a symlink), with BuildKit's
+//! wildcard rules ([`crate::glob`]).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -17,19 +18,44 @@ use rnk_rootfs::{FileType, OpenHow, RootPath};
 use crate::error::{Error, Result};
 use crate::glob;
 
-/// The context's entries that `.dockerignore` keeps, with whether each is a
-/// directory; walked once per build.
+/// What a kept context entry is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Kind {
+    Dir,
+    /// A symlink, with its target as read during the walk.
+    Symlink(PathBuf),
+    Other,
+}
+
+/// The most symlinks followed for one source, as Linux's `MAXSYMLINKS`.
+const MAX_HOPS: usize = 40;
+
+/// One resolved `COPY`/`ADD` source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    /// The entry to copy, relative to its root, with no symlink in it (for
+    /// the context): what is read.
+    pub(crate) path: PathBuf,
+    /// The source as named, after wildcards: its last name names the copy.
+    pub(crate) named: PathBuf,
+    /// Whether `path` is a directory.
+    pub(crate) dir: bool,
+}
+
+/// The context's entries that `.dockerignore` keeps, with their kind;
+/// walked once per build.
 #[derive(Debug, Default)]
 pub struct ContextFiles {
-    entries: BTreeMap<PathBuf, bool>,
+    entries: BTreeMap<PathBuf, Kind>,
 }
 
 impl ContextFiles {
-    /// Walks `context` with `ignore`.
+    /// Walks `context` with `ignore`, reading each kept symlink's target.
     ///
     /// # Errors
     ///
-    /// [`Error::Context`] when the walk fails.
+    /// [`Error::Context`] when the walk fails, [`Error::Rootfs`] when a
+    /// symlink cannot be read.
     pub fn load(context: &Context, ignore: Option<&Matcher>) -> Result<Self> {
         let mut entries = BTreeMap::new();
         for entry in context.walk(ignore) {
@@ -38,10 +64,20 @@ impl ContextFiles {
             // BuildKit's filtered walk reports them.
             for a in entry.path.ancestors().skip(1) {
                 if !a.as_os_str().is_empty() {
-                    entries.insert(a.to_owned(), true);
+                    entries.insert(a.to_owned(), Kind::Dir);
                 }
             }
-            entries.insert(entry.path, entry.meta.file_type == FileType::Directory);
+            let kind = match entry.meta.file_type {
+                FileType::Directory => Kind::Dir,
+                FileType::Symlink => Kind::Symlink(context.root().read_link(&entry.path)?),
+                FileType::Regular
+                | FileType::Fifo
+                | FileType::CharDevice
+                | FileType::BlockDevice
+                | FileType::Socket
+                | FileType::Unknown => Kind::Other,
+            };
+            entries.insert(entry.path, kind);
         }
         Ok(Self { entries })
     }
@@ -56,45 +92,111 @@ impl ContextFiles {
     /// at its depth for a wildcard pattern. Paths are relative to the
     /// context root; `""` is the root.
     ///
+    /// A symlink is followed inside the context, as BuildKit follows a
+    /// source symlink [open: Q-120], but only through kept entries: every
+    /// link on the way and the target must be kept, so `.dockerignore`
+    /// cannot be bypassed by a link to an ignored file or directory.
+    ///
     /// # Errors
     ///
-    /// [`Error::Invalid`] when nothing kept matches, or the pattern is
-    /// malformed.
-    pub(crate) fn resolve(&self, source: &str) -> Result<Vec<(PathBuf, bool)>> {
+    /// [`Error::Invalid`] when nothing kept matches, a symlink leads to an
+    /// ignored or missing entry or loops, or the pattern is malformed.
+    pub(crate) fn resolve(&self, source: &str) -> Result<Vec<Resolved>> {
         let clean = clean_source(source);
         if clean.as_os_str().is_empty() {
-            return Ok(vec![(clean, true)]);
+            return Ok(vec![Resolved {
+                path: PathBuf::new(),
+                named: PathBuf::new(),
+                dir: true,
+            }]);
         }
         let text = clean.to_string_lossy();
-        if !glob::has_wildcard(&text) {
-            return match self.entries.get(&clean) {
-                Some(&dir) => Ok(vec![(clean, dir)]),
-                None => Err(not_found(source)),
-            };
-        }
-        let parts: Vec<&str> = text.split('/').collect();
-        let mut out = Vec::new();
-        for (path, &dir) in &self.entries {
-            let names: Vec<_> = path.components().collect();
-            if names.len() != parts.len() {
-                continue;
-            }
-            let mut all = true;
-            for (pattern, name) in parts.iter().zip(&names) {
-                let name = name.as_os_str().to_string_lossy();
-                if !glob::matches(pattern, &name).map_err(|_| bad_pattern(source))? {
-                    all = false;
-                    break;
+        let named: Vec<PathBuf> = if glob::has_wildcard(&text) {
+            let parts: Vec<&str> = text.split('/').collect();
+            let mut out = Vec::new();
+            for path in self.entries.keys() {
+                let names: Vec<_> = path.components().collect();
+                if names.len() != parts.len() {
+                    continue;
+                }
+                let mut all = true;
+                for (pattern, name) in parts.iter().zip(&names) {
+                    let name = name.as_os_str().to_string_lossy();
+                    if !glob::matches(pattern, &name).map_err(|_| bad_pattern(source))? {
+                        all = false;
+                        break;
+                    }
+                }
+                if all {
+                    out.push(path.clone());
                 }
             }
-            if all {
-                out.push((path.clone(), dir));
-            }
-        }
-        if out.is_empty() {
+            out
+        } else {
+            vec![clean.clone()]
+        };
+        if named.is_empty() {
             return Err(not_found(source));
         }
-        Ok(out)
+        named
+            .into_iter()
+            .map(|n| {
+                let (path, dir) = self.follow(&n, source)?;
+                Ok(Resolved {
+                    path,
+                    named: n,
+                    dir,
+                })
+            })
+            .collect()
+    }
+
+    /// `path` with every symlink in it resolved inside the context, through
+    /// kept entries only; and whether it is a directory.
+    fn follow(&self, path: &Path, source: &str) -> Result<(PathBuf, bool)> {
+        let mut pending: Vec<std::ffi::OsString> = path
+            .components()
+            .rev()
+            .map(|c| c.as_os_str().to_owned())
+            .collect();
+        let mut at = PathBuf::new();
+        let mut hops = 0;
+        while let Some(name) = pending.pop() {
+            let next = at.join(&name);
+            match self.entries.get(&next) {
+                None => return Err(not_found(source)),
+                Some(Kind::Symlink(target)) => {
+                    hops += 1;
+                    if hops > MAX_HOPS {
+                        return Err(Error::Invalid(format!(
+                            "source {source:?}: too many levels of symlinks"
+                        )));
+                    }
+                    // Absolute targets start at the context root; `..`
+                    // never climbs above it.
+                    let joined = if target.is_absolute() {
+                        target.clone()
+                    } else {
+                        at.join(target)
+                    };
+                    let mut rest: Vec<_> = clean_source(&joined.to_string_lossy())
+                        .components()
+                        .rev()
+                        .map(|c| c.as_os_str().to_owned())
+                        .collect();
+                    pending.append(&mut rest);
+                    at = PathBuf::new();
+                }
+                Some(Kind::Dir) => at = next,
+                Some(Kind::Other) => {
+                    if !pending.is_empty() {
+                        return Err(not_found(source));
+                    }
+                    return Ok((next, false));
+                }
+            }
+        }
+        Ok((at, true))
     }
 }
 
@@ -107,7 +209,7 @@ impl ContextFiles {
 ///
 /// [`Error::Invalid`] when nothing matches or the pattern is malformed;
 /// [`Error::Rootfs`] when a directory cannot be listed.
-pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<(PathBuf, bool)>> {
+pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<Resolved>> {
     let clean = clean_source(source);
     let text = clean.to_string_lossy().into_owned();
     if !glob::has_wildcard(&text) {
@@ -117,7 +219,11 @@ pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<(Path
             Err(e) if e.raw_os_error() == Some(libc_enoent()) => return Err(not_found(source)),
             Err(e) => return Err(e.into()),
         };
-        return Ok(vec![(clean, dir)]);
+        return Ok(vec![Resolved {
+            path: clean.clone(),
+            named: clean,
+            dir,
+        }]);
     }
     let mut found = vec![PathBuf::new()];
     let parts: Vec<&str> = text.split('/').collect();
@@ -137,22 +243,40 @@ pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<(Path
             }
         }
         if !last {
-            // Only directories lead further.
-            next.retain(|p| root.open_at(p, &OpenHow::path().directory()).is_ok());
+            // Only directories lead further; a missing name or a file ends
+            // that branch, any other error stops the copy.
+            let mut dirs = Vec::with_capacity(next.len());
+            for p in next {
+                match root.open_at(&p, &OpenHow::path().directory()) {
+                    Ok(_) => dirs.push(p),
+                    Err(e) if matches!(e.raw_os_error(), Some(c) if c == libc_enoent() || c == libc_enotdir()) =>
+                        {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            next = dirs;
         }
         found = next;
     }
     let mut out = Vec::new();
     for p in found {
         match root.open_at(&p, &OpenHow::path().directory()) {
-            Ok(_) => out.push((p, true)),
-            Err(e) if e.raw_os_error() == Some(libc_enotdir()) => out.push((p, false)),
+            Ok(_) => out.push(Resolved {
+                path: p.clone(),
+                named: p,
+                dir: true,
+            }),
+            Err(e) if e.raw_os_error() == Some(libc_enotdir()) => out.push(Resolved {
+                path: p.clone(),
+                named: p,
+                dir: false,
+            }),
             // A literal last component that does not exist.
             Err(e) if e.raw_os_error() == Some(libc_enoent()) => {}
             Err(e) => return Err(e.into()),
         }
     }
-    out.sort();
+    out.sort_by(|a, b| a.named.cmp(&b.named));
     if out.is_empty() {
         return Err(not_found(source));
     }
@@ -228,10 +352,23 @@ fn bad_pattern(source: &str) -> Error {
 mod tests {
     use super::*;
 
-    fn files(paths: &[(&str, bool)]) -> ContextFiles {
+    fn files(paths: &[(&str, Kind)]) -> ContextFiles {
         ContextFiles {
-            entries: paths.iter().map(|(p, d)| (PathBuf::from(p), *d)).collect(),
+            entries: paths
+                .iter()
+                .map(|(p, k)| (PathBuf::from(p), k.clone()))
+                .collect(),
         }
+    }
+
+    fn link(t: &str) -> Kind {
+        Kind::Symlink(PathBuf::from(t))
+    }
+
+    fn paths(r: Vec<Resolved>) -> Vec<(String, bool)> {
+        r.into_iter()
+            .map(|r| (r.path.to_string_lossy().into_owned(), r.dir))
+            .collect()
     }
 
     #[test]
@@ -244,30 +381,74 @@ mod tests {
     #[test]
     fn plain_paths_and_wildcards_match_kept_entries() {
         let f = files(&[
-            ("a.js", false),
-            ("b.js", false),
-            ("src", true),
-            ("src/c.js", false),
+            ("a.js", Kind::Other),
+            ("b.js", Kind::Other),
+            ("src", Kind::Dir),
+            ("src/c.js", Kind::Other),
         ]);
         assert_eq!(
-            f.resolve("./a.js").unwrap(),
-            vec![(PathBuf::from("a.js"), false)]
+            paths(f.resolve("./a.js").unwrap()),
+            [("a.js".into(), false)]
         );
         assert_eq!(
-            f.resolve("*.js").unwrap(),
-            vec![
-                (PathBuf::from("a.js"), false),
-                (PathBuf::from("b.js"), false)
-            ]
+            paths(f.resolve("*.js").unwrap()),
+            [("a.js".into(), false), ("b.js".into(), false)]
         );
         // A wildcard matches at its own depth only.
         assert_eq!(
-            f.resolve("*/c.js").unwrap(),
-            vec![(PathBuf::from("src/c.js"), false)]
+            paths(f.resolve("*/c.js").unwrap()),
+            [("src/c.js".into(), false)]
         );
-        assert_eq!(f.resolve(".").unwrap(), vec![(PathBuf::new(), true)]);
+        assert_eq!(paths(f.resolve(".").unwrap()), [(String::new(), true)]);
         assert!(matches!(f.resolve("missing"), Err(Error::Invalid(_))));
         assert!(matches!(f.resolve("*.rs"), Err(Error::Invalid(_))));
         assert!(matches!(f.resolve("[a"), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn symlinks_resolve_through_kept_entries_only() {
+        // `.env` and `secrets/` are ignored: not in the walk.
+        let f = files(&[
+            ("app", Kind::Dir),
+            ("app/main.js", Kind::Other),
+            ("to-env", link(".env")),
+            ("to-secrets", link("secrets/")),
+            ("to-app", link("./app")),
+            ("abs", link("/app/main.js")),
+            ("up", link("../../app")),
+            ("via", link("to-app/main.js")),
+            ("loop-a", link("loop-b")),
+            ("loop-b", link("loop-a")),
+        ]);
+        assert!(
+            matches!(f.resolve("to-env"), Err(Error::Invalid(_))),
+            "file"
+        );
+        assert!(
+            matches!(f.resolve("to-secrets"), Err(Error::Invalid(_))),
+            "dir"
+        );
+        assert!(matches!(
+            f.resolve("to-secrets/key"),
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(paths(f.resolve("to-app").unwrap()), [("app".into(), true)]);
+        assert_eq!(
+            paths(f.resolve("abs").unwrap()),
+            [("app/main.js".into(), false)]
+        );
+        assert_eq!(paths(f.resolve("up").unwrap()), [("app".into(), true)]);
+        assert_eq!(
+            paths(f.resolve("via").unwrap()),
+            [("app/main.js".into(), false)]
+        );
+        assert_eq!(
+            paths(f.resolve("to-app/main.js").unwrap()),
+            [("app/main.js".into(), false)]
+        );
+        // The copy is named after the source as written.
+        assert_eq!(f.resolve("via").unwrap()[0].named, PathBuf::from("via"));
+        let e = f.resolve("loop-a").unwrap_err().to_string();
+        assert!(e.contains("too many levels"), "{e}");
     }
 }

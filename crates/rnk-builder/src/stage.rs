@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Write as _};
-use std::os::unix::fs::{PermissionsExt as _, chown};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -21,7 +21,7 @@ use rnk_dockerfile::{
     chomp_heredoc_content, parse_heredoc_marker,
 };
 use rnk_oci::{CommandLine, ConfigEdit, HealthConfig, ImageConfig, ImageFormat, Platform};
-use rnk_rootfs::{CopyOpts, FileType, Meta, OpenHow, Owner, RootPath};
+use rnk_rootfs::{CopyOpts, Meta, OpenHow, Owner, RootPath};
 use rnk_sandbox::{BindMount, MountKind, Network, RunSpec, Sandbox};
 use rnk_snapshot::{Base, LayerDiff, Snapshotter, StageRootfs};
 use rnk_store::Store;
@@ -70,8 +70,8 @@ pub struct BuildCx<'a, S> {
     pub time: &'a BuildTime,
     /// The network of a `RUN` without `--network` (ADR-0010).
     pub network: Network,
-    /// `RUN --mount=type=secret` sources: id to host file.
-    // [open: Q-022] interim: `--secret id=ID,src=PATH`, as BuildKit's CLI.
+    /// `RUN --mount=type=secret` sources: id to host file, absolute.
+    // [open: Q-022] interim: kaniko's `--secret id=ID,src=PATH` for files.
     pub secrets: &'a BTreeMap<String, PathBuf>,
     /// The image platform, for `FROM scratch`.
     pub platform: &'a Platform,
@@ -111,11 +111,12 @@ impl<R: StageRootfs> SourceRoot<R> {
     }
 }
 
-/// An image read by `COPY --from=<image>`: pulled, with a root on it.
+/// An image read by `COPY --from=<image>`: pulled, with a root on it, made
+/// by the stage that reads it (preparation touches no root).
 #[derive(Debug)]
 pub struct ImageSource<R> {
     /// The pulled image.
-    pub image: PulledImage,
+    pub image: std::sync::Arc<PulledImage>,
     /// A root on its layers.
     pub root: SourceRoot<R>,
 }
@@ -126,7 +127,10 @@ impl<R: StageRootfs> ImageSource<R> {
     /// # Errors
     ///
     /// As `Snapshotter::prepare`.
-    pub fn new<S: Snapshotter<Root = R>>(snapshotter: &S, image: PulledImage) -> Result<Self> {
+    pub fn new<S: Snapshotter<Root = R>>(
+        snapshotter: &S,
+        image: std::sync::Arc<PulledImage>,
+    ) -> Result<Self> {
         let root = snapshotter.prepare(Base::Image(&image.layers))?;
         Ok(Self {
             image,
@@ -209,9 +213,16 @@ pub fn build_stage<S: Snapshotter>(
     }
     let (root, scope, config, layers, base_format) = match &input.base {
         StageBase::Scratch => {
+            // kaniko gives `FROM scratch` a `PATH` (`ScratchEnvVars`,
+            // `kaniko@44aa7ddc0 pkg/constants/constants.go:62`); an image
+            // without one keeps none [open: Q-185].
             let config = ImageConfig {
                 architecture: cx.platform.architecture.clone(),
                 os: cx.platform.os.clone(),
+                config: Some(rnk_oci::ContainerConfig {
+                    env: Some(vec![format!("PATH={}", rnk_dockerfile::DEFAULT_PATH)]),
+                    ..rnk_oci::ContainerConfig::default()
+                }),
                 ..ImageConfig::default()
             };
             let scope = input.graph.scope_from_image::<&str>(&[]);
@@ -276,6 +287,7 @@ pub fn build_stage<S: Snapshotter>(
         config,
         layers,
         new_layers: 0,
+        scripts: Vec::new(),
     };
     let result = b.run();
     span.record("layers", b.new_layers);
@@ -306,6 +318,8 @@ struct Builder<'c, 'i, S: Snapshotter> {
     config: ImageConfig,
     layers: Vec<BlobLayer>,
     new_layers: u64,
+    /// Scripts of `#!` heredocs, removed when the stage ends.
+    scripts: Vec<tempfile::NamedTempFile>,
 }
 
 impl<S: Snapshotter> Builder<'_, '_, S> {
@@ -326,14 +340,19 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             );
             let _entered = span.enter();
             info!("[{}] {}", self.name, instruction.code);
-            self.execute(index, instruction).map_err(|e| match e {
-                Error::Cancelled => Error::Cancelled,
-                e => Error::Instruction {
-                    stage: self.name.clone(),
-                    line: instruction.lines.start,
-                    instruction: shorten(&instruction.code),
-                    source: Box::new(e),
-                },
+            self.execute(index, instruction).map_err(|e| {
+                // A cancel is reported as such, not as the instruction's
+                // failure; every other error names the instruction.
+                if matches!(e, Error::Cancelled) {
+                    e
+                } else {
+                    Error::Instruction {
+                        stage: self.name.clone(),
+                        line: instruction.lines.start,
+                        instruction: shorten(&instruction.code),
+                        source: Box::new(e),
+                    }
+                }
             })?;
         }
         Ok(())
@@ -412,9 +431,16 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             Err(e) => Err(e.into()),
         };
         // Closed whatever happened: the diff is discarded with the stage on
-        // failure.
-        let diff = self.root.end_layer()?;
-        result?;
+        // failure. The instruction's error comes first when both fail.
+        let diff = match (self.root.end_layer(), result) {
+            (Ok(diff), Ok(())) => diff,
+            (Err(e), Ok(())) => return Err(e.into()),
+            (Ok(_), Err(e)) => return Err(e),
+            (Err(end), Err(e)) => {
+                tracing::warn!("closing the layer after a failed instruction: {end}");
+                return Err(e);
+            }
+        };
         self.new_layers += 1;
         if self.input.demand.needed() {
             let blob = self.cx.exporter.export(Box::new(DiffLayer(diff)))?;
@@ -459,7 +485,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         })
     }
 
-    fn run_command(&mut self, mut run: rnk_dockerfile::Run, code: &str) -> Result<()> {
+    fn run_command(&mut self, run: rnk_dockerfile::Run, code: &str) -> Result<()> {
         if run.security == Security::Insecure {
             return Err(Error::Invalid(
                 "RUN --security=insecure is not supported".to_owned(),
@@ -468,23 +494,43 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         if !run.devices.is_empty() {
             return Err(Error::Invalid("RUN --device is not supported".to_owned()));
         }
-        if run.mounts.len() != run.mount_specs.len() {
-            run.parse_mounts(&mut |s| Ok(s.to_owned()))
-                .map_err(Error::Invalid)?;
-        }
         let shell = self
             .config
             .config
             .as_ref()
             .and_then(|c| c.shell.clone())
             .unwrap_or_else(|| rnk_oci::DEFAULT_SHELL.map(str::to_owned).to_vec());
-        let argv = run_argv(&run.cmd, &shell)?;
         let workdir = self.working_dir();
-        let mounts = self.mounts(&run.mounts, &workdir)?;
-        let network = match run.network {
-            DfNetwork::None => Network::None,
-            DfNetwork::Host => Network::Host,
-            DfNetwork::Default => self.cx.network,
+        let mut mounts = self.mounts(&run.mounts, &workdir)?;
+        let argv = match run_argv(&run.cmd, &shell)? {
+            Argv::Plain(argv) => argv,
+            Argv::Script { name, body } => {
+                // BuildKit writes a `#!` heredoc to a file and runs it; the
+                // file is bound in read-only from the build directory, so it
+                // never reaches a layer.
+                let script = write_script(self.cx.store.build_dir(), &body)?;
+                let target = PathBuf::from("/dev/pipes").join(&name);
+                mounts.push(BindMount {
+                    source: script.path().to_owned(),
+                    target: target.clone(),
+                    kind: MountKind::File,
+                    read_only: true,
+                });
+                self.scripts.push(script);
+                vec![target.to_string_lossy().into_owned()]
+            }
+        };
+        let network = match (run.network, self.cx.network) {
+            (DfNetwork::None, _) => Network::None,
+            // The operator's --network=none is a ceiling a Dockerfile cannot
+            // lift [open: Q-184].
+            (DfNetwork::Host, Network::None) => {
+                return Err(Error::Invalid(
+                    "RUN --network=host is refused: the build runs with --network=none".to_owned(),
+                ));
+            }
+            (DfNetwork::Host, Network::Host) => Network::Host,
+            (DfNetwork::Default, n) => n,
         };
         let env: Vec<(OsString, OsString)> = self
             .scope
@@ -524,13 +570,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
     fn mounts(&self, mounts: &[rnk_dockerfile::Mount], workdir: &Path) -> Result<Vec<BindMount>> {
         let mut out = Vec::new();
         for m in mounts {
-            let target = |t: &str| -> PathBuf {
-                if t.starts_with('/') {
-                    PathBuf::from(t)
-                } else {
-                    workdir.join(t)
-                }
-            };
+            let target = |t: &str| mount_target(t, workdir);
             match m.kind {
                 MountType::Cache => {
                     if !m.from.is_empty() {
@@ -546,19 +586,8 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                     }
                     // [open: Q-181] sharing= is not enforced: every cache is
                     // shared, as BuildKit's default.
-                    let id = if m.cache_id.is_empty() {
-                        &m.target
-                    } else {
-                        &m.cache_id
-                    };
-                    let dir = self.cx.store.cache_dir(id)?;
-                    if let Some(mode) = m.mode {
-                        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode))
-                            .map_err(Error::io("chmod", &dir))?;
-                    }
-                    if m.uid.is_some() || m.gid.is_some() {
-                        chown(&dir, m.uid, m.gid).map_err(Error::io("chown", &dir))?;
-                    }
+                    let dir = self.cx.store.cache_dir(cache_id(m))?;
+                    set_cache_owner(&dir, m)?;
                     out.push(BindMount {
                         source: dir,
                         target: target(&m.target),
@@ -567,43 +596,9 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                     });
                 }
                 MountType::Secret => {
-                    if m.env.is_some() {
-                        return Err(Error::Invalid(
-                            "RUN --mount=type=secret,env= is not supported yet".to_owned(),
-                        ));
+                    if let Some(bind) = secret_mount(m, workdir, self.cx.secrets)? {
+                        out.push(bind);
                     }
-                    let id = if m.cache_id.is_empty() {
-                        Path::new(&m.target)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default()
-                    } else {
-                        m.cache_id.clone()
-                    };
-                    if id.is_empty() {
-                        return Err(Error::Invalid(
-                            "RUN --mount=type=secret needs an id or a target".to_owned(),
-                        ));
-                    }
-                    let Some(source) = self.cx.secrets.get(&id) else {
-                        if m.required {
-                            return Err(Error::Invalid(format!(
-                                "secret {id:?} is required but was not given (--secret)"
-                            )));
-                        }
-                        continue;
-                    };
-                    let target = if m.target.is_empty() {
-                        PathBuf::from("/run/secrets").join(&id)
-                    } else {
-                        target(&m.target)
-                    };
-                    out.push(BindMount {
-                        source: source.clone(),
-                        target,
-                        kind: MountKind::File,
-                        read_only: true,
-                    });
                 }
                 MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
                     return Err(Error::Invalid(format!(
@@ -679,6 +674,9 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 .ok_or_else(|| Error::Invalid("the source stage was released".to_owned()))?
                 .view()?,
         };
+        for content in &c.contents {
+            check_heredoc_name(&content.path)?;
+        }
         let mut resolved = Vec::new();
         for s in &c.sources {
             let found = match &source {
@@ -707,33 +705,45 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 Some(rnk_rootfs::lookup_owner(root, &chown)?)
             };
             let opts = CopyOpts { owner, chmod };
+            // An existing directory, or a symlink to one inside the root, as
+            // BuildKit follows it: the copy goes inside.
             let into_dir = |root: &RootPath| -> Result<bool> {
-                Ok(dest_is_dir
-                    || matches!(root.statx(&dest), Ok(st) if st.file_type() == FileType::Directory))
+                if dest_is_dir {
+                    return Ok(true);
+                }
+                match root.open_at(&dest, &OpenHow::path().directory()) {
+                    Ok(_) => Ok(true),
+                    Err(e) if matches!(e.raw_os_error(), Some(c) if c == ENOENT || c == ENOTDIR) => {
+                        Ok(false)
+                    }
+                    Err(e) => Err(e.into()),
+                }
             };
-            for (path, is_dir) in &resolved {
-                if *is_dir {
+            for r in &resolved {
+                if r.dir {
                     if from_context {
+                        // `r.path` has no symlink left: the entries below it
+                        // are the walk's, filtered by `.dockerignore`.
                         let keep = |p: &Path, _dir: bool| files.keeps(p);
-                        rnk_rootfs::copy_filtered(src_root, path, root, &dest, &opts, &keep)?;
+                        rnk_rootfs::copy_filtered(src_root, &r.path, root, &dest, &opts, &keep)?;
                     } else {
-                        rnk_rootfs::copy(src_root, path, root, &dest, &opts)?;
+                        rnk_rootfs::copy(src_root, &r.path, root, &dest, &opts)?;
                     }
                     continue;
                 }
-                if refuse_archives && from_context && is_archive(src_root, path)? {
+                if refuse_archives && from_context && is_archive(src_root, &r.path)? {
                     return Err(Error::Invalid(format!(
                         "ADD of the local archive {} extracts it, which is not supported yet \
                          (Phase 5); use COPY and RUN tar",
-                        path.display()
+                        r.named.display()
                     )));
                 }
                 let to = if into_dir(root)? {
-                    dest.join(path.file_name().unwrap_or_default())
+                    dest.join(r.named.file_name().unwrap_or_default())
                 } else {
                     dest.clone()
                 };
-                rnk_rootfs::copy(src_root, path, root, &to, &opts)?;
+                rnk_rootfs::copy(src_root, &r.path, root, &to, &opts)?;
             }
             for content in &contents {
                 let to = if into_dir(root)? {
@@ -813,20 +823,29 @@ fn health(h: &Healthcheck) -> HealthConfig {
     }
 }
 
+/// What a `RUN` executes.
+#[derive(Debug, PartialEq, Eq)]
+enum Argv {
+    /// This argv.
+    Plain(Vec<String>),
+    /// A `#!` heredoc: its body, written to a file named `name` and run.
+    Script { name: String, body: String },
+}
+
 /// The argv of a `RUN`, as BuildKit builds it: exec form as written; shell
 /// form with the stage's shell, heredocs included.
-fn run_argv(cmd: &CmdLine, shell: &[String]) -> Result<Vec<String>> {
+fn run_argv(cmd: &CmdLine, shell: &[String]) -> Result<Argv> {
     if !cmd.prepend_shell {
         if cmd.args.is_empty() {
             return Err(Error::Invalid("RUN has no command".to_owned()));
         }
-        return Ok(cmd.args.clone());
+        return Ok(Argv::Plain(cmd.args.clone()));
     }
     let line = cmd.args.first().cloned().unwrap_or_default();
     let mut argv = shell.to_vec();
     if cmd.files.is_empty() {
         argv.push(line);
-        return Ok(argv);
+        return Ok(Argv::Plain(argv));
     }
     // A RUN that is only one heredoc runs its body as the script.
     if let [file] = cmd.files.as_slice()
@@ -838,12 +857,14 @@ fn run_argv(cmd: &CmdLine, shell: &[String]) -> Result<Vec<String>> {
             file.data.clone()
         };
         if body.starts_with("#!") {
-            return Err(Error::Invalid(
-                "a RUN heredoc with a #! line is not supported yet".to_owned(),
-            ));
+            check_heredoc_name(&file.name)?;
+            return Ok(Argv::Script {
+                name: file.name.clone(),
+                body,
+            });
         }
         argv.push(body);
-        return Ok(argv);
+        return Ok(Argv::Plain(argv));
     }
     // Otherwise the shell reads the heredocs itself.
     let mut script = line;
@@ -856,7 +877,127 @@ fn run_argv(cmd: &CmdLine, shell: &[String]) -> Result<Vec<String>> {
         script.push_str(&f.name);
     }
     argv.push(script);
-    Ok(argv)
+    Ok(Argv::Plain(argv))
+}
+
+const ENOENT: i32 = rustix::io::Errno::NOENT.raw_os_error();
+const ENOTDIR: i32 = rustix::io::Errno::NOTDIR.raw_os_error();
+
+/// A heredoc's name names a file: one path component, not `.` or `..`.
+fn check_heredoc_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        return Err(Error::Invalid(format!(
+            "heredoc name {name:?} cannot name a file: one name without '/' is needed"
+        )));
+    }
+    Ok(())
+}
+
+/// Writes a `#!` heredoc's body to a build-private executable file.
+fn write_script(dir: &Path, body: &str) -> Result<tempfile::NamedTempFile> {
+    let mut f = tempfile::Builder::new()
+        .prefix(".heredoc-")
+        .permissions(std::fs::Permissions::from_mode(0o755))
+        .tempfile_in(dir)
+        .map_err(Error::io("create a script in", dir))?;
+    f.write_all(body.as_bytes())
+        .map_err(Error::io("write", f.path().to_owned()))?;
+    f.as_file()
+        .sync_all()
+        .map_err(Error::io("sync", f.path().to_owned()))?;
+    Ok(f)
+}
+
+/// A `RUN --mount` target inside the root: absolute, or relative to the
+/// working directory; cleaned, never above `/`.
+fn mount_target(t: &str, workdir: &Path) -> PathBuf {
+    let joined = if t.starts_with('/') {
+        PathBuf::from(t)
+    } else {
+        workdir.join(t)
+    };
+    PathBuf::from("/").join(sources::clean_source(&joined.to_string_lossy()))
+}
+
+/// The id of a cache mount: `id=`, else its target, as BuildKit.
+fn cache_id(m: &rnk_dockerfile::Mount) -> &str {
+    if m.cache_id.is_empty() {
+        &m.target
+    } else {
+        &m.cache_id
+    }
+}
+
+/// Applies a cache mount's `mode`, `uid` and `gid` to its directory in the
+/// store, through a descriptor of the directory itself: never by a path a
+/// symlink could redirect. Only permission bits and the sticky bit are
+/// taken from `mode`.
+fn set_cache_owner(dir: &Path, m: &rnk_dockerfile::Mount) -> Result<()> {
+    if m.mode.is_none() && m.uid.is_none() && m.gid.is_none() {
+        return Ok(());
+    }
+    let root = RootPath::open(dir)?;
+    let fd = root.open_at(".", &OpenHow::read().directory().no_follow())?;
+    if let Some(mode) = m.mode {
+        rustix::fs::fchmod(&fd, rustix::fs::Mode::from_raw_mode(mode & 0o1777))
+            .map_err(|e| Error::io("chmod", dir)(e.into()))?;
+    }
+    if m.uid.is_some() || m.gid.is_some() {
+        rustix::fs::fchown(
+            &fd,
+            m.uid.map(rustix::fs::Uid::from_raw),
+            m.gid.map(rustix::fs::Gid::from_raw),
+        )
+        .map_err(|e| Error::io("chown", dir)(e.into()))?;
+    }
+    Ok(())
+}
+
+/// A `RUN --mount=type=secret` as a bind, `None` for a missing optional
+/// secret. The id is `id=`, else the target's last name; the target is
+/// `target=`, else `/run/secrets/<id>`.
+fn secret_mount(
+    m: &rnk_dockerfile::Mount,
+    workdir: &Path,
+    secrets: &BTreeMap<String, PathBuf>,
+) -> Result<Option<BindMount>> {
+    if m.env.is_some() {
+        return Err(Error::Invalid(
+            "RUN --mount=type=secret,env= is not supported yet (Q-022)".to_owned(),
+        ));
+    }
+    let id = if m.cache_id.is_empty() {
+        Path::new(&m.target)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        m.cache_id.clone()
+    };
+    if id.is_empty() {
+        return Err(Error::Invalid(
+            "RUN --mount=type=secret needs an id or a target".to_owned(),
+        ));
+    }
+    let Some(source) = secrets.get(&id) else {
+        if m.required {
+            return Err(Error::Invalid(format!(
+                "secret {id:?} is required but was not given (--secret)"
+            )));
+        }
+        return Ok(None);
+    };
+    let target = if m.target.is_empty() {
+        PathBuf::from("/run/secrets").join(&id)
+    } else {
+        mount_target(&m.target, workdir)
+    };
+    Ok(Some(BindMount {
+        source: source.clone(),
+        target,
+        kind: MountKind::File,
+        read_only: true,
+    }))
 }
 
 /// `--chmod`, octal only [open: Q-120].
@@ -966,7 +1107,8 @@ mod tests {
             prepend_shell: false,
             files: vec![],
         };
-        assert_eq!(run_argv(&exec, &shell()).unwrap(), ["echo", "hi"]);
+        let plain = |v: &[&str]| Argv::Plain(v.iter().map(|s| (*s).to_owned()).collect());
+        assert_eq!(run_argv(&exec, &shell()).unwrap(), plain(&["echo", "hi"]));
         let sh = CmdLine {
             args: vec!["echo $HOME".into()],
             prepend_shell: true,
@@ -974,7 +1116,7 @@ mod tests {
         };
         assert_eq!(
             run_argv(&sh, &shell()).unwrap(),
-            ["/bin/sh", "-c", "echo $HOME"]
+            plain(&["/bin/sh", "-c", "echo $HOME"])
         );
         let only = CmdLine {
             args: vec!["<<EOF".into()],
@@ -987,7 +1129,7 @@ mod tests {
         };
         assert_eq!(
             run_argv(&only, &shell()).unwrap(),
-            ["/bin/sh", "-c", "\techo a\necho b\n"]
+            plain(&["/bin/sh", "-c", "\techo a\necho b\n"])
         );
         let chomped = CmdLine {
             files: vec![InlineFile {
@@ -999,7 +1141,7 @@ mod tests {
         };
         assert_eq!(
             run_argv(&chomped, &shell()).unwrap(),
-            ["/bin/sh", "-c", "echo a\necho b\n"]
+            plain(&["/bin/sh", "-c", "echo a\necho b\n"])
         );
         let inline = CmdLine {
             args: vec!["cat <<EOF > /f".into()],
@@ -1007,7 +1149,23 @@ mod tests {
         };
         assert_eq!(
             run_argv(&inline, &shell()).unwrap(),
-            ["/bin/sh", "-c", "cat <<EOF > /f\n\techo a\necho b\nEOF"]
+            plain(&["/bin/sh", "-c", "cat <<EOF > /f\n\techo a\necho b\nEOF"])
+        );
+        let shebang = CmdLine {
+            args: vec!["<<EOF".into()],
+            prepend_shell: true,
+            files: vec![InlineFile {
+                name: "EOF".into(),
+                data: "#!/usr/bin/env python3\nprint(1)\n".into(),
+                chomp: false,
+            }],
+        };
+        assert_eq!(
+            run_argv(&shebang, &shell()).unwrap(),
+            Argv::Script {
+                name: "EOF".into(),
+                body: "#!/usr/bin/env python3\nprint(1)\n".into()
+            }
         );
     }
 
@@ -1055,5 +1213,83 @@ mod tests {
         assert!(is_remote("https://example.com/a.tgz"));
         assert!(is_remote("git@github.com:a/b.git"));
         assert!(!is_remote("src/a.tgz"));
+    }
+
+    fn mount(kind: MountType) -> rnk_dockerfile::Mount {
+        rnk_dockerfile::Mount {
+            kind,
+            ..rnk_dockerfile::Mount::default()
+        }
+    }
+
+    #[test]
+    fn mount_targets_are_absolute_and_clean() {
+        let wd = Path::new("/app");
+        assert_eq!(mount_target("/cache", wd), PathBuf::from("/cache"));
+        assert_eq!(
+            mount_target("node_modules/.cache", wd),
+            PathBuf::from("/app/node_modules/.cache")
+        );
+        assert_eq!(mount_target("../../../x", wd), PathBuf::from("/x"));
+    }
+
+    #[test]
+    fn a_cache_id_defaults_to_the_target() {
+        let mut m = mount(MountType::Cache);
+        m.target = "/root/.npm".into();
+        assert_eq!(cache_id(&m), "/root/.npm");
+        m.cache_id = "npm".into();
+        assert_eq!(cache_id(&m), "npm");
+    }
+
+    #[test]
+    fn secret_mounts_follow_buildkit_defaults() {
+        let wd = Path::new("/app");
+        let secrets: BTreeMap<String, PathBuf> =
+            [("token".to_owned(), PathBuf::from("/host/token"))].into();
+        // The id from the target's last name.
+        let mut m = mount(MountType::Secret);
+        m.target = "/etc/token".into();
+        let b = secret_mount(&m, wd, &secrets).unwrap().unwrap();
+        assert_eq!(b.source, PathBuf::from("/host/token"));
+        assert_eq!(b.target, PathBuf::from("/etc/token"));
+        assert!(b.read_only);
+        // The target from the id; a relative target under the workdir.
+        let mut m = mount(MountType::Secret);
+        m.cache_id = "token".into();
+        assert_eq!(
+            secret_mount(&m, wd, &secrets).unwrap().unwrap().target,
+            PathBuf::from("/run/secrets/token")
+        );
+        m.target = "conf/token".into();
+        assert_eq!(
+            secret_mount(&m, wd, &secrets).unwrap().unwrap().target,
+            PathBuf::from("/app/conf/token")
+        );
+        // Missing: skipped unless required.
+        let mut m = mount(MountType::Secret);
+        m.cache_id = "other".into();
+        assert_eq!(secret_mount(&m, wd, &secrets).unwrap(), None);
+        m.required = true;
+        assert!(secret_mount(&m, wd, &secrets).is_err());
+        // No id at all, and env=.
+        assert!(secret_mount(&mount(MountType::Secret), wd, &secrets).is_err());
+        let mut m = mount(MountType::Secret);
+        m.cache_id = "token".into();
+        m.env = Some("TOKEN".into());
+        assert!(
+            secret_mount(&m, wd, &secrets)
+                .unwrap_err()
+                .to_string()
+                .contains("Q-022")
+        );
+    }
+
+    #[test]
+    fn heredoc_names_name_one_file() {
+        assert!(check_heredoc_name("EOF").is_ok());
+        for bad in ["", ".", "..", "a/b", "../x"] {
+            assert!(check_heredoc_name(bad).is_err(), "{bad:?}");
+        }
     }
 }

@@ -195,8 +195,9 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
     let setup::Outcome::OverlayRoot { overlay, .. } = setup.outcome;
     let built = build::run(&config, setup.store, setup.sandbox, overlay).map_err(Failure::error)?;
     tracing::info!("built image {}", built.digest);
-    let _ = writeln!(std::io::stdout(), "{}", built.digest);
-    Ok(())
+    // The digest is the build's result: failing to print it fails the run.
+    writeln!(std::io::stdout(), "{}", built.digest)
+        .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
 }
 
 /// Panics, then aborts. Release builds abort inside the panic, right after
