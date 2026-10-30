@@ -59,6 +59,16 @@ Three tracks after task 0: set-up (1, 2), the snapshot (3–6) and execution
 | 10 | `--parallel-stages`: bare `chroot`, `/dev`, subreaper, fake `/proc`, Java | 9 | |
 | 11 | CLI end to end in the VM, the e2e kaniko-mode leg, acceptance runs | all | |
 
+Run in parallel from 2026-10-30, each on its own branch and worktree,
+because these parts need only what is already built: task 2; task 3; task
+4 against the existing `rnk_rootfs::IgnoreList`, so it does not wait for
+task 3's list; the sandbox half of task 7 (`Isolation::Direct`, the placed
+files' journal and mtime restore), testable on any root without
+`KanikoRoot`; and the logic half of task 8 (squashing, the lazy-snapshot
+rule from the stage graph, the shared-`/` exclusivity in `rnk-sched`).
+Task 5 waits for task 4's diff type; task 6 joins 3, 4 and 5, and wires
+the halves of 7 and 8 in.
+
 Every task instruments its crate as its card's `## Metrics` and
 [design/metrics.md](../design/metrics.md#spans-per-crate) list, tested
 with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
