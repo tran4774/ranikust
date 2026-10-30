@@ -54,16 +54,22 @@ network namespace. The first such `RUN` probes it once
 where the build process can bring `lo` up in a namespace of its own (root
 on a host, `--privileged`, rootless podman), the clone creates the network
 namespace and the child brings `lo` up after entering the root, as before.
-Where it cannot (Docker's default capabilities plus `SYS_ADMIN`), a holder
-process creates a user namespace and a network namespace owned by it,
-brings `lo` up there and waits; the child is cloned without
+Where it cannot (Docker's default capabilities plus `SYS_ADMIN`), the `RUN`
+is refused, naming `--allow network.none-userns`. With that opt-in, a
+holder process creates a user namespace and a network namespace owned by
+it, brings `lo` up there and waits; the child is cloned without
 `CLONE_NEWNET` and joins that namespace through the holder's pidfd
-(`setns`) as its first step, before any mount, so `sysfs` shows it. Only
-the network namespace changes owner: the child stays in the build's user
-namespace with its uid, gid and capabilities. The holder closes every
-descriptor it inherited, dies with the spawner thread, and is killed and
-reaped after the `RUN`. Where user namespaces are denied too, the `RUN` is
-refused with both errnos.
+(`setns`) as its first step, before any mount, so `sysfs` shows it. The
+child stays in the build's user namespace with its uid, gid and
+capabilities, but as root it holds every capability in the holder's user
+namespace (its owner is uid 0): after every mount and before the
+capability drop it installs a seccomp filter that refuses `setns`,
+`unshare`/`clone` with `CLONE_NEWUSER`, `io_uring`, netlink sockets other
+than route, sock_diag and kobject_uevent, and any syscall of another
+architecture, with `EPERM`, and `clone3` with `ENOSYS`. rtnetlink stays
+open. The holder closes every descriptor it inherited, stdio included,
+clears `PR_SET_DUMPABLE`, dies with the spawner thread, and is killed and
+reaped after the `RUN`.
 
 1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check that the parent process
    did not die before: `getppid()` is 0 in a new PID namespace, so the child

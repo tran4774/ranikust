@@ -84,9 +84,11 @@ from `rnk-store`, secret file) and passes `--network`.
   127; end-of-file on the pipe means `execve` succeeded.
 - Namespaces: mount, PID, UTS, IPC (plus user without `CAP_SYS_ADMIN`
   [design, Phase 3], network for `--network=none`, with `lo` up: the
-  clone's own, or one a holder process creates in a user namespace of its
-  own and the child joins by pidfd where `CAP_NET_ADMIN` is missing,
-  probed once (ADR-0033, `NetHolder`, `probe_network`)). Mounts
+  clone's own; where `CAP_NET_ADMIN` is missing, refused, or with
+  `Sandbox::allow_userns_network` (`--allow network.none-userns`) one a
+  holder process creates in a user namespace of its own, which the child
+  joins by pidfd and runs under the `seccomp` module's filter; probed once,
+  ADR-0033, `NetHolder`, `probe_network`). Mounts
   exist only in the child, so the parent diffs the root as the image left
   it.
 - Mount order: all mounts private, self-bind remounted `nodev`, `proc`,

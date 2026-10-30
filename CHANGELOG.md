@@ -58,11 +58,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `type=env`). `RUN --network=host` under `--network=none` needs
   `--allow network.host`. A cancel (SIGINT, SIGTERM or a failed stage)
   kills the running `RUN`s. Features of later phases stop the build with a
-  message naming the phase. `RUN --network=none` gets loopback also
-  without `CAP_NET_ADMIN` (a container with only `SYS_ADMIN` added),
-  through a network namespace in a user namespace of its own, as rootless
-  BuildKit; it is refused only where user namespaces are denied too
-  (ADR-0033).
+  message naming the phase. Where ranikust lacks `CAP_NET_ADMIN` (a
+  container with only `SYS_ADMIN` added), `RUN --network=none` is refused
+  unless `--allow network.none-userns` opts in to loopback through a user
+  namespace, under a seccomp filter (ADR-0033).
 - Where kaniko and BuildKit build differently, ranikust builds as
   BuildKit: images use OCI media types whatever the base image; a new
   `ENTRYPOINT` clears a `CMD` inherited from the base; `EXPOSE` takes

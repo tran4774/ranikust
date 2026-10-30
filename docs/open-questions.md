@@ -1081,8 +1081,10 @@ Entry format:
 
 ### Q-183: What does `RUN --network=none` do without `CAP_NET_ADMIN`?
 
-- **Answer (2026-10-30):** option (c) with fallback (a): where the build
-  process cannot bring up `lo`, the network namespace is created inside a
-  user namespace of its own, as rootless BuildKit does; where user
-  namespaces are denied too, the `RUN` is refused. Recorded in
+- **Answer (2026-10-30):** (a) by default: refused where the build
+  process cannot bring up `lo`; `--allow network.none-userns` opts in to
+  (c), a network namespace owned by a user namespace of its own, with a
+  seccomp filter on the `RUN`, since its root holds every capability in
+  that user namespace. Phase 3 moves the opt-in to running the `RUN`
+  inside the user namespace. Recorded in
   [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md).

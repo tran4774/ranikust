@@ -156,7 +156,8 @@ config, history, `COPY`, `RUN --mount` and registry questions; the code
 changes land in follow-up branches. Escalated to the maintainer under that
 rule: `RUN --network=none` without `CAP_NET_ADMIN` (Q-183, answered in
 [ADR-0033](../adr/0033-network-none-loopback-through-a-user-namespace.md):
-a network namespace in a user namespace, else a refusal), remote
+refused, or with `--allow network.none-userns` a network namespace in a
+user namespace under seccomp), remote
 repository contexts (Q-045, Phase 5) and filtering unchanged copied-up
 files (Q-049, after Phase 1).
 
