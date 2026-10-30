@@ -196,9 +196,10 @@ fn components(p: &Path) -> Vec<&OsStr> {
     p.components()
         .filter_map(|c| match c {
             Component::Normal(n) => Some(n),
-            Component::RootDir | Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
-                None
-            }
+            Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir
+            | Component::Prefix(_) => None,
         })
         .collect()
 }
