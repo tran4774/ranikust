@@ -1,6 +1,6 @@
 # rnk-builder
 
-> **Status:** skeleton · **Phase:** 1 ·
+> **Status:** in progress · **Phase:** 1 ·
 > **Depends on:** `rnk-snapshot`, `rnk-sandbox`, `rnk-cache`, `rnk-layer`, `rnk-registry`, `rnk-context`, `rnk-ignore`, `rnk-dockerfile`, `rnk-store`, `rnk-rootfs`, `rnk-oci` · **Used by:** `rnk-sched` · **Path:** `crates/rnk-builder/`
 
 **TL;DR:** Builds one stage: one executor per instruction, diffs through
@@ -26,7 +26,62 @@ independent of timing.
   (`rnk-sandbox`), compute keys (`rnk-cache`), write tar (`rnk-layer`).
 - Touch a path in a root except through `RootPath`.
 
-## API (planned)
+## API
+
+Built, the output side:
+
+```rust
+pub struct BuildTime;                                   // one clock reading per build
+impl BuildTime {
+    pub fn at(now: SystemTime) -> Self;                 // normal build: config `created`, history
+    pub fn reproducible(source_date_epoch: Option<&str>) -> Result<Self>;  // epoch or SOURCE_DATE_EPOCH [open: Q-161]
+    pub fn layer_mtime(&self) -> Option<i64>;           // for EncodeOptions::mtime
+    pub fn rfc3339(&self) -> String;                    // Go's RFC3339Nano, as kaniko writes
+}
+pub struct LayerDemand { pub push: bool, pub cache: bool, pub target: bool, pub output: bool }
+impl LayerDemand {
+    pub fn for_stage(in_target: bool, outputs: &Outputs, cache: bool) -> Self;  // [open: Q-029] rnk-sched calls it
+    pub fn needed(&self) -> bool;
+}
+pub trait LayerSource: Send {                           // rnk-snapshot's exporter implements it
+    fn encode(self: Box<Self>, options: EncodeOptions, out: &mut dyn Write) -> Result<LayerDigests, rnk_layer::Error>;
+}
+pub struct EntriesLayer<S: EntrySource + Send>;         // entries plus a content source
+pub struct BlobLayer { pub diff_id: Digest, pub blob: Descriptor, pub path: PathBuf, pub mount_from: Option<Reference> }
+impl BlobLayer { pub fn base(diff_id: Digest, blob: Descriptor, path: PathBuf, from: Reference) -> Self; }
+pub struct LayerExporter;                               // into the build dir, blobs named by digest
+impl LayerExporter {
+    pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self;  // dir: Store::build_dir(); mtime from time
+    pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
+    pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
+}
+pub fn layer_history(created_by: &str, time: &BuildTime) -> History;                       // [open: Q-131]
+pub fn image_format(base: Option<ImageFormat>, zstd: bool, reproducible: bool) -> ImageFormat;  // [open: Q-006]
+pub struct Image { pub format: ImageFormat, pub config: Bytes, pub config_descriptor: Descriptor,
+                   pub manifest: RawManifest, pub layers: Vec<BlobLayer> }
+pub fn assemble(config: ImageConfig, layers: Vec<BlobLayer>, format: ImageFormat, time: &BuildTime) -> Result<Image>;
+pub struct Outputs { pub destinations: Vec<Reference>, pub push: bool,
+                     pub docker_tar: Option<PathBuf>, pub oci_layout: Option<PathBuf> }
+impl Outputs {
+    pub fn new(destinations: &[String], push: bool, docker_tar: Option<PathBuf>, oci_layout: Option<PathBuf>) -> Result<Self>;
+    pub fn tar_tags(&self) -> &[String];                // as typed, `:latest` added; UNSET_DESTINATION without one
+}
+pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()>;
+pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<()>;
+pub async fn push(image: &Image, destinations: &[Reference], client: &Client, jobs: NonZeroUsize)
+    -> Result<Vec<(Reference, Digest)>>;
+```
+
+The caller writes the outputs in kaniko's order: OCI layout, Docker tar,
+push. `export` and the two file outputs block: call them from a blocking
+thread when a runtime runs. Every file is written to a randomly named,
+exclusively created temporary file and renamed into place, so a planted
+name is never followed and an error leaves no partial output. `push`
+fails with `Error::Push`, naming the destination that failed and those
+already pushed; the first failed blob cancels the other transfers to that
+destination, and later destinations are not tried.
+
+Planned:
 
 ```rust
 use rnk_store::BuildPaths;  // [design] { root, state }, the only source of paths (ADR-0021)
@@ -39,8 +94,6 @@ pub trait Executor {                                 // [design] one per instruc
     async fn execute(&self, cx: &mut StageCx<'_>) -> Result<()>;  // files via cx.root or cx.sandbox; config via cx.config
     fn cache_inputs(&self, cx: &StageCx<'_>) -> Result<KeyInputs>;  // [open: Q-041] Phase 4
 }
-pub struct LayerDemand { pub push: bool, pub cache: bool, pub target: bool, pub output: bool }  // [design] encode iff any
-pub enum Output { Registry(Reference), DockerTar(PathBuf), OciLayout(PathBuf) }                 // [design]
 ```
 
 ## Invariants
@@ -81,6 +134,10 @@ pub enum Output { Registry(Reference), DockerTar(PathBuf), OciLayout(PathBuf) } 
   `crates/rnk-oci/src/edit.rs`; here, that each executor builds the right
   edit, and the result against BuildKit and kaniko config goldens; the
   `LayerDemand` table; assembly of fake layers gives stable digests.
+  Built: `tests/outputs` (layer bytes the same at 1, 2 and 8 threads;
+  `--reproducible` scrubbing; the OCI layout and Docker tar file by file
+  and through `skopeo inspect` when installed; push with mounts against
+  `rnk-registry`'s fake registry) and `tests/spans.rs`.
 - **T1/T2:** W1 and W3 end to end; flattened content against kaniko
   (`nextjs-kaniko/digest-check/`) and between modes (ADR-0012 list);
   `--jobs 1` and the default give one digest. Phase 6: kaniko's 201
@@ -107,6 +164,22 @@ pub enum Output { Registry(Reference), DockerTar(PathBuf), OciLayout(PathBuf) } 
   needs a test of its meaning (ADR-0011).
 - Retrying a failed `RUN` is unsafe: it may have written part of its output
   (kaniko-mode design).
+- A layer's media type is fixed when the image is assembled
+  (`MediaType::to_format`), not when it is encoded: a base image's Docker
+  layers become OCI ones in an OCI image, and the reverse.
+- The Docker tar goes through `rnk-layer`'s writer, which sorts entries:
+  layers, `manifest.json`, then the config, not go-containerregistry's
+  order; loaders read the whole archive, so only the file's bytes differ.
+  `RepoTags` are the destinations as typed, `:latest` added when no tag was
+  given, as go-containerregistry's `tag.String()` (not the normalized
+  `docker.io/library/...`).
+- `assemble` writes OCI when Docker is asked for but a layer has no Docker
+  media type (a zstd base layer under `--reproducible`): `Image::format` is
+  what was written, not what was asked.
+- An OCI layout's existing blob is kept only if its bytes hash to its name.
+- `push` mounts from the base repository first, then from the first
+  destination. `rnk-registry`'s fake registry answers `HEAD` only for
+  repositories that hold a blob; otherwise no mount is ever tried.
 
 ## Phase 1
 
@@ -120,4 +193,14 @@ pub enum Output { Registry(Reference), DockerTar(PathBuf), OciLayout(PathBuf) } 
 - Deferred: the kaniko-mode flow with squashing and `COPY --from` file saving
   (Phase 2); cache checks (Phase 4); `ADD` URL, git and tar, `ONBUILD`,
   `COPY --link`/`--parents`/`--exclude`, `RUN --mount=type=bind` (Phase 5).
-- [open: Q-029] Who computes `LayerDemand` from the graph and the outputs.
+- Done: lazy export (`LayerExporter`, `LayerDemand`), assembly with
+  `--reproducible`, and the three outputs. Left: `BuildPaths` and
+  `StageCx`, the executors, and calling the outputs from `ranikust`.
+- [open: Q-029] Interim: `rnk-sched` builds each stage's demand with
+  `LayerDemand::for_stage`; the rule lives here.
+- [open: Q-006] Interim: kaniko's format rule, `image_format`.
+- [open: Q-131] Interim: kaniko's history, author `ranikust`,
+  `layer_history`.
+- [open: Q-160] Under `--reproducible`, base layers are kept as pulled.
+- [open: Q-162] Built layer blobs live in the build directory, not in the
+  store's `blobs/`.

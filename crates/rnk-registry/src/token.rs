@@ -76,12 +76,47 @@ pub(crate) async fn exchange(
         form.push(("service", service));
     }
     let started = Instant::now();
-    let mut response = http
+    let response = http
         .post(&challenge.realm)
         .form(&form)
         .send()
         .await
         .map_err(ExchangeError::Request)?;
+    access_token(response, started).await
+}
+
+/// Asks the realm for one access token covering every scope in `scopes`,
+/// as a `GET` with one `scope` parameter each, the distribution token
+/// specification's form: anonymously, or with `basic` credentials.
+///
+/// A cross-repository mount needs this: the destination's push scope and
+/// the source's pull scope in the same token, which `oci-client`'s
+/// one-scope tokens cannot give.
+pub(crate) async fn fetch(
+    http: &reqwest::Client,
+    challenge: &Challenge,
+    basic: Option<(&str, &str)>,
+    scopes: &[&str],
+) -> Result<AccessToken, ExchangeError> {
+    let mut query: Vec<(&str, &str)> = scopes.iter().map(|s| ("scope", *s)).collect();
+    if let Some(service) = &challenge.service {
+        query.push(("service", service));
+    }
+    let mut request = http.get(&challenge.realm).query(&query);
+    if let Some((user, password)) = basic {
+        request = request.basic_auth(user, Some(password));
+    }
+    let started = Instant::now();
+    let response = request.send().await.map_err(ExchangeError::Request)?;
+    access_token(response, started).await
+}
+
+/// The access token of a token endpoint's `response`, requested at
+/// `started`.
+async fn access_token(
+    mut response: reqwest::Response,
+    started: Instant,
+) -> Result<AccessToken, ExchangeError> {
     let status = response.status();
     if !status.is_success() {
         return Err(ExchangeError::Status(status.as_u16()));

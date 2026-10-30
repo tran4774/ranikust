@@ -171,8 +171,23 @@ struct Host {
     /// Scopes (repository, operation) already authorized; for identity
     /// tokens, with the token.
     scopes: Mutex<BTreeMap<(String, RegistryOperation), Option<ScopeToken>>>,
-    /// The client for the identity-token exchange.
+    /// The client for the identity-token exchange and mounts.
     http: reqwest::Client,
+    /// `<scheme>://<endpoint>`, for requests sent without `oci-client`.
+    base_url: String,
+    /// The `Bearer` challenge of `GET /v2/`, if the registry sent one.
+    challenge: Option<Challenge>,
+    /// Mount tokens by (destination, source) repository.
+    mount_tokens: Mutex<BTreeMap<(String, String), ScopeToken>>,
+}
+
+/// The scopes a cross-repository mount needs: push to the destination,
+/// pull from the source.
+fn mount_scopes(repository: &str, from_repository: &str) -> [String; 2] {
+    [
+        format!("repository:{repository}:pull,push"),
+        format!("repository:{from_repository}:pull"),
+    ]
 }
 
 /// An access token from the identity-token exchange and when to refresh it.
@@ -469,7 +484,7 @@ impl Client {
             .filter(|f| {
                 f.registry() == reference.registry() && f.repository() != reference.repository()
             })
-            .map(|f| oci_reference(&f.name()))
+            .map(|f| oci_reference(&f.name()).map(|o| (o, f.repository())))
             .transpose()?;
 
         let digest = blob.digest.as_str();
@@ -503,11 +518,21 @@ impl Client {
             if exists? {
                 return Ok(PushOutcome::Existed);
             }
-            if let Some(from) = &from {
-                requests += 1;
+            if let Some((from_ref, from_repository)) = &from {
                 // A refusal (`202`, which `oci-client` reports as a spec
                 // violation) or any other failure falls back to an upload.
-                if host.oci.mount_blob(&oci_ref, from, digest).await.is_ok() {
+                let (mounted, sent) = self
+                    .mount(
+                        &host,
+                        &oci_ref,
+                        reference.repository(),
+                        from_ref,
+                        from_repository,
+                        digest,
+                    )
+                    .await;
+                requests += sent;
+                if mounted {
                     return Ok(PushOutcome::Mounted);
                 }
             }
@@ -547,6 +572,99 @@ impl Client {
             span.record("existed", *outcome == PushOutcome::Existed);
         }
         result
+    }
+
+    /// Asks the registry to mount `digest` from `from_repository` into
+    /// `repository`. Returns whether it did, and the requests sent.
+    ///
+    /// On a token registry the mount needs pull access to the source as well
+    /// as push access to the destination, in one token, as
+    /// go-containerregistry asks for (`kaniko@44aa7ddc0
+    /// vendor/github.com/google/go-containerregistry/pkg/v1/remote/write.go:140-155`,
+    /// `maybeUpdateScopes`);
+    /// `oci-client` only knows one scope per token, so that token is fetched
+    /// here and the mount sent with it. Without a token flow (an open
+    /// registry, basic authentication, a static registry token) the push
+    /// authorization is used as is.
+    async fn mount(
+        &self,
+        host: &Host,
+        oci_ref: &oci_client::Reference,
+        repository: &str,
+        from_ref: &oci_client::Reference,
+        from_repository: &str,
+        digest: &str,
+    ) -> (bool, u64) {
+        let token = match (&host.strategy, &host.challenge) {
+            (Strategy::None, _)
+            | (Strategy::Oci(RegistryAuth::Bearer(_)), _)
+            | (Strategy::Oci(RegistryAuth::Anonymous | RegistryAuth::Basic(..)), None) => {
+                let mounted = host.oci.mount_blob(oci_ref, from_ref, digest).await.is_ok();
+                return (mounted, 1);
+            }
+            (Strategy::Oci(auth), Some(challenge)) => {
+                self.mount_token(host, challenge, auth, repository, from_repository)
+                    .await
+            }
+            (
+                Strategy::Identity {
+                    refresh_token,
+                    challenge,
+                },
+                _,
+            ) => {
+                let scopes = mount_scopes(repository, from_repository);
+                token::exchange(&host.http, challenge, refresh_token, &scopes.join(" "))
+                    .await
+                    .map(|t| t.token)
+                    .ok()
+            }
+        };
+        let Some(token) = token else {
+            // No token for both scopes: the upload still works with the push
+            // token, so the mount is skipped rather than failed.
+            return (false, 1);
+        };
+        let url = format!("{}/v2/{repository}/blobs/uploads/", host.base_url);
+        let mounted = host
+            .http
+            .post(url)
+            .query(&[("mount", digest), ("from", from_repository)])
+            .bearer_auth(token)
+            .send()
+            .await
+            .is_ok_and(|r| r.status() == reqwest::StatusCode::CREATED);
+        (mounted, 2)
+    }
+
+    /// A token for a mount's two scopes through the challenge's realm,
+    /// cached per pair of repositories; `None` when the realm refuses.
+    async fn mount_token(
+        &self,
+        host: &Host,
+        challenge: &Challenge,
+        auth: &RegistryAuth,
+        repository: &str,
+        from_repository: &str,
+    ) -> Option<String> {
+        let key = (repository.to_owned(), from_repository.to_owned());
+        let mut cache = host.mount_tokens.lock().await;
+        if let Some((token, refresh_after)) = cache.get(&key)
+            && Instant::now() < *refresh_after
+        {
+            return Some(token.clone());
+        }
+        let basic = match auth {
+            RegistryAuth::Basic(user, password) => Some((user.as_str(), password.as_str())),
+            RegistryAuth::Anonymous | RegistryAuth::Bearer(_) => None,
+        };
+        let scopes = mount_scopes(repository, from_repository);
+        let scopes: Vec<&str> = scopes.iter().map(String::as_str).collect();
+        let access = token::fetch(&host.http, challenge, basic, &scopes)
+            .await
+            .ok()?;
+        cache.insert(key, (access.token.clone(), access.refresh_after));
+        Some(access.token)
     }
 
     /// Pushes `manifest` under `reference`'s tag and returns its digest.
@@ -709,6 +827,10 @@ impl Client {
                 "credential helpers are not supported yet; accessing the registry anonymously"
             );
         }
+        let challenge = match &ping {
+            Ping::Bearer(challenge) => Some(challenge.clone()),
+            Ping::Open | Ping::Basic => None,
+        };
         let strategy = strategy(registry, scheme, ping, credential)?;
         if matches!(strategy, Strategy::Identity { .. }) {
             // `oci-client` consults its token cache only for registries with
@@ -722,6 +844,9 @@ impl Client {
             strategy,
             scopes: Mutex::new(BTreeMap::new()),
             http,
+            base_url: format!("{scheme}://{endpoint}"),
+            challenge,
+            mount_tokens: Mutex::new(BTreeMap::new()),
         })
     }
 

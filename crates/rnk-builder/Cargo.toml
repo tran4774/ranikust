@@ -10,3 +10,29 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+rnk-layer.workspace = true
+rnk-oci.workspace = true
+rnk-registry.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# `tempfile`: uniquely named, exclusively created temporary files beside
+# each output and encoded layer, renamed into place.
+tempfile.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# `base64`, `http-body-util`, `hyper`, `hyper-util`: the fake
+# registry of `rnk-registry`'s tests, compiled into this crate's push tests.
+base64.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rnk-metrics.workspace = true
+# `tar`: reading the Docker tarball back in tests.
+tar.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

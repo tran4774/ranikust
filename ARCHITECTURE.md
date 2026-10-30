@@ -182,7 +182,10 @@ Runs the stage DAG. Each stage is an async task started when its
 dependencies finish; root-independent work (base pulls, cache lookups)
 starts for all stages up front. `--jobs` bounds concurrent `RUN`s, available
 memory bounds how many stages run at once, a stage on the shared `/` runs
-alone, the first failure cancels the rest, logs are tagged per stage.
+alone (Phase 2), the first failure cancels the rest, logs are tagged per
+stage. A
+stage is built through the `StageRunner` trait, which the builder's side
+implements and tests fake.
 **Must not** know how a stage is built, or let output depend on execution
 order.
 
@@ -211,8 +214,14 @@ keys only, and carry a format version.
 Builds one stage: one executor per instruction (`commands` module), cache
 checks, lazy layer export (a layer is encoded only if pushed, cached or part
 of the target), image config updates, then image assembly and output.
+The output side exists: `LayerExporter` encodes a snapshot's
+`LayerSource` into the build directory when its `LayerDemand` needs it,
+`assemble` writes the canonical config and manifest at one `BuildTime`,
+and `push`, `write_docker_tar` and `write_oci_layout` write the image.
 **Must not** keep global state (paths arrive as `rnk-store`'s
-`BuildPaths`), order stages, or parse flags.
+`BuildPaths`, the clock and `SOURCE_DATE_EPOCH` as values), order stages,
+parse flags, or write tar itself (`rnk-layer` writes layers and the Docker
+tarball).
 
 ### `rnk-metrics`
 
@@ -237,7 +246,8 @@ chain: `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes and
 extraction, writer for export) and `rnk-store`; `rnk-cache` uses
 `rnk-store`; `rnk-registry` does not: it writes pulls into a sink its caller
 gets from `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`;
-`rnk-context` uses `rnk-ignore` for its walk (ADR-0027; interim, Q-028).
+`rnk-context` uses `rnk-ignore` for its walk (ADR-0027; interim, Q-028);
+`rnk-sched` uses `rnk-dockerfile` for the stage graph (interim, Q-028).
 `rnk-rootfs` never depends on `rnk-layer`. Lower crates never depend on
 higher ones. `rnk-dockerfile`, `rnk-ignore` and `rnk-oci` stay pure data.
 Only `ranikust` depends on `rnk-metrics`; libraries reach it through
@@ -260,7 +270,8 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
    store and look up the cache, in parallel (`rnk-registry`, `rnk-store`,
    `rnk-cache`).
 5. **Schedule** (`rnk-sched`): start each stage once its dependencies are
-   done, at most `--jobs` `RUN`s at a time; one at a time on a shared `/`.
+   done, at most `--jobs` `RUN`s at a time; one at a time on a shared `/`
+   (Phase 2).
 6. **Build a stage** (`rnk-builder`): prepare the root (`rnk-snapshot`:
    overlay mount over the layer store, or extraction plus a baseline walk).
    For each instruction compute the cache key; on a hit add the cached
