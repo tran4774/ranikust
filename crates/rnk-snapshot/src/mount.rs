@@ -196,7 +196,8 @@ static NEXT_LINKS: AtomicU64 = AtomicU64::new(0);
 /// directory never changes. ranikust's names are links `0`, `1`, ... in a
 /// fresh directory under `links`, which overlay follows once, at mount
 /// time; the directory is removed again after the mount, whatever its
-/// result.
+/// result. When only that removal fails, the mount still succeeds (it
+/// stands, and its caller tracks it): the directory goes with the stage's.
 fn mount_data(spec: &Spec<'_>, links: &RootPath) -> Result<()> {
     let data = data(spec);
     let len = data.len();
@@ -227,17 +228,43 @@ fn mount_data(spec: &Spec<'_>, links: &RootPath) -> Result<()> {
     links.create_dir(&name, 0o700)?;
     let mounted = make_links(links, &name, spec.lowers).and_then(|dir| {
         std::thread::scope(|s| {
-            s.spawn(|| mount_in(&dir, spec.target, flags, &data))
+            let thread = std::thread::Builder::new()
+                .name("rnk-mount".into())
+                .spawn_scoped(s, || mount_in(&dir, spec.target, flags, &data))
+                .map_err(|e| Error::Mount {
+                    target: spec.target.to_owned(),
+                    lowers: spec.lowers.len(),
+                    how: "mount(2)",
+                    step: format!("start the mount thread: {e}"),
+                    errno: e
+                        .raw_os_error()
+                        .map_or(Errno::AGAIN, Errno::from_raw_os_error),
+                    options: Some(len),
+                })?;
+            thread
                 .join()
                 // The workspace aborts on panic, so the thread never
                 // unwinds; a join error is not expected.
                 .unwrap_or(Err(Errno::INVAL))
+                .map_err(mount_err)
         })
-        .map_err(mount_err)
     });
     let removed = remove_links(links, &name, spec.lowers.len());
-    mounted?;
-    removed
+    match (mounted, removed) {
+        (Err(e), _) => Err(e),
+        (Ok(()), Ok(())) => Ok(()),
+        // The mount stands and is the caller's to track: the links went
+        // with the lookup, and their directory goes with the stage's or
+        // at the next start's clean-up.
+        (Ok(()), Err(e)) => {
+            tracing::warn!(
+                target: "rnk_snapshot",
+                "removing the links of the mount on {}: {e}",
+                spec.target.display()
+            );
+            Ok(())
+        }
+    }
 }
 
 /// Fills `links/<name>/` with `<i> -> lowers[i]` and opens it as a path
