@@ -132,8 +132,10 @@ impl Overlay {
     ///
     /// # Errors
     ///
-    /// [`Error::Rootfs`] when the state directory cannot be opened.
+    /// [`Error::UnsafePath`] when the state directory's path holds overlay
+    /// option syntax; [`Error::Rootfs`] when it cannot be opened.
     pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self> {
+        mount::check_path(store.state_dir())?;
         let state = Arc::new(RootPath::open(store.state_dir())?);
         Ok(Self {
             store,
@@ -163,14 +165,14 @@ impl Snapshotter for Overlay {
     }
 
     fn prepare(&self, base: Base<'_, OverlayStage>) -> Result<OverlayStage> {
-        let lowers: Vec<PathBuf> = match base {
-            Base::Scratch => Vec::new(),
-            Base::Image(layers) => layers.iter().rev().map(|l| l.path.clone()).collect(),
+        let (lowers, parent): (Vec<PathBuf>, _) = match base {
+            Base::Scratch => (Vec::new(), None),
+            Base::Image(layers) => (layers.iter().rev().map(|l| l.path.clone()).collect(), None),
             Base::Stage(parent) => {
-                if parent.open.is_some() {
+                if parent.mounted == Mounted::Layer {
                     return Err(Error::State("the parent stage has a layer open"));
                 }
-                parent.lowers.clone()
+                (parent.lowers.clone(), Some(Arc::clone(&parent.children)))
             }
         };
         let span = tracing::info_span!("rnk_snapshot.prepare", layers = lowers.len());
@@ -194,11 +196,26 @@ impl Snapshotter for Overlay {
             api: self.api,
             lowers,
             next: 0,
+            mounted: Mounted::Nothing,
             open: None,
             view: None,
             diffs: Vec::new(),
+            children: Arc::new(()),
+            _parent: parent,
         })
     }
+}
+
+/// What is mounted on a stage's `rootfs/`, tracked apart from the
+/// `RootPath` opened on it, so that a mount whose `RootPath` could not be
+/// opened is still known, and unmounted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mounted {
+    Nothing,
+    /// The open layer, writable.
+    Layer,
+    /// The read-only view between layers.
+    View,
 }
 
 /// An overlay stage root: `builds/<id>/stages/<n>/` with `rootfs/` (the
@@ -220,12 +237,20 @@ pub struct OverlayStage {
     lowers: Vec<PathBuf>,
     /// The number of layers begun.
     next: u64,
+    /// What is mounted on `rootfs/`.
+    mounted: Mounted,
     /// The writable root of the open layer.
     open: Option<RootPath>,
     /// The read-only view, mounted on `rootfs/` between layers.
     view: Option<RootPath>,
     /// The diffs of this stage, for their short names.
     diffs: Vec<PathBuf>,
+    /// Shared with every stage built on this one ([`Base::Stage`]), whose
+    /// lower stack holds this stage's diffs: release refuses while a clone
+    /// is alive.
+    children: Arc<()>,
+    /// The parent's `children`, while this stage lives.
+    _parent: Option<Arc<()>>,
 }
 
 impl OverlayStage {
@@ -253,9 +278,37 @@ impl OverlayStage {
         Ok(self.dir.join(name))
     }
 
+    /// Mounts `spec` on `rootfs/` as `what`, then opens it as a root. If
+    /// that open fails, the mount is undone, so no error leaves it behind.
+    fn mount_root(&mut self, spec: &Spec<'_>, what: Mounted) -> Result<RootPath> {
+        self.mount(spec)?;
+        self.mounted = what;
+        match RootPath::open(&self.rootfs) {
+            Ok(root) => Ok(root),
+            Err(e) => {
+                if mount::unmount(&self.rootfs).is_ok() {
+                    self.mounted = Mounted::Nothing;
+                }
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Unmounts whatever is mounted on `rootfs/`; the state changes only
+    /// once the unmount succeeded.
+    fn unmount_all(&mut self) -> Result<()> {
+        if self.mounted != Mounted::Nothing {
+            mount::unmount(&self.rootfs)?;
+            self.mounted = Mounted::Nothing;
+        }
+        self.open = None;
+        self.view = None;
+        Ok(())
+    }
+
     fn drop_view(&mut self) -> Result<()> {
-        if self.view.take().is_some() {
-            mount::unmount(&self.rootfs())?;
+        if self.mounted == Mounted::View {
+            self.unmount_all()?;
         }
         Ok(())
     }
@@ -280,7 +333,7 @@ impl StageRootfs for OverlayStage {
     }
 
     fn begin_layer(&mut self) -> Result<()> {
-        if self.open.is_some() {
+        if self.mounted == Mounted::Layer {
             return Err(Error::State("a layer is open already"));
         }
         self.drop_view()?;
@@ -300,22 +353,25 @@ impl StageRootfs for OverlayStage {
         };
         let (upper, work) = (self.dir.join(diff), self.dir.join(work));
         let target = self.rootfs();
-        self.mount(&Spec {
-            lowers: &lowers,
-            upper: Some((&upper, &work)),
-            target: &target,
-        })?;
-        self.open = Some(RootPath::open(&target)?);
+        let root = self.mount_root(
+            &Spec {
+                lowers: &lowers,
+                upper: Some((&upper, &work)),
+                target: &target,
+            },
+            Mounted::Layer,
+        )?;
+        self.open = Some(root);
         self.diffs.push(upper);
         Ok(())
     }
 
     fn end_layer(&mut self) -> Result<LayerDiff> {
-        let Some(root) = self.open.take() else {
+        if self.mounted != Mounted::Layer {
             return Err(Error::State("no layer is open"));
-        };
-        drop(root);
-        mount::unmount(&self.rootfs())?;
+        }
+        // On failure the layer stays open, and so does its root.
+        self.unmount_all()?;
         let upper = self.dir.join(format!("diff-{}", self.next));
         let diff = LayerDiff {
             upper: upper.clone(),
@@ -326,10 +382,10 @@ impl StageRootfs for OverlayStage {
     }
 
     fn view(&mut self) -> Result<&RootPath> {
-        if self.open.is_some() {
+        if self.mounted == Mounted::Layer {
             return self.root();
         }
-        if self.view.is_none() {
+        if self.mounted == Mounted::Nothing {
             // A read-only overlay needs two lower layers.
             let mut lowers = self.lowers.clone();
             for i in 0..2_u8 {
@@ -338,19 +394,31 @@ impl StageRootfs for OverlayStage {
                 }
             }
             let target = self.rootfs();
-            self.mount(&Spec {
-                lowers: &lowers,
-                upper: None,
-                target: &target,
-            })?;
-            self.view = Some(RootPath::open(&target)?);
+            let root = self.mount_root(
+                &Spec {
+                    lowers: &lowers,
+                    upper: None,
+                    target: &target,
+                },
+                Mounted::View,
+            )?;
+            self.view = Some(root);
         }
         self.view.as_ref().ok_or(Error::State("no view"))
     }
 
+    /// Also refuses while a stage built on this one ([`Base::Stage`]) is
+    /// alive: its lower stack holds this stage's diffs. A refused or failed
+    /// release drops the stage (unmounted); its directories stay until the
+    /// store closes.
     fn release(mut self) -> Result<()> {
         let span = tracing::info_span!("rnk_snapshot.release", entries = self.diffs.len());
         let _entered = span.enter();
+        if Arc::strong_count(&self.children) > 1 {
+            return Err(Error::State(
+                "a stage built on this one is still alive; release it first",
+            ));
+        }
         self.unmount_all()?;
         delete_contents(&self.root, &IgnoreList::new())?;
         self.state.remove_dir(&self.rel)?;
@@ -362,15 +430,6 @@ impl StageRootfs for OverlayStage {
             names.remove(&d);
         }
         Ok(())
-    }
-}
-
-impl OverlayStage {
-    fn unmount_all(&mut self) -> Result<()> {
-        if self.open.take().is_some() {
-            mount::unmount(&self.rootfs())?;
-        }
-        self.drop_view()
     }
 }
 

@@ -223,6 +223,30 @@ fn mount_data(spec: &Spec<'_>, short: &mut dyn FnMut(&Path) -> Result<PathBuf>) 
     })
 }
 
+/// Checks that `dir`, under which every lower, upper, work directory and
+/// short name lives, holds nothing overlay's option syntax treats as
+/// syntax: `,` and `=` separate options, `:` lowers, `\` escapes, and
+/// control characters have no business in a path given to the kernel.
+/// The names ranikust adds below it (digests, build ids, `diff-<k>`) never
+/// do.
+pub(crate) fn check_path(dir: &Path) -> Result<()> {
+    let reason = dir.as_os_str().as_bytes().iter().find_map(|&b| match b {
+        b',' => Some("its path holds a ','"),
+        b':' => Some("its path holds a ':'"),
+        b'\\' => Some("its path holds a '\\'"),
+        b'=' => Some("its path holds a '='"),
+        b if b.is_ascii_control() => Some("its path holds a control character"),
+        _ => None,
+    });
+    match reason {
+        Some(reason) => Err(Error::UnsafePath {
+            path: dir.to_owned(),
+            reason,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Detaches the mount at `target`: open descriptors below it (the stage's
 /// `RootPath`) no longer keep it busy, and it goes away with the last one.
 pub(crate) fn unmount(target: &Path) -> Result<()> {
@@ -347,6 +371,15 @@ mod tests {
             matches!(e, Error::OptionsTooLong { lowers: 200, .. }),
             "{e}"
         );
+    }
+
+    #[test]
+    fn paths_with_option_syntax_are_refused() {
+        assert!(check_path(Path::new("/home/u/w/.ranikust")).is_ok());
+        for bad in ["/x,lowerdir=/", "/a:b", "/a\\b", "/a=b", "/a\nb", "/a\tb"] {
+            let e = check_path(Path::new(bad)).unwrap_err();
+            assert!(matches!(e, Error::UnsafePath { .. }), "{bad}: {e}");
+        }
     }
 
     #[test]

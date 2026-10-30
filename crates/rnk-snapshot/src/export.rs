@@ -126,7 +126,7 @@ impl LayerDiff {
                 entries: Vec::new(),
                 counts: DiffCounts::default(),
             };
-            walk.dir(Path::new(""))?;
+            walk.run()?;
             diff.record("files_added", walk.counts.files_added);
             diff.record("whiteouts", walk.counts.whiteouts);
             diff.record("opaque_dirs", walk.counts.opaque_dirs);
@@ -170,7 +170,7 @@ impl LayerDiff {
             entries: Vec::new(),
             counts: DiffCounts::default(),
         };
-        walk.dir(Path::new(""))?;
+        walk.run()?;
         let mut entries = walk.entries;
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(entries)
@@ -210,17 +210,38 @@ struct Walk<'a> {
     counts: DiffCounts,
 }
 
+/// The longest path below a layer root the exporter walks to (`PATH_MAX`
+/// less the NUL): every entry is resolved again from the root, so a deeper
+/// tree, which a `RUN` can make, is refused with this error rather than an
+/// `ENAMETOOLONG` from the kernel.
+const PATH_MAX: usize = 4095;
+
 impl Walk<'_> {
-    fn dir(&mut self, dir: &Path) -> Result<()> {
-        for name in list(self.upper, dir)? {
-            let p = dir.join(&name);
-            let st = self.upper.statx(&p)?;
-            self.entry(&p, &st)?;
+    /// Walks the whole upper directory with an explicit stack of the
+    /// directories still to list, so a deep tree costs memory, never stack.
+    fn run(&mut self) -> Result<()> {
+        let mut todo = vec![PathBuf::new()];
+        while let Some(dir) = todo.pop() {
+            for name in list(self.upper, &dir)? {
+                let p = dir.join(&name);
+                if p.as_os_str().len() > PATH_MAX {
+                    return Err(Error::Export {
+                        path: dir,
+                        reason: "an entry's path is longer than PATH_MAX",
+                    });
+                }
+                let st = self.upper.statx(&p)?;
+                if self.entry(&p, &st)? {
+                    todo.push(p);
+                }
+            }
         }
         Ok(())
     }
 
-    fn entry(&mut self, p: &Path, st: &Stat) -> Result<()> {
+    /// Classifies one entry and feeds it, or not; `true` when the walk must
+    /// go into it (a directory, whether it is fed or an unchanged copy-up).
+    fn entry(&mut self, p: &Path, st: &Stat) -> Result<bool> {
         let path = entry_path(p)?;
         if lowers::is_whiteout(st) {
             if self.lowers.lookup(p)?.is_some() {
@@ -236,7 +257,7 @@ impl Walk<'_> {
                     inode: None,
                 });
             }
-            return Ok(());
+            return Ok(false);
         }
         let all = self.upper.xattrs(p)?;
         if all
@@ -261,7 +282,7 @@ impl Walk<'_> {
                     EntryKind::OpaqueDir
                 } else if !opaque && lower_dir && same_dir(st, &xattrs, lower.as_ref(), p)? {
                     // Copied up unchanged: not a change by itself.
-                    return self.dir(p);
+                    return Ok(true);
                 } else {
                     EntryKind::Dir
                 }
@@ -277,7 +298,7 @@ impl Walk<'_> {
             FileType::BlockDevice => EntryKind::Block(st.rdev_major, st.rdev_minor),
             FileType::Fifo => EntryKind::Fifo,
             // A socket is no layer content (as kaniko and BuildKit).
-            FileType::Socket => return Ok(()),
+            FileType::Socket => return Ok(false),
             FileType::Unknown => {
                 return Err(Error::Export {
                     path: p.to_owned(),
@@ -297,7 +318,7 @@ impl Walk<'_> {
             mtime: st.mtime.secs,
             xattrs: xattrs.into_iter().map(|(n, v)| (n.into_vec(), v)).collect(),
         });
-        if is_dir { self.dir(p) } else { Ok(()) }
+        Ok(is_dir)
     }
 }
 
@@ -351,10 +372,15 @@ impl EntrySource for Source<'_> {
         let p = Path::new(OsStr::from_bytes(path.as_bytes()));
         let (st, xattrs) = match self.upper.statx(p) {
             Ok(st) => (st, self.upper.xattrs(p).map_err(io::Error::other)?),
-            Err(_) => match self.lowers.lookup(p).map_err(io::Error::other)? {
-                Some(f) => (f.stat, f.layer.xattrs(p).map_err(io::Error::other)?),
-                None => return Ok(None),
-            },
+            // Only a parent the upper does not have comes from the lowers;
+            // any other error is an error.
+            Err(e) if lowers::is_missing(&e) => {
+                match self.lowers.lookup(p).map_err(io::Error::other)? {
+                    Some(f) => (f.stat, f.layer.xattrs(p).map_err(io::Error::other)?),
+                    None => return Ok(None),
+                }
+            }
+            Err(e) => return Err(io::Error::other(e)),
         };
         if st.file_type() != FileType::Directory {
             return Ok(None);

@@ -46,6 +46,16 @@ pub enum Error {
         /// The largest length `mount(2)` takes.
         max: usize,
     },
+    /// A path overlay's option syntax cannot carry: `mount(2)` splits its
+    /// option string on `,` and lists of lowers on `:`, with `\` and `=`
+    /// special too, so such a state directory could add options or layers.
+    #[error("{path}: {reason}; overlay mounts need a state directory without it (--state-dir)")]
+    UnsafePath {
+        /// The path.
+        path: PathBuf,
+        /// What it holds.
+        reason: &'static str,
+    },
     /// More lower layers than overlay allows [open: Q-026].
     #[error("a stage root needs {lowers} lower layers; overlay takes at most {max}")]
     TooManyLowers {
@@ -128,6 +138,7 @@ impl Error {
             Self::Rootfs(e) => e.raw_os_error(),
             Self::Io { source, .. } => source.raw_os_error(),
             Self::OptionsTooLong { .. }
+            | Self::UnsafePath { .. }
             | Self::TooManyLowers { .. }
             | Self::State(_)
             | Self::Export { .. }

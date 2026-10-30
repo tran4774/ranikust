@@ -55,7 +55,9 @@ pub(crate) fn default_root() -> Meta {
 
 /// The metadata the merged root of `stack` (topmost first) shows: the
 /// topmost layer whose root is not marked [`INHERIT_ROOT`], else
-/// [`default_root`]. Overlay's own xattrs and the mark are left out.
+/// [`default_root`]. Its xattrs stay in the overlay form, for the new
+/// upper root: overlay's own are left out, escaped content xattrs
+/// (`user.overlay.overlay.*`) stay escaped.
 pub(crate) fn root_meta(stack: &[RootPath]) -> Result<Meta> {
     for layer in stack {
         let xattrs = layer.xattrs("")?;
@@ -69,7 +71,7 @@ pub(crate) fn root_meta(stack: &[RootPath]) -> Result<Meta> {
             mode: Some(st.mode),
             atime: Some(st.mtime),
             mtime: Some(st.mtime),
-            xattrs: lowers::content_xattrs(xattrs),
+            xattrs: lowers::overlay_form_xattrs(xattrs),
         });
     }
     Ok(default_root())
@@ -152,6 +154,14 @@ mod tests {
         fs::set_permissions(p("set"), fs::Permissions::from_mode(0o750)).unwrap();
         rustix::fs::setxattr(p("set"), "user.overlay.opaque", b"y", XattrFlags::empty()).unwrap();
         rustix::fs::setxattr(p("set"), "user.kept", b"k", XattrFlags::empty()).unwrap();
+        // An image's own `user.overlay.opaque`, escaped on extraction.
+        rustix::fs::setxattr(
+            p("set"),
+            "user.overlay.overlay.opaque",
+            b"y",
+            XattrFlags::empty(),
+        )
+        .unwrap();
         let stack = [
             RootPath::open(p("inherit")).unwrap(),
             RootPath::open(p("set")).unwrap(),
@@ -159,8 +169,15 @@ mod tests {
         let m = root_meta(&stack).unwrap();
         assert_eq!(m.mode.map(|m| m & 0o7777), Some(0o750));
         // Overlay's own xattrs never reach the new upper root: an opaque
-        // root would hide every lower layer.
-        assert_eq!(m.xattrs, [(OsString::from("user.kept"), b"k".to_vec())]);
+        // root would hide every lower layer. The image's escaped one stays
+        // escaped, or overlay would take it as its own marker.
+        assert_eq!(
+            m.xattrs,
+            [
+                (OsString::from("user.kept"), b"k".to_vec()),
+                (OsString::from("user.overlay.overlay.opaque"), b"y".to_vec()),
+            ]
+        );
         assert_eq!(root_meta(&stack[..1]).unwrap(), default_root());
         assert_eq!(root_meta(&[]).unwrap(), default_root());
     }

@@ -34,11 +34,14 @@ pub struct OverlayCaps {
 ///
 /// # Errors
 ///
-/// [`Error::Probe`] naming the failed step: the mount with both APIs
+/// [`Error::UnsafePath`] when `dir`'s path holds overlay option syntax
+/// (`,` `:` `\` `=` or a control character); [`Error::Probe`] naming the
+/// failed step: the mount with both APIs
 /// (upper on overlayfs or NFS, nested too deep, no privilege), or a write
 /// through it; [`Error::ProbeCheck`] when the upper directory does not
 /// hold what it should.
 pub fn probe(dir: &Path) -> Result<OverlayCaps> {
+    mount::check_path(dir)?;
     let root = RootPath::open(dir)?;
     let r = probe_in(&root, dir);
     let cleanup = delete_contents(&root, &IgnoreList::new());

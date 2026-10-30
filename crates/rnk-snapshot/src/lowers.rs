@@ -56,6 +56,21 @@ pub(crate) fn content_xattrs(all: Vec<(OsString, Vec<u8>)>) -> Vec<(OsString, Ve
         .collect()
 }
 
+/// The xattrs of an entry in the overlay form to copy onto another entry
+/// in the overlay form (the new upper root): overlay's own dropped, as
+/// overlay's copy-up does, and the escaped `user.overlay.overlay.*` kept
+/// escaped. Un-escaping them there would hand an image's xattrs to overlay
+/// as its own markers.
+pub(crate) fn overlay_form_xattrs(all: Vec<(OsString, Vec<u8>)>) -> Vec<(OsString, Vec<u8>)> {
+    all.into_iter()
+        .filter(|(n, _)| {
+            let b = n.as_bytes();
+            b.starts_with(ESCAPED)
+                || (!b.starts_with(USER_OVERLAY) && !b.starts_with(TRUSTED_OVERLAY))
+        })
+        .collect()
+}
+
 /// A stack of lower layers, topmost first, as overlay's `lowerdir=`.
 pub(crate) struct Lowers<'a> {
     pub(crate) layers: &'a [RootPath],
@@ -128,7 +143,7 @@ impl<'a> Lowers<'a> {
 }
 
 /// `ENOENT` or `ENOTDIR`: the layer does not have the path.
-fn is_missing(e: &rnk_rootfs::Error) -> bool {
+pub(crate) fn is_missing(e: &rnk_rootfs::Error) -> bool {
     matches!(
         e.raw_os_error().map(Errno::from_raw_os_error),
         Some(Errno::NOENT | Errno::NOTDIR)

@@ -110,6 +110,35 @@ fn a_layer_without_a_root_entry_is_marked_to_inherit_the_root() {
 }
 
 #[test]
+fn a_stage_is_not_released_while_a_stage_built_on_it_lives() {
+    use rnk_snapshot::{Base, StageRootfs};
+    let (_dir, s) = snapshotter();
+    let parent = s.prepare(Base::Scratch).unwrap();
+    let parent_dir = parent.mount_point().parent().unwrap().to_owned();
+    let child = s.prepare(Base::Stage(&parent)).unwrap();
+    let e = parent.release().unwrap_err();
+    assert!(matches!(e, Error::State(_)), "{e}");
+    // The refused parent's directories stay, for the child's lowers.
+    assert!(parent_dir.exists());
+    child.release().unwrap();
+}
+
+#[test]
+fn a_state_directory_with_option_syntax_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("x,lowerdir=");
+    let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    let e = Overlay::new(
+        Arc::new(store),
+        OverlayCaps {
+            api: MountApi::Mount2,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(e, Error::UnsafePath { .. }), "{e}");
+}
+
+#[test]
 fn a_tar_that_does_not_hash_to_the_diff_id_is_not_published() {
     let (_dir, s) = snapshotter();
     let (tar, _) = Tar::new()

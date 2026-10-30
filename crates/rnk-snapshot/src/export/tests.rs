@@ -283,6 +283,34 @@ fn flate2_free_gunzip(blob: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn a_tree_deeper_than_path_max_is_refused_clearly() {
+    let f = Fixture::new();
+    // 2,100 levels of `d/`: 4,200 bytes below the layer root, made by fd so
+    // no host path gets that long.
+    let mut fd = rustix::fs::open(
+        f.p("upper"),
+        rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .unwrap();
+    for _ in 0..2_100 {
+        rustix::fs::mkdirat(&fd, "d", Mode::from_raw_mode(0o755)).unwrap();
+        fd = rustix::fs::openat(
+            &fd,
+            "d",
+            rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+    }
+    let e = f.diff().entries().unwrap_err();
+    assert!(
+        matches!(e, Error::Export { reason, .. } if reason.contains("PATH_MAX")),
+        "{e}"
+    );
+}
+
+#[test]
 fn is_empty_tells_an_unchanged_upper() {
     let f = Fixture::new();
     assert!(f.diff().is_empty().unwrap());

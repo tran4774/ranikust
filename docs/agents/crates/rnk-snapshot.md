@@ -167,7 +167,24 @@ pub const MAX_LOWERS: usize = 500;                 // [open: Q-026] refused beyo
   ([open: Q-152]).
 - Unmounting is `MNT_DETACH`: open descriptors below the mount (a
   `RootPath`) do not make it busy, and the upper is complete once
-  nothing writes; the sandbox must have reaped the `RUN` first.
+  nothing writes.
+- **Contract for `rnk-builder` and `rnk-sandbox`:** every process of a
+  `RUN` is dead (reaped, its PID namespace gone) before `end_layer`.
+  `MNT_DETACH` leaves a surviving writer able to keep writing into the
+  upper while it is exported or used as a lower.
+- **Contract for `rnk-sandbox`:** its stubs (`/etc/resolv.conf`,
+  `/etc/hosts`, `/etc/hostname`, mount targets) are journalled and removed
+  from the upper, with the parent's times restored, before the diff is
+  exported; the exporter has no ignore list for them.
+- Root xattrs of the new upper stay in the overlay form: escaped
+  `user.overlay.overlay.*` stays escaped. Un-escaping it there would hand
+  an image's xattr to overlay as its own marker (host-safety review).
+- The state directory's path must not hold `,` `:` `\` `=` or control
+  characters: `mount(2)` would read them as option syntax (a state
+  directory `/x,lowerdir=/` would add the host's `/` as a lower).
+  `Overlay::new` and `probe` refuse such a path.
+- A stage built on another (`Base::Stage`) holds its parent's diffs as
+  lowers: the parent's `release` refuses while the child lives.
 
 ## Phase 1
 
