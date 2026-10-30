@@ -11,9 +11,12 @@ pub enum EntryKey {
     /// A compressed blob, by its digest: the file
     /// `blobs/<algorithm>/<hex>`.
     Blob(Digest),
-    /// An extracted layer, by its diff ID (the digest of the uncompressed
-    /// tar), so that the gzip and zstd blobs of one layer share it: the
-    /// directory `layers/<algorithm>/<hex>/` [open: Q-015].
+    /// An extracted layer, by the digest its extractor names it with:
+    /// `rnk-snapshot` uses the layer's chain ID (its diff ID for a bottom
+    /// layer), so that the gzip and zstd blobs of one layer share it and
+    /// an extraction that depends on the layers below never crosses stacks
+    /// (ADR-0032, Q-150): the directory `layers/<algorithm>/<hex>/`
+    /// [open: Q-015].
     Layer(Digest),
 }
 

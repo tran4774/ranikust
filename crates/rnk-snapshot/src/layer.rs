@@ -8,11 +8,13 @@ use rnk_oci::Digest;
 use rnk_rootfs::{FileTime, Meta, RootPath, extract_overlay};
 use rnk_store::{EntryKey, Store};
 
+use sha2::{Digest as _, Sha256};
+
 use crate::error::{Error, Result};
 use crate::lowers;
 
-/// An extracted layer in the store, `layers/<algorithm>/<hex>/`: immutable,
-/// only ever a lower directory.
+/// An extracted layer in the store, `layers/<algorithm>/<hex>/` named by
+/// its chain ID: immutable, only ever a lower directory.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LayerDir {
     pub(crate) diff_id: Digest,
@@ -77,15 +79,28 @@ pub(crate) fn root_meta(stack: &[RootPath]) -> Result<Meta> {
     Ok(default_root())
 }
 
+/// The chain ID of `diff_id` above `below` (image order, bottom first), as
+/// the OCI image spec defines it: a bottom layer's is its diff ID, else
+/// `sha256("<chain ID below> <diff ID>")`.
+pub(crate) fn chain_id(diff_id: &Digest, below: &[LayerDir]) -> Digest {
+    let mut ids = below.iter().map(|l| &l.diff_id).chain([diff_id]);
+    let first = ids.next().unwrap_or(diff_id).clone();
+    ids.fold(first, |chain, id| {
+        let hash: [u8; 32] = Sha256::digest(format!("{chain} {id}")).into();
+        Digest::from_sha256_bytes(&hash)
+    })
+}
+
 /// Extracts the layer blob `blob` (gzip, zstd or plain tar) into the store
-/// as `diff_id`, above `below` (the layers under it, in image order: the
-/// one right below last), unless the store has it already.
+/// above `below` (the layers under it, in image order: the one right below
+/// last), unless the store has it already.
 ///
-/// The store's per-digest lock keeps two builds from extracting one layer
-/// twice. The uncompressed tar must hash to `diff_id`, or nothing is
-/// published. A hardlink into a layer below is copied from `below` (Q-055);
-/// the stored layer then depends on the stack it was first extracted on,
-/// though the store keys it by diff ID alone [open: Q-150].
+/// The store keys the extraction by chain ID, as BuildKit and containerd
+/// key unpacked snapshots (ADR-0032, Q-150): a hardlink into a layer below
+/// is copied from `below` (Q-055), so what is extracted depends on the
+/// stack. The store's per-digest lock keeps two builds from extracting one
+/// layer twice. The uncompressed tar must hash to `diff_id`, or nothing is
+/// published.
 ///
 /// # Errors
 ///
@@ -97,7 +112,8 @@ pub(crate) fn extract_layer(
     blob: impl Read,
     below: &[LayerDir],
 ) -> Result<LayerDir> {
-    let path = store.fill(&EntryKey::Layer(diff_id.clone()), |tmp| -> Result<u64> {
+    let key = EntryKey::Layer(chain_id(diff_id, below));
+    let path = store.fill(&key, |tmp| -> Result<u64> {
         let root = tmp
             .root()
             .ok_or(Error::State("the store gave no directory for a layer"))?;

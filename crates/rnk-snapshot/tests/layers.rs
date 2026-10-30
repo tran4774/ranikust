@@ -199,3 +199,47 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
         .unwrap();
     assert_eq!(fs::read(l2.path().join("usr/b")).unwrap(), b"lower");
 }
+
+#[test]
+fn layers_are_keyed_by_chain_id() {
+    // As BuildKit and containerd (`cache/blobs.go`): a layer's extraction
+    // depends on the stack below it (a hardlink copied from a lower), so
+    // one diff ID on two stacks is extracted twice; a bottom layer's chain
+    // ID is its diff ID.
+    let (_dir, s) = snapshotter();
+    let (ta, ida) = Tar::new()
+        .entry("a", EntryType::Regular, 0o644, b"a")
+        .finish();
+    let (tb, idb) = Tar::new()
+        .entry("b", EntryType::Regular, 0o644, b"b")
+        .finish();
+    let (tc, idc) = Tar::new()
+        .entry("c", EntryType::Regular, 0o644, b"c")
+        .finish();
+    let a = s.base_layer(&ida, ta.as_slice(), &[]).unwrap();
+    assert!(
+        a.path().ends_with(ida.to_string().replace(':', "/")),
+        "{a:?}"
+    );
+    let b = s.base_layer(&idb, tb.as_slice(), &[]).unwrap();
+    let c_on_a = s
+        .base_layer(&idc, tc.as_slice(), std::slice::from_ref(&a))
+        .unwrap();
+    let c_on_b = s
+        .base_layer(&idc, tc.as_slice(), std::slice::from_ref(&b))
+        .unwrap();
+    assert_ne!(c_on_a.path(), c_on_b.path());
+    assert_eq!(c_on_a.diff_id(), &idc);
+    // ChainID(c on a) = sha256("<diff a> <diff c>") (OCI image spec).
+    let chain: [u8; 32] = Sha256::digest(format!("{ida} {idc}")).into();
+    let chain = Digest::from_sha256_bytes(&chain);
+    assert!(
+        c_on_a.path().ends_with(chain.to_string().replace(':', "/")),
+        "{c_on_a:?}"
+    );
+    // The same stack again reuses the extraction.
+    let again = s
+        .base_layer(&idc, &b"not a tar"[..], std::slice::from_ref(&a))
+        .unwrap();
+    assert_eq!(again.path(), c_on_a.path());
+}
