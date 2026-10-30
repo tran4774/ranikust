@@ -5,14 +5,14 @@
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, Permissions};
 use std::io::{self, Write as _};
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,6 +35,7 @@ use crate::error::{Error, Result, Step, io_err, sys_err};
 use crate::journal::{self, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
+use crate::seccomp;
 use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, SecretFile, Stdio};
 
 /// Runs `RUN` commands.
@@ -108,6 +109,15 @@ impl Sandbox {
         })
     }
 
+    /// Allows `--network=none` through a user namespace where the process
+    /// lacks `CAP_NET_ADMIN` (`--allow network.none-userns`, ADR-0033):
+    /// such `RUN`s join a network namespace a user namespace owns and run
+    /// under a seccomp filter. Without it they are refused. Call
+    /// before the first `RUN`.
+    pub fn allow_userns_network(&mut self) {
+        self.runner.userns_network = true;
+    }
+
     /// Cancels the build's `RUN`s: kills every one running with `SIGKILL`,
     /// as BuildKit does on a cancel, and makes every later [`Sandbox::run`]
     /// fail with [`Error::Cancelled`]. Stubs are cleaned up as after any
@@ -164,6 +174,9 @@ pub(crate) struct Job {
     /// `clone` flags, the exit signal included.
     flags: libc::c_long,
     isolation: Isolation,
+    /// Join a network namespace [`NetNs::create`] makes in its own user
+    /// namespace, instead of cloning one (ADR-0033).
+    hold_network: bool,
     /// Descriptors the child uses (the caller's stdio, mount sources), open
     /// until the clone and closed right after, so that only the child holds
     /// them.
@@ -180,6 +193,8 @@ pub(crate) struct Spawned {
     pid: Pid,
     /// Read end of the error pipe: end-of-file once `execve` succeeded.
     failures: OwnedFd,
+    /// The network namespace the child joined, closed once it is reaped.
+    netns: Option<NetNs>,
 }
 
 /// This process's pid as `/proc` numbers it: the parent pid its children
@@ -222,14 +237,25 @@ fn spawner(requests: &mpsc::Receiver<Request>, parent: ParentPid) {
 /// thread for `PR_SET_PDEATHSIG`.
 pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let Job {
-        args,
+        mut args,
         flags,
         isolation,
+        hold_network,
         fds: keep,
     } = job;
     let (failures, err_w) =
         rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
     let err_w = above_stdio(err_w)?;
+    // Last before the clone: nothing can fail between it and the clone
+    // without ending it.
+    let netns = if hold_network {
+        let ns =
+            NetNs::create(true).map_err(|e| sys_err("create the RUN's network namespace", e))?;
+        args.netns = Some(ns.fd.as_raw_fd());
+        Some(ns)
+    } else {
+        None
+    };
     let ptrs = ExecPtrs::new(&args);
     let fds = ChildFds {
         err_w: err_w.as_raw_fd(),
@@ -255,6 +281,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     drop(keep);
     if ret < 0 {
         let e = io::Error::last_os_error();
+        drop(netns);
         return Err(match e.raw_os_error() {
             Some(libc::EPERM) => Error::Privilege("creating the RUN namespaces"),
             _ => sys_err("clone", e),
@@ -265,7 +292,233 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
         .and_then(Pid::from_raw)
         .ok_or_else(|| sys_err("clone", io::Error::from(io::ErrorKind::InvalidData)))?;
     drop(err_w);
-    Ok(Spawned { pid, failures })
+    Ok(Spawned {
+        pid,
+        failures,
+        netns,
+    })
+}
+
+/// A network namespace for `--network=none` without `CAP_NET_ADMIN`
+/// (ADR-0033): a descriptor of it, which keeps it alive, made by a helper
+/// ([`child::create_network`]) that has exited. The `RUN` child joins it
+/// with `setns`.
+#[derive(Debug)]
+pub(crate) struct NetNs {
+    fd: OwnedFd,
+}
+
+/// `NSFS_MAGIC`: the file system of `/proc/<pid>/ns/*`.
+const NSFS_MAGIC: i64 = 0x6e73_6673;
+
+impl NetNs {
+    /// A new network namespace with `lo` up: in a new user namespace with
+    /// `userns`, else in the caller's (the probe).
+    fn create(userns: bool) -> io::Result<Self> {
+        let me = rustix::process::getpid().as_raw_nonzero().get();
+        let fd = run_helper(|chan| {
+            // SAFETY: the child of the helper's clone, right after it.
+            unsafe { child::create_network(chan, me, userns) }
+        })?
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        // A namespace descriptor, not something else the helper opened.
+        let st = rustix::fs::fstatfs(&fd)?;
+        #[allow(
+            clippy::useless_conversion,
+            reason = "f_type's integer type differs between targets"
+        )]
+        let fs_type = i64::from(st.f_type);
+        if fs_type != NSFS_MAGIC {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        // A new namespace, not this process's own.
+        let own = rustix::fs::open(
+            "/proc/self/ns/net",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let (new, mine) = (rustix::fs::fstat(&fd)?, rustix::fs::fstat(&own)?);
+        if (new.st_dev, new.st_ino) == (mine.st_dev, mine.st_ino) {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        Ok(Self { fd })
+    }
+
+    /// Whether a child can join this namespace, as the `RUN` child will: a
+    /// helper that joins it and exits.
+    fn check_join(&self) -> io::Result<()> {
+        let ns = self.fd.as_raw_fd();
+        run_helper(|chan| {
+            // SAFETY: the child of the helper's clone, right after it.
+            unsafe { child::try_join(chan, ns) }
+        })
+        .map(drop)
+    }
+}
+
+/// Clones a helper running `body` (which never returns) with its end of a
+/// close-on-exec `SOCK_SEQPACKET` pair, waits for its one message, then
+/// kills (it has nothing left to do) and reaps it. The message is
+/// [`child::READY`], with the descriptor it sent if any, or an 8-byte
+/// failure record, whose errno is returned; end-of-file (a helper killed
+/// early) is an error, never readiness.
+fn run_helper(body: impl FnOnce(RawFd)) -> io::Result<Option<OwnedFd>> {
+    let mut pair = [-1; 2];
+    // SAFETY: `socketpair` writes two descriptors into `pair`, owned below.
+    if unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+            0,
+            pair.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: both are new descriptors this function owns.
+    let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1])) };
+    let theirs = above_stdio(theirs).map_err(|_| io::Error::from_raw_os_error(libc::EMFILE))?;
+    let null: libc::c_long = 0;
+    // SAFETY: as in `clone_child`: a `fork`-like clone; the child only makes
+    // plain syscalls and never returns from `body`.
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_clone,
+            libc::c_long::from(libc::SIGCHLD),
+            null,
+            null,
+            null,
+            null,
+        )
+    };
+    if ret == 0 {
+        body(theirs.as_raw_fd());
+        // SAFETY: `body` does not return; `_exit` if it ever did.
+        unsafe { libc::_exit(127) }
+    }
+    drop(theirs);
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let pid = i32::try_from(ret)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    let answer = receive(&ours);
+    // Not reaped yet: the pid is the helper's. Done or failed, it has
+    // nothing left to do.
+    let _ = rustix::process::kill_process(pid, Signal::KILL);
+    reap_helper(pid);
+    answer
+}
+
+/// Receives a helper's message on `chan`: see [`run_helper`].
+fn receive(chan: &OwnedFd) -> io::Result<Option<OwnedFd>> {
+    let mut data = [0u8; 8];
+    let mut control = [0u64; 4];
+    // SAFETY: `msghdr` and `iovec` are plain integers and pointers; all-zero
+    // is valid. The pointers refer to `data` and `control`, which live
+    // across `recvmsg`; the `CMSG_*` helpers walk only `control`.
+    unsafe {
+        let mut iov = libc::iovec {
+            iov_base: data.as_mut_ptr().cast(),
+            iov_len: data.len(),
+        };
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = size_of_val(&control) as _;
+        let n = loop {
+            let n = libc::recvmsg(chan.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC);
+            if n >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                break n;
+            }
+        };
+        // Every descriptor received, owned at once so that none leaks.
+        let mut fds = Vec::new();
+        let mut cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                let data = libc::CMSG_DATA(cmsg).cast::<libc::c_int>();
+                let len = (*cmsg).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
+                for i in 0..len / size_of::<libc::c_int>() {
+                    fds.push(OwnedFd::from_raw_fd(data.add(i).read_unaligned()));
+                }
+            }
+            cmsg = libc::CMSG_NXTHDR(&raw const msg, cmsg);
+        }
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if msg.msg_flags & libc::MSG_CTRUNC != 0 || fds.len() > 1 {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        match (n, data) {
+            (1, [child::READY, ..]) => Ok(fds.pop()),
+            (8, record) => match child::decode_failure(record) {
+                Some((_, errno)) => Err(io::Error::from_raw_os_error(errno)),
+                None => Err(io::Error::from(io::ErrorKind::InvalidData)),
+            },
+            _ => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+        }
+    }
+}
+
+/// Reaps a helper process.
+fn reap_helper(pid: Pid) {
+    loop {
+        match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
+            Err(Errno::INTR) => {}
+            // Reaped, or not a child any more: nothing else to do.
+            _ => return,
+        }
+    }
+}
+
+/// How a `--network=none` `RUN` gets a network namespace with loopback up,
+/// found once by [`probe_network`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NetMode {
+    /// The clone creates it and the child brings up `lo`: the process has
+    /// `CAP_NET_ADMIN`.
+    Clone,
+    /// [`NetNs::create`] makes it in a user namespace of its own, and the
+    /// child runs under [`crate::seccomp::userns_network`] (ADR-0033).
+    UserNs,
+    /// The process lacks `CAP_NET_ADMIN` and the user-namespace path is not
+    /// allowed: the errno of the attempt without it.
+    NotAllowed { direct: i32 },
+    /// Allowed, but neither works: the errnos of the two attempts.
+    Unavailable { direct: i32, userns: i32 },
+}
+
+/// Tries a network namespace with `lo` up without a user namespace, then,
+/// when `userns` allows it, with one (and a child joining it), as the `RUN`
+/// child would.
+fn probe_network(userns: bool) -> NetMode {
+    let direct = match NetNs::create(false) {
+        Ok(_) => return NetMode::Clone,
+        Err(e) => e.raw_os_error().unwrap_or(libc::EIO),
+    };
+    if !userns {
+        return NetMode::NotAllowed { direct };
+    }
+    if seccomp::userns_network().is_none() {
+        return NetMode::Unavailable {
+            direct,
+            userns: libc::ENOSYS,
+        };
+    }
+    let held = NetNs::create(true).and_then(|ns| ns.check_join());
+    match held {
+        Ok(()) => NetMode::UserNs,
+        Err(e) => NetMode::Unavailable {
+            direct,
+            userns: e.raw_os_error().unwrap_or(libc::EIO),
+        },
+    }
 }
 
 /// Prepares, runs and cleans up `RUN`s; the cloning is the caller's.
@@ -279,6 +532,11 @@ pub(crate) struct Runner {
     root_entry: Option<RootEntry>,
     drops: ([u32; 64], usize),
     next: AtomicU64,
+    /// Found at the first `--network=none` `RUN`.
+    net_mode: OnceLock<NetMode>,
+    /// `--allow network.none-userns`: without `CAP_NET_ADMIN`, the
+    /// user-namespace path of [`NetMode::UserNs`] (ADR-0033).
+    userns_network: bool,
 }
 
 impl Runner {
@@ -295,6 +553,8 @@ impl Runner {
             root_entry,
             drops: caps::bounding_drops(caps::last_cap()),
             next: AtomicU64::new(0),
+            net_mode: OnceLock::new(),
+            userns_network: false,
         })
     }
 
@@ -304,6 +564,14 @@ impl Runner {
 
     pub(crate) fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    /// Makes `--network=none` use a [`NetNs`] whatever the probe would
+    /// find: the path of an environment without `CAP_NET_ADMIN`, tested
+    /// where the process has it.
+    #[cfg(test)]
+    pub(crate) fn hold_networks(&self) {
+        let _ = self.net_mode.set(NetMode::UserNs);
     }
 
     /// Runs `spec`, cloning through `spawn`. With `running` (a
@@ -457,6 +725,44 @@ impl Runner {
             }
             (Some(dir), false) => Some(child_secrets(dir, &spec.secrets)?),
         };
+        let mut flags = clone_flags(spec);
+        let mut loopback = false;
+        let mut hold_network = false;
+        if spec.isolation == Isolation::Full && spec.network == Network::None {
+            match *self
+                .net_mode
+                .get_or_init(|| probe_network(self.userns_network))
+            {
+                NetMode::Clone => loopback = true,
+                NetMode::UserNs => {
+                    flags &= !libc::CLONE_NEWNET;
+                    hold_network = true;
+                }
+                NetMode::NotAllowed { direct } => {
+                    return Err(Error::NoLoopback {
+                        source: io::Error::from_raw_os_error(direct),
+                    });
+                }
+                NetMode::Unavailable { direct, userns } => {
+                    return Err(Error::NoLoopbackUserns {
+                        direct: io::Error::from_raw_os_error(direct),
+                        userns: io::Error::from_raw_os_error(userns),
+                    });
+                }
+            }
+        }
+        // A `RUN` in a user namespace's network namespace never runs
+        // without its filter.
+        let seccomp = if hold_network {
+            Some(
+                seccomp::userns_network().ok_or_else(|| Error::NoLoopbackUserns {
+                    direct: io::Error::from_raw_os_error(libc::EPERM),
+                    userns: io::Error::from_raw_os_error(libc::ENOSYS),
+                })?,
+            )
+        } else {
+            None
+        };
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
@@ -465,7 +771,10 @@ impl Runner {
             dev_remount,
             root_entry,
             hostname: hostname(spec).as_bytes().to_vec(),
-            loopback: spec.network == Network::None,
+            loopback,
+            netns: None,
+            // Only with a `NetNs`; `probe_network` checked it exists.
+            seccomp,
             drops: self.drops,
             keep: caps::docker_default_mask(),
             uid: Uid::from_raw(user.uid),
@@ -484,8 +793,9 @@ impl Runner {
         };
         Ok(Job {
             args,
-            flags: libc::c_long::from(clone_flags(spec)),
+            flags: libc::c_long::from(flags),
             isolation: spec.isolation,
+            hold_network,
             fds: keep,
         })
     }
@@ -788,7 +1098,11 @@ fn execute(
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
     }
-    let Spawned { pid, failures } = spawn(job)?;
+    let Spawned {
+        pid,
+        failures,
+        netns,
+    } = spawn(job)?;
     if let Some(r) = running {
         r.add(pid, isolation);
     }
@@ -818,7 +1132,10 @@ fn execute(
         // kills the rest.
         (r, _) => r,
     };
-    let (status, usage) = reap(pid)?;
+    let reaped = reap(pid);
+    // The child is reaped: its namespace can end with this descriptor.
+    drop(netns);
+    let (status, usage) = reaped?;
     killed?;
     if cancelled {
         return Err(Error::Cancelled);
@@ -932,6 +1249,72 @@ fn timeval_ns(t: libc::timeval) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The inode of the network namespace `fd` refers to.
+    fn ns_inode(fd: &OwnedFd) -> u64 {
+        rustix::fs::fstat(fd).unwrap().st_ino
+    }
+
+    /// A namespace in a user namespace of its own: unprivileged where the
+    /// host allows user namespaces, skipped where it does not. The helper
+    /// is gone; the descriptor alone keeps the namespace.
+    #[test]
+    fn a_created_network_namespace_outlives_its_helper() {
+        let ns = match NetNs::create(true) {
+            Ok(ns) => ns,
+            Err(e) => {
+                eprintln!("skipped: no user namespace here ({e})");
+                return;
+            }
+        };
+        let mine = rustix::fs::open(
+            "/proc/self/ns/net",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        assert_ne!(ns_inode(&ns.fd), ns_inode(&mine));
+    }
+
+    /// Joins `ns` in a forked child and reports whether `lo` is up there:
+    /// its `127.0.0.1` local route exists only then.
+    fn loopback_is_up_in(ns: &NetNs) -> bool {
+        let fd = ns.fd.as_raw_fd();
+        // SAFETY: the child only makes syscalls on stack buffers and exits
+        // with `_exit`.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: as above.
+            unsafe {
+                if libc::setns(fd, libc::CLONE_NEWNET) != 0 {
+                    libc::_exit(2);
+                }
+                let f = libc::open(c"/proc/self/net/fib_trie".as_ptr(), libc::O_RDONLY);
+                let mut buf = [0u8; 8192];
+                let n = libc::read(f, buf.as_mut_ptr().cast(), buf.len());
+                let n = usize::try_from(n).unwrap_or(0);
+                let up = buf[..n].windows(9).any(|w| w == b"127.0.0.1");
+                libc::_exit(if up { 0 } else { 1 });
+            }
+        }
+        let mut status = 0;
+        // SAFETY: reaping the child forked above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
+    }
+
+    #[test]
+    #[ignore = "T2: creates network namespaces; run as root in the test VM only"]
+    fn root_brings_up_loopback_itself_and_in_a_user_namespace() {
+        assert_eq!(probe_network(false), NetMode::Clone);
+        assert_eq!(probe_network(true), NetMode::Clone);
+        let ns = NetNs::create(true).unwrap();
+        ns.check_join().unwrap();
+        assert!(loopback_is_up_in(&ns));
+        let plain = NetNs::create(false).unwrap();
+        assert!(loopback_is_up_in(&plain));
+    }
 
     #[test]
     fn a_symlinked_sandbox_or_runs_directory_is_refused() {

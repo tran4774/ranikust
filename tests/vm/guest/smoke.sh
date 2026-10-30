@@ -96,19 +96,62 @@ e2e() {
     log="$(sudo "$RNK" "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
   else
     smoke_e2e_args /ctx /tmp/w /out /token
-    # `RUN --network=none` brings up loopback in a new network namespace,
-    # which needs CAP_NET_ADMIN: Docker's defaults lack it [open: Q-183].
-    local net=()
-    [ "$name" = sysadmin ] && net=(--cap-add NET_ADMIN)
+    # No CAP_NET_ADMIN in `sysadmin`: `RUN --network=none` gets loopback
+    # through a network namespace in a user namespace, an opt-in (ADR-0033).
+    local allow=()
+    [ "$name" = sysadmin ] && allow=(--allow network.none-userns)
     # shellcheck disable=SC2046
-    log="$(sudo docker run --rm $(docker_args "$name") "${net[@]}" -v "$RNK:/ranikust:ro" \
+    log="$(sudo docker run --rm $(docker_args "$name") -v "$RNK:/ranikust:ro" \
       -v "$CTX:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" -v "$W/token:/token:ro" \
-      "$IMAGE" /ranikust "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
+      "$IMAGE" /ranikust "${e2e_args[@]}" "${allow[@]}" "$@" 2>&1)" || rc=$?
   fi
   echo "$log" | sudo tee -a "$W/$name/e2e.log" >&2
   smoke_check_build "$log" "$syscall" "$rc" >&2 || return 1
   smoke_digest "$log"
 }
+# `sysadmin` lacks CAP_NET_ADMIN (ADR-0033). Without `--allow
+# network.none-userns`, a `RUN --network=none` is refused, naming the flag.
+# With it, the RUN's root cannot join the user namespace that owns its
+# network namespace or create one, and is refused x_tables, PF_KEY, TCP
+# repair and nf_tables or xfrm netlink (tests/smoke/netns-check.py), while
+# loopback, rtnetlink and audit netlink work (shadow's useradd).
+netns_checks() {
+  local d="$W/sysadmin/netns" rc=0 log
+  # x_tables and PF_KEY loaded, so that their checks reach the kernel's
+  # code rather than a missing module.
+  sudo modprobe -a ip_tables ip6_tables af_key || true
+  sudo rm -rf "$d" && sudo mkdir -m 700 -p "$d/ctx" "$d/w" "$d/out"
+  printf 'FROM %s\nRUN --network=none true\n' "$IMAGE" | sudo tee "$d/ctx/Dockerfile" >/dev/null
+  # shellcheck disable=SC2046
+  log="$(sudo docker run --rm $(docker_args sysadmin) -v "$RNK:/ranikust:ro" \
+    -v "$d/ctx:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" \
+    "$IMAGE" /ranikust --context /ctx --no-push --workdir /tmp/w 2>&1)" || rc=$?
+  echo "$log" | sudo tee "$d/refused.log" >/dev/null
+  if [ "$rc" = 0 ] || ! grep -q -- '--allow network.none-userns' <<<"$log"; then
+    echo "error: sysadmin: RUN --network=none without the opt-in: expected a refusal naming it, got $rc:" >&2
+    echo "$log" >&2
+    exit 1
+  fi
+  echo "sysadmin: RUN --network=none refused without --allow network.none-userns, as expected"
+  sudo cp "$HOME/rnk/guest/netns-check.py" "$d/ctx/check.py"
+  printf 'FROM %s\nRUN apk add --no-cache shadow\nCOPY check.py /check.py\nRUN --network=none python3 /check.py\nRUN --network=none useradd -m tester && id tester\n' "$IMAGE" |
+    sudo tee "$d/ctx/Dockerfile" >/dev/null
+  rc=0
+  # shellcheck disable=SC2046
+  log="$(sudo docker run --rm $(docker_args sysadmin) -v "$RNK:/ranikust:ro" \
+    -v "$d/ctx:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" \
+    "$IMAGE" /ranikust --context /ctx --no-push --workdir /tmp/w \
+    --allow network.none-userns 2>&1)" || rc=$?
+  echo "$log" | sudo tee "$d/allowed.log" >/dev/null
+  if [ "$rc" != 0 ] || ! grep -q '^netns checks: ok' <<<"$log"; then
+    echo "error: sysadmin: the user-namespace RUN checks failed ($rc):" >&2
+    echo "$log" >&2
+    exit 1
+  fi
+  grep -E '^NS_GET_USERNS ' <<<"$log" || true
+  echo "sysadmin: with --allow network.none-userns, loopback is up, the filter refuses what it closes, and useradd works"
+}
+
 trap 'sudo rm -f "$MARKER"' EXIT
 domainname_before="$(cat /proc/sys/kernel/domainname)"
 
@@ -140,6 +183,7 @@ for v in "${VARIANTS[@]}"; do
   # The real binary builds tests/smoke/e2e in the same environment.
   case "$entry" in PivotRoot) syscall=pivot_root ;; MoveMount) syscall=MS_MOVE ;; esac
   e2e "$name" "$syscall" >/dev/null
+  [ "$name" = sysadmin ] && netns_checks
   sudo bash -c "$(declare -f smoke_check_no_stub_leak smoke_check_no_secret smoke_check_empty_layer); \
     smoke_check_no_stub_leak '$dir/e2e/out/oci' && \
     smoke_check_no_secret '$dir/e2e/out/oci' '$SMOKE_E2E_SECRET' && \

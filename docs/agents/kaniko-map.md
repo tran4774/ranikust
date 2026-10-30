@@ -187,7 +187,9 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
     sockets become empty files and `--chmod` takes symbolic modes (Q-120).
   - `--secret` takes `type=env`; a secret is a private `0400` file
     (Q-022, Q-182); cache `sharing=` is enforced (Q-181);
-    `RUN --network=host` needs `--allow network.host` (Q-184); a cancel
+    `RUN --network=host` needs `--allow network.host` (Q-184); without
+    `CAP_NET_ADMIN`, `RUN --network=none` needs `--allow
+    network.none-userns` (ADR-0033, ranikust's own); a cancel
     kills a running `RUN` (Q-186).
 
   The code for these lands in follow-up branches; until then the interims

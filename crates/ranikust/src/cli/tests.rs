@@ -278,6 +278,10 @@ fn allow_takes_buildkit_entitlements() {
         parse_entitlement("network.host").unwrap(),
         Entitlement::NetworkHost
     );
+    assert_eq!(
+        parse_entitlement("network.none-userns").unwrap(),
+        Entitlement::NetworkNoneUserns
+    );
     assert!(parse_entitlement("security.insecure").is_err());
     assert!(parse_entitlement("network").is_err());
 }

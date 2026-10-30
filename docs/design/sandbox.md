@@ -48,6 +48,33 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 `CLONE_NEWIPC`, plus `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`, plus
 `CLONE_NEWNET` for `--network=none`.
 
+`--network=none` needs `lo` up, which needs `CAP_NET_ADMIN` over the new
+network namespace. The first such `RUN` probes it once
+([ADR-0033](../adr/0033-network-none-loopback-through-a-user-namespace.md)):
+where the build process can bring `lo` up in a namespace of its own (root
+on a host, `--privileged`, rootless podman), the clone creates the network
+namespace and the child brings `lo` up after entering the root, as before.
+Where it cannot (Docker's default capabilities plus `SYS_ADMIN`), the `RUN`
+is refused, naming `--allow network.none-userns`. With that opt-in, a
+helper process creates a user namespace and a network namespace owned by
+it, brings `lo` up there, sends a descriptor of the namespace over a
+close-on-exec socket pair (`SCM_RIGHTS`) and exits; the descriptor keeps
+the namespace alive until the `RUN` is reaped. The child is cloned without
+`CLONE_NEWNET` and joins that namespace with `setns` as its first step,
+before any mount, so `sysfs` shows it. The child stays in the build's
+user namespace with its uid, gid and capabilities, but as root it holds
+every capability in the helper's user namespace (its owner is uid 0):
+after every mount and before the capability drop it installs a seccomp
+filter. The filter refuses `setns`, `unshare`/`clone` with
+`CLONE_NEWUSER`, `io_uring`, `socket(AF_KEY)`, the x_tables, arp_tables,
+ebtables, IPVS, IPsec-policy and multicast-routing options of
+`setsockopt`/`getsockopt` at `SOL_IP` and `SOL_IPV6` (`IPV6_RECVTCLASS`
+and `IPV6_TCLASS`, which share ip6_tables' numbers, stay open), `TCP_REPAIR`, and
+syscalls of another architecture with `EPERM`; netlink other than route,
+sock_diag, audit and uevent with `EPROTONOSUPPORT`; `clone3` with `ENOSYS`.
+Every other interface `CAP_NET_ADMIN` opens over that namespace stays open,
+rtnetlink first; the ADR lists them as residual risk.
+
 1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check that the parent process
    did not die before: `getppid()` is 0 in a new PID namespace, so the child
    reads the parent pid in its own `/proc/self/stat` of the outer procfs,

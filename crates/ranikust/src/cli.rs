@@ -204,7 +204,9 @@ pub(crate) struct BuildArgs {
     pub(crate) secrets: Vec<SecretArg>,
 
     /// Grants an entitlement, as buildctl's `--allow`: `network.host` lets a
-    /// `RUN --network=host` lift `--network=none`. Repeat for several.
+    /// `RUN --network=host` lift `--network=none`; `network.none-userns`
+    /// lets a `RUN --network=none` get loopback through a user namespace
+    /// where ranikust lacks `CAP_NET_ADMIN` (ADR-0033). Repeat for several.
     #[arg(
         long = "allow",
         value_name = "ENTITLEMENT",
@@ -471,6 +473,10 @@ fn parse_secret(value: &str) -> Result<SecretArg, String> {
 pub(crate) enum Entitlement {
     /// `network.host`: a `RUN --network=host` may lift `--network=none`.
     NetworkHost,
+    /// `network.none-userns`: without `CAP_NET_ADMIN`, a `RUN
+    /// --network=none` gets loopback in a network namespace a user namespace
+    /// owns, under a seccomp filter (ADR-0033). ranikust's own.
+    NetworkNoneUserns,
 }
 
 /// An `--allow` value. BuildKit's other entitlements (`security.insecure`,
@@ -478,10 +484,13 @@ pub(crate) enum Entitlement {
 fn parse_entitlement(value: &str) -> Result<Entitlement, String> {
     match value {
         "network.host" => Ok(Entitlement::NetworkHost),
+        "network.none-userns" => Ok(Entitlement::NetworkNoneUserns),
         "security.insecure" | "device" => Err(format!(
             "--allow {value}: the RUN options it unlocks are not supported"
         )),
-        _ => Err(format!("unknown entitlement {value:?} (network.host)")),
+        _ => Err(format!(
+            "unknown entitlement {value:?} (network.host, network.none-userns)"
+        )),
     }
 }
 

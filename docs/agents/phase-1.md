@@ -154,11 +154,13 @@ Settled by following BuildKit
 ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): the
 config, history, `COPY`, `RUN --mount` and registry questions; the code
 changes land in follow-up branches. Escalated to the maintainer under that
-rule: `RUN --network=none` without `CAP_NET_ADMIN`
-([Q-183](../open-questions.md#q-183-what-does-run---networknone-do-without-cap_net_admin)),
-remote repository contexts (Q-045, Phase 5, since decided in
-[ADR-0035](../adr/0035-git-contexts-built-in-or-external-git.md)) and filtering unchanged
-copied-up files (Q-049, settled by ADR-0034: BuildKit's full rule).
+rule: `RUN --network=none` without `CAP_NET_ADMIN` (Q-183, answered in
+[ADR-0033](../adr/0033-network-none-loopback-through-a-user-namespace.md):
+refused, or with `--allow network.none-userns` a network namespace in a
+user namespace under seccomp), remote repository contexts (Q-045, Phase 5,
+since decided in [ADR-0035](../adr/0035-git-contexts-built-in-or-external-git.md))
+and filtering unchanged copied-up files (Q-049, settled by ADR-0034:
+BuildKit's full rule).
 
 Every open question, in task order, is in
 [open-questions.md](../open-questions.md#open).

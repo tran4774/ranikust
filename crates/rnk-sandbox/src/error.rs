@@ -81,10 +81,17 @@ pub enum Step {
     SessionKeyring,
     /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
     Secret,
+    /// Creating the network namespace of `--network=none` in the helper
+    /// that holds it, with its own user namespace where needed.
+    NetNamespace,
+    /// Joining that network namespace.
+    JoinNetwork,
+    /// Installing the seccomp filter of a `RUN` in such a namespace.
+    Seccomp,
 }
 
 impl Step {
-    const ALL: [Step; 34] = [
+    const ALL: [Step; 37] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -119,6 +126,9 @@ impl Step {
         Step::MaskPath,
         Step::SessionKeyring,
         Step::Secret,
+        Step::NetNamespace,
+        Step::JoinNetwork,
+        Step::Seccomp,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -173,6 +183,9 @@ impl Step {
             Step::MaskPath => "mask a /proc or /sys path",
             Step::SessionKeyring => "join a new session keyring",
             Step::Secret => "write and bind a secret file",
+            Step::NetNamespace => "create the network namespace",
+            Step::JoinNetwork => "join the network namespace",
+            Step::Seccomp => "install the seccomp filter",
         }
     }
 }
@@ -227,6 +240,33 @@ pub enum Error {
          bind-mount the chroot directory onto itself before entering it"
     )]
     InPlainChroot,
+    /// `RUN --network=none` cannot bring up loopback: the process lacks
+    /// `CAP_NET_ADMIN` over a new network namespace, and the user-namespace
+    /// path is not allowed (ADR-0033).
+    #[error(
+        "RUN --network=none: cannot bring up the loopback interface without \
+         CAP_NET_ADMIN ({source}); give ranikust CAP_NET_ADMIN, or pass \
+         --allow network.none-userns to use a user namespace under a seccomp \
+         filter (ADR-0033)"
+    )]
+    NoLoopback {
+        /// Why the network namespace failed without a user namespace.
+        source: io::Error,
+    },
+    /// `RUN --network=none` cannot bring up loopback, with
+    /// `--allow network.none-userns` either: user namespaces, or joining one
+    /// by `setns`, are denied (ADR-0033).
+    #[error(
+        "RUN --network=none: cannot bring up the loopback interface: without \
+         CAP_NET_ADMIN ({direct}), and through a user namespace ({userns}); \
+         give ranikust CAP_NET_ADMIN, or allow user namespaces"
+    )]
+    NoLoopbackUserns {
+        /// Why the network namespace failed without a user namespace.
+        direct: io::Error,
+        /// Why the user-namespace path failed.
+        userns: io::Error,
+    },
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,

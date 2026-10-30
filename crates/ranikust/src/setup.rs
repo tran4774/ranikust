@@ -103,12 +103,17 @@ const UNSAFE_STATE_DIR: &str = "the state directory and the workdir above it mus
 /// `rnk-sandbox` and `rnk-snapshot`, the outcome, then the spawner thread.
 /// Before the spawner, the only other thread is the overlay probe's
 /// `mount(2)` attempt, which it joins: the process is single-threaded
-/// again when the spawner starts.
+/// again when the spawner starts. `userns_network` is `--allow
+/// network.none-userns` (ADR-0033).
 ///
 /// # Errors
 ///
 /// A [`Refusal`] naming what failed and what to do instead.
-pub(crate) fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal> {
+pub(crate) fn set_up(
+    state_dir: &Path,
+    workdir: Option<&Path>,
+    userns_network: bool,
+) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     // Workdir checks (Q-011) come first, once designed.
     rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))?;
@@ -135,10 +140,13 @@ pub(crate) fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, 
     };
     tracing::info!("ranikust: {outcome}");
     let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
-    let sandbox = Sandbox::start(Some(caps), &sandbox_dir).map_err(|e| Refusal {
+    let mut sandbox = Sandbox::start(Some(caps), &sandbox_dir).map_err(|e| Refusal {
         reason: e.to_string(),
         guidance: "",
     })?;
+    if userns_network {
+        sandbox.allow_userns_network();
+    }
     Ok(Setup {
         outcome,
         state_dir: state_dir.to_path_buf(),

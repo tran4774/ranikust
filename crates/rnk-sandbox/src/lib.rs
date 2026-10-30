@@ -42,6 +42,7 @@ mod error;
 mod journal;
 mod plan;
 mod probe;
+mod seccomp;
 mod setup;
 mod spawner;
 mod spec;

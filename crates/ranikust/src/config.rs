@@ -116,6 +116,8 @@ pub(crate) struct BuildConfig {
     pub(crate) secrets: Vec<(String, rnk_builder::Secret)>,
     /// `--allow network.host`.
     pub(crate) allow_network_host: bool,
+    /// `--allow network.none-userns` (ADR-0033).
+    pub(crate) allow_network_none_userns: bool,
 }
 
 /// Where a `--secret` comes from, as BuildKit's secrets store
@@ -204,6 +206,9 @@ impl BuildConfig {
             network: args.network,
             secrets: args.secrets.iter().map(secret).collect(),
             allow_network_host: args.allow.contains(&crate::cli::Entitlement::NetworkHost),
+            allow_network_none_userns: args
+                .allow
+                .contains(&crate::cli::Entitlement::NetworkNoneUserns),
         })
     }
 

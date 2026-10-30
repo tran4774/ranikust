@@ -126,7 +126,16 @@ pub(crate) struct ChildArgs {
     pub(crate) dev_remount: [MountFlags; DEV_NODES.len()],
     pub(crate) root_entry: RootEntry,
     pub(crate) hostname: Vec<u8>,
+    /// Bring up `lo` in the network namespace the clone created
+    /// (`--network=none` where the process has `CAP_NET_ADMIN`).
     pub(crate) loopback: bool,
+    /// A descriptor of the network namespace [`create_network`] made, owned
+    /// by a user namespace and with `lo` already up, which the child joins
+    /// instead (`--network=none` without `CAP_NET_ADMIN`, ADR-0033).
+    pub(crate) netns: Option<RawFd>,
+    /// The seccomp filter installed before the capability drop: with
+    /// `netns`, [`crate::seccomp::userns_network`].
+    pub(crate) seccomp: Option<Vec<libc::sock_filter>>,
     /// Capabilities to drop from the bounding set, and how many.
     pub(crate) drops: ([u32; 64], usize),
     /// The capabilities kept (Docker's defaults), as a mask.
@@ -277,6 +286,14 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     let err = fds.err_w;
     let parent = ParentCheck::open(err, fds.parent);
     arm_death_signal(err, parent);
+    // First, so that `sysfs` below is mounted for this namespace.
+    if let Some(fd) = args.netns {
+        // SAFETY: `setns` on a namespace descriptor the parent keeps open
+        // across the clone.
+        if unsafe { libc::setns(fd, libc::CLONE_NEWNET) } != 0 {
+            fail(err, Step::JoinNetwork, last_errno());
+        }
+    }
 
     // Nothing mounted from here on propagates to the build's namespace.
     check(
@@ -352,6 +369,11 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     let _ = rustix::system::sethostname(&args.hostname);
     if args.loopback {
         loopback_up(err);
+    }
+    // After the namespace is joined and every mount made, which the filter
+    // would refuse.
+    if let Some(f) = &args.seccomp {
+        install_filter(err, f);
     }
 
     drop_capabilities(err, args);
@@ -902,6 +924,213 @@ fn loopback_up(err: RawFd) {
     }
 }
 
+/// The byte a [`create_network`] or [`try_join`] helper sends when it is
+/// ready: anything else, end-of-file included, is a failure.
+pub(crate) const READY: u8 = b'R';
+
+/// The helper that creates the network namespace of a `--network=none`
+/// `RUN` without `CAP_NET_ADMIN`, under `--allow network.none-userns`
+/// (ADR-0033): it creates a user namespace and a network namespace owned by
+/// it, where it has `CAP_NET_ADMIN`, brings up `lo`, sends [`READY`] with a
+/// descriptor of the namespace (`/proc/self/ns/net`) on `chan`, a
+/// `SOCK_SEQPACKET` socket, and exits: the descriptor keeps the namespace
+/// alive. The `RUN` child joins it with `setns` and stays in the build's
+/// user namespace, under the filter of [`crate::seccomp`]. With `userns`
+/// false it creates the network namespace alone: the probe that tells
+/// whether the clone can do it itself.
+///
+/// # Safety
+///
+/// Call only in the child of a `clone` without `CLONE_VM`, right after it
+/// returned 0: everything here is a plain syscall, with no allocation.
+pub(crate) unsafe fn create_network(chan: RawFd, parent: i32, userns: bool) -> ! {
+    check(
+        chan,
+        Step::DeathSignal,
+        rustix::process::set_parent_process_death_signal(Some(Signal::KILL)),
+    );
+    // Not in a new PID namespace: `getppid` is the cloning process, unless it
+    // died before the signal was armed.
+    if rustix::process::getppid().map_or(0, |p| p.as_raw_nonzero().get()) != parent {
+        fail(chan, Step::ParentGone, Errno::SRCH);
+    }
+    // A forked copy of every descriptor of the build, stdio included:
+    // closed, so that the helper holds no lock, pipe end or terminal of it.
+    close_all_but(chan);
+    let mut flags = libc::CLONE_NEWNET;
+    if userns {
+        flags |= libc::CLONE_NEWUSER;
+    }
+    // SAFETY: plain syscall; the process is single-threaded (a clone).
+    if unsafe { libc::unshare(flags) } != 0 {
+        fail(chan, Step::NetNamespace, last_errno());
+    }
+    loopback_up(chan);
+    let ns = check(
+        chan,
+        Step::NetNamespace,
+        rustix::fs::openat(
+            CWD,
+            c"/proc/self/ns/net",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ),
+    );
+    send_ready(chan, Some(ns.as_raw_fd()));
+    // SAFETY: `_exit` without handlers, as in `fail`.
+    unsafe { libc::_exit(0) }
+}
+
+/// Joins the network namespace `ns` (from [`create_network`]), then exits:
+/// the probe's check that a child can, as the `RUN` child will need.
+///
+/// # Safety
+///
+/// As [`create_network`].
+pub(crate) unsafe fn try_join(chan: RawFd, ns: RawFd) -> ! {
+    // SAFETY: `setns` on a namespace descriptor the parent keeps open
+    // across the clone.
+    if unsafe { libc::setns(ns, libc::CLONE_NEWNET) } != 0 {
+        fail(chan, Step::JoinNetwork, last_errno());
+    }
+    send_ready(chan, None);
+    // SAFETY: `_exit` without handlers, as in `fail`.
+    unsafe { libc::_exit(0) }
+}
+
+/// Sends [`READY`] on `chan`, with `fd` as `SCM_RIGHTS` when given, in one
+/// message; buffers on the stack.
+fn send_ready(chan: RawFd, fd: Option<RawFd>) {
+    let mut data = [READY];
+    // Room for one `cmsghdr` and one descriptor, aligned for `cmsghdr`.
+    let mut control = [0u64; 4];
+    // SAFETY: `msghdr` and `iovec` are plain integers and pointers; all-zero
+    // is valid. The pointers refer to `data` and `control`, which live
+    // across `sendmsg`; the `CMSG_*` helpers only compute addresses inside
+    // `control`, which has room for one descriptor.
+    let sent = unsafe {
+        let mut iov = libc::iovec {
+            iov_base: data.as_mut_ptr().cast(),
+            iov_len: data.len(),
+        };
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        if let Some(fd) = fd {
+            let int = u32::try_from(size_of::<libc::c_int>()).unwrap_or(4);
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = libc::CMSG_SPACE(int) as _;
+            let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
+            if cmsg.is_null() {
+                fail(chan, Step::NetNamespace, Errno::INVAL);
+            }
+            (*cmsg).cmsg_level = libc::SOL_SOCKET;
+            (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(int) as _;
+            libc::CMSG_DATA(cmsg)
+                .cast::<libc::c_int>()
+                .write_unaligned(fd);
+        }
+        libc::sendmsg(chan, &raw const msg, libc::MSG_NOSIGNAL)
+    };
+    if sent != 1 {
+        fail(chan, Step::NetNamespace, last_errno());
+    }
+}
+
+/// Closes every descriptor except `keep`, from 0: with `close_range`, else
+/// those `/proc/self/fd` lists, else every number up to the hard limit.
+fn close_all_but(keep: RawFd) {
+    let k = u32::try_from(keep).unwrap_or(u32::MAX);
+    let mut ok = true;
+    if k > 0 {
+        // SAFETY: plain syscall on a descriptor range.
+        ok &= unsafe { libc::syscall(libc::SYS_close_range, 0u32, k - 1, 0u32) } == 0;
+    }
+    if k < u32::MAX {
+        // SAFETY: as above.
+        ok &= unsafe { libc::syscall(libc::SYS_close_range, k + 1, u32::MAX, 0u32) } == 0;
+    }
+    if ok || close_listed(keep) {
+        return;
+    }
+    let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
+        .maximum
+        .unwrap_or(1 << 20)
+        .min(1 << 20);
+    let limit = RawFd::try_from(limit).unwrap_or(1 << 20);
+    for fd in 0..=limit {
+        if fd != keep {
+            // SAFETY: closing a descriptor number; a closed one fails with
+            // EBADF.
+            unsafe { libc::close(fd) };
+        }
+    }
+}
+
+/// Closes every descriptor `/proc/self/fd` lists except `keep`, passing
+/// again until one pass finds none; `false` if the list cannot be read.
+fn close_listed(keep: RawFd) -> bool {
+    loop {
+        let Ok(dir) = rustix::fs::openat(
+            CWD,
+            c"/proc/self/fd",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            return false;
+        };
+        match rustix::fs::fstatfs(&dir) {
+            Ok(st) if st.f_type == PROC_SUPER_MAGIC => {}
+            _ => return false,
+        }
+        let own = dir.as_raw_fd();
+        let mut closed = 0;
+        let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
+        let mut entries = RawDir::new(&dir, &mut buf);
+        while let Some(entry) = entries.next() {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if let Some(fd) = parse_fd(entry.file_name().to_bytes())
+                && fd != keep
+                && fd != own
+            {
+                // SAFETY: closing a listed descriptor number.
+                unsafe { libc::close(fd) };
+                closed += 1;
+            }
+        }
+        if closed == 0 {
+            return true;
+        }
+    }
+}
+
+/// Installs the seccomp filter of a `RUN` that joined a held network
+/// namespace ([`crate::seccomp`]). Without `no_new_privs`: the child still
+/// has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must keep
+/// working.
+fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
+    let prog = libc::sock_fprog {
+        len: u16::try_from(filter.len()).unwrap_or(u16::MAX),
+        filter: filter.as_ptr().cast_mut(),
+    };
+    // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the program, which
+    // lives across the call.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            0u32,
+            &raw const prog,
+        )
+    };
+    if r != 0 {
+        fail(err, Step::Seccomp, last_errno());
+    }
+}
+
 /// Bounding set to Docker's defaults, ambient set cleared, effective and
 /// permitted set to the defaults (of those the process has), inheritable
 /// empty, as Docker since 20.10.14. Root keeps the defaults through
@@ -1239,6 +1468,8 @@ mod tests {
             root_entry: RootEntry::PivotRoot,
             hostname: Vec::new(),
             loopback: false,
+            netns: None,
+            seccomp: None,
             drops: ([0; 64], 0),
             keep: 0,
             uid: Uid::ROOT,
