@@ -25,6 +25,9 @@ just test-vm e2e          # nextjs-kaniko W1-W3: kaniko, BuildKit, ranikust
   comparison (`result: other=0` is what Phase 1 acceptance needs), and a
   `ranikust` build that hits an unbuilt part is `pending`, not a failure.
 
+- Docker Hub images are pulled through `mirror.gcr.io` by default
+  (`RANIKUST_VM_IMAGE_REGISTRY`; `docker.io` for Docker Hub itself, which
+  rate-limits anonymous pulls: a `Toomanyrequests` failure means that).
 - Run it in the background: a cold run (image download, release build,
   boot, cloud-init installing Docker) takes several minutes.
 - If `just` or `cargo-zigbuild` is not found, put `~/.cargo/bin` on `PATH`.

@@ -21,6 +21,10 @@
 #   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout e2e reads, default
 #                        ../nextjs-kaniko next to the repository
 #   RANIKUST_E2E_*       options of the e2e suite (tests/vm/guest/e2e.sh)
+#   RANIKUST_VM_IMAGE_REGISTRY  where the guest pulls Docker Hub images
+#                        from: default mirror.gcr.io (Google's public Docker
+#                        Hub mirror, no pull rate limit); docker.io to pull
+#                        from Docker Hub itself
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,6 +32,7 @@ HERE="$REPO/tests/vm"
 RELEASE="${RANIKUST_VM_RELEASE:-noble}"
 CACHE="${RANIKUST_VM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ranikust/vm}"
 CPUS="${RANIKUST_VM_CPUS:-4}"
+IMAGE_REGISTRY="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
 MEM="${RANIKUST_VM_MEM:-4096}"
 TARGET="${CARGO_TARGET_DIR:-$REPO/target}"
 MUSL=x86_64-unknown-linux-musl
@@ -118,6 +123,8 @@ if wants e2e; then
   done
   env | grep '^RANIKUST_E2E_' | sed 's/^/export /' >"$STAGE/e2e.env" || true
 fi
+# Read by guest/run.sh: the suites pull Docker Hub images from here.
+printf 'export RANIKUST_VM_IMAGE_REGISTRY=%q\n' "$IMAGE_REGISTRY" >"$STAGE/vm.env"
 
 # --- Image: fetch and verify against SHA256SUMS ------------------------------
 
@@ -175,7 +182,10 @@ MONITOR="$SOCKDIR/monitor.sock"
 
 ssh-keygen -q -t ed25519 -N '' -C "ranikust-vm" -f "$RUN/key"
 mkdir "$RUN/seed"
-sed "s|@SSH_KEY@|$(cat "$RUN/key.pub")|" "$HERE/cloud-init/user-data" >"$RUN/seed/user-data"
+# The guest's Docker pulls docker.io images through the same mirror.
+if [ "$IMAGE_REGISTRY" = docker.io ]; then MIRRORS='[]'; else MIRRORS="[\"https://$IMAGE_REGISTRY\"]"; fi
+sed -e "s|@SSH_KEY@|$(cat "$RUN/key.pub")|" -e "s|@REGISTRY_MIRRORS@|$MIRRORS|" \
+  "$HERE/cloud-init/user-data" >"$RUN/seed/user-data"
 printf 'instance-id: ranikust-vm-%s\nlocal-hostname: ranikust-vm\n' "$(basename "$RUN")" >"$RUN/seed/meta-data"
 xorriso -as mkisofs -quiet -output "$RUN/seed.iso" -volid cidata -joliet -rock \
   "$RUN/seed/user-data" "$RUN/seed/meta-data"

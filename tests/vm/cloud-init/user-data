@@ -1,6 +1,7 @@
 #cloud-config
 # NoCloud seed of the T2 VM; tests/vm/vm.sh puts the run's own key in place
-# of @SSH_KEY@.
+# of @SSH_KEY@ and the Docker Hub mirror (RANIKUST_VM_IMAGE_REGISTRY) in place
+# of @REGISTRY_MIRRORS@, so the guest's Docker avoids Docker Hub's pull limit.
 hostname: ranikust-vm
 ssh_pwauth: false
 
@@ -16,7 +17,13 @@ package_update: true
 packages:
   - docker.io
 
+write_files:
+  - path: /etc/docker/daemon.json
+    content: |
+      {"registry-mirrors": @REGISTRY_MIRRORS@}
+
 runcmd:
-  - [systemctl, enable, --now, docker]
+  - [systemctl, enable, docker]
+  - [systemctl, restart, docker]
   - [usermod, -aG, docker, rnk]
   - [touch, /var/lib/ranikust-vm-ready]

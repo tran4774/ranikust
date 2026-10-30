@@ -81,7 +81,13 @@ runs as root on the host:
 3. **Prepare** a run directory under `target/vm/`: a copy-on-write qcow2
    overlay on the cached image, a fresh SSH key and a NoCloud seed
    (`tests/vm/cloud-init/user-data`: user `rnk` with passwordless `sudo`,
-   Docker from the Ubuntu archive).
+   Docker from the Ubuntu archive). Docker Hub images come through
+   `RANIKUST_VM_IMAGE_REGISTRY`, by default `mirror.gcr.io` (Google's
+   public Docker Hub mirror, which has no pull rate limit): the guest's
+   Docker uses it as a `registry-mirrors` entry, and the `smoke` suite
+   pulls `python:3.13-alpine` and the e2e base `alpine:3.20` from it by
+   name. `RANIKUST_VM_IMAGE_REGISTRY=docker.io` pulls from Docker Hub
+   itself, which allows anonymous clients only a few pulls per hour.
 4. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
    ACL, never `sudo`), user-mode networking, SSH forwarded to a free port
    on `127.0.0.1` only. The disk is 20 GB (`RANIKUST_VM_DISK`) and the
