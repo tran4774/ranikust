@@ -47,9 +47,14 @@ Entry format:
   also require an explicit flag naming `/` (for example `--workdir=/`) when
   the heuristic is the only evidence; (c) a first-run confirmation, which
   does not fit an unattended CI job.
-- **Recommendation:** (a) for kaniko parity, revisited if a host is ever
-  seen to match the heuristic; (b) is the cheap hardening if that happens.
-- **Interim:** (a), unchanged.
+- **Recommendation:** (b), under the maintainer's priorities (security
+  first, then performance; kaniko drop-in parity is not a goal): require
+  an explicit opt-in to build on `/` (`--workdir=/`, or `--force` as the
+  only switch) and never trust the container heuristic alone before
+  extracting over or emptying `/`. Option (a), kaniko's behaviour, is
+  weaker: a host that happens to match the heuristic loses its `/`
+  without any flag.
+- **Interim:** (a), unchanged until the maintainer decides.
 - **Raised:** 2026-10-31
 
 ### Q-008: What does a repeated target flag mean?
