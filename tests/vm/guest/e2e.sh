@@ -13,7 +13,7 @@
 # does not fail the suite; any other failure does.
 #
 # Seed (copied in by tests/vm/vm.sh from tests/vm/e2e-seed.py): ~/rnk/e2e/
-# with images.tar and images.txt, registry/ (the base and tools images with
+# with images/ and images.txt, registry/ (the base and tools images with
 # their original digests), verdaccio/ (the npm proxy's storage) and nk/ (the
 # workloads and the files of nextjs-kaniko/bench it needs).
 #
@@ -55,8 +55,11 @@ mkdir -p "$OUT"
 
 command -v zstd >/dev/null || { log "installing zstd"; sudo apt-get install -qq -y zstd >/dev/null; }
 log "loading the reference images"
-sudo docker load -q -i "$E/images.tar"
-while read -r id name; do sudo docker tag "$id" "$name"; done <"$E/images.txt"
+while read -r id name; do
+  loaded="$(sudo docker load -q -i "$E/images/$id.tar" | sed -nE 's/^Loaded image( ID)?: //p' | tail -1)"
+  [ -n "$loaded" ] || { echo "error: docker load of $name gave no image" >&2; exit 1; }
+  sudo docker tag "$loaded" "$name"
+done <"$E/images.txt"
 
 sudo rm -rf "$W" && sudo mkdir -p "$W"
 sudo mv "$E/registry" "$W/registry"

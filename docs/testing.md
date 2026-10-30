@@ -153,8 +153,24 @@ implemented`, a flag refused until a later phase) is recorded as
 `RANIKUST_E2E_WORKLOADS`, `_BUILDERS`, `_ROUNDS` (default 1; use 3 or more
 for the acceptance timings), `_WARMUP`, `_CPUS`, `_MEMORY`, `_JOBS`. The
 VM gets 12 GiB and an 80 GB disk unless `RANIKUST_VM_MEM`/`_DISK` say
-otherwise. A run of one round takes about 15–25 minutes, most of it the
-seed copy, the builds and flattening W1's images.
+otherwise. A run of one round took about 15 minutes on noble, most of it
+the seed copy, the builds and flattening W1's images.
+
+First run (2026-10-30, noble, 4 vCPUs, one round, so indicative only):
+kaniko W1 22.4 s, W2 16.3 s, W3 29.7 s; BuildKit W1 48.4 s, W2 13.2 s,
+W3 15.3 s; every `ranikust` build pending on `--insecure-registry`
+([Q-200](open-questions.md#q-200-how-does-the-e2e-suites-ranikust-reach-a-plain-http-registry)).
+The references already differ from each other, which a `ranikust`
+comparison has to read against:
+
+- BuildKit (rootless, in rootful Docker) gives the directories that a
+  `RUN` or `WORKDIR` creates the setgid bit (`2755` where kaniko has
+  `755`): 13,045 directories on W1, 3,585 on W2.
+- kaniko's W3 image has no `/out/all.txt`, which the last `RUN` writes,
+  and its `/out` is `1000:1000 775` where BuildKit's is `0:0`; the
+  `/out/c.txt` contents differ too. Not investigated yet.
+- W1's non-deterministic files of experiment 07 (1,650) show up as noise,
+  as expected.
 
 Not covered yet: cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a
 reboot), Docker's default profile and `--cap-add SYS_ADMIN` alone (they

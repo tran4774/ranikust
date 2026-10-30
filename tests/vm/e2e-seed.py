@@ -1,11 +1,12 @@
 """Writes the seed of the VM's e2e suite as a tar stream on stdout.
 
-    python3 -I tests/vm/e2e-seed.py <nextjs-kaniko dir> <images.tar> <images.txt> | <ssh> 'tar -x ...'
+    python3 -I tests/vm/e2e-seed.py <nextjs-kaniko dir> <image dir> <images.txt> | <ssh> 'tar -x ...'
 
 Read by tests/vm/vm.sh; unpacked as ~/rnk/e2e/ in the VM. Holds:
 
-- images.tar, images.txt: the reference images (kaniko, BuildKit, registry,
-  verdaccio) saved from the host, and the names to tag them with;
+- images/<id>.tar, images.txt: the reference images (kaniko, BuildKit,
+  registry, verdaccio), one docker-archive each as saved from the host's
+  podman, and the name to tag each with;
 - registry/: the repositories of the base and tools images that the
   workloads name by digest (bench/base-image.txt, bench/tools-image.txt),
   copied from the host registry's storage with their blobs, so the digests
@@ -48,11 +49,13 @@ def repo_of(image_file):
 
 
 def main():
-    nk, images_tar, images_txt = sys.argv[1:4]
+    nk, images_dir, images_txt = sys.argv[1:4]
     v2 = os.path.join(nk, ".data/registry/docker/registry/v2")
     repos = [repo_of(os.path.join(nk, "bench", f)) for f in ("base-image.txt", "tools-image.txt")]
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as tar:
-        tar.add(images_tar, "images.tar", filter=owned_by_root)
+        for line in open(images_txt):
+            image_id = line.split()[0]
+            tar.add(os.path.join(images_dir, f"{image_id}.tar"), f"images/{image_id}.tar", filter=owned_by_root)
         tar.add(images_txt, "images.txt", filter=owned_by_root)
         blobs = set()
         for repo in repos:

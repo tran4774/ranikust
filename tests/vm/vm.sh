@@ -97,21 +97,20 @@ if wants e2e; then
   E2E_IMAGES=(localhost/kaniko-bench:stream docker.io/library/registry:2 docker.io/verdaccio/verdaccio:6.1.6
     docker.io/moby/buildkit@sha256:f8a833b2de9d68e27f0815e4a737abdfaf8a2e4c615650557df11025101557b4)
   E2E_NAMES=(localhost/kaniko-bench:stream registry:2 verdaccio/verdaccio:6.1.6 rnk-e2e/buildkit:v0.33.1-rootless)
+  # One archive per image: Docker with the containerd store gives a loaded
+  # image another ID, so the guest tags what each `docker load` reports.
   mkdir -p "$CACHE/e2e"
   : >"$STAGE/e2e-images.txt"
   for i in "${!E2E_IMAGES[@]}"; do
     id="$(SUPPRESS_BOLTDB_WARNING=1 podman image inspect -f '{{.Id}}' "${E2E_IMAGES[$i]}" 2>/dev/null)" ||
       die "podman has no ${E2E_IMAGES[$i]} (nextjs-kaniko's harness uses it)"
+    if [ ! -f "$CACHE/e2e/$id.tar" ]; then
+      log "saving ${E2E_IMAGES[$i]} to $CACHE/e2e/"
+      SUPPRESS_BOLTDB_WARNING=1 podman save -q --format docker-archive -o "$CACHE/e2e/$id.tar.part" "$id"
+      mv "$CACHE/e2e/$id.tar.part" "$CACHE/e2e/$id.tar"
+    fi
     echo "$id ${E2E_NAMES[$i]}" >>"$STAGE/e2e-images.txt"
   done
-  E2E_TAR="$CACHE/e2e/images-$(sha256sum "$STAGE/e2e-images.txt" | cut -c1-16).tar"
-  if [ ! -f "$E2E_TAR" ]; then
-    log "saving the reference images to $E2E_TAR"
-    # shellcheck disable=SC2046
-    SUPPRESS_BOLTDB_WARNING=1 podman save -q -m --format docker-archive -o "$E2E_TAR.part" \
-      $(cut -d' ' -f1 "$STAGE/e2e-images.txt")
-    mv "$E2E_TAR.part" "$E2E_TAR"
-  fi
   env | grep '^RANIKUST_E2E_' | sed 's/^/export /' >"$STAGE/e2e.env" || true
 fi
 
@@ -206,7 +205,7 @@ log "copying in $(du -sh "$STAGE" | cut -f1)"
 tar -C "$STAGE" -cf - . | vssh 'mkdir rnk && tar -C rnk -xf -'
 if wants e2e; then
   log "copying in the e2e seed (images, registry, npm proxy storage, workloads)"
-  python3 -I "$HERE/e2e-seed.py" "$NEXTJS" "$E2E_TAR" "$STAGE/e2e-images.txt" |
+  python3 -I "$HERE/e2e-seed.py" "$NEXTJS" "$CACHE/e2e" "$STAGE/e2e-images.txt" |
     vssh 'mkdir -p rnk/e2e && tar -C rnk/e2e -xf -'
 fi
 

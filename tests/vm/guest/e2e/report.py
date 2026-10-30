@@ -52,6 +52,8 @@ def main():
         print(f"\n## {w}\n")
         for f in files:
             text = open(os.path.join(wd, f)).read().strip()
+            if not text:
+                continue
             if f.startswith("compare-"):
                 last = text.splitlines()[-1] if text else ""
                 head = text.splitlines()[0] if text else ""
