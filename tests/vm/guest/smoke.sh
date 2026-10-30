@@ -159,21 +159,37 @@ for v in "${VARIANTS[@]}"; do
       { echo "error: --reproducible digests differ: $a with the default jobs, $b with 1" >&2; exit 1; }
     echo "host: --reproducible gives $a with --jobs 1 and the default"
     # A cancel kills the running RUN, as BuildKit (ADR-0032): SIGINT while
-    # a RUN sleeps ends the build at once, and no RUN process is left.
+    # a RUN sleeps ends the build at once, and no RUN process is left. The
+    # RUN mounts the secret, which lives only on the RUN's own tmpfs: it is
+    # in no file of the host, during the RUN or after, even when ranikust
+    # is killed with SIGKILL.
     c="$W/host/cancel"
-    sudo mkdir -m 700 -p "$c/ctx" "$c/w"
-    printf 'FROM %s\nRUN sleep 300\n' "$IMAGE" | sudo tee "$c/ctx/Dockerfile" >/dev/null
-    clog="$(mktemp)"
-    sudo "$RNK" --context "$c/ctx" --no-push --workdir "$c/w" >"$clog" 2>&1 &
-    for _ in $(seq 120); do pgrep -f '^sleep 300$' >/dev/null && break; sleep 1; done
-    pgrep -f '^sleep 300$' >/dev/null || { echo "error: the cancel test's RUN never started" >&2; cat "$clog" >&2; exit 1; }
-    start=$SECONDS
-    sudo pkill -INT -x ranikust
-    rc=0; wait $! || rc=$?
-    [ "$rc" != 0 ] && [ $((SECONDS - start)) -lt 30 ] ||
-      { echo "error: a cancelled build took $((SECONDS - start)) s, exit $rc" >&2; cat "$clog" >&2; exit 1; }
-    ! pgrep -f '^sleep 300$' >/dev/null || { echo "error: the cancelled RUN is still running" >&2; exit 1; }
-    echo "host: a cancel kills the running RUN ($((SECONDS - start)) s)"
+    sudo mkdir -m 700 -p "$c/ctx"
+    printf 'FROM %s\nRUN --mount=type=secret,id=token sleep 300\n' "$IMAGE" |
+      sudo tee "$c/ctx/Dockerfile" >/dev/null
+    no_secret_on_disk() {
+      ! sudo grep -rqa -- "$SMOKE_E2E_SECRET" "$c/w" ||
+        { echo "error: the secret is in a file under $c/w ($1)" >&2; exit 1; }
+    }
+    for sig in INT KILL; do
+      sudo rm -rf "$c/w" && sudo mkdir -m 700 "$c/w"
+      clog="$(mktemp)"
+      sudo "$RNK" --context "$c/ctx" --no-push --workdir "$c/w" \
+        --secret "id=token,src=$W/token" >"$clog" 2>&1 &
+      for _ in $(seq 120); do pgrep -f '^sleep 300$' >/dev/null && break; sleep 1; done
+      pgrep -f '^sleep 300$' >/dev/null ||
+        { echo "error: the $sig test's RUN never started" >&2; cat "$clog" >&2; exit 1; }
+      no_secret_on_disk "during the RUN"
+      start=$SECONDS
+      sudo pkill "-$sig" -x ranikust
+      rc=0; wait $! || rc=$?
+      [ "$rc" != 0 ] && [ $((SECONDS - start)) -lt 30 ] ||
+        { echo "error: SIG$sig: the build took $((SECONDS - start)) s, exit $rc" >&2; cat "$clog" >&2; exit 1; }
+      for _ in $(seq 10); do pgrep -f '^sleep 300$' >/dev/null || break; sleep 1; done
+      ! pgrep -f '^sleep 300$' >/dev/null || { echo "error: SIG$sig: the RUN is still running" >&2; exit 1; }
+      no_secret_on_disk "after SIG$sig"
+      echo "host: SIG$sig kills the running RUN ($((SECONDS - start)) s); the secret never reached a disk"
+    done
   fi
   echo "$name: ok"
 done
