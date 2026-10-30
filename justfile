@@ -66,23 +66,45 @@ build-static:
 check-aarch64:
     cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl
 
-# aarch64 runs under qemu-user (ADR-0009): the static release binary, then the
-# T0 tests, built with cargo-zigbuild and run through cargo's target runner.
-# QEMU 9.1 or later: older qemu-user has no openat2, which RootPath needs.
-# Skipped there, with the reason:
+# aarch64 (ADR-0009): the static release binary, then the T0 tests, built with
+# cargo-zigbuild. On an aarch64 host (CI's `ubuntu-24.04-arm` runner) they run
+# natively and nothing is skipped. Elsewhere they run under qemu-user through
+# cargo's target runner, QEMU 9.1 or later (older qemu-user has no openat2,
+# which RootPath needs), and these are skipped, with the reason:
 # - `open_gives_cloexec_path_fd_and_mount_id`: qemu-user's statx leaves
 #   `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id it asserts is not seen;
 # - `without_root_the_set_up_refuses_before_touching_the_workdir`: qemu-user
 #   runs a thread of its own, so the set-up stops at its single-thread check
 #   before the privilege refusal the test expects;
-# - without a binfmt_misc entry for aarch64, ranikust's `cli` and `metrics`
-#   tests, which spawn the binary themselves (CI registers one and requires it).
+# - `the_filter_refuses_what_it_should_and_nothing_else`: a seccomp filter
+#   written for aarch64 syscall numbers cannot be installed in the x86_64
+#   host kernel through qemu-user;
+# - without a binfmt_misc entry for aarch64, the tests that spawn an aarch64
+#   binary themselves: ranikust's `cli` and `metrics`, and rnk-store's
+#   `processes`.
 
-# Static aarch64 musl binary and T0 tests under qemu-user (CI job `test-aarch64`). QEMU_AARCH64 names the emulator. Requires zig, cargo-zigbuild, qemu-user 9.1 or later.
+# Static aarch64 musl binary and T0 tests, natively on aarch64 (CI job `test-aarch64`) or under qemu-user elsewhere. QEMU_AARCH64 names the emulator. Requires zig, cargo-zigbuild; on x86_64 also qemu-user 9.1 or later.
 test-aarch64 *args:
     #!/usr/bin/env bash
     set -euo pipefail
     target=aarch64-unknown-linux-musl
+    BIN=target/$target/release/ranikust
+    static_check() {
+      file "$BIN"
+      if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter' ||
+         readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
+        echo "error: $BIN is not static" >&2
+        exit 1
+      fi
+    }
+    if [ "$(uname -m)" = aarch64 ]; then
+      echo "native aarch64: no emulation, nothing skipped"
+      cargo-zigbuild build --release --locked --target $target -p ranikust
+      static_check
+      "$BIN" version
+      cargo-zigbuild test --workspace --locked --target $target {{ args }}
+      exit 0
+    fi
     qemu="${QEMU_AARCH64:-$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)}"
     if [ ! -x "$qemu" ]; then
       echo "error: no qemu-aarch64: install qemu-user 9.1 or later, or set QEMU_AARCH64" >&2
@@ -98,21 +120,18 @@ test-aarch64 *args:
       echo "binfmt: $(grep '^interpreter' /proc/sys/fs/binfmt_misc/qemu-aarch64)"
     fi
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER="$qemu"
-    BIN=target/$target/release/ranikust
     cargo-zigbuild build --release --locked --target $target -p ranikust
-    file "$BIN"
-    if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter' ||
-       readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
-      echo "error: $BIN is not static" >&2
-      exit 1
-    fi
+    static_check
     "$qemu" "$BIN" version
     skip=(--skip root::tests::open_gives_cloexec_path_fd_and_mount_id
-      --skip without_root_the_set_up_refuses_before_touching_the_workdir)
+      --skip without_root_the_set_up_refuses_before_touching_the_workdir
+      --skip seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else)
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
       cargo-zigbuild test --workspace --locked --target $target {{ args }} -- "${skip[@]}"
     else
-      echo "warning: no binfmt_misc entry for aarch64: skipping ranikust's cli and metrics tests" >&2
+      echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics, rnk-store's processes)" >&2
+      skip+=(--skip concurrent_fills_from_processes_run_the_filler_once
+        --skip a_build_killed_mid_fill_leaves_nothing_behind)
       cargo-zigbuild test --workspace --exclude ranikust --locked --target $target {{ args }} -- "${skip[@]}"
       cargo-zigbuild test -p ranikust --bins --locked --target $target {{ args }} -- "${skip[@]}"
     fi
