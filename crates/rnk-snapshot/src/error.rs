@@ -115,6 +115,31 @@ pub enum Error {
     /// Decoding or encoding a layer.
     #[error(transparent)]
     Layer(#[from] rnk_layer::Error),
+    /// A system call of the kaniko-mode walk failed on an entry.
+    #[error("walk: {op} {path}: {errno}")]
+    Walk {
+        /// The call (`getdents64`, `statx`, `openat2`, `read`, ...).
+        op: &'static str,
+        /// The entry, relative to the root.
+        path: PathBuf,
+        /// The kernel's answer.
+        errno: Errno,
+    },
+    /// An entry was swapped for another between its `statx` and its
+    /// opening: something else is writing to the root during the walk.
+    #[error("walk: {path} changed while it was walked")]
+    Changed {
+        /// The entry, relative to the root.
+        path: PathBuf,
+    },
+    /// The walk's thread pool could not start.
+    #[error("walk: cannot start {workers} workers: {reason}")]
+    Pool {
+        /// The worker count asked for.
+        workers: usize,
+        /// rayon's message.
+        reason: String,
+    },
     /// A host-side I/O error on ranikust's own directories.
     #[error("{op} {path}: {source}")]
     Io {
@@ -133,7 +158,9 @@ impl Error {
     #[must_use]
     pub fn raw_os_error(&self) -> Option<i32> {
         match self {
-            Self::Mount { errno, .. } | Self::Unmount { errno, .. } => Some(errno.raw_os_error()),
+            Self::Mount { errno, .. } | Self::Unmount { errno, .. } | Self::Walk { errno, .. } => {
+                Some(errno.raw_os_error())
+            }
             Self::Probe { source, .. } => source.raw_os_error(),
             Self::Rootfs(e) => e.raw_os_error(),
             Self::Io { source, .. } => source.raw_os_error(),
@@ -145,6 +172,8 @@ impl Error {
             | Self::DiffIdMismatch { .. }
             | Self::ProbeCheck(_)
             | Self::Store(_)
+            | Self::Changed { .. }
+            | Self::Pool { .. }
             | Self::Layer(_) => None,
         }
     }

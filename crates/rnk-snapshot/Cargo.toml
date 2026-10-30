@@ -16,6 +16,8 @@ rnk-layer.workspace = true
 rnk-oci.workspace = true
 rnk-rootfs.workspace = true
 rnk-store.workspace = true
+# The kaniko-mode walk's pool (ADR-0039).
+rayon.workspace = true
 # `mount`: overlay mounts (`fsopen`, `fsconfig`, `fsmount`, `move_mount`,
 # `mount(2)`, `umount2`); `thread` and `process`: `unshare(CLONE_FS)` and
 # `fchdir` on the thread of a `mount(2)` with relative lowers.
@@ -24,6 +26,8 @@ rustix = { workspace = true, features = ["mount", "process", "thread"] }
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# xxh3-128 of the kaniko-mode walk (ADR-0039).
+xxhash-rust.workspace = true
 
 [dev-dependencies]
 # gzip layer blobs in the extraction tests.

@@ -56,7 +56,44 @@ pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, M
 pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
     "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile";
 pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused beyond, no merging yet
+
+// kaniko mode, built (Phase 2 task 4, src/kaniko/walk.rs, ADR-0039)
+pub const DEFAULT_WALK_WORKERS: NonZeroUsize;      // 8
+pub struct WalkOptions { pub workers: NonZeroUsize, pub mode: SnapshotMode } // Default: 8, Full
+pub enum SnapshotMode { Full, Redo, Time }         // kaniko's --snapshot-mode
+pub struct Walker;                                 // owns a rayon pool: create after the set-up
+impl Walker {
+    pub fn new(opts: WalkOptions) -> Result<Self>;
+    pub fn baseline(&mut self, root: &RootPath, ignore: &IgnoreList) -> Result<WalkStats>; // walk, keep, no diff
+    pub fn diff(&mut self, root: &RootPath, ignore: &IgnoreList) -> Result<WalkDiff>;      // walk, diff against the last walk, keep
+    pub fn forget(&mut self);                      // after emptying the root: next diff adds everything
+    pub fn entries(&self) -> usize; pub fn options(&self) -> WalkOptions;
+}
+pub struct WalkDiff { pub root: Option<EntryMeta>, pub changed: Vec<Changed>, pub deleted: Vec<PathBuf>, pub stats: WalkStats }
+pub struct Changed { pub path: PathBuf, pub change: Change, pub meta: EntryMeta } // Change::{Added, Modified}
+pub struct EntryMeta { pub kind: FileType, pub mode, uid, gid, size, mtime: FileTime, rdev, dev, ino, nlink } // #[non_exhaustive]
+pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits, skipped, max_threads }
 ```
+
+- `WalkDiff` is what task 5's exporter consumes: paths relative to the
+  root, never empty, sorted component by component (a directory before
+  its contents) whatever the worker count. `changed` lists a directory
+  only when its own metadata changed (the exporter adds parent headers);
+  an entry of another type than before is `Added`. `deleted` holds the
+  topmost deleted paths only (one whiteout each); what a directory
+  replaced by a file held is not listed. `root` is set when the root's
+  metadata changed. `meta.dev`/`ino`/`nlink` group hard links. Content is
+  read again by the exporter through `RootPath`.
+- The walk keeps the previous one as a path arena (`kaniko/tree.rs`): one
+  name buffer, nodes with parent and a sorted run of children. The stat
+  cache is the previous walk's record at the same path: a regular file
+  whose `statx` key (`dev, ino, size, mtime, ctime, mode, uid, gid`) is
+  unchanged and whose `mtime` and `ctime` were 2 s older than that walk's
+  start reuses its hashes.
+- xattrs are hashed on regular files and directories (through the fd
+  already open), not on symlinks or device nodes [inferred: only
+  `security.*` and `trusted.*` can sit there, and a relabel alone is not a
+  change kaniko sees either].
 
 - `Base::Image` takes layers in image order (the config's `diff_ids`,
   bottom first); the lower stack is topmost first. `Base::Stage` shares
@@ -122,9 +159,17 @@ pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused 
 
 ## Tests
 
-- **T0:** exporter rules on a modelled upper and lower stack; kaniko walk on
-  temp dirs: property `apply(base, diff) == tree`, the racy window, an
-  unchanged `RUN` giving an empty layer.
+- **T0:** exporter rules on a modelled upper and lower stack. kaniko walk
+  built (`src/kaniko/walk/tests.rs`): first diff adds all in path order,
+  `baseline` and `forget`, what each `--snapshot-mode` compares, a type
+  change in every mode, topmost deletions and a directory replaced by a
+  file, symlinks hashed by target and never followed, hard links sharing
+  `(dev, ino)`, ignored paths neither walked nor deleted, 1 against 8
+  workers identical on a 1,360-entry tree, the stat cache and its racy
+  window, xattrs but overlay's, a tree deeper than `PATH_MAX`;
+  `tests/spans.rs` the walk spans. To do: property `apply(base, diff) ==
+  tree` (with the exporter, task 5), an unchanged `RUN` giving an empty
+  layer (task 6).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
 - **T2** (VM only): overlay as real root; kernel 5.15 fallback; kaniko mode
@@ -139,7 +184,10 @@ pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused 
   `blocks_read` is not recorded yet; `rnk_snapshot.extract` is not a span:
   base layers nest `rnk_store.fill`, `rnk_layer.decode` and
   `rnk_rootfs.extract`.
-- Walk workers count locally; totals are recorded once per walk.
+- Walk workers count locally; totals are recorded once per walk. Built:
+  `rnk_snapshot.walk` (`entries`, `files_hashed`, `bytes_hashed`,
+  `stat_cache_hits`, `max_threads`) per walk, `rnk_snapshot.baseline`
+  (`entries`) around a baseline walk.
 
 ## Pitfalls
 

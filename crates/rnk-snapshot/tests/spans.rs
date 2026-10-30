@@ -82,3 +82,28 @@ fn export_and_its_diff_are_recorded() {
     assert_eq!(phases["rnk_snapshot.diff"]["files_added"], 1);
     assert_eq!(phases["rnk_snapshot.diff"]["bytes"], 5);
 }
+
+#[test]
+fn walks_are_recorded_once_each_with_their_counts() {
+    let capture = Capture::new();
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("d")).unwrap();
+    fs::write(dir.path().join("d/f"), b"12345").unwrap();
+    let root = rnk_rootfs::RootPath::open(fs::canonicalize(dir.path()).unwrap()).unwrap();
+    let ignore = rnk_rootfs::IgnoreList::new();
+    capture.run(|| {
+        let mut walker = rnk_snapshot::Walker::new(rnk_snapshot::WalkOptions::default()).unwrap();
+        walker.baseline(&root, &ignore).unwrap();
+        fs::write(dir.path().join("d/g"), b"678").unwrap();
+        walker.diff(&root, &ignore).unwrap();
+    });
+    let report = capture.report();
+    let phases = &report["phases"];
+    assert_eq!(phases["rnk_snapshot.baseline"]["count"], 1);
+    assert_eq!(phases["rnk_snapshot.baseline"]["entries"], 2);
+    assert_eq!(phases["rnk_snapshot.walk"]["count"], 2);
+    assert_eq!(phases["rnk_snapshot.walk"]["entries"], 5);
+    // The racy window keeps both fresh files from the cache.
+    assert_eq!(phases["rnk_snapshot.walk"]["files_hashed"], 3);
+    assert_eq!(phases["rnk_snapshot.walk"]["bytes_hashed"], 13);
+}

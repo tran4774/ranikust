@@ -68,7 +68,8 @@ squashing, which folds a parent stage into the child that builds on it
   plus a hash of the xattrs, excluding `*.overlay.*`.
 - **Stat cache**: key `{dev, ino, size, mtime, ctime, mode, uid, gid}`. An
   entry is reused only if `max(mtime, ctime)` is more than 2 s older than the
-  start of the scan (racy window).
+  start of the scan (racy window). The cache is the previous walk's record
+  at the same path in the path arena, so it costs no memory of its own.
 - **Diff rule**: added or modified when any of kind, mode, uid, gid, size,
   mtime, rdev, symlink target, content hash or xattr hash changed. A deletion
   becomes one whiteout at the topmost deleted path.
@@ -83,8 +84,11 @@ squashing, which folds a parent stage into the child that builds on it
 - **`--snapshot-mode`** picks what is compared, as in kaniko
   ([ADR-0023](../adr/0023-mode-flag.md)): `full` (default) everything above,
   content included; `redo` mode, mtime, size, uid and gid, without reading
-  content; `time` mtime only [inferred: how `redo` and `time` combine with
-  the stat cache].
+  content; `time` mtime only. Neither reads a file, so the stat cache does
+  not apply to them. In every mode a change of the entry's type is a
+  change, which kaniko's `time` mode misses when the mtime matches.
+- xattrs are hashed on regular files and directories only, through the
+  descriptor the walk already holds.
 
 ## Ignore list
 
