@@ -13,7 +13,11 @@ set -euo pipefail
 cd "$HOME/rnk"
 source guest/smoke-lib.bash
 
-IMAGE=docker.io/library/python:3.13-alpine
+# Docker Hub images come through RANIKUST_VM_IMAGE_REGISTRY (tests/vm/vm.sh),
+# by default Google's mirror, which has no pull rate limit.
+REG="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
+IMAGE="$REG/library/python:3.13-alpine"
+E2E_BASE="$REG/library/alpine:3.20"
 BIN="$HOME/rnk/bin/smoke-build"
 RNK="$HOME/rnk/bin/ranikust"
 W=/var/tmp/rnk-smoke
@@ -93,9 +97,11 @@ e2e() {
   sudo mkdir -m 700 -p "$d/w" "$d/out"
   if [ "$name" = host ]; then
     smoke_e2e_args "$CTX" "$d/w" "$d/out" "$W/token"
+    e2e_args+=(--build-arg "BASE=$E2E_BASE")
     log="$(sudo "$RNK" "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
   else
     smoke_e2e_args /ctx /tmp/w /out /token
+    e2e_args+=(--build-arg "BASE=$E2E_BASE")
     # No CAP_NET_ADMIN in `sysadmin`: `RUN --network=none` gets loopback
     # through a network namespace in a user namespace, an opt-in (ADR-0033).
     local allow=()

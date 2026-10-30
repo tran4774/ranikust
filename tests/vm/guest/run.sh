@@ -5,6 +5,9 @@
 set -uo pipefail
 cd "$HOME/rnk"
 mkdir -p out
+# RANIKUST_VM_IMAGE_REGISTRY, from tests/vm/vm.sh.
+# shellcheck disable=SC1091
+[ -f vm.env ] && source vm.env
 
 {
   echo "kernel: $(uname -r)"
