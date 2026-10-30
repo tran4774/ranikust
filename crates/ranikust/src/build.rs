@@ -621,8 +621,19 @@ impl StageRunner for Runner {
                                     // Held until the RUN's process tree exits;
                                     // an error means the thread dropped its
                                     // permit without sending, which also
-                                    // releases it.
-                                    let _ = released.await;
+                                    // releases it. A cancel meanwhile must
+                                    // reach the RUN, or it would run to its
+                                    // end first.
+                                    let mut released = released;
+                                    tokio::select! {
+                                        _ = &mut released => {}
+                                        () = job.cancel.cancelled(), if !seen_cancel => {
+                                            seen_cancel = true;
+                                            cancelled.store(true, Ordering::Relaxed);
+                                            shared.sandbox.cancel();
+                                            let _ = released.await;
+                                        }
+                                    }
                                 }
                                 drop(permit);
                             }
