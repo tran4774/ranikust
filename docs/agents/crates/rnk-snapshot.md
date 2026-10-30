@@ -216,6 +216,8 @@ impl WalkDiff {
   `rnk_snapshot.export` (`entries`, `bytes_read`) around
   `rnk_snapshot.diff` (`files_added`, `whiteouts`, `bytes`; the others 0),
   which there only turns the walk's diff into entries.
+- The kaniko exporter writes what changed, not the targets of changed
+  symlinks kaniko adds, nor a socket's parents (`ADR-0045`).
   `blocks_read` is not recorded yet; `rnk_snapshot.extract` is not a span:
   base layers nest `rnk_store.fill`, `rnk_layer.decode` and
   `rnk_rootfs.extract`.

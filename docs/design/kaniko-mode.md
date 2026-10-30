@@ -180,7 +180,12 @@ kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
   of one layer. Names of one inode that are both in the layer become a
   file and tar hardlinks to it.
 - Of the xattrs, only `security.capability` is kept (ADR-0032); sockets
-  are left out, as kaniko (`pkg/util/tar_util.go:74-77`).
+  are left out, as kaniko (`pkg/util/tar_util.go:74-77`), but without the
+  parents kaniko still writes for them (`ADR-0045`).
+- What changed is written, nothing more: the unchanged target of a changed
+  symlink, which kaniko's `ResolvePaths` adds
+  (`pkg/filesystem/resolve.go:69-98`), is not, as BuildKit and overlay
+  mode (`ADR-0045`). The exporter never resolves a symlink.
 - The root is live: a file's content is read through the descriptor
   `RootPath::open_regular` pins, checked by device and inode against the
   walk's record; a symlink target or xattrs are read after a `statx` of
