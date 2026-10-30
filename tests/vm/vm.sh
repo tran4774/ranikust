@@ -78,6 +78,17 @@ if wants e2e; then
   # registry and the npm proxy's storage.
   MEM="${RANIKUST_VM_MEM:-12288}"
   DISK="${RANIKUST_VM_DISK:-80G}"
+  # A guest touches all of its memory (page cache), and QEMU keeps it: on a
+  # host short of memory the VM then stalls for minutes while the host
+  # swaps. Shrink the default to what the host can spare, never below 8 GiB.
+  avail=$(($(sed -n 's/^MemAvailable: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024))
+  if [ -z "${RANIKUST_VM_MEM:-}" ] && [ "$MEM" -gt $((avail - 3072)) ]; then
+    MEM=$(((avail - 3072) / 1024 * 1024))
+    [ "$MEM" -ge 8192 ] || MEM=8192
+    log "the host has ${avail} MiB available: the e2e VM gets $MEM MiB"
+  fi
+  [ "$MEM" -le $((avail - 2048)) ] ||
+    log "warning: $MEM MiB for the VM leaves the host under 2 GiB of its ${avail} MiB available; the VM may stall (close memory-hungry programs, or set RANIKUST_VM_MEM)"
   # Next to the main checkout, also when this is a git worktree.
   NEXTJS="${RANIKUST_NEXTJS_KANIKO:-$(dirname "$MAIN")/nextjs-kaniko}"
   [ -f "$NEXTJS/bench/run-fair.sh" ] || die "no nextjs-kaniko checkout at $NEXTJS (set RANIKUST_NEXTJS_KANIKO)"
@@ -227,13 +238,14 @@ qemu-system-x86_64 \
   -drive file="$RUN/disk.qcow2",if=virtio,format=qcow2 \
   -drive file="$RUN/seed.iso",if=virtio,format=raw,readonly=on \
   -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$PORT"-:22 -device virtio-net-pci,netdev=n0 \
+  -device virtio-balloon-pci,free-page-reporting=on \
   -display none -serial file:"$RUN/serial.log" \
   -monitor unix:"$MONITOR",server,nowait \
   -pidfile "$RUN/qemu.pid" -daemonize
 QEMU_PID="$(cat "$RUN/qemu.pid")"
 
 SSH_OPTS=(-i "$RUN/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-  -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=15)
+  -o LogLevel=ERROR -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=8)
 vssh() { ssh "${SSH_OPTS[@]}" -p "$PORT" "$VM_USER@127.0.0.1" "$@"; }
 
 for i in $(seq 120); do
@@ -253,12 +265,34 @@ if wants e2e; then
     vssh 'mkdir -p rnk/e2e && tar -C rnk/e2e -xf -'
 fi
 
-set +e
-vssh "bash rnk/guest/run.sh ${SUITES[*]}"
-status=$?
-set -e
+# The suites run detached in the guest, so that a dropped SSH connection
+# (the VM stalled while the host swapped) loses neither the run nor its
+# results: the host follows the log and reconnects.
+vssh "setsid nohup bash -c 'bash rnk/guest/run.sh ${SUITES[*]} >rnk/suite.log 2>&1; echo \$? >rnk/suite.rc' </dev/null >/dev/null 2>&1 &"
+shown=0 lost=0
+while :; do
+  # The whole log each time (small), printed from where the last poll
+  # stopped; then the exit status once the suites have finished.
+  # Each command succeeds in the guest whether or not the files exist yet,
+  # so a failure here is SSH itself.
+  if vssh 'cat rnk/suite.log 2>/dev/null; true' >"$RUN/suite.log" &&
+     rc="$(vssh 'cat rnk/suite.rc 2>/dev/null; true')"; then
+    lost=0
+    size=$(stat -c %s "$RUN/suite.log")
+    [ "$size" -le "$shown" ] || { tail -c +$((shown + 1)) "$RUN/suite.log"; shown=$size; }
+    [ -z "$rc" ] || { status=$rc; break; }
+  else
+    lost=$((lost + 1))
+    log "no SSH to the VM ($lost); the suites keep running"
+    [ "$lost" -lt 60 ] || die "the VM stopped answering SSH for 15 minutes"
+  fi
+  sleep 15
+done
 mkdir -p "$RESULTS"
-vssh 'tar -C rnk/out -cf - .' | tar -C "$RESULTS" -xf - ||
-  log "could not copy the results out"
+for i in 1 2 3 4 5; do
+  vssh 'tar -C rnk/out -cf - .' | tar -C "$RESULTS" -xf - && break
+  [ "$i" = 5 ] && log "could not copy the results out"
+  sleep 10
+done
 log "results in $RESULTS"
 exit "$status"
