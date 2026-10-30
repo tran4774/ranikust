@@ -52,6 +52,19 @@ pub(crate) fn try_lock(fd: impl AsFd) -> io::Result<bool> {
     }
 }
 
+/// Takes the shared lock without waiting: `false` when another descriptor
+/// holds the exclusive one.
+pub(crate) fn try_lock_shared(fd: impl AsFd) -> io::Result<bool> {
+    loop {
+        match rustix::fs::flock(fd.as_fd(), FlockOperation::NonBlockingLockShared) {
+            Ok(()) => return Ok(true),
+            Err(Errno::WOULDBLOCK) => return Ok(false),
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 /// The per-digest locks this process holds, kept apart from `flock`: on
 /// NFS, CIFS and some FUSE filesystems `flock` is emulated with per-process
 /// record locks, so two threads of one process would not exclude each

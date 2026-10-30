@@ -44,9 +44,12 @@ pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ 
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
+    pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation */ }  // #[non_exhaustive]; RunSpec::new
-pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache|secret
+pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache
+pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // RunSpec::secrets: written
+    // by the child on its own tmpfs, bound read-only; Debug hides the bytes, as RunSpec's the env values
 pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; BareChroot { fake_proc } [design], Phase 2
@@ -70,6 +73,11 @@ from `rnk-store`, secret file) and passes `--network`.
   and checked again after it. The child is PID 1 of its PID namespace, so
   its tree dies with it. Dropping
   the `Sandbox` ends the thread and kills every running `RUN`.
+- `Sandbox::cancel` kills every running `RUN` with `SIGKILL` (its PID 1;
+  a `Direct` one's process group too), as BuildKit on a cancel, and every
+  later `run` returns `Error::Cancelled`. A child is forgotten only after
+  `waitid(WNOWAIT)` saw it exit and before `wait4` reaps it: the kill
+  never reaches a reused pid.
 - Between `clone` and `execve` the child only makes system calls (rustix's
   raw backend, a few `libc` calls) on arguments built before the clone. A
   failing step writes `(step, errno)` to a close-on-exec pipe and exits

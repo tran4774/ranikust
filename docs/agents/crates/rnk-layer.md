@@ -37,7 +37,7 @@ pub enum Compression { None, Gzip, Zstd }  // [design] level: gzip 0..=9, zstd 1
 pub struct EncodeOptions { pub compression: Compression, pub level: i32, pub threads: NonZeroUsize, pub mtime: Option<i64> } // mtime: --reproducible, later mtimes clamped to it (BuildKit, Q-161)
 pub trait EntrySource {            // [design] implemented by the exporter
     fn open(&mut self, e: &Entry) -> io::Result<Box<dyn Read + '_>>;            // file content, read once in layer order
-    fn parent(&mut self, p: &EntryPath) -> io::Result<Option<Entry>>;          // [open: Q-013] interim: missing parents
+    fn parent(&mut self, p: &EntryPath) -> io::Result<Option<Entry>>;          // (Q-013, ADR-0032) interim: missing parents
 }
 pub struct LayerWriter;            // [design] new(EncodeOptions); add(Entry) in any order; finish(&mut dyn EntrySource, W) -> LayerDigests
 pub struct LayerDigests { pub diff_id: Sha256Digest, pub digest: Sha256Digest, pub size: u64, pub compression: Compression }
@@ -149,7 +149,7 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   into the compressor, `--reproducible`, and a reader for base layers.
 - Order: tar writer with goldens → gzip and zstd with determinism tests →
   streaming digests → decoder → exporter integration with `rnk-snapshot`.
-- [open: Q-013] How `LayerWriter` gets a missing parent's metadata from
+- (Q-013, ADR-0032) How `LayerWriter` gets a missing parent's metadata from
   the exporter; interim: `EntrySource::parent`.
 - Done: tar writer with goldens; parallel gzip and zstd with determinism
   tests; streaming digests; the decoder (gzip with any number of members,

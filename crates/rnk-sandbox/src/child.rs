@@ -69,6 +69,40 @@ pub(crate) enum ChildMount {
     },
 }
 
+/// A secret file the child writes on its tmpfs, bound at every target of
+/// the `RUN` that mounts it.
+pub(crate) struct ChildSecret {
+    /// The file's name on the tmpfs.
+    pub(crate) name: CString,
+    pub(crate) data: std::sync::Arc<[u8]>,
+    pub(crate) uid: Uid,
+    pub(crate) gid: Gid,
+    pub(crate) mode: Mode,
+    pub(crate) targets: Vec<CString>,
+}
+
+impl std::fmt::Debug for ChildSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildSecret")
+            .field("name", &self.name)
+            .field("data", &format_args!("<{} bytes hidden>", self.data.len()))
+            .field("targets", &self.targets)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The secrets of a `RUN` and the tmpfs they are written on.
+#[derive(Debug)]
+pub(crate) struct ChildSecrets {
+    /// A host directory of this `RUN` (its journal's scratch directory,
+    /// whose files are already bound) the tmpfs is mounted on, in the
+    /// child's own mount namespace, then detached.
+    pub(crate) dir: CString,
+    /// The tmpfs options: `size=` and `mode=0700`.
+    pub(crate) options: CString,
+    pub(crate) files: Vec<ChildSecret>,
+}
+
 /// Where a standard stream goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChildStdio {
@@ -86,6 +120,8 @@ pub(crate) struct ChildArgs {
     /// Flags of the remount of the root's bind: `nodev`, the rest kept.
     pub(crate) root_remount: MountFlags,
     pub(crate) mounts: Vec<ChildMount>,
+    /// `None` without secrets.
+    pub(crate) secrets: Option<ChildSecrets>,
     /// Flags of the read-only remount of each [`DEV_NODES`] bind.
     pub(crate) dev_remount: [MountFlags; DEV_NODES.len()],
     pub(crate) root_entry: RootEntry,
@@ -279,6 +315,9 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     );
     for m in &args.mounts {
         mount_one(err, root.as_fd(), &args.dev_remount, m);
+    }
+    if let Some(s) = &args.secrets {
+        mount_secrets(err, root.as_fd(), s);
     }
     protect_kernel_files(err, root.as_fd(), args.dev_remount[DEV_NULL]);
 
@@ -501,6 +540,87 @@ fn mount_one(
             );
         }
     }
+}
+
+/// BuildKit's secret mount (`secretmount_unix.go`): a private tmpfs
+/// (`nodev`, `nosuid`, `noexec`, mode 0700), each secret written there as a
+/// new file, given its owner and mode, bound read-only at its target; then
+/// the tmpfs is detached, kept alive by the binds alone. The bytes never
+/// reach a disk, and the tmpfs vanishes with the `RUN`'s mount namespace
+/// whatever happens to ranikust.
+fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets) {
+    let step = Step::Secret;
+    let dir = secrets.dir.as_c_str();
+    check(
+        err,
+        step,
+        rustix::mount::mount(
+            c"tmpfs",
+            dir,
+            c"tmpfs",
+            MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC,
+            Some(secrets.options.as_c_str()),
+        ),
+    );
+    let d = check(
+        err,
+        step,
+        rustix::fs::openat(
+            CWD,
+            dir,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ),
+    );
+    for s in &secrets.files {
+        let f = check(
+            err,
+            step,
+            rustix::fs::openat(
+                &d,
+                s.name.as_c_str(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            ),
+        );
+        let mut rest: &[u8] = &s.data;
+        while !rest.is_empty() {
+            match rustix::io::write(&f, rest) {
+                Ok(0) => fail(err, step, Errno::NOSPC),
+                Ok(n) => rest = rest.get(n..).unwrap_or_default(),
+                Err(Errno::INTR) => {}
+                Err(e) => fail(err, step, e),
+            }
+        }
+        check(err, step, rustix::fs::fchown(&f, Some(s.uid), Some(s.gid)));
+        check(err, step, rustix::fs::fchmod(&f, s.mode));
+        for target in &s.targets {
+            let t = resolve(err, root, target);
+            check(
+                err,
+                step,
+                rustix::mount::mount_bind(fd_path(err, &f).path(), fd_path(err, &t).path()),
+            );
+            drop(t);
+            // Resolved again, it is the bind, not the stub under it.
+            let t = resolve(err, root, target);
+            check(
+                err,
+                Step::Remount,
+                rustix::mount::mount_remount(
+                    fd_path(err, &t).path(),
+                    MountFlags::BIND
+                        | MountFlags::RDONLY
+                        | MountFlags::NOSUID
+                        | MountFlags::NODEV
+                        | MountFlags::NOEXEC,
+                    c"",
+                ),
+            );
+        }
+    }
+    drop(d);
+    check(err, step, rustix::mount::unmount(dir, UnmountFlags::DETACH));
 }
 
 /// A mount source as an `O_PATH` descriptor in the child's own mount
@@ -1114,6 +1234,7 @@ mod tests {
             root_dir: c"/r".into(),
             root_remount: MountFlags::BIND,
             mounts: Vec::new(),
+            secrets: None,
             dev_remount: [MountFlags::BIND; DEV_NODES.len()],
             root_entry: RootEntry::PivotRoot,
             hostname: Vec::new(),

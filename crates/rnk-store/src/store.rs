@@ -1,6 +1,6 @@
 //! The store: opening and clean-up, per-digest locks, publication.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::File;
 use std::os::fd::OwnedFd;
@@ -8,6 +8,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
@@ -45,6 +46,105 @@ impl BuildPaths {
         Self {
             root: root.into(),
             state: state.into(),
+        }
+    }
+}
+
+/// How a cache mount is shared: BuildKit's `sharing=` of
+/// `RUN --mount=type=cache`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CacheSharing {
+    /// Every user at once.
+    #[default]
+    Shared,
+    /// One user at a time; the others wait.
+    Locked,
+    /// One user at a time; another gets a new empty cache of the same key.
+    Private,
+}
+
+/// The owner and mode a new cache gets: BuildKit's `mkdir` of the cache's
+/// base when the mount sets `uid`, `gid` or `mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheOwner {
+    /// Owner.
+    pub uid: u32,
+    /// Group.
+    pub gid: u32,
+    /// Permission bits and the sticky bit; set-id bits are dropped.
+    pub mode: u32,
+}
+
+/// A cache directory held for one `RUN` ([`Store::cache_lease`]); the hold
+/// ends when the lease drops, or when the process dies.
+#[derive(Debug)]
+pub struct CacheLease {
+    path: PathBuf,
+    created: bool,
+    _lock: OwnedFd,
+    _held: CacheHold,
+}
+
+impl CacheLease {
+    /// The directory, for the `RUN`'s bind mount.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether this lease made the directory (with its owner and mode).
+    #[must_use]
+    pub fn created(&self) -> bool {
+        self.created
+    }
+}
+
+/// The cache directories this process holds, apart from `flock`: on NFS,
+/// CIFS and some FUSE filesystems `flock` is emulated with per-process
+/// record locks, so two stages of one build would not exclude each other.
+/// Per lock file: the shared holders, and whether one holds it alone.
+#[derive(Debug, Default)]
+struct CacheHolds(Mutex<HashMap<PathBuf, (usize, bool)>>);
+
+impl CacheHolds {
+    /// Takes `lock` in this process, without waiting; `None` when it is
+    /// held in a way `exclusive` conflicts with.
+    fn try_hold(self: &Arc<Self>, lock: &Path, exclusive: bool) -> Option<CacheHold> {
+        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = map.entry(lock.to_owned()).or_insert((0, false));
+        match (exclusive, *entry) {
+            (_, (_, true)) | (true, (1.., _)) => return None,
+            (true, (0, false)) => entry.1 = true,
+            (false, (n, false)) => entry.0 = n + 1,
+        }
+        Some(CacheHold {
+            holds: Arc::clone(self),
+            lock: lock.to_owned(),
+            exclusive,
+        })
+    }
+}
+
+/// A hold in [`CacheHolds`], given back on drop.
+#[derive(Debug)]
+struct CacheHold {
+    holds: Arc<CacheHolds>,
+    lock: PathBuf,
+    exclusive: bool,
+}
+
+impl Drop for CacheHold {
+    fn drop(&mut self) {
+        let mut map = self.holds.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = map.get_mut(&self.lock) {
+            if self.exclusive {
+                entry.1 = false;
+            } else {
+                entry.0 = entry.0.saturating_sub(1);
+            }
+            if *entry == (0, false) {
+                map.remove(&self.lock);
+            }
         }
     }
 }
@@ -100,6 +200,8 @@ pub struct Store {
     _build_lock: OwnedFd,
     /// The per-digest locks held by this store's threads.
     held: lock::InProcess,
+    /// The cache directories held by this store's threads.
+    cache_holds: Arc<CacheHolds>,
     next_tmp: AtomicU64,
 }
 
@@ -145,6 +247,7 @@ impl Store {
             id,
             _build_lock: build_lock,
             held: lock::InProcess::default(),
+            cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
         };
         store.cleanup()?;
@@ -261,6 +364,194 @@ impl Store {
         let rel = Path::new("caches").join(Digest::from_sha256_bytes(&hash).encoded());
         self.state.create_dir_all(&rel, 0o755)?;
         Ok(self.host(&rel))
+    }
+
+    /// A directory of the `RUN --mount=type=cache` key `key`, held for one
+    /// `RUN` as `sharing` says, as BuildKit's cache mounts
+    /// (`solver/llbsolver/mounts/mount.go` `getRefCacheDir`):
+    ///
+    /// - [`CacheSharing::Shared`]: the first directory of the key no build
+    ///   holds alone, used by every shared holder at once;
+    /// - [`CacheSharing::Locked`]: a directory no one else holds, waiting
+    ///   (and polling `cancelled` every 100 ms) while every one is held;
+    /// - [`CacheSharing::Private`]: a directory no one else holds, or a new
+    ///   empty one of the same key when every one is held.
+    ///
+    /// The first directory of a key is `caches/<sha256(key)>` (as
+    /// [`Store::cache_dir`]), the next `caches/<sha256(key)>-<n>`. A lease
+    /// is an `flock` on `locks/caches/<name>.lock`, shared or exclusive, and
+    /// a hold in this process (for filesystems whose `flock` is per
+    /// process), kept until the lease drops; the kernel releases the `flock`
+    /// if the process dies. A new directory is made under a temporary name,
+    /// given `owner` (else root's, `0755`) through its descriptor and renamed
+    /// into place, all under the key's pool lock: a failure never leaves a
+    /// cache with the wrong owner. A caller taking several leases for one
+    /// `RUN` takes them in the order of their keys.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Cancelled`] when `cancelled` turns true while waiting;
+    /// [`Error::Rootfs`] or [`Error::Io`] when a directory or lock file
+    /// cannot be made or locked; [`Error::BadEntry`] when one is not what
+    /// the store made.
+    pub fn cache_lease(
+        &self,
+        key: &str,
+        sharing: CacheSharing,
+        owner: Option<CacheOwner>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<CacheLease> {
+        let hash: [u8; 32] = Sha256::digest(key.as_bytes()).into();
+        let base = Digest::from_sha256_bytes(&hash).encoded().to_owned();
+        let locks = Path::new("locks").join("caches");
+        self.state.create_dir_all(&locks, DIR_MODE)?;
+        let name = |n: usize| {
+            if n == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            }
+        };
+        let exclusive = sharing != CacheSharing::Shared;
+        loop {
+            // The pool lock orders the scan and the creation of a new
+            // directory between builds; it is held only for that.
+            // In this process too: where flock is per process (NFS,
+            // CIFS), two stages of one build would both hold it.
+            let pool_rel = locks.join(format!("{base}.pool"));
+            let (pool_held, _) = self.held.acquire(&pool_rel);
+            let pool = lock::open(&self.state, &pool_rel)?;
+            lock::lock(&pool).map_err(|e| self.io_err("flock", &locks, e))?;
+            let mut n = 0;
+            let mut any = false;
+            while self.cache_entry_exists(&name(n))? {
+                any = true;
+                if let Some(lease) = self.try_cache(&locks, &name(n), exclusive, false)? {
+                    return Ok(lease);
+                }
+                n += 1;
+            }
+            if sharing == CacheSharing::Locked && any {
+                drop((pool, pool_held));
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            let Some(lease) = self.try_cache(&locks, &name(n), exclusive, true)? else {
+                // A lock file kept by a cache removed under it, still held:
+                // wait for its holder as for a locked cache.
+                drop((pool, pool_held));
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            };
+            self.make_cache(&name(n), owner)?;
+            return Ok(lease);
+        }
+    }
+
+    /// Takes `caches/<name>`'s lock without waiting, in this process and
+    /// with `flock`: `None` when it is held.
+    fn try_cache(
+        &self,
+        locks: &Path,
+        name: &str,
+        exclusive: bool,
+        created: bool,
+    ) -> Result<Option<CacheLease>> {
+        let lock_rel = locks.join(format!("{name}.lock"));
+        let Some(held) = self.cache_holds.try_hold(&lock_rel, exclusive) else {
+            return Ok(None);
+        };
+        let fd = lock::open(&self.state, &lock_rel)?;
+        let got = if exclusive {
+            lock::try_lock(&fd)
+        } else {
+            lock::try_lock_shared(&fd)
+        }
+        .map_err(|e| self.io_err("flock", locks, e))?;
+        if !got {
+            return Ok(None);
+        }
+        Ok(Some(CacheLease {
+            path: self.host(&Path::new("caches").join(name)),
+            created,
+            _lock: fd,
+            _held: held,
+        }))
+    }
+
+    /// Makes `caches/<name>`: a new directory under a temporary name, its
+    /// owner and mode set through its descriptor, then renamed into place.
+    fn make_cache(&self, name: &str, owner: Option<CacheOwner>) -> Result<()> {
+        let tmp = Path::new("caches").join(format!(".{name}.new-{}", self.id));
+        if self.state.statx(&tmp).is_ok() {
+            remove_tree(&self.state, &tmp)?;
+        }
+        self.state.create_dir_all(&tmp, 0o700)?;
+        let made = self.fill_cache(&tmp, name, owner);
+        if made.is_err() {
+            // Whatever failed, the temporary directory goes; the error to
+            // report is the first one.
+            if let Err(e) = remove_tree(&self.state, &tmp) {
+                tracing::warn!("rnk-store: cannot remove {}: {e}", tmp.display());
+            }
+        }
+        made
+    }
+
+    /// Gives the new cache `tmp` its owner and mode through its descriptor,
+    /// then renames it to `caches/<name>`, never over an existing entry.
+    fn fill_cache(&self, tmp: &Path, name: &str, owner: Option<CacheOwner>) -> Result<()> {
+        let fd = self
+            .state
+            .open_at(tmp, &OpenHow::read().directory().no_follow())?;
+        let st = rustix::fs::fstat(&fd).map_err(|e| self.io_err("stat", tmp, e.into()))?;
+        // Without one, the process's own ids: root's in a build.
+        let owner = owner.unwrap_or(CacheOwner {
+            uid: st.st_uid,
+            gid: st.st_gid,
+            mode: 0o755,
+        });
+        if (st.st_uid, st.st_gid) != (owner.uid, owner.gid) {
+            rustix::fs::fchown(
+                &fd,
+                Some(rustix::fs::Uid::from_raw(owner.uid)),
+                Some(rustix::fs::Gid::from_raw(owner.gid)),
+            )
+            .map_err(|e| self.io_err("chown", tmp, e.into()))?;
+        }
+        rustix::fs::fchmod(&fd, rustix::fs::Mode::from_raw_mode(owner.mode & 0o1777))
+            .map_err(|e| self.io_err("chmod", tmp, e.into()))?;
+        drop(fd);
+        self.state
+            .rename_noreplace(tmp, Path::new("caches").join(name))?;
+        Ok(())
+    }
+
+    /// Whether `caches/<name>` exists, as a directory of the state
+    /// directory's mount; anything else there is refused.
+    fn cache_entry_exists(&self, name: &str) -> Result<bool> {
+        let rel = Path::new("caches").join(name);
+        match self.state.statx(&rel) {
+            Ok(st)
+                if st.file_type() == FileType::Directory
+                    && !st.mount_root
+                    && st.mnt_id == self.state.mnt_id() =>
+            {
+                Ok(true)
+            }
+            Ok(_) => Err(Error::BadEntry {
+                path: rel,
+                reason: "a cache must be a directory on the state directory's mount",
+            }),
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Ends the build: removes `builds/<build-id>` and `tmp/<build-id>`,

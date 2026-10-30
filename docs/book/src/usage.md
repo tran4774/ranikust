@@ -47,7 +47,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--compression=gzip\|zstd` | Layer compression, gzip by default. zstd cannot go into a `--tar-path` tarball. |
 | `--reproducible` | Fixed timestamps, for byte-identical images: the image's time is `SOURCE_DATE_EPOCH`, else 1970-01-01, and file times later than it are set to it, as BuildKit does. |
 | `--registry-certificate=REGISTRY=PATH` | An extra CA certificate for one registry. Repeatable. |
-| `--insecure-registry=REGISTRY` | Reach this registry (`host[:port]`) over plain HTTP when HTTPS fails, as kaniko. Repeatable. |
+| `--insecure-registry=REGISTRY` | Reach this registry (`host[:port]`) over plain HTTP when HTTPS fails, as kaniko. Repeatable. A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP without it, as BuildKit. |
 | `--snapshot-mode=full\|redo\|time` | What kaniko mode compares between snapshots, as in kaniko; ignored, with a warning, in overlay mode. |
 
 ## ranikust's own flags
@@ -61,7 +61,8 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--network=host\|none` | The network `RUN` gets. Default `host`. |
 | `--platform=linux/amd64` | The image platform; kaniko's `--custom-platform`. Only `linux/amd64` for now. |
 | `--metrics-file=PATH` | Write the build metrics report there; takes the place of `RANIKUST_METRICS_FILE`. |
-| `--secret=id=ID,src=PATH` | A file for `RUN --mount=type=secret,id=ID`, bound read-only into that `RUN` and kept out of every layer, the config and the logs; kaniko's syntax, file secrets only. Repeat for several. |
+| `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. Kept out of every layer, the config and the logs; at most 500 KiB. kaniko's and buildctl's syntax. Repeat for several. |
+| `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
 
 ## kaniko flags it refuses
 

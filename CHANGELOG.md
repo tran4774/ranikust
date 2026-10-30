@@ -35,8 +35,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--no-push`, `--tar-path`, `--oci-layout-path`, `--compression`,
   `--reproducible`, `--registry-certificate`, `--snapshot-mode`. New flags:
   `--mode=auto|overlay|kaniko`, `--workdir`, `--state-dir` (kaniko's
-  `--kaniko-dir`), `--jobs`, `--network=host|none`, `--platform` and
-  `--metrics-file`. Other kaniko flags are refused with the reason, never
+  `--kaniko-dir`), `--jobs`, `--network=host|none`, `--platform`,
+  `--secret`, `--allow` and `--metrics-file`. Other kaniko flags are refused with the reason, never
   ignored.
 - Building: `ranikust` builds a Dockerfile in overlay mode as root, its
   stages in parallel up to `--jobs`, one layer per `RUN`, `COPY`, `ADD`
@@ -49,8 +49,15 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--from`, `--chown` and octal or symbolic `--chmod`, `.dockerignore`
   honoured;
   `RUN` in shell, exec and heredoc form with `--mount=type=cache`,
-  `--mount=type=secret` and `--network=none`. `--secret id=ID,src=PATH`
-  provides secret files. Features of later phases stop the build with a
+  `--mount=type=secret` and `--network=none`, as BuildKit: cache
+  `sharing=shared|locked|private` with `uid`/`gid`/`mode` when a cache is
+  made, secrets as a `0400` root file on a tmpfs of the `RUN`'s own,
+  never on a disk (or the requested mode and owner)
+  or with `env=` as a variable of that `RUN`. `--secret` takes kaniko's
+  and buildctl's syntax: a file (`src=`) or a variable (`env=`,
+  `type=env`). `RUN --network=host` under `--network=none` needs
+  `--allow network.host`. A cancel (SIGINT, SIGTERM or a failed stage)
+  kills the running `RUN`s. Features of later phases stop the build with a
   message naming the phase. `RUN --network=none` needs `CAP_NET_ADMIN`
   in a container.
 - Where kaniko and BuildKit build differently, ranikust builds as
@@ -82,5 +89,23 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - Building the static musl binary from source needs zig 0.16.0 and
   cargo-zigbuild 0.24.0, which compile its C dependencies; see
   `CONTRIBUTING.md`.
+- Where kaniko and BuildKit differ, image and `RUN` behaviour now follows
+  BuildKit (ADR-0032):
+  - OCI media types by default;
+  - a new `ENTRYPOINT` clears an inherited `CMD`;
+  - BuildKit's `EXPOSE` rules;
+  - one history entry per instruction;
+  - a default `PATH` in every config;
+  - empty base-config fields dropped;
+  - layers carry only `security.capability`;
+  - loopback registries over plain HTTP;
+  - `COPY` wildcards that match nothing are no error;
+  - `--secret` with `type=env`;
+  - cache `sharing=` enforced;
+  - `RUN --network=host` only with `--allow network.host`;
+  - a cancel kills a running `RUN`;
+  - times clamped to `SOURCE_DATE_EPOCH`.
+
+  These land in the releases that follow; the decisions are recorded now.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main

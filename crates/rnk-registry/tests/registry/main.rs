@@ -42,6 +42,23 @@ async fn open_registry_pulls() {
 }
 
 #[tokio::test]
+async fn a_loopback_registry_speaks_plain_http_unasked() {
+    // As BuildKit (`util/resolver/resolver.go`, containerd's
+    // `MatchLocalhost`): a loopback registry is plain HTTP without a flag,
+    // and HTTPS is not even tried: the fake speaks only HTTP, and the
+    // registry is not listed as insecure.
+    let registry = FakeRegistry::start(Auth::Open).await;
+    add_image(&registry, "app", "1.0", b"x".to_vec());
+    let mut options = options(&registry);
+    options.insecure.clear();
+    let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
+    client
+        .pull_manifest(&reference(&registry, "app:1.0"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn bearer_tokens_from_config_json_credentials() {
     let registry = FakeRegistry::start(Auth::Bearer {
         user: "builder".to_owned(),
@@ -108,6 +125,68 @@ async fn anonymous_pulls_get_a_token() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::Auth { .. }), "{err}");
+}
+
+/// A client whose `config.json` holds credentials for the fake, which is
+/// not listed as insecure: plain HTTP to loopback, credentials held back.
+fn unlisted_client(registry: &FakeRegistry) -> Client {
+    let mut options = options(registry);
+    options.insecure.clear();
+    Client::new(
+        options,
+        TrustStore::load(),
+        support::credentials(&basic_auth_entry(&registry.host(), "builder", "s3cret")),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn credentials_never_go_in_clear_to_an_unlisted_loopback_registry() {
+    // A `RUN` shares the host's network namespace (unlike BuildKit's), so
+    // it could sniff `lo` or serve the port: credentials go over plain HTTP
+    // only to a registry listed with `--insecure-registry` (T11).
+    let registry = FakeRegistry::start(Auth::Bearer {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+        refresh_token: "refresh".to_owned(),
+        anonymous_pull: true,
+    })
+    .await;
+    let image = add_image(&registry, "app", "v1", b"x".to_vec());
+    let client = unlisted_client(&registry);
+    // Anonymous pulls work.
+    client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap();
+    // A push needs the credentials: refused, saying how to send them.
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let body = BlobBody::Bytes(Bytes::from(image.layer.clone()));
+    let err = client
+        .push_blob(&reference(&registry, "app:v2"), &blob, &body)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    assert!(err.to_string().contains("--insecure-registry"), "{err}");
+    assert_eq!(registry.count("PUT "), 0, "nothing was pushed");
+}
+
+#[tokio::test]
+async fn an_unlisted_loopback_registry_asking_for_basic_auth_is_refused() {
+    let registry = FakeRegistry::start(Auth::Basic {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+    })
+    .await;
+    add_image(&registry, "app", "v1", b"x".to_vec());
+    let err = unlisted_client(&registry)
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    assert!(err.to_string().contains("--insecure-registry"), "{err}");
+    // Only the ping reached the registry: no request carried credentials.
+    assert_eq!(registry.count("GET /v2/app"), 0);
 }
 
 #[tokio::test]
@@ -469,30 +548,6 @@ async fn index_entries_are_picked_by_platform() {
         .await
         .unwrap();
     assert!(single.index.is_none());
-}
-
-#[tokio::test]
-async fn plain_http_needs_the_registry_listed_as_insecure() {
-    let registry = FakeRegistry::start(Auth::Open).await;
-    add_image(&registry, "app", "v1", b"x".to_vec());
-    let mut options = options(&registry);
-    options.insecure.clear();
-    let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
-    let err = client
-        .pull_manifest(&reference(&registry, "app:v1"))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            Error::Registry {
-                operation: "ping",
-                ..
-            }
-        ),
-        "{err}"
-    );
-    assert_eq!(registry.count("GET /v2/app"), 0);
 }
 
 #[tokio::test]

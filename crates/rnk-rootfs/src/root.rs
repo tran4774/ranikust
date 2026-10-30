@@ -456,6 +456,27 @@ impl RootPath {
         rustix::fs::renameat(&opfd, oname, &npfd, nname).map_err(|e| io_err("rename", from, e))
     }
 
+    /// Renames `from` to `to`, both inside this root, failing with `EEXIST`
+    /// when `to` exists (`renameat2(RENAME_NOREPLACE)`). Neither last name
+    /// is followed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] as `renameat2(2)`.
+    pub fn rename_noreplace(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+        let (from, to) = (from.as_ref(), to.as_ref());
+        let (opfd, oname) = self.parent(from)?;
+        let (npfd, nname) = self.parent(to)?;
+        rustix::fs::renameat_with(
+            &opfd,
+            oname,
+            &npfd,
+            nname,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|e| io_err("rename", from, e))
+    }
+
     /// Removes the non-directory `p`; a symlink is removed, not followed.
     ///
     /// # Errors

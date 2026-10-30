@@ -22,7 +22,7 @@ and archive and clone contents reach disk the same way.
 
 - Fetch from cloud object stores (S3, GCS, Azure) for now (ADR-0008).
 - Interpret the Dockerfile or decide which files an instruction copies
-  (`rnk-builder`), including resolving `COPY` source globs [open: Q-080];
+  (`rnk-builder`), including resolving `COPY` source globs (Q-080, ADR-0032);
   match ignore patterns itself (`rnk-ignore`).
 - Reach a context path with `std::fs` on a joined host path (`rnk-rootfs`).
 
@@ -41,7 +41,7 @@ pub fn open(spec: &ContextSpec) -> Result<Context>;   // Dir only; Tar, Git, Htt
 impl Context {
     pub fn root(&self) -> &RootPath;                  // unfiltered: ignored files are reachable through it
     pub fn origin(&self) -> &Path;                    // the canonical directory, for messages
-    pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context>;  // --context-sub-path; `..` clamped [open: Q-081]
+    pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context>;  // --context-sub-path; `..` clamped (Q-081, ADR-0032)
     pub fn find_dockerignore(&self, dockerfile: Option<&Path>) -> Result<Option<IgnoreFile>>;
     pub fn matcher(&self, ignore: &IgnoreFile) -> Result<rnk_ignore::Matcher>;
     pub fn walk<'c>(&'c self, ignore: Option<&'c Matcher>) -> Walk<'c>;  // Iterator<Item = Result<Entry>>
@@ -113,7 +113,7 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
 - kaniko takes a `--context` without `://` as a directory and dispatches
   `dir://`, `tar://`, `git://`, `https://` (`root.go:599-601`,
   `buildcontext.go:53-71`); `https://` on Azure Blob hosts goes to an Azure
-  source (`:63-65`) ranikust lacks (ADR-0008) [open: Q-046].
+  source (`:63-65`) ranikust lacks (ADR-0008) (Q-046, ADR-0032).
 - kaniko's `git://` clones over HTTPS (HTTP with `GIT_PULL_METHOD`), takes
   `GIT_USERNAME`/`GIT_PASSWORD`/`GIT_TOKEN` and reads `#ref#commit`
   (`git.go:56-128`, `:197-220`); Docker uses `#ref:dir`
@@ -121,7 +121,7 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
 - `tar://stdin` is a gzip stream on stdin (`tar.go:41-56`);
   `--context-sub-path` applies after fetching (`root.go:625-630`), and
   kaniko ignores it for a bare path, which returns before that line
-  (`root.go:599-601`) [open: Q-081].
+  (`root.go:599-601`) (Q-081, ADR-0032).
 - HTTPS needs the explicit trust store: reqwest's default fails in `scratch`
   ([exp-05](../../research/experiments/05-rust-ecosystem.md#q1-static-binary), ADR-0020).
 - A static binary in `scratch` has no `git` to call [open: Q-045].
@@ -139,7 +139,7 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
   reported before the error reading it, and the walk stops at that error.
 - `Context::root()` sees ignored files too: whatever reads sources for
   `COPY` must go through the walk's filter, or ignored files leak into the
-  image [open: Q-080].
+  image (Q-080, ADR-0032).
 
 ## Phase 1
 

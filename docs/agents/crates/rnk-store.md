@@ -47,13 +47,21 @@ impl Store {
         where F: FnOnce(&TmpEntry) -> std::result::Result<u64, E>,    //   tmp/<id>/<n> → f (bytes written)
               E: Into<Box<dyn std::error::Error + Send + Sync>>;      //   → fsync a blob → rename
     pub fn cache_dir(&self, id: &str) -> Result<PathBuf>;  // caches/<sha256(id)>, created if missing
+    pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
+        cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=;
+        // flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
+}
+pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked: wait for EX; private: new dir
+pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new cache's; set-id bits dropped
+impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  // flock held until dropped
+impl Store {
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>
-    pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport>; // [design] Phase 5, [open: Q-043]
+    pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport>; // [design] Phase 5, (Q-043, ADR-0032)
 }
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
-pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by diff ID [open: Q-015]; digest() -> &Digest
-pub enum Error { NotAStateDir, NoFlock, Io, BadEntry, Rootfs, Fill }
+pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, Q-150) [open: Q-015]; digest() -> &Digest
+pub enum Error { NotAStateDir, NoFlock, Io, BadEntry, Cancelled, Rootfs, Fill }
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a
@@ -70,7 +78,7 @@ on a blocking thread, because the lock may wait.
 - Locks are `flock` on lock files in the state directory, released by the
   kernel when the process dies; no `flock` support is a start-up error
   (`Error::NoFlock`). Per-digest lock files are
-  `locks/{blobs,layers}/<algorithm>/<hex>` and are never removed (until
+  `locks/{blobs,layers/v2}/<algorithm>/<hex>` and are never removed (until
   `prune`), so no lock is ever taken on an unlinked file.
 - A build is alive while it holds the lock on `builds/<id>.lock`; it
   takes it before creating `builds/<id>` and `tmp/<id>`, so a clean-up never
@@ -176,7 +184,8 @@ on a blocking thread, because the lock may wait.
   caller (`ranikust`, task 8) still has to open the store at set-up and
   `close` it at the end.
 - Deferred: `prune` (Phase 5).
-- [open: Q-015] Interim: layers named by diff ID, lock files under
-  `locks/`. [open: Q-100] Durability: a blob is `fsync`ed before its
+- [open: Q-015] Interim: layers named by the digest the caller gives
+  (`rnk-snapshot` uses the chain ID, Q-150), lock files under
+  `locks/`. (Q-100, ADR-0032) Durability: a blob is `fsync`ed before its
   rename, a layer is not. [open: Q-011] The owner of the workdir checks
   and the kaniko-mode workdir lock (`ranikust` or `rnk-rootfs`); not here.

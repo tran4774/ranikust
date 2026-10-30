@@ -55,7 +55,7 @@ Canonical JSON is OLPC's, as OCI [considerations.md](https://github.com/opencont
 asks: every object's keys sorted by UTF-8 bytes, struct fields included; no
 whitespace; integers only; `serde_json`'s string escaping.
 
-Config edits and output index files (pure; [open: Q-007] here rather than
+Config edits and output index files (pure; (Q-007) here rather than
 in `rnk-builder`):
 
 ```rust

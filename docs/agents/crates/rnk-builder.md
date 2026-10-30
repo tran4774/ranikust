@@ -34,7 +34,7 @@ Built, the output side:
 pub struct BuildTime;                                   // one clock reading per build
 impl BuildTime {
     pub fn at(now: SystemTime) -> Self;                 // normal build: config `created`, history
-    pub fn reproducible(source_date_epoch: Option<&str>) -> Result<Self>;  // epoch or SOURCE_DATE_EPOCH (Q-161)
+    pub fn reproducible(source_date_epoch: Option<&str>) -> Result<Self>;  // epoch or SOURCE_DATE_EPOCH (Q-161, ADR-0032)
     pub fn layer_mtime(&self) -> Option<i64>;           // for EncodeOptions::mtime: later mtimes clamped to it
     pub fn rfc3339(&self) -> String;                    // Go's RFC3339Nano, as kaniko writes
 }
@@ -88,8 +88,11 @@ Built, the stage executor (blocking: call it on a thread of its own):
 pub fn build_stage<S: Snapshotter>(cx: &BuildCx<'_, S>, input: StageInput<'_, S::Root>) -> Result<StageDone<S::Root>>;
 pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox, pub store: &'a Store,
     pub context: &'a Context, pub context_files: &'a ContextFiles, pub exporter: &'a LayerExporter,
-    pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, PathBuf>,  // [open: Q-022]
+    pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, Secret>,
+    pub allow_network_host: bool,                        // --allow network.host
     pub platform: &'a Platform, pub run_gate: &'a dyn RunGate, pub cancelled: &'a (dyn Fn() -> bool + Sync) }
+pub enum Secret { File(PathBuf), Env(OsString) }         // a --secret, read when a RUN mounts it
+pub const MAX_SECRET_SIZE: u64;                          // 500 KiB, as BuildKit
 pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
 pub struct StageInput<'a, R> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R>,
     pub stages: BTreeMap<usize, &StageDone<R>>, pub images: BTreeMap<String, &ImageSource<R>>, pub demand: LayerDemand }
@@ -121,7 +124,8 @@ Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
 or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
 --link/--parents/--exclude`, `RUN --mount` other than `cache` and
 `secret`, `RUN --security=insecure` and `--device`, `RUN --network=host`
-under the operator's `--network=none` [open: Q-184], a heredoc name with
+under the operator's `--network=none` without `--allow network.host`
+(BuildKit's entitlement, ADR-0032), a heredoc name with
 `/`. A `#!` `RUN` heredoc runs as a script, bound read-only from the build
 directory at `/dev/pipes/<name>`. A symlinked context source is followed
 only through kept entries; a copy onto a symlink to a directory goes
@@ -253,9 +257,20 @@ through a descriptor of its directory.
   must exist); several sources need no destination ending in `/`.
 - Q-120: a symlinked source is followed inside its root; `--chmod` takes
   octal or symbolic modes (`rnk_rootfs::Chmod`).
-- [open: Q-180] `VOLUME` records the config only. [open: Q-181] cache
-  mounts are all `shared`. [open: Q-182] a secret keeps its host file's
-  mode and owner.
+- (Q-180, ADR-0032) `VOLUME` records the config only.
+- `RUN --mount` (`mounts.rs`), as BuildKit (ADR-0032): a cache mount is
+  leased from the store with its `sharing=` (`Store::cache_lease`: shared,
+  locked waits, private gets a new empty cache); a `RUN` takes its leases
+  in key order, and a key mounted twice shares one lease; the id defaults
+  to the cleaned target, and `uid`/`gid`/`mode` key the cache and are set
+  by the store when it makes it. A secret's id is `id=`, else `source=`,
+  else the target's name; with `env=` it is a variable of that `RUN` only
+  (a NUL byte is refused, naming the id), and without `env=` or with a
+  `target=` a `rnk_sandbox::SecretFile` (default `0400`, root's;
+  permission bits only) that the sandbox writes on the `RUN`'s own tmpfs
+  and binds read-only at the target or `/run/secrets/<id>`: no copy
+  reaches a disk. Secret files are opened non-blocking and must be
+  regular files. A cancel kills the running `RUN` (`Sandbox::cancel`).
 - [open: Q-029] Interim: `rnk-sched` builds each stage's demand with
   `LayerDemand::for_stage`; the rule lives here.
 - Q-006: OCI media types whatever the base and `--reproducible`; a layer
@@ -263,6 +278,6 @@ through a descriptor of its directory.
 - Q-161: under `--reproducible` the config's `created` is the epoch, the
   build's history entries carry it, the base's keep theirs, and layer
   mtimes later than it are clamped, as BuildKit.
-- [open: Q-160] Under `--reproducible`, base layers are kept as pulled.
+- (Q-160, ADR-0032) Under `--reproducible`, base layers are kept as pulled.
 - [open: Q-162] Built layer blobs live in the build directory, not in the
   store's `blobs/`.

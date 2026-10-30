@@ -186,8 +186,19 @@ fn value_names_match_the_flags() {
 
 #[test]
 fn secrets_are_absolute_and_ids_unique() {
+    use rnk_builder::Secret;
     let ok = config(&["--no-push", "--secret", "id=a,src=rel/a"]).expect("config");
-    assert!(ok.secrets[0].1.is_absolute());
+    assert!(matches!(&ok.secrets[0].1, Secret::File(p) if p.is_absolute() && p.ends_with("rel/a")));
+    let env = config(&["--no-push", "--secret", "id=a,env=TOKEN"]).expect("config");
+    assert_eq!(env.secrets[0].1, Secret::Env("TOKEN".into()));
+    // No source: the variable named by the id when set, else the file.
+    let none = config(&["--no-push", "--secret", "id=RNK_TEST_NEVER_SET_X3"]).expect("config");
+    assert!(matches!(&none.secrets[0].1, Secret::File(p) if p.ends_with("RNK_TEST_NEVER_SET_X3")));
+    let path = config(&["--no-push", "--secret", "id=PATH"]).expect("config");
+    assert_eq!(path.secrets[0].1, Secret::Env("PATH".into()));
+    let allow = config(&["--no-push", "--allow", "network.host"]).expect("config");
+    assert!(allow.allow_network_host);
+    assert!(!ok.allow_network_host);
     let twice = config(&[
         "--no-push",
         "--secret",

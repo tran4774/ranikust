@@ -1,5 +1,7 @@
 //! Overlay mounts with the ADR-0016 options: `fsconfig(lowerdir+)` where
-//! the kernel has it, else `mount(2)` with short names.
+//! the kernel has it, else `mount(2)` with relative lower names, from a
+//! thread of its own working directory, as containerd mounts many lowers
+//! (ADR-0032, Q-151).
 //!
 //! Every path here is ranikust's own: lower layers in the store's
 //! `layers/`, upper, work and mount point under `builds/<id>/` (mode 0700,
@@ -7,16 +9,18 @@
 //! namespace (`rnk_sandbox::enter_build_namespace`).
 
 use std::ffi::{CString, OsString};
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use rnk_rootfs::RootPath;
+use rnk_rootfs::{OpenHow, RootPath};
 use rustix::fs::CWD;
 use rustix::io::Errno;
 use rustix::mount::{
     FsMountFlags, FsOpenFlags, MountAttrFlags, MountFlags, MoveMountFlags, UnmountFlags,
 };
-use sha2::{Digest as _, Sha256};
+use rustix::thread::UnshareFlags;
 
 use crate::error::{Error, Result};
 
@@ -38,8 +42,9 @@ pub enum MountApi {
     /// `FSCONFIG_CMD_CREATE`, `fsmount`, `move_mount` (Linux 6.8): no
     /// length limit.
     LowerdirPlus,
-    /// `mount(2)` with one option string of short `l/<name>` paths: at most
-    /// `MOUNT_DATA_MAX` bytes.
+    /// `mount(2)` with one option string, the lowers named `0`, `1`, ...
+    /// relative to a directory of links to them: at most `MOUNT_DATA_MAX`
+    /// bytes, which 500 lowers fit.
     Mount2,
 }
 
@@ -54,13 +59,10 @@ pub(crate) struct Spec<'a> {
     pub(crate) target: &'a Path,
 }
 
-/// Mounts `spec` with `api`. `short` gives the short name of a lower for
-/// [`MountApi::Mount2`].
-pub(crate) fn mount(
-    spec: &Spec<'_>,
-    api: MountApi,
-    short: &mut dyn FnMut(&Path) -> Result<PathBuf>,
-) -> Result<()> {
+/// Mounts `spec` with `api`. For [`MountApi::Mount2`], `links` is a
+/// private directory of the build where the mount makes, and removes
+/// again, its directory of links to the lowers.
+pub(crate) fn mount(spec: &Spec<'_>, api: MountApi, links: &RootPath) -> Result<()> {
     let span = tracing::debug_span!("rnk_snapshot.mount", lowers = spec.lowers.len());
     let _entered = span.enter();
     if spec.lowers.len() > MAX_LOWERS {
@@ -71,7 +73,7 @@ pub(crate) fn mount(
     }
     match api {
         MountApi::LowerdirPlus => mount_fsconfig(spec),
-        MountApi::Mount2 => mount_data(spec, short),
+        MountApi::Mount2 => mount_data(spec, links),
     }
 }
 
@@ -154,8 +156,10 @@ fn kernel_messages(fs: &impl rustix::fd::AsFd) -> String {
     }
 }
 
-/// The `mount(2)` option string, with the lowers' short names.
-fn data(spec: &Spec<'_>, short: &mut dyn FnMut(&Path) -> Result<PathBuf>) -> Result<OsString> {
+/// The `mount(2)` option string, with the lowers named by their index:
+/// `lowerdir=0:1:...`, relative to the directory of links the mount runs
+/// in. Upper and work stay absolute.
+fn data(spec: &Spec<'_>) -> OsString {
     let mut d = Vec::new();
     for (k, v) in options(spec.upper.is_some()) {
         d.extend_from_slice(k.as_bytes());
@@ -166,11 +170,11 @@ fn data(spec: &Spec<'_>, short: &mut dyn FnMut(&Path) -> Result<PathBuf>) -> Res
         d.push(b',');
     }
     d.extend_from_slice(b"lowerdir=");
-    for (i, lower) in spec.lowers.iter().enumerate() {
+    for i in 0..spec.lowers.len() {
         if i > 0 {
             d.push(b':');
         }
-        d.extend_from_slice(short(lower)?.as_os_str().as_bytes());
+        d.extend_from_slice(i.to_string().as_bytes());
     }
     if let Some((upper, work)) = spec.upper {
         d.extend_from_slice(b",upperdir=");
@@ -178,11 +182,24 @@ fn data(spec: &Spec<'_>, short: &mut dyn FnMut(&Path) -> Result<PathBuf>) -> Res
         d.extend_from_slice(b",workdir=");
         d.extend_from_slice(work.as_os_str().as_bytes());
     }
-    Ok(OsString::from_vec(d))
+    OsString::from_vec(d)
 }
 
-fn mount_data(spec: &Spec<'_>, short: &mut dyn FnMut(&Path) -> Result<PathBuf>) -> Result<()> {
-    let data = data(spec, short)?;
+/// Tells the directories of links of this process's mounts apart.
+static NEXT_LINKS: AtomicU64 = AtomicU64::new(0);
+
+/// `mount(2)` as containerd mounts many lowers
+/// (`core/mount/mount_linux.go`, `compactLowerdirOption` and `mountAt`):
+/// the lowers get short relative names, and the mount runs on a thread of
+/// its own that unshares its filesystem context (`CLONE_FS`) and changes
+/// into the directory the names are relative to, so the process's working
+/// directory never changes. ranikust's names are links `0`, `1`, ... in a
+/// fresh directory under `links`, which overlay follows once, at mount
+/// time; the directory is removed again after the mount, whatever its
+/// result. When only that removal fails, the mount still succeeds (it
+/// stands, and its caller tracks it): the directory goes with the stage's.
+fn mount_data(spec: &Spec<'_>, links: &RootPath) -> Result<()> {
+    let data = data(spec);
     let len = data.len();
     if len > MOUNT_DATA_MAX {
         return Err(Error::OptionsTooLong {
@@ -200,32 +217,97 @@ fn mount_data(spec: &Spec<'_>, short: &mut dyn FnMut(&Path) -> Result<PathBuf>) 
         errno,
         options: Some(len),
     };
-    // Paths of ranikust's own directories: no NUL byte.
+    // Paths of ranikust's own directories and decimal names: no NUL byte.
     let data = CString::new(data.into_vec()).map_err(|_| mount_err(Errno::INVAL))?;
-    rustix::mount::mount(
-        "overlay",
-        spec.target,
-        "overlay",
-        if spec.upper.is_some() {
-            MountFlags::empty()
-        } else {
-            MountFlags::RDONLY
-        },
-        data.as_c_str(),
-    )
-    .map_err(|errno| Error::Mount {
-        target: spec.target.to_owned(),
-        lowers: spec.lowers.len(),
-        how: "mount(2)",
-        step: "mount".into(),
-        errno,
-        options: Some(len),
-    })
+    let flags = if spec.upper.is_some() {
+        MountFlags::empty()
+    } else {
+        MountFlags::RDONLY
+    };
+    let name = format!("lowers-{}", NEXT_LINKS.fetch_add(1, Ordering::Relaxed));
+    links.create_dir(&name, 0o700)?;
+    let mounted = make_links(links, &name, spec.lowers).and_then(|dir| {
+        std::thread::scope(|s| {
+            let thread = std::thread::Builder::new()
+                .name("rnk-mount".into())
+                .spawn_scoped(s, || mount_in(&dir, spec.target, flags, &data))
+                .map_err(|e| Error::Mount {
+                    target: spec.target.to_owned(),
+                    lowers: spec.lowers.len(),
+                    how: "mount(2)",
+                    step: format!("start the mount thread: {e}"),
+                    errno: e
+                        .raw_os_error()
+                        .map_or(Errno::AGAIN, Errno::from_raw_os_error),
+                    options: Some(len),
+                })?;
+            thread
+                .join()
+                // The workspace aborts on panic, so the thread never
+                // unwinds; a join error is not expected.
+                .unwrap_or(Err(Errno::INVAL))
+                .map_err(mount_err)
+        })
+    });
+    let removed = remove_links(links, &name, spec.lowers.len());
+    match (mounted, removed) {
+        (Err(e), _) => Err(e),
+        (Ok(()), Ok(())) => Ok(()),
+        // The mount stands and is the caller's to track: the links went
+        // with the lookup, and their directory goes with the stage's or
+        // at the next start's clean-up.
+        (Ok(()), Err(e)) => {
+            tracing::warn!(
+                target: "rnk_snapshot",
+                "removing the links of the mount on {}: {e}",
+                spec.target.display()
+            );
+            Ok(())
+        }
+    }
 }
 
-/// Checks that `dir`, under which every lower, upper, work directory and
-/// short name lives, holds nothing overlay's option syntax treats as
-/// syntax: `,` and `=` separate options, `:` lowers, `\` escapes, and
+/// Fills `links/<name>/` with `<i> -> lowers[i]` and opens it as a path
+/// handle for `fchdir`.
+fn make_links(links: &RootPath, name: &str, lowers: &[PathBuf]) -> Result<OwnedFd> {
+    let dir = Path::new(name);
+    for (i, lower) in lowers.iter().enumerate() {
+        links.symlink(lower, dir.join(i.to_string()))?;
+    }
+    Ok(links.open_at(dir, &OpenHow::path().directory().no_follow())?)
+}
+
+/// Removes what [`make_links`] made, also when it stopped half-way.
+fn remove_links(links: &RootPath, name: &str, count: usize) -> Result<()> {
+    let dir = Path::new(name);
+    for i in 0..count {
+        match links.remove_file(dir.join(i.to_string())) {
+            Ok(()) => {}
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(links.remove_dir(dir)?)
+}
+
+/// The mount itself, on its own thread: a private filesystem context, the
+/// working directory `dir`, then `mount(2)`. The thread ends right after,
+/// and its context with it.
+fn mount_in(
+    dir: &OwnedFd,
+    target: &Path,
+    flags: MountFlags,
+    data: &CString,
+) -> rustix::io::Result<()> {
+    // SAFETY: `FS` does not unshare the descriptor table, the only flag
+    // `unshare_unsafe` is unsafe for.
+    unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS) }?;
+    rustix::process::fchdir(dir)?;
+    rustix::mount::mount("overlay", target, "overlay", flags, data.as_c_str())
+}
+
+/// Checks that `dir`, under which every lower, upper and work directory
+/// lives, holds nothing overlay's option syntax treats as syntax: `,` and `=` separate options, `:` lowers, `\` escapes, and
 /// control characters have no business in a path given to the kernel.
 /// The names ranikust adds below it (digests, build ids, `diff-<k>`) never
 /// do.
@@ -260,69 +342,6 @@ pub(crate) fn unmount(target: &Path) -> Result<()> {
     })
 }
 
-/// The short names of `mount(2)`: `<state>/l/<name>`, a symlink to a lower
-/// layer, so that a mount's option string stays below one page.
-pub(crate) struct ShortNames<'a> {
-    /// The state directory.
-    pub(crate) state: &'a RootPath,
-    /// Its host path.
-    pub(crate) state_path: &'a Path,
-}
-
-/// Length of a short name: 12 characters of base 32, 60 bits of the
-/// target's sha256.
-const SHORT_LEN: usize = 12;
-
-impl ShortNames<'_> {
-    /// The short path of `target`, creating its link if missing. Names come
-    /// from the target's hash, so two builds sharing the store agree on them;
-    /// a link that points elsewhere (a hash collision, or something planted)
-    /// is refused.
-    pub(crate) fn get(&self, target: &Path) -> Result<PathBuf> {
-        let name = short_name(target);
-        let rel = Path::new("l").join(&name);
-        self.state.create_dir_all("l", 0o700)?;
-        match self.state.symlink(target, &rel) {
-            Ok(()) => {}
-            Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => {
-                let found = self.state.read_link(&rel)?;
-                if found != target {
-                    return Err(Error::Export {
-                        path: rel,
-                        reason: "a short name of the mount(2) fallback points elsewhere",
-                    });
-                }
-            }
-            Err(e) => return Err(e.into()),
-        }
-        Ok(self.state_path.join(rel))
-    }
-
-    /// Removes the short name of `target`, if it is there.
-    pub(crate) fn remove(&self, target: &Path) {
-        let rel = Path::new("l").join(short_name(target));
-        if let Ok(found) = self.state.read_link(&rel)
-            && found == target
-        {
-            let _ = self.state.remove_file(&rel);
-        }
-    }
-}
-
-fn short_name(target: &Path) -> String {
-    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-    let hash = Sha256::digest(target.as_os_str().as_bytes());
-    let mut bits = u64::from_be_bytes(hash[..8].try_into().unwrap_or([0; 8]));
-    let mut name = String::with_capacity(SHORT_LEN);
-    for _ in 0..SHORT_LEN {
-        name.push(char::from(
-            ALPHABET[usize::from(u8::try_from(bits & 31).unwrap_or(0))],
-        ));
-        bits >>= 5;
-    }
-    name
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,41 +355,70 @@ mod tests {
     }
 
     #[test]
-    fn data_has_every_option_and_short_lowers_topmost_first() {
+    fn data_has_every_option_and_lowers_by_index_topmost_first() {
         let lowers = [PathBuf::from("/s/a"), PathBuf::from("/s/b")];
-        let d = data(
-            &spec(&lowers, Some((Path::new("/s/u"), Path::new("/s/w")))),
-            &mut |p| Ok(Path::new("/l").join(p.file_name().unwrap())),
-        )
-        .unwrap();
+        let d = data(&spec(&lowers, Some((Path::new("/s/u"), Path::new("/s/w")))));
         assert_eq!(
             d,
             "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile,\
-             lowerdir=/l/a:/l/b,upperdir=/s/u,workdir=/s/w"
+             lowerdir=0:1,upperdir=/s/u,workdir=/s/w"
         );
     }
 
     #[test]
     fn read_only_mount_leaves_out_volatile() {
         let lowers = [PathBuf::from("/a"), PathBuf::from("/b")];
-        let d = data(&spec(&lowers, None), &mut |p| Ok(p.to_owned())).unwrap();
+        let d = data(&spec(&lowers, None));
         assert!(!d.to_string_lossy().contains("volatile"), "{d:?}");
-        assert!(d.to_string_lossy().ends_with("lowerdir=/a:/b"), "{d:?}");
+        assert!(d.to_string_lossy().ends_with("lowerdir=0:1"), "{d:?}");
+    }
+
+    #[test]
+    fn five_hundred_lowers_fit_one_page() {
+        let lowers: Vec<PathBuf> = (0..MAX_LOWERS)
+            .map(|i| PathBuf::from(format!("/{}/{i}", "x".repeat(200))))
+            .collect();
+        let long = PathBuf::from(format!("/{}", "s".repeat(1000)));
+        let d = data(&spec(&lowers, Some((&long, &long))));
+        assert!(d.len() <= MOUNT_DATA_MAX, "{}", d.len());
     }
 
     #[test]
     fn too_long_data_is_refused_before_the_kernel_truncates_it() {
-        let lowers: Vec<PathBuf> = (0..200)
-            .map(|i| PathBuf::from(format!("/{}/{i}", "x".repeat(30))))
-            .collect();
-        let e = mount(&spec(&lowers, None), MountApi::Mount2, &mut |p| {
-            Ok(p.to_owned())
-        })
+        let lowers = [PathBuf::from("/a")];
+        let long = PathBuf::from(format!("/{}", "s".repeat(2100)));
+        let dir = tempfile::tempdir().unwrap();
+        let links = RootPath::open(dir.path()).unwrap();
+        let e = mount(
+            &spec(&lowers, Some((&long, &long))),
+            MountApi::Mount2,
+            &links,
+        )
         .unwrap_err();
-        assert!(
-            matches!(e, Error::OptionsTooLong { lowers: 200, .. }),
-            "{e}"
-        );
+        assert!(matches!(e, Error::OptionsTooLong { lowers: 1, .. }), "{e}");
+        // Refused before any link was made.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_failed_mount_leaves_no_links() {
+        // Unprivileged, mount(2) fails with EPERM; the links go anyway.
+        let dir = tempfile::tempdir().unwrap();
+        let links = RootPath::open(dir.path()).unwrap();
+        let lowers = [dir.path().join("a"), dir.path().join("b")];
+        let target = dir.path().join("t");
+        let e = mount(
+            &Spec {
+                lowers: &lowers,
+                upper: None,
+                target: &target,
+            },
+            MountApi::Mount2,
+            &links,
+        )
+        .unwrap_err();
+        assert!(matches!(e, Error::Mount { .. }), "{e}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -387,10 +435,9 @@ mod tests {
         let lowers: Vec<PathBuf> = (0..=MAX_LOWERS)
             .map(|i| PathBuf::from(format!("/{i}")))
             .collect();
-        let e = mount(&spec(&lowers, None), MountApi::LowerdirPlus, &mut |p| {
-            Ok(p.to_owned())
-        })
-        .unwrap_err();
+        let dir = tempfile::tempdir().unwrap();
+        let links = RootPath::open(dir.path()).unwrap();
+        let e = mount(&spec(&lowers, None), MountApi::LowerdirPlus, &links).unwrap_err();
         assert!(
             matches!(
                 e,
@@ -401,31 +448,5 @@ mod tests {
             ),
             "{e}"
         );
-    }
-
-    #[test]
-    fn short_names_are_stable_short_and_checked() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = RootPath::open(dir.path()).unwrap();
-        let names = ShortNames {
-            state: &state,
-            state_path: dir.path(),
-        };
-        let a = names.get(Path::new("/store/layers/sha256/aa")).unwrap();
-        assert_eq!(a, names.get(Path::new("/store/layers/sha256/aa")).unwrap());
-        assert_eq!(a.file_name().unwrap().len(), SHORT_LEN);
-        assert_eq!(
-            std::fs::read_link(&a).unwrap(),
-            Path::new("/store/layers/sha256/aa")
-        );
-        assert_ne!(a, names.get(Path::new("/store/layers/sha256/bb")).unwrap());
-        // A link planted under the name is not trusted.
-        let planted = Path::new("/elsewhere");
-        let name = a.file_name().unwrap();
-        std::fs::remove_file(&a).unwrap();
-        std::os::unix::fs::symlink(planted, dir.path().join("l").join(name)).unwrap();
-        assert!(names.get(Path::new("/store/layers/sha256/aa")).is_err());
-        names.remove(Path::new("/store/layers/sha256/aa"));
-        assert!(dir.path().join("l").join(name).symlink_metadata().is_ok());
     }
 }

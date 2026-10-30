@@ -101,7 +101,7 @@ inside `rnk-registry`. It also holds, as pure data, the config edits of the
 metadata instructions (`ConfigEdit`: `ENV`, `LABEL`, `USER`, `WORKDIR`…),
 history and `diff_ids` appends, and the file names and index types of a
 docker-save tarball and an OCI layout; `rnk-builder` writes the files
-[open: Q-007].
+(Q-007).
 **Must not** access the network or filesystem.
 
 ### `rnk-registry`
@@ -195,7 +195,7 @@ order.
 
 Deterministic tar with fully controlled headers: the writer sorts the
 entries it is fed and emits missing parent directory headers, whose metadata
-it asks the exporter for through `EntrySource` ([open: Q-013], interim),
+it asks the exporter for through `EntrySource` ((Q-013, ADR-0032), interim),
 which also gives file contents. Parallel gzip and zstd compression;
 decompression of pulled gzip and zstd blobs into a plain tar stream; digests
 computed while streaming.

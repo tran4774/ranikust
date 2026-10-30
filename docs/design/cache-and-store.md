@@ -26,10 +26,10 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 <state-dir>/
 ├── .ranikust-root
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
-├── layers/sha256/<hex>/        extracted layers by diff ID, immutable [open: Q-015]
+├── layers/v2/sha256/<hex>/     extracted layers by chain ID, immutable [open: Q-015]
 ├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
-├── locks/{blobs,layers}/sha256/<hex>   per-digest lock files [open: Q-015]
+├── locks/{blobs,layers/v2}/sha256/<hex>   per-digest lock files [open: Q-015]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── builds/<build-id>.lock      held (flock) while the build runs
@@ -82,7 +82,7 @@ form of a flattened base in the store is not designed yet].
 2. Write the new entry under `tmp/<build-id>/<n>` on the same filesystem.
 3. Verify it (blob digest; layer extracted completely): the caller does,
    while filling it.
-4. `fsync` a blob [open: Q-100], then `rename` it to its final name.
+4. `fsync` a blob (Q-100, ADR-0032), then `rename` it to its final name.
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build
 is no longer running. A state directory that is not empty and has no
@@ -95,7 +95,7 @@ directory the user pointed at by mistake. In overlay mode an upper directory wri
 `ranikust prune` calls `rnk-store`, which removes entries by total store size
 and by age. It takes the same locks as a build and never removes an entry a
 running build uses [inferred: the in-use tracking is not designed yet].
-Defaults and the age measure (last use or creation) are [open: Q-043].
+Defaults and the age measure (last use or creation) are (Q-043, ADR-0032).
 
 ## Cache keys
 

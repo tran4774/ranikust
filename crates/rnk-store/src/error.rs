@@ -61,6 +61,10 @@ pub enum Error {
         reason: &'static str,
     },
 
+    /// The caller cancelled while waiting for a locked cache mount.
+    #[error("cancelled while waiting for a locked cache mount")]
+    Cancelled,
+
     /// An operation inside the state directory failed.
     #[error("state directory: {0}")]
     Rootfs(#[from] rnk_rootfs::Error),

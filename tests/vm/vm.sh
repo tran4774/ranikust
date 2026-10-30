@@ -69,6 +69,8 @@ STAGE="$TARGET/vm/stage"
 rm -rf "$STAGE" && mkdir -p "$STAGE/bin/tests"
 cp -r "$HERE/guest" "$STAGE/guest"
 cp "$REPO/tests/smoke/lib.bash" "$STAGE/guest/smoke-lib.bash"
+# The smoke suite's build context; not `guest/e2e`, which holds the e2e
+# suite's scripts.
 cp -r "$REPO/tests/smoke/e2e" "$STAGE/guest/smoke-e2e"
 zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}"; }
 

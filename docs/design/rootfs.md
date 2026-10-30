@@ -133,7 +133,7 @@ never called. A hand-written reader would repeat that parsing for no gain.
   lower inode link to that copy, so the bytes written stay bounded by the
   lower layers' size, however many names a layer links. Only the
   `user.overlay.opaque=y` form ranikust writes is recognised
-  ([open: Q-121]). A target in no layer, hidden, or a directory is an
+  ((Q-121)). A target in no layer, hidden, or a directory is an
   `Error::Entry`; so is any missing target for plain `extract`. Lower
   layers are only read.
 - **`Whiteouts::Overlay`** (`layers/<id>`, mounted with `userxattr`,

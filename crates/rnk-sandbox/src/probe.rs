@@ -76,7 +76,7 @@ fn attempts(dir: &Path, root_dir: &Path, parent: ParentPid) -> Result<Caps> {
         let runner = Runner::new(dir, Some(root_entry))?;
         let spec = RunSpec::new(root_dir, vec![PROBE_PROGRAM.into()]);
         let outcome =
-            span.in_scope(|| reached_exec(runner.run(spec, false, |job| clone_child(job, parent))));
+            span.in_scope(|| reached_exec(runner.run(spec, None, |job| clone_child(job, parent))));
         span.record("ok", outcome.is_ok());
         match outcome {
             Ok(()) => return Ok(Caps { root_entry }),

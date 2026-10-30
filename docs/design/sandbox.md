@@ -81,9 +81,18 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
       read-only remount must keep the source mount's locked flags
       (`statfs().f_flags`: `nosuid`, `nodev`, `noexec`, `relatime`) or it
       fails with `EPERM` in a user namespace.
-   6. `RUN --mount`: `type=cache` binds `caches/<id>` from the store
-      (`rnk-store`), `type=secret` binds a file, `type=bind` binds the
-      context or another stage's root. Every bind is remounted `nodev`.
+   6. `RUN --mount`: `type=cache` binds a cache directory leased from
+      the store with its `sharing=` (`Store::cache_lease`), `type=bind`
+      binds the context or another stage's root. `type=secret` follows
+      BuildKit's secret mount: after the other mounts, the child mounts a
+      tmpfs (`nodev`, `nosuid`, `noexec`, `0700`) over the `RUN`'s scratch
+      directory, writes each secret there from its own memory, gives it
+      its owner and mode (`0400`, root's, unless the mount asks
+      otherwise), binds it read-only (`nosuid`, `nodev`, `noexec`) at its
+      target and detaches the tmpfs. The secret never reaches a disk and
+      dies with the `RUN`'s mount namespace. A secret with `env=` is a
+      variable of that `RUN` instead. Every bind is remounted `nodev`
+      (ADR-0032).
       The child opens each source in its own mount namespace (`O_PATH`,
       no symlink as the last component, type checked) and binds it through
       `/proc/self/fd`: a bind refuses (`EINVAL`) a source opened in another
@@ -132,7 +141,10 @@ and exits 127; the parent reads end-of-file once `execve` succeeded.
 
 The parent waits for the child. The child is PID 1 of its namespace; when it
 exits, the kernel kills everything left in the namespace, so no `tini` and no
-process-group kill are needed. A command running as PID 1 ignores `SIGTERM`
+process-group kill are needed. A cancel (`Sandbox::cancel`) sends that PID 1
+`SIGKILL`, as BuildKit kills the process on a cancel; the child is
+forgotten only once it has exited and before it is reaped, so the kill
+never reaches a reused pid. A command running as PID 1 ignores `SIGTERM`
 unless it installs a handler, as under Docker and BuildKit.
 
 ## Stub mount points
