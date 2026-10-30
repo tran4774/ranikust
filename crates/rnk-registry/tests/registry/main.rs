@@ -347,10 +347,8 @@ async fn mounts_fall_back_to_upload() {
     let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
     let body = BlobBody::Bytes(Bytes::from(image.layer.clone()));
     let from = reference(&registry, "base:v1");
-    // The fake shares one blob store across repositories: forget the blob so
-    // the existence check misses and the mount is tried.
-    registry.state().blobs.remove(blob.digest.as_str()).unwrap();
-
+    // Each repository sees only its own blobs: `a` and `b` miss the blob
+    // and try the mount.
     registry.state().refuse_mounts = true;
     let outcome = client
         .mount_or_push(&reference(&registry, "a:v1"), &from, &blob, &body)
@@ -359,21 +357,63 @@ async fn mounts_fall_back_to_upload() {
     assert_eq!(registry.count("POST /v2/a/blobs/uploads/?mount="), 1);
     assert_eq!(registry.count("PUT /v2/a/blobs/uploads/"), 1);
 
-    // Accepted mounts: the upload stored the blob again, so the existence
-    // check is made to miss once more.
     registry.state().refuse_mounts = false;
-    registry.state().faults.push(Fault {
-        method: Method::HEAD,
-        path_contains: "/v2/b/blobs/".to_owned(),
-        status: 404,
-        remaining: 1,
-    });
     let outcome = client
         .mount_or_push(&reference(&registry, "b:v1"), &from, &blob, &body)
         .await;
     assert_eq!(outcome.unwrap(), PushOutcome::Mounted);
     assert_eq!(registry.count("HEAD /v2/b/blobs/"), 1);
     assert_eq!(registry.count("PUT /v2/b/blobs/uploads/"), 0);
+}
+
+/// On a token registry the mount carries one token with push access to the
+/// destination and pull access to the source, from the realm (basic
+/// credentials) or the identity-token exchange.
+#[tokio::test]
+async fn mounts_on_token_registries_ask_for_the_source_scope() {
+    for identity in [false, true] {
+        let registry = FakeRegistry::start(Auth::Bearer {
+            user: "builder".to_owned(),
+            password: "s3cret".to_owned(),
+            refresh_token: "refresh-xyz".to_owned(),
+            anonymous_pull: false,
+        })
+        .await;
+        let host = registry.host();
+        let client = if identity {
+            client_with(
+                &registry,
+                &format!(r#"{{"auths":{{"{host}":{{"identitytoken":"refresh-xyz"}}}}}}"#),
+            )
+        } else {
+            client_with(&registry, &basic_auth_entry(&host, "builder", "s3cret"))
+        };
+        let image = add_image(&registry, "base", "v1", b"shared layer".repeat(10));
+        let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+        let body = BlobBody::Bytes(Bytes::from(image.layer.clone()));
+        let from = reference(&registry, "base:v1");
+
+        for target in ["a:v1", "b:v1"] {
+            let outcome = client
+                .mount_or_push(&reference(&registry, target), &from, &blob, &body)
+                .await;
+            assert_eq!(
+                outcome.unwrap(),
+                PushOutcome::Mounted,
+                "identity: {identity}"
+            );
+        }
+        assert_eq!(registry.count("PUT /v2/"), 0, "nothing uploaded");
+        if identity {
+            let forms = registry.state().token_forms.clone();
+            assert!(
+                forms
+                    .iter()
+                    .any(|f| f.contains("repository%3Aa%3Apull%2Cpush+repository%3Abase%3Apull")),
+                "{forms:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

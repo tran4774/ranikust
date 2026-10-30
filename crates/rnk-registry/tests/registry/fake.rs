@@ -271,10 +271,15 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
             None => reply(404, ""),
         },
         ("blobs", Method::GET) => {
+            let held = state
+                .blob_repos
+                .get(&target)
+                .is_some_and(|r| r.contains(&repo));
             let served = state
                 .tampered
                 .get(&target)
                 .or_else(|| state.blobs.get(&target))
+                .filter(|_| held)
                 .cloned();
             match served {
                 Some(blob) => reply(200, blob),
@@ -288,7 +293,14 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
                     .blob_repos
                     .get(digest)
                     .is_some_and(|r| r.contains(from));
-                if held && !state.refuse_mounts {
+                // Under bearer authentication a mount also needs pull access
+                // to the source, in the same token; without it a registry
+                // answers as for a refused mount.
+                let may_read_source = match &state.auth {
+                    Auth::Open | Auth::Basic { .. } => true,
+                    Auth::Bearer { .. } => granted(authorization.as_deref(), from, false),
+                };
+                if held && may_read_source && !state.refuse_mounts {
                     state
                         .blob_repos
                         .entry(digest.clone())
@@ -387,17 +399,10 @@ fn refusal(
             }
         }
         Auth::Bearer { .. } => {
-            let granted = authorization
-                .and_then(|a| a.strip_prefix("Bearer "))
-                .and_then(|t| t.strip_prefix("tok,"))
-                .is_some_and(|t| match scope {
-                    None => true,
-                    Some((repo, push)) => {
-                        let wanted = if push { "pull,push" } else { "pull" };
-                        t == format!("{repo}:{wanted}")
-                            || (!push && t == format!("{repo}:pull,push"))
-                    }
-                });
+            let granted = match scope {
+                None => authorization.is_some_and(|a| a.starts_with("Bearer tok,")),
+                Some((repo, push)) => granted(authorization, repo, push),
+            };
             if granted {
                 None
             } else {
@@ -412,8 +417,24 @@ fn refusal(
     }
 }
 
-/// The token endpoint: `GET` with optional basic credentials, `POST` with a
-/// refresh token. Tokens are `tok,<repository>:<actions>`.
+/// Whether a bearer `authorization` grants `repo` pull access, or push
+/// access when `push`. Tokens are `tok,<repository>:<actions>[;...]`.
+fn granted(authorization: Option<&str>, repo: &str, push: bool) -> bool {
+    authorization
+        .and_then(|a| a.strip_prefix("Bearer "))
+        .and_then(|t| t.strip_prefix("tok,"))
+        .is_some_and(|t| {
+            t.split(';').any(|scope| {
+                let wanted = if push { "pull,push" } else { "pull" };
+                scope == format!("{repo}:{wanted}")
+                    || (!push && scope == format!("{repo}:pull,push"))
+            })
+        })
+}
+
+/// The token endpoint: `GET` with optional basic credentials and one
+/// `scope` parameter per scope, `POST` with a refresh token and the scopes
+/// space-separated. One token covers every scope asked for.
 fn token(
     state: &mut State,
     method: &Method,
@@ -430,17 +451,32 @@ fn token(
     else {
         return reply(404, "");
     };
-    let form = if *method == Method::POST {
+    let (form, scopes): (HashMap<String, String>, Vec<String>) = if *method == Method::POST {
         let text = String::from_utf8_lossy(body).into_owned();
         state.token_forms.push(text.clone());
-        params(&text)
+        let form = params(&text);
+        let scopes = form
+            .get("scope")
+            .map(|s| s.split(' ').map(str::to_owned).collect())
+            .unwrap_or_default();
+        (form, scopes)
     } else {
-        params(query)
+        let scopes = query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .filter(|(k, _)| *k == "scope")
+            .map(|(_, v)| decode(v))
+            .collect();
+        (params(query), scopes)
     };
-    let Some(scope) = form.get("scope") else {
+    if scopes.is_empty() {
         return reply(400, "no scope");
-    };
-    let Some(repo_actions) = scope.strip_prefix("repository:") else {
+    }
+    let Some(repo_actions) = scopes
+        .iter()
+        .map(|s| s.strip_prefix("repository:"))
+        .collect::<Option<Vec<_>>>()
+    else {
         return reply(400, "bad scope");
     };
     let authorized = if *method == Method::POST {
@@ -448,12 +484,12 @@ fn token(
             && form.get("refresh_token") == Some(&refresh_token)
     } else {
         authorization == Some(basic_header(&user, &password).as_str())
-            || (anonymous_pull && repo_actions.ends_with(":pull"))
+            || (anonymous_pull && repo_actions.iter().all(|r| r.ends_with(":pull")))
     };
     if !authorized {
         return reply(401, r#"{"details":"denied"}"#);
     }
-    let token = format!("tok,{repo_actions}");
+    let token = format!("tok,{}", repo_actions.join(";"));
     let field = if *method == Method::POST {
         "access_token"
     } else {
