@@ -611,27 +611,29 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+## Answered
+
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 
-- **Blocks:** an aarch64 release (Phase 6); **Area:** build, CI
-- **Context:** `ADR-0020` releases a static-pie binary with its symbol
-  table; x86_64 gets both by linking with the host `cc`. For
-  `aarch64-unknown-linux-musl` there is no host cross `cc`: zig's linker
-  (the cargo-zigbuild default) gives a static `EXEC` without `.symtab`, and
-  `rust-lld` (`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld`)
-  a static `EXEC` with `.symtab`; both run `ranikust version` under
-  qemu-user (measured on branch `ci/aarch64-tests`). `just test-aarch64`
-  checks only that the binary is static.
-- **Options:** (a) `rust-lld` plus flags that give static-pie, if rustc's
-  target allows it; (b) a musl cross `cc` (e.g. `aarch64-linux-musl-gcc`)
-  as the linker in CI; (c) accept a non-PIE aarch64 binary and amend the
-  ADR.
-- **Recommendation:** none
-- **Interim:** zig's linker, static `EXEC`, no symbols; nothing is released
-  for aarch64 (`ADR-0009`).
-- **Raised:** 2026-10-30
-
-## Answered
+- **Answer (2026-10-30):** the maintainer chose a fourth option: link with
+  a gcc driver that targets aarch64, as x86_64 links with the host `cc`:
+  the native `cc` on an aarch64 machine (CI's `ubuntu-24.04-arm` runner)
+  and `aarch64-linux-gnu-gcc` (package `gcc-aarch64-linux-gnu`) on
+  x86_64. The linker alone is not enough: rustc 1.99's
+  `aarch64-unknown-linux-musl` target has no static-pie and links
+  `-static -no-pie` with `crt1.o` (forcing `-static-pie` over it gives a
+  binary that crashes, since `crt1.o` does not relocate itself). `just
+  test-aarch64` therefore builds PIE code (`-C relocation-model=pie`),
+  turns off rustc's own start files (`-C link-self-contained=no`) and links
+  musl's self-relocating `rcrt1.o`, `crti.o`, `crtbeginS.o`, `libc.a`,
+  `crtendS.o` and `crtn.o` from rustc's self-contained directory with
+  `-static-pie -nostdlib`, as rustc does by itself for x86_64. Measured on
+  x86_64 with `aarch64-linux-gnu-gcc` 15.2 and QEMU 10.2: `static-pie
+  linked, not stripped`, no interpreter, no `NEEDED`, no glibc symbol;
+  every T0 test passes. Revisit when rustc gives the target static-pie
+  (the flags can then go). Without a cross gcc the recipe falls back to
+  zig's linker and warns. See
+  [development-setup](development-setup.md#2-aarch64-when-you-touch-anything-platform-specific).
 
 ### Q-020: Is custom-platform accepted as an alias of platform?
 

@@ -256,7 +256,9 @@ natively and no test is skipped. On an x86_64 host it runs everything under
 `qemu-aarch64`, as below:
 
 1. The static release binary: no loader and no `NEEDED` entries, then
-   `ranikust version`. It is not static-pie, unlike x86_64 [open: Q-140].
+   `ranikust version`; static-pie with a symbol table, like x86_64, when
+   linked by `aarch64-linux-gnu-gcc` (natively by `cc`); with zig's
+   linker (no cross gcc installed) it is not, and the recipe warns (Q-140).
 2. The T0 tests of the workspace, through cargo's target runner
    (`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER`). `openat2` with
    `RESOLVE_IN_ROOT`, `statx` and the sandbox's unprivileged tests work

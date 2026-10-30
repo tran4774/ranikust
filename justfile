@@ -89,11 +89,46 @@ test-aarch64 *args:
     set -euo pipefail
     target=aarch64-unknown-linux-musl
     BIN=target/$target/release/ranikust
+    # The linker, as for x86_64 (ADR-0020, Q-140): a gcc driver that targets
+    # aarch64 gives static-pie with a symbol table, zig's linker gives
+    # neither. Native `cc` on aarch64 (CI), a cross gcc on x86_64.
+    if [ "$(uname -m)" = aarch64 ]; then
+      linker=cc
+    elif command -v aarch64-linux-gnu-gcc >/dev/null; then
+      linker=aarch64-linux-gnu-gcc
+    else
+      linker=
+      echo "warning: no aarch64-linux-gnu-gcc: linking with zig, so the binary is not static-pie and static-pie is not checked (install gcc-aarch64-linux-gnu)" >&2
+    fi
+    if [ -n "$linker" ]; then
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$linker"
+      # rustc's aarch64-unknown-linux-musl target has no static-pie: it links
+      # `-static -no-pie` with crt1.o. Ask for PIE code and link musl's own
+      # self-relocating start file (rcrt1.o) and libc.a from rustc's
+      # self-contained directory by hand, as x86_64-unknown-linux-musl does
+      # by itself; the gcc driver only links, so its glibc is never used.
+      sc="$(rustc --print sysroot)/lib/rustlib/$target/lib/self-contained"
+      flags="-C relocation-model=pie -C link-self-contained=no"
+      for a in -static-pie -nostdlib "-L$sc" "$sc/rcrt1.o" "$sc/crti.o" "$sc/crtbeginS.o" \
+               "$sc/libc.a" -lgcc "$sc/crtendS.o" "$sc/crtn.o"; do
+        flags+=" -C link-arg=$a"
+      done
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$flags"
+    fi
     static_check() {
       file "$BIN"
       if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter' ||
          readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
         echo "error: $BIN is not static" >&2
+        exit 1
+      fi
+      [ -n "$linker" ] || return 0
+      if ! readelf --file-header --wide "$BIN" | grep -q 'Type: *DYN'; then
+        echo "error: $BIN is not position-independent (static-pie)" >&2
+        exit 1
+      fi
+      if ! readelf --section-headers --wide "$BIN" | grep -q '\.symtab'; then
+        echo "error: $BIN has no symbol table" >&2
         exit 1
       fi
     }

@@ -35,7 +35,7 @@ the code.
 | [~] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` (done and called by `ranikust build`; the OCI layout and Docker tar load in podman and Docker; one digest with `--jobs 1` and the default under `--reproducible`; left: a push to a real registry in an end-to-end run; OCI by default and clamped times under `SOURCE_DATE_EPOCH`, `ADR-0032`) | `rnk-builder`, `rnk-registry`, `rnk-layer` |
 | [~] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix (done; `ranikust`'s runner builds each stage on a thread of its own and takes a `--jobs` permit per `RUN`; left: the W3 digest test, the memory thresholds [open: Q-030]) | `rnk-sched` |
 | [x] | Common kaniko flags and the subcommands (`ADR-0011`, `ADR-0036`): `build` and `version`; every kaniko flag accepted with its meaning, ignored with a warning, or refused with the phase; kaniko's variables honoured, refused or named in a warning; `--secret` and `--allow` (ADR-0032); `push`/`login` [open: Q-048] | `ranikust` |
-| [~] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests natively on GitHub's `ubuntu-24.04-arm` runner, or under qemu-user 9.1+ on x86_64 (`ADR-0009`, `just test-aarch64`); the release binary is static but not static-pie [open: Q-140] | CI |
+| [~] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests natively on GitHub's `ubuntu-24.04-arm` runner, or under qemu-user 9.1+ on x86_64 (`ADR-0009`, `just test-aarch64`); the binary is static-pie with symbols, linked by a gcc driver for aarch64 (Q-140) | CI |
 | [~] | T2 VM harness `just test-vm` (`docs/testing.md`): `unit` and `smoke` suites on Ubuntu 22.04 and 24.04 (done); cgroup v1, kernels before 5.11, the host-safety attack suite and a CI job with KVM to come | tests |
 | [~] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) (the `e2e` VM suite, `just test-vm e2e`: W1–W3 built by kaniko and BuildKit as `run-fair.sh` does, flattened-image and config comparison, `check-blobs.py`, metrics side by side; the `ranikust` leg waits for `ranikust build` and a way to reach a plain-HTTP registry, (Q-200)) | tests |
 | [~] | Build metrics (`ADR-0025`): subscriber, metrics layer, JSON report on every exit path, `--metrics-file` (the only report path, ADR-0037), `meta.mode` and `meta.options` (done); every crate's spans per `design/metrics.md` with its own task | `rnk-metrics`, `ranikust`; each crate for its spans |
@@ -151,7 +151,7 @@ with `rnk_metrics::Capture`; a task is not done without it.
 - [x] aarch64 in CI: `just check-aarch64` plus the static build and the
       unit tests of `ADR-0009` (`just test-aarch64`), natively on the
       `ubuntu-24.04-arm` runner with nothing skipped; green in CI run
-      41056969633 (2026-10-30). The binary is not static-pie yet [open: Q-140].
+      41056969633 (2026-10-30). Static-pie with symbols since Q-140's answer (a gcc driver for aarch64 as linker).
 - [x] W1 and W3 metrics reports compared with kaniko's by the bench harness
       ([phase map](../design/metrics.md#comparing-with-kaniko)); with
       `--reproducible`, the same digests with metrics on and off. Same
