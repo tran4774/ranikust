@@ -255,6 +255,25 @@ fn statx_does_not_follow_and_carries_mount_id() {
 }
 
 #[test]
+fn read_names_lists_entries_without_following_symlinks() {
+    let f = Fixture::new();
+    assert!(f.root.read_names("/").unwrap().is_empty());
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/a"), b"").unwrap();
+    symlink("/", f.host("l")).unwrap();
+    let mut names = f.root.read_names("/").unwrap();
+    names.sort();
+    assert_eq!(names, [OsString::from("d"), OsString::from("l")]);
+    assert_eq!(f.root.read_names("d").unwrap(), [OsString::from("a")]);
+    // `l` resolves to the root itself, never to the host's `/`.
+    let mut through_link = f.root.read_names("l").unwrap();
+    through_link.sort();
+    assert_eq!(through_link, names);
+    let e = f.root.read_names("d/a").unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::NOTDIR), "{e}");
+}
+
+#[test]
 fn set_meta_raw_modes_times_owner() {
     let f = Fixture::new();
     fs::write(f.host("f"), b"x").unwrap();

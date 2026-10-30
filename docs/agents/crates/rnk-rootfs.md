@@ -43,6 +43,7 @@ impl RootPath {
     pub fn open_regular(&self, p) -> Result<OwnedFd>;    // built: reads a file; FIFOs, devices refused unopened
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
+    pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (ranikust's workdir marker check)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // built: every xattr, overlay's too, sorted; no follow, no open of a FIFO or device (rnk-snapshot's exporter)
     // built: create_dir, create_dir_all, symlink, read_link, hard_link,
@@ -171,8 +172,8 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   tested, not yet used with mounts in the root), the mountinfo ignore list,
   `delete_contents` on `/`, `FICLONE` stage copies.
 - The workdir checks belong to `ranikust` (`ADR-0038`, Q-011); this crate
-  provides their primitives, `RootPath::open` and `statx` (`dev`, `ino`,
-  `mnt_id`).
+  provides their primitives, `RootPath::open`, `statx` (`dev`, `ino`,
+  `mnt_id`), `open_at` and `read_names`.
 - Needs Linux 5.8; `Error::Unsupported`, no fallback. The binary checks
   it at start-up (ADR-0028).
 - Done: `RootPath`, `extract` and `extract_overlay` (Q-055),

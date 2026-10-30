@@ -71,8 +71,10 @@ Set-up order, built so far: parse the flags (no I/O; refused kaniko flags
 reported first, so `--help` works on any kernel) → the Linux 5.8 check
 (`rnk_rootfs::probe_support`, ADR-0028; skipped by `version`) →
 `rnk_metrics::init` (starts no thread), `--metrics-file` over
-`--metrics-file` (ADR-0037) → `BuildConfig::from_args` → `--mode=kaniko`
-stops (Phase 2) → the overlay-mode state directory, `--state-dir` or
+`--metrics-file` (ADR-0037) → `BuildConfig::from_args` → `--mode=kaniko`:
+without `--workdir` it stops (Phase 2); with it, `workdir::claim` (the
+checks and lock of `ADR-0038`, below) and `raise_nofile_limit`, then it
+stops with exit code 2 → the overlay-mode state directory, `--state-dir` or
 `<workdir>/.ranikust`, else a usage error [open: Q-110] → `setup::set_up`:
 `rnk_sandbox::enter_build_namespace` (refuses in a plain `chroot`, then
 `unshare(CLONE_NEWNS)`, `/` rslave) → `prepare_state_dir` (created 0700;
@@ -83,9 +85,23 @@ owned by the effective uid, or group/world-writable) → `rnk_store::Store::open
 `builds/<id>/overlay-probe` → outcome → `Sandbox::start` (stub-journal
 replay, spawner thread) → the store is closed → stop with exit code 2,
 "set up for …, but building is not implemented yet". Still to
-come [design]: workdir checks (`ADR-0038`, Phase 2 task 1) before the namespace →
-`rnk-store` open and clean-up before the spawner (task 7) (Q-111) →
-kaniko mode: `flock` the workdir → tokio runtime → `rnk-sched`.
+come [design]: `rnk-store` open and clean-up before the spawner (task 7) (Q-111) →
+kaniko mode: its state directory, probes and outcome after the workdir
+lock (Phase 2 task 2) → tokio runtime → `rnk-sched`.
+
+Kaniko-mode workdir checks (`src/workdir.rs`, `ADR-0038`), before anything
+is written: canonicalize; refuse `/` and any of the 30 `SYSTEM_DIRS` or
+their ancestors, by name and by `(dev, ino)` of the opened workdir against
+each system directory and its ancestors; `RootPath::open`
+(`RESOLVE_NO_SYMLINKS`); `flock(LOCK_EX | LOCK_NB)` on a readable fd held
+by `Workdir` for the build; a non-empty workdir without a regular
+`.ranikust-root` refused. `claim` writes nothing: an empty workdir gets the
+marker from `Workdir::mark` right before the build first writes to it,
+which lists the workdir again and drops the marker if anything else
+appeared. Everything done in the workdir later, deletion above all, goes
+through `Workdir::root()`, never a reopened `path()`. `RLIMIT_NOFILE`'s
+soft limit is raised to the hard limit; `RUN` children must get the
+original back (Phase 2 task 7).
 
 Exit codes: 0 success (`--help`, `--version`, `version` included); 1 a
 runtime error, an unsupported kernel or a refused environment; 2 a usage
@@ -146,15 +162,23 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `--privileged` (`pivot_root`) and with `SYS_ADMIN` under Docker's seccomp
   (`MS_MOVE`); refused inside a plain `chroot` (`tests/smoke/lib.bash`
   `smoke_check_setup`).
-- To do: refusal of a non-empty unmarked `--workdir` under a fresh temp dir
-  (Phase 2 task 1). T3: `just build-static`.
+- T0 built, `src/workdir/tests.rs`: `/`, `//`, `/usr/../` and system
+  directories refused, a symlink to `/usr` refused by its target, an empty
+  workdir locked (a second claim refused) and marked only by `mark`, a
+  workdir filled before `mark` refused with the marker removed, a non-empty
+  one refused without the marker and nothing written, the name and
+  identity checks as pure functions, a marker that is a
+  symlink or directory refused, `RLIMIT_NOFILE` at the hard limit.
+  `tests/cli.rs`: `--mode=kaniko --workdir` refused when unmarked, stopped
+  with nothing written when empty, `/usr` refused. T3: `just build-static`.
 - T2 only, in the VM: `--workdir` at `/`, `/home`, other system directories
   ([testing](../../testing.md#planned-test-suites)).
 
 ## Metrics
 
 - Emits `ranikust.run` (the process), `ranikust.build` (from flag
-  validation on), `ranikust.setup` (namespace, store open, probes,
+  validation on), `ranikust.workdir` (kaniko mode's workdir checks and
+  lock), `ranikust.setup` (namespace, store open, probes,
   spawner) and inside it `ranikust.probe` with `steps`, the crates'
   probes that really ran (the sandbox's and the overlay probe)
   ([design/metrics.md](../../design/metrics.md#ranikust)).
@@ -232,7 +256,8 @@ error, a refused kaniko flag, an invalid combination, and for now every
   signal exits at once. A release that fails leaves the stages below it to the
   next build's clean-up.
 - Left for Phase 2 ([phase-2.md](../phase-2.md)): the workdir checks and
-  the kaniko-mode workdir lock, owned here (`ADR-0038`, Q-011).
+  the kaniko-mode workdir lock, owned here (`ADR-0038`, Q-011); built in
+  Phase 2 task 1.
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push` and

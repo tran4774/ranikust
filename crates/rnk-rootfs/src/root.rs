@@ -347,6 +347,21 @@ impl RootPath {
         }
     }
 
+    /// The names in the directory `p`, without `.` and `..`, in the order
+    /// the filesystem returns them. A mount point below `p` is listed like
+    /// any other entry.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when `p` is missing or not a directory.
+    pub fn read_names(&self, p: impl AsRef<Path>) -> Result<Vec<OsString>> {
+        let p = p.as_ref();
+        // `getdents64` needs a readable fd, not `O_PATH`; `O_DIRECTORY`
+        // keeps anything but a directory from being opened.
+        let fd = self.resolve(p, OFlags::RDONLY | OFlags::DIRECTORY, Mode::empty())?;
+        crate::delete::read_names(fd.as_fd(), p)
+    }
+
     /// Creates the directory `p` with `mode & !umask`; its parent must exist.
     ///
     /// # Errors

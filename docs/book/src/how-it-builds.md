@@ -75,6 +75,11 @@ with the default security profile or in most Kubernetes pods.
   moves it.
 - `--snapshot-mode=full|redo|time` means what it means in kaniko: what the
   walk compares to find changed files. The default is `full`.
+- Outside a container, kaniko mode builds in `--workdir`, which it empties,
+  so it refuses a directory the host needs: `/`, a system directory such as
+  `/usr` or `/home`, or an ancestor of one. A non-empty work directory must
+  hold a `.ranikust-root` file, which says its contents may be deleted; an
+  empty one gets it when the build starts writing. Only one build at a time may use a work directory.
 
 ## When no mode works
 
