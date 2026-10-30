@@ -1,0 +1,602 @@
+//! The build after the set-up: the Dockerfile and context, the stages run
+//! by `rnk-sched` through `rnk-builder`, then the outputs in kaniko's order
+//! (OCI layout, Docker tar, push).
+//!
+//! The scheduler polls every stage on one task: each stage is built on a
+//! thread of its own, which asks the task for a `--jobs` permit before each
+//! `RUN` (ADR-0013). Stage roots are released here, children before
+//! parents, on success and on failure alike; the store is closed last.
+
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::SystemTime;
+
+use rnk_builder::{
+    BuildCx, BuildTime, ContextFiles, Error, ImageSource, LayerDemand, LayerExporter, Outputs,
+    PulledImage, RunGate, StageBase, StageDone, StageInput, assemble, build_stage, image_format,
+    pull_image,
+};
+use rnk_context::{Context, ContextSpec};
+use rnk_dockerfile::{Dockerfile, GraphOptions, StageGraph};
+use rnk_layer::{Compression, EncodeOptions};
+use rnk_oci::Platform;
+use rnk_registry::{Client, ClientOptions, Credentials, TrustStore};
+use rnk_sandbox::Sandbox;
+use rnk_sched::{CancellationToken, PrepareJob, Scheduler, StageJob, StageRunner};
+use rnk_snapshot::{Overlay, OverlayStage};
+use rnk_store::Store;
+
+use crate::config::{self, BuildConfig};
+
+type Stage = StageDone<OverlayStage>;
+type ImageRoot = ImageSource<OverlayStage>;
+
+/// Everything the stages share; owned by the build, borrowed by each
+/// stage's thread through an `Arc`.
+struct Shared {
+    overlay: Arc<Overlay>,
+    sandbox: Sandbox,
+    store: Arc<Store>,
+    context: Context,
+    context_files: ContextFiles,
+    exporter: LayerExporter,
+    time: BuildTime,
+    network: rnk_sandbox::Network,
+    secrets: BTreeMap<String, PathBuf>,
+    platform: Platform,
+    client: Arc<Client>,
+    dockerfile: Dockerfile,
+    graph: StageGraph,
+    outputs: Outputs,
+    /// Per stage: whether the target's image inherits its layers.
+    in_target: Vec<bool>,
+    /// Every root made, for the release at the end.
+    stages: Mutex<Vec<(usize, Arc<Stage>)>>,
+    images: Mutex<Vec<Arc<ImageRoot>>>,
+}
+
+/// What a build reports on success.
+pub(crate) struct Built {
+    /// The image digest.
+    pub(crate) digest: String,
+}
+
+/// Runs the build on what the set-up made. Consumes the sandbox and the
+/// store, which it closes.
+pub(crate) fn run(
+    config: &BuildConfig,
+    store: Arc<Store>,
+    sandbox: Sandbox,
+    overlay_caps: rnk_snapshot::OverlayCaps,
+) -> Result<Built, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("starting the async runtime: {e}"))?;
+    let prepared = prepare(config, Arc::clone(&store), sandbox, overlay_caps);
+    let shared = match prepared {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            close_store(store);
+            return Err(e);
+        }
+    };
+    let result = runtime.block_on(build(config, &shared));
+    release_all(&shared);
+    drop(runtime);
+    match Arc::into_inner(shared) {
+        Some(s) => {
+            drop(s.overlay);
+            drop(s.sandbox);
+            drop(s.exporter);
+        }
+        None => tracing::warn!("a stage thread still holds the build; the store stays open"),
+    }
+    close_store(store);
+    result
+}
+
+fn close_store(store: Arc<Store>) {
+    match Arc::into_inner(store) {
+        Some(store) => {
+            if let Err(e) = store.close() {
+                tracing::warn!("closing the store: {e}");
+            }
+        }
+        None => tracing::warn!("the store is still in use; the next build cleans it up"),
+    }
+}
+
+/// Reads the Dockerfile and the context and makes the shared state.
+fn prepare(
+    config: &BuildConfig,
+    store: Arc<Store>,
+    sandbox: Sandbox,
+    overlay_caps: rnk_snapshot::OverlayCaps,
+) -> Result<Shared, String> {
+    let dockerfile_path = dockerfile_path(&config.dockerfile, &config.context);
+    let text = std::fs::read_to_string(&dockerfile_path)
+        .map_err(|e| format!("reading the Dockerfile {}: {e}", dockerfile_path.display()))?;
+    let dockerfile = rnk_dockerfile::parse(&text).map_err(|e| e.to_string())?;
+    let (os, arch) = config
+        .platform
+        .split_once('/')
+        .unwrap_or(("linux", "amd64"));
+    let df_platform = rnk_dockerfile::Platform::new(os, arch);
+    let options = GraphOptions {
+        build_args: config
+            .build_args
+            .iter()
+            .filter_map(|a| {
+                let value = a.value.clone().or_else(|| std::env::var(&a.name).ok())?;
+                Some((a.name.clone(), value))
+            })
+            .collect(),
+        build_platform: df_platform.clone(),
+        target_platform: df_platform,
+        targets: config.targets.clone(),
+    };
+    let graph = rnk_dockerfile::stage_graph(&dockerfile, &options).map_err(|e| e.to_string())?;
+
+    let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
+        .map_err(|e| format!("opening the build context: {e}"))?;
+    let ignore = context
+        .find_dockerignore(Some(&dockerfile_path))
+        .map_err(|e| e.to_string())?;
+    let matcher = ignore
+        .as_ref()
+        .map(|i| context.matcher(i))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let context_files =
+        ContextFiles::load(&context, matcher.as_ref()).map_err(|e| e.to_string())?;
+
+    let outputs = Outputs::new(
+        &config.destinations,
+        !config.no_push,
+        config.tar_path.clone(),
+        config.oci_layout_path.clone(),
+    )
+    .map_err(|e| e.to_string())?;
+    let time = if config.reproducible {
+        BuildTime::reproducible(std::env::var("SOURCE_DATE_EPOCH").ok().as_deref())
+            .map_err(|e| e.to_string())?
+    } else {
+        BuildTime::at(SystemTime::now())
+    };
+    let threads = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    let compression = match config.compression {
+        config::Compression::Gzip => Compression::Gzip,
+        config::Compression::Zstd => Compression::Zstd,
+    };
+    let encode = EncodeOptions {
+        compression,
+        level: match compression {
+            Compression::Zstd => 3,
+            _ => 6,
+        },
+        threads,
+        mtime: None,
+    };
+    let exporter = LayerExporter::new(store.build_dir(), encode, &time);
+
+    let mut options = ClientOptions::default();
+    options.registry_certificates = config.registry_certificates.clone();
+    let credentials = credentials()?;
+    let client = Client::new(options, TrustStore::load(), credentials)
+        .map_err(|e| format!("setting up the registry client: {e}"))?;
+    let overlay =
+        Arc::new(Overlay::new(Arc::clone(&store), overlay_caps).map_err(|e| e.to_string())?);
+
+    let in_target = in_target(&graph);
+    let mut secrets = BTreeMap::new();
+    for (id, path) in &config.secrets {
+        secrets.insert(id.clone(), path.clone());
+    }
+    Ok(Shared {
+        overlay,
+        sandbox,
+        store,
+        context,
+        context_files,
+        exporter,
+        time,
+        network: match config.network {
+            config::Network::Host => rnk_sandbox::Network::Host,
+            config::Network::None => rnk_sandbox::Network::None,
+        },
+        secrets,
+        platform: Platform::new(os, arch),
+        client: Arc::new(client),
+        dockerfile,
+        graph,
+        outputs,
+        in_target,
+        stages: Mutex::new(Vec::new()),
+        images: Mutex::new(Vec::new()),
+    })
+}
+
+/// kaniko's `--dockerfile`: as given when it exists, else inside the
+/// context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go` `resolveDockerfilePath`).
+fn dockerfile_path(dockerfile: &Path, context: &Path) -> PathBuf {
+    if dockerfile.is_absolute() || dockerfile.exists() {
+        return std::path::absolute(dockerfile).unwrap_or_else(|_| dockerfile.to_owned());
+    }
+    context.join(dockerfile)
+}
+
+/// The docker CLI's `config.json`, as kaniko reads it; none when missing.
+fn credentials() -> Result<Credentials, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let path = Credentials::config_path(
+        std::env::var_os("DOCKER_CONFIG").as_deref().map(OsStr::new),
+        home.as_deref(),
+    );
+    match path {
+        Some(p) if p.exists() => Credentials::load(&p).map_err(|e| e.to_string()),
+        _ => Ok(Credentials::none()),
+    }
+}
+
+/// Per stage: whether the target's image inherits its layers, through
+/// `FROM <stage>` from the primary target.
+fn in_target(graph: &StageGraph) -> Vec<bool> {
+    let mut out = vec![false; graph.stages.len()];
+    let mut at = Some(graph.primary_target());
+    while let Some(s) = at {
+        out[s] = true;
+        at = match graph.stages[s].base {
+            rnk_dockerfile::Base::Stage(b) => Some(b),
+            _ => None,
+        };
+    }
+    out
+}
+
+/// The stages, then the outputs.
+async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, String> {
+    let runner = Runner {
+        shared: Arc::clone(shared),
+    };
+    let cancel = CancellationToken::new();
+    let summary = Scheduler::new(config.jobs)
+        .run(&shared.graph, &runner, &cancel)
+        .await
+        .map_err(|e| e.to_string())?;
+    let target = summary
+        .stages
+        .iter()
+        .find(|(i, _)| *i == summary.target)
+        .map(|(_, d)| Arc::clone(d))
+        .ok_or("the target stage was not built")?;
+    let done: &Stage = &target;
+    let format = image_format(
+        done.base_format,
+        config.compression == config::Compression::Zstd,
+        config.reproducible,
+    );
+    let image = assemble(
+        done.config.clone(),
+        done.layers.clone(),
+        format,
+        &shared.time,
+    )
+    .map_err(|e| e.to_string())?;
+    let outputs = &shared.outputs;
+    if let Some(dir) = &outputs.oci_layout {
+        rnk_builder::write_oci_layout(&image, dir).map_err(|e| e.to_string())?;
+    }
+    if let Some(path) = &outputs.docker_tar {
+        rnk_builder::write_docker_tar(&image, outputs.tar_tags(), path)
+            .map_err(|e| e.to_string())?;
+    }
+    if outputs.push {
+        let jobs = config
+            .jobs
+            .or_else(|| std::thread::available_parallelism().ok())
+            .unwrap_or(NonZeroUsize::MIN);
+        rnk_builder::push(&image, &outputs.destinations, &shared.client, jobs)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(Built {
+        digest: image.digest().to_string(),
+    })
+}
+
+/// Releases every root, children before parents: later stages first, the
+/// roots of `COPY --from` images last.
+fn release_all(shared: &Shared) {
+    let mut stages =
+        std::mem::take(&mut *shared.stages.lock().unwrap_or_else(PoisonError::into_inner));
+    stages.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
+    for (i, stage) in stages {
+        if let Err(e) = stage.root.release() {
+            tracing::warn!("releasing stage {i}: {e}");
+        }
+    }
+    let images = std::mem::take(&mut *shared.images.lock().unwrap_or_else(PoisonError::into_inner));
+    for image in images {
+        if let Err(e) = image.root.release() {
+            tracing::warn!("releasing the root of {}: {e}", image.image.reference);
+        }
+    }
+}
+
+struct Runner {
+    shared: Arc<Shared>,
+}
+
+/// What a stage's preparation pulled.
+struct Prepared {
+    base: Option<Arc<PulledImage>>,
+    images: BTreeMap<String, Arc<ImageRoot>>,
+}
+
+/// Pulls a stage's base image and the images its `COPY --from` reads,
+/// with a root on each of the latter.
+async fn prepare_stage(
+    shared: &Arc<Shared>,
+    base: Option<String>,
+    images: Vec<String>,
+) -> Result<Prepared, Error> {
+    let mut prepared = Prepared {
+        base: None,
+        images: BTreeMap::new(),
+    };
+    if let Some(r) = base {
+        let image = pull_image(
+            &shared.client,
+            &shared.store,
+            &shared.overlay,
+            &r,
+            &shared.platform,
+        )
+        .await?;
+        prepared.base = Some(Arc::new(image));
+    }
+    for r in images {
+        let image = pull_image(
+            &shared.client,
+            &shared.store,
+            &shared.overlay,
+            &r,
+            &shared.platform,
+        )
+        .await?;
+        let root = Arc::new(ImageSource::new(&*shared.overlay, image)?);
+        shared
+            .images
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::clone(&root));
+        prepared.images.insert(r, root);
+    }
+    Ok(prepared)
+}
+
+impl StageRunner for Runner {
+    type Prepared = Arc<Prepared>;
+    type Output = Arc<Stage>;
+    type Error = Error;
+
+    fn prepare(
+        &self,
+        job: PrepareJob<'_>,
+    ) -> impl Future<Output = Result<Arc<Prepared>, Error>> + Send {
+        let shared = Arc::clone(&self.shared);
+        let node = job.node;
+        let cancel = job.cancel.clone();
+        let base = match &node.base {
+            rnk_dockerfile::Base::Image(r) => Some(r.clone()),
+            _ => None,
+        };
+        let platform_ok = node
+            .platform
+            .as_deref()
+            .is_none_or(|p| p == config::PLATFORM);
+        let images: Vec<String> = node.images().into_iter().map(str::to_owned).collect();
+        async move {
+            if !platform_ok {
+                return Err(Error::Invalid(format!(
+                    "FROM --platform other than {} is not supported (ADR-0009)",
+                    config::PLATFORM
+                )));
+            }
+            // The registry client's futures are not `Send` for every
+            // lifetime, which this future must be: the pulls run on a
+            // blocking thread that drives them.
+            let handle = tokio::runtime::Handle::current();
+            let work = tokio::task::spawn_blocking(move || {
+                handle.block_on(prepare_stage(&shared, base, images)).map(Arc::new)
+            });
+            tokio::select! {
+                r = work => r.unwrap_or_else(|e| Err(Error::Invalid(format!("pulling: {e}")))),
+                () = cancel.cancelled() => Err(Error::Cancelled),
+            }
+        }
+    }
+
+    fn build(
+        &self,
+        job: StageJob<'_, Self>,
+    ) -> impl Future<Output = Result<Arc<Stage>, Error>> + Send {
+        let shared = Arc::clone(&self.shared);
+        async move {
+            let index = job.stage;
+            let deps: Vec<(usize, Arc<Stage>)> =
+                job.deps.iter().map(|(i, d)| (*i, Arc::clone(&**d))).collect();
+            let (requests, mut asked) = tokio::sync::mpsc::unbounded_channel();
+            let (done_tx, mut done) = tokio::sync::oneshot::channel();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&cancelled);
+            let s = Arc::clone(&shared);
+            let prepared = Arc::clone(&job.prepared);
+            std::thread::Builder::new()
+                .name(format!("stage-{index}"))
+                .spawn(move || {
+                    let gate = ChannelGate { requests };
+                    let r = run_stage(&s, index, &deps, &prepared, &gate, &flag);
+                    // Let go of the build before reporting, so that the
+                    // caller can close the store once every stage is done.
+                    drop((s, deps, prepared, gate));
+                    let _ = done_tx.send(r);
+                })
+                .map_err(|e| {
+                    Error::Invalid(format!("starting the thread of stage {index}: {e}"))
+                })?;
+            let mut seen_cancel = false;
+            loop {
+                tokio::select! {
+                    r = &mut done => {
+                        return r.unwrap_or_else(|_| Err(Error::Invalid(
+                            format!("the thread of stage {index} ended without a result"),
+                        )));
+                    }
+                    Some(reply) = asked.recv() => {
+                        let reply: std::sync::mpsc::SyncSender<Option<tokio::sync::oneshot::Sender<()>>> = reply;
+                        match job.run_slot().await {
+                            None => {
+                                let _ = reply.send(None);
+                            }
+                            Some(permit) => {
+                                let (release, released) = tokio::sync::oneshot::channel();
+                                if reply.send(Some(release)).is_ok() {
+                                    // Held until the RUN's process tree exits.
+                                    let _ = released.await;
+                                }
+                                drop(permit);
+                            }
+                        }
+                    }
+                    () = job.cancel.cancelled(), if !seen_cancel => {
+                        seen_cancel = true;
+                        cancelled.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The scheduler's `--jobs` permits, asked for from a stage's thread.
+struct ChannelGate {
+    requests: tokio::sync::mpsc::UnboundedSender<
+        std::sync::mpsc::SyncSender<Option<tokio::sync::oneshot::Sender<()>>>,
+    >,
+}
+
+/// A held permit: dropping it hands the permit back.
+struct Held(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
+impl RunGate for ChannelGate {
+    fn enter(&self) -> Option<Box<dyn Send>> {
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        self.requests.send(reply).ok()?;
+        let release = answer.recv().ok()??;
+        Some(Box::new(Held(Some(release))))
+    }
+}
+
+/// Builds stage `index` on the calling thread.
+fn run_stage(
+    shared: &Shared,
+    index: usize,
+    deps: &[(usize, Arc<Stage>)],
+    prepared: &Prepared,
+    gate: &ChannelGate,
+    cancelled: &AtomicBool,
+) -> Result<Arc<Stage>, Error> {
+    let node = &shared.graph.stages[index];
+    let base = match &node.base {
+        rnk_dockerfile::Base::Scratch => StageBase::Scratch,
+        rnk_dockerfile::Base::Image(_) => StageBase::Image(
+            prepared
+                .base
+                .as_deref()
+                .ok_or_else(|| Error::Invalid("the base image was not pulled".to_owned()))?,
+        ),
+        rnk_dockerfile::Base::Stage(b) => StageBase::Stage(
+            deps.iter()
+                .find(|(i, _)| i == b)
+                .map(|(_, d)| &**d)
+                .ok_or_else(|| Error::Invalid(format!("stage {b} is not built")))?,
+        ),
+    };
+    let input = StageInput {
+        index,
+        graph: &shared.graph,
+        stage: &shared.dockerfile.stages[index],
+        base,
+        stages: deps.iter().map(|(i, d)| (*i, &**d)).collect(),
+        images: prepared
+            .images
+            .iter()
+            .map(|(k, v)| (k.clone(), &**v))
+            .collect(),
+        demand: LayerDemand::for_stage(shared.in_target[index], &shared.outputs, false),
+    };
+    let is_cancelled = || cancelled.load(Ordering::Relaxed);
+    let cx = BuildCx {
+        snapshotter: &*shared.overlay,
+        sandbox: &shared.sandbox,
+        store: &shared.store,
+        context: &shared.context,
+        context_files: &shared.context_files,
+        exporter: &shared.exporter,
+        time: &shared.time,
+        network: shared.network,
+        secrets: &shared.secrets,
+        platform: &shared.platform,
+        run_gate: gate,
+        cancelled: &is_cancelled,
+    };
+    let done = Arc::new(build_stage(&cx, input)?);
+    shared
+        .stages
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((index, Arc::clone(&done)));
+    Ok(done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_target_inherits_layers_of_its_from_stages_only() {
+        let df = rnk_dockerfile::parse(
+            "FROM alpine AS a\nFROM a AS b\nFROM alpine AS c\nCOPY --from=b / /\nFROM c\n",
+        )
+        .unwrap();
+        let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+        assert_eq!(in_target(&graph), [false, false, true, true]);
+    }
+
+    #[test]
+    fn a_dockerfile_outside_the_working_directory_is_found_in_the_context() {
+        let ctx = tempfile::tempdir().unwrap();
+        assert_eq!(
+            dockerfile_path(Path::new("no-such-dir/Dockerfile"), ctx.path()),
+            ctx.path().join("no-such-dir/Dockerfile")
+        );
+        assert_eq!(
+            dockerfile_path(Path::new("/abs/Dockerfile"), ctx.path()),
+            PathBuf::from("/abs/Dockerfile")
+        );
+    }
+}

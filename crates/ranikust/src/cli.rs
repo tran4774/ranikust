@@ -179,6 +179,18 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_enum, default_value_t = Network::Host, help_heading = "ranikust")]
     pub(crate) network: Network,
 
+    /// A secret for `RUN --mount=type=secret`: `id=ID,src=PATH`, as
+    /// BuildKit's CLI. Repeat for several.
+    // [open: Q-022] interim: BuildKit's syntax; the file is bound read-only
+    // into the RUN and never reaches a layer, the config or a log.
+    #[arg(
+        long = "secret",
+        value_name = "id=ID,src=PATH",
+        value_parser = parse_secret,
+        help_heading = "ranikust"
+    )]
+    pub(crate) secrets: Vec<(String, PathBuf)>,
+
     /// Write the build metrics report (JSON) to this path; overrides
     /// `RANIKUST_METRICS_FILE`.
     #[arg(long, value_name = "PATH", help_heading = "ranikust")]
@@ -217,10 +229,6 @@ const REFUSED: &[(&str, Refusal)] = &[
     (
         "ignore-path",
         Refusal::NotYet("ignore paths matter in kaniko mode, which comes in Phase 2"),
-    ),
-    (
-        "secret",
-        Refusal::NotYet("build secrets come with RUN --mount=type=secret (Q-022)"),
     ),
     (
         "bucket",
@@ -377,6 +385,24 @@ fn parse_registry_certificate(value: &str) -> Result<(String, PathBuf), String> 
             Ok((registry.to_owned(), PathBuf::from(path)))
         }
         _ => Err(format!("expected REGISTRY=PATH, got {value:?}")),
+    }
+}
+
+/// A `--secret` value: `id=ID,src=PATH` (`source=` also accepted), in any
+/// order.
+fn parse_secret(value: &str) -> Result<(String, PathBuf), String> {
+    let mut id = None;
+    let mut src = None;
+    for field in value.split(',') {
+        match field.split_once('=') {
+            Some(("id", v)) if !v.is_empty() => id = Some(v.to_owned()),
+            Some(("src" | "source", v)) if !v.is_empty() => src = Some(PathBuf::from(v)),
+            _ => return Err(format!("expected id=ID,src=PATH, got {value:?}")),
+        }
+    }
+    match (id, src) {
+        (Some(id), Some(src)) => Ok((id, src)),
+        _ => Err(format!("expected id=ID,src=PATH, got {value:?}")),
     }
 }
 

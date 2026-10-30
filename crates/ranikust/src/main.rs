@@ -27,6 +27,7 @@
 //! - Probes no capability itself: each library probes its own, and this
 //!   binary runs the probes in order and combines their results.
 
+mod build;
 mod cli;
 mod config;
 mod setup;
@@ -52,8 +53,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// these paths, including a release build, where `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
-/// Exit code of a usage error, as clap uses, and of a build that stops
-/// because the builder does not exist yet.
+/// Exit code of a usage error, as clap uses.
 const EXIT_USAGE: u8 = 2;
 
 /// How a run ends when it does not succeed.
@@ -191,19 +191,12 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
         tracing::warn!("--snapshot-mode is ignored in overlay mode (ADR-0023)");
     }
     tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
-    // The hand-off to the scheduler and the builder (tasks 11 and 12) goes
-    // here, with `rnk_snapshot::Overlay::new(setup.store, caps)`. Until
-    // then, stop the spawner thread and close the store.
-    drop(setup.sandbox);
-    if let Some(store) = std::sync::Arc::into_inner(setup.store)
-        && let Err(e) = store.close()
-    {
-        tracing::warn!("closing the store: {e}");
-    }
-    Err(Failure::usage(format!(
-        "set up for {}, but building is not implemented yet (Phase 1 task 11)",
-        setup.outcome
-    )))
+    tracing::info!("set up for {}", setup.outcome);
+    let setup::Outcome::OverlayRoot { overlay, .. } = setup.outcome;
+    let built = build::run(&config, setup.store, setup.sandbox, overlay).map_err(Failure::error)?;
+    tracing::info!("built image {}", built.digest);
+    let _ = writeln!(std::io::stdout(), "{}", built.digest);
+    Ok(())
 }
 
 /// Panics, then aborts. Release builds abort inside the panic, right after

@@ -160,18 +160,35 @@ smoke image="docker.io/library/alpine:3.20":
       -v "$BIN:/smoke-build:ro" -v "$OUT:/out" \
       "{{ image }}" /smoke-build --image "{{ image }}" --out /out --tag "$NAME" "${runs[@]}"
     smoke_check_no_stub_leak "$OUT"
-    # The workdir is a volume: overlay refuses an upper directory on the
-    # container's own overlay root (that environment needs kaniko mode).
-    W="$TARGET/smoke/w" && rm -rf "$W" && mkdir -m 700 -p "$W"
-    rc=0
-    log="$(podman run --rm --privileged -v "$RNK:/ranikust:ro" -v "$W:/tmp/w" "{{ image }}" \
-      /ranikust --no-push --workdir /tmp/w 2>&1)" || rc=$?
-    smoke_check_setup "$log" pivot_root "$rc"
     # `podman load` reads the layout as an OCI archive and names the image
     # after its `ref.name` annotation.
     tar -C "$OUT" -cf "$OUT.tar" .
     podman load --quiet -i "$OUT.tar"
     podman run --rm "$NAME" sh -c 'cat /hello && jq --version'
+    # The ranikust binary builds tests/smoke/e2e. The workdir is a volume:
+    # overlay refuses an upper directory on the container's own overlay
+    # root (that environment needs kaniko mode).
+    E="$TARGET/smoke/e2e" && rm -rf "$E" && mkdir -m 700 -p "$E/w" "$E/out"
+    printf %s "$SMOKE_E2E_SECRET" >"$E/token"
+    smoke_e2e_args /ctx /tmp/w /out /token
+    e2e() {
+      local rc=0 log
+      log="$(podman run --rm --privileged -v "$RNK:/ranikust:ro" -v "$PWD/tests/smoke/e2e:/ctx:ro" \
+        -v "$E/w:/tmp/w" -v "$E/out:/out" -v "$E/token:/token:ro" "{{ image }}" \
+        /ranikust "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
+      smoke_check_build "$log" pivot_root "$rc" >&2
+      smoke_digest "$log"
+    }
+    e2e >/dev/null
+    smoke_check_no_stub_leak "$E/out/oci"
+    smoke_check_no_secret "$E/out/oci" "$SMOKE_E2E_SECRET"
+    podman load --quiet -i "$E/out/image.tar"
+    got="$(podman run --rm localhost/rnk-e2e:latest)"
+    [ "$got" = "$SMOKE_E2E_OUTPUT" ] || { echo "error: the e2e image printed: $got" >&2; exit 1; }
+    [ "$(podman run --rm localhost/rnk-e2e:latest id -un)" = "$SMOKE_E2E_USER" ]
+    # --reproducible: one digest, whatever --jobs.
+    a="$(e2e --reproducible)" && b="$(e2e --reproducible --jobs 1)"
+    [ "$a" = "$b" ] || { echo "error: --reproducible digests differ: $a, $b" >&2; exit 1; }
     echo "smoke: ok"
 
 # Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.

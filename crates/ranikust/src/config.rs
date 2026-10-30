@@ -109,6 +109,8 @@ pub(crate) struct BuildConfig {
     pub(crate) jobs: Option<NonZeroUsize>,
     /// The network of `RUN`.
     pub(crate) network: Network,
+    /// `--secret` files by id, paths absolute [open: Q-022].
+    pub(crate) secrets: Vec<(String, PathBuf)>,
 }
 
 /// A rejected combination of flags.
@@ -175,6 +177,11 @@ impl BuildConfig {
             state_dir: args.state_dir.as_deref().map(absolute),
             jobs: args.jobs,
             network: args.network,
+            secrets: args
+                .secrets
+                .iter()
+                .map(|(id, path)| (id.clone(), absolute(path)))
+                .collect(),
         })
     }
 

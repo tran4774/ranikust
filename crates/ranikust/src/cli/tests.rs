@@ -176,7 +176,6 @@ fn refused_kaniko_flags_say_why() {
         (&["--cache=true"], "Phase 4"),
         (&["--cache-repo", "r/cache"], "Phase 4"),
         (&["--ignore-path=/var"], "Phase 2"),
-        (&["--secret", "id=a,src=/a"], "RUN --mount=type=secret"),
         (&["--bucket=b"], "out of scope"),
         (&["-b", "b"], "out of scope"),
         (&["-bbucket"], "out of scope"),
@@ -227,4 +226,18 @@ fn pflag_booleans() {
     }
     assert!(parse_bool("yes").is_err());
     assert!(parse_bool("").is_err());
+}
+
+#[test]
+fn secrets_take_an_id_and_a_source() {
+    assert_eq!(
+        parse_secret("id=npm,src=/run/npmrc").unwrap(),
+        ("npm".to_owned(), PathBuf::from("/run/npmrc"))
+    );
+    assert_eq!(
+        parse_secret("source=/a,id=b").unwrap(),
+        ("b".to_owned(), PathBuf::from("/a"))
+    );
+    assert!(parse_secret("id=a").is_err());
+    assert!(parse_secret("id=a,src=/a,env=X").is_err());
 }
