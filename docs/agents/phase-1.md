@@ -98,9 +98,10 @@ with `rnk_metrics::Capture`; a task is not done without it.
 - [ ] `--network=none`: `RUN` sees only loopback.
 - [ ] Common kaniko flags: list fixed ([kaniko-map.md](kaniko-map.md#flags)),
       each accepted flag tested for its meaning, mapping in the book.
-- [~] aarch64 in CI: `just check-aarch64` plus the cross-build and
-      qemu-user unit tests of `ADR-0009` (`just test-aarch64`; done when
-      the CI job has run green).
+- [x] aarch64 in CI: `just check-aarch64` plus the static build and the
+      unit tests of `ADR-0009` (`just test-aarch64`), natively on the
+      `ubuntu-24.04-arm` runner with nothing skipped; green in CI run
+      41056969633 (2026-10-30). The binary is not static-pie yet [open: Q-140].
 - [ ] W1 and W3 metrics reports compared with kaniko's by the bench harness
       ([phase map](../design/metrics.md#comparing-with-kaniko)); with
       `--reproducible`, the same digests with metrics on and off.
