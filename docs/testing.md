@@ -172,6 +172,21 @@ comparison has to read against:
 - W1's non-deterministic files of experiment 07 (1,650) show up as noise,
   as expected.
 
+Second run (2026-10-30, noble, same settings, `ranikust` with
+`--insecure-registry`): every build succeeded. Wall time, kaniko /
+BuildKit / `ranikust`: W1 24.0 / 63.9 / 20.5 s, W2 cold 16.5 / 12.0 /
+8.6 s, W3 29.6 / 15.0 s and `ranikust` 15.0 (`--jobs 1`), 13.1 (2),
+13.2 s (default). Compared with kaniko, `ranikust` differs in 3 entries
+on W1 (a pnpm state file and an npm log named after the time), 1 on W2
+(`MANIFEST.sha256`, 3 bytes) and 3 on W3 (`/out/a.txt`, see below; kaniko's
+`/out` owner and mode and its missing `/out/all.txt`), configs equal;
+compared with BuildKit, the same counts as kaniko's against BuildKit
+(the setgid directories), plus that `MANIFEST.sha256` on W2. The suite
+still fails on its W3 check: `--jobs 1` and the default give one digest,
+`--jobs 2` another, through `/out/a.txt` alone, which records `du -sk
+node_modules`: disk usage, not the files
+([Q-187](open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output)).
+
 Not covered yet: cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a
 reboot), Docker's default profile and `--cap-add SYS_ADMIN` alone (they
 need kaniko mode), kernels before 5.11 (an older `..` walk; Debian 11

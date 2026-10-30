@@ -77,8 +77,10 @@ with `rnk_metrics::Capture`; a task is not done without it.
 
 ## Acceptance criteria
 
-- [ ] Builds W1 (`nextjs-kaniko/app`), W2 cold (`nextjs-kaniko/app-cache`;
+- [x] Builds W1 (`nextjs-kaniko/app`), W2 cold (`nextjs-kaniko/app-cache`;
       it needs `COPY --from=<image>`) and W3 (`nextjs-kaniko/app-par`).
+      Built by `just test-vm e2e` on noble, one round (2026-10-30); the W3
+      digest across `--jobs` waits on [Q-187](../open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output).
 - [ ] `--jobs 1`, `2` and default measured on W3 with `run-fair.sh`
       (`exp-08` at 32 CPUs, lazy: 8.44, 6.52, 6.02 s); peak memory recorded;
       with `--reproducible`, `--jobs 1` and default give identical digests.

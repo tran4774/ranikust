@@ -916,6 +916,27 @@ Entry format:
   the e2e build. Reversible: one step of the child's set-up.
 - **Raised:** 2026-10-30
 
+### Q-187: How does the W3 digest check treat the workload's `du` output?
+
+- **Blocks:** Phase 1 acceptance (W3 digests across `--jobs`); **Area:**
+  tests, `nextjs-kaniko`
+- **Context:** `just test-vm e2e` requires one W3 digest for `--jobs 1`, 2
+  and the default under `--reproducible`. On 2026-10-30 (noble) `--jobs 1`
+  and the default matched, `--jobs 2` did not; every diff ID but two was
+  equal, and the files that differ are `/out/a.txt` and `/out/all.txt`
+  built from it. Each stage's `summary.txt` records `du -sk node_modules`,
+  the disk usage of a pnpm install, which depends on block allocation
+  while other stages write at the same time; kaniko's and BuildKit's
+  images differ there too. The layer bytes do not depend on `--jobs`.
+- **Options:** (a) drop `du -sk` from the workload, as `nextjs-kaniko`'s
+  own change; (b) compare the W3 images across `--jobs` with the
+  workload's noise list instead of by digest; (c) accept a digest
+  mismatch confined to `/out`.
+- **Recommendation:** (a): the acceptance criterion is about ranikust's
+  bytes, and the workload's output should not vary by itself.
+- **Interim:** none; the suite reports the mismatch and fails.
+- **Raised:** 2026-10-30
+
 ### Q-184: May a Dockerfile's `RUN --network=host` lift `--network=none`?
 
 - **Blocks:** nothing yet; **Area:** `rnk-builder`, `ranikust`
