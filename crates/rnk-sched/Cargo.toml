@@ -8,5 +8,20 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+futures-util.workspace = true
+# [open: Q-028] `rnk-sched` → `rnk-dockerfile` for the stage graph type,
+# interim; the alternative routes the graph through `rnk-builder`.
+rnk-dockerfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rnk-metrics.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
 [lints]
 workspace = true

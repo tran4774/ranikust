@@ -1315,6 +1315,16 @@ dependencies = [
 [[package]]
 name = "rnk-sched"
 version = "0.0.0"
+dependencies = [
+ "futures-util",
+ "proptest",
+ "rnk-dockerfile",
+ "rnk-metrics",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "rnk-snapshot"
