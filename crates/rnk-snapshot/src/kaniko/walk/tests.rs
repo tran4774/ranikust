@@ -279,6 +279,30 @@ fn ignored_paths_are_neither_walked_nor_deleted() {
 }
 
 #[test]
+fn globs_and_below_only_entries_are_skipped() {
+    let f = Fixture::new();
+    f.mkdir("gpg/keys");
+    f.mkdir("cache-a");
+    f.mkdir("cache-b");
+    f.mkdir("keep");
+    let mut w = walker(SnapshotMode::Full, 2);
+    w.baseline(&f.root, &none()).unwrap();
+    let mut ignore = IgnoreList::new();
+    ignore.insert_below("/gpg").unwrap();
+    ignore.insert_glob("/cache-*").unwrap();
+    f.write("gpg/keys/k", b"k");
+    f.write("cache-a/x", b"x");
+    f.write("cache-b/x", b"x");
+    f.write("keep/x", b"x");
+    let d = w.diff(&f.root, &ignore).unwrap();
+    let changed: Vec<_> = paths(&d).into_iter().map(|(p, _)| p).collect();
+    assert!(changed.iter().all(|p| p.starts_with("keep")), "{changed:?}");
+    assert!(changed.iter().any(|p| p == "keep/x"), "{changed:?}");
+    // `gpg` itself is walked; `gpg/keys`, `cache-a` and `cache-b` are skipped.
+    assert_eq!(d.stats.skipped, 3);
+}
+
+#[test]
 fn the_result_does_not_depend_on_the_worker_count() {
     let old = SystemTime::now() - Duration::from_secs(3600);
     let f = Fixture::new();

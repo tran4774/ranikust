@@ -10,7 +10,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use rnk_metrics::Capture;
-use rnk_rootfs::{CopyOpts, IgnoreList, RootPath, Whiteouts, copy, delete_contents, extract};
+use rnk_rootfs::{
+    CopyOpts, IgnoreList, RootPath, Whiteouts, copy, delete_contents, extract, extract_live,
+};
 
 /// A fresh root below a temp dir, removed on drop.
 fn root() -> (tempfile::TempDir, PathBuf, RootPath) {
@@ -95,4 +97,36 @@ fn delete_counts_entries() {
     let d = &report["phases"]["rnk_rootfs.delete"];
     assert_eq!(d["count"], 1);
     assert_eq!(d["entries"], 4);
+}
+
+#[test]
+fn a_live_extraction_counts_ignored_entries_and_skipped_nodes() {
+    let capture = Capture::new();
+    let (_tmp, _host, root) = root();
+    let mut b = tar::Builder::new(Vec::new());
+    let mut add = |name: &str, t: tar::EntryType| {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(t);
+        h.set_mode(0o644);
+        h.set_uid(rustix::process::getuid().as_raw().into());
+        h.set_gid(rustix::process::getgid().as_raw().into());
+        h.set_mtime(0);
+        h.set_size(0);
+        h.set_device_major(0).unwrap();
+        h.set_device_minor(0).unwrap();
+        b.append_data(&mut h, name, &b""[..]).unwrap();
+    };
+    add("proc/x", tar::EntryType::Regular);
+    add("fifo", tar::EntryType::Fifo);
+    add("kept", tar::EntryType::Regular);
+    let tar = b.into_inner().unwrap();
+    let mut keep = IgnoreList::new();
+    keep.insert("/proc").unwrap();
+    capture.run(|| extract_live(&root, tar.as_slice(), &keep).unwrap());
+    let report = capture.report();
+    let x = &report["phases"]["rnk_rootfs.extract"];
+    assert_eq!(x["entries"], 3);
+    assert_eq!(x["ignored"], 1);
+    assert_eq!(x["nodes_skipped"], 1);
+    assert_eq!(x["files"], 1);
 }

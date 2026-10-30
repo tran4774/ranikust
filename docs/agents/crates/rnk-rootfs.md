@@ -50,11 +50,13 @@ impl RootPath {
     // rename, remove_file, remove_dir; mnt_id()
 }
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
+pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // built: kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; copy_file_range
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore)
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<u32> } // built: None keeps the source's
-pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)
+pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built
+pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component); covers, has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
 pub fn probe_support() -> Result<(), Unsupported>;             // built: start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
@@ -116,8 +118,9 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 
 ## Metrics
 
-- `rnk_rootfs.extract` per layer (`entries`, `files`, `whiteouts`,
-  `hardlinks`, `bytes_in`, `bytes_written`), `rnk_rootfs.copy` per `COPY`
+- `rnk_rootfs.extract` per layer (`mode`: `Apply`, `Overlay` or `Live`;
+  `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`, `hardlinks`, `bytes_in`,
+  `bytes_written`), `rnk_rootfs.copy` per `COPY`
   source set, `rnk_rootfs.delete` per tree ([rows](../../design/metrics.md#rnk-rootfs)).
 - Count in the entry loop, record once at the end: never a span per entry.
 
@@ -168,9 +171,9 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   `extract` → `copy` (`--chown`, `--chmod`, `--from`) and `lookup_user` →
   fd-based deletion of `builds/<id>` and `tmp/` leftovers → the workdir
   checks.
-- Deferred to Phase 2: `Whiteouts::Apply` into a live root (built and T0
-  tested, not yet used with mounts in the root), the mountinfo ignore list,
-  `delete_contents` on `/`, `FICLONE` stage copies.
+- Deferred to Phase 2: `delete_contents` on `/`, `FICLONE` stage copies.
+  Built in Phase 2 task 3: `extract_live` and `IgnoreList`'s kaniko
+  matching; the mountinfo list itself is `rnk-snapshot`'s.
 - The workdir checks belong to `ranikust` (`ADR-0038`, Q-011); this crate
   provides their primitives, `RootPath::open`, `statx` (`dev`, `ino`,
   `mnt_id`), `open_at` and `read_names`.

@@ -577,6 +577,16 @@ Entry format:
   change it, `--snapshot-workers`. Recorded in
   [ADR-0039](adr/0039-kaniko-mode-walk-and-hash-crates.md).
 
+### Q-270: Are device nodes from an image created in a host-workdir root?
+
+- **Answer (2026-10-31):** option (b), by the rule to follow kaniko:
+  `extract_live` creates no block or character device node and no FIFO in a
+  live root, `/` and host workdirs alike, as kaniko's `ExtractFile`
+  (kaniko@44aa7ddc0 `pkg/util/fs_util.go:440-575`); they are counted as
+  `nodes_skipped`, and the image keeps them through its unchanged base
+  layers. Recorded in
+  [ADR-0041](adr/0041-live-root-extraction-skips-device-nodes.md).
+
 ### Q-300: Is a stage whose image is kept for a later `FROM` walked in sequential kaniko mode?
 
 - **Answer (2026-10-31):** option (a), kaniko's `SaveStage` behaviour:

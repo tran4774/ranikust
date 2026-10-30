@@ -106,6 +106,10 @@ pub enum Error {
     /// overlay should have written there.
     #[error("overlay probe: {0}")]
     ProbeCheck(&'static str),
+    /// `/proc/self/mountinfo` or an ignore-list input kaniko mode cannot
+    /// use.
+    #[error("kaniko-mode ignore list: {0}")]
+    Ignore(String),
     /// A filesystem operation through `rnk-rootfs`.
     #[error(transparent)]
     Rootfs(#[from] rnk_rootfs::Error),
@@ -174,6 +178,7 @@ impl Error {
             | Self::Export { .. }
             | Self::DiffIdMismatch { .. }
             | Self::ProbeCheck(_)
+            | Self::Ignore(_)
             | Self::Store(_)
             | Self::Changed { .. }
             | Self::WalkTooLarge

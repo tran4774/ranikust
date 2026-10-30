@@ -130,6 +130,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   outside a 2 s window; and diffs against the previous walk while walking,
   with kaniko's `--snapshot-mode=full|redo|time` meaning. The result does
   not depend on the thread count.
+- Groundwork for kaniko mode's ignore list: mount points below the root
+  from `/proc/self/mountinfo`, kaniko's defaults (`/etc/mtab`, what is
+  below `/tmp/apt-key-gpghome`, `/var/run`), `/proc`, `/sys`, `/dev`,
+  `/ranikust` and the state directory; `--ignore-path` entries match as
+  globs, as in kaniko. Base layers can be extracted into a live root
+  without writing an ignored path or below a mount point, and, as kaniko,
+  without creating device nodes or FIFOs. Not yet used by a build.
 
 ### Changed
 

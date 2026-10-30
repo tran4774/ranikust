@@ -642,7 +642,9 @@ impl<'a> Ctx<'a> {
                 (Some(t), Some(d)) => t.child(d, name),
                 _ => None,
             };
-            if !self.ignore.is_empty() && self.ignore.contains(as_path(&child_path)) {
+            // `covers`, not `contains`: `--ignore-path` globs and kaniko's
+            // below-only entries match names that are not literal entries.
+            if !self.ignore.is_empty() && self.ignore.covers(as_path(&child_path)) {
                 self.mark(prev_child, KEPT);
                 self.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;

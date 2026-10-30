@@ -888,3 +888,228 @@ fn extract_overlay_reports_whether_the_layer_set_the_root() {
     assert!(r.root_set);
     assert_eq!(f.root.statx("").unwrap().permissions(), 0o555);
 }
+
+fn live_keep() -> IgnoreList {
+    let mut keep = IgnoreList::new();
+    keep.insert("/ranikust").unwrap();
+    keep.insert("/proc").unwrap();
+    keep.insert("/etc/mtab").unwrap();
+    keep.insert("/var/run").unwrap();
+    keep.insert_below("/tmp/apt-key-gpghome").unwrap();
+    keep
+}
+
+#[test]
+fn live_extraction_never_writes_ignored_paths() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.dir("ranikust/", 0o755)
+        .file("ranikust/state/blob", 0o644, b"evil")
+        .file("proc/1/environ", 0o644, b"evil")
+        .file("etc/mtab", 0o644, b"evil")
+        .file("etc/hostname", 0o644, b"ok")
+        .dir("tmp/apt-key-gpghome/", 0o700)
+        .file("tmp/apt-key-gpghome/pubring", 0o600, b"evil")
+        .file("var/run/pid", 0o644, b"evil")
+        .hardlink("etc/linked", "etc/mtab");
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    for gone in [
+        "ranikust",
+        "proc",
+        "etc/mtab",
+        "tmp/apt-key-gpghome/pubring",
+        "var/run",
+        "etc/linked",
+    ] {
+        assert!(fs::symlink_metadata(f.host(gone)).is_err(), "{gone}");
+    }
+    assert_eq!(fs::read(f.host("etc/hostname")).unwrap(), b"ok");
+    // `PrefixMatchOnly`: the directory itself is written, not its contents.
+    assert!(f.host("tmp/apt-key-gpghome").is_dir());
+}
+
+#[test]
+fn live_extraction_follows_symlinks_to_the_physical_path() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("ranikust/state")).unwrap();
+    symlink("/ranikust", f.host("old")).unwrap();
+    let mut t = Tar::new(&f);
+    t.file("old/state/evil", 0o644, b"x")
+        .file("old/new/evil", 0o644, b"x")
+        .symlink("lnk", "ranikust/state")
+        .file("lnk/evil", 0o644, b"x")
+        .dir("d/", 0o755)
+        .file("d/ok", 0o644, b"ok")
+        .file(".wh.old", 0o644, b"")
+        .symlink("d2", "d")
+        .file("d2/via", 0o644, b"ok");
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    let left: Vec<_> = fs::read_dir(f.host("ranikust/state")).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+    assert!(!f.host("ranikust/new").exists());
+    assert_eq!(fs::read(f.host("d/ok")).unwrap(), b"ok");
+    assert_eq!(fs::read(f.host("d/via")).unwrap(), b"ok");
+    // The whiteout removed the symlink `old`, not what it points to.
+    assert!(fs::symlink_metadata(f.host("old")).is_err());
+    assert!(f.host("ranikust/state").is_dir());
+}
+
+#[test]
+fn live_whiteouts_leave_ignored_paths_alone() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("var/run")).unwrap();
+    fs::write(f.host("var/run/sock"), b"").unwrap();
+    fs::write(f.host("var/log"), b"").unwrap();
+    fs::create_dir_all(f.host("etc")).unwrap();
+    fs::write(f.host("etc/mtab"), b"m").unwrap();
+    fs::write(f.host("etc/old"), b"").unwrap();
+    fs::create_dir_all(f.host("ranikust")).unwrap();
+    fs::write(f.host("gone"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.file(".wh.var", 0o644, b"")
+        .file(".wh.ranikust", 0o644, b"")
+        .file(".wh.gone", 0o644, b"")
+        .file("etc/.wh..wh..opq", 0o644, b"")
+        .file("etc/new", 0o644, b"n");
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    // kaniko skips a whiteout of a directory holding an ignored path.
+    assert!(f.host("var/run/sock").exists());
+    assert!(f.host("var/log").exists());
+    assert!(f.host("ranikust").is_dir());
+    assert!(!f.host("gone").exists());
+    // The opaque directory keeps the ignored file and what the layer added.
+    assert_eq!(fs::read(f.host("etc/mtab")).unwrap(), b"m");
+    assert!(!f.host("etc/old").exists());
+    assert!(f.host("etc/new").exists());
+}
+
+#[test]
+fn live_extraction_keeps_a_directory_holding_an_ignored_path() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("var/run")).unwrap();
+    fs::write(f.host("var/run/sock"), b"").unwrap();
+    fs::write(f.host("var/other"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.symlink("var", "/elsewhere");
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    // As kaniko's FF_KANIKO_PRESERVE_MOUNTED_PATHS: the rest is removed and
+    // the entry skipped.
+    assert!(f.host("var/run/sock").exists());
+    assert!(!f.host("var/other").exists());
+    assert!(fs::symlink_metadata(f.host("var")).unwrap().is_dir());
+}
+
+/// The same entries as [`entries_on_a_mount_point_are_refused`], skipped
+/// instead of refused in a live root.
+#[test]
+fn live_extraction_skips_entries_on_a_mount_point() {
+    let f = Fixture::new();
+    fs::write(f.host("file"), b"lower").unwrap();
+    fs::create_dir(f.host("dir")).unwrap();
+    fs::write(f.host("dir/keep"), b"").unwrap();
+    let root = RootPath::open(&f.host)
+        .unwrap()
+        .with_mnt_id(f.root.mnt_id() + 1);
+    let mut t = Tar::new(&f);
+    t.file("file", 0o644, b"new")
+        .dir("dir/", 0o700)
+        .file(".wh.dir", 0o644, b"")
+        .file("dir/.wh..wh..opq", 0o644, b"");
+    extract_live(&root, t.bytes().as_slice(), &IgnoreList::new()).unwrap();
+    assert_eq!(fs::read(f.host("file")).unwrap(), b"lower");
+    assert!(f.host("dir/keep").exists());
+}
+
+/// Run by the T1 harness as [`extraction_never_writes_below_a_mount`]: a live
+/// extraction skips the mounts, whether or not they are on the list.
+#[test]
+#[ignore = "T1: needs a bind mount and a tmpfs inside the root (mount namespace)"]
+fn live_extraction_skips_real_mounts() {
+    let dir = std::env::var_os("RNK_T1_ROOT").expect("RNK_T1_ROOT is set by the T1 harness");
+    let marker = fs::symlink_metadata(Path::new(&dir).join(".rnk-t1-root"));
+    assert!(marker.is_ok_and(|m| m.is_file()), "no .rnk-t1-root marker");
+    let root = RootPath::open(&dir).unwrap();
+    let md = fs::metadata(&dir).unwrap();
+    let mut t = Tar {
+        out: Vec::new(),
+        uid: u64::from(md.uid()),
+        gid: u64::from(md.gid()),
+    };
+    t.file("bind/x", 0o644, b"")
+        .file("tmpfs/x", 0o644, b"")
+        .file(".wh.bind", 0o644, b"")
+        .file("tmpfs", 0o644, b"");
+    extract_live(&root, t.bytes().as_slice(), &IgnoreList::new()).unwrap();
+    assert!(!Path::new(&dir).join("bind/x").exists());
+    assert!(!Path::new(&dir).join("tmpfs/x").exists());
+    assert!(Path::new(&dir).join("bind").is_dir());
+    assert!(Path::new(&dir).join("tmpfs").is_dir());
+}
+
+/// A thread swaps the parent directory of every entry with a symlink to the
+/// ignored state directory while a live extraction runs: whatever fails,
+/// nothing may land in the state directory, nor its directories' metadata
+/// change.
+#[test]
+fn a_racing_swap_never_leads_a_live_extraction_into_an_ignored_path() {
+    for _ in 0..20 {
+        let f = Fixture::new();
+        fs::create_dir_all(f.host("ranikust/state")).unwrap();
+        fs::create_dir(f.host("d")).unwrap();
+        symlink("/ranikust/state", f.host("swap")).unwrap();
+        let mut t = Tar::new(&f);
+        t.dir("d/", 0o700);
+        for i in 0..200 {
+            t.file(&format!("d/f{i}"), 0o644, b"x")
+                .dir(&format!("d/s{i}/"), 0o700);
+        }
+        let bytes = t.bytes();
+        let state_mode = mode_of(&f.host("ranikust/state"));
+        let host_dir = fs::File::open(&f.host).unwrap();
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let r = rustix::fs::renameat_with(
+                        &host_dir,
+                        "d",
+                        &host_dir,
+                        "swap",
+                        rustix::fs::RenameFlags::EXCHANGE,
+                    );
+                    if r.is_err() {
+                        break;
+                    }
+                }
+            });
+            // Failing is fine; writing into the state directory is not.
+            let _ = extract_live(&f.root, bytes.as_slice(), &live_keep());
+            stop.store(true, Ordering::Relaxed);
+        });
+        let left: Vec<_> = fs::read_dir(f.host("ranikust/state")).unwrap().collect();
+        assert!(
+            left.is_empty(),
+            "{} entries in the state directory",
+            left.len()
+        );
+        assert_eq!(mode_of(&f.host("ranikust/state")), state_mode);
+    }
+}
+
+/// As kaniko (ADR-0041): no device node or FIFO in a live root, whatever
+/// the numbers; the other entries of the layer are written.
+#[test]
+fn live_extraction_creates_no_device_node_or_fifo() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.node("fifo", EntryType::Fifo, 0, 0)
+        .node("null", EntryType::Char, 1, 3)
+        .node("wh", EntryType::Char, 0, 0)
+        .node("sda", EntryType::Block, 8, 0)
+        .file("kept", 0o644, b"ok");
+    extract_live(&f.root, t.bytes().as_slice(), &IgnoreList::new()).unwrap();
+    for name in ["fifo", "null", "wh", "sda"] {
+        assert!(fs::symlink_metadata(f.host(name)).is_err(), "{name}");
+    }
+    assert_eq!(fs::read(f.host("kept")).unwrap(), b"ok");
+}
