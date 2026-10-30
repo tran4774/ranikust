@@ -563,8 +563,12 @@ Entry format:
   `feat/rnk-context`: ADR-0027 makes the context walk call
   `matches_using_parent` and `may_reinclude_below`, which only work inside
   the walk, so routing through `rnk-builder` would move the walk there.
-  Reversible: one dependency line, and `rnk-ignore` is pure data. The other
-  edges are still undeclared.
+  Reversible: one dependency line, and `rnk-ignore` is pure data.
+  `rnk-sched` → `rnk-dockerfile` is declared on branch `feat/rnk-sched`:
+  the scheduler walks `StageGraph::needed` and `StageNode::dependencies()`.
+  Reversible: the graph type is pure data, and routing it through
+  `rnk-builder` would only move the import. The other edges are still
+  undeclared.
 - **Raised:** 2026-10-30
 
 ### Q-130: Where kaniko and BuildKit differ on a config edit, which one wins?
@@ -727,7 +731,18 @@ Entry format:
 - **Options:** none listed; thresholds come from measurement.
 - **Recommendation:** none
 - **Interim:** add the hook and measure in Phase 1; thresholds stay open
-  ([rnk-sched](agents/crates/rnk-sched.md#phase-1)).
+  ([rnk-sched](agents/crates/rnk-sched.md#phase-1)). On branch
+  `feat/rnk-sched` the hook is the `MemoryGate` trait, checked before each
+  stage starts; `SystemMemory` admits a stage while free memory is at
+  least an eighth of the limit and at least 512 MiB, and always when no
+  stage runs. Free memory under a cgroup v2 limit is `memory.max` less the
+  working set, `memory.current` minus `inactive_file` from `memory.stat`
+  (the kubelet's measure): page cache from pulls and extraction would
+  otherwise hold every later stage back. Without a limit it is
+  `MemAvailable`. The gate admits at most one stage per fresh reading,
+  500 ms or more after its last admission, so stages that become ready
+  together (W3's peak) do not all start on one reading. Reversible: one
+  function and two constants, and the gate is replaceable.
 - **Raised:** 2026-10-30
 
 ### Q-031: How does per-stage log grouping fit the kaniko log flags?
@@ -741,7 +756,8 @@ Entry format:
 - **Options:** (a) grouping as its own option, independent of the format;
   (b) grouping as a value of `--log-format`.
 - **Recommendation:** none
-- **Interim:** none
+- **Interim:** no grouping yet; `rnk-sched` hands each stage its
+  `LogTag` (`[<stage-name> <k>/<n>]`), which either option uses.
 - **Raised:** 2026-10-30
 
 ### Q-032: What remains to verify in the RUN sandbox?
