@@ -89,7 +89,12 @@ Test data from kaniko
 Code derived from kaniko
 ------------------------
 
-None yet.
+File:      crates/rnk-dockerfile/src/squash.rs
+Source:    pkg/dockerfile/dockerfile.go (MakeKanikoStages and Squash),
+           commit 44aa7ddc0 (osscontainertools/kaniko 34ba9eadf plus local
+           commits)
+Copyright: Copyright 2018 Google LLC
+License:   Apache License, Version 2.0 (LICENSE-APACHE)
 
 kaniko (https://github.com/osscontainertools/kaniko, originally
 https://github.com/GoogleContainerTools/kaniko) is licensed under the Apache

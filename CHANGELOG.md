@@ -108,6 +108,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   directory another build has locked, and a non-empty directory without a
   `.ranikust-root` marker. Kaniko-mode builds themselves still stop after
   these checks, before anything is written.
+- The plan of a sequential kaniko-mode build, not yet wired to the CLI:
+  kaniko's stage squashing on the shared root, which stages are walked for
+  layers, what later stages read from each, and a scheduler mode that runs
+  stages on the shared root one at a time in a fixed order.
 
 ### Changed
 
