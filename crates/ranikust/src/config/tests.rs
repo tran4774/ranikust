@@ -183,3 +183,17 @@ fn value_names_match_the_flags() {
     assert_eq!(name(Network::None), "none");
     assert_eq!(name(Compression::Zstd), "zstd");
 }
+
+#[test]
+fn secrets_are_absolute_and_ids_unique() {
+    let ok = config(&["--no-push", "--secret", "id=a,src=rel/a"]).expect("config");
+    assert!(ok.secrets[0].1.is_absolute());
+    let twice = config(&[
+        "--no-push",
+        "--secret",
+        "id=a,src=/a",
+        "--secret",
+        "id=a,src=/b",
+    ]);
+    assert!(twice.unwrap_err().0.contains("twice"));
+}

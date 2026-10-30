@@ -21,11 +21,18 @@ mkdir -p /out
 cp /work/hello /work/cache-list /out/
 EOF
 
+# Independent of `build`: with --jobs above 1 both run at once.
+FROM ${BASE} AS other
+RUN echo other > /other
+
 FROM ${BASE}
 LABEL org.example.test=e2e
 ENV APP_HOME=/srv/app
 WORKDIR $APP_HOME
 COPY --from=build /out/ ./
+COPY --from=other /other ./
+# Changes nothing: an empty layer (`smoke_check_empty_layer`).
+RUN true
 COPY --chmod=755 <<EOF /usr/local/bin/show
 #!/bin/sh
 cat /srv/app/hello

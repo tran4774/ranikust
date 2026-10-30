@@ -140,9 +140,10 @@ for v in "${VARIANTS[@]}"; do
   # The real binary builds tests/smoke/e2e in the same environment.
   case "$entry" in PivotRoot) syscall=pivot_root ;; MoveMount) syscall=MS_MOVE ;; esac
   e2e "$name" "$syscall" >/dev/null
-  sudo bash -c "$(declare -f smoke_check_no_stub_leak smoke_check_no_secret); \
+  sudo bash -c "$(declare -f smoke_check_no_stub_leak smoke_check_no_secret smoke_check_empty_layer); \
     smoke_check_no_stub_leak '$dir/e2e/out/oci' && \
-    smoke_check_no_secret '$dir/e2e/out/oci' '$SMOKE_E2E_SECRET'"
+    smoke_check_no_secret '$dir/e2e/out/oci' '$SMOKE_E2E_SECRET' && \
+    smoke_check_empty_layer '$dir/e2e/out/oci'"
   sudo docker load -q -i "$dir/e2e/out/image.tar" >/dev/null
   got="$(sudo docker run --rm localhost/rnk-e2e:latest)"
   [ "$got" = "$SMOKE_E2E_OUTPUT" ] ||

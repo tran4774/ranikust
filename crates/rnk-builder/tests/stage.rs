@@ -11,6 +11,7 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rnk_builder::{
@@ -27,16 +28,39 @@ use rnk_sandbox::{Network, Sandbox};
 use rnk_snapshot::{Base, LayerDiff, LayerDir, Snapshotter, StageRootfs};
 use rnk_store::{BuildPaths, Store};
 
-/// Stage roots as plain directories: a layer is the whole root.
+/// Stage roots as plain directories: a layer is the whole root. A
+/// `FROM scratch` root starts with the `seed` entries.
 struct FakeSnapshotter {
     dir: PathBuf,
     next: AtomicUsize,
+    released: Arc<AtomicUsize>,
+    seed: Vec<(String, String)>,
 }
 
 struct FakeRoot {
     path: PathBuf,
     root: RootPath,
     open: bool,
+    released: Arc<AtomicUsize>,
+}
+
+/// Creates `entries` under `dir`: a name ending in `/` is a directory,
+/// content starting with `->` a symlink to the rest, anything else a file.
+fn plant(dir: &Path, entries: &[(&str, &[u8])]) {
+    for (p, content) in entries {
+        let p = dir.join(p);
+        if p.to_string_lossy().ends_with('/') {
+            fs::create_dir_all(&p).unwrap();
+            continue;
+        }
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        match content.strip_prefix(b"->") {
+            Some(target) => {
+                std::os::unix::fs::symlink(std::str::from_utf8(target).unwrap(), &p).unwrap()
+            }
+            None => fs::write(p, content).unwrap(),
+        }
+    }
 }
 
 impl Snapshotter for FakeSnapshotter {
@@ -56,13 +80,25 @@ impl Snapshotter for FakeSnapshotter {
         let path = self.dir.join(format!("stage-{n}"));
         fs::create_dir(&path).unwrap();
         let root = RootPath::open(&path)?;
-        if let Base::Stage(parent) = base {
-            rnk_rootfs::copy(&parent.root, "/", &root, "/", &CopyOpts::default())?;
+        match base {
+            Base::Stage(parent) => {
+                rnk_rootfs::copy(&parent.root, "/", &root, "/", &CopyOpts::default())?;
+            }
+            Base::Scratch => {
+                let seed: Vec<(&str, &[u8])> = self
+                    .seed
+                    .iter()
+                    .map(|(p, c)| (p.as_str(), c.as_bytes()))
+                    .collect();
+                plant(&path, &seed);
+            }
+            Base::Image(_) => unreachable!("no image in these tests"),
         }
         Ok(FakeRoot {
             path,
             root,
             open: false,
+            released: Arc::clone(&self.released),
         })
     }
 }
@@ -96,6 +132,7 @@ impl StageRootfs for FakeRoot {
 
     fn release(self) -> rnk_snapshot::Result<()> {
         fs::remove_dir_all(&self.path).unwrap();
+        self.released.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -103,6 +140,8 @@ impl StageRootfs for FakeRoot {
 struct Build {
     _dir: tempfile::TempDir,
     stages: Vec<StageDone<FakeRoot>>,
+    /// Roots released by the builder itself (a failed stage's).
+    released: usize,
 }
 
 /// Builds every needed stage of `dockerfile` over a context of `files`
@@ -110,14 +149,20 @@ struct Build {
 /// Dockerfile is replaced by `uid:gid` of the test process, for `--chown`
 /// (an unprivileged process cannot give files to root).
 fn build(dockerfile: &str, files: &[(&str, &[u8])]) -> (Build, Result<(), Error>) {
+    build_seeded(dockerfile, files, &[])
+}
+
+/// [`build`] with `FROM scratch` roots that start with `seed` (as
+/// [`plant`] reads it).
+fn build_seeded(
+    dockerfile: &str,
+    files: &[(&str, &[u8])],
+    seed: &[(&str, &str)],
+) -> (Build, Result<(), Error>) {
     let dir = tempfile::tempdir().unwrap();
     let ctx = dir.path().join("ctx");
-    for (p, content) in files {
-        let p = ctx.join(p);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, content).unwrap();
-    }
     fs::create_dir_all(&ctx).unwrap();
+    plant(&ctx, files);
     let meta = fs::metadata(dir.path()).unwrap();
     let dockerfile = dockerfile.replace("{ID}", &format!("{}:{}", meta.uid(), meta.gid()));
 
@@ -141,9 +186,15 @@ fn build(dockerfile: &str, files: &[(&str, &[u8])]) -> (Build, Result<(), Error>
     );
     let roots = dir.path().join("roots");
     fs::create_dir(&roots).unwrap();
+    let released = Arc::new(AtomicUsize::new(0));
     let snapshotter = FakeSnapshotter {
         dir: roots,
         next: AtomicUsize::new(0),
+        released: Arc::clone(&released),
+        seed: seed
+            .iter()
+            .map(|(p, c)| ((*p).to_owned(), (*c).to_owned()))
+            .collect(),
     };
     let platform = Platform::new("linux", "amd64");
     let secrets = BTreeMap::new();
@@ -202,10 +253,12 @@ fn build(dockerfile: &str, files: &[(&str, &[u8])]) -> (Build, Result<(), Error>
         }
     }
     drop(sandbox);
+    let released = released.load(Ordering::SeqCst);
     (
         Build {
             _dir: dir,
             stages: done,
+            released,
         },
         result,
     )
@@ -250,6 +303,11 @@ fn metadata_and_copies_build_the_config_and_the_root() {
     let c = b.stages[0].config.config.clone().unwrap();
     let env = c.env.unwrap();
     assert!(env.contains(&"A=1".to_owned()), "{env:?}");
+    // kaniko's `PATH` for `FROM scratch`.
+    assert!(
+        env.contains(&format!("PATH={}", rnk_dockerfile::DEFAULT_PATH)),
+        "{env:?}"
+    );
     assert!(env.contains(&"B=two".to_owned()), "{env:?}");
     assert!(
         !env.iter().any(|e| e.starts_with("V=")),
@@ -356,4 +414,66 @@ fn stage_and_instruction_spans_are_recorded() {
         .map(|c| c["kind"].as_str().unwrap())
         .collect();
     assert_eq!(kinds, ["ENV", "COPY"], "{commands:?}");
+}
+
+#[test]
+fn a_failed_stage_releases_its_root() {
+    let _capture = Capture::new();
+    let (b, r) = build(
+        "FROM scratch\nENV A=1\nCOPY missing /\n",
+        &[("a.txt", b"a")],
+    );
+    assert!(r.is_err());
+    assert!(b.stages.is_empty());
+    assert_eq!(b.released, 1);
+}
+
+#[test]
+fn symlinked_sources_cannot_reach_ignored_files() {
+    let _capture = Capture::new();
+    let files: &[(&str, &[u8])] = &[
+        ("a.txt", b"a"),
+        (".env", b"SECRET"),
+        ("secrets/key", b"SECRET"),
+        ("to-env", b"->.env"),
+        ("to-secrets", b"->secrets"),
+        ("to-a", b"->a.txt"),
+        ("dir/", b""),
+        ("dir/up", b"->../secrets"),
+        (".dockerignore", b".env\nsecrets\n"),
+    ];
+    for source in ["to-env", "to-secrets", "to-secrets/key", "dir/up"] {
+        let (_b, r) = build(
+            &format!("FROM scratch\nCOPY --chown={{ID}} {source} /x\n"),
+            files,
+        );
+        let e = r.expect_err(source).to_string();
+        assert!(e.contains("not found"), "{source}: {e}");
+    }
+    // A directory copied whole leaves its symlinks as links, unread.
+    let (b, r) = build("FROM scratch\nCOPY --chown={ID} dir /d\n", files);
+    r.unwrap();
+    let up = root_of(&b, 0).join("d/up");
+    assert_eq!(fs::read_link(up).unwrap(), PathBuf::from("../secrets"));
+    // A kept link to a kept file copies the file, under the link's name.
+    let (b, r) = build("FROM scratch\nCOPY --chown={ID} to-a /dst/\n", files);
+    r.unwrap();
+    assert_eq!(fs::read(root_of(&b, 0).join("dst/to-a")).unwrap(), b"a");
+}
+
+#[test]
+fn a_copy_onto_a_symlink_to_a_directory_goes_inside_it() {
+    let _capture = Capture::new();
+    let (b, r) = build_seeded(
+        "FROM scratch\nCOPY --chown={ID} a.txt /link\n",
+        &[("a.txt", b"a")],
+        &[("real/", ""), ("link", "->real")],
+    );
+    r.unwrap();
+    let root = root_of(&b, 0);
+    assert_eq!(fs::read(root.join("real/a.txt")).unwrap(), b"a");
+    assert_eq!(
+        fs::read_link(root.join("link")).unwrap(),
+        PathBuf::from("real")
+    );
 }

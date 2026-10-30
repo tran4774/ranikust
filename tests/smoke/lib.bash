@@ -72,6 +72,19 @@ smoke_digest() {
   grep -Eo '^sha256:[0-9a-f]{64}$' <<<"$1" | tail -1
 }
 
+# The OCI layout $1 must hold an empty layer: the e2e Dockerfile's `RUN
+# true`, which changes nothing, still gets one.
+smoke_check_empty_layer() {
+  local blob
+  for blob in "$1"/blobs/sha256/*; do
+    if gzip -t "$blob" 2>/dev/null && [ -z "$(tar -tzf "$blob")" ]; then
+      return 0
+    fi
+  done
+  echo "error: no empty layer in $1" >&2
+  return 1
+}
+
 # The secret $2 must not appear in any blob of the OCI layout $1: layers
 # (decompressed), config and manifests.
 smoke_check_no_secret() {

@@ -182,6 +182,7 @@ smoke image="docker.io/library/alpine:3.20":
     e2e >/dev/null
     smoke_check_no_stub_leak "$E/out/oci"
     smoke_check_no_secret "$E/out/oci" "$SMOKE_E2E_SECRET"
+    smoke_check_empty_layer "$E/out/oci"
     podman load --quiet -i "$E/out/image.tar"
     got="$(podman run --rm localhost/rnk-e2e:latest)"
     [ "$got" = "$SMOKE_E2E_OUTPUT" ] || { echo "error: the e2e image printed: $got" >&2; exit 1; }
