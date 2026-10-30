@@ -26,7 +26,8 @@ must keep compiling ([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)).
 | [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
 | [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | `cargo install --locked cargo-zigbuild@0.24.0` |
 | `qemu-aarch64` (QEMU user mode) 9.1 or later | `just test-aarch64`, so `just ci`: the aarch64 tests under emulation (8.2 has no `openat2`); a binfmt_misc entry also runs ranikust's own CLI tests (CI requires it) | `qemu-user` package if 9.1 or later, else Debian 13's `qemu-user` unpacked with `dpkg -x`; `QEMU_AARCH64=<path>` |
-| rootless [Podman](https://podman.io/) | Only for `just smoke`, the T1 smoke test ([docs/testing.md](docs/testing.md)) | `podman` package |
+| rootless [Podman](https://podman.io/) | Only for `just smoke`, the T1 smoke test ([docs/testing.md](docs/testing.md)), and `just test-vm e2e`, which saves the reference images from it | `podman` package |
+| A [`nextjs-kaniko`](docs/testing.md#end-to-end-workloads-e2e) checkout next to the repository, with its registry and verdaccio storage filled and its `kaniko-bench:stream`, BuildKit, `registry:2` and verdaccio images in podman | Only for `just test-vm e2e`; read, never written | `RANIKUST_NEXTJS_KANIKO=<path>` |
 | QEMU with KVM, `xorriso`, `jq` | Only for `just test-vm`, the T2 VM harness; `/dev/kvm` must be readable and writable by you (its group or an ACL), never through `sudo` | `qemu-system-x86`, `qemu-utils`, `xorriso`, `jq` packages |
 
 The versions of cargo-deny, mdBook, zig and cargo-zigbuild match CI. Nothing

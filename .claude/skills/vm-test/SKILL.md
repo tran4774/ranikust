@@ -15,7 +15,15 @@ description is in `docs/testing.md#the-vm-harness-tier-t2`.
 just test-vm              # unit and smoke, Ubuntu 24.04 (kernel 6.8)
 just test-vm unit         # only the #[ignore = "T2: ..."] tests
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
+just test-vm e2e          # nextjs-kaniko W1-W3: kaniko, BuildKit, ranikust
 ```
+
+- `e2e` runs only when named: about 15–25 minutes and 2.8 GB copied in,
+  read from the `nextjs-kaniko` checkout next to the main checkout and
+  from the host's podman images (docs/testing.md#end-to-end-workloads-e2e).
+  Its `report.md` holds the times, `compare-*.txt` the flattened-image
+  comparison (`result: other=0` is what Phase 1 acceptance needs), and a
+  `ranikust` build that hits an unbuilt part is `pending`, not a failure.
 
 - Run it in the background: a cold run (image download, release build,
   boot, cloud-init installing Docker) takes several minutes.
