@@ -16,7 +16,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rnk_context::Context;
 use rnk_dockerfile::{
-    Add, CmdLine, Copy, Healthcheck, Instruction, Located, MountType, Network as DfNetwork, Origin,
+    Add, CmdLine, Copy, Healthcheck, Instruction, Located, Network as DfNetwork, Origin,
     ReferenceKind, Security, Source, SourceContent, Stage, StageGraph, StageScope,
     chomp_heredoc_content, parse_heredoc_marker,
 };
@@ -30,6 +30,7 @@ use tracing::{debug_span, info, info_span};
 use crate::error::{Error, Result};
 use crate::image::layer_history;
 use crate::layer::{BlobLayer, LayerDemand, LayerExporter, LayerSource};
+use crate::mounts::{self, Secret};
 use crate::pull::PulledImage;
 use crate::sources::{self, ContextFiles};
 use crate::time::BuildTime;
@@ -70,9 +71,11 @@ pub struct BuildCx<'a, S> {
     pub time: &'a BuildTime,
     /// The network of a `RUN` without `--network` (ADR-0010).
     pub network: Network,
-    /// `RUN --mount=type=secret` sources: id to host file, absolute.
-    // [open: Q-022] interim: kaniko's `--secret id=ID,src=PATH` for files.
-    pub secrets: &'a BTreeMap<String, PathBuf>,
+    /// `RUN --mount=type=secret` sources by id: `--secret` (ADR-0032).
+    pub secrets: &'a BTreeMap<String, Secret>,
+    /// Whether a `RUN --network=host` may lift `--network=none`: BuildKit's
+    /// `network.host` entitlement, `--allow network.host` (ADR-0032).
+    pub allow_network_host: bool,
     /// The image platform, for `FROM scratch`.
     pub platform: &'a Platform,
     /// `--jobs` permits for `RUN`.
@@ -501,7 +504,14 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             .and_then(|c| c.shell.clone())
             .unwrap_or_else(|| rnk_oci::DEFAULT_SHELL.map(str::to_owned).to_vec());
         let workdir = self.working_dir();
-        let mut mounts = self.mounts(&run.mounts, &workdir)?;
+        let network = run_network(run.network, self.cx.network, self.cx.allow_network_host)?;
+        let mut mounts = mounts::run_mounts(
+            &run.mounts,
+            &workdir,
+            self.cx.store,
+            self.cx.secrets,
+            self.cx.cancelled,
+        )?;
         let argv = match run_argv(&run.cmd, &shell)? {
             Argv::Plain(argv) => argv,
             Argv::Script { name, body } => {
@@ -510,7 +520,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 // never reaches a layer.
                 let script = write_script(self.cx.store.build_dir(), &body)?;
                 let target = PathBuf::from("/dev/pipes").join(&name);
-                mounts.push(BindMount {
+                mounts.binds.push(BindMount {
                     source: script.path().to_owned(),
                     target: target.clone(),
                     kind: MountKind::File,
@@ -520,24 +530,16 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 vec![target.to_string_lossy().into_owned()]
             }
         };
-        let network = match (run.network, self.cx.network) {
-            (DfNetwork::None, _) => Network::None,
-            // The operator's --network=none is a ceiling a Dockerfile cannot
-            // lift [open: Q-184].
-            (DfNetwork::Host, Network::None) => {
-                return Err(Error::Invalid(
-                    "RUN --network=host is refused: the build runs with --network=none".to_owned(),
-                ));
-            }
-            (DfNetwork::Host, Network::Host) => Network::Host,
-            (DfNetwork::Default, n) => n,
-        };
-        let env: Vec<(OsString, OsString)> = self
+        // Secrets given with `env=` come last and win over a variable of the
+        // same name; they live in this RUN's environment only.
+        let mut env: Vec<(OsString, OsString)> = self
             .scope
             .env()
             .iter()
             .map(|(k, v)| (k.into(), v.into()))
+            .filter(|(k, _): &(OsString, OsString)| mounts.env.iter().all(|(s, _)| s != k))
             .collect();
+        env.append(&mut mounts.env);
         let user = self.user();
         self.layer(code, move |b, _root| {
             let mut spec = RunSpec::new(
@@ -548,12 +550,22 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             spec.user = user;
             spec.workdir = workdir;
             spec.network = network;
-            spec.mounts = mounts;
+            spec.mounts = std::mem::take(&mut mounts.binds);
             // Held until the RUN's process tree is gone (ADR-0013).
-            let permit = b.cx.run_gate.enter().ok_or(Error::Cancelled)?;
+            let Some(permit) = b.cx.run_gate.enter() else {
+                mounts.finish()?;
+                return Err(Error::Cancelled);
+            };
             let status = b.cx.sandbox.run(spec);
             drop(permit);
-            let status = status?;
+            // The RUN is gone: its secret files and cache leases end before
+            // anything else can fail; the RUN's own error comes first.
+            let finished = mounts.finish();
+            let status = match status {
+                Err(rnk_sandbox::Error::Cancelled) => return Err(Error::Cancelled),
+                s => s?,
+            };
+            finished?;
             if status.success() {
                 return Ok(());
             }
@@ -564,51 +576,6 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 .unwrap_or(1);
             Err(Error::RunFailed { code })
         })
-    }
-
-    /// `RUN --mount` values as the sandbox's binds.
-    fn mounts(&self, mounts: &[rnk_dockerfile::Mount], workdir: &Path) -> Result<Vec<BindMount>> {
-        let mut out = Vec::new();
-        for m in mounts {
-            let target = |t: &str| mount_target(t, workdir);
-            match m.kind {
-                MountType::Cache => {
-                    if !m.from.is_empty() {
-                        return Err(Error::Invalid(
-                            "RUN --mount=type=cache,from= is not supported yet (Phase 5)"
-                                .to_owned(),
-                        ));
-                    }
-                    if m.target.is_empty() {
-                        return Err(Error::Invalid(
-                            "RUN --mount=type=cache needs a target".to_owned(),
-                        ));
-                    }
-                    // [open: Q-181] sharing= is not enforced: every cache is
-                    // shared, as BuildKit's default.
-                    let dir = self.cx.store.cache_dir(cache_id(m))?;
-                    set_cache_owner(&dir, m)?;
-                    out.push(BindMount {
-                        source: dir,
-                        target: target(&m.target),
-                        kind: MountKind::Directory,
-                        read_only: m.read_only,
-                    });
-                }
-                MountType::Secret => {
-                    if let Some(bind) = secret_mount(m, workdir, self.cx.secrets)? {
-                        out.push(bind);
-                    }
-                }
-                MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
-                    return Err(Error::Invalid(format!(
-                        "RUN --mount=type={} is not supported yet (Phase 5)",
-                        m.kind
-                    )));
-                }
-            }
-        }
-        Ok(out)
     }
 
     fn add(&mut self, index: usize, a: Add, code: &str) -> Result<()> {
@@ -908,96 +875,21 @@ fn write_script(dir: &Path, body: &str) -> Result<tempfile::NamedTempFile> {
     Ok(f)
 }
 
-/// A `RUN --mount` target inside the root: absolute, or relative to the
-/// working directory; cleaned, never above `/`.
-fn mount_target(t: &str, workdir: &Path) -> PathBuf {
-    let joined = if t.starts_with('/') {
-        PathBuf::from(t)
-    } else {
-        workdir.join(t)
-    };
-    PathBuf::from("/").join(sources::clean_source(&joined.to_string_lossy()))
-}
-
-/// The id of a cache mount: `id=`, else its target, as BuildKit.
-fn cache_id(m: &rnk_dockerfile::Mount) -> &str {
-    if m.cache_id.is_empty() {
-        &m.target
-    } else {
-        &m.cache_id
+/// The network of a `RUN`. As BuildKit's `network.host` entitlement, a
+/// `RUN --network=host` under the operator's `--network=none` needs
+/// `--allow network.host`; under the default host network (ADR-0010) it
+/// asks for nothing more.
+fn run_network(asked: DfNetwork, build: Network, allow_host: bool) -> Result<Network> {
+    match (asked, build) {
+        (DfNetwork::None, _) => Ok(Network::None),
+        (DfNetwork::Host, Network::None) if !allow_host => Err(Error::Invalid(
+            "RUN --network=host: network.host is not allowed under --network=none; \
+             pass --allow network.host"
+                .to_owned(),
+        )),
+        (DfNetwork::Host, _) => Ok(Network::Host),
+        (DfNetwork::Default, n) => Ok(n),
     }
-}
-
-/// Applies a cache mount's `mode`, `uid` and `gid` to its directory in the
-/// store, through a descriptor of the directory itself: never by a path a
-/// symlink could redirect. Only permission bits and the sticky bit are
-/// taken from `mode`.
-fn set_cache_owner(dir: &Path, m: &rnk_dockerfile::Mount) -> Result<()> {
-    if m.mode.is_none() && m.uid.is_none() && m.gid.is_none() {
-        return Ok(());
-    }
-    let root = RootPath::open(dir)?;
-    let fd = root.open_at(".", &OpenHow::read().directory().no_follow())?;
-    if let Some(mode) = m.mode {
-        rustix::fs::fchmod(&fd, rustix::fs::Mode::from_raw_mode(mode & 0o1777))
-            .map_err(|e| Error::io("chmod", dir)(e.into()))?;
-    }
-    if m.uid.is_some() || m.gid.is_some() {
-        rustix::fs::fchown(
-            &fd,
-            m.uid.map(rustix::fs::Uid::from_raw),
-            m.gid.map(rustix::fs::Gid::from_raw),
-        )
-        .map_err(|e| Error::io("chown", dir)(e.into()))?;
-    }
-    Ok(())
-}
-
-/// A `RUN --mount=type=secret` as a bind, `None` for a missing optional
-/// secret. The id is `id=`, else the target's last name; the target is
-/// `target=`, else `/run/secrets/<id>`.
-fn secret_mount(
-    m: &rnk_dockerfile::Mount,
-    workdir: &Path,
-    secrets: &BTreeMap<String, PathBuf>,
-) -> Result<Option<BindMount>> {
-    if m.env.is_some() {
-        return Err(Error::Invalid(
-            "RUN --mount=type=secret,env= is not supported yet (Q-022)".to_owned(),
-        ));
-    }
-    let id = if m.cache_id.is_empty() {
-        Path::new(&m.target)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    } else {
-        m.cache_id.clone()
-    };
-    if id.is_empty() {
-        return Err(Error::Invalid(
-            "RUN --mount=type=secret needs an id or a target".to_owned(),
-        ));
-    }
-    let Some(source) = secrets.get(&id) else {
-        if m.required {
-            return Err(Error::Invalid(format!(
-                "secret {id:?} is required but was not given (--secret)"
-            )));
-        }
-        return Ok(None);
-    };
-    let target = if m.target.is_empty() {
-        PathBuf::from("/run/secrets").join(&id)
-    } else {
-        mount_target(&m.target, workdir)
-    };
-    Ok(Some(BindMount {
-        source: source.clone(),
-        target,
-        kind: MountKind::File,
-        read_only: true,
-    }))
 }
 
 /// `--chmod`, octal only [open: Q-120].
@@ -1215,73 +1107,26 @@ mod tests {
         assert!(!is_remote("src/a.tgz"));
     }
 
-    fn mount(kind: MountType) -> rnk_dockerfile::Mount {
-        rnk_dockerfile::Mount {
-            kind,
-            ..rnk_dockerfile::Mount::default()
-        }
-    }
-
     #[test]
-    fn mount_targets_are_absolute_and_clean() {
-        let wd = Path::new("/app");
-        assert_eq!(mount_target("/cache", wd), PathBuf::from("/cache"));
+    fn host_network_under_none_needs_the_entitlement() {
+        use DfNetwork as Df;
         assert_eq!(
-            mount_target("node_modules/.cache", wd),
-            PathBuf::from("/app/node_modules/.cache")
+            run_network(Df::Default, Network::None, false).unwrap(),
+            Network::None
         );
-        assert_eq!(mount_target("../../../x", wd), PathBuf::from("/x"));
-    }
-
-    #[test]
-    fn a_cache_id_defaults_to_the_target() {
-        let mut m = mount(MountType::Cache);
-        m.target = "/root/.npm".into();
-        assert_eq!(cache_id(&m), "/root/.npm");
-        m.cache_id = "npm".into();
-        assert_eq!(cache_id(&m), "npm");
-    }
-
-    #[test]
-    fn secret_mounts_follow_buildkit_defaults() {
-        let wd = Path::new("/app");
-        let secrets: BTreeMap<String, PathBuf> =
-            [("token".to_owned(), PathBuf::from("/host/token"))].into();
-        // The id from the target's last name.
-        let mut m = mount(MountType::Secret);
-        m.target = "/etc/token".into();
-        let b = secret_mount(&m, wd, &secrets).unwrap().unwrap();
-        assert_eq!(b.source, PathBuf::from("/host/token"));
-        assert_eq!(b.target, PathBuf::from("/etc/token"));
-        assert!(b.read_only);
-        // The target from the id; a relative target under the workdir.
-        let mut m = mount(MountType::Secret);
-        m.cache_id = "token".into();
         assert_eq!(
-            secret_mount(&m, wd, &secrets).unwrap().unwrap().target,
-            PathBuf::from("/run/secrets/token")
+            run_network(Df::Host, Network::Host, false).unwrap(),
+            Network::Host
         );
-        m.target = "conf/token".into();
+        let refused = run_network(Df::Host, Network::None, false).unwrap_err();
+        assert!(refused.to_string().contains("--allow network.host"));
         assert_eq!(
-            secret_mount(&m, wd, &secrets).unwrap().unwrap().target,
-            PathBuf::from("/app/conf/token")
+            run_network(Df::Host, Network::None, true).unwrap(),
+            Network::Host
         );
-        // Missing: skipped unless required.
-        let mut m = mount(MountType::Secret);
-        m.cache_id = "other".into();
-        assert_eq!(secret_mount(&m, wd, &secrets).unwrap(), None);
-        m.required = true;
-        assert!(secret_mount(&m, wd, &secrets).is_err());
-        // No id at all, and env=.
-        assert!(secret_mount(&mount(MountType::Secret), wd, &secrets).is_err());
-        let mut m = mount(MountType::Secret);
-        m.cache_id = "token".into();
-        m.env = Some("TOKEN".into());
-        assert!(
-            secret_mount(&m, wd, &secrets)
-                .unwrap_err()
-                .to_string()
-                .contains("Q-022")
+        assert_eq!(
+            run_network(Df::None, Network::Host, false).unwrap(),
+            Network::None
         );
     }
 

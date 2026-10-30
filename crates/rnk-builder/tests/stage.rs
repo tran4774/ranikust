@@ -209,6 +209,7 @@ fn build_seeded(
         time: &time,
         network: Network::Host,
         secrets: &secrets,
+        allow_network_host: false,
         platform: &platform,
         run_gate: &Ungated,
         cancelled: &never,

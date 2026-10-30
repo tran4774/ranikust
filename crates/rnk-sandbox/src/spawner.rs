@@ -1029,8 +1029,10 @@ mod tests {
         let (status, _) = reap(pid).unwrap();
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        let mut child = child;
+        assert!(child.wait().is_err(), "already reaped");
         // After the cancel, a new child dies as soon as it is recorded.
-        let child = std::process::Command::new("sleep")
+        let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .unwrap();
@@ -1039,6 +1041,7 @@ mod tests {
         wait_exited(pid).unwrap();
         assert!(running.remove(pid));
         assert_eq!(reap(pid).unwrap().0.signal(), Some(libc::SIGKILL));
+        assert!(child.wait().is_err(), "already reaped");
     }
 
     #[test]
