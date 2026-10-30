@@ -23,6 +23,7 @@ pub(crate) fn fast_retries() -> RetryPolicy {
 pub(crate) fn options(registry: &FakeRegistry) -> ClientOptions {
     let mut options = ClientOptions::default();
     options.insecure = BTreeSet::from([registry.host()]);
+    options.http_credentials = options.insecure.clone();
     options.retry = fast_retries();
     options
 }

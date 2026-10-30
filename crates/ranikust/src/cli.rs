@@ -69,6 +69,11 @@ pub(crate) struct BuildArgs {
     )]
     pub(crate) context: String,
 
+    /// A sub-directory of a `dir://` context to build from, as kaniko;
+    /// ignored, with a warning, for a plain path, which kaniko ignores too.
+    #[arg(long, value_name = "DIR", help_heading = "Input")]
+    pub(crate) context_sub_path: Option<String>,
+
     /// Path of the Dockerfile.
     #[arg(
         short = 'f',
@@ -268,16 +273,17 @@ pub(crate) struct BuildArgs {
         short = 'v',
         long,
         value_enum,
+        ignore_case = true,
         default_value_t = Verbosity::Info,
         help_heading = "Logging"
     )]
     pub(crate) verbosity: Verbosity,
 
-    /// Log format: text, color (when stderr is a terminal), json.
+    /// Log format, as kaniko's logrus: text, color (forced), json.
     #[arg(long, value_enum, default_value_t = LogFormatArg::Color, help_heading = "Logging")]
     pub(crate) log_format: LogFormatArg,
 
-    /// A timestamp on each log line.
+    /// The full time in colored logs instead of seconds since start.
     #[arg(
         long,
         value_name = "BOOL",
@@ -304,9 +310,8 @@ pub(crate) struct BuildArgs {
     pub(crate) reproducible: bool,
 
     /// A registry reached over plain HTTP when HTTPS fails, as kaniko's
-    /// `--insecure-registry`: `host[:port]`. Repeat for several.
-    // [open: Q-200] interim (a), and one flag of Q-023's list: kaniko's name
-    // and meaning, through rnk-registry's `ClientOptions::insecure`.
+    /// `--insecure-registry`: `host[:port]`. Repeat for several. Its
+    /// credentials may go over plain HTTP (threat model T11).
     #[arg(
         long = "insecure-registry",
         value_name = "REGISTRY",
@@ -409,7 +414,6 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("cache-copy-layers", Refusal::NotYet(PHASE_4)),
     ("cache-run-layers", Refusal::NotYet(PHASE_4)),
     ("compressed-caching", Refusal::NotYet(PHASE_4)),
-    ("no-push-cache", Refusal::NotYet(PHASE_4)),
     ("ignore-path", Refusal::NotYet(PHASE_2)),
     ("single-snapshot", Refusal::NotYet(PHASE_2)),
     ("materialize", Refusal::NotYet(PHASE_2)),
@@ -489,11 +493,6 @@ const IGNORED: &[(&str, bool, &str)] = &[
         "image-fs-extract-retry",
         true,
         "layers are extracted from the store; pulls are retried by --image-download-retry",
-    ),
-    (
-        "context-sub-path",
-        true,
-        "it applies only to fetched contexts, which come in Phase 5 (Q-081)",
     ),
     (
         "force-build-metadata",
@@ -578,6 +577,9 @@ fn prepass(all: &[OsString]) -> Prepass {
         out.args.push(program.clone());
     }
     let mut first = true;
+    // Each long flag as written and the name clap gets, to catch two
+    // spellings of one flag.
+    let mut names: Vec<(&str, &str)> = Vec::new();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.to_str() else {
             out.args.push(arg.clone());
@@ -619,6 +621,17 @@ fn prepass(all: &[OsString]) -> Prepass {
         if name == "cache" && value.is_some_and(|v| parse_bool(v) == Ok(false)) {
             continue;
         }
+        // Without a layer cache, not compressing or not pushing it changes
+        // nothing; `--compressed-caching` (true, kaniko's default) without a
+        // value or `=true` still names the cache and is refused below.
+        if (name == "compressed-caching" && value.is_some_and(|v| parse_bool(v) == Ok(false)))
+            || name == "no-push-cache"
+        {
+            out.warnings.push(format!(
+                "--{name} is ignored: the layer cache comes in Phase 4"
+            ));
+            continue;
+        }
         if let Some((name, refusal)) = REFUSED.iter().find(|(n, _)| *n == name) {
             let reason = match refusal {
                 Refusal::Renamed(why) => format!("renamed in ranikust: {why}"),
@@ -642,13 +655,35 @@ fn prepass(all: &[OsString]) -> Prepass {
                 out.warnings
                     .push(format!("--{old} is deprecated in kaniko, use --{new}"));
             }
+            names.push((*old, *new));
             out.args.push(match value {
                 Some(v) => OsString::from(format!("--{new}={v}")),
                 None => OsString::from(format!("--{new}")),
             });
             continue;
         }
+        names.push((name, name));
         out.args.push(arg.clone());
+    }
+    // Two spellings of one flag: clap would only say it was given twice.
+    let mut targets: Vec<&str> = RENAMED.iter().map(|(_, n, _)| *n).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    for new in targets {
+        let mut given: Vec<&str> = names
+            .iter()
+            .filter(|(_, n)| *n == new)
+            .map(|(o, _)| *o)
+            .collect();
+        given.sort_unstable();
+        given.dedup();
+        if given.len() > 1 {
+            let spellings: Vec<String> = given.iter().map(|g| format!("--{g}")).collect();
+            out.refused.push(format!(
+                "{} name the same setting: give it once",
+                spellings.join(" and ")
+            ));
+        }
     }
     out
 }
@@ -681,7 +716,12 @@ fn parse_registry_host(value: &str) -> Result<String, String> {
             "expected a registry host such as registry:5000, got {value:?}"
         ));
     }
-    Ok(value.to_owned())
+    // Docker Hub's legacy name is the registry `Reference` calls docker.io.
+    Ok(if value == "index.docker.io" {
+        rnk_oci::Reference::DOCKER_HUB.to_owned()
+    } else {
+        value.to_owned()
+    })
 }
 
 /// A `--secret` as given: buildctl's `parseSecret`

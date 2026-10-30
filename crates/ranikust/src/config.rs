@@ -65,6 +65,7 @@ pub(crate) enum Verbosity {
     Debug,
     #[default]
     Info,
+    #[value(alias = "warning")]
     Warn,
     Error,
     /// As `error`: ranikust has no level above it.
@@ -78,7 +79,7 @@ pub(crate) enum Verbosity {
 pub(crate) enum LogFormatArg {
     /// Plain text.
     Text,
-    /// Text, colored when stderr is a terminal (kaniko's default).
+    /// logrus forced colors and seconds since start (kaniko's default).
     #[default]
     Color,
     /// One JSON object per line.
@@ -235,10 +236,6 @@ fn key_value(flag: &str, arg: &str) -> Result<(String, String), Invalid> {
     }
 }
 
-/// The environment variables kaniko reads that ranikust honours: the rest
-/// of `KANIKO_*` and `FF_KANIKO_*` get one warning (ADR-0036).
-const HONOURED_ENV: &[&str] = &["KANIKO_NO_PUSH", "KANIKO_PRESERVE_CONTEXT"];
-
 /// Applies kaniko's environment variables to `args` (ADR-0036) and returns
 /// the warnings for those ranikust does not honour.
 ///
@@ -281,7 +278,6 @@ pub(crate) fn apply_env(
             "KANIKO_DIR" => warnings.push(
                 "KANIKO_DIR is ignored: ranikust's state directory is --state-dir".to_owned(),
             ),
-            _ if HONOURED_ENV.contains(&name) => {}
             _ => ignored.push(name.to_owned()),
         }
     }
@@ -347,12 +343,47 @@ impl BuildConfig {
                     .to_owned(),
             ));
         }
-        // kaniko `cmd/executor/cmd/root.go:212-214`.
-        if args.destinations.is_empty() && args.image_name_with_digest_file.is_some() {
-            return Err(Invalid(
-                "you must provide --destination if setting --image-name-with-digest-file"
-                    .to_owned(),
-            ));
+        // kaniko `cmd/executor/cmd/root.go:212-217`.
+        for (flag, set) in [
+            (
+                "--image-name-with-digest-file",
+                args.image_name_with_digest_file.is_some(),
+            ),
+            (
+                "--image-name-tag-with-digest-file",
+                args.image_name_tag_with_digest_file.is_some(),
+            ),
+        ] {
+            if set && args.destinations.is_empty() {
+                return Err(Invalid(format!(
+                    "you must provide --destination if setting {flag}"
+                )));
+            }
+        }
+        // kaniko PUTs a digest file whose path is an https:// URL
+        // (`pkg/executor/push.go:150-166`); ranikust writes local files
+        // only.
+        for (flag, path) in [
+            ("--digest-file", &args.digest_file),
+            (
+                "--image-name-with-digest-file",
+                &args.image_name_with_digest_file,
+            ),
+            (
+                "--image-name-tag-with-digest-file",
+                &args.image_name_tag_with_digest_file,
+            ),
+        ] {
+            if path
+                .as_deref()
+                .and_then(Path::to_str)
+                .is_some_and(|p| p.starts_with("https://"))
+            {
+                return Err(Invalid(format!(
+                    "{flag}: uploading the file to a URL, as kaniko can, is not supported; \
+                     give a local path"
+                )));
+            }
         }
         let compression_level = args
             .compression_level
@@ -373,7 +404,7 @@ impl BuildConfig {
             return Err(Invalid("--target names an empty stage".to_owned()));
         }
         Ok(Self {
-            context: absolute(&context_dir(&args.context)?),
+            context: absolute(&context_with_sub_path(args)?),
             dockerfile: args.dockerfile.clone(),
             build_args: args
                 .build_args
@@ -480,6 +511,41 @@ pub(crate) fn name<T: ValueEnum>(value: T) -> String {
 
 /// The local directory of `--context`: `dir://` stripped; other schemes are
 /// refused with the phase that brings them.
+/// The context directory with kaniko's `--context-sub-path` applied: joined
+/// onto a `dir://` context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:599-631`,
+/// `pkg/buildcontext/dir.go:25`), staying inside it, so an absolute path
+/// or `..` is refused. kaniko returns before the join for a plain path, so
+/// there it is ignored ([`context_sub_path_ignored`]); other schemes are
+/// refused with their phase by [`context_dir`].
+fn context_with_sub_path(args: &BuildArgs) -> Result<PathBuf, Invalid> {
+    let dir = context_dir(&args.context)?;
+    let Some(sub) = args.context_sub_path.as_deref() else {
+        return Ok(dir);
+    };
+    if !args.context.starts_with("dir://") {
+        return Ok(dir);
+    }
+    let sub_path = Path::new(sub);
+    let inside = sub_path.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    if !inside {
+        return Err(Invalid(format!(
+            "--context-sub-path={sub}: must be a relative path inside the context, without .."
+        )));
+    }
+    Ok(dir.join(sub_path))
+}
+
+/// Whether `--context-sub-path` is given for a plain local path, where
+/// kaniko ignores it: the caller warns.
+pub(crate) fn context_sub_path_ignored(args: &BuildArgs) -> bool {
+    args.context_sub_path.is_some() && !args.context.contains("://")
+}
+
 fn context_dir(context: &str) -> Result<PathBuf, Invalid> {
     if context.is_empty() {
         return Err(Invalid("--context is empty".to_owned()));

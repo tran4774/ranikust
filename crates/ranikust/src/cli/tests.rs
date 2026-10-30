@@ -177,7 +177,7 @@ fn refused_kaniko_flags_say_why() {
         (&["--cache"], "Phase 4"),
         (&["--cache-repo", "r/cache"], "Phase 4"),
         (&["--cache-ttl=1h"], "Phase 4"),
-        (&["--no-push-cache"], "Phase 4"),
+        (&["--compressed-caching"], "Phase 4"),
         (&["--ignore-path=/var"], "Phase 2"),
         (&["--single-snapshot"], "Phase 2"),
         (&["--ignore-var-run=false"], "Q-035"),
@@ -230,18 +230,34 @@ fn flags_that_change_nothing_are_ignored_with_a_warning() {
         "--cleanup=true",
         "--pre-cleanup",
         "--image-fs-extract-retry=3",
-        "--context-sub-path",
-        "sub",
         "--force-build-metadata",
         "--skip-unused-stages",
         "--no-push",
     ]);
-    assert_eq!(w.len(), 9, "{w:?}");
+    assert_eq!(w.len(), 8, "{w:?}");
     assert!(w.iter().all(|l| l.contains("is ignored")), "{w:?}");
     assert!(args.no_push, "the flag after a consumed value still parses");
     // `--cache=false` asks for what Phase 1 does: no warning, no refusal.
     let (_, w) = warnings(&["--cache=false", "--no-push"]);
     assert!(w.is_empty(), "{w:?}");
+    // Without a cache, not compressing or not pushing it changes nothing.
+    let (_, w) = warnings(&["--compressed-caching=false", "--no-push-cache", "--no-push"]);
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(w.iter().all(|l| l.contains("Phase 4")), "{w:?}");
+}
+
+#[test]
+fn two_spellings_of_one_flag_are_refused_naming_both() {
+    let lines = refused(&[
+        "--platform=linux/amd64",
+        "--custom-platform=linux/amd64",
+        "--no-push",
+    ]);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("--custom-platform and --platform"),
+        "{lines:?}"
+    );
 }
 
 /// kaniko's deprecated spellings and `--custom-platform` (Q-020).

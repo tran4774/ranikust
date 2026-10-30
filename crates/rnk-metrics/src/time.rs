@@ -21,6 +21,16 @@ pub(crate) fn rfc3339(t: SystemTime) -> String {
     )
 }
 
+/// [`rfc3339`] to the second, as Go's `time.RFC3339` prints it in UTC
+/// (`2026-10-30T12:00:00Z`): logrus's timestamps in logs.
+pub(crate) fn rfc3339_seconds(t: SystemTime) -> String {
+    let mut s = rfc3339(t);
+    // Drop `.nnnnnnnnn` before the `Z`.
+    s.truncate(s.len() - 11);
+    s.push('Z');
+    s
+}
+
 /// Year, month and day of a count of days since 1970-01-01 (Howard Hinnant's
 /// `civil_from_days`, restricted to non-negative days).
 fn civil_from_days(days: u64) -> (u64, u64, u64) {

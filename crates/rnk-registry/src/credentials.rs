@@ -122,12 +122,28 @@ impl Credentials {
     /// (`kaniko@44aa7ddc0 pkg/creds/creds.go:39-42`). Chain the file with
     /// [`Credentials::or`].
     ///
-    /// The error never quotes the value, which holds secrets.
+    /// Only `auths` is read, as the docker CLI reads the variable
+    /// (`cli/config/configfile/file.go:352-378`): `credsStore`,
+    /// `credHelpers` and any other field are refused, so no helper is ever
+    /// named by a variable. The error never quotes the value, which holds
+    /// secrets.
     pub fn from_env_value(value: &[u8]) -> Result<Self, Error> {
-        Self::from_json(value).map_err(|reason| Error::Credentials {
+        let fail = |reason: String| Error::Credentials {
             path: PathBuf::from("$DOCKER_AUTH_CONFIG"),
             reason,
+        };
+        let env: EnvConfig = serde_json::from_slice(value).map_err(|e| {
+            fail(format!(
+                "invalid at line {} column {}: only an \"auths\" object is allowed",
+                e.line(),
+                e.column()
+            ))
+        })?;
+        Self::from_file(ConfigFile {
+            auths: env.auths,
+            ..ConfigFile::default()
         })
+        .map_err(fail)
     }
 
     /// These credentials, then `fallback` for a registry they say nothing
@@ -149,6 +165,11 @@ impl Credentials {
             // serde_json's message may quote a value; keep the position only.
             format!("invalid JSON at line {} column {}", e.line(), e.column())
         })?;
+        Self::from_file(file)
+    }
+
+    /// The credentials of a parsed `config.json`.
+    fn from_file(file: ConfigFile) -> Result<Self, String> {
         let mut auths = Vec::new();
         for (key, entry) in file.auths {
             let credential = entry
@@ -229,7 +250,7 @@ fn canonical_host(name: &str) -> String {
 }
 
 /// The parts of `config.json` this crate reads; other keys are ignored.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct ConfigFile {
     #[serde(default)]
     auths: BTreeMap<String, AuthEntry>,
@@ -237,6 +258,14 @@ struct ConfigFile {
     cred_helpers: BTreeMap<String, String>,
     #[serde(default, rename = "credsStore")]
     creds_store: Option<String>,
+}
+
+/// `DOCKER_AUTH_CONFIG`: `auths` and nothing else.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvConfig {
+    #[serde(default)]
+    auths: BTreeMap<String, AuthEntry>,
 }
 
 /// One `auths` entry. Docker writes `{}` for hosts a helper serves.
@@ -337,6 +366,17 @@ mod tests {
             .to_string();
         assert!(!bad.contains("c2VjcmV0"), "{bad}");
         assert!(bad.contains("DOCKER_AUTH_CONFIG"), "{bad}");
+        // Only `auths`: a variable never names a helper.
+        for extra in [
+            r#"{"auths":{},"credsStore":"desktop"}"#,
+            r#"{"auths":{},"credHelpers":{"r.example":"ecr"}}"#,
+            r#"{"auths":{},"proxies":{}}"#,
+        ] {
+            let e = Credentials::from_env_value(extra.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("only an \"auths\" object"), "{extra}: {e}");
+        }
     }
 
     #[test]

@@ -44,18 +44,6 @@ impl RetryPolicy {
         }
     }
 
-    /// kaniko's `--push-retry`/`--image-download-retry` `retries`: that many
-    /// retries after the first attempt, waiting 1 s, then twice as long each
-    /// time (`kaniko@44aa7ddc0 pkg/util/util.go:221` `Retry`). `0` never
-    /// retries.
-    pub fn kaniko(retries: u32) -> Self {
-        Self {
-            attempts: retries.saturating_add(1),
-            initial_delay: Duration::from_secs(1),
-            factor: 2,
-        }
-    }
-
     /// The wait after failed attempt `attempt` (0-based), without jitter.
     fn base_delay(&self, attempt: u32) -> Duration {
         let factor = self.factor.max(1).saturating_pow(attempt);
@@ -94,9 +82,64 @@ pub(crate) async fn retry<T>(
     }
 }
 
+/// kaniko's `--push-retry` and `--image-download-retry`: runs `op` once,
+/// then up to `retries` more times after any failure, waiting 1 s, then
+/// twice as long each time (`kaniko@44aa7ddc0 pkg/util/util.go:221`
+/// `Retry`). It wraps a whole operation whose requests keep their own
+/// [`RetryPolicy`], so a build never gets fewer attempts than without the
+/// flag. Logs each retry as kaniko does.
+///
+/// # Errors
+///
+/// The last attempt's error.
+pub async fn retry_kaniko<T, E: std::fmt::Display>(
+    retries: u32,
+    op: impl AsyncFn() -> Result<T, E>,
+) -> Result<T, E> {
+    retry_kaniko_after(retries, Duration::from_secs(1), op).await
+}
+
+/// [`retry_kaniko`] with the first wait `first` (tests use milliseconds).
+async fn retry_kaniko_after<T, E: std::fmt::Display>(
+    retries: u32,
+    first: Duration,
+    op: impl AsyncFn() -> Result<T, E>,
+) -> Result<T, E> {
+    let mut result = op().await;
+    for i in 0..retries {
+        let Err(e) = &result else { break };
+        let wait = first.saturating_mul(2u32.saturating_pow(i));
+        tracing::warn!("retrying after {wait:?}: {e}");
+        tokio::time::sleep(wait).await;
+        result = op().await;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn kaniko_retries_wrap_the_operation_any_error_included() {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let failing = async || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err::<(), _>("permanent")
+        };
+        let r = retry_kaniko_after(3, Duration::from_millis(1), failing).await;
+        assert_eq!(r, Err("permanent"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+        calls.store(0, std::sync::atomic::Ordering::SeqCst);
+        let r = retry_kaniko_after(0, Duration::from_millis(1), failing).await;
+        assert!(r.is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let ok = retry_kaniko_after(5, Duration::from_millis(1), async || {
+            Ok::<_, &str>(calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+        })
+        .await;
+        assert_eq!(ok, Ok(1), "no retry after a success");
+    }
 
     fn transient() -> Error {
         Error::Registry {
@@ -126,16 +169,6 @@ mod tests {
             let base = policy.base_delay(attempt);
             assert!(delay >= base && delay <= base + base / 10, "{delay:?}");
         }
-    }
-
-    #[test]
-    fn kaniko_retries_double_from_one_second() {
-        let policy = RetryPolicy::kaniko(3);
-        assert_eq!(policy.attempts, 4);
-        assert_eq!(policy.base_delay(0), Duration::from_secs(1));
-        assert_eq!(policy.base_delay(1), Duration::from_secs(2));
-        assert_eq!(policy.base_delay(2), Duration::from_secs(4));
-        assert_eq!(RetryPolicy::kaniko(0).attempts, 1);
     }
 
     #[tokio::test]

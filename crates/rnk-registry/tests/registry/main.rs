@@ -51,6 +51,7 @@ async fn a_loopback_registry_speaks_plain_http_unasked() {
     add_image(&registry, "app", "1.0", b"x".to_vec());
     let mut options = options(&registry);
     options.insecure.clear();
+    options.http_credentials.clear();
     let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
     client
         .pull_manifest(&reference(&registry, "app:1.0"))
@@ -132,6 +133,7 @@ async fn anonymous_pulls_get_a_token() {
 fn unlisted_client(registry: &FakeRegistry) -> Client {
     let mut options = options(registry);
     options.insecure.clear();
+    options.http_credentials.clear();
     Client::new(
         options,
         TrustStore::load(),
@@ -169,6 +171,41 @@ async fn credentials_never_go_in_clear_to_an_unlisted_loopback_registry() {
     assert!(matches!(err, Error::Auth { .. }), "{err}");
     assert!(err.to_string().contains("--insecure-registry"), "{err}");
     assert_eq!(registry.count("PUT "), 0, "nothing was pushed");
+}
+
+/// `--insecure-pull` lets a registry a Dockerfile names be plain HTTP, but
+/// not receive credentials over it: being insecure is not enough
+/// (`http_credentials`, T11, ADR-0036).
+#[tokio::test]
+async fn an_insecure_registry_not_named_for_credentials_gets_none() {
+    let registry = FakeRegistry::start(Auth::Basic {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+    })
+    .await;
+    add_image(&registry, "app", "v1", b"x".to_vec());
+    let mut opts = options(&registry);
+    opts.http_credentials.clear();
+    let client = Client::new(
+        opts,
+        TrustStore::load(),
+        support::credentials(&basic_auth_entry(&registry.host(), "builder", "s3cret")),
+    )
+    .unwrap();
+    let err = client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    assert_eq!(registry.count("GET /v2/app"), 0);
+    // The control: named for credentials, the same pull works.
+    client_with(
+        &registry,
+        &basic_auth_entry(&registry.host(), "builder", "s3cret"),
+    )
+    .pull_manifest(&reference(&registry, "app:v1"))
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -369,50 +406,46 @@ async fn transient_failures_are_retried() {
     assert_eq!(registry.count("GET /v2/app/manifests/"), before + 1);
 }
 
-/// kaniko's `--push-retry` and `--image-download-retry`: each replaces the
-/// default policy for its own operations only.
+/// kaniko's `--image-download-retry`: an outer loop around the image
+/// manifest fetch, each round with the default policy inside, so never
+/// fewer attempts than without it; any error is retried, as kaniko's
+/// `Retry` (`remote.go:79,121`, `util.go:221`).
 #[tokio::test]
-async fn push_and_pull_retries_are_set_apart() {
+async fn manifest_retries_wrap_the_default_policy() {
     let registry = FakeRegistry::start(Auth::Open).await;
     add_image(&registry, "app", "v1", b"layer".to_vec());
     let mut opts = options(&registry);
-    opts.push_retry = Some(rnk_registry::RetryPolicy {
-        attempts: 1,
-        ..support::fast_retries()
-    });
-    opts.pull_retry = Some(rnk_registry::RetryPolicy {
-        attempts: 4,
-        ..support::fast_retries()
-    });
+    opts.manifest_retries = 1;
     let client = Client::new(opts, TrustStore::load(), Credentials::none()).unwrap();
+    let linux = Platform::new("linux", "amd64");
 
-    // Pulls: three failures, then the fourth attempt succeeds.
+    // Four transient failures: the first round's three inner attempts, then
+    // one more in the second round, which succeeds.
     registry.state().faults.push(Fault {
         method: Method::GET,
         path_contains: "/manifests/".to_owned(),
         status: 503,
-        remaining: 3,
+        remaining: 4,
     });
     client
-        .pull_manifest(&reference(&registry, "app:v1"))
+        .pull_image_manifest(&reference(&registry, "app:v1"), &linux)
         .await
         .unwrap();
-    assert_eq!(registry.count("GET /v2/app/manifests/"), 4);
+    assert_eq!(registry.count("GET /v2/app/manifests/"), 5);
 
-    // Pushes: `--push-retry=0` means one attempt.
+    // A permanent failure is retried by the outer loop only.
     registry.state().faults.push(Fault {
-        method: Method::PUT,
+        method: Method::GET,
         path_contains: "/manifests/".to_owned(),
-        status: 503,
+        status: 404,
         remaining: 1,
     });
-    let manifest = RawManifest::new(MediaType::OCI_MANIFEST, br#"{"schemaVersion":2}"#.to_vec());
-    let err = client
-        .push_manifest(&reference(&registry, "out:v1"), &manifest)
+    let before = registry.count("GET /v2/app/manifests/");
+    client
+        .pull_image_manifest(&reference(&registry, "app:v1"), &linux)
         .await
-        .unwrap_err();
-    assert!(err.is_retryable(), "{err}");
-    assert_eq!(registry.count("PUT /v2/out/manifests/"), 1);
+        .unwrap();
+    assert_eq!(registry.count("GET /v2/app/manifests/"), before + 2);
 }
 
 #[tokio::test]
@@ -621,6 +654,7 @@ async fn real_registry_pull() {
     let reference = Reference::parse(&image).unwrap();
     let mut options = ClientOptions::default();
     options.insecure = BTreeSet::from([reference.registry().to_owned()]);
+    options.http_credentials = options.insecure.clone();
     let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
 
     let pulled = client
@@ -657,6 +691,7 @@ async fn real_registry_round_trip() {
     };
     let mut options = ClientOptions::default();
     options.insecure = BTreeSet::from([host.clone()]);
+    options.http_credentials = options.insecure.clone();
     let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
     let target = Reference::parse(&format!("{host}/k6-rnk-registry/test:round-trip")).unwrap();
 

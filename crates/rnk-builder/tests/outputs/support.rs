@@ -183,6 +183,7 @@ pub(crate) fn client_with_basic(registry: &FakeRegistry, user: &str, password: &
 fn client_with(registry: &FakeRegistry, credentials: Credentials) -> Client {
     let mut options = ClientOptions::default();
     options.insecure = BTreeSet::from([registry.host()]);
+    options.http_credentials = options.insecure.clone();
     options.retry = RetryPolicy {
         attempts: 3,
         initial_delay: Duration::from_millis(1),

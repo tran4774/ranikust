@@ -179,6 +179,12 @@ fn run(command: &Command, telemetry: &Telemetry, fault: Option<&str>) -> Result<
 
 fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
+    if config::context_sub_path_ignored(args) {
+        tracing::warn!(
+            "--context-sub-path is ignored: kaniko applies it to dir:// and fetched contexts \
+             only, not to a plain path"
+        );
+    }
     telemetry.set_meta("mode", config::name(config.mode));
     telemetry.set_meta("options", config.meta_options());
     tracing::debug!(

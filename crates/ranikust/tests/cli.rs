@@ -17,7 +17,18 @@ fn ranikust(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")
+        .env_remove("DOCKER_CONFIG")
+        .env_remove("DOCKER_AUTH_CONFIG")
+        .env_remove("SOURCE_DATE_EPOCH")
+        .env_remove("NO_COLOR")
         .env("RUST_BACKTRACE", "0");
+    // kaniko's variables change what the binary does (ADR-0036).
+    for (key, _) in std::env::vars_os() {
+        let k = key.to_string_lossy();
+        if k.starts_with("KANIKO_") || k.starts_with("FF_KANIKO_") {
+            cmd.env_remove(&key);
+        }
+    }
     for (key, value) in env {
         cmd.env(key, value);
     }
@@ -260,27 +271,39 @@ fn logging_flags_change_what_is_written() {
         assert!(err.contains("Phase 2"), "stopped at --mode=kaniko: {err}");
         err
     };
+    // `text` is logrus's plain formatter: time, level, msg, never colored.
     let info = run(&[]);
     assert!(info.contains("--force is ignored"), "{info}");
     assert!(!info.contains("build settings validated"), "{info}");
-    // No timestamp: the line starts with the level.
     let first = info.lines().next().expect("a line");
-    assert!(first.trim_start().starts_with("WARN"), "{first}");
-    let debug = run(&["-v", "debug"]);
+    assert!(first.starts_with("time="), "{first}");
+    assert!(first.contains(" level=warning msg="), "{first}");
+    assert!(!info.contains('\u{1b}'), "text is never colored");
+    let debug = run(&["-v", "DEBUG"]);
     assert!(debug.contains("build settings validated"), "{debug}");
     let quiet = run(&["--verbosity=error"]);
     assert!(!quiet.contains("--force is ignored"), "{quiet}");
-    let stamped = run(&["--log-timestamp"]);
+    assert!(run(&["-v", "warning"]).contains("--force is ignored"));
+    // `color`, kaniko's default, forces colors and counts seconds since
+    // start; `--log-timestamp` gives the full time instead.
+    let color = run(&["--log-format=color"]);
+    let first = color.lines().next().expect("a line");
+    assert!(
+        first.starts_with("\u{1b}[33mWARN\u{1b}[0m[0000] "),
+        "{first:?}"
+    );
+    let stamped = run(&["--log-format=color", "--log-timestamp"]);
     let first = stamped.lines().next().expect("a line");
-    assert!(first.starts_with(|c: char| c.is_ascii_digit()), "{first}");
-    assert!(!info.contains('\u{1b}'), "text is never colored");
+    assert!(first.starts_with("\u{1b}[33mWARN\u{1b}[0m[2"), "{first:?}");
     let json = run(&["--log-format=json"]);
     let line = json
         .lines()
         .find(|l| l.contains("is ignored"))
         .expect("the warning");
     let value: Value = serde_json::from_str(line).expect("a JSON line");
-    assert_eq!(value["level"], "WARN");
+    assert_eq!(value["level"], "warning");
+    assert!(value["msg"].as_str().unwrap().contains("--force"));
+    assert!(value["time"].is_string());
 }
 
 /// kaniko's variables (ADR-0036): mirrors are refused before anything runs.

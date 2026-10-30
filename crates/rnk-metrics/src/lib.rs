@@ -39,6 +39,7 @@
 
 mod collector;
 mod layer;
+mod logfmt;
 mod report;
 mod resources;
 mod state;
@@ -51,7 +52,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 use tracing::Dispatch;
-use tracing_subscriber::filter::{LevelFilter, filter_fn};
+use tracing_subscriber::filter::{LevelFilter, Targets, filter_fn};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::{Layer as _, Registry};
 
@@ -87,7 +88,9 @@ pub struct LogOptions {
     pub level: LevelFilter,
     /// The format.
     pub format: LogFormat,
-    /// A timestamp on each line; off by default, as in kaniko.
+    /// kaniko's `--log-timestamp`: in the colored format, the full time
+    /// instead of the seconds since start (`INFO[0005]`); the text and JSON
+    /// formats always carry the time, as logrus's.
     pub timestamp: bool,
 }
 
@@ -104,13 +107,12 @@ impl Default for LogOptions {
 /// kaniko's `--log-format`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LogFormat {
-    /// Plain text, never colored.
+    /// logrus's plain text: `time=… level=… msg=…`, never colored.
     Text,
-    /// Text, colored when stderr is a terminal, as logrus does: kaniko's
-    /// default.
+    /// logrus's forced colors, kaniko's default: `INFO[0005] message`.
     #[default]
     Color,
-    /// One JSON object per line.
+    /// logrus's JSON: one object per line, with `level`, `msg` and `time`.
     Json,
 }
 
@@ -192,30 +194,54 @@ pub fn init(config: Config) -> Telemetry {
     Telemetry { collector }
 }
 
-/// The log layer: stderr, at `options.level`, in `options.format`
-/// (ADR-0036; per-stage grouping stays apart from the format, Q-031). Its
-/// per-layer filter keeps its level from hiding spans from the metrics
-/// layer.
+/// ranikust's own crates: their events log at `options.level`; anything
+/// else (dependencies such as `hyper`, `rustls`) at `INFO` at most, so that
+/// `--verbosity=trace` cannot print a dependency's internals, request
+/// headers included (threat model T11).
+const OWN_TARGETS: &[&str] = &[
+    "ranikust",
+    "rnk_builder",
+    "rnk_cache",
+    "rnk_context",
+    "rnk_dockerfile",
+    "rnk_ignore",
+    "rnk_layer",
+    "rnk_metrics",
+    "rnk_oci",
+    "rnk_registry",
+    "rnk_rootfs",
+    "rnk_sandbox",
+    "rnk_sched",
+    "rnk_snapshot",
+    "rnk_store",
+];
+
+/// `level` for [`OWN_TARGETS`], at most `INFO` for the rest.
+fn log_filter(level: LevelFilter) -> Targets {
+    OWN_TARGETS.iter().fold(
+        Targets::new().with_default(level.min(LevelFilter::INFO)),
+        |t, own| t.with_target(*own, level),
+    )
+}
+
+/// The log layer: stderr, at `options.level`, written as kaniko's logrus
+/// writes it (`logfmt`; ADR-0036; per-stage grouping stays apart from the
+/// format, Q-031). Its per-layer filter keeps its level from hiding spans
+/// from the metrics layer.
 fn logs<S>(options: LogOptions) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    use std::io::IsTerminal as _;
-    let base = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-    let level = options.level;
-    match (options.format, options.timestamp) {
-        (LogFormat::Json, true) => base.json().with_filter(level).boxed(),
-        (LogFormat::Json, false) => base.json().without_time().with_filter(level).boxed(),
-        (format, timestamp) => {
-            let ansi = format == LogFormat::Color && std::io::stderr().is_terminal();
-            let base = base.with_ansi(ansi);
-            if timestamp {
-                base.with_filter(level).boxed()
-            } else {
-                base.without_time().with_filter(level).boxed()
-            }
-        }
-    }
+    let filter = log_filter(options.level);
+    tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .event_format(logfmt::Logrus {
+            format: options.format,
+            full_timestamp: options.timestamp,
+            start: Instant::now(),
+        })
+        .with_filter(filter)
+        .boxed()
 }
 
 /// The subscriber with metrics off: the log layer alone, whose level hint

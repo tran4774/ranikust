@@ -71,6 +71,21 @@ fn the_log_level_is_the_log_layers_hint_in_every_format() {
     }
 }
 
+/// `-v trace` shows ranikust's own events, never a dependency's below
+/// `INFO` (T11: request internals); `-v error` hides everyone's warnings.
+#[test]
+fn dependencies_log_at_info_at_most() {
+    use tracing::Level;
+    let trace = log_filter(LevelFilter::TRACE);
+    assert!(trace.would_enable("rnk_registry::client", &Level::TRACE));
+    assert!(trace.would_enable("ranikust::build", &Level::DEBUG));
+    assert!(!trace.would_enable("hyper::proto::h1", &Level::DEBUG));
+    assert!(trace.would_enable("hyper::proto::h1", &Level::INFO));
+    let error = log_filter(LevelFilter::ERROR);
+    assert!(!error.would_enable("ranikust::main", &Level::WARN));
+    assert!(!error.would_enable("hyper", &Level::WARN));
+}
+
 #[test]
 fn log_level_never_hides_a_metric_span() {
     let tmp = tempfile::tempdir().expect("tempdir");

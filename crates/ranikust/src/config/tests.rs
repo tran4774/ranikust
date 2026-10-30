@@ -86,11 +86,51 @@ fn image_format_labels_annotations_and_digest_files() {
     assert!(err.0.contains("--image-format=oci"), "{}", err.0);
     let err = config(&["--no-push", "--image-name-with-digest-file=n"]).expect_err("no dest");
     assert!(err.0.contains("--destination"), "{}", err.0);
-    assert!(config(&["--no-push", "--image-name-tag-with-digest-file=n"]).is_ok());
+    // kaniko `root.go:215-217`: the tag file needs a destination too.
+    let err = config(&["--no-push", "--image-name-tag-with-digest-file=n"]).expect_err("no dest");
+    assert!(
+        err.0.contains("--image-name-tag-with-digest-file"),
+        "{}",
+        err.0
+    );
+    // kaniko PUTs an https:// path; ranikust writes local files only.
+    let err = config(&["--no-push", "--digest-file=https://bucket.example/d"]).expect_err("a URL");
+    assert!(err.0.contains("local path"), "{}", err.0);
     let err = config(&["--no-push", "--label=nokey"]).expect_err("no =");
     assert!(err.0.contains("key=value"), "{}", err.0);
     // ADR-0036: an OCI tarball is allowed, unlike kaniko.
     assert!(config(&["--no-push", "--tar-path=/t", "--image-format=oci"]).is_ok());
+}
+
+/// kaniko's `--context-sub-path`: joined onto a `dir://` context, inside
+/// it; ignored for a plain path, as kaniko returns before the join
+/// (`root.go:599-631`).
+#[test]
+fn context_sub_path_applies_to_dir_contexts() {
+    let c = config(&[
+        "--no-push",
+        "--context=dir:///ctx",
+        "--context-sub-path=app/x",
+    ])
+    .expect("valid");
+    assert_eq!(c.context, Path::new("/ctx/app/x"));
+    for bad in ["../up", "/abs", "a/../../b"] {
+        let flag = format!("--context-sub-path={bad}");
+        let err = config(&["--no-push", "--context=dir:///ctx", &flag]).expect_err(bad);
+        assert!(err.0.contains("inside the context"), "{bad}: {}", err.0);
+    }
+    let a = args(&["--no-push", "--context=/ctx", "--context-sub-path=app"]);
+    assert_eq!(
+        BuildConfig::from_args(&a).unwrap().context,
+        Path::new("/ctx")
+    );
+    assert!(context_sub_path_ignored(&a));
+    let a = args(&[
+        "--no-push",
+        "--context=dir:///ctx",
+        "--context-sub-path=app",
+    ]);
+    assert!(!context_sub_path_ignored(&a));
 }
 
 #[test]

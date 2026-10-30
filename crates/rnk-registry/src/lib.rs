@@ -37,5 +37,5 @@ pub use credentials::{Credential, Credentials};
 pub use error::Error;
 pub use io::{BlobBody, BlobSink};
 pub use platform::select_platform;
-pub use retry::RetryPolicy;
+pub use retry::{RetryPolicy, retry_kaniko};
 pub use tls::TrustStore;
