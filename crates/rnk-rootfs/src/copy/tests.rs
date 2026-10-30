@@ -401,3 +401,18 @@ fn a_destination_inside_the_source_is_refused() {
     copy(&s.root, "a/ro", &s.root, "a/ro2", &CopyOpts::default()).unwrap();
     assert!(s.host("a/ro2/inside").is_file());
 }
+
+#[test]
+fn a_filter_leaves_out_refused_entries_and_whole_directories() {
+    let s = source();
+    let d = Fixture::new();
+    let keep = |p: &Path, is_dir: bool| -> bool {
+        // Refuses a file, and a directory with what is below it.
+        p != Path::new("a/hl") && !(is_dir && p == Path::new("a/ro"))
+    };
+    copy_filtered(&s.root, "a", &d.root, "/app", &CopyOpts::default(), &keep).unwrap();
+    assert_eq!(fs::read(d.host("app/f")).unwrap(), b"content");
+    assert!(fs::symlink_metadata(d.host("app/hl")).is_err());
+    assert!(fs::symlink_metadata(d.host("app/ro")).is_err());
+    assert!(fs::symlink_metadata(d.host("app/fifo")).is_ok());
+}

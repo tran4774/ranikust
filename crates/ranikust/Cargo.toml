@@ -12,22 +12,28 @@ publish = false
 [dependencies]
 clap.workspace = true
 mimalloc.workspace = true
+rnk-builder.workspace = true
+rnk-context.workspace = true
+rnk-dockerfile.workspace = true
+rnk-layer.workspace = true
 rnk-metrics.workspace = true
+rnk-oci.workspace = true
+rnk-registry.workspace = true
 rnk-rootfs.workspace = true
 rnk-sandbox.workspace = true
+rnk-sched.workspace = true
 rnk-snapshot.workspace = true
 rnk-store.workspace = true
 # `geteuid` for the set-up's guidance and state-directory check.
 rustix = { workspace = true, features = ["fs", "process"] }
 serde_json.workspace = true
+# The runtime the scheduler, pulls and pushes run on, started after the
+# single-threaded set-up.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tracing.workspace = true
 
 [dev-dependencies]
-# The crates `examples/smoke-build.rs` strings together until `rnk-builder`
-# exists.
-rnk-layer.workspace = true
-rnk-oci.workspace = true
-rnk-registry.workspace = true
+# `examples/smoke-build.rs`, the sandbox's smoke test without the builder.
 sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }

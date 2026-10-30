@@ -1,13 +1,13 @@
 # Command line
 
-> **ranikust cannot build images yet.** The command line below exists: it
-> checks the kernel, reads the flags and validates them, probes what the
-> environment allows, then stops with "building is not implemented yet"
-> and exit code 2. For now the probe accepts only root (on a host with
-> `sudo`, or in a `--privileged` container) and needs `--workdir` or
-> `--state-dir`; elsewhere it stops with exit code 1, the step that failed
-> and what to do instead. This page describes what it accepts today, so a
-> pipeline can be prepared for it.
+> **ranikust is pre-alpha.** It builds a Dockerfile in overlay mode as
+> root only (on a host with `sudo`, or in a `--privileged` container, its
+> `--workdir` on a volume), and needs `--workdir` or `--state-dir`;
+> elsewhere it stops with exit code 1, the step that failed and what to do
+> instead. It prints the image digest on stdout. Instructions of later
+> phases (`ADD` of a URL or an archive, `COPY --link`, `RUN
+> --mount=type=bind`, `ONBUILD`…) stop the build with a message naming
+> the phase.
 
 ## Running it
 
@@ -47,6 +47,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--compression=gzip\|zstd` | Layer compression, gzip by default. zstd cannot go into a `--tar-path` tarball. |
 | `--reproducible` | Fixed timestamps, for byte-identical images. |
 | `--registry-certificate=REGISTRY=PATH` | An extra CA certificate for one registry. Repeatable. |
+| `--insecure-registry=REGISTRY` | Reach this registry (`host[:port]`) over plain HTTP when HTTPS fails, as kaniko. Repeatable. |
 | `--snapshot-mode=full\|redo\|time` | What kaniko mode compares between snapshots, as in kaniko; ignored, with a warning, in overlay mode. |
 
 ## ranikust's own flags
@@ -60,6 +61,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--network=host\|none` | The network `RUN` gets. Default `host`. |
 | `--platform=linux/amd64` | The image platform; kaniko's `--custom-platform`. Only `linux/amd64` for now. |
 | `--metrics-file=PATH` | Write the build metrics report there; takes the place of `RANIKUST_METRICS_FILE`. |
+| `--secret=id=ID,src=PATH` | A file for `RUN --mount=type=secret,id=ID`, bound read-only into that `RUN` and kept out of every layer, the config and the logs; kaniko's syntax, file secrets only. Repeat for several. |
 
 ## kaniko flags it refuses
 
@@ -75,12 +77,12 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
 - **Renamed:** `--kaniko-dir` is `--state-dir`; `--custom-platform` is
   `--platform`.
 - **Later:** `--cache` and `--cache-repo` (the layer cache), `--ignore-path`
-  (kaniko mode), `--secret`, `--git`, `--registry-mirror`,
+  (kaniko mode), `--git`, `--registry-mirror`,
   `--registry-map` and `--credential-helpers`.
 - **Not planned:** `--bucket` (`-b`), GCS build contexts.
 - **Undecided:** the remaining kaniko flags, among them `--force`,
   `--cache-dir`, `--verbosity`, `--label`, `--image-format`,
-  `--digest-file`, `--insecure` and `--skip-tls-verify`; and kaniko's
+  `--digest-file`, `--insecure`, `--insecure-pull` and `--skip-tls-verify`; and kaniko's
   deprecated spellings, which the message points to the current name.
 
 The `KANIKO_*` environment variables (`KANIKO_NO_PUSH`,
@@ -91,5 +93,5 @@ The `KANIKO_*` environment variables (`KANIKO_NO_PUSH`,
 | Code | Meaning |
 |---|---|
 | 0 | Success, including `--help` and `version`. |
-| 1 | An error while running, or a kernel ranikust cannot use. |
-| 2 | A usage error: an unknown or refused flag, a bad value, an invalid combination such as no `--destination` without `--no-push`. For now also every valid build, which stops before building. |
+| 1 | An error while running (a `RUN` that fails, a missing `COPY` source, an instruction of a later phase), or a kernel ranikust cannot use. |
+| 2 | A usage error: an unknown or refused flag, a bad value, an invalid combination such as no `--destination` without `--no-push`. |

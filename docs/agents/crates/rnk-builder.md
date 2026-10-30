@@ -1,7 +1,7 @@
 # rnk-builder
 
 > **Status:** in progress · **Phase:** 1 ·
-> **Depends on:** `rnk-snapshot`, `rnk-sandbox`, `rnk-cache`, `rnk-layer`, `rnk-registry`, `rnk-context`, `rnk-ignore`, `rnk-dockerfile`, `rnk-store`, `rnk-rootfs`, `rnk-oci` · **Used by:** `rnk-sched` · **Path:** `crates/rnk-builder/`
+> **Depends on:** `rnk-snapshot`, `rnk-sandbox`, `rnk-cache`, `rnk-layer`, `rnk-registry`, `rnk-context`, `rnk-ignore`, `rnk-dockerfile`, `rnk-store`, `rnk-rootfs`, `rnk-oci` · **Used by:** `ranikust` (its `rnk-sched` runner) · **Path:** `crates/rnk-builder/`
 
 **TL;DR:** Builds one stage: one executor per instruction, diffs through
 `rnk-snapshot`, `RUN` through `rnk-sandbox`, encoding only the layers that are
@@ -81,20 +81,45 @@ fails with `Error::Push`, naming the destination that failed and those
 already pushed; the first failed blob cancels the other transfers to that
 destination, and later destinations are not tried.
 
-Planned:
+Built, the stage executor (blocking: call it on a thread of its own):
 
 ```rust
-use rnk_store::BuildPaths;  // [design] { root, state }, the only source of paths (ADR-0021)
-pub struct StageBuilder<'a> { /* &BuildPaths, &Sandbox, snapshotter, registry, cache */ }  // [design]
-impl StageBuilder<'_> {
-    pub async fn build(&self, job: StageJob, root: impl StageRootfs) -> Result<StageDone>;  // [design] called by rnk-sched
-}
-pub trait Executor {                                 // [design] one per instruction, `commands` module
-    fn touches_rootfs(&self) -> bool;                // false for ENV, LABEL, USER...: no mount, no layer
-    async fn execute(&self, cx: &mut StageCx<'_>) -> Result<()>;  // files via cx.root or cx.sandbox; config via cx.config
-    fn cache_inputs(&self, cx: &StageCx<'_>) -> Result<KeyInputs>;  // [open: Q-041] Phase 4
-}
+pub fn build_stage<S: Snapshotter>(cx: &BuildCx<'_, S>, input: StageInput<'_, S::Root>) -> Result<StageDone<S::Root>>;
+pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox, pub store: &'a Store,
+    pub context: &'a Context, pub context_files: &'a ContextFiles, pub exporter: &'a LayerExporter,
+    pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, PathBuf>,  // [open: Q-022]
+    pub platform: &'a Platform, pub run_gate: &'a dyn RunGate, pub cancelled: &'a (dyn Fn() -> bool + Sync) }
+pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
+pub struct StageInput<'a, R> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R>,
+    pub stages: BTreeMap<usize, &StageDone<R>>, pub images: BTreeMap<String, &ImageSource<R>>, pub demand: LayerDemand }
+pub enum StageBase<'a, R> { Scratch, Image(&'a PulledImage), Stage(&'a StageDone<R>) }
+pub struct StageDone<R> { pub root: SourceRoot<R>, pub scope: StageScope, pub config: ImageConfig,
+    pub layers: Vec<BlobLayer>, pub complete: bool, pub base_format: Option<ImageFormat> }
+pub struct SourceRoot<R>;                                // a root behind a mutex; release() once, children first
+pub struct ImageSource<R> { pub image: PulledImage, pub root: SourceRoot<R> }  // COPY --from=<image>
+pub struct ContextFiles;                                 // ContextFiles::load(&Context, Option<&Matcher>)
+pub async fn pull_image<S>(client: &Arc<Client>, store: &Arc<Store>, snapshotter: &Arc<S>,
+    reference: &str, platform: &Platform) -> Result<PulledImage>;  // blobs into the store, layers extracted
+pub struct PulledImage { pub reference, pub config: ImageConfig, pub format: ImageFormat,
+    pub blobs: Vec<BlobLayer>, pub layers: Vec<LayerDir> }
 ```
+
+`RUN`, `COPY`, `ADD` and a `WORKDIR` that creates its directory each run
+in a layer of their own; the other instructions edit the config through
+`rnk_oci::ConfigEdit` and mount nothing. A closed layer is encoded at
+once when the stage's `LayerDemand` needs it, and gets a history entry
+([open: Q-131], kaniko's shape). `ranikust` implements `rnk-sched`'s
+`StageRunner` on top: this crate does not depend on `rnk-sched`.
+Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
+or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
+--link/--parents/--exclude`, `RUN --mount` other than `cache` and
+`secret`, `RUN --security=insecure` and `--device`, `RUN --network=host`
+under the operator's `--network=none` [open: Q-184], a heredoc name with
+`/`. A `#!` `RUN` heredoc runs as a script, bound read-only from the build
+directory at `/dev/pipes/<name>`. A symlinked context source is followed
+only through kept entries; a copy onto a symlink to a directory goes
+inside it, as BuildKit. A cache mount's `mode`, `uid` and `gid` are set
+through a descriptor of its directory.
 
 ## Invariants
 
@@ -110,8 +135,9 @@ pub trait Executor {                                 // [design] one per instruc
 - Same inputs, same bytes: layer order is instruction order whatever order
   exports finish in; timestamps are fixed under `--reproducible`; nothing
   depends on `--jobs`, thread count or the host's users.
-- A failed `RUN` fails the stage with its exit status and is never retried;
-  an `EXDEV` failure in overlay mode suggests rerunning with `--mode=kaniko`.
+- A failed `RUN` fails the stage with its exit status and is never retried.
+  (An `EXDEV` hint towards `--mode=kaniko` is not built: the failing
+  program reports `EXDEV` itself, which the builder cannot see.)
 - A `RUN` that changes nothing gives an empty layer, with a test. Stage
   squashing exists only in sequential kaniko mode.
 
@@ -134,14 +160,21 @@ pub trait Executor {                                 // [design] one per instruc
   `crates/rnk-oci/src/edit.rs`; here, that each executor builds the right
   edit, and the result against BuildKit and kaniko config goldens; the
   `LayerDemand` table; assembly of fake layers gives stable digests.
-  Built: `tests/outputs` (layer bytes the same at 1, 2 and 8 threads;
+  Built: `tests/stage.rs` (a fake snapshotter on plain directories:
+  each metadata instruction's config, wildcard and directory `COPY` with
+  `.dockerignore`, heredoc sources, `COPY --from`, one layer and history
+  entry per changing instruction, the refusals, the spans);
+  `tests/outputs` (layer bytes the same at 1, 2 and 8 threads;
   `--reproducible` scrubbing; the OCI layout and Docker tar file by file
   and through `skopeo inspect` when installed; push with mounts against
   `rnk-registry`'s fake registry) and `tests/spans.rs`.
 - **T1/T2:** W1 and W3 end to end; flattened content against kaniko
   (`nextjs-kaniko/digest-check/`) and between modes (ADR-0012 list);
   `--jobs 1` and the default give one digest. Phase 6: kaniko's 201
-  integration Dockerfiles in every mode.
+  integration Dockerfiles in every mode. Built: `just smoke` and
+  `just test-vm smoke` build `tests/smoke/e2e` with the binary and run the
+  image; `--reproducible` gives one digest with `--jobs 1` and the default
+  (the same digest in rootless podman and as real root on the VM).
 
 ## Metrics
 
@@ -162,6 +195,16 @@ pub trait Executor {                                 // [design] one per instruc
   go through `rootfs/` (overlay-snapshot design).
 - An accepted kaniko flag with a slightly different meaning is a trap; each
   needs a test of its meaning (ADR-0011).
+- A layer is encoded right after its instruction, on the stage's
+  thread: the next instruction waits for it (exp-08 measured overlapping
+  as the gain; not done yet).
+- Context files are owned by `0:0` without `--chown`: an unprivileged
+  test process cannot do that, so T0 tests pass `--chown` with their own
+  ids.
+- The registry client's futures are not `Send` for every lifetime: an
+  async caller that must be `Send` (`rnk-sched`'s `prepare`) drives
+  `pull_image` with `block_on` on a blocking thread, and must await it
+  to the end: an abandoned pull still uses the runtime as it shuts down.
 - Retrying a failed `RUN` is unsafe: it may have written part of its output
   (kaniko-mode design).
 - A layer's media type is fixed when the image is assembled
@@ -194,8 +237,14 @@ pub trait Executor {                                 // [design] one per instruc
   (Phase 2); cache checks (Phase 4); `ADD` URL, git and tar, `ONBUILD`,
   `COPY --link`/`--parents`/`--exclude`, `RUN --mount=type=bind` (Phase 5).
 - Done: lazy export (`LayerExporter`, `LayerDemand`), assembly with
-  `--reproducible`, and the three outputs. Left: `BuildPaths` and
-  `StageCx`, the executors, and calling the outputs from `ranikust`.
+  `--reproducible`, the three outputs, and the executors (`build_stage`),
+  called by `ranikust build`. Left: config goldens against kaniko and
+  BuildKit, W1-W3, export overlapped with the next instruction.
+- [open: Q-080] Interim (a): sources resolve here, against the context
+  walk (`ContextFiles`) or a stage's root, with BuildKit's wildcards.
+- [open: Q-180] `VOLUME` records the config only. [open: Q-181] cache
+  mounts are all `shared`. [open: Q-182] a secret keeps its host file's
+  mode and owner.
 - [open: Q-029] Interim: `rnk-sched` builds each stage's demand with
   `LayerDemand::for_stage`; the rule lives here.
 - [open: Q-006] Interim: kaniko's format rule, `image_format`.

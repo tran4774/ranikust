@@ -23,7 +23,7 @@ behaviour that `34ba9eadf` also has. Checkout: `${KANIKO_SRC:-../kaniko}`.
 | vendored BuildKit `frontend/dockerfile/` | parser, instructions, shell lexer | `rnk-dockerfile` (hand port, `ADR-0015`) | `parser/parser.go:283`, `instructions/parse.go:185`, `shell/lex.go:39` |
 | vendored `moby/patternmatcher` | `.dockerignore` | `rnk-ignore` | `patternmatcher.go:42` `New`, `:128` `MatchesOrParentMatches` |
 | `pkg/executor/build.go` | sequential stage loop | `rnk-sched` (DAG) + `rnk-builder` | `:1689` `DoBuild`, `:1410` `CalculateDependencies`, `:603` `stageBuilder.build`, `:968` `takeSnapshot` |
-| `pkg/commands/*` | one file per instruction | `rnk-builder::commands` | `commands.go:78` `GetCommand`, `copy.go:50`, `run.go:288` `runCommandInExec` |
+| `pkg/commands/*` | one file per instruction | `rnk-builder` (`stage.rs`, `build_stage`) | `commands.go:78` `GetCommand`, `copy.go:50`, `run.go:288` `runCommandInExec` |
 | `pkg/commands/run.go`, `pkg/util/command_util.go` | `RUN` process, `PATH`, users | `rnk-sandbox`; user lookup `rnk-rootfs` | `run.go:350` `exec.Command`, `:356` `Setpgid`, `:330` global `PATH`, `command_util.go:534` `LookupUser` |
 | `pkg/snapshot`, `pkg/filesystem` | walk, hash, `LayeredMap`, path resolution | `rnk-snapshot` (kaniko mode, Phase 2) | `snapshot.go:127` `TakeSnapshot`, `:199` `TakeSnapshotFS`, `:432` `addParentDirectories`, `layered_map.go:45`, `resolve.go:39` |
 | `pkg/util/fs_util.go` | extraction, copy, ignore list, deletion, `.dockerignore` lookup | `rnk-rootfs` (mechanism), `rnk-snapshot` (policy), `rnk-context` (lookup) | `:165` `GetFSFromImage`, `:209` `extractLayer`, `:292` `DeleteFilesystem`, `:630` `DetectFilesystemIgnoreList`, `:1195-1204` `DockerignorePath` |
@@ -65,6 +65,7 @@ naming the reason, never silently ignored.
 | `--compression` | `:357` | unset (gzip) | accept (gzip, zstd) | parsed |
 | `--cache`, `--cache-repo` | `:360`, `:351` | false; inferred from destination, `oci:` prefix = layout | accept; behaviour before Phase 4 `[open: Q-021]` | refused until Phase 4 (Q-021 interim) |
 | `--registry-certificate` | `:402` | none | accept; added to host CAs plus embedded roots (`ADR-0024`) | parsed (`REGISTRY=PATH`) |
+| `--insecure-registry` | `:399` | none | accept: plain HTTP to push and pull, HTTPS tried first (`ClientOptions::insecure`); `[open: Q-200]` interim (a) | accepted, repeatable |
 | `--ignore-path` | `:371` | none | accept | refused until Phase 2 (kaniko mode) |
 | `--kaniko-dir` | `:345` | `/kaniko` | renamed `--state-dir` (`ADR-0011`); default `/ranikust/state` in kaniko mode, `<workdir>/.ranikust` in overlay mode (`ADR-0022`) | refused, naming `--state-dir`; `--state-dir` parsed |
 | `--snapshot-mode` | `:341` | `full` (`full\|redo\|time`, `build.go:2474`) | accept, kaniko's meaning: what the kaniko-mode walk compares; ignored with a warning in overlay mode (`ADR-0023`) | parsed; warning with `--mode=overlay` |
@@ -79,7 +80,7 @@ naming the reason, never silently ignored.
 `[open: Q-023]`, decided with the list: `--verbosity`, `--log-format`,
 `--log-timestamp`, `--label`, `--annotation`, `--image-format`,
 `--compression-level`, `--digest-file`, `--image-name-with-digest-file`,
-`--image-name-tag-with-digest-file`, `--insecure*`, `--skip-tls-verify*`,
+`--image-name-tag-with-digest-file`, `--insecure`, `--insecure-pull`, `--skip-tls-verify*`,
 `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-retry`,
 `--push-ignore-immutable-tag-errors`, `--image-download-retry`,
 `--image-fs-extract-retry`, `--context-sub-path`, `--single-snapshot`,
@@ -113,7 +114,20 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   ranikust matches exactly, as BuildKit does (Q-051), so
   `Dockerfile_test_issue_519` (`FROM BUG_stage`) is an accepted difference.
 - **`.dockerignore`.** kaniko filters with the deprecated `Matches`;
-  ranikust follows BuildKit's walk (`ADR-0027`).
+  ranikust follows BuildKit's walk (`ADR-0027`). A symlinked `COPY`
+  source is followed only through kept entries, so a link cannot reach an
+  ignored file.
+- **Owner of copied context files.** Without `--chown`, kaniko gives them
+  the active `USER`'s ids, and `0:0` only with `FF_KANIKO_COPY_AS_ROOT`
+  (`pkg/commands/copy.go:80-95`); ranikust gives `0:0`, the Dockerfile
+  reference's rule and BuildKit's. A difference to keep in the config
+  and content comparison of task 13.
+- **`MAINTAINER`.** kaniko skips it with a warning
+  (`pkg/commands/commands.go:115-117`); ranikust sets the config's
+  `author`, as BuildKit does.
+- **`FROM scratch`.** Both give the config `PATH` (`ScratchEnvVars`); an
+  image without `PATH` keeps none in kaniko and in ranikust, where BuildKit
+  adds it [open: Q-185].
 - **Ignore list.** kaniko ignores `/kaniko`, `/etc/mtab` and
   `/tmp/apt-key-gpghome` (`pkg/util/fs_util.go:72-89`), `/var/run` while
   `--ignore-var-run` is true (`cmd/executor/cmd/root.go:155-165`), every

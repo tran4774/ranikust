@@ -143,6 +143,18 @@ pub(crate) struct BuildArgs {
     )]
     pub(crate) reproducible: bool,
 
+    /// A registry reached over plain HTTP when HTTPS fails, as kaniko's
+    /// `--insecure-registry`: `host[:port]`. Repeat for several.
+    // [open: Q-200] interim (a), and one flag of Q-023's list: kaniko's name
+    // and meaning, through rnk-registry's `ClientOptions::insecure`.
+    #[arg(
+        long = "insecure-registry",
+        value_name = "REGISTRY",
+        value_parser = parse_registry_host,
+        help_heading = "Output"
+    )]
+    pub(crate) insecure_registries: Vec<String>,
+
     /// Extra CA certificate for one registry. Repeat for several.
     #[arg(
         long = "registry-certificate",
@@ -178,6 +190,19 @@ pub(crate) struct BuildArgs {
     /// Network of `RUN`: the host's, or none.
     #[arg(long, value_enum, default_value_t = Network::Host, help_heading = "ranikust")]
     pub(crate) network: Network,
+
+    /// A secret file for `RUN --mount=type=secret`: `id=ID,src=PATH`, as
+    /// kaniko's `type=file` secrets. Repeat for several.
+    // [open: Q-022] interim (b): kaniko's syntax for file secrets; `type=env`
+    // is refused. The file is bound read-only into the RUN and never
+    // reaches a layer, the config or a log.
+    #[arg(
+        long = "secret",
+        value_name = "id=ID,src=PATH",
+        value_parser = parse_secret,
+        help_heading = "ranikust"
+    )]
+    pub(crate) secrets: Vec<(String, PathBuf)>,
 
     /// Write the build metrics report (JSON) to this path; overrides
     /// `RANIKUST_METRICS_FILE`.
@@ -219,10 +244,6 @@ const REFUSED: &[(&str, Refusal)] = &[
         Refusal::NotYet("ignore paths matter in kaniko mode, which comes in Phase 2"),
     ),
     (
-        "secret",
-        Refusal::NotYet("build secrets come with RUN --mount=type=secret (Q-022)"),
-    ),
-    (
         "bucket",
         Refusal::OutOfScope("GCS contexts are out of scope (ADR-0008)"),
     ),
@@ -260,7 +281,6 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("image-name-tag-with-digest-file", Refusal::NotYet(Q023)),
     ("insecure", Refusal::NotYet(Q023)),
     ("insecure-pull", Refusal::NotYet(Q023)),
-    ("insecure-registry", Refusal::NotYet(Q023)),
     ("skip-tls-verify", Refusal::NotYet(Q023)),
     ("skip-tls-verify-pull", Refusal::NotYet(Q023)),
     ("skip-tls-verify-registry", Refusal::NotYet(Q023)),
@@ -377,6 +397,39 @@ fn parse_registry_certificate(value: &str) -> Result<(String, PathBuf), String> 
             Ok((registry.to_owned(), PathBuf::from(path)))
         }
         _ => Err(format!("expected REGISTRY=PATH, got {value:?}")),
+    }
+}
+
+/// An `--insecure-registry` value: a registry host, with a port or not; no
+/// scheme or path.
+fn parse_registry_host(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.contains('/') || value.contains(char::is_whitespace) {
+        return Err(format!(
+            "expected a registry host such as registry:5000, got {value:?}"
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+/// A `--secret` value as kaniko parses it (`pkg/config/options.go`), file
+/// secrets only: `id=ID,src=PATH`, `type=file` optional, any order.
+fn parse_secret(value: &str) -> Result<(String, PathBuf), String> {
+    let mut id = None;
+    let mut src = None;
+    for field in value.split(',') {
+        match field.split_once('=') {
+            Some(("id", v)) if !v.is_empty() => id = Some(v.to_owned()),
+            Some(("src" | "source", v)) if !v.is_empty() => src = Some(PathBuf::from(v)),
+            Some(("type", "file")) => {}
+            Some(("type", "env")) => {
+                return Err("type=env secrets are not supported yet (Q-022)".to_owned());
+            }
+            _ => return Err(format!("expected id=ID,src=PATH, got {value:?}")),
+        }
+    }
+    match (id, src) {
+        (Some(id), Some(src)) => Ok((id, src)),
+        _ => Err(format!("expected id=ID,src=PATH, got {value:?}")),
     }
 }
 

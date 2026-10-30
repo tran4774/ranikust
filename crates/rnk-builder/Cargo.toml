@@ -14,15 +14,26 @@ workspace = true
 [dependencies]
 bytes.workspace = true
 futures-util.workspace = true
+rnk-context.workspace = true
+rnk-dockerfile.workspace = true
+rnk-ignore.workspace = true
 rnk-layer.workspace = true
 rnk-oci.workspace = true
 rnk-registry.workspace = true
+rnk-rootfs.workspace = true
+rnk-sandbox.workspace = true
+rnk-snapshot.workspace = true
+rnk-store.workspace = true
+# Listing a directory of a root, by fd, for `COPY --from` wildcards.
+rustix.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 # `tempfile`: uniquely named, exclusively created temporary files beside
 # each output and encoded layer, renamed into place.
 tempfile.workspace = true
 thiserror.workspace = true
+# `rt`: pulls run the store's blocking fills on blocking threads.
+tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 
 [dev-dependencies]

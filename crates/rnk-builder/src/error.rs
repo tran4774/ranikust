@@ -64,6 +64,61 @@ pub enum Error {
         media_type: rnk_oci::MediaType,
     },
 
+    /// An instruction failed; `source` says why.
+    #[error("{stage}: line {line}: {instruction}: {source}")]
+    Instruction {
+        /// The stage's display name.
+        stage: String,
+        /// The instruction's first line in the Dockerfile.
+        line: usize,
+        /// The instruction as written, shortened.
+        instruction: String,
+        /// What failed.
+        #[source]
+        source: Box<Error>,
+    },
+
+    /// The Dockerfile asks for something this build refuses: a feature of
+    /// a later phase, or an invalid value (a missing source, a bad
+    /// `--chmod`).
+    #[error("{0}")]
+    Invalid(String),
+
+    /// A `RUN` command exited with a failure.
+    #[error("the command returned a non-zero code: {code}")]
+    RunFailed {
+        /// Exit code, or `128 + signal` when a signal killed it.
+        code: i32,
+    },
+
+    /// The build was cancelled.
+    #[error("cancelled")]
+    Cancelled,
+
+    /// Expanding or resolving the Dockerfile failed.
+    #[error(transparent)]
+    Dockerfile(#[from] rnk_dockerfile::Error),
+
+    /// The build context could not be read.
+    #[error(transparent)]
+    Context(#[from] rnk_context::Error),
+
+    /// A root filesystem operation failed.
+    #[error(transparent)]
+    Rootfs(#[from] rnk_rootfs::Error),
+
+    /// A stage root could not be made, mounted or diffed.
+    #[error(transparent)]
+    Snapshot(#[from] rnk_snapshot::Error),
+
+    /// The sandbox could not run a `RUN`.
+    #[error(transparent)]
+    Sandbox(#[from] rnk_sandbox::Error),
+
+    /// The store failed.
+    #[error(transparent)]
+    Store(#[from] rnk_store::Error),
+
     /// Pushing to one destination failed. The destinations in `pushed` were
     /// pushed completely before it and stay so; later ones were not tried.
     #[error("pushing to {destination}: {source}")]

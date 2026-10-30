@@ -97,7 +97,7 @@ runs as root on the host:
 | Suite | What it runs |
 |---|---|
 | `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass |
-| `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image, and the `ranikust` binary's set-up (`--no-push --workdir`, the workdir a volume in Docker, since overlay refuses an upper directory on the container's own overlay root) must reach overlay mode as root with the same root entry and a real overlay probe (either mount API), and stop with exit code 2. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
+| `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image. The `ranikust` binary then builds `tests/smoke/e2e` in the same environment (the workdir a volume in Docker, since overlay refuses an upper directory on the container's own overlay root; the `SYS_ADMIN` variant also gets `NET_ADMIN` for `RUN --network=none`, [Q-183](open-questions.md#q-183-what-does-run---networknone-do-without-cap_net_admin)): it must reach overlay mode as root with the same root entry and a real overlay probe (either mount API) and print a digest; no stub or secret may reach a blob, and Docker loads the tar and runs the image as user `app`. On the VM itself, `--reproducible` must give one digest with `--jobs 1` and the default. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
 | `e2e` | The Phase 1 workloads of `nextjs-kaniko` ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust`; times, image comparison, metrics. Not part of the default `just test-vm` |
 
 ### End-to-end workloads (`e2e`)
@@ -172,6 +172,21 @@ comparison has to read against:
 - W1's non-deterministic files of experiment 07 (1,650) show up as noise,
   as expected.
 
+Second run (2026-10-30, noble, same settings, `ranikust` with
+`--insecure-registry`): every build succeeded. Wall time, kaniko /
+BuildKit / `ranikust`: W1 24.0 / 63.9 / 20.5 s, W2 cold 16.5 / 12.0 /
+8.6 s, W3 29.6 / 15.0 s and `ranikust` 15.0 (`--jobs 1`), 13.1 (2),
+13.2 s (default). Compared with kaniko, `ranikust` differs in 3 entries
+on W1 (a pnpm state file and an npm log named after the time), 1 on W2
+(`MANIFEST.sha256`, 3 bytes) and 3 on W3 (`/out/a.txt`, see below; kaniko's
+`/out` owner and mode and its missing `/out/all.txt`), configs equal;
+compared with BuildKit, the same counts as kaniko's against BuildKit
+(the setgid directories), plus that `MANIFEST.sha256` on W2. The suite
+still fails on its W3 check: `--jobs 1` and the default give one digest,
+`--jobs 2` another, through `/out/a.txt` alone, which records `du -sk
+node_modules`: disk usage, not the files
+([Q-187](open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output)).
+
 Not covered yet: cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a
 reboot), Docker's default profile and `--cap-add SYS_ADMIN` alone (they
 need kaniko mode), kernels before 5.11 (an older `..` walk; Debian 11
@@ -233,15 +248,17 @@ reaches the host as root. It strings the finished crates together:
 
 The recipe then checks that the sandbox's stubs did not reach the layer
 (`/etc/resolv.conf` not at all, `/etc/hosts` and `/etc/hostname` not with
-the host name `ranikust`), runs the `ranikust` binary's set-up in the same
-kind of container with the workdir on a volume (it must pass the overlay
-probe, pick overlay mode as root with `pivot_root` and stop with exit code
-2), loads the layout into podman as an OCI archive (`podman load`; not
+the host name `ranikust`), loads the layout into podman as an OCI archive (`podman load`; not
 `skopeo`, which calls `unshare` itself and is refused where AppArmor
 restricts unprivileged user namespaces, as on Ubuntu 24.04) and runs it.
 It is not a
-builder: one squashed layer, no diff per instruction, no xattrs; it goes
-away when `rnk-builder` lands. It does not replace the VM: the sandbox runs
+builder: one squashed layer, no diff per instruction, no xattrs. The recipe
+then builds `tests/smoke/e2e` with the `ranikust` binary in the same kind
+of container (two stages, `COPY --from`, wildcards, `.dockerignore`, cache
+and secret mounts, `RUN --network=none`, heredocs, `WORKDIR`, `USER`,
+`ENV`, `LABEL`, `EXPOSE`, `CMD`), loads its Docker tar into podman and
+runs it, checks that no stub or secret reached a blob, and that
+`--reproducible` gives one digest with `--jobs 1` and the default. It does not replace the VM: the sandbox runs
 in a user namespace there, so real-root behaviour (T17, T18 of the threat
 model, `MS_MOVE` under Docker's seccomp) is checked by the `smoke` suite of
 `just test-vm` instead.

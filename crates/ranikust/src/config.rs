@@ -95,6 +95,9 @@ pub(crate) struct BuildConfig {
     pub(crate) compression: Compression,
     /// Fixed timestamps.
     pub(crate) reproducible: bool,
+    /// Registries reached over plain HTTP when HTTPS fails
+    /// (`--insecure-registry`) [open: Q-200].
+    pub(crate) insecure_registries: Vec<String>,
     /// Extra CA certificates per registry, paths absolute.
     pub(crate) registry_certificates: Vec<(String, PathBuf)>,
     /// What the kaniko-mode walk compares.
@@ -109,6 +112,8 @@ pub(crate) struct BuildConfig {
     pub(crate) jobs: Option<NonZeroUsize>,
     /// The network of `RUN`.
     pub(crate) network: Network,
+    /// `--secret` files by id, paths absolute [open: Q-022].
+    pub(crate) secrets: Vec<(String, PathBuf)>,
 }
 
 /// A rejected combination of flags.
@@ -145,6 +150,10 @@ impl BuildConfig {
                 "--platform={platform} is not supported yet: only {PLATFORM} (ADR-0009)"
             )));
         }
+        let mut ids = std::collections::BTreeSet::new();
+        if let Some((id, _)) = args.secrets.iter().find(|(id, _)| !ids.insert(id.as_str())) {
+            return Err(Invalid(format!("--secret id={id} is given twice")));
+        }
         if args.targets.iter().any(String::is_empty) {
             return Err(Invalid("--target names an empty stage".to_owned()));
         }
@@ -164,6 +173,7 @@ impl BuildConfig {
             oci_layout_path: args.oci_layout_path.as_deref().map(absolute),
             compression,
             reproducible: args.reproducible,
+            insecure_registries: args.insecure_registries.clone(),
             registry_certificates: args
                 .registry_certificates
                 .iter()
@@ -175,6 +185,11 @@ impl BuildConfig {
             state_dir: args.state_dir.as_deref().map(absolute),
             jobs: args.jobs,
             network: args.network,
+            secrets: args
+                .secrets
+                .iter()
+                .map(|(id, path)| (id.clone(), absolute(path)))
+                .collect(),
         })
     }
 

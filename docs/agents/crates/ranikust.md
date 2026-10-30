@@ -201,12 +201,27 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `BuildConfig`, the other kaniko flags refused with a reason, the Linux
   5.8 check, `meta.mode` and `meta.options`.
 - Done (task 8b): the mount namespace, the sandbox probe, the outcome
-  (overlay mode as root), refusals with guidance, the spawner thread; `build`
-  stops after the set-up with exit code 2 until the builder exists (task 11).
+  (overlay mode as root), refusals with guidance, the spawner thread.
 - Done (task 9): the store opened before the probes, the overlay probe,
   the store closed at the end.
+- Done (task 11): `build.rs` builds after the set-up: Dockerfile and stage
+  graph, the context walk with `.dockerignore`, a tokio runtime started
+  after the single-threaded set-up, `rnk-sched` over a `StageRunner` that
+  pulls bases and `COPY --from` images up front (on a blocking thread:
+  the registry client's futures are not `Send` for every lifetime) and
+  builds each stage on a thread of its own, which asks the scheduler for
+  a `--jobs` permit per `RUN` over a channel; then the outputs in
+  kaniko's order (OCI layout, Docker tar, push) and the digest on stdout.
+  Roots are released children first, then the store closed, on success
+  and failure alike. `--secret id=ID,src=PATH` [open: Q-022], ids unique.
+  The roots of `COPY --from=<image>` are made by the stage's thread, not
+  the preparation, which only pulls. A Dockerfile not found as given is
+  read inside the context through its `RootPath`, never by a host path.
+  The first SIGINT or SIGTERM cancels the build, a second exits at once
+  [open: Q-186]. A release that fails leaves the stages below it to the
+  next build's clean-up.
 - Left: the workdir checks [open: Q-011], the kaniko-mode lock
-  (Phase 2), the tokio runtime and the hand-off to `rnk-sched` (tasks 11, 12).
+  (Phase 2), the acceptance runs (task 13).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push` and

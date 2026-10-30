@@ -88,6 +88,28 @@ pub fn copy(
     to: impl AsRef<Path>,
     o: &CopyOpts,
 ) -> Result<()> {
+    copy_filtered(src, from, dst, to, o, &|_, _| true)
+}
+
+/// [`copy`], leaving out the entries below `from` that `keep` refuses.
+///
+/// `keep` gets each entry's path inside `src` (`from` joined with the
+/// names below it) and whether it is a directory; a refused directory is
+/// skipped with everything below it. `from` itself is always copied. The
+/// builder passes the `.dockerignore` result of the context walk, so an
+/// ignored file is never read.
+///
+/// # Errors
+///
+/// As [`copy`].
+pub fn copy_filtered(
+    src: &RootPath,
+    from: impl AsRef<Path>,
+    dst: &RootPath,
+    to: impl AsRef<Path>,
+    o: &CopyOpts,
+    keep: &dyn Fn(&Path, bool) -> bool,
+) -> Result<()> {
     let span = tracing::info_span!(
         "rnk_rootfs.copy",
         files = tracing::field::Empty,
@@ -98,6 +120,7 @@ pub fn copy(
     let mut c = Copier {
         dst,
         o: *o,
+        keep,
         dst_dirs: HashSet::new(),
         links: HashMap::new(),
         stats: Stats::default(),
@@ -122,6 +145,8 @@ type Inode = (u32, u32, u64);
 struct Copier<'r> {
     dst: &'r RootPath,
     o: CopyOpts,
+    /// Which entries below the source to copy ([`copy_filtered`]).
+    keep: &'r dyn Fn(&Path, bool) -> bool,
     /// Every destination directory this copy created or entered. A source
     /// directory among them is the destination inside the source (`COPY .
     /// /workspace/sub` on a live root), which would recurse without end.
@@ -221,6 +246,9 @@ impl Copier<'_> {
             )
             .map_err(|e| on_mount(e, &from))?;
             let st = meta::statx_at(pin.as_fd(), OsStr::new(""), &from)?;
+            if !(self.keep)(&from, st.file_type() == FileType::Directory) {
+                continue;
+            }
             match st.file_type() {
                 FileType::Directory => {
                     self.check_not_inside(&st, &from)?;

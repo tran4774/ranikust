@@ -5,8 +5,10 @@
 # host's /proc/sys (T17), device nodes (T18) and the chroot escapes of
 # Q-077, with a plain chroot as their control, and the refusal when
 # ranikust itself runs in a plain chroot. Docker then runs each image, and
-# the VM is checked for leftovers. The `ranikust` binary's set-up (namespace,
-# probes, outcome, spawner) runs in each environment too.
+# the VM is checked for leftovers. The `ranikust` binary builds
+# tests/smoke/e2e in each environment too; Docker runs that image, and on
+# the VM itself `--reproducible` must give one digest with `--jobs 1` and the
+# default.
 set -euo pipefail
 cd "$HOME/rnk"
 source guest/smoke-lib.bash
@@ -78,6 +80,35 @@ done
 
 sudo rm -rf "$W" && sudo mkdir -p "$W"
 sudo touch "$MARKER" "$W/marker"
+printf %s "$SMOKE_E2E_SECRET" | sudo tee "$W/token" >/dev/null
+CTX="$HOME/rnk/guest/e2e"
+
+# Builds tests/smoke/e2e with the ranikust binary in variant $1, whose RUN
+# enters its root with $2, extra flags after; prints the digest. The
+# workdir of a container is a volume: overlay refuses an upper directory on
+# the container's own overlay root (that environment needs kaniko mode).
+e2e() {
+  local name="$1" syscall="$2" d="$W/$1/e2e" rc=0 log
+  shift 2
+  sudo mkdir -m 700 -p "$d/w" "$d/out"
+  if [ "$name" = host ]; then
+    smoke_e2e_args "$CTX" "$d/w" "$d/out" "$W/token"
+    log="$(sudo "$RNK" "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
+  else
+    smoke_e2e_args /ctx /tmp/w /out /token
+    # `RUN --network=none` brings up loopback in a new network namespace,
+    # which needs CAP_NET_ADMIN: Docker's defaults lack it [open: Q-183].
+    local net=()
+    [ "$name" = sysadmin ] && net=(--cap-add NET_ADMIN)
+    # shellcheck disable=SC2046
+    log="$(sudo docker run --rm $(docker_args "$name") "${net[@]}" -v "$RNK:/ranikust:ro" \
+      -v "$CTX:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" -v "$W/token:/token:ro" \
+      "$IMAGE" /ranikust "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
+  fi
+  echo "$log" | sudo tee -a "$W/$name/e2e.log" >&2
+  smoke_check_build "$log" "$syscall" "$rc" >&2 || return 1
+  smoke_digest "$log"
+}
 trap 'sudo rm -f "$MARKER"' EXIT
 domainname_before="$(cat /proc/sys/kernel/domainname)"
 
@@ -106,21 +137,28 @@ for v in "${VARIANTS[@]}"; do
   [[ "$got" == "hello from ranikust"$'\n'jq-* ]] ||
     { echo "error: $name: the image does not run as built: $got" >&2; exit 1; }
   sudo docker rmi -f "$loaded" >/dev/null
-  # The real binary's set-up in the same environment.
+  # The real binary builds tests/smoke/e2e in the same environment.
   case "$entry" in PivotRoot) syscall=pivot_root ;; MoveMount) syscall=MS_MOVE ;; esac
-  rc=0
+  e2e "$name" "$syscall" >/dev/null
+  sudo bash -c "$(declare -f smoke_check_no_stub_leak smoke_check_no_secret smoke_check_empty_layer); \
+    smoke_check_no_stub_leak '$dir/e2e/out/oci' && \
+    smoke_check_no_secret '$dir/e2e/out/oci' '$SMOKE_E2E_SECRET' && \
+    smoke_check_empty_layer '$dir/e2e/out/oci'"
+  sudo docker load -q -i "$dir/e2e/out/image.tar" >/dev/null
+  got="$(sudo docker run --rm localhost/rnk-e2e:latest)"
+  [ "$got" = "$SMOKE_E2E_OUTPUT" ] ||
+    { echo "error: $name: the e2e image printed: $got" >&2; exit 1; }
+  [ "$(sudo docker run --rm localhost/rnk-e2e:latest id -un)" = "$SMOKE_E2E_USER" ] ||
+    { echo "error: $name: the e2e image does not run as $SMOKE_E2E_USER" >&2; exit 1; }
+  sudo docker rmi -f localhost/rnk-e2e:latest >/dev/null
   if [ "$name" = host ]; then
-    log="$(sudo "$RNK" --no-push --workdir "$dir/rnk" 2>&1)" || rc=$?
-  else
-    # The workdir is a volume: overlay refuses an upper directory on the
-    # container's own overlay root (that environment needs kaniko mode).
-    sudo mkdir -m 700 -p "$dir/rnk"
-    # shellcheck disable=SC2046
-    log="$(sudo docker run --rm $(docker_args "$name") -v "$RNK:/ranikust:ro" \
-      -v "$dir/rnk:/tmp/w" "$IMAGE" /ranikust --no-push --workdir /tmp/w 2>&1)" || rc=$?
+    # --reproducible: one digest, whatever --jobs.
+    a="$(e2e "$name" "$syscall" --reproducible)"
+    b="$(e2e "$name" "$syscall" --reproducible --jobs 1)"
+    [ "$a" = "$b" ] ||
+      { echo "error: --reproducible digests differ: $a with the default jobs, $b with 1" >&2; exit 1; }
+    echo "host: --reproducible gives $a with --jobs 1 and the default"
   fi
-  echo "$log"
-  smoke_check_setup "$log" "$syscall" "$rc"
   echo "$name: ok"
 done
 

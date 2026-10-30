@@ -360,9 +360,10 @@ Entry format:
 - **Options:** (a) kaniko's syntax, file and env sources; (b) a subset in
   Phase 1, the rest later.
 - **Recommendation:** none
-- **Interim:** `feat/ranikust-cli` refuses `--secret` with a message
-  naming this question. Reversible: accepting it is one more flag, and no
-  build runs yet.
+- **Interim:** (b), on branch `feat/rnk-builder-executors`: kaniko's
+  syntax for file secrets, `id=ID,src=PATH` (`type=file` optional);
+  `type=env` and `RUN --mount=type=secret,env=` are refused. Reversible:
+  more fields of the same syntax.
 - **Raised:** 2026-10-30
 
 ### Q-023: Which other kaniko flags and variables are accepted?
@@ -370,7 +371,8 @@ Entry format:
 - **Blocks:** Phase 1 tasks 8, 13; **Area:** `ranikust`
 - **Context:** about 30 kaniko flags are still to be decided with the list
   ([kaniko-map](agents/kaniko-map.md#flags): `--verbosity`, `--log-format`,
-  `--label`, `--image-format`, `--digest-file`, `--insecure*`,
+  `--label`, `--image-format`, `--digest-file`, `--insecure`,
+  `--insecure-pull` (`--insecure-registry` is accepted, Q-200),
   `--push-retry`, `--single-snapshot`, `--cleanup`, `--dryrun`, deprecated
   forms…), plus `--force` (replaced by the workdir checks), `--cache-dir`
   (the store replaces it) and `KANIKO_REGISTRY_MIRROR`, `KANIKO_NO_PUSH`,
@@ -836,9 +838,144 @@ Entry format:
   BuildKit's) is part of either.
 - **Recommendation:** (a), which the card's boundary already implies;
   the dialect needs a golden against BuildKit.
-- **Interim:** `rnk-context` exposes the filtered walk and `root()` only
-  (`feat/rnk-context`); nothing resolves globs yet. Reversible: adding a
-  resolver to either crate later is additive.
+- **Interim:** (a), on branch `feat/rnk-builder-executors`:
+  `rnk_builder::ContextFiles` keeps the walk's entries and resolves a
+  source against them, so an ignored file is never named; a directory is
+  copied with `rnk_rootfs::copy_filtered`, which skips the ignored entries
+  below it. Wildcards follow BuildKit: Go's `filepath.Match` one component
+  at a time, at the pattern's own depth; `COPY --from` sources are matched
+  by listing the stage's root. Reversible: one module,
+  `crates/rnk-builder/src/sources.rs`; the golden against BuildKit is
+  still to do. A symlinked source is followed inside the context through
+  kept entries only (an ignored target is "not found"). The error rules
+  follow kaniko's `IsSrcsValid` (`kaniko@44aa7ddc0
+  pkg/util/command_util.go:259`): a missing source fails, and several sources
+  need a destination ending in `/`.
+- **Raised:** 2026-10-30
+
+### Q-180: Does VOLUME create its directories?
+
+- **Blocks:** Phase 1 task 13 (layer comparison); **Area:** `rnk-builder`
+- **Context:** kaniko's `VOLUME` creates each directory in the root
+  (`kaniko@44aa7ddc0 pkg/commands/volume.go`) and snapshots nothing for it,
+  so a directory it made lands in the next layer that changes files, or
+  nowhere; Docker and BuildKit only record the volume in the config
+  [inferred]. In overlay mode nothing is writable between layers.
+- **Options:** (a) config only; (b) create the directories in a layer of
+  their own; (c) create them in the next changing instruction's layer, as
+  kaniko ends up doing.
+- **Recommendation:** none
+- **Interim:** (a), on branch `feat/rnk-builder-executors`. Reversible:
+  one executor.
+- **Raised:** 2026-10-30
+
+### Q-181: How is `RUN --mount=type=cache,sharing=` enforced?
+
+- **Blocks:** Phase 1 task 13; **Area:** `rnk-builder`, `rnk-store`
+- **Context:** BuildKit's `sharing=shared` (default) lets concurrent
+  `RUN`s use one cache directory, `locked` makes them wait, `private`
+  gives each its own copy. Parallel stages make the difference visible.
+  Cache directories are `rnk_store::Store::cache_dir(id)`; `mode`, `uid`
+  and `gid` are applied to it at each use.
+- **Options:** (a) treat every cache as `shared`; (b) `locked` with a
+  `flock` on the cache directory; (c) also `private`, with a copy per
+  concurrent use.
+- **Recommendation:** none
+- **Interim:** (a), on branch `feat/rnk-builder-executors`. Reversible:
+  the cache mount is built in one place (`stage.rs`, `mounts`).
+- **Raised:** 2026-10-30
+
+### Q-182: Which `RUN --mount=type=secret` options are honoured?
+
+- **Blocks:** nothing yet; **Area:** `rnk-builder`, `rnk-sandbox`
+- **Context:** the secret file is bound read-only from its `--secret`
+  source, so it keeps the host file's mode and owner. BuildKit's `mode`,
+  `uid` and `gid` (default `0400`, root) set what the `RUN` sees, and
+  `env=` exposes the secret as a variable [inferred].
+- **Options:** (a) bind the host file as it is; (b) copy it to a
+  build-private file with the requested mode and owner, then bind that.
+- **Recommendation:** none
+- **Interim:** (a); `env=` is refused. Reversible: one function.
+- **Raised:** 2026-10-30
+
+### Q-183: What does `RUN --network=none` do without `CAP_NET_ADMIN`?
+
+- **Blocks:** Phase 1 acceptance (`--network=none`); Phase 3;
+  **Area:** `rnk-sandbox`
+- **Context:** the sandbox brings up loopback in the `RUN`'s new network
+  namespace, which needs `CAP_NET_ADMIN` over it. In a container with
+  Docker's or podman's default capabilities plus `SYS_ADMIN` (the
+  `MS_MOVE` environment) that step fails with `EPERM`, measured with the
+  e2e build in rootless podman; `--privileged` and real root work.
+- **Options:** (a) refuse, as now (`RUN sandbox: bring up the loopback
+  interface: Operation not permitted`); (b) run with loopback down when
+  it cannot be brought up, with a warning; (c) create the network
+  namespace inside a user namespace, whose root may bring it up.
+- **Recommendation:** none
+- **Interim:** (a); the VM's `SYS_ADMIN` variant adds `NET_ADMIN` for
+  the e2e build. Reversible: one step of the child's set-up.
+- **Raised:** 2026-10-30
+
+### Q-187: How does the W3 digest check treat the workload's `du` output?
+
+- **Blocks:** Phase 1 acceptance (W3 digests across `--jobs`); **Area:**
+  tests, `nextjs-kaniko`
+- **Context:** `just test-vm e2e` requires one W3 digest for `--jobs 1`, 2
+  and the default under `--reproducible`. On 2026-10-30 (noble) `--jobs 1`
+  and the default matched, `--jobs 2` did not; every diff ID but two was
+  equal, and the files that differ are `/out/a.txt` and `/out/all.txt`
+  built from it. Each stage's `summary.txt` records `du -sk node_modules`,
+  the disk usage of a pnpm install, which depends on block allocation
+  while other stages write at the same time; kaniko's and BuildKit's
+  images differ there too. The layer bytes do not depend on `--jobs`.
+- **Options:** (a) drop `du -sk` from the workload, as `nextjs-kaniko`'s
+  own change; (b) compare the W3 images across `--jobs` with the
+  workload's noise list instead of by digest; (c) accept a digest
+  mismatch confined to `/out`.
+- **Recommendation:** (a): the acceptance criterion is about ranikust's
+  bytes, and the workload's output should not vary by itself.
+- **Interim:** none; the suite reports the mismatch and fails.
+- **Raised:** 2026-10-30
+
+### Q-184: May a Dockerfile's `RUN --network=host` lift `--network=none`?
+
+- **Blocks:** nothing yet; **Area:** `rnk-builder`, `ranikust`
+- **Context:** the operator's `--network=none` cuts every `RUN` off the
+  network; `RUN --network=host` in the Dockerfile would reach it again,
+  the cloud metadata service and the host's loopback included. BuildKit
+  needs the `network.host` entitlement (`--allow`) for it [inferred].
+- **Options:** (a) refuse it under `--network=none`; (b) an entitlement
+  flag, as BuildKit's `--allow network.host`.
+- **Recommendation:** none
+- **Interim:** (a): the build fails with a message naming the flag.
+  Reversible: one match in `stage.rs`, `run_command`.
+- **Raised:** 2026-10-30
+
+### Q-185: Does an image without `PATH` get one in its config?
+
+- **Blocks:** Phase 1 task 13 (config comparison); **Area:** `rnk-builder`
+- **Context:** `FROM scratch` gets `PATH` in kaniko
+  (`ScratchEnvVars`) and BuildKit; ranikust does the same. For a base
+  image whose config has no `PATH`, BuildKit adds it to the config,
+  kaniko does not [inferred for BuildKit]. A `RUN` gets Docker's default
+  `PATH` either way (`rnk-sandbox`).
+- **Options:** (a) kaniko: the config stays without; (b) BuildKit: add it.
+- **Recommendation:** none
+- **Interim:** (a). Reversible: one line in `build_stage`.
+- **Raised:** 2026-10-30
+
+### Q-186: Does a cancel kill a running `RUN`?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, `ranikust`
+- **Context:** the first SIGINT or SIGTERM cancels the build: stages stop
+  between instructions, but a `RUN` already running finishes first, which
+  may take long. A second signal exits at once, and the `RUN`s die with
+  their parent thread (`PR_SET_PDEATHSIG`). `rnk_sandbox::Sandbox::run`
+  has no way to stop a `RUN` it started.
+- **Options:** (a) as now; (b) a cancel in `Sandbox` that kills the
+  `RUN`'s PID 1, which takes its PID namespace with it.
+- **Recommendation:** none
+- **Interim:** (a). Reversible: a new `Sandbox` call.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?
@@ -951,7 +1088,10 @@ Entry format:
   changes the reference setup of experiments 07 and 08.
 - **Recommendation:** (a): the references and the bench harness use it, and
   the client already implements it.
-- **Interim:** the suite passes kaniko's flag and waits.
+- **Interim:** (a), on branch `feat/rnk-builder-executors`:
+  `--insecure-registry <host>` (repeatable) with kaniko's meaning, wired
+  to `ClientOptions::insecure` (HTTPS first, plain HTTP when it fails).
+  Reversible: one flag. `--insecure` and `--insecure-pull` stay refused.
 - **Raised:** 2026-10-30
 
 ### Q-034: When must a lazily skipped stage still be snapshotted?

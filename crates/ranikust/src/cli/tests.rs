@@ -176,7 +176,6 @@ fn refused_kaniko_flags_say_why() {
         (&["--cache=true"], "Phase 4"),
         (&["--cache-repo", "r/cache"], "Phase 4"),
         (&["--ignore-path=/var"], "Phase 2"),
-        (&["--secret", "id=a,src=/a"], "RUN --mount=type=secret"),
         (&["--bucket=b"], "out of scope"),
         (&["-b", "b"], "out of scope"),
         (&["-bbucket"], "out of scope"),
@@ -227,4 +226,38 @@ fn pflag_booleans() {
     }
     assert!(parse_bool("yes").is_err());
     assert!(parse_bool("").is_err());
+}
+
+#[test]
+fn insecure_registries_are_hosts() {
+    let a = build(&[
+        "--no-push",
+        "--insecure-registry=registry:5000",
+        "--insecure-registry",
+        "r.example",
+    ]);
+    assert_eq!(a.insecure_registries, ["registry:5000", "r.example"]);
+    assert!(parse_registry_host("http://r.example").is_err());
+    assert!(parse_registry_host("").is_err());
+    // kaniko's other insecure flags stay refused.
+    assert_eq!(refused(&["--insecure"]).len(), 1);
+}
+
+#[test]
+fn secrets_take_an_id_and_a_source() {
+    assert_eq!(
+        parse_secret("id=npm,src=/run/npmrc").unwrap(),
+        ("npm".to_owned(), PathBuf::from("/run/npmrc"))
+    );
+    assert_eq!(
+        parse_secret("source=/a,id=b").unwrap(),
+        ("b".to_owned(), PathBuf::from("/a"))
+    );
+    assert_eq!(
+        parse_secret("id=c,type=file,src=/c").unwrap(),
+        ("c".to_owned(), PathBuf::from("/c"))
+    );
+    assert!(parse_secret("id=a,type=env,env=A").is_err());
+    assert!(parse_secret("id=a").is_err());
+    assert!(parse_secret("id=a,src=/a,env=X").is_err());
 }

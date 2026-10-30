@@ -51,6 +51,7 @@ impl RootPath {
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; copy_file_range
+pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore)
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<u32> } // built: None keeps the source's
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built; IgnoreList: exact cleaned paths (insert, contains)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
