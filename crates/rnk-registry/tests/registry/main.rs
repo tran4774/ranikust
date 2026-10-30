@@ -369,6 +369,52 @@ async fn transient_failures_are_retried() {
     assert_eq!(registry.count("GET /v2/app/manifests/"), before + 1);
 }
 
+/// kaniko's `--push-retry` and `--image-download-retry`: each replaces the
+/// default policy for its own operations only.
+#[tokio::test]
+async fn push_and_pull_retries_are_set_apart() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    add_image(&registry, "app", "v1", b"layer".to_vec());
+    let mut opts = options(&registry);
+    opts.push_retry = Some(rnk_registry::RetryPolicy {
+        attempts: 1,
+        ..support::fast_retries()
+    });
+    opts.pull_retry = Some(rnk_registry::RetryPolicy {
+        attempts: 4,
+        ..support::fast_retries()
+    });
+    let client = Client::new(opts, TrustStore::load(), Credentials::none()).unwrap();
+
+    // Pulls: three failures, then the fourth attempt succeeds.
+    registry.state().faults.push(Fault {
+        method: Method::GET,
+        path_contains: "/manifests/".to_owned(),
+        status: 503,
+        remaining: 3,
+    });
+    client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap();
+    assert_eq!(registry.count("GET /v2/app/manifests/"), 4);
+
+    // Pushes: `--push-retry=0` means one attempt.
+    registry.state().faults.push(Fault {
+        method: Method::PUT,
+        path_contains: "/manifests/".to_owned(),
+        status: 503,
+        remaining: 1,
+    });
+    let manifest = RawManifest::new(MediaType::OCI_MANIFEST, br#"{"schemaVersion":2}"#.to_vec());
+    let err = client
+        .push_manifest(&reference(&registry, "out:v1"), &manifest)
+        .await
+        .unwrap_err();
+    assert!(err.is_retryable(), "{err}");
+    assert_eq!(registry.count("PUT /v2/out/manifests/"), 1);
+}
+
 #[tokio::test]
 async fn pushes_upload_once_then_find_the_blob() {
     let registry = FakeRegistry::start(Auth::Open).await;

@@ -61,6 +61,12 @@ pub struct ClientOptions {
     pub registry_certificates: Vec<(String, PathBuf)>,
     /// How failed requests are retried.
     pub retry: RetryPolicy,
+    /// How failed push requests are retried, in place of [`Self::retry`]:
+    /// kaniko's `--push-retry`, only when given ([`RetryPolicy::kaniko`]).
+    pub push_retry: Option<RetryPolicy>,
+    /// How failed pull requests (manifests and blobs) are retried, in place
+    /// of [`Self::retry`]: kaniko's `--image-download-retry`, only when given.
+    pub pull_retry: Option<RetryPolicy>,
     /// Bound on establishing a connection; Go's default dialer uses 30 s.
     pub connect_timeout: Option<Duration>,
     /// Bound on waiting for data on an open connection.
@@ -76,6 +82,8 @@ impl Default for ClientOptions {
             skip_tls_verify: BTreeSet::new(),
             registry_certificates: Vec::new(),
             retry: RetryPolicy::default(),
+            push_retry: None,
+            pull_retry: None,
             connect_timeout: Some(Duration::from_secs(30)),
             read_timeout: None,
             user_agent: concat!("ranikust/", env!("CARGO_PKG_VERSION")),
@@ -299,7 +307,7 @@ impl Client {
             bytes_in = Empty,
         );
         let mut bytes_in = 0u64;
-        let (result, retries) = retry(&self.options.retry, async |_| {
+        let (result, retries) = retry(self.pull_policy(), async |_| {
             // The authorization stored by `authorize` wins over this one.
             let (body, digest) = host
                 .oci
@@ -418,7 +426,7 @@ impl Client {
             bytes_in = Empty,
         );
         let mut bytes_in = 0u64;
-        let (result, retries) = retry(&self.options.retry, async |attempt| {
+        let (result, retries) = retry(self.pull_policy(), async |attempt| {
             if attempt > 0 {
                 out.reset().await.map_err(|source| Error::Io {
                     what: format!("resetting the destination of {digest}"),
@@ -477,7 +485,7 @@ impl Client {
             host: &host.name,
             target: digest.as_str(),
         };
-        retry(&self.options.retry, async |_| {
+        retry(self.push_policy(), async |_| {
             host.oci
                 .blob_exists(&oci_ref, digest.as_str())
                 .await
@@ -556,7 +564,7 @@ impl Client {
         let mut requests = 0u64;
         let mut retries = 0u32;
         let result = async {
-            let (exists, r) = retry(&self.options.retry, async |_| {
+            let (exists, r) = retry(self.push_policy(), async |_| {
                 requests += 1;
                 host.oci
                     .blob_exists(&oci_ref, digest)
@@ -586,7 +594,7 @@ impl Client {
                     return Ok(PushOutcome::Mounted);
                 }
             }
-            let (uploaded, r) = retry(&self.options.retry, async |_| {
+            let (uploaded, r) = retry(self.push_policy(), async |_| {
                 let io_error = |source| Error::Io {
                     what: body.describe(),
                     source,
@@ -773,7 +781,7 @@ impl Client {
             bytes_out = Empty,
         );
         let mut bytes_out = 0u64;
-        let (result, retries) = retry(&self.options.retry, async |_| {
+        let (result, retries) = retry(self.push_policy(), async |_| {
             bytes_out += manifest.size();
             host.oci
                 .push_manifest_raw(&oci_ref, manifest.bytes().clone(), content_type.clone())
@@ -790,6 +798,16 @@ impl Client {
     /// The connection state for `registry`, created on first use.
     /// Adds to an access refusal by a registry whose credentials were held
     /// back over plain HTTP (see [`Client::connect`]) how to send them.
+    /// The retry policy of a pull: `--image-download-retry`'s when given.
+    fn pull_policy(&self) -> &RetryPolicy {
+        self.options.pull_retry.as_ref().unwrap_or(&self.options.retry)
+    }
+
+    /// The retry policy of a push: `--push-retry`'s when given.
+    fn push_policy(&self) -> &RetryPolicy {
+        self.options.push_retry.as_ref().unwrap_or(&self.options.retry)
+    }
+
     async fn hint<T>(&self, registry: &str, r: Result<T, Error>) -> Result<T, Error> {
         let Err(e) = r else { return r };
         let withheld = self

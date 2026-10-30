@@ -74,6 +74,9 @@ pub struct Credentials {
     helpers: BTreeMap<String, String>,
     /// `credsStore`: the default helper.
     store: Option<String>,
+    /// Asked when this source has nothing for a registry: the file after
+    /// `DOCKER_AUTH_CONFIG`.
+    fallback: Option<Box<Credentials>>,
 }
 
 impl Credentials {
@@ -114,6 +117,30 @@ impl Credentials {
         Self::from_json(&bytes).map_err(fail)
     }
 
+    /// The credentials of the `DOCKER_AUTH_CONFIG` variable: a `config.json`
+    /// inline, which kaniko asks before the file
+    /// (`kaniko@44aa7ddc0 pkg/creds/creds.go:39-42`). Chain the file with
+    /// [`Credentials::or`].
+    ///
+    /// The error never quotes the value, which holds secrets.
+    pub fn from_env_value(value: &[u8]) -> Result<Self, Error> {
+        Self::from_json(value).map_err(|reason| Error::Credentials {
+            path: PathBuf::from("$DOCKER_AUTH_CONFIG"),
+            reason,
+        })
+    }
+
+    /// These credentials, then `fallback` for a registry they say nothing
+    /// about: no `auths` entry and no helper.
+    #[must_use]
+    pub fn or(mut self, fallback: Self) -> Self {
+        match self.fallback {
+            Some(next) => self.fallback = Some(Box::new(next.or(fallback))),
+            None => self.fallback = Some(Box::new(fallback)),
+        }
+        self
+    }
+
     /// Parses the contents of a `config.json`.
     ///
     /// The error never quotes the file, which holds secrets.
@@ -141,6 +168,7 @@ impl Credentials {
             auths,
             helpers,
             store: file.creds_store.filter(|s| !s.is_empty()),
+            fallback: None,
         })
     }
 
@@ -154,14 +182,30 @@ impl Credentials {
         let exact = self.auths.iter().find(|(key, _, _)| {
             key == registry || (host == DOCKER_HUB_HOST && key == DOCKER_HUB_KEY)
         });
-        exact
+        let own = exact
             .or_else(|| self.auths.iter().find(|(_, h, _)| *h == host))
-            .map(|(_, _, credential)| credential)
+            .map(|(_, _, credential)| credential);
+        match own {
+            Some(c) => Some(c),
+            None if self.own_helper(registry).is_some() => None,
+            None => self.fallback.as_deref().and_then(|f| f.get(registry)),
+        }
     }
 
     /// The credential helper configured for `registry` (`credHelpers`, else
     /// `credsStore`), which Phase 1 does not run (Q-012).
     pub fn helper(&self, registry: &str) -> Option<&str> {
+        let host = canonical_host(registry);
+        self.own_helper(registry).or_else(|| {
+            if self.auths.iter().any(|(_, h, _)| *h == host) {
+                return None;
+            }
+            self.fallback.as_deref().and_then(|f| f.helper(registry))
+        })
+    }
+
+    /// This source's own helper for `registry`, without the fallback.
+    fn own_helper(&self, registry: &str) -> Option<&str> {
         self.helpers
             .get(&canonical_host(registry))
             .or(self.store.as_ref())
@@ -266,6 +310,33 @@ mod tests {
         let creds = Credentials::from_json(json.as_bytes()).unwrap();
         assert_eq!(creds.get("localhost:5055"), Some(&basic("user", "pa:ss")));
         assert_eq!(creds.get("localhost:5056"), None);
+    }
+
+    #[test]
+    fn docker_auth_config_comes_before_the_file() {
+        let env = format!(
+            r#"{{"auths":{{"a.example":{{"auth":"{}"}}}}}}"#,
+            b64("env:1")
+        );
+        let file = format!(
+            r#"{{"auths":{{"a.example":{{"auth":"{}"}},"b.example":{{"auth":"{}"}}}},
+                "credHelpers":{{"c.example":"ecr"}}}}"#,
+            b64("file:1"),
+            b64("file:2")
+        );
+        let creds = Credentials::from_env_value(env.as_bytes())
+            .unwrap()
+            .or(Credentials::from_json(file.as_bytes()).unwrap());
+        assert_eq!(creds.get("a.example"), Some(&basic("env", "1")));
+        assert_eq!(creds.get("b.example"), Some(&basic("file", "2")));
+        assert_eq!(creds.get("c.example"), None);
+        assert_eq!(creds.helper("c.example"), Some("ecr"));
+        assert_eq!(creds.helper("a.example"), None);
+        let bad = Credentials::from_env_value(br#"{"auths": {"x": {"auth": "c2VjcmV0"}}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(!bad.contains("c2VjcmV0"), "{bad}");
+        assert!(bad.contains("DOCKER_AUTH_CONFIG"), "{bad}");
     }
 
     #[test]

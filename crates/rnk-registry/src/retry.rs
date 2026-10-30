@@ -44,6 +44,18 @@ impl RetryPolicy {
         }
     }
 
+    /// kaniko's `--push-retry`/`--image-download-retry` `retries`: that many
+    /// retries after the first attempt, waiting 1 s, then twice as long each
+    /// time (`kaniko@44aa7ddc0 pkg/util/util.go:221` `Retry`). `0` never
+    /// retries.
+    pub fn kaniko(retries: u32) -> Self {
+        Self {
+            attempts: retries.saturating_add(1),
+            initial_delay: Duration::from_secs(1),
+            factor: 2,
+        }
+    }
+
     /// The wait after failed attempt `attempt` (0-based), without jitter.
     fn base_delay(&self, attempt: u32) -> Duration {
         let factor = self.factor.max(1).saturating_pow(attempt);
@@ -114,6 +126,16 @@ mod tests {
             let base = policy.base_delay(attempt);
             assert!(delay >= base && delay <= base + base / 10, "{delay:?}");
         }
+    }
+
+    #[test]
+    fn kaniko_retries_double_from_one_second() {
+        let policy = RetryPolicy::kaniko(3);
+        assert_eq!(policy.attempts, 4);
+        assert_eq!(policy.base_delay(0), Duration::from_secs(1));
+        assert_eq!(policy.base_delay(1), Duration::from_secs(2));
+        assert_eq!(policy.base_delay(2), Duration::from_secs(4));
+        assert_eq!(RetryPolicy::kaniko(0).attempts, 1);
     }
 
     #[tokio::test]
