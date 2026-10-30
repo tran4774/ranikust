@@ -243,21 +243,41 @@ fn insecure_registries_are_hosts() {
     assert_eq!(refused(&["--insecure"]).len(), 1);
 }
 
+fn secret(id: &str, src: Option<&str>, env: Option<&str>) -> SecretArg {
+    SecretArg {
+        id: id.to_owned(),
+        src: src.map(PathBuf::from),
+        env: env.map(str::to_owned),
+    }
+}
+
+/// buildctl's `parseSecret`, which kaniko copies.
 #[test]
-fn secrets_take_an_id_and_a_source() {
+fn secrets_parse_as_buildctl() {
+    let p = |v| parse_secret(v).unwrap();
     assert_eq!(
-        parse_secret("id=npm,src=/run/npmrc").unwrap(),
-        ("npm".to_owned(), PathBuf::from("/run/npmrc"))
+        p("id=npm,src=/run/npmrc"),
+        secret("npm", Some("/run/npmrc"), None)
     );
+    assert_eq!(p("source=/a,id=b"), secret("b", Some("/a"), None));
+    assert_eq!(p("ID=c,Type=file,SRC=/c"), secret("c", Some("/c"), None));
+    // type=env takes the variable from env=, else from src=.
+    assert_eq!(p("id=a,type=env,env=A"), secret("a", None, Some("A")));
+    assert_eq!(p("id=a,type=env,src=A"), secret("a", None, Some("A")));
+    assert_eq!(p("id=a,env=A"), secret("a", None, Some("A")));
+    // No source: decided by the environment later.
+    assert_eq!(p("id=a"), secret("a", None, None));
+    for bad in ["src=/a", "id=a,type=ssh", "id=a,src", "id=a,mode=0400"] {
+        assert!(parse_secret(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn allow_takes_buildkit_entitlements() {
     assert_eq!(
-        parse_secret("source=/a,id=b").unwrap(),
-        ("b".to_owned(), PathBuf::from("/a"))
+        parse_entitlement("network.host").unwrap(),
+        Entitlement::NetworkHost
     );
-    assert_eq!(
-        parse_secret("id=c,type=file,src=/c").unwrap(),
-        ("c".to_owned(), PathBuf::from("/c"))
-    );
-    assert!(parse_secret("id=a,type=env,env=A").is_err());
-    assert!(parse_secret("id=a").is_err());
-    assert!(parse_secret("id=a,src=/a,env=X").is_err());
+    assert!(parse_entitlement("security.insecure").is_err());
+    assert!(parse_entitlement("network").is_err());
 }

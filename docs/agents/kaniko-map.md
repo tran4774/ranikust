@@ -71,7 +71,7 @@ naming the reason, never silently ignored.
 | `--snapshot-mode` | `:341` | `full` (`full\|redo\|time`, `build.go:2474`) | accept, kaniko's meaning: what the kaniko-mode walk compares; ignored with a warning in overlay mode (`ADR-0023`) | parsed; warning with `--mode=overlay` |
 | `--custom-platform` | `:342` | host | `--platform`, `linux/amd64` only at first (`ADR-0009`); alias `[open: Q-020]` | refused, naming `--platform` (Q-020 interim); `--platform` parsed |
 | `--force` | `:63` | false | replaced by the workdir checks; accept or reject `[open: Q-023]` | refused (Q-023 interim) |
-| `--secret` | `:378` | none | needed for `type=secret` in Phase 1; format `(Q-022, ADR-0032)` | refused until the format is decided (Q-022 interim) |
+| `--secret` | `:378` | none | kaniko's and buildctl's syntax (ADR-0032): `type=file\|env`, `src=`, `env=`, the id as variable or file by default | accepted, same meaning |
 | `--registry-mirror`, `--registry-map`, `--credential-helpers` | `:407`, `:406`, `:409` | none; helpers: all | Phase 5 (mirrors, helpers); names `[open: Q-047]` | refused (Phase 5) |
 | `--cache-dir` | `:352` | `/cache` | warmer's base-image cache; the store replaces it `[inferred]`; `[open: Q-023]` | refused (Q-023 interim) |
 | `--git`, `--bucket` | `:368`, `:340` | none | git context Phase 5; GCS out of scope | refused (`-b` too) |

@@ -41,7 +41,7 @@ enum Command { Build(Box<BuildArgs>), Version }                  // built (clap,
 struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, destination, no_push,
     tar_path, oci_layout_path, compression, reproducible, registry_certificate, snapshot_mode;
     ours: mode, workdir, state_dir, jobs, network, metrics_file.
-    Planned: secret (Q-022, ADR-0032), cache, cache_repo [open: Q-021], ignore_path (2),
+    Planned: cache, cache_repo [open: Q-021], ignore_path (2),
     parallel_stages (2), seccomp, userns (3) */ }
 fn cli::parse(args) -> Result<Cli, ParseError>;  // built: refused kaniko flags first, then clap
 struct BuildConfig { /* built: the flags validated, paths absolute, enums resolved */ }
@@ -213,12 +213,17 @@ error, a refused kaniko flag, an invalid combination, and for now every
   a `--jobs` permit per `RUN` over a channel; then the outputs in
   kaniko's order (OCI layout, Docker tar, push) and the digest on stdout.
   Roots are released children first, then the store closed, on success
-  and failure alike. `--secret id=ID,src=PATH` (Q-022, ADR-0032), ids unique.
+  and failure alike. `--secret` takes buildctl's and kaniko's syntax
+  (`id=`, `type=file|env`, `src=`, `env=`; without a source the variable
+  named by the id, else the file), ids unique; a file secret must exist
+  and fit 500 KiB at the start. `--allow network.host` is BuildKit's
+  entitlement (ADR-0032).
   The roots of `COPY --from=<image>` are made by the stage's thread, not
   the preparation, which only pulls. A Dockerfile not found as given is
   read inside the context through its `RootPath`, never by a host path.
-  The first SIGINT or SIGTERM cancels the build, a second exits at once
-  (Q-186, ADR-0032). A release that fails leaves the stages below it to the
+  The first SIGINT or SIGTERM, or a failed stage, cancels the build and
+  kills the running `RUN`s (`Sandbox::cancel`, as BuildKit); a second
+  signal exits at once. A release that fails leaves the stages below it to the
   next build's clean-up.
 - Left: the workdir checks [open: Q-011], the kaniko-mode lock
   (Phase 2), the acceptance runs (task 13).

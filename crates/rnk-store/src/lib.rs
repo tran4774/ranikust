@@ -39,4 +39,4 @@ mod store;
 
 pub use error::{Error, Result};
 pub use key::EntryKey;
-pub use store::{BuildPaths, Store, TmpEntry};
+pub use store::{BuildPaths, CacheLease, CacheOwner, CacheSharing, Store, TmpEntry};

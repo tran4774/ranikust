@@ -112,8 +112,25 @@ pub(crate) struct BuildConfig {
     pub(crate) jobs: Option<NonZeroUsize>,
     /// The network of `RUN`.
     pub(crate) network: Network,
-    /// `--secret` files by id, paths absolute [open: Q-022].
-    pub(crate) secrets: Vec<(String, PathBuf)>,
+    /// `--secret`s by id, file paths absolute.
+    pub(crate) secrets: Vec<(String, rnk_builder::Secret)>,
+    /// `--allow network.host`.
+    pub(crate) allow_network_host: bool,
+}
+
+/// Where a `--secret` comes from, as BuildKit's secrets store
+/// (`session/secrets/secretsprovider/store.go`): `env=` first; without a
+/// source, the variable named by the id when it is set, else the file named
+/// by the id.
+fn secret(s: &crate::cli::SecretArg) -> (String, rnk_builder::Secret) {
+    use rnk_builder::Secret;
+    let source = match (&s.env, &s.src) {
+        (Some(env), _) => Secret::Env(env.into()),
+        (None, Some(src)) => Secret::File(absolute(src)),
+        (None, None) if std::env::var_os(&s.id).is_some() => Secret::Env(s.id.clone().into()),
+        (None, None) => Secret::File(absolute(Path::new(&s.id))),
+    };
+    (s.id.clone(), source)
 }
 
 /// A rejected combination of flags.
@@ -151,8 +168,8 @@ impl BuildConfig {
             )));
         }
         let mut ids = std::collections::BTreeSet::new();
-        if let Some((id, _)) = args.secrets.iter().find(|(id, _)| !ids.insert(id.as_str())) {
-            return Err(Invalid(format!("--secret id={id} is given twice")));
+        if let Some(s) = args.secrets.iter().find(|s| !ids.insert(s.id.as_str())) {
+            return Err(Invalid(format!("--secret id={} is given twice", s.id)));
         }
         if args.targets.iter().any(String::is_empty) {
             return Err(Invalid("--target names an empty stage".to_owned()));
@@ -185,11 +202,8 @@ impl BuildConfig {
             state_dir: args.state_dir.as_deref().map(absolute),
             jobs: args.jobs,
             network: args.network,
-            secrets: args
-                .secrets
-                .iter()
-                .map(|(id, path)| (id.clone(), absolute(path)))
-                .collect(),
+            secrets: args.secrets.iter().map(secret).collect(),
+            allow_network_host: args.allow.contains(&crate::cli::Entitlement::NetworkHost),
         })
     }
 

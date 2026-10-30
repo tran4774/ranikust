@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use rnk_oci::Digest;
-use rnk_store::{BuildPaths, EntryKey, Error, Store, TmpEntry};
+use rnk_store::{BuildPaths, CacheSharing, EntryKey, Error, Store, TmpEntry};
 
 fn digest(n: u8) -> Digest {
     Digest::from_sha256_bytes(&[n; 32])
@@ -269,6 +269,100 @@ fn cache_dirs_are_named_by_the_hash_of_their_id() {
     assert_eq!(b.parent().unwrap(), store.state_dir().join("caches"));
 }
 
+fn never() -> bool {
+    false
+}
+
+#[test]
+fn shared_cache_leases_use_one_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let a = store
+        .cache_lease("npm", CacheSharing::Shared, None, &never)
+        .unwrap();
+    assert!(a.created());
+    let b = store
+        .cache_lease("npm", CacheSharing::Shared, None, &never)
+        .unwrap();
+    assert!(!b.created());
+    assert_eq!(a.path(), b.path());
+    assert_eq!(a.path(), store.cache_dir("npm").unwrap());
+    drop((a, b));
+    let c = store
+        .cache_lease("npm", CacheSharing::Shared, None, &never)
+        .unwrap();
+    assert!(!c.created(), "kept between builds");
+}
+
+#[test]
+fn a_private_cache_lease_gets_a_new_directory_while_one_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let a = store
+        .cache_lease("k", CacheSharing::Private, None, &never)
+        .unwrap();
+    fs::write(a.path().join("x"), b"x").unwrap();
+    let b = store
+        .cache_lease("k", CacheSharing::Private, None, &never)
+        .unwrap();
+    assert!(b.created());
+    assert_ne!(a.path(), b.path());
+    assert!(names(b.path()).is_empty(), "a new cache, not a copy");
+    // A shared user beside a private holder gets another directory too.
+    let s = store
+        .cache_lease("k", CacheSharing::Shared, None, &never)
+        .unwrap();
+    assert_ne!(s.path(), a.path());
+    assert_ne!(s.path(), b.path());
+    let a_path = a.path().to_owned();
+    drop((a, b, s));
+    let again = store
+        .cache_lease("k", CacheSharing::Private, None, &never)
+        .unwrap();
+    assert_eq!(again.path(), a_path, "a free directory is reused");
+    assert!(!again.created());
+}
+
+#[test]
+fn a_locked_cache_lease_waits_for_the_holder() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let held = store
+        .cache_lease("k", CacheSharing::Locked, None, &never)
+        .unwrap();
+    let path = held.path().to_owned();
+    let start = std::time::Instant::now();
+    thread::scope(|s| {
+        s.spawn(|| {
+            thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        let next = store
+            .cache_lease("k", CacheSharing::Locked, None, &never)
+            .unwrap();
+        assert_eq!(next.path(), path, "the same cache, after the holder");
+        assert!(!next.created());
+    });
+    assert!(start.elapsed() >= Duration::from_millis(250));
+    // A cancel ends the wait.
+    let _held = store
+        .cache_lease("k", CacheSharing::Locked, None, &never)
+        .unwrap();
+    let r = store.cache_lease("k", CacheSharing::Locked, None, &|| true);
+    assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
+}
+
+#[test]
+fn a_cache_lease_refuses_a_planted_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let path = store.cache_dir("k").unwrap();
+    fs::remove_dir(&path).unwrap();
+    std::os::unix::fs::symlink("/", &path).unwrap();
+    let r = store.cache_lease("k", CacheSharing::Shared, None, &never);
+    assert!(matches!(r, Err(Error::BadEntry { .. })), "{r:?}");
+}
+
 #[test]
 fn entry_keys_need_their_algorithm_directory() {
     let dir = tempfile::tempdir().unwrap();
@@ -408,4 +502,63 @@ fn a_symlink_left_as_a_build_directory_is_unlinked_not_followed() {
         )
     );
     assert!(state.join(".ranikust-root").is_file());
+}
+
+#[test]
+fn a_new_cache_gets_its_owner_and_mode_once() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let owner = rnk_store::CacheOwner {
+        uid: rustix::process::geteuid().as_raw(),
+        gid: rustix::process::getegid().as_raw(),
+        mode: 0o4710,
+    };
+    let a = store
+        .cache_lease("k", CacheSharing::Shared, Some(owner), &never)
+        .unwrap();
+    assert!(a.created());
+    let meta = fs::metadata(a.path()).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o710, "no set-id bit");
+    assert_eq!((meta.uid(), meta.gid()), (owner.uid, owner.gid));
+    let path = a.path().to_owned();
+    drop(a);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
+    let b = store
+        .cache_lease("k", CacheSharing::Shared, Some(owner), &never)
+        .unwrap();
+    assert!(!b.created());
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o750
+    );
+    // No temporary directory is left in caches/.
+    assert!(
+        names(store.state_dir().join("caches"))
+            .iter()
+            .all(|n| !n.starts_with('.'))
+    );
+}
+
+/// A cache that cannot be made leaves no temporary directory and no cache:
+/// as a regular user, giving it to root fails.
+#[test]
+fn a_failed_new_cache_leaves_nothing() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("skipped: root can give a directory to root");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let owner = rnk_store::CacheOwner {
+        uid: 0,
+        gid: 0,
+        mode: 0o755,
+    };
+    let r = store.cache_lease("k", CacheSharing::Shared, Some(owner), &never);
+    assert!(r.is_err(), "{r:?}");
+    assert!(names(store.state_dir().join("caches")).is_empty());
+    // The next attempt is not blocked by a leftover.
+    let ok = store.cache_lease("k", CacheSharing::Shared, None, &never);
+    assert!(ok.unwrap().created());
 }

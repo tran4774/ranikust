@@ -61,7 +61,8 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--network=host\|none` | The network `RUN` gets. Default `host`. |
 | `--platform=linux/amd64` | The image platform; kaniko's `--custom-platform`. Only `linux/amd64` for now. |
 | `--metrics-file=PATH` | Write the build metrics report there; takes the place of `RANIKUST_METRICS_FILE`. |
-| `--secret=id=ID,src=PATH` | A file for `RUN --mount=type=secret,id=ID`, bound read-only into that `RUN` and kept out of every layer, the config and the logs; kaniko's syntax, file secrets only. Repeat for several. |
+| `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. Kept out of every layer, the config and the logs; at most 500 KiB. kaniko's and buildctl's syntax. Repeat for several. |
+| `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
 
 ## kaniko flags it refuses
 

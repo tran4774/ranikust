@@ -46,7 +46,8 @@ struct Shared {
     exporter: LayerExporter,
     time: BuildTime,
     network: rnk_sandbox::Network,
-    secrets: BTreeMap<String, PathBuf>,
+    secrets: BTreeMap<String, rnk_builder::Secret>,
+    allow_network_host: bool,
     platform: Platform,
     client: Arc<Client>,
     dockerfile: Dockerfile,
@@ -202,8 +203,13 @@ fn prepare(
 
     let in_target = in_target(&graph);
     let mut secrets = BTreeMap::new();
-    for (id, path) in &config.secrets {
-        secrets.insert(id.clone(), path.clone());
+    for (id, source) in &config.secrets {
+        // As BuildKit's store: a file secret must exist and fit at the
+        // start, not first at the RUN that mounts it.
+        source
+            .check(id)
+            .map_err(|e| format!("--secret id={id}: {e}"))?;
+        secrets.insert(id.clone(), source.clone());
     }
     Ok(Shared {
         overlay,
@@ -218,6 +224,7 @@ fn prepare(
             config::Network::None => rnk_sandbox::Network::None,
         },
         secrets,
+        allow_network_host: config.allow_network_host,
         platform: Platform::new(os, arch),
         client: Arc::new(client),
         dockerfile,
@@ -382,8 +389,8 @@ async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, Stri
     })
 }
 
-/// Cancels the build on the first SIGINT or SIGTERM: stages stop between
-/// instructions, a running `RUN` finishes first [open: Q-186]. A second
+/// Cancels the build on the first SIGINT or SIGTERM: running `RUN`s are
+/// killed, as BuildKit does (ADR-0032), and stages stop. A second
 /// signal exits at once: the `RUN`s die with their parent thread
 /// (`PR_SET_PDEATHSIG`), the mounts with the private mount namespace, and
 /// the next build cleans the store.
@@ -605,8 +612,19 @@ impl StageRunner for Runner {
                                     // Held until the RUN's process tree exits;
                                     // an error means the thread dropped its
                                     // permit without sending, which also
-                                    // releases it.
-                                    let _ = released.await;
+                                    // releases it. A cancel meanwhile must
+                                    // reach the RUN, or it would run to its
+                                    // end first.
+                                    let mut released = released;
+                                    tokio::select! {
+                                        _ = &mut released => {}
+                                        () = job.cancel.cancelled(), if !seen_cancel => {
+                                            seen_cancel = true;
+                                            cancelled.store(true, Ordering::Relaxed);
+                                            shared.sandbox.cancel();
+                                            let _ = released.await;
+                                        }
+                                    }
                                 }
                                 drop(permit);
                             }
@@ -615,6 +633,9 @@ impl StageRunner for Runner {
                     () = job.cancel.cancelled(), if !seen_cancel => {
                         seen_cancel = true;
                         cancelled.store(true, Ordering::Relaxed);
+                        // As BuildKit, a cancel kills the running RUNs; the
+                        // stages then stop with Error::Cancelled.
+                        shared.sandbox.cancel();
                     }
                 }
             }
@@ -708,6 +729,7 @@ fn run_stage(
         time: &shared.time,
         network: shared.network,
         secrets: &shared.secrets,
+        allow_network_host: shared.allow_network_host,
         platform: &shared.platform,
         run_gate: gate,
         cancelled: &is_cancelled,

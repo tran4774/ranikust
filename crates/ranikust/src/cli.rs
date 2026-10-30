@@ -191,18 +191,27 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_enum, default_value_t = Network::Host, help_heading = "ranikust")]
     pub(crate) network: Network,
 
-    /// A secret file for `RUN --mount=type=secret`: `id=ID,src=PATH`, as
-    /// kaniko's `type=file` secrets. Repeat for several.
-    // [open: Q-022] interim (b): kaniko's syntax for file secrets; `type=env`
-    // is refused. The file is bound read-only into the RUN and never
-    // reaches a layer, the config or a log.
+    /// A secret for `RUN --mount=type=secret`, as buildctl's and kaniko's
+    /// `--secret`: `id=ID[,type=file|env][,src=PATH|,env=VAR]`. Without a
+    /// source, the variable named ID if set, else the file ID. Repeat for
+    /// several. A secret never reaches a layer, the config or a log.
     #[arg(
         long = "secret",
         value_name = "id=ID,src=PATH",
         value_parser = parse_secret,
         help_heading = "ranikust"
     )]
-    pub(crate) secrets: Vec<(String, PathBuf)>,
+    pub(crate) secrets: Vec<SecretArg>,
+
+    /// Grants an entitlement, as buildctl's `--allow`: `network.host` lets a
+    /// `RUN --network=host` lift `--network=none`. Repeat for several.
+    #[arg(
+        long = "allow",
+        value_name = "ENTITLEMENT",
+        value_parser = parse_entitlement,
+        help_heading = "ranikust"
+    )]
+    pub(crate) allow: Vec<Entitlement>,
 
     /// Write the build metrics report (JSON) to this path; overrides
     /// `RANIKUST_METRICS_FILE`.
@@ -411,25 +420,68 @@ fn parse_registry_host(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-/// A `--secret` value as kaniko parses it (`pkg/config/options.go`), file
-/// secrets only: `id=ID,src=PATH`, `type=file` optional, any order.
-fn parse_secret(value: &str) -> Result<(String, PathBuf), String> {
-    let mut id = None;
+/// A `--secret` as given: buildctl's `parseSecret`
+/// (`cmd/buildctl/build/secret.go`), which kaniko copies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SecretArg {
+    pub(crate) id: String,
+    /// `src=` or `source=`; with `type=env` and no `env=`, the variable.
+    pub(crate) src: Option<PathBuf>,
+    pub(crate) env: Option<String>,
+}
+
+/// A `--secret` value: comma-separated `key=value` fields, keys in any
+/// case: `type` (`file` or `env`), `id`, `src`/`source`, `env`. With
+/// `type=env` and no `env=`, `src` names the variable.
+fn parse_secret(value: &str) -> Result<SecretArg, String> {
+    let mut id = String::new();
     let mut src = None;
+    let mut env = None;
+    let mut typ = None;
     for field in value.split(',') {
-        match field.split_once('=') {
-            Some(("id", v)) if !v.is_empty() => id = Some(v.to_owned()),
-            Some(("src" | "source", v)) if !v.is_empty() => src = Some(PathBuf::from(v)),
-            Some(("type", "file")) => {}
-            Some(("type", "env")) => {
-                return Err("type=env secrets are not supported yet (Q-022)".to_owned());
-            }
-            _ => return Err(format!("expected id=ID,src=PATH, got {value:?}")),
+        let Some((key, v)) = field.split_once('=') else {
+            return Err(format!("invalid field {field:?}: must be a key=value pair"));
+        };
+        match key.to_ascii_lowercase().as_str() {
+            "type" => match v {
+                "file" | "env" => typ = Some(v.to_owned()),
+                _ => return Err(format!("unsupported secret type {v:?}")),
+            },
+            "id" => v.clone_into(&mut id),
+            "source" | "src" => src = Some(v.to_owned()),
+            "env" => env = Some(v.to_owned()),
+            _ => return Err(format!("unexpected key {key:?} in {field:?}")),
         }
     }
-    match (id, src) {
-        (Some(id), Some(src)) => Ok((id, src)),
-        _ => Err(format!("expected id=ID,src=PATH, got {value:?}")),
+    if typ.as_deref() == Some("env") && env.as_deref().is_none_or(str::is_empty) {
+        env = src.take();
+    }
+    if id.is_empty() {
+        return Err(format!("secret missing ID in {value:?}"));
+    }
+    Ok(SecretArg {
+        id,
+        src: src.filter(|s| !s.is_empty()).map(PathBuf::from),
+        env: env.filter(|e| !e.is_empty()),
+    })
+}
+
+/// An entitlement of `--allow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Entitlement {
+    /// `network.host`: a `RUN --network=host` may lift `--network=none`.
+    NetworkHost,
+}
+
+/// An `--allow` value. BuildKit's other entitlements (`security.insecure`,
+/// `device`) unlock `RUN` options ranikust refuses anyway.
+fn parse_entitlement(value: &str) -> Result<Entitlement, String> {
+    match value {
+        "network.host" => Ok(Entitlement::NetworkHost),
+        "security.insecure" | "device" => Err(format!(
+            "--allow {value}: the RUN options it unlocks are not supported"
+        )),
+        _ => Err(format!("unknown entitlement {value:?} (network.host)")),
     }
 }
 
