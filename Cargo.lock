@@ -1093,6 +1093,8 @@ dependencies = [
  "rnk-registry",
  "rnk-rootfs",
  "rnk-sandbox",
+ "rnk-snapshot",
+ "rnk-store",
  "rustix",
  "serde_json",
  "sha2",
@@ -1350,7 +1352,18 @@ dependencies = [
 name = "rnk-snapshot"
 version = "0.0.0"
 dependencies = [
+ "flate2",
+ "rnk-layer",
+ "rnk-metrics",
+ "rnk-oci",
  "rnk-rootfs",
+ "rnk-store",
+ "rustix",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

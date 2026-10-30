@@ -75,7 +75,7 @@ const PARENT_MODE: u32 = 0o755;
 /// entry, [`Error::Io`] when the filesystem refuses an operation (for
 /// example a device node or a foreign owner without privileges).
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
-    extract_with(dst, tar, wh, &[])
+    extract_with(dst, tar, wh, &[]).map(drop)
 }
 
 /// Extracts the plain tar stream `tar` into `dst` in the overlay form
@@ -95,15 +95,34 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// link to that copy, so the bytes written stay bounded by the lower
 /// layers' size. The lower layers are only read.
 ///
+/// Returns what the caller cannot see on disk afterwards: whether the layer
+/// set the root's metadata (an entry `./`). Without one, the root of an
+/// image keeps what the layers below gave it, so the caller takes it from
+/// them.
+///
 /// # Errors
 ///
 /// As [`extract`]; [`Error::Entry`] when the target is in no layer or hidden,
 /// is a directory, or lies below a symlink in a lower layer.
-pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<()> {
+pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted> {
     extract_with(dst, tar, Whiteouts::Overlay, lowers)
 }
 
-fn extract_with(dst: &RootPath, tar: impl Read, wh: Whiteouts, lowers: &[&RootPath]) -> Result<()> {
+/// What [`extract_overlay`] reports about a layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Extracted {
+    /// The layer has an entry for its root (`./`), whose metadata the root
+    /// now has.
+    pub root_set: bool,
+}
+
+fn extract_with(
+    dst: &RootPath,
+    tar: impl Read,
+    wh: Whiteouts,
+    lowers: &[&RootPath],
+) -> Result<Extracted> {
     let span = tracing::info_span!(
         "rnk_rootfs.extract",
         mode = ?wh,
@@ -134,7 +153,10 @@ fn extract_with(dst: &RootPath, tar: impl Read, wh: Whiteouts, lowers: &[&RootPa
     let r = ex.run(&mut tar);
     ex.stats.bytes_in = tar.n;
     ex.stats.record(&span);
-    r
+    r?;
+    Ok(Extracted {
+        root_set: ex.dirs.contains_key(Path::new("")),
+    })
 }
 
 /// Counts the bytes read from the tar stream.

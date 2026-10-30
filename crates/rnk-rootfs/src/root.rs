@@ -9,7 +9,7 @@ use rustix::fs::{AtFlags, Mode, OFlags, ResolveFlags};
 use rustix::io::Errno;
 
 use crate::error::{Error, Result, io_err};
-use crate::meta::{self, FileType, Handle, Meta, Stat};
+use crate::meta::{self, FileType, Handle, Meta, Stat, Xattrs};
 use crate::path::{self, Target};
 
 /// How every path inside a root is resolved: `..` and absolute symlinks are
@@ -476,6 +476,48 @@ impl RootPath {
         let p = p.as_ref();
         let (pfd, name) = self.parent(p)?;
         rustix::fs::unlinkat(&pfd, name, AtFlags::REMOVEDIR).map_err(|e| io_err("rmdir", p, e))
+    }
+
+    /// Every extended attribute of `p`, overlay's own (`user.overlay.*`,
+    /// `trusted.overlay.*`) included, without following a final symlink;
+    /// sorted by name. A filesystem without xattrs gives none.
+    ///
+    /// The entry is pinned by an `O_PATH | O_NOFOLLOW` fd and read through
+    /// ranikust's own `/proc/self/fd`, so a FIFO or device node is never
+    /// opened; a symlink's are read by its name in the pinned parent, and a
+    /// swap of that name in between is [`Error::Changed`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when `p` or a parent is missing or a read fails.
+    pub fn xattrs(&self, p: impl AsRef<Path>) -> Result<Vec<(OsString, Vec<u8>)>> {
+        let p = p.as_ref();
+        let mut out = match path::target(p)? {
+            Target::Root => {
+                meta::read_xattrs(self.fd(), FileType::Directory, None, Xattrs::All, p)?
+            }
+            Target::Entry { parent, name } => {
+                let pfd = self.resolve_dir(&parent)?;
+                let fd = open_name(
+                    pfd.as_fd(),
+                    name,
+                    OFlags::PATH | OFlags::NOFOLLOW,
+                    0,
+                    false,
+                    p,
+                )?;
+                let file_type = meta::statx_at(fd.as_fd(), OsStr::new(""), p)?.file_type();
+                meta::read_xattrs(
+                    fd.as_fd(),
+                    file_type,
+                    Some((pfd.as_fd(), name)),
+                    Xattrs::All,
+                    p,
+                )?
+            }
+        };
+        out.sort();
+        Ok(out)
     }
 
     /// Sets owner, xattrs, raw mode bits and times of `p` (see [`Meta`] for

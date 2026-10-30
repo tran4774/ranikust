@@ -55,12 +55,12 @@ enum Mode { Auto, Overlay, Kaniko }                          // built: --mode, A
 enum Outcome { OverlayRoot { sandbox: rnk_sandbox::Caps, overlay: OverlayCaps } }
     // planned: OverlayRootless (3), KanikoCanMount, KanikoCannotMount (2) [decided] ADR-0002,
     // ADR-0004; each library receives only its own part [open: Q-017]
-struct OverlayCaps { probed: bool }   // placeholder for rnk-snapshot's caps; seam for task 9
+// overlay: rnk_snapshot::OverlayCaps (the mount API: lowerdir+ or mount(2))
 struct Refusal { reason: String, guidance: &'static str }        // what failed, what to do
-struct Setup { outcome: Outcome, state_dir: PathBuf, sandbox: rnk_sandbox::Sandbox }  // the hand-off
-fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal>;  // namespace → state dir → probes → outcome → spawner
-fn prepare_state_dir(state_dir, workdir, euid) -> Result<(), Refusal>; // 0700; no symlink, owner euid, no g/o write up to the workdir [open: Q-111]
-fn probe_overlay(state_dir: &Path) -> Result<OverlayCaps, Refusal>; // seam: rnk_snapshot::probe (task 9)
+struct Setup { outcome: Outcome, state_dir: PathBuf, store: Arc<rnk_store::Store>, sandbox: rnk_sandbox::Sandbox }  // the hand-off
+fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal>;  // namespace → state dir → store → probes → outcome → spawner
+fn prepare_state_dir(state_dir, workdir, euid) -> Result<(), Refusal>; // 0700; no symlink, owner euid, no g/o write up to the workdir [open: Q-011]
+fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal>; // rnk_snapshot::probe in builds/<id>/overlay-probe
 struct PushArgs { path: PathBuf, destination: Vec<String> } // [open: Q-048] kaniko pushes a docker-save tar or OCI layout
 ```
 
@@ -74,10 +74,12 @@ stops (Phase 2) → the overlay-mode state directory, `--state-dir` or
 `rnk_sandbox::enter_build_namespace` (refuses in a plain `chroot`, then
 `unshare(CLONE_NEWNS)`, `/` rslave) → `prepare_state_dir` (created 0700;
 refused if it or a directory above it up to the workdir is a symlink, not
-owned by the effective uid, or group/world-writable) → `rnk_sandbox::probe` in
-`<state-dir>/sandbox` → the overlay probe seam → outcome →
-`Sandbox::start` (stub-journal replay, spawner thread) → stop with exit
-code 2, "set up for …, but building is not implemented yet". Still to
+owned by the effective uid, or group/world-writable) → `rnk_store::Store::open`
+(marker, start-up clean-up; [open: Q-111] interim (a)) →
+`rnk_sandbox::probe` in `<state-dir>/sandbox` → `rnk_snapshot::probe` in
+`builds/<id>/overlay-probe` → outcome → `Sandbox::start` (stub-journal
+replay, spawner thread) → the store is closed → stop with exit code 2,
+"set up for …, but building is not implemented yet". Still to
 come [design]: workdir checks [open: Q-011] before the namespace →
 `rnk-store` open and clean-up before the spawner (task 7) [open: Q-111] →
 kaniko mode: `flock` the workdir → tokio runtime → `rnk-sched`.
@@ -149,10 +151,9 @@ error, a refused kaniko flag, an invalid combination, and for now every
 ## Metrics
 
 - Emits `ranikust.run` (the process), `ranikust.build` (from flag
-  validation on), `ranikust.setup` (namespace, probes, spawner; the store
-  open joins it with task 7) and inside it `ranikust.probe` with `steps`,
-  the crates' probes that really ran (the sandbox's; the overlay seam does
-  not count until task 9)
+  validation on), `ranikust.setup` (namespace, store open, probes,
+  spawner) and inside it `ranikust.probe` with `steps`, the crates'
+  probes that really ran (the sandbox's and the overlay probe)
   ([design/metrics.md](../../design/metrics.md#ranikust)).
 - `Telemetry::finish` on every way out that returns. `--metrics-file` fills
   `Config::file`. `set_meta`: `ranikust_version`; for `build`, `mode` and
@@ -202,8 +203,9 @@ error, a refused kaniko flag, an invalid combination, and for now every
 - Done (task 8b): the mount namespace, the sandbox probe, the outcome
   (overlay mode as root), refusals with guidance, the spawner thread; `build`
   stops after the set-up with exit code 2 until the builder exists (task 11).
-- Left: the overlay probe behind `setup::probe_overlay` (task 9), the store
-  open (task 7), the workdir checks [open: Q-011], the kaniko-mode lock
+- Done (task 9): the store opened before the probes, the overlay probe,
+  the store closed at the end.
+- Left: the workdir checks [open: Q-011], the kaniko-mode lock
   (Phase 2), the tokio runtime and the hand-off to `rnk-sched` (tasks 11, 12).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,

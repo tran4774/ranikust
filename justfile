@@ -160,8 +160,11 @@ smoke image="docker.io/library/alpine:3.20":
       -v "$BIN:/smoke-build:ro" -v "$OUT:/out" \
       "{{ image }}" /smoke-build --image "{{ image }}" --out /out --tag "$NAME" "${runs[@]}"
     smoke_check_no_stub_leak "$OUT"
+    # The workdir is a volume: overlay refuses an upper directory on the
+    # container's own overlay root (that environment needs kaniko mode).
+    W="$TARGET/smoke/w" && rm -rf "$W" && mkdir -m 700 -p "$W"
     rc=0
-    log="$(podman run --rm --privileged -v "$RNK:/ranikust:ro" "{{ image }}" \
+    log="$(podman run --rm --privileged -v "$RNK:/ranikust:ro" -v "$W:/tmp/w" "{{ image }}" \
       /ranikust --no-push --workdir /tmp/w 2>&1)" || rc=$?
     smoke_check_setup "$log" pivot_root "$rc"
     # `podman load` reads the layout as an OCI archive and names the image

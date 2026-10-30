@@ -161,8 +161,11 @@ with `mknod` `/dev` nodes, the static fake `/proc` and `/sys`, and the
 ### `rnk-snapshot`
 
 Per-stage roots and per-instruction diffs: the `StageRootfs` and
-`Snapshotter` traits with two implementations (the `Snapshotter` signature
-is [open: Q-024] until Phase 1 task 9). Overlay: mounts with the
+`Snapshotter` traits with two implementations (an interim signature from
+Phase 1 task 9, [open: Q-024]: `begin_layer`/`end_layer` around each
+instruction that changes files, giving a `LayerDiff`; a read-only `view`
+between layers; the stage's host mount point only for the sandbox). Overlay
+(`Overlay`, `OverlayStage`, Phase 1): mounts with the
 [ADR-0016](docs/adr/0016-overlay-mount-options.md) options, one upper
 directory per instruction, overlay/OCI whiteout conversion, extraction of
 base layers into the store's `layers/` (`rnk-layer`'s decoder chained into

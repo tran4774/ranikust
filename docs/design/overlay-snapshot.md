@@ -29,15 +29,19 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 ├── .ranikust-root              marker file
 ├── blobs/sha256/<digest>       downloaded compressed blobs
 ├── layers/<id>/                extracted layers, immutable, overlay whiteout form
-├── l/<short> -> ../layers/<id> short names, only for the mount(2) fallback
+├── l/<short> -> <lower>        short names, only for the mount(2) fallback (Q-151)
 ├── caches/<sha256(id)>/        RUN --mount=type=cache
 └── builds/<build-id>/
+    ├── overlay-probe/          the start-up probe's mount, emptied after it
     ├── context/
     └── stages/<n>/
         ├── diff-<k>/           upper of instruction k = diff of layer k
         ├── work-<k>/           overlay work directory of instruction k
+        ├── empty-<i>/          an empty lower: FROM scratch, the read-only view
         └── rootfs/             mount point of stage n
 ```
+
+`layers/` is `layers/<algorithm>/<hex>/`, named by diff ID (Q-015).
 
 `blobs/`, `layers/` and `caches/` form the persistent store, shared between
 stages and builds and owned by `rnk-store`
@@ -72,16 +76,44 @@ only the image config (`ENV`, `LABEL`, `USER`, …) mount nothing and produce
 no layer. Keeping one mount across several
 consecutive instructions is a later optimization; see the `volatile` rules.
 
+In code (`rnk-snapshot`, interim signature, Q-024): `Snapshotter::prepare`
+makes a stage on `Base::Scratch`, `Base::Image(layers)` or
+`Base::Stage(parent)`; `StageRootfs::begin_layer` is steps 2 and 3,
+`end_layer` step 5 and returns the `LayerDiff` that step 6 exports. Every
+diff becomes the topmost lower of the next layer, empty or not. Between
+layers, `view` mounts the stack read-only on `rootfs/` (overlay without an
+upper needs two lowers, so an empty directory pads it) for reads such as
+`USER` lookups and `COPY --from`; the next `begin_layer` replaces it.
+`release` unmounts and deletes the stage directory, so a stage is
+released only after every stage built on it.
+
+**The root's metadata** (step 2) is the merged view's: the topmost lower
+whose root a layer set. Extraction records that: a layer whose tar has no
+entry for `./` gets the xattr `user.ranikust.inherit-root` on its root and
+is skipped, as a flattening extractor leaves the root alone for such a
+layer. No layer sets it: `0755`, the epoch, ranikust's owner (root).
+Overlay's own xattrs on a lower root are never copied: an opaque upper root
+would hide every lower layer.
+
 ## Mounting
 
 - **Kernel ≥ 6.8:** `fsopen("overlay")`; one `FSCONFIG_SET_STRING` call
   with key `lowerdir+` per layer; `FSCONFIG_CMD_CREATE`; `fsmount`;
   `move_mount`. Path length does not matter.
 - **Older kernels:** `mount(2)` with a single option string using the short
-  `l/<short>` names. `mount(8)` is never used.
+  `l/<short>` names: absolute symlinks `<state-dir>/l/<12 chars>`, named by
+  the target's hash and checked before use, so about 90–100 lowers fit
+  (Q-151). `mount(8)` is never used.
 - Whether `lowerdir+` works is probed by creating a mount: a probe of this
   crate that `ranikust` runs at start-up
-  ([modes-and-detection](modes-and-detection.md)).
+  ([modes-and-detection](modes-and-detection.md)). The probe mounts a small
+  overlay in `builds/<id>/overlay-probe` with `lowerdir+`, then with
+  `mount(2)`, writes through it (a new file, a deleted file, a directory
+  made again) and checks that the upper holds the file, two whiteouts and
+  `user.overlay.opaque=y`.
+- Unmounting uses `MNT_DETACH`; the read-only view also sets
+  `MOUNT_ATTR_RDONLY` (`MS_RDONLY` with `mount(2)`) and leaves out
+  `volatile`, which needs an upper.
 - Limits:
   - At most 500 lower layers; layer 501 is `EINVAL` ("too many lower
     directories, limit is 500").
@@ -90,7 +122,8 @@ consecutive instructions is a later optimization; see the `volatile` rules.
     clear error.
   - `fsconfig(FSCONFIG_SET_STRING, "lowerdir", s)` takes at most 256 bytes;
     never pass a joined list there.
-  - Close to 500 layers, merge the oldest diffs into one temporary layer.
+  - Close to 500 layers, merge the oldest diffs into one temporary layer
+    (not built yet: more than 500 is refused with a clear error, Q-026).
 
 ## The `volatile` lifecycle
 
@@ -206,6 +239,9 @@ stages as in kaniko.
 - [Q-025](../open-questions.md#q-025-are-other-user-xattrs-kept-in-exported-layers) Are other user xattrs kept in exported layers?
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
 - [Q-026](../open-questions.md#q-026-when-and-how-are-layers-merged-near-the-500-lower-limit) When and how are layers merged near the 500-lower limit?
+- [Q-150](../open-questions.md#q-150-is-an-extracted-layer-keyed-by-its-diff-id-alone) Is an extracted layer keyed by its diff ID alone?
+- [Q-151](../open-questions.md#q-151-how-does-the-mount2-fallback-fit-many-layers) How does the mount(2) fallback fit many layers?
+- [Q-152](../open-questions.md#q-152-how-are-read-only-layer-roots-published-without-root) How are read-only layer roots published without root?
 - [Q-013](../open-questions.md#q-013-how-does-the-layer-writer-learn-missing-parent-metadata) How does the layer writer learn missing parent metadata?
 
 ## References

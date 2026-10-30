@@ -128,8 +128,8 @@ code. All names are `[design]`.
 |---|---|---|
 | `ranikust.run` | | The whole process, already emitted. Parent of everything; `meta.wall_ns` adds metrics set-up. |
 | `ranikust.build` | | The `build` subcommand, emitted from flag validation on: kaniko's `build.total` plus `push.total`. |
-| `ranikust.setup` | | Mount namespace, state-directory check, probes, spawner start (built); workdir checks and store open to come: what a build pays before its first stage. |
-| `ranikust.probe` | `steps` | The probe sequence at every start (forked children), inside `ranikust.setup`; `steps` counts the crates' probes that really ran (today 1, the sandbox's; the overlay probe adds one with task 9); `exp-03`, `exp-13`. |
+| `ranikust.setup` | | Mount namespace, state-directory check, store open, probes, spawner start (built); workdir checks to come: what a build pays before its first stage. |
+| `ranikust.probe` | `steps` | The probe sequence at every start, inside `ranikust.setup`; `steps` counts the crates' probes that really ran (2: the sandbox's, in forked children, and the overlay probe, in the build's namespace); `exp-03`, `exp-13`. |
 
 ### `rnk-dockerfile`
 
@@ -207,9 +207,9 @@ attempts.
 | `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | Phase 2: one walk with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (3.18 s, `exp-07`). |
 | `rnk_snapshot.resolve` | `paths` | Phase 2: path resolution; kaniko's `snapshot.resolve` (2.48 s, `exp-07`). |
 | `rnk_snapshot.syncfs` | | Phase 2: kaniko's `snapshot.syncfs` (0.48 s, `exp-07`). |
-| `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`. `blocks_read` is the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread: the disk re-reads `exp-07` and `exp-08` found under memory pressure (183–538 MB per layer). Omitted if reads fan out to a pool. |
+| `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`. `blocks_read` is the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread: the disk re-reads `exp-07` and `exp-08` found under memory pressure (183–538 MB per layer). Omitted if reads fan out to a pool. Not recorded yet: the overlay exporter records `entries` and `bytes_read`. |
 | `rnk_snapshot.release` | `entries` | Deleting diff directories or a stage root; kaniko's `fs.delete`. |
-| `rnk_snapshot.probe` | `ok` | One overlay probe step (mount, `lowerdir+`). |
+| `rnk_snapshot.probe` | `ok`, `api` | One overlay mount attempt of the probe: `api` is `LowerdirPlus` or `Mount2`, tried in that order. |
 
 ### `rnk-layer`
 

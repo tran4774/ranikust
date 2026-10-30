@@ -64,7 +64,12 @@ namespaces before 5.11; SELinux needs 5.13).
 
 The probe runs before any thread exists. Each attempt runs in a forked child,
 which reports its result through a pipe and exits, so failed attempts leave no
-namespace or mount behind [inferred].
+namespace or mount behind [inferred]. The overlay probe as root
+(`rnk_snapshot::probe`, steps 1 and 4) is the exception: `ranikust` has
+already entered the build's private mount namespace, so it mounts there
+directly and unmounts; a mount a failure leaves goes with the process. It
+runs after the store is open, in `builds/<id>/overlay-probe` (Q-018,
+Q-111).
 
 1. **Overlay without a new user namespace.** `unshare(CLONE_NEWNS)`, mount a
    small overlay where the stage roots will live (the state directory) with

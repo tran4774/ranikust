@@ -112,9 +112,12 @@ for v in "${VARIANTS[@]}"; do
   if [ "$name" = host ]; then
     log="$(sudo "$RNK" --no-push --workdir "$dir/rnk" 2>&1)" || rc=$?
   else
+    # The workdir is a volume: overlay refuses an upper directory on the
+    # container's own overlay root (that environment needs kaniko mode).
+    sudo mkdir -m 700 -p "$dir/rnk"
     # shellcheck disable=SC2046
-    log="$(sudo docker run --rm $(docker_args "$name") -v "$RNK:/ranikust:ro" "$IMAGE" \
-      /ranikust --no-push --workdir /tmp/w 2>&1)" || rc=$?
+    log="$(sudo docker run --rm $(docker_args "$name") -v "$RNK:/ranikust:ro" \
+      -v "$dir/rnk:/tmp/w" "$IMAGE" /ranikust --no-push --workdir /tmp/w 2>&1)" || rc=$?
   fi
   echo "$log"
   smoke_check_setup "$log" "$syscall" "$rc"
