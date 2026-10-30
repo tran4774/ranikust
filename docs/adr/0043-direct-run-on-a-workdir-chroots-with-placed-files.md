@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-10-31
 decision-makers: Tran Nguyen (maintainer)
 ---
@@ -33,7 +33,7 @@ decides how such a `RUN` is entered and what it sees.
 
 ## Decision Outcome
 
-Proposed: `Direct` on a root other than `/` `chroot`s into it; ranikust's
+Chosen by the maintainer (2026-10-31): `Direct` on a root other than `/` `chroot`s into it; ranikust's
 `resolv.conf`, `hosts` and `hostname` and the `/dev` nodes are put in place
 for the `RUN`, journaled before anything changes and undone after it, the
 image's entries renamed aside and back; every `RUN` gets the
