@@ -1,0 +1,3 @@
+# The VM harness cache (tests/vm/vm.sh): cloud images and e2e reference images,
+# shared by every git worktree of this checkout.
+_vm-image/

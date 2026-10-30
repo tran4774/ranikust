@@ -14,7 +14,11 @@
 # Environment:
 #   RANIKUST_VM_RELEASE  Ubuntu release: noble (24.04, kernel 6.8, default)
 #                        or jammy (22.04, kernel 5.15)
-#   RANIKUST_VM_CACHE    verified image cache, default ~/.cache/ranikust/vm
+#   RANIKUST_VM_CACHE    verified image cache (cloud images, e2e reference
+#                        images), default tests/e2e/_vm-image of the main
+#                        checkout, shared by every git worktree (gitignored)
+#   RANIKUST_VM_LOCK_WAIT  seconds to wait for another run's VM to finish,
+#                        default 3600: one VM at a time on this machine
 #   RANIKUST_VM_CPUS     vCPUs, default 4
 #   RANIKUST_VM_MEM      memory in MiB, default 4096 (12288 with e2e)
 #   RANIKUST_VM_DISK     disk size, default 20G (80G with e2e)
@@ -28,9 +32,12 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The main checkout, also when this is a git worktree: the cache and the
+# one-VM lock live there so that worktrees share them.
+MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
 HERE="$REPO/tests/vm"
 RELEASE="${RANIKUST_VM_RELEASE:-noble}"
-CACHE="${RANIKUST_VM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ranikust/vm}"
+CACHE="${RANIKUST_VM_CACHE:-$MAIN/tests/e2e/_vm-image}"
 CPUS="${RANIKUST_VM_CPUS:-4}"
 IMAGE_REGISTRY="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
 MEM="${RANIKUST_VM_MEM:-4096}"
@@ -55,6 +62,16 @@ done
 
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
+# One VM at a time on this machine, whichever checkout or worktree starts
+# it: the lock is held on fd 9 until this script exits, so it also guards
+# the cache while images are downloaded or saved into it.
+mkdir -p "$CACHE"
+exec 9>"$CACHE/.vm.lock"
+if ! flock -n 9; then
+  log "another run's VM is up; waiting for it (at most ${RANIKUST_VM_LOCK_WAIT:-3600} s)"
+  flock -w "${RANIKUST_VM_LOCK_WAIT:-3600}" 9 || die "another run's VM still holds $CACHE/.vm.lock"
+fi
+
 DISK="${RANIKUST_VM_DISK:-20G}"
 if wants e2e; then
   # Three builders of W1 (about 3 GB of rootfs each), their images in the
@@ -62,7 +79,6 @@ if wants e2e; then
   MEM="${RANIKUST_VM_MEM:-12288}"
   DISK="${RANIKUST_VM_DISK:-80G}"
   # Next to the main checkout, also when this is a git worktree.
-  MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
   NEXTJS="${RANIKUST_NEXTJS_KANIKO:-$(dirname "$MAIN")/nextjs-kaniko}"
   [ -f "$NEXTJS/bench/run-fair.sh" ] || die "no nextjs-kaniko checkout at $NEXTJS (set RANIKUST_NEXTJS_KANIKO)"
   command -v podman >/dev/null || die "missing podman (e2e saves the reference images from it)"

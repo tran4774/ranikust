@@ -32,6 +32,10 @@ just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS regis
 - Docker Hub images are pulled through `mirror.gcr.io` by default
   (`RANIKUST_VM_IMAGE_REGISTRY`; `docker.io` for Docker Hub itself, which
   rate-limits anonymous pulls: a `Toomanyrequests` failure means that).
+- One VM at a time, one image cache: images are cached in
+  `tests/e2e/_vm-image/` of the main checkout, shared by every worktree,
+  and a second run waits on its lock (the `test` skill has the rules and
+  the clean-up policy).
 - Run it in the background: a cold run (image download, release build,
   boot, cloud-init installing Docker) takes several minutes.
 - If `just` or `cargo-zigbuild` is not found, put `~/.cargo/bin` on `PATH`.
