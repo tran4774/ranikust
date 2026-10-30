@@ -10,3 +10,18 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+rnk-oci.workspace = true
+rnk-rootfs.workspace = true
+# `process`: `geteuid`, for the warning about a shared state directory.
+rustix = { workspace = true, features = ["process"] }
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rnk-metrics.workspace = true
+# `mount`: the T2 test that puts a bind mount where clean-up deletes.
+rustix = { workspace = true, features = ["mount", "process"] }
+tempfile.workspace = true
