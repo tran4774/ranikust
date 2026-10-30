@@ -42,6 +42,23 @@ async fn open_registry_pulls() {
 }
 
 #[tokio::test]
+async fn a_loopback_registry_speaks_plain_http_unasked() {
+    // As BuildKit (`util/resolver/resolver.go`, containerd's
+    // `MatchLocalhost`): a loopback registry is plain HTTP without a flag,
+    // and HTTPS is not even tried: the fake speaks only HTTP, and the
+    // registry is not listed as insecure.
+    let registry = FakeRegistry::start(Auth::Open).await;
+    add_image(&registry, "app", "1.0", b"x".to_vec());
+    let mut options = options(&registry);
+    options.insecure.clear();
+    let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
+    client
+        .pull_manifest(&reference(&registry, "app:1.0"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn bearer_tokens_from_config_json_credentials() {
     let registry = FakeRegistry::start(Auth::Bearer {
         user: "builder".to_owned(),
@@ -469,30 +486,6 @@ async fn index_entries_are_picked_by_platform() {
         .await
         .unwrap();
     assert!(single.index.is_none());
-}
-
-#[tokio::test]
-async fn plain_http_needs_the_registry_listed_as_insecure() {
-    let registry = FakeRegistry::start(Auth::Open).await;
-    add_image(&registry, "app", "v1", b"x".to_vec());
-    let mut options = options(&registry);
-    options.insecure.clear();
-    let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
-    let err = client
-        .pull_manifest(&reference(&registry, "app:v1"))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            Error::Registry {
-                operation: "ping",
-                ..
-            }
-        ),
-        "{err}"
-    );
-    assert_eq!(registry.count("GET /v2/app"), 0);
 }
 
 #[tokio::test]

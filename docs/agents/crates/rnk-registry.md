@@ -92,7 +92,8 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   basic and bearer registries, `config.json` credentials, identity tokens
   per scope, digest and size mismatches, retries on 503 and none on 404,
   one-PUT push, existence check, mount refused (`202`) then upload, mount
-  accepted, platform selection, plain HTTP only when listed. The spans are
+  accepted, platform selection, a loopback registry over plain HTTP
+  unlisted. The spans are
   checked in `tests/spans/`, a binary with one test, since tracing caches
   callsite interest per process.
 - T0 unit tests: exp-05's Table 14 credential cases without helpers, secret
@@ -174,6 +175,8 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 - Deferred: mirrors, credential helpers (phase 5); cache-repo use by
   `rnk-cache` (phase 4). [open: Q-014] Task 11 mounts (interim, on
   `feat/rnk-builder-outputs`).
-  [open: Q-065] HTTP fallback for local registries. [open: Q-048] `login`.
+  A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP
+  unasked, as BuildKit (ADR-0032, Q-065); private-network addresses are
+  not special. [open: Q-048] `login`.
   Only a loopback registry was measured
   ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).

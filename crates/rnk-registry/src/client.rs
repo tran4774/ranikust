@@ -48,7 +48,9 @@ const MAX_MANIFEST_BYTES: usize = 4 << 20;
 pub struct ClientOptions {
     /// Registries that may be reached over plain HTTP: HTTPS is tried first
     /// and HTTP used when it fails, as go-containerregistry does for kaniko's
-    /// `--insecure`, `--insecure-pull` and `--insecure-registry`.
+    /// `--insecure`, `--insecure-pull` and `--insecure-registry`. A loopback
+    /// registry not listed here is plain HTTP without trying HTTPS, as
+    /// BuildKit (ADR-0032, Q-065).
     pub insecure: BTreeSet<String>,
     /// Registries whose TLS certificate is not verified
     /// (`--skip-tls-verify`, `--skip-tls-verify-pull`,
@@ -767,10 +769,20 @@ impl Client {
         let span = debug_span!("rnk_registry.auth", host = registry, requests = Empty);
         let mut requests = 0u64;
         let pinged = async {
-            // [open: Q-065] kaniko also falls back to HTTP, unasked, for
-            // localhost and private-network registries; only listed ones do
-            // here.
+            // As BuildKit (ADR-0032, Q-065): a loopback registry not listed
+            // as insecure is plain HTTP, HTTPS not even tried
+            // (`util/resolver/resolver.go`); a listed one tries HTTPS, then
+            // HTTP. Private-network addresses are not special.
             let insecure = self.options.insecure.contains(registry);
+            if !insecure && is_loopback(registry) {
+                let plain = retry(&self.options.retry, async |_| {
+                    requests += 1;
+                    ping(&http, "http", endpoint, registry, false).await
+                })
+                .await
+                .0?;
+                return Ok(("http", plain));
+            }
             let https = retry(&self.options.retry, async |_| {
                 requests += 1;
                 ping(&http, "https", endpoint, registry, insecure).await
@@ -942,6 +954,34 @@ impl Client {
         span.record("requests", requests);
         result
     }
+}
+
+/// Whether `registry` (`host[:port]`) is a loopback address, as
+/// containerd's `MatchLocalhost`: `localhost`, `127.0.0.0/8` or `::1`,
+/// with or without a port. Like it, names that only resolve to loopback,
+/// and addresses in octal, decimal or hex form, do not count.
+fn is_loopback(registry: &str) -> bool {
+    if registry == "::1" || registry == "[::1]" {
+        return true;
+    }
+    let host = match registry.rsplit_once(':') {
+        // `[v6]:port`, or `v4:port` and `name:port`.
+        Some((host, port)) if !host.contains(':') || host.starts_with('[') => {
+            if port.is_empty() {
+                return false;
+            }
+            host.trim_start_matches('[').trim_end_matches(']')
+        }
+        // A bare IPv6 address, or no port at all.
+        _ => registry,
+    };
+    let host = if host == "localhost" {
+        "127.0.0.1"
+    } else {
+        host
+    };
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `GET /v2/`: what the registry asks for.
@@ -1150,6 +1190,34 @@ fn raw_manifest(body: Bytes, digest: &str) -> Result<RawManifest, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_registries_are_matched_as_containerd_does() {
+        for host in [
+            "localhost",
+            "localhost:5000",
+            "127.0.0.1",
+            "127.0.0.1:5000",
+            "127.1.2.3:80",
+            "::1",
+            "[::1]",
+            "[::1]:5000",
+        ] {
+            assert!(is_loopback(host), "{host}");
+        }
+        for host in [
+            "registry.example",
+            "localhost.example:5000",
+            "10.0.0.1:5000",
+            "192.168.1.2",
+            "registry.local",
+            "128.0.0.1",
+            "[::2]:5000",
+            "localhost:",
+        ] {
+            assert!(!is_loopback(host), "{host}");
+        }
+    }
 
     #[test]
     fn accepted_media_types_are_the_manifest_and_index_types() {
