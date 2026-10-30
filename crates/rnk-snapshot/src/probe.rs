@@ -71,12 +71,8 @@ fn probe_in(root: &RootPath, dir: &Path) -> Result<OverlayCaps> {
     let api = attempt(&spec, MountApi::LowerdirPlus)
         .map(|()| MountApi::LowerdirPlus)
         .or_else(|plus| {
-            attempt(&spec, MountApi::Mount2)
-                .map(|()| MountApi::Mount2)
-                .map_err(|e| {
-                    tracing::info!(target: "rnk_snapshot", "overlay probe: lowerdir+: {plus}");
-                    e
-                })
+            tracing::info!(target: "rnk_snapshot", "overlay probe: {plus}; trying mount(2)");
+            attempt(&spec, MountApi::Mount2).map(|()| MountApi::Mount2)
         })
         .map_err(|e| Error::Probe {
             step: "mount",

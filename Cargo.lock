@@ -1093,6 +1093,8 @@ dependencies = [
  "rnk-registry",
  "rnk-rootfs",
  "rnk-sandbox",
+ "rnk-snapshot",
+ "rnk-store",
  "rustix",
  "serde_json",
  "sha2",

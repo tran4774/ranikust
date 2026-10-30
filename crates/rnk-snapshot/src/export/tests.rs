@@ -41,18 +41,11 @@ impl Fixture {
     }
 
     fn whiteout(&self, rel: &str) {
-        rustix::fs::mknodat(
-            CWD,
-            &self.p(rel),
-            RawType::CharacterDevice,
-            Mode::empty(),
-            0,
-        )
-        .unwrap();
+        rustix::fs::mknodat(CWD, self.p(rel), RawType::CharacterDevice, Mode::empty(), 0).unwrap();
     }
 
     fn xattr(&self, rel: &str, name: &str, value: &[u8]) {
-        rustix::fs::setxattr(&self.p(rel), name, value, XattrFlags::empty()).unwrap();
+        rustix::fs::setxattr(self.p(rel), name, value, XattrFlags::empty()).unwrap();
     }
 
     /// Copies `rel`'s mode and times from `l1` to `upper`, as a copy-up.

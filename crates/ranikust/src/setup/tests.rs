@@ -12,14 +12,47 @@ const EACCES: i32 = 13;
 /// Not root: the uid of a test user. Only the comparison with 0 matters.
 const USER: u32 = 1000;
 
+const CAPS: OverlayCaps = OverlayCaps {
+    api: MountApi::LowerdirPlus,
+};
+
 fn overlay_ok() -> Result<OverlayCaps, Refusal> {
-    Ok(OverlayCaps { probed: true })
+    Ok(CAPS)
 }
 
 #[test]
 fn both_probes_succeeding_pick_overlay_as_root() {
     let picked = pick(Ok("caps"), overlay_ok(), 0).unwrap();
-    assert_eq!(picked, ("caps", OverlayCaps { probed: true }));
+    assert_eq!(picked, ("caps", CAPS));
+}
+
+#[test]
+fn a_refused_overlay_mount_needs_kaniko_mode_as_root_but_a_host_error_does_not() {
+    let mount = SnapshotError::Probe {
+        step: "mount",
+        source: Box::new(SnapshotError::Mount {
+            target: "/s/merged".into(),
+            lowers: 1,
+            how: "mount(2)",
+            step: "mount".into(),
+            errno: rustix::io::Errno::INVAL,
+            options: Some(120),
+        }),
+    };
+    let r = overlay_refusal(&mount, 0);
+    assert_eq!(r.guidance, NEEDS_KANIKO_MODE);
+    assert!(
+        r.reason.contains("EINVAL") || r.reason.contains("Invalid"),
+        "{r}"
+    );
+    assert_eq!(overlay_refusal(&mount, USER).guidance, NEEDS_ROOT);
+
+    let host = SnapshotError::Io {
+        op: "create",
+        path: "/s".into(),
+        source: io::Error::from_raw_os_error(EACCES),
+    };
+    assert_eq!(overlay_refusal(&host, 0).guidance, "");
 }
 
 #[test]

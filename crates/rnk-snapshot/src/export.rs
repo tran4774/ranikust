@@ -10,7 +10,9 @@ use std::io::{self, Read, Write};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 
-use rnk_layer::{EncodeOptions, Entry, EntryKind, EntryPath, EntrySource, LayerDigests, LayerWriter};
+use rnk_layer::{
+    EncodeOptions, Entry, EntryKind, EntryPath, EntrySource, LayerDigests, LayerWriter,
+};
 use rnk_rootfs::{FileType, OpenHow, RootPath, Stat};
 
 use crate::error::{Error, Result};
@@ -42,6 +44,17 @@ pub struct DiffCounts {
 }
 
 impl LayerDiff {
+    /// The diff of the upper directory `upper` over `lowers` (topmost
+    /// first), in the overlay form with `userxattr`, as an unmounted
+    /// overlay leaves them. [`StageRootfs::end_layer`] makes these; this is
+    /// for diffs kept elsewhere.
+    ///
+    /// [`StageRootfs::end_layer`]: crate::StageRootfs::end_layer
+    #[must_use]
+    pub fn new(upper: PathBuf, lowers: Vec<PathBuf>) -> Self {
+        Self { upper, lowers }
+    }
+
     /// The upper directory, for messages.
     #[must_use]
     pub fn upper(&self) -> &Path {
@@ -78,7 +91,11 @@ impl LayerDiff {
     /// `redirect_dir=nofollow`) or an entry of unknown type;
     /// [`Error::Layer`] when encoding fails; [`Error::Rootfs`] when a
     /// directory cannot be read.
-    pub fn export<W: Write>(&self, options: EncodeOptions, out: W) -> Result<(LayerDigests, DiffCounts)> {
+    pub fn export<W: Write>(
+        &self,
+        options: EncodeOptions,
+        out: W,
+    ) -> Result<(LayerDigests, DiffCounts)> {
         let span = tracing::info_span!(
             "rnk_snapshot.export",
             entries = tracing::field::Empty,
@@ -222,7 +239,10 @@ impl Walk<'_> {
             return Ok(());
         }
         let all = self.upper.xattrs(p)?;
-        if all.iter().any(|(n, _)| n == REDIRECT || n == "trusted.overlay.redirect") {
+        if all
+            .iter()
+            .any(|(n, _)| n == REDIRECT || n == "trusted.overlay.redirect")
+        {
             return Err(Error::Export {
                 path: p.to_owned(),
                 reason: "an overlay redirect, which redirect_dir=nofollow never creates",

@@ -9,20 +9,11 @@
 use std::fmt;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rnk_sandbox::{Caps, Error as SandboxError, Sandbox};
-
-/// What `rnk-snapshot`'s overlay probe found: the overlay mount with the
-/// ADR-0016 options and `fsconfig(lowerdir+)` (probe steps 1 and 4).
-///
-/// A placeholder until task 9: `rnk-snapshot` defines its own caps type and
-/// [`probe_overlay`] returns it, as `rnk_sandbox::probe` returns
-/// [`Caps`] (Q-017, interim (b)).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OverlayCaps {
-    /// Whether the probe really ran; `false` until task 9.
-    pub(crate) probed: bool,
-}
+use rnk_snapshot::{Error as SnapshotError, MountApi, OverlayCaps};
+use rnk_store::{BuildPaths, Store};
 
 /// The outcome the probes picked (ADR-0002, ADR-0004). Each library gets
 /// only its own part (Q-017, interim (b)).
@@ -47,10 +38,10 @@ impl fmt::Display for Outcome {
                     rnk_sandbox::RootEntry::PivotRoot => "pivot_root",
                     rnk_sandbox::RootEntry::MoveMount => "MS_MOVE",
                 })?;
-                if !overlay.probed {
-                    f.write_str(" (overlay not probed yet)")?;
-                }
-                Ok(())
+                f.write_str(match overlay.api {
+                    MountApi::LowerdirPlus => ", overlay mounts with fsconfig(lowerdir+)",
+                    MountApi::Mount2 => ", overlay mounts with mount(2)",
+                })
             }
         }
     }
@@ -93,6 +84,10 @@ pub(crate) struct Setup {
     pub(crate) outcome: Outcome,
     /// The state directory the probes used.
     pub(crate) state_dir: PathBuf,
+    /// The store in the state directory, open for this build; shared with
+    /// `rnk-snapshot` (`rnk_snapshot::Overlay::new`) and the registry
+    /// client. [`Store::close`] it at the end.
+    pub(crate) store: Arc<Store>,
     /// The spawner thread every `RUN` is cloned from.
     pub(crate) sandbox: Sandbox,
 }
@@ -104,8 +99,9 @@ const UNSAFE_STATE_DIR: &str = "the state directory and the workdir above it mus
 
 /// Sets the process up for a build whose state directory is `state_dir`, in
 /// `workdir` if given: a private mount namespace, the state directory's
-/// check, the probes of `rnk-sandbox` and `rnk-snapshot`, the outcome, then
-/// the spawner thread. Starts no thread before the spawner.
+/// check, the store (marker check, start-up clean-up), the probes of
+/// `rnk-sandbox` and `rnk-snapshot`, the outcome, then the spawner thread.
+/// Starts no thread before the spawner.
 ///
 /// # Errors
 ///
@@ -115,21 +111,27 @@ pub(crate) fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, 
     // Workdir checks (Q-011) come first, once designed.
     rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))?;
     prepare_state_dir(state_dir, workdir, euid)?;
+    // The store first, then the probes, which write in the state directory
+    // only once its marker is checked (Q-111, (a)).
+    let store =
+        Store::open(&BuildPaths::new(workdir.unwrap_or(state_dir), state_dir)).map_err(|e| {
+            Refusal {
+                reason: format!("cannot open the store in {}: {e}", state_dir.display()),
+                guidance: "",
+            }
+        })?;
     let sandbox_dir = state_dir.join("sandbox");
     let outcome = {
-        // `steps`: the probes that really ran; the overlay seam does not
-        // count until task 9 fills it.
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
         let sandbox = rnk_sandbox::probe(&sandbox_dir);
         span.record("steps", 1_u64);
-        let overlay = probe_overlay(state_dir);
+        let overlay = probe_overlay(store.build_dir(), euid);
+        span.record("steps", 2_u64);
         let (sandbox, overlay) = pick(sandbox, overlay, euid)?;
         Outcome::OverlayRoot { sandbox, overlay }
     };
     tracing::info!("ranikust: {outcome}");
-    // Task 7: `rnk_store::Store::open` (marker check, start-up clean-up)
-    // goes here, before any thread.
     let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
     let sandbox = Sandbox::start(Some(caps), &sandbox_dir).map_err(|e| Refusal {
         reason: e.to_string(),
@@ -138,14 +140,44 @@ pub(crate) fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, 
     Ok(Setup {
         outcome,
         state_dir: state_dir.to_path_buf(),
+        store: Arc::new(store),
         sandbox,
     })
 }
 
-/// The seam for task 9: `rnk_snapshot::probe(state_dir)` replaces this.
-/// Until then, overlay is assumed to work wherever the sandbox does.
-fn probe_overlay(_state_dir: &Path) -> Result<OverlayCaps, Refusal> {
-    Ok(OverlayCaps { probed: false })
+/// `rnk-snapshot`'s overlay probe (steps 1 and 4), in a directory of this
+/// build: on the state directory's filesystem, where the upper directories
+/// will be, and removed with the build.
+fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal> {
+    let dir = build_dir.join("overlay-probe");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| Refusal {
+            reason: format!("cannot create {}: {e}", dir.display()),
+            guidance: "",
+        })?;
+    rnk_snapshot::probe(&dir).map_err(|e| overlay_refusal(&e, euid))
+}
+
+/// The refusal for a failed overlay probe. Where the kernel refused the
+/// mount (an upper directory on overlayfs or NFS, overlay nested too deep,
+/// no privilege), root needs kaniko mode; a host-side failure (the state
+/// directory unwritable, a full disk) gets no such guidance.
+fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
+    let refused_mount = matches!(
+        e,
+        SnapshotError::Probe { source, .. }
+            if matches!(**source, SnapshotError::Mount { .. })
+    ) || matches!(e, SnapshotError::ProbeCheck(_));
+    Refusal {
+        reason: format!("overlay mode cannot run here: {e}"),
+        guidance: if refused_mount {
+            privilege_guidance(euid)
+        } else {
+            ""
+        },
+    }
 }
 
 /// Creates the state directory if missing (mode 0700) and checks it, and

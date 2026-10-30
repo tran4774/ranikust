@@ -191,9 +191,15 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
         tracing::warn!("--snapshot-mode is ignored in overlay mode (ADR-0023)");
     }
     tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
-    // The hand-off to the store, the scheduler and the builder (tasks 7, 11
-    // and 12) goes here. Until then, stop the spawner thread.
+    // The hand-off to the scheduler and the builder (tasks 11 and 12) goes
+    // here, with `rnk_snapshot::Overlay::new(setup.store, caps)`. Until
+    // then, stop the spawner thread and close the store.
     drop(setup.sandbox);
+    if let Some(store) = std::sync::Arc::into_inner(setup.store)
+        && let Err(e) = store.close()
+    {
+        tracing::warn!("closing the store: {e}");
+    }
     Err(Failure::usage(format!(
         "set up for {}, but building is not implemented yet (Phase 1 task 11)",
         setup.outcome
