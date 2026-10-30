@@ -395,7 +395,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 self.edit(ConfigEdit::Expose(ports), &text)
             }
             // Config only, as BuildKit: the directories are not created
-            // (Q-180).
+            // (Q-180, `ADR-0032`).
             Instruction::Volume(volumes) => {
                 let text = format!("VOLUME {}", history::go_list(&volumes));
                 self.edit(ConfigEdit::Volume(volumes), &text)

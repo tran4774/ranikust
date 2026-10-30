@@ -356,9 +356,12 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
   tar, since libzstd's own multithreading is not deterministic (`exp-05`,
   [ADR-0029](docs/adr/0029-zstd-layers-as-independent-1-mib-frames.md)); tar
   entries are sorted; configs are canonical JSON.
-- Timestamps follow kaniko: the current time by default (the config's
-  `created` and history; files keep the times they have on disk); with
-  `--reproducible`, a fixed epoch, or `SOURCE_DATE_EPOCH` when set.
+- Timestamps: the current time by default (the config's `created` and
+  history; files keep the times they have on disk); with `--reproducible`,
+  as BuildKit (`ADR-0032`, Q-161), the epoch is `SOURCE_DATE_EPOCH` when
+  set, else 1970-01-01: the config's `created` and the build's history
+  entries carry it, and built-layer mtimes later than it are clamped to it
+  while earlier ones are kept.
 - With `--reproducible`, a build with `--jobs 1` and one with the default
   give the same digests.
 

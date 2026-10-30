@@ -69,11 +69,12 @@ impl Image {
 ///
 /// `config.rootfs.diff_ids` must list the layers' diff IDs in order; each
 /// executor keeps it so with `ImageConfig::push_layer`. `created` is set to
-/// `time`, which under `--reproducible` is the fixed epoch, as BuildKit
-/// clamps it to `SOURCE_DATE_EPOCH` (`buildkit@cd8ee244
-/// exporter/containerimage/writer.go:830-843`). History entries are left as
-/// they are: the base image's keep their times, as BuildKit keeps them
-/// (`writer.go:809-821`), and the build's own already carry `time`.
+/// `time`: the build's start, or under `--reproducible` the epoch, which is
+/// what BuildKit's clamp of a later `created` to `SOURCE_DATE_EPOCH` gives
+/// (`buildkit@cd8ee244 exporter/containerimage/writer.go:830-843`). History
+/// entries are left as they are: the base image's keep their times, as
+/// BuildKit keeps them (`writer.go:809-821`), and the build's own already
+/// carry `time`.
 ///
 /// `format` is the format asked for ([`image_format`]); the image is written
 /// in OCI instead when a layer has no Docker media type, such as a zstd base
