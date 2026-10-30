@@ -176,7 +176,7 @@ smoke image="docker.io/library/alpine:3.20":
       log="$(podman run --rm --privileged -v "$RNK:/ranikust:ro" -v "$PWD/tests/smoke/e2e:/ctx:ro" \
         -v "$E/w:/tmp/w" -v "$E/out:/out" -v "$E/token:/token:ro" "{{ image }}" \
         /ranikust "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
-      smoke_check_build "$log" pivot_root "$rc" >&2
+      smoke_check_build "$log" pivot_root "$rc" >&2 || return 1
       smoke_digest "$log"
     }
     e2e >/dev/null
