@@ -169,5 +169,6 @@ echo "=== the VM after the runs"
   { echo "error: the VM's domainname changed" >&2; exit 1; }
 ! grep -q "$W" /proc/self/mountinfo || { echo "error: mounts left under $W" >&2; exit 1; }
 ! pgrep -f smoke-build >/dev/null || { echo "error: smoke-build processes left" >&2; exit 1; }
+! pgrep -x ranikust >/dev/null || { echo "error: ranikust processes left" >&2; exit 1; }
 sudo rm -rf "$W"
 echo "smoke: ok"

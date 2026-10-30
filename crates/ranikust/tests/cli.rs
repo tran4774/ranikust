@@ -96,6 +96,10 @@ fn kaniko_mode_is_not_built_yet() {
 fn without_root_the_set_up_refuses_before_touching_the_workdir() {
     if running_as_root() {
         // As root the set-up really runs: T2, in the VM smoke suite.
+        eprintln!(
+            "skipped: the tests run as root, where the set-up is not refused; \
+             `just test-vm smoke` covers it"
+        );
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");

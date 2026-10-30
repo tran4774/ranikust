@@ -55,11 +55,11 @@ impl Sandbox {
     ///
     /// # Errors
     ///
-    /// The directory cannot be created, a journal cannot be listed, or the
-    /// thread cannot start.
+    /// The directory cannot be created or is a symlink, a journal cannot be
+    /// listed, or the thread cannot start.
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self> {
         let runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
-        let replayed = journal::replay(&runner.runs_dir)?;
+        let replayed = journal::replay(&runner.runs_dir, &runner.state_dir)?;
         if replayed.journals > 0 {
             tracing::info!(
                 "rnk-sandbox: removed {} stub(s) left by {} interrupted RUN(s)",
@@ -111,6 +111,37 @@ impl Drop for Sandbox {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// Makes `d` exist as a directory that is not a symlink: an existing entry
+/// is checked before anything is created through it, and a missing one is
+/// created with `mkdir`, which does not follow a symlink in its place
+/// (with its ancestors when `ancestors`).
+fn real_dir(d: &Path, ancestors: bool) -> Result<()> {
+    let not_a_dir = || {
+        io_err(
+            "use as the sandbox directory",
+            d,
+            io::Error::new(io::ErrorKind::InvalidInput, "not a directory (a symlink?)"),
+        )
+    };
+    match fs::symlink_metadata(d) {
+        Ok(st) if st.is_dir() => return Ok(()),
+        Ok(_) => return Err(not_a_dir()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_err("stat", d, e)),
+    }
+    let created = if ancestors {
+        fs::create_dir_all(d)
+    } else {
+        fs::create_dir(d)
+    };
+    created.map_err(|e| io_err("create", d, e))?;
+    match fs::symlink_metadata(d) {
+        Ok(st) if st.is_dir() => Ok(()),
+        Ok(_) => Err(not_a_dir()),
+        Err(e) => Err(io_err("stat", d, e)),
     }
 }
 
@@ -228,6 +259,9 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
 #[derive(Debug)]
 pub(crate) struct Runner {
     runs_dir: PathBuf,
+    /// The parent of the sandbox's directory: every root a journal may name
+    /// lies below it.
+    state_dir: PathBuf,
     /// `None`: the probe failed, only [`Isolation::Direct`] runs.
     root_entry: Option<RootEntry>,
     drops: ([u32; 64], usize),
@@ -236,10 +270,14 @@ pub(crate) struct Runner {
 
 impl Runner {
     /// A runner keeping its journals in `dir/runs`, created if missing.
+    /// Neither `dir` nor `dir/runs` may be a symlink: a planted one would
+    /// send the journals, and what a replay removes, elsewhere.
     pub(crate) fn new(dir: &Path, root_entry: Option<RootEntry>) -> Result<Self> {
         let runs_dir = dir.join("runs");
-        fs::create_dir_all(&runs_dir).map_err(|e| io_err("create", &runs_dir, e))?;
+        real_dir(dir, true)?;
+        real_dir(&runs_dir, false)?;
         Ok(Self {
+            state_dir: dir.parent().unwrap_or(dir).to_path_buf(),
             runs_dir,
             root_entry,
             drops: caps::bounding_drops(caps::last_cap()),
@@ -249,6 +287,10 @@ impl Runner {
 
     pub(crate) fn runs_dir(&self) -> &Path {
         &self.runs_dir
+    }
+
+    pub(crate) fn state_dir(&self) -> &Path {
+        &self.state_dir
     }
 
     /// Runs `spec`, cloning through `spawn`. With `traced`, records the
@@ -724,6 +766,22 @@ fn timeval_ns(t: libc::timeval) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_symlinked_sandbox_or_runs_directory_is_refused() {
+        let state = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let sandbox = state.path().join("sandbox");
+        std::os::unix::fs::symlink(elsewhere.path(), &sandbox).unwrap();
+        assert!(Runner::new(&sandbox, None).is_err());
+        assert!(Sandbox::start(None, &sandbox).is_err());
+
+        let real = state.path().join("real");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), real.join("runs")).unwrap();
+        assert!(Runner::new(&real, None).is_err());
+        assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn clone_flags_follow_isolation_and_network() {

@@ -7,6 +7,7 @@
 //! environment is refused with the probe's diagnosis.
 
 use std::fmt;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
 use rnk_sandbox::{Caps, Error as SandboxError, Sandbox};
@@ -96,26 +97,34 @@ pub(crate) struct Setup {
     pub(crate) sandbox: Sandbox,
 }
 
-/// Sets the process up for a build whose state directory is `state_dir`:
-/// a private mount namespace, the probes of `rnk-sandbox` and
-/// `rnk-snapshot`, the outcome, then the spawner thread. Starts no thread
-/// before the spawner.
+/// Guidance where the state directory is not safe to use as root.
+const UNSAFE_STATE_DIR: &str = "the state directory and the workdir above it must be real \
+     directories (no symlink), owned by the user running ranikust and not writable by group or \
+     others; pass another --workdir or --state-dir";
+
+/// Sets the process up for a build whose state directory is `state_dir`, in
+/// `workdir` if given: a private mount namespace, the state directory's
+/// check, the probes of `rnk-sandbox` and `rnk-snapshot`, the outcome, then
+/// the spawner thread. Starts no thread before the spawner.
 ///
 /// # Errors
 ///
 /// A [`Refusal`] naming what failed and what to do instead.
-pub(crate) fn set_up(state_dir: &Path) -> Result<Setup, Refusal> {
+pub(crate) fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal> {
+    let euid = rustix::process::geteuid().as_raw();
     // Workdir checks (Q-011) come first, once designed.
-    rnk_sandbox::enter_build_namespace().map_err(namespace_refusal)?;
+    rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))?;
+    prepare_state_dir(state_dir, workdir, euid)?;
     let sandbox_dir = state_dir.join("sandbox");
     let outcome = {
+        // `steps`: the probes that really ran; the overlay seam does not
+        // count until task 9 fills it.
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
         let sandbox = rnk_sandbox::probe(&sandbox_dir);
         span.record("steps", 1_u64);
         let overlay = probe_overlay(state_dir);
-        span.record("steps", 2_u64);
-        let (sandbox, overlay) = pick(sandbox, overlay)?;
+        let (sandbox, overlay) = pick(sandbox, overlay, euid)?;
         Outcome::OverlayRoot { sandbox, overlay }
     };
     tracing::info!("ranikust: {outcome}");
@@ -139,10 +148,81 @@ fn probe_overlay(_state_dir: &Path) -> Result<OverlayCaps, Refusal> {
     Ok(OverlayCaps { probed: false })
 }
 
+/// Creates the state directory if missing (mode 0700) and checks it, and
+/// every directory above it up to and including `workdir`: each must be a
+/// real directory, not a symlink, owned by `euid` and not writable by group
+/// or others. The probes run as root in it, and the sandbox replays what its
+/// journals there name. Checked before anything is created, and again
+/// after. A stand-in for the workdir checks (Q-011) and the store's marker
+/// (Q-111).
+fn prepare_state_dir(state_dir: &Path, workdir: Option<&Path>, euid: u32) -> Result<(), Refusal> {
+    check_state_dir(state_dir, workdir, euid, true)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(state_dir)
+        .map_err(|e| Refusal {
+            reason: format!(
+                "cannot create the state directory {}: {e}",
+                state_dir.display()
+            ),
+            guidance: "",
+        })?;
+    check_state_dir(state_dir, workdir, euid, false)
+}
+
+/// The check of [`prepare_state_dir`]; with `missing_ok`, entries that do
+/// not exist yet pass.
+fn check_state_dir(
+    state_dir: &Path,
+    workdir: Option<&Path>,
+    euid: u32,
+    missing_ok: bool,
+) -> Result<(), Refusal> {
+    use std::os::unix::fs::MetadataExt as _;
+    let chain = state_dir
+        .ancestors()
+        .take_while(|p| *p == state_dir || workdir.is_some_and(|w| p.starts_with(w)));
+    for dir in chain {
+        let refuse = |why: &str| Refusal {
+            reason: format!("unsafe state directory: {} {why}", dir.display()),
+            guidance: UNSAFE_STATE_DIR,
+        };
+        let st = match std::fs::symlink_metadata(dir) {
+            Ok(st) => st,
+            Err(e) if missing_ok && e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(refuse(&format!("cannot be read: {e}"))),
+        };
+        if st.file_type().is_symlink() {
+            return Err(refuse("is a symlink"));
+        }
+        if !st.is_dir() {
+            return Err(refuse("is not a directory"));
+        }
+        if st.uid() != euid {
+            return Err(refuse(&format!("is owned by uid {}, not {euid}", st.uid())));
+        }
+        if st.mode() & 0o022 != 0 {
+            return Err(refuse("is writable by group or others"));
+        }
+    }
+    Ok(())
+}
+
+/// The guidance for missing privileges: root that still lacks them (Docker's
+/// defaults) needs kaniko mode; anyone else needs root.
+fn privilege_guidance(euid: u32) -> &'static str {
+    if euid == 0 {
+        NEEDS_KANIKO_MODE
+    } else {
+        NEEDS_ROOT
+    }
+}
+
 /// The refusal for a failed [`rnk_sandbox::enter_build_namespace`].
-fn namespace_refusal(e: SandboxError) -> Refusal {
+fn namespace_refusal(e: SandboxError, euid: u32) -> Refusal {
     let guidance = match e {
-        SandboxError::Privilege(_) => NEEDS_ROOT,
+        SandboxError::Privilege(_) => privilege_guidance(euid),
         _ => "",
     };
     Refusal {
@@ -153,16 +233,20 @@ fn namespace_refusal(e: SandboxError) -> Refusal {
 
 /// Picks the outcome from the probes' results: both must succeed for
 /// [`Outcome::OverlayRoot`], the only outcome of Phase 1; otherwise a
-/// refusal with the failing probe's diagnosis. Generic over the sandbox's
-/// caps, which only `rnk-sandbox` can make.
+/// refusal with the failing probe's diagnosis. Kaniko mode is suggested only
+/// where the environment refused a step of the sandbox, not for a host-side
+/// failure (the state directory unwritable, a full disk). Generic over the
+/// sandbox's caps, which only `rnk-sandbox` can make.
 fn pick<C>(
     sandbox: Result<C, SandboxError>,
     overlay: Result<OverlayCaps, Refusal>,
+    euid: u32,
 ) -> Result<(C, OverlayCaps), Refusal> {
     let sandbox = sandbox.map_err(|e| Refusal {
         guidance: match e {
-            SandboxError::Privilege(_) => NEEDS_ROOT,
-            _ => NEEDS_KANIKO_MODE,
+            SandboxError::Privilege(_) => privilege_guidance(euid),
+            SandboxError::Setup { .. } => NEEDS_KANIKO_MODE,
+            _ => "",
         },
         reason: format!("the RUN sandbox cannot run here: {e}"),
     })?;

@@ -128,8 +128,8 @@ code. All names are `[design]`.
 |---|---|---|
 | `ranikust.run` | | The whole process, already emitted. Parent of everything; `meta.wall_ns` adds metrics set-up. |
 | `ranikust.build` | | The `build` subcommand, emitted from flag validation on: kaniko's `build.total` plus `push.total`. |
-| `ranikust.setup` | | Workdir checks, mount namespace, store open: what a build pays before its first stage. |
-| `ranikust.probe` | `steps` | The probe sequence at every start (forked children); `exp-03`, `exp-13`. |
+| `ranikust.setup` | | Mount namespace, state-directory check, probes, spawner start (built); workdir checks and store open to come: what a build pays before its first stage. |
+| `ranikust.probe` | `steps` | The probe sequence at every start (forked children), inside `ranikust.setup`; `steps` counts the crates' probes that really ran (today 1, the sandbox's; the overlay probe adds one with task 9); `exp-03`, `exp-13`. |
 
 ### `rnk-dockerfile`
 

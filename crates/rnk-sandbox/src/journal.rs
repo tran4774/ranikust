@@ -24,6 +24,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use rnk_rootfs::{FileTime, FileType, Meta, OpenHow, RootPath};
@@ -279,7 +280,13 @@ pub(crate) struct Replayed {
 }
 
 /// Replays every journal in `runs_dir` that no live process holds.
-pub(crate) fn replay(runs_dir: &Path) -> Result<Replayed> {
+///
+/// The state directory is not trusted further than its owner: a journal is
+/// opened without following a symlink, its root must lie below `confine`
+/// (the state directory, where every root of a build lives), and its scratch
+/// directory is removed through descriptors, never through a symlink. A
+/// journal that fails these checks is left in place with a warning.
+pub(crate) fn replay(runs_dir: &Path, confine: &Path) -> Result<Replayed> {
     let mut done = Replayed::default();
     let entries = match fs::read_dir(runs_dir) {
         Ok(entries) => entries,
@@ -302,7 +309,7 @@ pub(crate) fn replay(runs_dir: &Path) -> Result<Replayed> {
         if ext != JOURNAL_EXT {
             continue;
         }
-        match replay_one(&path) {
+        match replay_one(&path, confine) {
             Ok(Some(stubs)) => {
                 done.journals += 1;
                 done.stubs += stubs;
@@ -317,7 +324,11 @@ pub(crate) fn replay(runs_dir: &Path) -> Result<Replayed> {
 
 /// Removes a journal that was never published, unless it is locked.
 fn remove_unlocked(path: &Path) {
-    let Ok(file) = File::open(path) else {
+    let Ok(file) = File::options()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    else {
         return;
     };
     if rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
@@ -326,10 +337,11 @@ fn remove_unlocked(path: &Path) {
 }
 
 /// Replays one journal; `None` when a live run still holds it.
-fn replay_one(path: &Path) -> Result<Option<usize>> {
+fn replay_one(path: &Path, confine: &Path) -> Result<Option<usize>> {
     let mut file = File::options()
         .read(true)
         .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .map_err(|e| io_err("open the stub journal", path, e))?;
     match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
@@ -348,10 +360,12 @@ fn replay_one(path: &Path) -> Result<Option<usize>> {
         .map_err(|e| io_err("read the stub journal", path, e))?;
     let (root_dir, stubs) = parse(&text);
     let mut removed = 0;
-    if let Some(root_dir) = root_dir {
+    if let Some(root_dir) = root_dir
+        // `None`: the root is gone, and its stubs with it.
+        && let Some(root_dir) = confined_root(&root_dir, confine)?
+    {
         match RootPath::open(&root_dir) {
             Ok(root) => removed = remove_stubs(&root, &stubs)?,
-            // The root is gone, and its stubs with it.
             Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
             Err(e) => return Err(e.into()),
         }
@@ -412,22 +426,57 @@ fn ok_unless(r: rnk_rootfs::Result<()>, expected: &[i32]) -> Result<bool> {
     }
 }
 
-/// Removes the scratch files by name, then their directory.
+/// The journal's root, resolved, if it still exists and lies strictly below
+/// `confine`; an error for a root elsewhere, which a journal planted in the
+/// state directory could name to remove host files.
+fn confined_root(root_dir: &Path, confine: &Path) -> Result<Option<PathBuf>> {
+    let root = match root_dir.canonicalize() {
+        Ok(root) => root,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err("resolve the journaled root", root_dir, e)),
+    };
+    let base = confine
+        .canonicalize()
+        .map_err(|e| io_err("resolve the state directory", confine, e))?;
+    if root == base || !root.starts_with(&base) {
+        return Err(io_err(
+            "replay a journal whose root is outside the state directory",
+            root_dir,
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        ));
+    }
+    Ok(Some(root))
+}
+
+/// Removes the scratch files of the run directory `dir` by name, then the
+/// directory, through descriptors: `dir` is opened below its parent without
+/// following a symlink, so a planted `runs/<id> -> /etc` removes nothing.
 fn remove_scratch(dir: &Path) -> Result<()> {
-    for name in SCRATCH_FILES {
-        let p = dir.join(name);
-        match fs::remove_file(&p) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => {
-                return Err(io_err("remove a run file", &p, e));
-            }
-            _ => {}
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Err(io_err(
+            "remove the run directory",
+            dir,
+            io::Error::from(io::ErrorKind::InvalidInput),
+        ));
+    };
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let runs = rustix::fs::open(parent, flags, Mode::empty())
+        .map_err(|e| io_err("open the runs directory", parent, e.into()))?;
+    let run = match rustix::fs::openat(&runs, name, flags, Mode::empty()) {
+        Ok(run) => run,
+        Err(Errno::NOENT) => return Ok(()),
+        Err(e) => return Err(io_err("open the run directory", dir, e.into())),
+    };
+    for file in SCRATCH_FILES {
+        match rustix::fs::unlinkat(&run, file, AtFlags::empty()) {
+            Ok(()) | Err(Errno::NOENT) => {}
+            Err(e) => return Err(io_err("remove a run file", dir.join(file), e.into())),
         }
     }
-    match fs::remove_dir(dir) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => {
-            Err(io_err("remove the run directory", dir, e))
-        }
-        _ => Ok(()),
+    match rustix::fs::unlinkat(&runs, name, AtFlags::REMOVEDIR) {
+        Ok(()) | Err(Errno::NOENT) => Ok(()),
+        Err(e) => Err(io_err("remove the run directory", dir, e.into())),
     }
 }
 
@@ -540,9 +589,16 @@ mod tests {
     use super::*;
 
     struct Fixture {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         root_dir: PathBuf,
         runs: PathBuf,
+    }
+
+    impl Fixture {
+        /// The state directory the roots lie in.
+        fn base(&self) -> &Path {
+            self.dir.path()
+        }
     }
 
     fn fixture() -> Fixture {
@@ -554,8 +610,83 @@ mod tests {
         Fixture {
             root_dir: root_dir.canonicalize().unwrap(),
             runs,
-            _dir: dir,
+            dir,
         }
+    }
+
+    /// Host files a planted journal aims at, outside the state directory.
+    fn victim() -> tempfile::TempDir {
+        let victim = tempfile::tempdir().unwrap();
+        for name in SCRATCH_FILES {
+            fs::write(victim.path().join(name), b"host").unwrap();
+        }
+        victim
+    }
+
+    fn assert_untouched(victim: &tempfile::TempDir) {
+        for name in SCRATCH_FILES {
+            assert_eq!(
+                fs::read(victim.path().join(name)).unwrap(),
+                b"host",
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_does_not_follow_a_planted_run_directory_symlink() {
+        let f = fixture();
+        let victim = victim();
+        fs::write(f.runs.join("x.journal"), b"").unwrap();
+        std::os::unix::fs::symlink(victim.path(), f.runs.join("x")).unwrap();
+        replay(&f.runs, f.base()).unwrap();
+        assert_untouched(&victim);
+        // Left for a human: the journal could not be replayed.
+        assert!(f.runs.join("x.journal").exists());
+    }
+
+    #[test]
+    fn replay_refuses_a_journaled_root_outside_the_state_directory() {
+        let f = fixture();
+        let victim = victim();
+        let text = format!(
+            "root\t{}\nstub\tf\t{}\t1.0\t2.0\n",
+            hex(victim.path().as_os_str().as_bytes()),
+            hex(b"/hosts"),
+        );
+        fs::write(f.runs.join("x.journal"), text.as_bytes()).unwrap();
+        fs::write(victim.path().join("empty"), b"").unwrap();
+        let text = format!(
+            "root\t{}\nstub\tf\t{}\t1.0\t2.0\n",
+            hex(victim.path().as_os_str().as_bytes()),
+            hex(b"/empty"),
+        );
+        fs::write(f.runs.join("y.journal"), text.as_bytes()).unwrap();
+        // Also through a symlink inside the state directory.
+        std::os::unix::fs::symlink(victim.path(), f.base().join("link")).unwrap();
+        let text = format!(
+            "root\t{}\nstub\tf\t{}\t1.0\t2.0\n",
+            hex(f.base().join("link").as_os_str().as_bytes()),
+            hex(b"/empty"),
+        );
+        fs::write(f.runs.join("z.journal"), text.as_bytes()).unwrap();
+        assert_eq!(replay(&f.runs, f.base()).unwrap(), Replayed::default());
+        assert_untouched(&victim);
+        assert!(victim.path().join("empty").exists());
+        for j in ["x", "y", "z"] {
+            assert!(f.runs.join(format!("{j}.journal")).exists(), "{j}");
+        }
+    }
+
+    #[test]
+    fn replay_does_not_follow_a_journal_symlink() {
+        let f = fixture();
+        let victim = victim();
+        let target = victim.path().join("hosts");
+        std::os::unix::fs::symlink(&target, f.runs.join("x.journal")).unwrap();
+        std::os::unix::fs::symlink(&target, f.runs.join(format!("y.{NEW_EXT}"))).unwrap();
+        replay(&f.runs, f.base()).unwrap();
+        assert_untouched(&victim);
     }
 
     fn set_old_times(root: &RootPath, p: &str) -> FileTime {
@@ -707,7 +838,7 @@ mod tests {
         live.ensure(Path::new("/srv"), MountKind::Directory)
             .unwrap();
 
-        let done = replay(&f.runs).unwrap();
+        let done = replay(&f.runs, f.base()).unwrap();
         assert_eq!(
             done,
             Replayed {
@@ -734,7 +865,7 @@ mod tests {
         let live = f.runs.join(format!("live.{NEW_EXT}"));
         let held = File::create(&live).unwrap();
         rustix::fs::flock(&held, FlockOperation::LockExclusive).unwrap();
-        assert_eq!(replay(&f.runs).unwrap(), Replayed::default());
+        assert_eq!(replay(&f.runs, f.base()).unwrap(), Replayed::default());
         assert!(!dead.exists());
         assert!(live.exists());
         // Published names never collide.

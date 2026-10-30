@@ -33,6 +33,9 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    `PR_SET_PDEATHSIG` fires when the parent *thread* exits, and blocking-pool
    threads are reaped when idle. Any thread may wait for the child.
 3. Replay the stub journals of previous crashed runs and remove their stubs.
+   The replay trusts no symlink in the sandbox's directory and touches only
+   roots below the state directory: a planted journal or run directory
+   cannot point it at host files.
 
 The privilege probes of [modes-and-detection](modes-and-detection.md) also
 run in this single-threaded window: `ranikust` runs this crate's probes

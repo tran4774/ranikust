@@ -423,7 +423,15 @@ Entry format:
 - **Interim:** (c) until task 7: `feat/ranikust-setup` probes before any
   store exists; the seam for `Store::open` is marked in
   `crates/ranikust/src/setup.rs`, after the outcome and before
-  `Sandbox::start`.
+  `Sandbox::start`. As a stand-in for the marker and the workdir checks
+  (Q-011), the set-up creates a missing state directory with mode 0700 and
+  refuses one, or any directory above it up to the workdir, that is a
+  symlink, not owned by the effective uid, or writable by group or others,
+  before the probe writes there (`prepare_state_dir`). The sandbox does not
+  trust the directory either: journals and the run directories are opened
+  without following symlinks, a journal's root must lie below the state
+  directory, and a symlinked `sandbox/` or `sandbox/runs` is refused.
+  Reversible: one function in `setup.rs`, replaced by the store's checks.
 - **Raised:** 2026-10-30
 
 ### Q-077: How is the MS_MOVE fallback kept from a chroot escape?

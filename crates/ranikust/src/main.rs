@@ -185,7 +185,7 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
         )
     })?;
     let setup = tracing::debug_span!("ranikust.setup")
-        .in_scope(|| setup::set_up(&state_dir))
+        .in_scope(|| setup::set_up(&state_dir, config.workdir.as_deref()))
         .map_err(|refusal| Failure::error(refusal.to_string()))?;
     if args.snapshot_mode.is_some() {
         tracing::warn!("--snapshot-mode is ignored in overlay mode (ADR-0023)");

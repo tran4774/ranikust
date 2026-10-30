@@ -58,7 +58,8 @@ enum Outcome { OverlayRoot { sandbox: rnk_sandbox::Caps, overlay: OverlayCaps } 
 struct OverlayCaps { probed: bool }   // placeholder for rnk-snapshot's caps; seam for task 9
 struct Refusal { reason: String, guidance: &'static str }        // what failed, what to do
 struct Setup { outcome: Outcome, state_dir: PathBuf, sandbox: rnk_sandbox::Sandbox }  // the hand-off
-fn set_up(state_dir: &Path) -> Result<Setup, Refusal>;  // namespace → probes → outcome → spawner
+fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal>;  // namespace → state dir → probes → outcome → spawner
+fn prepare_state_dir(state_dir, workdir, euid) -> Result<(), Refusal>; // 0700; no symlink, owner euid, no g/o write up to the workdir [open: Q-111]
 fn probe_overlay(state_dir: &Path) -> Result<OverlayCaps, Refusal>; // seam: rnk_snapshot::probe (task 9)
 struct PushArgs { path: PathBuf, destination: Vec<String> } // [open: Q-048] kaniko pushes a docker-save tar or OCI layout
 ```
@@ -71,7 +72,9 @@ reported first, so `--help` works on any kernel) → the Linux 5.8 check
 stops (Phase 2) → the overlay-mode state directory, `--state-dir` or
 `<workdir>/.ranikust`, else a usage error [open: Q-110] → `setup::set_up`:
 `rnk_sandbox::enter_build_namespace` (refuses in a plain `chroot`, then
-`unshare(CLONE_NEWNS)`, `/` rslave) → `rnk_sandbox::probe` in
+`unshare(CLONE_NEWNS)`, `/` rslave) → `prepare_state_dir` (created 0700;
+refused if it or a directory above it up to the workdir is a symlink, not
+owned by the effective uid, or group/world-writable) → `rnk_sandbox::probe` in
 `<state-dir>/sandbox` → the overlay probe seam → outcome →
 `Sandbox::start` (stub-journal replay, spawner thread) → stop with exit
 code 2, "set up for …, but building is not implemented yet". Still to
@@ -123,8 +126,12 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `kernel-blocked`; `--metrics-file` over the variable. `tests/metrics.rs`: the report on
   every exit path, panic included (`RANIKUST_DEBUG_FAULT=panic|error`).
 - T0 built, `src/setup/tests.rs`: the outcome from the probes' results
-  (both succeed; sandbox without privileges; a failed step reported
-  verbatim; a failed overlay probe), the plain-chroot refusal's message.
+  (both succeed; no privileges, as root and not; a failed step reported
+  verbatim with kaniko mode as the way; a host-side failure without it; a
+  failed overlay probe), the plain-chroot refusal's message, and the
+  state-directory check (created 0700; a symlinked state dir or workdir,
+  a group- or world-writable one, another owner refused, nothing created
+  through a symlink; only the chain up to the workdir checked).
   `tests/cli.rs`: overlay mode without `--workdir`/`--state-dir`,
   `--mode=kaniko`, and, unless the tests run as root, the refusal before
   the namespace with the workdir left empty and `ranikust.setup` in the
@@ -144,7 +151,8 @@ error, a refused kaniko flag, an invalid combination, and for now every
 - Emits `ranikust.run` (the process), `ranikust.build` (from flag
   validation on), `ranikust.setup` (namespace, probes, spawner; the store
   open joins it with task 7) and inside it `ranikust.probe` with `steps`,
-  the probes run (sandbox, overlay seam)
+  the crates' probes that really ran (the sandbox's; the overlay seam does
+  not count until task 9)
   ([design/metrics.md](../../design/metrics.md#ranikust)).
 - `Telemetry::finish` on every way out that returns. `--metrics-file` fills
   `Config::file`. `set_meta`: `ranikust_version`; for `build`, `mode` and

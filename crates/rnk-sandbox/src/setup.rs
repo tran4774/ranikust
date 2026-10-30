@@ -25,8 +25,9 @@ pub fn enter_build_namespace() -> Result<()> {
         return Err(Error::NotSingleThreaded { threads });
     }
     // In a plain `chroot`, making `/` a slave mount fails with `EINVAL`
-    // after the `unshare`: say why before changing anything.
-    if !crate::probe::slash_is_mount_root()? {
+    // after the `unshare`: say why before changing anything. Only a definite
+    // "no"; where the kernel does not tell, the `mount_change` below decides.
+    if crate::probe::slash_is_mount_root()? == Some(false) {
         return Err(Error::InPlainChroot);
     }
     // SAFETY: `NEWNS` does not unshare the descriptor table, the only flag
@@ -78,10 +79,10 @@ mod tests {
     }
 
     #[test]
-    fn the_root_of_a_test_process_is_a_mount_root() {
-        // Tests run on a host or in a container, never in a plain chroot;
-        // the chroot refusal itself is checked in the VM smoke suite.
-        assert!(crate::probe::slash_is_mount_root().unwrap());
+    fn the_mount_root_check_works_here() {
+        // What it answers depends on where the tests run; the chroot
+        // refusal itself is checked in the VM smoke suite.
+        crate::probe::slash_is_mount_root().unwrap();
     }
 
     #[test]
