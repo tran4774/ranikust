@@ -160,7 +160,7 @@ while streaming.
 | character device 0/0 (overlay whiteout) | `.wh.<name>` if a lower layer has `<name>`; otherwise dropped |
 | directory with `user.overlay.opaque=y` | directory plus `.wh..wh..opq` if a lower layer has that directory; otherwise a plain directory (overlay also marks new directories that were renamed) |
 | directory present in a lower layer with identical metadata (copied-up parent) | not a change in itself (BuildKit's `sameDirent`) |
-| xattrs | only `security.capability` kept, as BuildKit and kaniko (ADR-0032, Q-025); overlay's own (`origin`, `impure`, `uuid`, `opaque`) and every other one stripped |
+| xattrs | only `security.capability` kept, as BuildKit and kaniko (ADR-0032, Q-025); overlay's own (`origin`, `impure`, `uuid`, `opaque`) and every other one stripped, POSIX ACLs, SELinux labels and IMA/EVM signatures included |
 | `user.overlay.redirect` or `trusted.overlay.redirect` | error: cannot occur with `redirect_dir=nofollow` |
 | files, symlinks, hardlinks within the same upper | kept |
 

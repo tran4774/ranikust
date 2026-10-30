@@ -75,7 +75,9 @@ pub const MAX_LOWERS: usize = 500;                 // [open: Q-026] refused beyo
   a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
   (containerd's way, ADR-0032, Q-151), and removes it again.
 - Exported layers keep only the `security.capability` xattr, as BuildKit
-  and kaniko (ADR-0032, Q-025).
+  and kaniko (ADR-0032, Q-025). POSIX ACLs (`system.posix_acl_*`), SELinux
+  labels and IMA/EVM signatures (`security.ima`, `security.evm`) a `RUN`
+  sets are dropped too, as there.
 
 ## Invariants
 
