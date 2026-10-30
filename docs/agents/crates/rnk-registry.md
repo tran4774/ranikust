@@ -177,6 +177,10 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   `feat/rnk-builder-outputs`).
   A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP
   unasked, as BuildKit (ADR-0032, Q-065); private-network addresses are
-  not special. [open: Q-048] `login`.
+  not special. Unlike BuildKit, credentials go over plain HTTP only to a
+  registry listed with `--insecure-registry`: BuildKit's `RUN` has its own
+  network namespace, ranikust's shares the host's and could sniff `lo` or
+  serve the port (threat model T11). An unlisted loopback registry is
+  accessed anonymously, a refusal names the flag. [open: Q-048] `login`.
   Only a loopback registry was measured
   ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).
