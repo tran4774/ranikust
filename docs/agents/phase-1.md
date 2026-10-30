@@ -34,7 +34,7 @@ the code.
 | [x] | Lazy export, config updates, image assembly; canonical JSON with sorted keys (`LayerDemand`, `LayerExporter` over the snapshot's diff, `assemble`; a layer is encoded right after its instruction, not overlapped with the next one yet) | `rnk-builder`, `rnk-oci` |
 | [~] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` (done and called by `ranikust build`; the OCI layout and Docker tar load in podman and Docker; one digest with `--jobs 1` and the default under `--reproducible`; left: a push to a real registry in an end-to-end run; OCI by default and clamped times under `SOURCE_DATE_EPOCH`, `ADR-0032`) | `rnk-builder`, `rnk-registry`, `rnk-layer` |
 | [~] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix (done; `ranikust`'s runner builds each stage on a thread of its own and takes a `--jobs` permit per `RUN`; left: the W3 digest test, the memory thresholds [open: Q-030]) | `rnk-sched` |
-| [~] | Common kaniko flags and the subcommands (`ADR-0011`): `build` and `version`, accepted flags parsed and validated, the others refused with a reason (done); final list [open: Q-023], `--cache` [open: Q-021], `--secret` and `--allow` (ADR-0032), `push`/`login` [open: Q-048] | `ranikust` |
+| [x] | Common kaniko flags and the subcommands (`ADR-0011`, `ADR-0036`): `build` and `version`; every kaniko flag accepted with its meaning, ignored with a warning, or refused with the phase; kaniko's variables honoured, refused or named in a warning; `--secret` and `--allow` (ADR-0032); `push`/`login` [open: Q-048] | `ranikust` |
 | [~] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests natively on GitHub's `ubuntu-24.04-arm` runner, or under qemu-user 9.1+ on x86_64 (`ADR-0009`, `just test-aarch64`); the release binary is static but not static-pie [open: Q-140] | CI |
 | [~] | T2 VM harness `just test-vm` (`docs/testing.md`): `unit` and `smoke` suites on Ubuntu 22.04 and 24.04 (done); cgroup v1, kernels before 5.11, the host-safety attack suite and a CI job with KVM to come | tests |
 | [~] | `nextjs-kaniko` harness hooked up: `bench/run-fair.sh`, `digest-check/` (separate project, e.g. `../nextjs-kaniko`) (the `e2e` VM suite, `just test-vm e2e`: W1–W3 built by kaniko and BuildKit as `run-fair.sh` does, flattened-image and config comparison, `check-blobs.py`, metrics side by side; the `ranikust` leg waits for `ranikust build` and a way to reach a plain-HTTP registry, (Q-200)) | tests |
@@ -121,8 +121,19 @@ with `rnk_metrics::Capture`; a task is not done without it.
       (2026-10-30): only `lo` in `/sys/class/net` and `/proc/net/dev`, `lo`
       up, nothing outside reachable; without `CAP_NET_ADMIN` refused unless
       `--allow network.none-userns` (ADR-0033).
-- [ ] Common kaniko flags: list fixed ([kaniko-map.md](kaniko-map.md#flags)),
+- [x] Common kaniko flags: list fixed ([kaniko-map.md](kaniko-map.md#flags)),
       each accepted flag tested for its meaning, mapping in the book.
+      ADR-0036 (2026-10-30); T0: `ranikust` `cli::tests`, `config::tests`,
+      `build::tests` (per-registry insecure and TLS sets, digest files),
+      `tests/cli.rs` `logging_flags_change_what_is_written`; `rnk-builder`
+      `labels_go_to_the_target_stage_and_a_label_instruction_wins`,
+      `assembly_converts_media_types_and_is_stable` (`--image-format`,
+      `--annotation`); `rnk-registry` `push_and_pull_retries_are_set_apart`,
+      `docker_auth_config_comes_before_the_file`. Flags accepted before
+      ADR-0036 (`--context`, `--dockerfile`, `--build-arg`, `--target`,
+      `--destination`, `--no-push`, the outputs, `--insecure-registry`,
+      `--registry-certificate`, `--secret`) are exercised end to end by the
+      VM smoke, e2e and push suites; the book's usage page has the mapping.
 - [x] aarch64 in CI: `just check-aarch64` plus the static build and the
       unit tests of `ADR-0009` (`just test-aarch64`), natively on the
       `ubuntu-24.04-arm` runner with nothing skipped; green in CI run

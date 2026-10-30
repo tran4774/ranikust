@@ -39,11 +39,14 @@ fn main() -> std::process::ExitCode;   // built; no #[tokio::main]: runtime buil
 enum Command { Build(Box<BuildArgs>), Version }                  // built (clap, Q-012); no subcommand = Build
     // Push(PushArgs), Prune(PruneArgs), Login(LoginArgs): later [open: Q-048]
 struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, destination, no_push,
-    tar_path, oci_layout_path, compression, reproducible, registry_certificate, snapshot_mode;
-    ours: mode, workdir, state_dir, jobs, network, metrics_file.
-    Planned: cache, cache_repo [open: Q-021], ignore_path (2),
-    parallel_stages (2), seccomp, userns (3) */ }
-fn cli::parse(args) -> Result<Cli, ParseError>;  // built: refused kaniko flags first, then clap
+    tar_path, oci_layout_path, compression, compression_level, image_format, label, annotation,
+    digest files, insecure*, skip_tls_verify*, push_retry, image_download_retry, verbosity,
+    log_format, log_timestamp, reproducible, registry_certificate, snapshot_mode (ADR-0036);
+    ours: mode, workdir, state_dir, jobs, network, secret, allow, metrics_file.
+    Planned: cache, cache_repo (4), ignore_path (2), parallel_stages (2), seccomp, userns (3) */ }
+fn cli::parse(args) -> Result<Parsed, ParseError>;  // refused kaniko flags first; ignored ones
+    // taken out and old spellings renamed, each with a warning (Parsed::warnings); then clap
+fn config::apply_env(&mut BuildArgs, vars) -> Result<Vec<String>, Invalid>;  // KANIKO_* (ADR-0036)
 struct BuildConfig { /* built: the flags validated, paths absolute, enums resolved */ }
 impl BuildConfig {
     fn from_args(&BuildArgs) -> Result<Self, Invalid>;       // built: kaniko's checks, no I/O
@@ -182,10 +185,13 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `--no-push false` does not (the `false` is an argument). clap matches it
   with `require_equals` and `num_args = 0..=1`.
 - clap would report a known kaniko flag as "unexpected argument"; the
-  pre-scan in `cli::parse` refuses it by name first. A new kaniko flag in
-  the refused list needs a row in `REFUSED` and in the kaniko map.
-- kaniko reads `KANIKO_REGISTRY_MIRROR`, `KANIKO_NO_PUSH`, `KANIKO_REGISTRY_MAP`
-  (`root.go:75-104`) [open: Q-023]; defaults `--context=/workspace/`,
+  pre-pass in `cli::parse` refuses it by name first (`REFUSED`), takes out
+  the ignored ones (`IGNORED`, with whether they take a value, so the next
+  argument goes with them) and renames old spellings (`RENAMED`). A new
+  kaniko flag needs a row there and in the kaniko map (ADR-0036).
+- kaniko's variables are applied by `config::apply_env` before validation:
+  `KANIKO_NO_PUSH` overrides the flag, `KANIKO_REGISTRY_MIRROR`/`_MAP` exit
+  2, the rest get one warning (`root.go:75-104`, ADR-0036); defaults `--context=/workspace/`,
   `--dockerfile=Dockerfile` (`:337-338`); `--kaniko-dir` is `--state-dir`
   (default `<workdir>/.ranikust` or `/ranikust/state`, ADR-0022).
 

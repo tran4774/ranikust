@@ -87,7 +87,8 @@ pub use tokio_util::sync::CancellationToken;
   and pulls itself. `run` is not cancel safe: cancel the token and keep
   awaiting.
 - Log lines carry `[<stage-name> <k>/<n>]`, `k` the position among the
-  stages the build runs; grouping per stage is [open: Q-031].
+  stages the build runs; grouping per stage would be an option of its
+  own, apart from `--log-format` (Q-031, ADR-0036), not built yet.
 
 ## Invariants
 

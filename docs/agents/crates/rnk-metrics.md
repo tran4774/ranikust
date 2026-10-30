@@ -28,7 +28,9 @@ never reaches the image.
 - Influence a build: write anything but the report, or let a library read
   metric state.
 - Start a thread, or keep state per file or tar entry.
-- Decide log formats or verbosity flags [open: Q-023] [open: Q-031].
+- Parse the logging flags: `ranikust` maps kaniko's `--verbosity`,
+  `--log-format` and `--log-timestamp` into `Config::logs` (`LogOptions`,
+  ADR-0036); this crate only applies them to the log layer.
 
 ## API
 

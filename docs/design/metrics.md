@@ -37,10 +37,11 @@ Code: `crates/rnk-metrics`, wired in `crates/ranikust/src/main.rs`.
 | `RANIKUST_METRICS_SUMMARY=1` | Collect, and print a short summary to stderr at exit (anything but empty or `0`). |
 
 `build --metrics-file=<path>` takes the report path's place; the other
-variable still applies. Whether kaniko's `KANIKO_METRICS_FILE` is honoured
-too is part of
-[Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted)
-(interim: not read).
+variable still applies. kaniko's `KANIKO_METRICS_FILE` is not honoured: it
+is named in the start-up warning about unread `KANIKO_*` variables
+([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)). The log level and
+format (`--verbosity`, `--log-format`, `--log-timestamp`) apply to the log
+layer only and never change the report.
 
 Logs are a separate layer: stderr, `INFO` until the verbosity and format
 flags are decided ([Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted),
@@ -397,8 +398,6 @@ its outputs (Phase 1 task 11).
   [Q-057](../open-questions.md#q-057-does-ranikust-offer-cpu-and-heap-profiling).
 - Export formats besides the file (OTLP, Prometheus):
   [Q-058](../open-questions.md#q-058-which-metric-export-formats-come-after-the-json-report).
-- `KANIKO_METRICS_FILE` and the flag name:
-  [Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted).
 
 ## References
 

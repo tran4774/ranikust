@@ -33,8 +33,9 @@
 //! - Aggregates only: no state per file or tar entry, no timer finer than a
 //!   span, no thread of its own (the process must stay single-threaded until
 //!   its namespaces are set up).
-//! - Log format and verbosity flags are not decided here ([open: Q-023],
-//!   [open: Q-031]); logs go to stderr at `INFO`.
+//! - Logs go to stderr at the level and in the format of
+//!   [`Config::logs`]: kaniko's `--verbosity`, `--log-format` and
+//!   `--log-timestamp`, which `ranikust` parses (ADR-0036).
 
 mod collector;
 mod layer;

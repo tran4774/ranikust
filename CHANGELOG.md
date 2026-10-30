@@ -85,8 +85,24 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - A start-up check: on a kernel older than Linux 5.8, or where seccomp
   blocks `openat2` or `statx`, ranikust stops at once with a message naming
   the kernel.
+- kaniko's flags, as listed in the user guide's command-line page:
+  `-v`/`--verbosity`, `--log-format`, `--log-timestamp`, `--label`,
+  `--annotation`, `--image-format`, `--compression-level`, the three digest
+  files, `--insecure`, `--insecure-pull`, the `--skip-tls-verify` flags,
+  `--push-retry`, `--image-download-retry`, `--custom-platform`,
+  `--cache=false`, and kaniko's deprecated `--tarPath`, `--snapshotMode` and
+  `--customPlatform`. Flags that change nothing in the image built, such as
+  `--force`, `--cache-dir` and `--cleanup`, are accepted with a warning;
+  the others are refused with the release that brings them.
+- kaniko's variables: `KANIKO_NO_PUSH`, `DOCKER_AUTH_CONFIG` (read before
+  `config.json`), and a warning naming every other `KANIKO_*` or
+  `FF_KANIKO_*` variable that is set. `KANIKO_REGISTRY_MIRROR` and
+  `KANIKO_REGISTRY_MAP` stop the build until mirrors are supported.
 
 ### Changed
+
+- Log lines carry no timestamp unless `--log-timestamp` is given, as in
+  kaniko.
 
 - Layers leave out files a `RUN` copied up without changing them, and
   write an opaque directory as whiteouts of what it hides, as BuildKit's

@@ -128,8 +128,8 @@ impl<R: StageRunner + ?Sized> fmt::Debug for StageJob<'_, R> {
 /// The prefix of a stage's log lines: `[<stage-name> <k>/<n>]`, `k` its
 /// position among the stages the build runs (from 1, file order), `n`
 /// their number.
-// [open: Q-031] grouping output per stage, and how it meets kaniko's log
-// flags, is undecided; the tag is the same either way.
+// Grouping output per stage would be an option of its own, apart from
+// kaniko's `--log-format` (Q-031, ADR-0036); it is not built yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogTag {
     /// The stage's display name.
