@@ -61,15 +61,23 @@ pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused 
 - `Base::Image` takes layers in image order (the config's `diff_ids`,
   bottom first); the lower stack is topmost first. `Base::Stage` shares
   the parent's diffs: release the parent only after its children.
-- `base_layer` fills `EntryKey::Layer(diff_id)` through `Store::fill`
-  (per-digest lock), checks that the tar hashes to the diff ID, and marks
-  a layer whose tar has no `./` entry with `user.ranikust.inherit-root`,
-  so the stage root takes its metadata from the layers below, as a
-  flattening extractor would ((Q-150, ADR-0032) the key ignores the stack).
+- `base_layer` fills `EntryKey::Layer(<chain ID>)` through `Store::fill`
+  (per-digest lock): keyed by chain ID, as BuildKit, since a hardlink
+  copied from a lower makes an extraction depend on its stack (ADR-0032,
+  Q-150). It checks that the tar hashes to the diff ID, and marks a layer
+  whose tar has no `./` entry with `user.ranikust.inherit-root`, so the
+  stage root takes its metadata from the layers below, as a flattening
+  extractor would.
 - The stage directory is `builds/<id>/stages/<n>/` with `rootfs/`,
   `diff-<k>/`, `work-<k>/` and `empty-<i>/` (a lower for `FROM scratch`
-  and the read-only view, which needs two). `mount(2)` short names are
-  `<state-dir>/l/<12 chars>` symlinks ((Q-151, ADR-0032)).
+  and the read-only view, which needs two). A `mount(2)` mount makes
+  `lowers-<m>/` there with links `0`, `1`, ... to its lowers, mounts from
+  a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
+  (containerd's way, ADR-0032, Q-151), and removes it again.
+- Exported layers keep only the `security.capability` xattr, as BuildKit
+  and kaniko (ADR-0032, Q-025). POSIX ACLs (`system.posix_acl_*`), SELinux
+  labels and IMA/EVM signatures (`security.ima`, `security.evm`) a `RUN`
+  sets are dropped too, as there.
 
 ## Invariants
 
@@ -201,5 +209,4 @@ pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused 
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
 - [open: Q-024] The signature (interim above). (Q-026, ADR-0032) Merging
   layers near 500 lowers. [open: Q-049] One mount across instructions;
-  the export-time hash filter. (Q-150, ADR-0032), (Q-151, ADR-0032),
-  [open: Q-152].
+  the export-time hash filter. [open: Q-152].

@@ -26,10 +26,10 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 <state-dir>/
 ├── .ranikust-root
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
-├── layers/sha256/<hex>/        extracted layers by diff ID, immutable [open: Q-015]
+├── layers/v2/sha256/<hex>/     extracted layers by chain ID, immutable [open: Q-015]
 ├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
-├── locks/{blobs,layers}/sha256/<hex>   per-digest lock files [open: Q-015]
+├── locks/{blobs,layers/v2}/sha256/<hex>   per-digest lock files [open: Q-015]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── builds/<build-id>.lock      held (flock) while the build runs

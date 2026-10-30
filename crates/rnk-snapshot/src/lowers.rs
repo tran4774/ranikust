@@ -39,20 +39,16 @@ pub(crate) fn is_opaque(root: &RootPath, p: &Path) -> Result<bool> {
         .any(|(n, v)| n == OPAQUE && v.as_slice() == b"y"))
 }
 
-/// The content xattrs of an entry in the overlay form: overlay's own
-/// (`user.overlay.*`, `trusted.overlay.*`) dropped, the escaped
-/// `user.overlay.overlay.<x>` turned back into `user.overlay.<x>`.
-pub(crate) fn content_xattrs(all: Vec<(OsString, Vec<u8>)>) -> Vec<(OsString, Vec<u8>)> {
+/// The xattr a layer keeps.
+const CAPABILITY: &[u8] = b"security.capability";
+
+/// The xattrs an exported layer carries of an entry in the overlay form:
+/// `security.capability` only, as BuildKit (containerd's `ChangeWriter`
+/// writes that one xattr) and kaniko; overlay's own and every other xattr
+/// are left out (ADR-0032, Q-025).
+pub(crate) fn layer_xattrs(all: Vec<(OsString, Vec<u8>)>) -> Vec<(OsString, Vec<u8>)> {
     all.into_iter()
-        .filter_map(|(n, v)| {
-            let b = n.as_bytes();
-            if let Some(rest) = b.strip_prefix(ESCAPED) {
-                let mut un = USER_OVERLAY.to_vec();
-                un.extend_from_slice(rest);
-                return Some((OsStr::from_bytes(&un).to_owned(), v));
-            }
-            (!b.starts_with(USER_OVERLAY) && !b.starts_with(TRUSTED_OVERLAY)).then_some((n, v))
-        })
+        .filter(|(n, _)| n.as_bytes() == CAPABILITY)
         .collect()
 }
 
@@ -246,19 +242,18 @@ mod tests {
     }
 
     #[test]
-    fn content_xattrs_drop_overlay_and_unescape() {
+    fn layer_xattrs_keep_only_security_capability() {
         let x = |n: &str| (OsString::from(n), b"v".to_vec());
-        let kept = content_xattrs(vec![
+        let kept = layer_xattrs(vec![
             x("security.capability"),
+            x("security.selinux"),
             x("trusted.overlay.origin"),
+            x("trusted.other"),
             x("user.overlay.opaque"),
             x("user.overlay.overlay.mine"),
             x("user.other"),
         ]);
         let names: Vec<_> = kept.iter().map(|(n, _)| n.to_str().unwrap()).collect();
-        assert_eq!(
-            names,
-            ["security.capability", "user.overlay.mine", "user.other"]
-        );
+        assert_eq!(names, ["security.capability"]);
     }
 }

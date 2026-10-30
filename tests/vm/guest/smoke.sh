@@ -81,7 +81,7 @@ done
 sudo rm -rf "$W" && sudo mkdir -p "$W"
 sudo touch "$MARKER" "$W/marker"
 printf %s "$SMOKE_E2E_SECRET" | sudo tee "$W/token" >/dev/null
-CTX="$HOME/rnk/guest/e2e"
+CTX="$HOME/rnk/guest/smoke-e2e"
 
 # Builds tests/smoke/e2e with the ranikust binary in variant $1, whose RUN
 # enters its root with $2, extra flags after; prints the digest. The

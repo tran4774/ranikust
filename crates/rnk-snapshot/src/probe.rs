@@ -3,7 +3,7 @@
 //! mount with the ADR-0016 options where the stage roots will live, first
 //! with `fsconfig(lowerdir+)`, else with `mount(2)`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rnk_rootfs::{FileType, IgnoreList, OpenHow, RootPath, delete_contents};
 
@@ -23,7 +23,8 @@ pub struct OverlayCaps {
 /// filesystem that will hold the upper directories (the state directory).
 ///
 /// Runs in the build's private mount namespace, where `ranikust` calls it
-/// before any thread exists: it mounts there directly, so a failed attempt
+/// before any long-lived thread exists: it mounts there directly (the
+/// `mount(2)` attempt from a short thread it joins), so a failed attempt
 /// leaves at most a mount in that namespace, which goes with the process.
 /// Mounts a small overlay with the ADR-0016 options, with `lowerdir+` and
 /// then, if the kernel refuses it (Linux before 6.8 fails it only at
@@ -71,11 +72,11 @@ fn probe_in(root: &RootPath, dir: &Path) -> Result<OverlayCaps> {
         upper: Some((&upper, &work)),
         target: &merged,
     };
-    let api = attempt(&spec, MountApi::LowerdirPlus)
+    let api = attempt(&spec, MountApi::LowerdirPlus, root)
         .map(|()| MountApi::LowerdirPlus)
         .or_else(|plus| {
             tracing::info!(target: "rnk_snapshot", "overlay probe: {plus}; trying mount(2)");
-            attempt(&spec, MountApi::Mount2).map(|()| MountApi::Mount2)
+            attempt(&spec, MountApi::Mount2, root).map(|()| MountApi::Mount2)
         })
         .map_err(|e| Error::Probe {
             step: "mount",
@@ -94,12 +95,10 @@ fn probe_in(root: &RootPath, dir: &Path) -> Result<OverlayCaps> {
     Ok(OverlayCaps { api })
 }
 
-fn attempt(spec: &Spec<'_>, api: MountApi) -> Result<()> {
+fn attempt(spec: &Spec<'_>, api: MountApi, links: &RootPath) -> Result<()> {
     let span = tracing::debug_span!("rnk_snapshot.probe", ok = false, api = ?api);
     let _entered = span.enter();
-    mount::mount(spec, api, &mut |p: &Path| -> Result<PathBuf> {
-        Ok(p.to_owned())
-    })?;
+    mount::mount(spec, api, links)?;
     span.record("ok", true);
     Ok(())
 }

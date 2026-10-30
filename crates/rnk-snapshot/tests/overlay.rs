@@ -207,6 +207,67 @@ fn a_stage_root_gets_one_layer_per_instruction_with_mount2() {
 
 #[test]
 #[ignore = "T2: mounts overlays; run as root in the test VM only"]
+fn mount2_takes_many_lowers_from_a_deep_state_directory() {
+    // With absolute paths, about 90 lowers fit one page; with relative
+    // names from a thread of its own (containerd's way, Q-151) the stack is
+    // bounded by overlay's 500 instead. A deep state directory makes the
+    // absolute paths long on purpose.
+    const LAYERS: usize = 400;
+    let dir = tempfile::Builder::new()
+        .prefix("rnk-snap")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    let state = dir
+        .path()
+        .join("a-rather-long-state-directory-name/".repeat(4));
+    let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    let overlay = Overlay::new(
+        Arc::new(store),
+        OverlayCaps {
+            api: MountApi::Mount2,
+        },
+    )
+    .unwrap();
+    let mut base: Vec<LayerDir> = Vec::new();
+    for i in 0..LAYERS {
+        let name = format!("f{i}");
+        let (t, id) = layer(&[(&name, EntryType::Regular, 0o644, name.as_bytes())]);
+        let l = overlay.base_layer(&id, t.as_slice(), &base).unwrap();
+        base.push(l);
+    }
+    let cwd = std::env::current_dir().unwrap();
+    let mut stage = overlay.prepare(Base::Image(&base)).unwrap();
+    stage.begin_layer().unwrap();
+    {
+        let root = stage.root().unwrap();
+        assert_eq!(read(root, "f0"), b"f0");
+        assert_eq!(
+            read(root, &format!("f{}", LAYERS - 1)),
+            format!("f{}", LAYERS - 1).as_bytes()
+        );
+        write(root, "top", b"t");
+    }
+    let d = stage.end_layer().unwrap();
+    assert_eq!(files(&d), [("top".to_owned(), false)]);
+    assert_eq!(read(stage.view().unwrap(), "top"), b"t");
+    // The process's working directory never moved, and no links are left.
+    assert_eq!(std::env::current_dir().unwrap(), cwd);
+    let stage_dir = stage.mount_point().parent().unwrap().to_owned();
+    assert!(
+        !fs::read_dir(&stage_dir).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("lowers-")),
+        "links left in {}",
+        stage_dir.display()
+    );
+    stage.release().unwrap();
+    assert_no_mounts_under(overlay.store().state_dir());
+}
+
+#[test]
+#[ignore = "T2: mounts overlays; run as root in the test VM only"]
 fn a_scratch_stage_mounts_over_an_empty_lower() {
     let b = build(MountApi::Mount2);
     let mut stage = b.overlay.prepare(Base::Scratch).unwrap();

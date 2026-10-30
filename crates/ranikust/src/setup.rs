@@ -101,7 +101,9 @@ const UNSAFE_STATE_DIR: &str = "the state directory and the workdir above it mus
 /// `workdir` if given: a private mount namespace, the state directory's
 /// check, the store (marker check, start-up clean-up), the probes of
 /// `rnk-sandbox` and `rnk-snapshot`, the outcome, then the spawner thread.
-/// Starts no thread before the spawner.
+/// Before the spawner, the only other thread is the overlay probe's
+/// `mount(2)` attempt, which it joins: the process is single-threaded
+/// again when the spawner starts.
 ///
 /// # Errors
 ///

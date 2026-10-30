@@ -13,7 +13,7 @@ use rnk_store::Store;
 use crate::error::{Error, Result};
 use crate::export::LayerDiff;
 use crate::layer::{self, LayerDir};
-use crate::mount::{self, MountApi, ShortNames, Spec};
+use crate::mount::{self, MountApi, Spec};
 use crate::probe::OverlayCaps;
 
 /// Mode of the stage directory and its work directories.
@@ -188,7 +188,6 @@ impl Snapshotter for Overlay {
         root.create_dir("rootfs", 0o755)?;
         Ok(OverlayStage {
             state: Arc::clone(&self.state),
-            state_path: self.store.state_dir().to_owned(),
             rel,
             rootfs: dir.join("rootfs"),
             dir,
@@ -223,7 +222,6 @@ enum Mounted {
 #[derive(Debug)]
 pub struct OverlayStage {
     state: Arc<RootPath>,
-    state_path: PathBuf,
     /// The stage directory relative to the state directory.
     rel: PathBuf,
     /// Its host path.
@@ -243,7 +241,7 @@ pub struct OverlayStage {
     open: Option<RootPath>,
     /// The read-only view, mounted on `rootfs/` between layers.
     view: Option<RootPath>,
-    /// The diffs of this stage, for their short names.
+    /// The diffs of this stage, counted at release.
     diffs: Vec<PathBuf>,
     /// Shared with every stage built on this one ([`Base::Stage`]), whose
     /// lower stack holds this stage's diffs: release refuses while a clone
@@ -258,12 +256,10 @@ impl OverlayStage {
         self.rootfs.clone()
     }
 
+    /// Mounts `spec`; the `mount(2)` fallback makes its links in the
+    /// stage's directory.
     fn mount(&self, spec: &Spec<'_>) -> Result<()> {
-        let names = ShortNames {
-            state: &self.state,
-            state_path: &self.state_path,
-        };
-        mount::mount(spec, self.api, &mut |p| names.get(p))
+        mount::mount(spec, self.api, &self.root)
     }
 
     /// An empty directory of the stage, for mounts that need a lower layer
@@ -422,13 +418,6 @@ impl StageRootfs for OverlayStage {
         self.unmount_all()?;
         delete_contents(&self.root, &IgnoreList::new())?;
         self.state.remove_dir(&self.rel)?;
-        let names = ShortNames {
-            state: &self.state,
-            state_path: &self.state_path,
-        };
-        for d in std::mem::take(&mut self.diffs) {
-            names.remove(&d);
-        }
         Ok(())
     }
 }

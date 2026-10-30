@@ -29,7 +29,6 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 ├── .ranikust-root              marker file
 ├── blobs/sha256/<digest>       downloaded compressed blobs
 ├── layers/<id>/                extracted layers, immutable, overlay whiteout form
-├── l/<short> -> <lower>        short names, only for the mount(2) fallback (Q-151)
 ├── caches/<sha256(id)>/        RUN --mount=type=cache
 └── builds/<build-id>/
     ├── overlay-probe/          the start-up probe's mount, emptied after it
@@ -38,10 +37,15 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
         ├── diff-<k>/           upper of instruction k = diff of layer k
         ├── work-<k>/           overlay work directory of instruction k
         ├── empty-<i>/          an empty lower: FROM scratch, the read-only view
+        ├── lowers-<m>/<i> -> <lower>   links of one mount(2), only while it mounts
         └── rootfs/             mount point of stage n
 ```
 
-`layers/` is `layers/<algorithm>/<hex>/`, named by diff ID (Q-015).
+`layers/` is `layers/v2/<algorithm>/<hex>/`, named by the layer's chain ID,
+as BuildKit and containerd key unpacked snapshots (ADR-0032, Q-150): a
+hardlink into a lower layer is copied from the layers below (Q-055), so an
+extraction depends on its stack. A bottom layer's chain ID is its diff ID;
+the same diff on another stack is extracted again.
 
 `blobs/`, `layers/` and `caches/` form the persistent store, shared between
 stages and builds and owned by `rnk-store`
@@ -100,10 +104,14 @@ would hide every lower layer.
 - **Kernel ≥ 6.8:** `fsopen("overlay")`; one `FSCONFIG_SET_STRING` call
   with key `lowerdir+` per layer; `FSCONFIG_CMD_CREATE`; `fsmount`;
   `move_mount`. Path length does not matter.
-- **Older kernels:** `mount(2)` with a single option string using the short
-  `l/<short>` names: absolute symlinks `<state-dir>/l/<12 chars>`, named by
-  the target's hash and checked before use, so about 90–100 lowers fit
-  (Q-151). `mount(8)` is never used.
+- **Older kernels:** `mount(2)` with a single option string, the lowers
+  relative names, as containerd mounts many lowers (ADR-0032, Q-151): each
+  mount makes a fresh `lowers-<m>/` in the stage directory with links `0`,
+  `1`, ... to its lowers, mounts from a short-lived thread that does
+  `unshare(CLONE_FS)` and `fchdir` into it, with `lowerdir=0:1:...`, and
+  removes the links again whatever the result; overlay follows them once,
+  at mount time. The process's working directory never changes, and the
+  500 lowers overlay takes fit one page. `mount(8)` is never used.
 - Whether `lowerdir+` works is probed by creating a mount: a probe of this
   crate that `ranikust` runs at start-up
   ([modes-and-detection](modes-and-detection.md)). The probe mounts a small
@@ -152,7 +160,7 @@ while streaming.
 | character device 0/0 (overlay whiteout) | `.wh.<name>` if a lower layer has `<name>`; otherwise dropped |
 | directory with `user.overlay.opaque=y` | directory plus `.wh..wh..opq` if a lower layer has that directory; otherwise a plain directory (overlay also marks new directories that were renamed) |
 | directory present in a lower layer with identical metadata (copied-up parent) | not a change in itself (BuildKit's `sameDirent`) |
-| `user.overlay.*` and `trusted.overlay.*` xattrs (`origin`, `impure`, `uuid`, `opaque`) | stripped; `security.capability` and other xattrs kept |
+| xattrs | only `security.capability` kept, as BuildKit and kaniko (ADR-0032, Q-025); overlay's own (`origin`, `impure`, `uuid`, `opaque`) and every other one stripped, POSIX ACLs, SELinux labels and IMA/EVM signatures included |
 | `user.overlay.redirect` or `trusted.overlay.redirect` | error: cannot occur with `redirect_dir=nofollow` |
 | files, symlinks, hardlinks within the same upper | kept |
 
@@ -236,11 +244,8 @@ stages as in kaniko.
 ## Open questions
 
 - [Q-049](../open-questions.md#q-049-which-overlay-optimizations-come-after-phase-1) Which overlay optimizations come after Phase 1?
-- [Q-025](../open-questions.md#q-025-are-other-user-xattrs-kept-in-exported-layers) Are other user xattrs kept in exported layers?
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
 - [Q-026](../open-questions.md#q-026-when-and-how-are-layers-merged-near-the-500-lower-limit) When and how are layers merged near the 500-lower limit?
-- [Q-150](../open-questions.md#q-150-is-an-extracted-layer-keyed-by-its-diff-id-alone) Is an extracted layer keyed by its diff ID alone?
-- [Q-151](../open-questions.md#q-151-how-does-the-mount2-fallback-fit-many-layers) How does the mount(2) fallback fit many layers?
 - [Q-152](../open-questions.md#q-152-how-are-read-only-layer-roots-published-without-root) How are read-only layer roots published without root?
 - [Q-013](../open-questions.md#q-013-how-does-the-layer-writer-learn-missing-parent-metadata) How does the layer writer learn missing parent metadata?
 

@@ -116,7 +116,7 @@ fn a_layer_is_published_as_a_directory() {
         p,
         store
             .state_dir()
-            .join("layers/sha256")
+            .join("layers/v2/sha256")
             .join(digest(2).encoded())
     );
     assert!(p.join("etc").is_dir());
@@ -124,6 +124,32 @@ fn a_layer_is_published_as_a_directory() {
         fs::read_link(p.join("etc/link")).unwrap(),
         Path::new("../outside")
     );
+}
+
+#[test]
+fn layers_of_the_first_layout_are_not_reused() {
+    // Before chain IDs (ADR-0032, Q-150) an upper layer was extracted under
+    // its diff ID in `layers/<algorithm>/`; that extraction may hold
+    // content copied from another stack.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let old = store
+        .state_dir()
+        .join("layers/sha256")
+        .join(digest(7).encoded());
+    fs::create_dir_all(old.join("etc")).unwrap();
+    let key = EntryKey::Layer(digest(7));
+    assert_eq!(store.get(&key).unwrap(), None);
+    let filled = AtomicUsize::new(0);
+    let p = store
+        .fill(&key, |_| -> rnk_rootfs::Result<u64> {
+            filled.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        })
+        .unwrap();
+    assert_eq!(filled.load(Ordering::SeqCst), 1);
+    assert_ne!(p, old);
+    assert!(!p.join("etc").exists());
 }
 
 #[test]
@@ -275,7 +301,7 @@ fn a_symlink_planted_as_an_entry_is_refused_not_followed() {
         let kind = if matches!(key, EntryKey::Blob(_)) {
             "blobs"
         } else {
-            "layers"
+            "layers/v2"
         };
         let p = state.join(kind).join("sha256").join(digest(8).encoded());
         fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -299,7 +325,7 @@ fn a_layer_of_the_wrong_type_is_refused() {
     let store = Store::open(&paths(dir.path())).unwrap();
     let p = store
         .state_dir()
-        .join("layers/sha256")
+        .join("layers/v2/sha256")
         .join(digest(9).encoded());
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(&p, "not a directory").unwrap();

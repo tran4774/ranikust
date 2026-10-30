@@ -48,7 +48,9 @@ const MAX_MANIFEST_BYTES: usize = 4 << 20;
 pub struct ClientOptions {
     /// Registries that may be reached over plain HTTP: HTTPS is tried first
     /// and HTTP used when it fails, as go-containerregistry does for kaniko's
-    /// `--insecure`, `--insecure-pull` and `--insecure-registry`.
+    /// `--insecure`, `--insecure-pull` and `--insecure-registry`. A loopback
+    /// registry not listed here is plain HTTP without trying HTTPS, as
+    /// BuildKit (ADR-0032, Q-065).
     pub insecure: BTreeSet<String>,
     /// Registries whose TLS certificate is not verified
     /// (`--skip-tls-verify`, `--skip-tls-verify-pull`,
@@ -179,6 +181,28 @@ struct Host {
     challenge: Option<Challenge>,
     /// Mount tokens by (destination, source) repository.
     mount_tokens: Mutex<BTreeMap<(String, String), ScopeToken>>,
+    /// Credentials are configured but held back: plain HTTP to a registry
+    /// not listed as insecure.
+    withheld: bool,
+}
+
+/// Why configured credentials are not sent, and how to send them.
+const WITHHELD: &str = "its credentials are not sent over plain HTTP to a \
+    registry not listed with --insecure-registry; list it to send them";
+
+/// Whether `e` is a registry refusing access: an authentication failure,
+/// or 401/403 and the distribution codes for them.
+fn is_refusal(e: &Error) -> bool {
+    match e {
+        Error::Auth { .. } => true,
+        Error::Registry { message, .. } => {
+            message.contains("401")
+                || message.contains("403")
+                || message.contains("Unauthorized")
+                || message.contains("Denied")
+        }
+        _ => false,
+    }
 }
 
 /// The scopes a cross-repository mount needs: push to the destination,
@@ -246,6 +270,11 @@ impl Client {
     /// against the reference's digest, if any, and the registry's
     /// `Docker-Content-Digest`, if sent.
     pub async fn pull_manifest(&self, reference: &Reference) -> Result<RawManifest, Error> {
+        let r = self.pull_manifest_once(reference).await;
+        self.hint(reference.registry(), r).await
+    }
+
+    async fn pull_manifest_once(&self, reference: &Reference) -> Result<RawManifest, Error> {
         let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(&reference.to_string())?;
         self.authorize(
@@ -355,6 +384,16 @@ impl Client {
         blob: &Descriptor,
         out: &mut impl BlobSink,
     ) -> Result<(), Error> {
+        let r = self.pull_blob_once(reference, blob, out).await;
+        self.hint(reference.registry(), r).await
+    }
+
+    async fn pull_blob_once(
+        &self,
+        reference: &Reference,
+        blob: &Descriptor,
+        out: &mut impl BlobSink,
+    ) -> Result<(), Error> {
         let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(&reference.name())?;
         self.authorize(
@@ -415,6 +454,15 @@ impl Client {
     /// Not a span of its own: [`Client::push_blob`] checks existence inside
     /// its span.
     pub async fn blob_exists(&self, reference: &Reference, digest: &Digest) -> Result<bool, Error> {
+        let r = self.blob_exists_once(reference, digest).await;
+        self.hint(reference.registry(), r).await
+    }
+
+    async fn blob_exists_once(
+        &self,
+        reference: &Reference,
+        digest: &Digest,
+    ) -> Result<bool, Error> {
         let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(&reference.name())?;
         self.authorize(
@@ -447,7 +495,8 @@ impl Client {
         blob: &Descriptor,
         body: &BlobBody,
     ) -> Result<PushOutcome, Error> {
-        self.push(reference, None, blob, body).await
+        let r = self.push(reference, None, blob, body).await;
+        self.hint(reference.registry(), r).await
     }
 
     /// Like [`Client::push_blob`], but first asks the registry to mount the
@@ -461,7 +510,8 @@ impl Client {
         blob: &Descriptor,
         body: &BlobBody,
     ) -> Result<PushOutcome, Error> {
-        self.push(reference, Some(from), blob, body).await
+        let r = self.push(reference, Some(from), blob, body).await;
+        self.hint(reference.registry(), r).await
     }
 
     async fn push(
@@ -677,6 +727,15 @@ impl Client {
         reference: &Reference,
         manifest: &RawManifest,
     ) -> Result<Digest, Error> {
+        let r = self.push_manifest_once(reference, manifest).await;
+        self.hint(reference.registry(), r).await
+    }
+
+    async fn push_manifest_once(
+        &self,
+        reference: &Reference,
+        manifest: &RawManifest,
+    ) -> Result<Digest, Error> {
         if reference.digest().is_some() || reference.tag().is_none() {
             return Err(Error::Reference {
                 reference: reference.to_string(),
@@ -729,6 +788,25 @@ impl Client {
     }
 
     /// The connection state for `registry`, created on first use.
+    /// Adds to an access refusal by a registry whose credentials were held
+    /// back over plain HTTP (see [`Client::connect`]) how to send them.
+    async fn hint<T>(&self, registry: &str, r: Result<T, Error>) -> Result<T, Error> {
+        let Err(e) = r else { return r };
+        let withheld = self
+            .hosts
+            .lock()
+            .await
+            .get(registry)
+            .is_some_and(|h| h.withheld);
+        if withheld && is_refusal(&e) {
+            return Err(Error::Auth {
+                host: registry.to_owned(),
+                reason: format!("{e}; {WITHHELD}"),
+            });
+        }
+        Err(e)
+    }
+
     async fn host(&self, registry: &str) -> Result<Arc<Host>, Error> {
         let mut hosts = self.hosts.lock().await;
         if let Some(host) = hosts.get(registry) {
@@ -747,7 +825,16 @@ impl Client {
         let mut http = reqwest::Client::builder()
             .tls_certs_only(trust.to_reqwest()?)
             .danger_accept_invalid_certs(skip_verify)
-            .user_agent(self.options.user_agent);
+            .user_agent(self.options.user_agent)
+            // `localhost` is loopback, whatever a resolver says: plain HTTP
+            // is chosen for it as a loopback address.
+            .resolve_to_addrs(
+                "localhost",
+                &[
+                    std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+                    std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
+                ],
+            );
         if let Some(timeout) = self.options.connect_timeout {
             http = http.connect_timeout(timeout);
         }
@@ -767,10 +854,20 @@ impl Client {
         let span = debug_span!("rnk_registry.auth", host = registry, requests = Empty);
         let mut requests = 0u64;
         let pinged = async {
-            // [open: Q-065] kaniko also falls back to HTTP, unasked, for
-            // localhost and private-network registries; only listed ones do
-            // here.
+            // As BuildKit (ADR-0032, Q-065): a loopback registry not listed
+            // as insecure is plain HTTP, HTTPS not even tried
+            // (`util/resolver/resolver.go`); a listed one tries HTTPS, then
+            // HTTP. Private-network addresses are not special.
             let insecure = self.options.insecure.contains(registry);
+            if !insecure && is_loopback(registry) {
+                let plain = retry(&self.options.retry, async |_| {
+                    requests += 1;
+                    ping(&http, "http", endpoint, registry, false).await
+                })
+                .await
+                .0?;
+                return Ok(("http", plain));
+            }
             let https = retry(&self.options.retry, async |_| {
                 requests += 1;
                 ping(&http, "https", endpoint, registry, insecure).await
@@ -817,8 +914,25 @@ impl Client {
             ))
         })?;
 
-        let credential = self.credentials.get(registry);
-        if credential.is_none()
+        let configured = self.credentials.get(registry);
+        // Unlike BuildKit's, a ranikust `RUN` shares the host's network
+        // namespace and may sniff `lo` or serve a loopback port: credentials
+        // go over plain HTTP only to a registry the operator listed as
+        // insecure (threat model T11). Any other plain-HTTP registry, a
+        // loopback one, is accessed anonymously.
+        let withheld =
+            scheme == "http" && !self.options.insecure.contains(registry) && configured.is_some();
+        let credential = if withheld { None } else { configured };
+        if withheld {
+            if matches!(ping, Ping::Basic) {
+                return Err(Error::Auth {
+                    host: registry.to_owned(),
+                    reason: format!("it asks for basic authentication; {WITHHELD}"),
+                });
+            }
+            tracing::warn!(registry, "{WITHHELD}; accessing it anonymously");
+        }
+        if configured.is_none()
             && let Some(helper) = self.credentials.helper(registry)
         {
             tracing::warn!(
@@ -847,6 +961,7 @@ impl Client {
             base_url: format!("{scheme}://{endpoint}"),
             challenge,
             mount_tokens: Mutex::new(BTreeMap::new()),
+            withheld,
         })
     }
 
@@ -942,6 +1057,34 @@ impl Client {
         span.record("requests", requests);
         result
     }
+}
+
+/// Whether `registry` (`host[:port]`) is a loopback address, as
+/// containerd's `MatchLocalhost`: `localhost`, `127.0.0.0/8` or `::1`,
+/// with or without a port. Like it, names that only resolve to loopback,
+/// and addresses in octal, decimal or hex form, do not count.
+fn is_loopback(registry: &str) -> bool {
+    if registry == "::1" || registry == "[::1]" {
+        return true;
+    }
+    let host = match registry.rsplit_once(':') {
+        // `[v6]:port`, or `v4:port` and `name:port`.
+        Some((host, port)) if !host.contains(':') || host.starts_with('[') => {
+            if port.is_empty() {
+                return false;
+            }
+            host.trim_start_matches('[').trim_end_matches(']')
+        }
+        // A bare IPv6 address, or no port at all.
+        _ => registry,
+    };
+    let host = if host == "localhost" {
+        "127.0.0.1"
+    } else {
+        host
+    };
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `GET /v2/`: what the registry asks for.
@@ -1150,6 +1293,34 @@ fn raw_manifest(body: Bytes, digest: &str) -> Result<RawManifest, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_registries_are_matched_as_containerd_does() {
+        for host in [
+            "localhost",
+            "localhost:5000",
+            "127.0.0.1",
+            "127.0.0.1:5000",
+            "127.1.2.3:80",
+            "::1",
+            "[::1]",
+            "[::1]:5000",
+        ] {
+            assert!(is_loopback(host), "{host}");
+        }
+        for host in [
+            "registry.example",
+            "localhost.example:5000",
+            "10.0.0.1:5000",
+            "192.168.1.2",
+            "registry.local",
+            "128.0.0.1",
+            "[::2]:5000",
+            "localhost:",
+        ] {
+            assert!(!is_loopback(host), "{host}");
+        }
+    }
 
     #[test]
     fn accepted_media_types_are_the_manifest_and_index_types() {
