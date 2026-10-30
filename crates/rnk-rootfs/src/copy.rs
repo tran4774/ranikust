@@ -36,8 +36,9 @@ pub struct CopyOpts {
     /// owner. Context sources without `--chown` pass `0:0`, Docker's rule.
     pub owner: Option<Owner>,
     /// `--chmod` for every copied entry but symlinks, directories included,
-    /// as BuildKit applies it (Q-120): an octal mode replaces the bits and
-    /// is also the mode of the directories the copy creates; a symbolic one
+    /// as BuildKit applies it (Q-120): an octal mode replaces the bits, and
+    /// its permission bits are the mode of the directories the copy
+    /// creates; a symbolic one
     /// changes each entry's own bits. `None` keeps the raw bits of the
     /// source, and created directories get `0755`.
     pub chmod: Option<Chmod>,
@@ -49,9 +50,10 @@ pub struct CopyOpts {
 ///   one included, as BuildKit (Q-120); `""` or `/` names the root of
 ///   `src`.
 /// - A directory has its contents copied into the directory `to`: `to`
-///   and its missing parents are created (mode `0755`, owner
-///   [`CopyOpts::owner`]; `to` gets the source directory's owner when
-///   that is `None`, and its times). An existing `to` is merged into and
+///   and its missing parents are created (an octal `--chmod`'s permission
+///   bits, else `0755`; owner [`CopyOpts::owner`], or the process's when
+///   that is `None`, as BuildKit's `MkdirAll`; `to` gets the source
+///   directory's times). An existing `to` is merged into and
 ///   keeps its metadata; a symlink there is followed inside `dst`, a
 ///   non-directory replaced.
 /// - Anything else is copied to exactly `to`, whose missing parents are
@@ -127,8 +129,10 @@ pub fn copy_filtered(
         dst_dirs: HashSet::new(),
         links: HashMap::new(),
         stats: Stats::default(),
+        skipped: meta::SkippedXattrs::default(),
     };
     let r = c.run(src, from.as_ref(), to.as_ref());
+    c.skipped.warn();
     span.record("files", c.stats.files);
     span.record("dirs", c.stats.dirs);
     span.record("bytes", c.stats.bytes);
@@ -158,6 +162,8 @@ struct Copier<'r> {
     /// later names link to it.
     links: HashMap<Inode, PathBuf>,
     stats: Stats,
+    /// Xattrs left out, warned about once at the end.
+    skipped: meta::SkippedXattrs,
 }
 
 /// One source directory being copied. One frame per level holds two fds,
@@ -230,7 +236,7 @@ impl Copier<'_> {
                         file_type: FileType::Directory,
                         parent: None,
                     };
-                    meta::apply_lenient(&h, m, &frame.to)?;
+                    meta::apply_lenient(&h, m, &frame.to, &self.skipped)?;
                 }
                 continue;
             };
@@ -256,12 +262,12 @@ impl Copier<'_> {
                     self.check_not_inside(&st, &from)?;
                     let s = meta::reopen(pin.as_fd(), OFlags::RDONLY | OFlags::DIRECTORY, &from)?;
                     let (d, mut m) = self.dir_entry(top.dst.as_fd(), &name, &to, &st)?;
-                    m.xattrs = meta::read_xattrs(
+                    m.xattrs = meta::read_xattrs_lenient(
                         s.as_fd(),
                         FileType::Directory,
                         None,
-                        Xattrs::Copy,
                         &from,
+                        &self.skipped,
                     )?;
                     let names = sorted_names(s.as_fd(), &from)?;
                     stack.push(Frame {
@@ -310,8 +316,11 @@ impl Copier<'_> {
         rustix::fs::mkdirat(&pfd, name, Mode::from_raw_mode(DIR_PENDING_MODE))
             .map_err(|e| io_err("mkdir", to, e))?;
         let fd = open_dir(pfd.as_fd(), name, to)?;
-        let (uid, gid) = self.owner_of(st);
-        self.set_owner(fd.as_fd(), pfd.as_fd(), name, uid, gid, to)?;
+        // BuildKit makes it with `MkdirAll`, owned by `--chown` or else by
+        // the process, not by the source directory (`fsutil copy.go:173`).
+        if let Some(o) = self.o.owner {
+            self.set_owner(fd.as_fd(), pfd.as_fd(), name, o.uid, o.gid, to)?;
+        }
         self.stats.dirs += 1;
         let pending = Meta {
             mode: Some(Chmod::created_dir_mode(self.o.chmod.as_ref())),
@@ -424,7 +433,17 @@ impl Copier<'_> {
             mtime: Some(st.mtime),
             xattrs: Vec::new(),
         };
-        self.stats.bytes += copy_node(pin, st, sparent, Xattrs::Copy, pfd, name, m, to)?;
+        self.stats.bytes += copy_node(
+            pin,
+            st,
+            sparent,
+            Xattrs::Copy,
+            Some(&self.skipped),
+            pfd,
+            name,
+            m,
+            to,
+        )?;
         self.stats.files += 1;
         if st.nlink > 1 {
             self.links.insert(key, to.to_owned());
@@ -540,19 +559,20 @@ pub(crate) fn copy_node(
     st: &Stat,
     sparent: Option<(BorrowedFd<'_>, &OsStr)>,
     which: Xattrs,
+    skipped: Option<&meta::SkippedXattrs>,
     pfd: BorrowedFd<'_>,
     name: &OsStr,
     mut m: Meta,
     path: &Path,
 ) -> Result<u64> {
     let file_type = st.file_type();
-    m.xattrs = meta::read_xattrs(pin, file_type, sparent, which, path)?;
-    let set_meta = |h: &Handle<'_>, m: &Meta| {
-        if which == Xattrs::Copy {
-            meta::apply_lenient(h, m, path)
-        } else {
-            meta::apply(h, m, path)
-        }
+    m.xattrs = match skipped {
+        Some(s) => meta::read_xattrs_lenient(pin, file_type, sparent, path, s)?,
+        None => meta::read_xattrs(pin, file_type, sparent, which, path)?,
+    };
+    let set_meta = |h: &Handle<'_>, m: &Meta| match skipped {
+        Some(s) => meta::apply_lenient(h, m, path, s),
+        None => meta::apply(h, m, path),
     };
     // A symlink or a node made by name: pinned again, never followed.
     let set_meta_at = |pfd: BorrowedFd<'_>, name: &OsStr, m: &Meta| -> Result<()> {

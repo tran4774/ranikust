@@ -175,9 +175,20 @@ pub struct RootFs {
     #[serde(rename = "type")]
     pub kind: String,
     /// Digest of each layer's uncompressed tar, base first. These are not the
-    /// manifest's layer digests, which cover the compressed blobs.
-    #[serde(deserialize_with = "null_as_default")]
+    /// manifest's layer digests, which cover the compressed blobs. Written
+    /// as `null` when empty, as BuildKit writes a nil slice
+    /// (`buildkit@cd8ee244 exporter/containerimage/writer.go:798-807`).
+    #[serde(deserialize_with = "null_as_default", serialize_with = "empty_as_null")]
     pub diff_ids: Vec<Digest>,
+}
+
+/// An empty list as `null`, as Go marshals a nil slice.
+fn empty_as_null<S: serde::Serializer>(v: &[Digest], serializer: S) -> Result<S::Ok, S::Error> {
+    if v.is_empty() {
+        serializer.serialize_none()
+    } else {
+        v.serialize(serializer)
+    }
 }
 
 impl Default for RootFs {
@@ -377,7 +388,7 @@ mod tests {
             serde_json::to_value(&c).unwrap(),
             json!({
                 "architecture": "amd64", "os": "linux", "config": {},
-                "rootfs": {"type": "layers", "diff_ids": []}
+                "rootfs": {"type": "layers", "diff_ids": null}
             })
         );
     }
@@ -412,7 +423,7 @@ mod tests {
             json!({
                 "architecture": "", "os": "",
                 "config": {"Healthcheck": {}},
-                "rootfs": {"type": "layers", "diff_ids": []},
+                "rootfs": {"type": "layers", "diff_ids": null},
                 "history": [{"created_by": "RUN x"}]
             })
         );
@@ -427,7 +438,7 @@ mod tests {
             serde_json::to_value(&c).unwrap(),
             json!({
                 "architecture": "", "os": "", "config": {},
-                "rootfs": {"type": "layers", "diff_ids": []}
+                "rootfs": {"type": "layers", "diff_ids": null}
             })
         );
         let c = ImageConfig::from_json(br#"{"rootfs":{}}"#).unwrap();

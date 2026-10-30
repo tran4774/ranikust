@@ -7,9 +7,9 @@
 //! for `CMD`/`ENTRYPOINT`, `%v` for `VOLUME`/`SHELL`, `%+v` of the health
 //! config for `HEALTHCHECK`. The helpers here print what those verbs print.
 
-use std::fmt::Write as _;
-
 use rnk_dockerfile::{ArgDecl, EnvList, Healthcheck};
+
+mod isprint;
 
 /// Go's `fmt.Sprintf("%v", list)` of a `[]string`: `[a b c]`.
 pub(crate) fn go_list(items: &[String]) -> String {
@@ -23,37 +23,76 @@ pub(crate) fn go_quoted_list(items: &[String]) -> String {
     format!("[{}]", quoted.join(" "))
 }
 
-/// Go's `strconv.Quote`: double quotes, Go escapes for `"`, `\` and control
-/// characters, printable characters as they are.
+/// Go's `strconv.Quote` (`appendEscapedRune`): double quotes; `"` and `\`
+/// escaped; a character Go's `strconv.IsPrint` accepts kept as it is; any
+/// other written as `\a`…`\v`, `\xHH` below U+0080, `\uHHHH` or
+/// `\UHHHHHHHH`.
 pub(crate) fn go_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\x07' => out.push_str("\\a"),
-            '\x08' => out.push_str("\\b"),
-            '\x0c' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\x0b' => out.push_str("\\v"),
-            c if (c as u32) < 0x20 || c == '\x7f' => {
-                let _ = write!(out, "\\x{:02x}", c as u32);
+        let escaped = match c {
+            '"' => "\\\"".to_owned(),
+            '\\' => "\\\\".to_owned(),
+            c if go_is_print(c) => {
+                out.push(c);
+                continue;
             }
-            c if c.is_control() => {
-                if (c as u32) <= 0xffff {
-                    let _ = write!(out, "\\u{:04x}", c as u32);
-                } else {
-                    let _ = write!(out, "\\U{:08x}", c as u32);
-                }
-            }
-            c => out.push(c),
-        }
+            '\x07' => "\\a".to_owned(),
+            '\x08' => "\\b".to_owned(),
+            '\x0c' => "\\f".to_owned(),
+            '\n' => "\\n".to_owned(),
+            '\r' => "\\r".to_owned(),
+            '\t' => "\\t".to_owned(),
+            '\x0b' => "\\v".to_owned(),
+            c if (c as u32) < 0x20 || c == '\x7f' => format!("\\x{:02x}", c as u32),
+            c if (c as u32) < 0x1_0000 => format!("\\u{:04x}", c as u32),
+            c => format!("\\U{:08x}", c as u32),
+        };
+        out.push_str(&escaped);
     }
     out.push('"');
     out
+}
+
+/// Go's `strconv.IsPrint`: a letter, mark, number, punctuation, symbol or
+/// the ASCII space, by Unicode 15.0 as Go 1.21's tables give them.
+fn go_is_print(c: char) -> bool {
+    let r = c as u32;
+    if r <= 0xff {
+        return (0x20..=0x7e).contains(&r) || ((0xa1..=0xff).contains(&r) && r != 0xad);
+    }
+    // The first index whose value is not below `x`, as Go's `bsearch`.
+    fn first_ge<T: Ord + Copy>(a: &[T], x: T) -> usize {
+        a.partition_point(|&v| v < x)
+    }
+    if let Ok(rr) = u16::try_from(r) {
+        let i = first_ge(&isprint::IS_PRINT16, rr);
+        if i >= isprint::IS_PRINT16.len()
+            || rr < isprint::IS_PRINT16[i & !1]
+            || isprint::IS_PRINT16[i | 1] < rr
+        {
+            return false;
+        }
+        let j = first_ge(&isprint::IS_NOT_PRINT16, rr);
+        return j >= isprint::IS_NOT_PRINT16.len() || isprint::IS_NOT_PRINT16[j] != rr;
+    }
+    let i = first_ge(&isprint::IS_PRINT32, r);
+    if i >= isprint::IS_PRINT32.len()
+        || r < isprint::IS_PRINT32[i & !1]
+        || isprint::IS_PRINT32[i | 1] < r
+    {
+        return false;
+    }
+    if r >= 0x2_0000 {
+        return true;
+    }
+    // Below 0x20000, so it fits once 0x10000 is taken off.
+    let Ok(rr) = u16::try_from(r - 0x1_0000) else {
+        return false;
+    };
+    let j = first_ge(&isprint::IS_NOT_PRINT32, rr);
+    j >= isprint::IS_NOT_PRINT32.len() || isprint::IS_NOT_PRINT32[j] != rr
 }
 
 /// Go's `time.Duration.String`: `0s`, `500ms`, `1.5s`, `1m30s`, `1h0m0s`.
@@ -160,18 +199,18 @@ pub(crate) fn copy(
 ) -> String {
     let mut out = String::from(if add { "ADD" } else { "COPY" });
     if !chown.is_empty() {
-        let _ = write!(out, " --chown={chown}");
+        out.push_str(&format!(" --chown={chown}"));
     }
     if !chmod.is_empty() {
-        let _ = write!(out, " --chmod={chmod}");
+        out.push_str(&format!(" --chmod={chmod}"));
     }
     for s in sources {
-        let _ = write!(out, " {s}");
+        out.push_str(&format!(" {s}"));
     }
     for h in heredocs {
-        let _ = write!(out, " <<{h}");
+        out.push_str(&format!(" <<{h}"));
     }
-    let _ = write!(out, " {dest}");
+    out.push_str(&format!(" {dest}"));
     out
 }
 
@@ -194,6 +233,28 @@ mod tests {
             r#"["/bin/sh" "-c" "echo \"hi\"\tx\\"]"#
         );
         assert_eq!(go_quote("a\x01é\u{85}"), r#""a\x01é\u0085""#);
+    }
+
+    #[test]
+    fn quote_escapes_what_go_does_not_print() {
+        // Checked against Go 1.21's strconv.Quote.
+        let cases = [
+            ("\u{a0}", r#""\u00a0""#),   // no-break space: Zs, not printed
+            ("\u{ad}", r#""\u00ad""#),   // soft hyphen: Cf
+            ("\u{200b}", r#""\u200b""#), // zero width space: Cf
+            ("\u{2028}", r#""\u2028""#), // line separator: Zl
+            ("\u{2029}", r#""\u2029""#), // paragraph separator: Zp
+            ("\u{e000}", r#""\ue000""#), // private use
+            ("\u{378}", r#""\u0378""#),  // unassigned
+            ("\u{fffe}", r#""\ufffe""#), // noncharacter
+            ("\u{10ffff}", r#""\U0010ffff""#),
+            ("\u{1f600}", "\"\u{1f600}\""),     // emoji: printed
+            ("日本\u{301}", "\"日本\u{301}\""), // marks: printed
+            ("\x7f", r#""\x7f""#),
+        ];
+        for (input, want) in cases {
+            assert_eq!(go_quote(input), want, "{input:?}");
+        }
     }
 
     #[test]

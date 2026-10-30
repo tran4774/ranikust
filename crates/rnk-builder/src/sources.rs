@@ -143,13 +143,13 @@ impl ContextFiles {
             vec![clean.clone()]
         };
         if named.is_empty() {
+            // The walk's start must exist; a file there, or on the way to
+            // it, matches nothing (`ENOTDIR`), as fsutil's walk.
             let base = wildcard_base(&text);
-            if !base.as_os_str().is_empty() {
-                // The directory the walk would start in must be there.
-                let (_, dir) = self.follow(&base, source)?;
-                if !dir {
-                    return Err(not_found(source));
-                }
+            if let Err(e) = self.follow(&base, source)
+                && !self.under_a_file(&base, source)
+            {
+                return Err(e);
             }
             return Ok(Vec::new());
         }
@@ -164,6 +164,20 @@ impl ContextFiles {
                 })
             })
             .collect()
+    }
+
+    /// Whether `path`, or a directory on the way to it, is a kept file.
+    fn under_a_file(&self, path: &Path, source: &str) -> bool {
+        let mut prefix = PathBuf::new();
+        for c in path.components() {
+            prefix.push(c);
+            match self.follow(&prefix, source) {
+                Ok((_, false)) => return true,
+                Ok((_, true)) => {}
+                Err(_) => return false,
+            }
+        }
+        false
     }
 
     /// `path` with every symlink in it resolved inside the context, through
@@ -296,12 +310,11 @@ pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<Resol
     out.sort_by(|a, b| a.named.cmp(&b.named));
     if out.is_empty() {
         let base = wildcard_base(&text);
+        // A missing start is an error; a file there matches nothing.
         match root.open_at(&base, &OpenHow::path().directory()) {
             Ok(_) => {}
-            Err(e) if matches!(e.raw_os_error(), Some(c) if c == libc_enoent() || c == libc_enotdir()) =>
-            {
-                return Err(not_found(source));
-            }
+            Err(e) if e.raw_os_error() == Some(libc_enotdir()) => {}
+            Err(e) if e.raw_os_error() == Some(libc_enoent()) => return Err(not_found(source)),
             Err(e) => return Err(e.into()),
         }
     }
@@ -440,7 +453,9 @@ mod tests {
         assert_eq!(f.resolve("*.rs").unwrap(), []);
         assert_eq!(f.resolve("src/*.rs").unwrap(), []);
         assert!(matches!(f.resolve("lib/*.rs"), Err(Error::Invalid(_))));
-        assert!(matches!(f.resolve("a.js/*"), Err(Error::Invalid(_))));
+        // Under a file: nothing matches, no error (ENOTDIR).
+        assert_eq!(f.resolve("a.js/*").unwrap(), []);
+        assert_eq!(f.resolve("a.js/x/*").unwrap(), []);
         assert!(matches!(f.resolve("[a"), Err(Error::Invalid(_))));
     }
 

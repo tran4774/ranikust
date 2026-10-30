@@ -71,11 +71,13 @@ impl Chmod {
         }
     }
 
-    /// The mode of the directories a copy creates: an octal mode itself,
-    /// else `0o755`, as BuildKit (`fsutil copy.go:85-89`).
+    /// The mode of the directories a copy creates: an octal mode's
+    /// permission bits, else `0o755`, as BuildKit's `MkdirAll` takes
+    /// `os.FileMode(perm)`, which carries no setuid, setgid or sticky bit
+    /// (`fsutil copy.go:85-89`).
     pub fn created_dir_mode(chmod: Option<&Self>) -> u32 {
         match chmod {
-            Some(Self::Octal(m)) => *m & 0o7777,
+            Some(Self::Octal(m)) => *m & 0o777,
             Some(Self::Symbolic(_)) | None => 0o755,
         }
     }
@@ -338,6 +340,7 @@ mod tests {
     fn created_directories_take_only_an_octal_mode() {
         assert_eq!(Chmod::created_dir_mode(None), 0o755);
         assert_eq!(Chmod::created_dir_mode(Some(&Chmod::Octal(0o700))), 0o700);
+        assert_eq!(Chmod::created_dir_mode(Some(&Chmod::Octal(0o7755))), 0o755);
         let sym = Chmod::parse("u+x").unwrap();
         assert_eq!(Chmod::created_dir_mode(Some(&sym)), 0o755);
     }

@@ -202,9 +202,11 @@ is `extract`.
   `security.capability` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1533`);
   layers carry only that one either way (Q-025). Hardlinks inside the
   copied tree stay hardlinks. Directories the copy creates above `to`, and
-  `to` itself for a directory's contents, get an octal `--chmod`, else
-  `0755` (BuildKit's `MkdirAll` in `fsutil copy/copy.go:85-89`), owned by
-  `opts.owner` (`to`: else the source directory's owner, with its times);
+  `to` itself for a directory's contents, get an octal `--chmod`'s
+  permission bits, else `0755` (BuildKit's `MkdirAll` in `fsutil
+  copy/copy.go:85-89`), owned by `opts.owner`, or by the process when it is
+  `None`, as `MkdirAll` leaves them (`to` takes the source directory's
+  times);
   an existing `to` keeps its metadata. A directory's mode and
   times are set through the fd it was written through when its entries
   are done, deepest first; nothing is re-resolved by path, and memory and

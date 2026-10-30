@@ -513,8 +513,17 @@ impl Extractor<'_> {
             xattrs: Vec::new(),
         };
         let sparent = Some((lpfd.as_fd(), last));
-        self.stats.bytes_written +=
-            copy::copy_node(pin.as_fd(), &st, sparent, Xattrs::Layer, pfd, name, m, path)?;
+        self.stats.bytes_written += copy::copy_node(
+            pin.as_fd(),
+            &st,
+            sparent,
+            Xattrs::Layer,
+            None,
+            pfd,
+            name,
+            m,
+            path,
+        )?;
         self.stats.hardlinks_copied += 1;
         self.copied.insert(key, path.to_owned());
         Ok(())

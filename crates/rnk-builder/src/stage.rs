@@ -535,12 +535,13 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
     fn workdir(&mut self, dir: String) -> Result<()> {
         ConfigEdit::Workdir(dir).apply(&mut self.config)?;
         let wd = self.working_dir();
-        let text = format!(
-            "WORKDIR {}",
-            self.run_field(|c| c.working_dir.as_ref())
-                .unwrap_or_else(|| "/".to_owned())
-        );
-        if wd == Path::new("/") {
+        let written = self
+            .run_field(|c| c.working_dir.as_ref())
+            .unwrap_or_else(|| "/".to_owned());
+        let text = format!("WORKDIR {written}");
+        // BuildKit compares the string: `/./`, kept as written, is not `/`
+        // and gets its (empty) layer (`convert.go:1546`).
+        if written == "/" {
             self.history(&text);
             return Ok(());
         }
