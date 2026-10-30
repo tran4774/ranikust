@@ -8,6 +8,7 @@ use rnk_dockerfile::{StageGraph, StageNode};
 use tokio_util::sync::CancellationToken;
 
 use crate::slots::{RunPermit, RunSlots};
+use crate::unit::Placement;
 
 /// Builds stages for the scheduler: `rnk-builder` in a build, fakes in
 /// tests.
@@ -66,6 +67,11 @@ pub struct PrepareJob<'a> {
     pub stage: usize,
     /// The stage.
     pub node: &'a StageNode,
+    /// Stages folded into this one, base first: the base to pull is the
+    /// first one's ([`crate::Unit::folded`]).
+    pub folded: &'a [usize],
+    /// Where the stage's root is.
+    pub placement: Placement,
     /// The whole graph.
     pub graph: &'a StageGraph,
     /// The stage's log tag.
@@ -84,10 +90,16 @@ pub struct StageJob<'a, R: StageRunner + ?Sized> {
     pub stage: usize,
     /// The stage.
     pub node: &'a StageNode,
+    /// Stages folded into this one, base first, to run before its own
+    /// instructions in the same root ([`crate::Unit::folded`]).
+    pub folded: &'a [usize],
+    /// Where the stage's root is.
+    pub placement: Placement,
     /// The whole graph.
     pub graph: &'a StageGraph,
     /// The outputs of the stages it depends on, in
-    /// [`StageNode::dependencies`] order: the base stage first.
+    /// [`StageNode::dependencies`] order over the chain's stages, base
+    /// first, without the folded stages themselves.
     pub deps: Vec<(usize, Arc<R::Output>)>,
     /// What [`StageRunner::prepare`] returned for this stage.
     pub prepared: R::Prepared,

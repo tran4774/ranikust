@@ -33,16 +33,23 @@ impl Scheduler {
     pub fn with_memory_gate(self, gate: impl MemoryGate + 'static) -> Self;
     pub fn jobs(&self) -> NonZeroUsize;
     pub async fn run<R: StageRunner>(&self, graph: &StageGraph, runner: &R, cancel: &CancellationToken)
-        -> Result<BuildSummary<R::Output>, Error<R::Error>>;  // needs a tokio runtime with the timer
+        -> Result<BuildSummary<R::Output>, Error<R::Error>>;  // needs a tokio runtime with the timer; = run_units(own_root_units)
+    pub async fn run_units<R: StageRunner>(&self, graph, units: &[Unit], runner, cancel)
+        -> Result<BuildSummary<R::Output>, Error<R::Error>>;  // explicit units, dependencies earlier in the list
 }
+pub enum Placement { Own, Shared }   // Shared: the `/` of sequential kaniko mode, one unit at a time, in unit order
+pub struct Unit { pub stage: usize, pub folded: Vec<usize>, pub placement: Placement }  // Unit::own(stage), chain()
+pub fn own_root_units(g: &StageGraph) -> Vec<Unit>;               // graph.needed, Own
+pub fn shared_root_units(plan: &[rnk_dockerfile::SquashedStage]) -> Vec<Unit>; // kaniko's squashed plan, Shared
 pub trait StageRunner: Sync {          // rnk-builder's side; T0 uses fakes
     type Prepared: Send; type Output: Send + Sync; type Error: std::error::Error + Send + Sync + 'static;
     fn prepare(&self, job: PrepareJob<'_>) -> impl Future<Output = Result<Self::Prepared, Self::Error>> + Send;
     fn build(&self, job: StageJob<'_, Self>) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send;
 }
-pub struct PrepareJob<'a> { pub stage: usize, pub node: &'a StageNode, pub graph: &'a StageGraph,
+pub struct PrepareJob<'a> { pub stage: usize, pub node: &'a StageNode, pub folded: &'a [usize],
+                            pub placement: Placement, pub graph: &'a StageGraph,
                             pub tag: LogTag, pub cancel: CancellationToken }
-pub struct StageJob<'a, R> { pub stage, pub node, pub graph, pub deps: Vec<(usize, Arc<R::Output>)>,
+pub struct StageJob<'a, R> { pub stage, pub node, pub folded, pub placement, pub graph, pub deps: Vec<(usize, Arc<R::Output>)>,
                              pub prepared: R::Prepared, pub tag: LogTag, pub cancel: CancellationToken, .. }
 impl StageJob<'a, R> { pub async fn run_slot(&self) -> Option<RunPermit<'a>>; pub fn slots(&self) -> &'a RunSlots; }
 pub struct RunSlots;   // one --jobs semaphore for all stages; a permit per RUN
@@ -60,6 +67,12 @@ pub use tokio_util::sync::CancellationToken;
   for every one of them before any `build`; a stage's `build` starts when
   its `prepare` and its dependencies are done and the memory gate admits
   it. `deps` are in `StageNode::dependencies()` order, base first.
+- `run_units` runs explicit units: a unit's `deps` are the dependencies
+  of every stage of its chain (folded stages first) outside the chain. A
+  `Shared` unit waits, besides its dependencies, for the `Shared` unit
+  before it in the list: shared stages never overlap and run in list
+  order whatever finishes first; `Own` units still run beside them. The
+  caller warns once that `--jobs` changes nothing on the shared root.
 - The scheduler drives every stage's future from the one task that awaits
   `run`, so a runner moves blocking work (a `RUN`, extraction,
   compression) to its own threads. Nothing is `tokio::spawn`ed, so the
@@ -98,12 +111,13 @@ pub use tokio_util::sync::CancellationToken;
   and in I/O (pulls, compression, pushes).
 - `--jobs` counts `RUN`s across all stages; the default honours the cgroup
   CPU quota and the affinity mask and is at least 1.
-- A stage whose root is `Shared` (`/`) runs alone; sequential kaniko mode
-  ignores `--jobs` for stages, while pulls and compression stay parallel
-  (Phase 2: not built yet).
+- A unit whose root is `Shared` (`/`) never overlaps another shared unit,
+  and shared units run in the order given; pulls (`prepare`) and
+  compression stay parallel (`run_units`).
 - Edges: `FROM <stage>`, `COPY --from`, `RUN --mount=...,from=<stage>`,
   `ONBUILD` of a base stage. Stages off the path to `--target` (or the last
-  stage) are dropped; overlay mode never squashes stages.
+  stage) are dropped; overlay mode never squashes stages, sequential
+  kaniko mode runs `rnk_dockerfile::squash_for_shared_root`'s units.
 - The first failure cancels the others (their `RUN` trees die with their PID
   namespaces); the exit code is the first failure's, as in BuildKit.
 - No global state: `BuildPaths` and configuration travel as values. Log
@@ -125,7 +139,9 @@ pub use tokio_util::sync::CancellationToken;
 
 - **T0** (fake builder closure): random DAGs and completion orders give the
   same outputs (property test); permits never exceed `--jobs`; a shared root
-  never overlaps another stage; a failure cancels siblings and returns the
+  never overlaps another stage and keeps unit order on a multi-thread
+  runtime, a squashed chain's folded `COPY --from` becomes its dependency,
+  units out of order refused (`tests/units.rs`); a failure cancels siblings and returns the
   first exit code; pruning to `--target`; up-front work starts for all stages.
 - **T1/T2:** W3 with `--jobs` 1, 2 and default gives one digest; a cancelled
   build leaves no mount, process or stub (T2, VM only). Timing comes from the
@@ -165,14 +181,14 @@ pub use tokio_util::sync::CancellationToken;
   random DAGs, completion orders and `--jobs`), the spans. Left: the
   `StageRunner` impl for `rnk-builder` (task 11), the W3 digest test with
   `--jobs` 1, 2 and default (task 13), measuring the gate (Q-030), and
-  for Phase 2 the hook that runs a stage on the shared `/` alone (the
-  runner telling the scheduler a stage's root kind before it is admitted).
+  Phase 2: `Placement::Shared` units run one at a time in unit order
+  (`run_units`, built).
   The
   first failure is the first by completion time, as in BuildKit; two
   failures at once may be reported either way.
 - Memory-aware limit: decided (ADR-0013); add the hook and measure now, the
   thresholds stay [open: Q-030] until measured.
-- Deferred: shared-`/` exclusivity and `--parallel-stages` (Phase 2); cache
+- Deferred: `--parallel-stages` (Phase 2 task 10); cache
   lookahead and skipping fully cached stages (Phase 4); `ONBUILD` and
   `RUN --mount=type=bind,from=` edges (Phase 5); deduplicating identical
   instructions across stages (later).

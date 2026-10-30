@@ -19,6 +19,7 @@ use crate::error::Error;
 use crate::memory::{MemoryGate, SystemMemory};
 use crate::runner::{LogTag, PrepareJob, StageJob, StageRunner};
 use crate::slots::RunSlots;
+use crate::unit::{Placement, Unit, own_root_units};
 
 /// How often a stage held back by the memory gate asks again when no
 /// stage has finished in the meantime.
@@ -42,8 +43,8 @@ impl std::fmt::Debug for Scheduler {
 /// What a finished build hands back: every stage's output.
 #[derive(Debug)]
 pub struct BuildSummary<O> {
-    /// `(stage, output)` for every stage the targets needed, in file order,
-    /// whatever order they finished in.
+    /// `(stage, output)` for every unit the build ran, in the order of the
+    /// units (file order), whatever order they finished in.
     pub stages: Vec<(usize, Arc<O>)>,
     /// The stage whose image is the result.
     pub target: usize,
@@ -124,13 +125,38 @@ impl Scheduler {
         runner: &R,
         cancel: &CancellationToken,
     ) -> Result<BuildSummary<R::Output>, Error<R::Error>> {
+        self.run_units(graph, &own_root_units(graph), runner, cancel)
+            .await
+    }
+
+    /// [`Scheduler::run`] over explicit units: kaniko's squashed stages
+    /// ([`crate::shared_root_units`]) or stages on roots of their own
+    /// ([`crate::own_root_units`]). Units must come in an order where each
+    /// one's dependencies are earlier. A [`Placement::Shared`] unit starts
+    /// only once the shared unit before it in `units` has finished, so
+    /// stages on the shared root never overlap and always run in the same
+    /// order; `--jobs` still bounds `RUN`s, which on the shared root changes
+    /// nothing, since one stage runs there at a time.
+    ///
+    /// # Errors
+    ///
+    /// As [`Scheduler::run`]; [`Error::Graph`] also for a unit listed twice,
+    /// a stage missing from the graph or a dependency on a stage no
+    /// earlier unit builds.
+    pub async fn run_units<R: StageRunner>(
+        &self,
+        graph: &StageGraph,
+        units: &[Unit],
+        runner: &R,
+        cancel: &CancellationToken,
+    ) -> Result<BuildSummary<R::Output>, Error<R::Error>> {
         let span = debug_span!(
             "rnk_sched.run",
-            stages = graph.needed.len() as u64,
+            stages = units.len() as u64,
             jobs = self.jobs.get() as u64,
             max_running = Empty,
         );
-        self.run_in(graph, runner, cancel, &span)
+        self.run_in(graph, units, runner, cancel, &span)
             .instrument(span.clone())
             .await
     }
@@ -138,11 +164,12 @@ impl Scheduler {
     async fn run_in<R: StageRunner>(
         &self,
         graph: &StageGraph,
+        units: &[Unit],
         runner: &R,
         cancel: &CancellationToken,
         span: &Span,
     ) -> Result<BuildSummary<R::Output>, Error<R::Error>> {
-        let plan = Plan::new(graph)?;
+        let plan = Plan::new(graph, units)?;
         let n = plan.stages.len();
         let token = cancel.child_token();
         let slots = RunSlots::new(self.jobs);
@@ -215,12 +242,17 @@ enum Slot<O> {
     Failed,
 }
 
-/// One needed stage, with its dependencies resolved to positions.
+/// One unit, with its dependencies resolved to positions.
 struct Planned<'a> {
     stage: usize,
     node: &'a StageNode,
-    /// `(stage, position in Plan::stages)`, in `dependencies()` order.
+    folded: &'a [usize],
+    placement: Placement,
+    /// `(stage, position in Plan::stages)`: the dependencies of every stage
+    /// of the chain, base first, without the chain's own stages.
     deps: Vec<(usize, usize)>,
+    /// For a shared unit, the position of the shared unit before it.
+    after: Option<usize>,
     tag: LogTag,
 }
 
@@ -229,35 +261,56 @@ struct Plan<'a> {
 }
 
 impl<'a> Plan<'a> {
-    fn new<E: std::error::Error>(graph: &'a StageGraph) -> Result<Self, Error<E>> {
-        let n = graph.needed.len();
-        let pos = |s: usize| graph.needed.iter().position(|&x| x == s);
+    fn new<E: std::error::Error>(
+        graph: &'a StageGraph,
+        units: &'a [Unit],
+    ) -> Result<Self, Error<E>> {
+        let n = units.len();
+        let pos = |s: usize| units.iter().position(|u| u.stage == s);
         let bad = |stage: usize, reason: String| Error::Graph { stage, reason };
         let mut stages = Vec::with_capacity(n);
-        for (k, &stage) in graph.needed.iter().enumerate() {
+        let mut last_shared = None;
+        for (k, unit) in units.iter().enumerate() {
+            let stage = unit.stage;
             if pos(stage) != Some(k) {
-                return Err(bad(stage, "listed twice in `needed`".to_owned()));
+                return Err(bad(stage, "listed twice in the units".to_owned()));
             }
             let node = graph
                 .stages
                 .get(stage)
                 .ok_or_else(|| bad(stage, "not in the graph".to_owned()))?;
-            let mut deps = Vec::new();
-            for d in node.dependencies() {
-                // A dependency comes earlier in `needed`, so the plan has no
-                // cycle and every wait ends.
-                let p = pos(d).filter(|&p| p < k).ok_or_else(|| {
-                    bad(
-                        stage,
-                        format!("depends on stage {d}, which is not needed before it"),
-                    )
-                })?;
-                deps.push((d, p));
+            let mut deps: Vec<(usize, usize)> = Vec::new();
+            for c in unit.chain() {
+                let member = graph
+                    .stages
+                    .get(c)
+                    .ok_or_else(|| bad(c, "not in the graph".to_owned()))?;
+                for d in member.dependencies() {
+                    if unit.chain().any(|x| x == d) || deps.iter().any(|&(x, _)| x == d) {
+                        continue;
+                    }
+                    // A dependency comes earlier in the units, so the plan
+                    // has no cycle and every wait ends.
+                    let p = pos(d).filter(|&p| p < k).ok_or_else(|| {
+                        bad(
+                            stage,
+                            format!("depends on stage {d}, which no earlier unit builds"),
+                        )
+                    })?;
+                    deps.push((d, p));
+                }
             }
+            let after = match unit.placement {
+                Placement::Own => None,
+                Placement::Shared => last_shared.replace(k),
+            };
             stages.push(Planned {
                 stage,
                 node,
+                folded: &unit.folded,
+                placement: unit.placement,
                 deps,
+                after,
                 tag: LogTag {
                     name: node.display_name.clone(),
                     k: k + 1,
@@ -302,6 +355,8 @@ impl<R: StageRunner> Ctx<'_, R> {
         let job = PrepareJob {
             stage: st.stage,
             node: st.node,
+            folded: st.folded,
+            placement: st.placement,
             graph: self.graph,
             tag: st.tag.clone(),
             cancel: self.token.clone(),
@@ -346,9 +401,16 @@ impl<R: StageRunner> Ctx<'_, R> {
         st: &Planned<'_>,
         prepared: oneshot::Receiver<Option<R::Prepared>>,
     ) -> bool {
-        let deps = self
-            .wait_deps(&st.deps)
-            .instrument(debug_span!("rnk_sched.wait_deps"));
+        let deps = async {
+            let deps = self.wait_deps(&st.deps).await?;
+            // The shared root is free once the shared unit before this one
+            // has ended; if it failed, the build is over.
+            match st.after {
+                Some(p) => self.wait_done(p).await.map(|_| deps),
+                None => Some(deps),
+            }
+        }
+        .instrument(debug_span!("rnk_sched.wait_deps"));
         let (prepared, deps) = join(prepared, deps).await;
         let (Ok(Some(prepared)), Some(deps)) = (prepared, deps) else {
             return false;
@@ -363,6 +425,8 @@ impl<R: StageRunner> Ctx<'_, R> {
         let job = StageJob {
             stage: st.stage,
             node: st.node,
+            folded: st.folded,
+            placement: st.placement,
             graph: self.graph,
             deps,
             prepared,
@@ -396,21 +460,26 @@ impl<R: StageRunner> Ctx<'_, R> {
     async fn wait_deps(&self, deps: &[(usize, usize)]) -> Option<Vec<(usize, Arc<R::Output>)>> {
         let mut out = Vec::with_capacity(deps.len());
         for &(stage, p) in deps {
-            let mut rx = self.done.get(p)?.subscribe();
-            let cancelled = pin!(self.token.cancelled());
-            let finished = pin!(rx.wait_for(|s| !matches!(s, Slot::Pending)));
-            let output = match select(cancelled, finished).await {
-                Either::Left(((), _)) => return None,
-                Either::Right((Ok(slot), _)) => match &*slot {
-                    Slot::Done(o) => o.clone(),
-                    Slot::Pending | Slot::Failed => return None,
-                },
-                // The senders live in `Ctx` until every stage has ended.
-                Either::Right((Err(_), _)) => return None,
-            };
-            out.push((stage, output));
+            out.push((stage, self.wait_done(p).await?));
         }
         Some(out)
+    }
+
+    /// The output of the unit at position `p`, or `None` if it failed or
+    /// the build was cancelled.
+    async fn wait_done(&self, p: usize) -> Option<Arc<R::Output>> {
+        let mut rx = self.done.get(p)?.subscribe();
+        let cancelled = pin!(self.token.cancelled());
+        let finished = pin!(rx.wait_for(|s| !matches!(s, Slot::Pending)));
+        match select(cancelled, finished).await {
+            Either::Left(((), _)) => None,
+            Either::Right((Ok(slot), _)) => match &*slot {
+                Slot::Done(o) => Some(o.clone()),
+                Slot::Pending | Slot::Failed => None,
+            },
+            // The senders live in `Ctx` until every stage has ended.
+            Either::Right((Err(_), _)) => None,
+        }
     }
 
     /// Waits until the memory gate lets one more stage start, and counts

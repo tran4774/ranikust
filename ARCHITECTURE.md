@@ -183,8 +183,9 @@ resolution, filesystem deletion.
 Runs the stage DAG. Each stage is an async task started when its
 dependencies finish; root-independent work (base pulls, cache lookups)
 starts for all stages up front. `--jobs` bounds concurrent `RUN`s, available
-memory bounds how many stages run at once, a stage on the shared `/` runs
-alone (Phase 2), the first failure cancels the rest, logs are tagged per
+memory bounds how many stages run at once, stages on the shared `/` of
+sequential kaniko mode run one at a time as kaniko's squashed units
+(`run_units`), the first failure cancels the rest, logs are tagged per
 stage. A
 stage is built through the `StageRunner` trait, which the builder's side
 implements and tests fake.

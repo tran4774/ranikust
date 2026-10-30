@@ -15,7 +15,12 @@
 //! 2. [`stage_graph`] expands each `FROM` with the global and built-in
 //!    `ARG`s, resolves stage references and selects the stages the targets
 //!    need ([`StageGraph`]).
-//! 3. For each needed stage, in order, the builder starts a [`StageScope`]
+//! 3. In sequential kaniko mode, [`squash_for_shared_root`] folds base
+//!    stages into their only child as kaniko does, and says which units are
+//!    walked for layers and what later units read from each;
+//!    [`layers_needed`] is the same layer rule where stages have their own
+//!    roots.
+//! 4. For each needed stage, in order, the builder starts a [`StageScope`]
 //!    from the base image's `Env` (or clones the base stage's final scope)
 //!    and passes every instruction through [`StageScope::apply`], which
 //!    expands it as BuildKit's dispatcher does and tracks `ENV` and `ARG`.
@@ -34,6 +39,7 @@ mod instructions;
 mod parser;
 mod scope;
 mod shell;
+mod squash;
 
 pub use error::{Error, ErrorKind, Lines};
 pub use graph::{
@@ -51,3 +57,4 @@ pub use parser::{
 };
 pub use scope::{DEFAULT_PATH, EnvList, Platform, StageScope};
 pub use shell::{Env, LexError, Lexer, NoEnv, WordMatches};
+pub use squash::{SquashedStage, layers_needed, squash_for_shared_root};

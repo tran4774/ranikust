@@ -52,7 +52,15 @@ At the end of the stage, keep what later stages need (files for
 `COPY --from`, the stage image when another stage builds `FROM` it) in the
 state directory, then empty the root. Sequential mode keeps kaniko's stage
 squashing, which folds a parent stage into the child that builds on it
-[inferred: survey 06 §4.1 drops squashing only for overlay mode].
+[inferred: survey 06 §4.1 drops squashing only for overlay mode]:
+`rnk_dockerfile::squash_for_shared_root`, from `kaniko@44aa7ddc0
+pkg/dockerfile/dockerfile.go:297-415`. A base folds into its only child
+when no `COPY --from` or `RUN --mount from=` reads it and it is not the
+result; chains fold whole. Each unit lists what later units read from it
+(`readers`: `COPY --from` sources, `RUN --mount from=` roots) and whether
+its image is kept for a later `FROM` (`save_image`); both are kept in the
+state directory before the root is emptied. `rnk-sched` runs the units one
+at a time, in plan order (`Placement::Shared`).
 
 ## Walk, hash and diff
 
@@ -289,6 +297,11 @@ builds `FROM` it (squashed or not). Any other stage, used only through
 `COPY --from`, is skipped. Nothing changes the decision during the build,
 so no deletion ever has to be detected after a skipped walk. With
 `--cache` (Phase 4) more stages may need their layers; the rule stays.
+On the shared root a unit whose image is kept for a later `FROM` is walked
+too, since that image is the only way to rebuild the root for the child
+[open: Q-300]. `rnk_dockerfile::squash_for_shared_root` sets
+`layers_needed` per unit; `rnk_dockerfile::layers_needed` gives the rule
+for per-stage directories.
 
 ## Memory
 

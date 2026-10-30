@@ -50,7 +50,10 @@ pub struct StageGraph { pub global_args: EnvList, pub stages: Vec<StageNode>, pu
 pub struct StageNode { pub base: Base, pub platform, pub triggers, pub references: Vec<Reference>, .. } // [done]
 pub struct StageScope { .. } // [done] apply(&Located<Instruction>) -> expanded; env(), config_env(), args()
 pub struct Error { kind: ErrorKind, lines: Option<Lines>, message } // [done] Syntax|Instruction|Expansion|Graph
-pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [design] phase 2
+pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [done] kaniko MakeKanikoStages/Squash; units in file order
+pub struct SquashedStage { pub stage, pub chain: Vec<usize>, pub base: Base, pub save_image: bool,
+                           pub layers_needed: bool, pub readers: Vec<(usize, usize)> } // [done] chain base first; readers = (stage, reference index)
+pub fn layers_needed(g: &StageGraph) -> Vec<usize>;                     // [done] ADR-0038 lazy rule for per-stage roots
 // (Q-044, ADR-0032) how remote base ONBUILD triggers enter stage_graph() without I/O
 ```
 
@@ -126,7 +129,16 @@ pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // [des
 - Done: parser with goldens, lexer with `envVarTest`, instructions, flags,
   `expand`, `StageScope`, `stage_graph` (`ARG` before `FROM`, `--build-arg`,
   built-in args, `--target`, local `ONBUILD` triggers).
-- Deferred: squashing (phase 2); `ONBUILD` execution, `--mount=type=bind`,
+- Phase 2: squashing for the shared root and the lazy-snapshot rule
+  (`src/squash.rs`, ported from `kaniko@44aa7ddc0
+  pkg/dockerfile/dockerfile.go:297-415`, `:482-497`): a base folds into
+  its only child when no `COPY --from` or `RUN --mount from=` reads it
+  and it is not the result; chains fold whole; a folded base that is
+  another `--target` is still built on its own; every stage of a chain
+  but the last runs without its `ONBUILD` instructions. kaniko does not
+  know `RUN --mount from=`; here it blocks folding as `COPY --from` does.
+  A saved image (a later unit builds `FROM` it) is walked [open: Q-300].
+- Deferred: `ONBUILD` execution, `--mount=type=bind`,
   `COPY --link/--parents/--exclude`, `ADD <url>`/git (phase 5). They are
   parsed ([Q-009](../../open-questions.md#q-009-does-the-parser-accept-instructions-deferred-to-phase-5),
   interim), and `rnk-builder` rejects them. `ADD --checksum` rules and image
