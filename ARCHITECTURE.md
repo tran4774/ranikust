@@ -179,7 +179,9 @@ Runs the stage DAG. Each stage is an async task started when its
 dependencies finish; root-independent work (base pulls, cache lookups)
 starts for all stages up front. `--jobs` bounds concurrent `RUN`s, available
 memory bounds how many stages run at once, a stage on the shared `/` runs
-alone, the first failure cancels the rest, logs are tagged per stage.
+alone, the first failure cancels the rest, logs are tagged per stage. A
+stage is built through the `StageRunner` trait, which the builder's side
+implements and tests fake.
 **Must not** know how a stage is built, or let output depend on execution
 order.
 
@@ -234,7 +236,8 @@ chain: `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes and
 extraction, writer for export) and `rnk-store`; `rnk-cache` uses
 `rnk-store`; `rnk-registry` does not: it writes pulls into a sink its caller
 gets from `rnk-store`; `rnk-sandbox` uses `rnk-rootfs` for `USER`;
-`rnk-context` uses `rnk-ignore` for its walk (ADR-0027; interim, Q-028).
+`rnk-context` uses `rnk-ignore` for its walk (ADR-0027; interim, Q-028);
+`rnk-sched` uses `rnk-dockerfile` for the stage graph (interim, Q-028).
 `rnk-rootfs` never depends on `rnk-layer`. Lower crates never depend on
 higher ones. `rnk-dockerfile`, `rnk-ignore` and `rnk-oci` stay pure data.
 Only `ranikust` depends on `rnk-metrics`; libraries reach it through

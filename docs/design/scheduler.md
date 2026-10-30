@@ -49,6 +49,15 @@ is answered; the first is the result.
   deletion between stages.
 - The capability of each `StageRootfs` (shared `/` or private root) decides
   whether the stage may run concurrently with others.
+- How a stage is built is behind a trait, `StageRunner`: `prepare` is the
+  work that touches no root, `build` the stage itself. The scheduler drives
+  every stage's future from the task that awaits it, without
+  `tokio::spawn`; the builder moves blocking work to its own threads. It
+  waits for every started call to return before it returns, since
+  clean-up cannot rely on `Drop`.
+- The stages' outputs come back in file order, whatever order they
+  finished in; a stage sees its dependencies' outputs in
+  `StageNode::dependencies()` order.
 
 ## Limits
 
@@ -61,7 +70,12 @@ is answered; the first is the result.
   memory headroom: cgroup `memory.current` against `memory.max` when a limit
   exists, otherwise `MemAvailable`. In kaniko mode the estimate includes the
   page cache each running stage will re-read to hash and tar its writes
-  [inferred: the exact algorithm is not designed yet].
+  [inferred: the exact algorithm is not designed yet]. The gate sits in
+  front of each stage, not each `RUN`: a stage starts while free memory is
+  at least an eighth of the limit and at least 512 MiB, and always when no
+  stage runs, so the gate can slow a build but not stop it. These numbers
+  are a placeholder until measured
+  ([Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds)).
 - Sequential kaniko mode ignores `--jobs` for stage execution; pulls and
   compression still run in parallel.
 

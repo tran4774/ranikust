@@ -33,7 +33,7 @@ the code.
 | [x] | Local directory context; locating the ignore file (`<Dockerfile>.dockerignore` first); the context walk as BuildKit's filtered walk (`ADR-0027`) | `rnk-context` |
 | [~] | Lazy export, config updates, image assembly; canonical JSON with sorted keys | `rnk-builder`, `rnk-oci` |
 | [ ] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` | `rnk-builder`, `rnk-registry`, `rnk-layer` |
-| [ ] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix | `rnk-sched` |
+| [~] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix (done with fake runners, T0; left: the `rnk-builder` runner, the W3 digest test, the memory thresholds [open: Q-030]) | `rnk-sched` |
 | [~] | Common kaniko flags and the subcommands (`ADR-0011`): `build` and `version`, accepted flags parsed and validated, the others refused with a reason (done); final list [open: Q-023], `--cache` [open: Q-021], `--secret` [open: Q-022], `push`/`login` [open: Q-048] | `ranikust` |
 | [~] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests under qemu-user 10.0 (`ADR-0009`; `just test-aarch64` passes locally; CI job `test-aarch64` has not run yet); the release binary is static but not static-pie [open: Q-140] | CI |
 | [~] | T2 VM harness `just test-vm` (`docs/testing.md`): `unit` and `smoke` suites on Ubuntu 22.04 and 24.04 (done); cgroup v1, kernels before 5.11, the host-safety attack suite and a CI job with KVM to come | tests |
@@ -65,7 +65,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 9 | `rnk-snapshot` overlay roots, overlay probes, extraction (hardlinks into lower layers copied, Q-055) and exporter; design the `Snapshotter` signature | 4, 5, 7 | |
 | 10 | `rnk-context` local directory (done); `COPY` sources are resolved in 11 (Q-080) | 3 | |
 | 11 | `rnk-builder`: executors, lazy export, assembly, outputs and push | 1, 2, 6, 8, 9, 10 | |
-| 12 | `rnk-sched`: DAG, `--jobs`, cancellation | 2, 11 | |
+| 12 | `rnk-sched`: DAG, `--jobs`, cancellation (done behind the `StageRunner` trait, tested with fakes; the builder's runner comes with 11) | 2, 11 | |
 | 13 | CLI end to end, outputs, acceptance runs | all | |
 
 Any time: the VM harness (before 8 and 9 can be
