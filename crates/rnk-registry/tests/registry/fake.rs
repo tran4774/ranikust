@@ -204,6 +204,11 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let content_type = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let body = req
         .into_body()
         .collect()
@@ -250,7 +255,14 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
     let repo = repo.to_owned();
     let target = target.to_owned();
     match (kind, method) {
-        ("blobs", Method::HEAD) => match state.blobs.get(&target) {
+        // A repository sees only its own blobs, as in a real registry, so
+        // a push to another repository mounts or uploads.
+        ("blobs", Method::HEAD) => match state.blobs.get(&target).filter(|_| {
+            state
+                .blob_repos
+                .get(&target)
+                .is_some_and(|r| r.contains(&repo))
+        }) {
             Some(blob) => with_header(
                 reply(200, ""),
                 header::CONTENT_LENGTH,
@@ -332,7 +344,9 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         }
         ("manifests", Method::PUT) => {
             let digest = sha256(&body);
-            let content_type = "application/vnd.oci.image.manifest.v1+json".to_owned();
+            // Stored with the type it was pushed with, as a registry serves it.
+            let content_type = content_type
+                .unwrap_or_else(|| "application/vnd.oci.image.manifest.v1+json".to_owned());
             state
                 .manifests
                 .insert((repo.clone(), target), (content_type.clone(), body.clone()));

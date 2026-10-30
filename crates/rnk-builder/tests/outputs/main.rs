@@ -1,0 +1,448 @@
+//! Lazy export, image assembly and the three outputs, end to end on fake
+//! layers: T0, no root, a loopback fake registry.
+
+#[path = "../../../rnk-registry/tests/registry/fake.rs"]
+mod fake;
+mod support;
+
+use std::collections::BTreeMap;
+use std::io::Read as _;
+use std::num::NonZeroUsize;
+use std::path::Path;
+use std::process::Command;
+
+use rnk_builder::{
+    BuildTime, Error, LayerDemand, LayerExporter, Outputs, UNSET_DESTINATION, assemble,
+    image_format,
+};
+use rnk_layer::Compression;
+use rnk_oci::{
+    ImageConfig, ImageFormat, ImageIndex, ImageManifest, MediaType, OciLayout, Reference,
+};
+
+use crate::fake::{Auth, FakeRegistry, sha256};
+use crate::support::{base, client, image, layer, options, reference, time};
+
+fn files(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn layer_bytes_do_not_depend_on_the_thread_count() {
+    let time = BuildTime::reproducible(None).unwrap();
+    for compression in [Compression::Gzip, Compression::Zstd, Compression::None] {
+        let mut seen = Vec::new();
+        for threads in [1, 2, 8] {
+            let dir = tempfile::tempdir().unwrap();
+            let exporter = LayerExporter::new(dir.path(), options(compression, threads, &time));
+            let blob = exporter.export(Box::new(layer(3, 60))).unwrap();
+            let bytes = std::fs::read(&blob.path).unwrap();
+            assert_eq!(sha256(&bytes), blob.blob.digest.as_str());
+            assert_eq!(u64::try_from(bytes.len()).unwrap(), blob.blob.size);
+            assert_eq!(
+                files(dir.path()),
+                [blob.blob.digest.encoded()],
+                "no temporary file left"
+            );
+            seen.push((blob.diff_id, blob.blob.digest, bytes));
+        }
+        assert!(seen.windows(2).all(|w| w[0] == w[1]), "{compression}");
+    }
+}
+
+#[test]
+fn a_layer_nothing_needs_is_not_encoded() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = LayerExporter::new(dir.path(), options(Compression::Gzip, 2, &time()));
+    let skipped = exporter
+        .export_if_needed(Box::new(layer(1, 5)), LayerDemand::default())
+        .unwrap();
+    assert_eq!(skipped, None);
+    assert!(files(dir.path()).is_empty());
+
+    let demand = LayerDemand {
+        output: true,
+        ..LayerDemand::default()
+    };
+    assert!(
+        exporter
+            .export_if_needed(Box::new(layer(1, 5)), demand)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn layer_demand_follows_the_target_and_the_outputs() {
+    let none = Outputs::new(&[], false, None, None).unwrap();
+    let push = Outputs::new(&["r.example/app".to_owned()], true, None, None).unwrap();
+    let tar = Outputs::new(&[], false, Some("/out.tar".into()), None).unwrap();
+
+    // A stage used only through `COPY --from` needs nothing.
+    for outputs in [&none, &push, &tar] {
+        assert!(!LayerDemand::for_stage(false, outputs, false).needed());
+    }
+    // ... unless its layers go to the cache.
+    assert!(LayerDemand::for_stage(false, &none, true).needed());
+    // The target always: its image is assembled for the digest.
+    assert!(LayerDemand::for_stage(true, &none, false).needed());
+    let d = LayerDemand::for_stage(true, &push, false);
+    assert!(d.push && d.target && !d.output && !d.cache);
+    let d = LayerDemand::for_stage(true, &tar, false);
+    assert!(d.output && !d.push);
+}
+
+#[test]
+fn outputs_are_checked_like_kaniko() {
+    let out = Outputs::new(
+        &["alpine".to_owned(), "r.example:5000/a/b:v1".to_owned()],
+        true,
+        None,
+        None,
+    )
+    .unwrap();
+    let names: Vec<String> = out.destinations.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        names,
+        ["docker.io/library/alpine:latest", "r.example:5000/a/b:v1"]
+    );
+    assert_eq!(out.tar_tags(), names);
+
+    let none = Outputs::new(&[], false, Some("/x.tar".into()), None).unwrap();
+    assert_eq!(none.tar_tags(), [UNSET_DESTINATION]);
+
+    for (dest, push) in [
+        (vec!["alpine@sha256:".to_owned() + &"a".repeat(64)], true),
+        (vec!["Not A Reference".to_owned()], false),
+        (vec![], true),
+    ] {
+        assert!(
+            matches!(
+                Outputs::new(&dest, push, None, None),
+                Err(Error::Destination { .. })
+            ),
+            "{dest:?}"
+        );
+    }
+}
+
+#[test]
+fn assembly_needs_the_config_to_list_the_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
+    let err = assemble(
+        ImageConfig::default(),
+        vec![base.layer.clone()],
+        ImageFormat::Oci,
+        &time(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::Inconsistent(_)), "{err}");
+}
+
+#[test]
+fn assembly_converts_media_types_and_is_stable() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
+    let time = time();
+    let image = image(dir.path(), &base, &time, Compression::Gzip);
+    assert_eq!(image.format, ImageFormat::Docker, "the base is Docker v2s2");
+    let manifest = ImageManifest::from_json(image.manifest.bytes()).unwrap();
+    assert_eq!(manifest.media_type, Some(MediaType::DOCKER_MANIFEST));
+    assert_eq!(manifest.config.media_type, MediaType::DOCKER_CONFIG);
+    assert!(
+        manifest
+            .layers
+            .iter()
+            .all(|l| l.media_type == MediaType::DOCKER_LAYER_GZIP)
+    );
+    assert_eq!(manifest.config.digest.as_str(), sha256(&image.config));
+
+    let config = ImageConfig::from_json(&image.config).unwrap();
+    assert_eq!(config.created.as_deref(), Some("2026-10-29T22:24:35Z"));
+    assert_eq!(config.rootfs.diff_ids.len(), 2);
+    let history = config.history.unwrap();
+    assert_eq!(
+        history[0].author.as_deref(),
+        Some("someone"),
+        "base history kept"
+    );
+    assert_eq!(history[1].created_by.as_deref(), Some("RUN make"));
+    assert_eq!(
+        history[1].author.as_deref(),
+        Some(rnk_builder::HISTORY_AUTHOR)
+    );
+    assert_eq!(config.container.as_deref(), Some("0123abcd"));
+
+    // Canonical JSON: keys sorted at every level, no whitespace.
+    let text = std::str::from_utf8(&image.config).unwrap();
+    assert!(
+        text.starts_with(r#"{"architecture":"amd64","config":{"Env":"#),
+        "{text}"
+    );
+
+    let again = support::image(
+        tempfile::tempdir().unwrap().path(),
+        &base,
+        &time,
+        Compression::Gzip,
+    );
+    assert_eq!(again.digest(), image.digest());
+
+    // zstd layers force OCI.
+    let zstd = support::image(dir.path(), &base, &time, Compression::Zstd);
+    assert_eq!(zstd.format, ImageFormat::Oci);
+    assert_eq!(zstd.layers[0].blob.media_type, MediaType::OCI_LAYER_GZIP);
+    assert_eq!(zstd.layers[1].blob.media_type, MediaType::OCI_LAYER_ZSTD);
+}
+
+#[test]
+fn reproducible_assembly_is_scrubbed_like_mutate_canonical() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
+    let time = BuildTime::reproducible(Some("1700000000")).unwrap();
+    assert_eq!(
+        image_format(Some(ImageFormat::Oci), false, true),
+        ImageFormat::Docker
+    );
+    let image = image(dir.path(), &base, &time, Compression::Gzip);
+    let config = ImageConfig::from_json(&image.config).unwrap();
+    let stamp = Some("2023-11-14T22:13:20Z");
+    assert_eq!(config.created.as_deref(), stamp);
+    for entry in config.history.unwrap() {
+        assert_eq!(entry.created.as_deref(), stamp);
+        assert_eq!(entry.author, None);
+    }
+    assert_eq!(config.container, None);
+    assert_eq!(config.docker_version, None);
+    assert_eq!(config.config.unwrap().hostname, None);
+
+    // Two builds at different times give one digest.
+    let again = support::image(
+        tempfile::tempdir().unwrap().path(),
+        &base,
+        &time,
+        Compression::Gzip,
+    );
+    assert_eq!(again.digest(), image.digest());
+}
+
+#[test]
+fn the_oci_layout_holds_every_blob_and_indexes_the_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
+    let image = image(dir.path(), &base, &time(), Compression::Zstd);
+    let out = dir.path().join("layout");
+    rnk_builder::write_oci_layout(&image, &out).unwrap();
+    // Twice: an existing layout is updated in place.
+    rnk_builder::write_oci_layout(&image, &out).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(out.join(OciLayout::FILE)).unwrap(),
+        r#"{"imageLayoutVersion":"1.0.0"}"#
+    );
+    let index =
+        ImageIndex::from_json(&std::fs::read(out.join(OciLayout::INDEX_FILE)).unwrap()).unwrap();
+    assert_eq!(index.manifests, [image.manifest.descriptor()]);
+    let mut digests = vec![
+        image.digest().clone(),
+        image.config_descriptor.digest.clone(),
+    ];
+    digests.extend(image.layers.iter().map(|l| l.blob.digest.clone()));
+    for digest in digests {
+        let bytes = std::fs::read(out.join(OciLayout::blob_path(&digest))).unwrap();
+        assert_eq!(sha256(&bytes), digest.as_str());
+    }
+    assert!(
+        !files(&out.join("blobs/sha256"))
+            .iter()
+            .any(|n| n.starts_with('.')),
+        "no temporary file left"
+    );
+
+    if let Some(json) = skopeo_inspect(&format!("oci:{}", out.display())) {
+        assert!(json.contains(image.digest().as_str()), "{json}");
+    }
+}
+
+#[test]
+fn the_docker_tar_is_what_docker_save_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
+    let image = image(dir.path(), &base, &time(), Compression::Gzip);
+    // The same layer twice is stored once.
+    let mut doubled = image.clone();
+    let mut config = ImageConfig::from_json(&image.config).unwrap();
+    let last = image.layers[1].clone();
+    config.push_layer(
+        last.diff_id.clone(),
+        rnk_builder::layer_history("COPY a b", &time()),
+    );
+    doubled.layers.push(last);
+    let doubled = assemble(config, doubled.layers, doubled.format, &time()).unwrap();
+
+    let path = dir.path().join("image.tar");
+    let tags = ["r.example/app:v1".to_owned()];
+    rnk_builder::write_docker_tar(&doubled, &tags, &path).unwrap();
+    let first = std::fs::read(&path).unwrap();
+    rnk_builder::write_docker_tar(&doubled, &tags, &path).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        first,
+        "the same bytes every time"
+    );
+
+    let mut entries = BTreeMap::new();
+    for entry in tar::Archive::new(&first[..]).entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let header = entry.header();
+        assert_eq!(
+            (
+                header.mode().unwrap(),
+                header.uid().unwrap(),
+                header.mtime().unwrap()
+            ),
+            (0o644, 0, 0)
+        );
+        let name = entry.path().unwrap().to_string_lossy().into_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        assert!(entries.insert(name, bytes).is_none(), "each name once");
+    }
+    let config_name = doubled.config_descriptor.digest.to_string();
+    let layer_names: Vec<String> = doubled
+        .layers
+        .iter()
+        .map(|l| format!("{}.tar.gz", l.blob.digest.encoded()))
+        .collect();
+    let mut expected: Vec<&str> = vec![
+        "manifest.json",
+        &config_name,
+        &layer_names[0],
+        &layer_names[1],
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        entries.keys().map(String::as_str).collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(entries[&config_name], doubled.config);
+    assert_eq!(entries[&layer_names[0]], base.bytes);
+    assert_eq!(
+        entries[&layer_names[1]],
+        std::fs::read(&doubled.layers[1].path).unwrap()
+    );
+
+    let manifest: serde_json::Value = serde_json::from_slice(&entries["manifest.json"]).unwrap();
+    assert_eq!(
+        manifest,
+        serde_json::json!([{
+            "Config": config_name,
+            "RepoTags": ["r.example/app:v1"],
+            "Layers": [layer_names[0], layer_names[1], layer_names[1]],
+        }])
+    );
+
+    if let Some(json) = skopeo_inspect(&format!("docker-archive:{}", path.display())) {
+        assert!(json.contains("\"architecture\": \"amd64\""), "{json}");
+    }
+}
+
+#[tokio::test]
+async fn push_mounts_base_layers_uploads_the_rest_and_tags_the_manifest() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let client = client(&registry);
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path(), reference(&registry, "base:1"));
+    registry.add_blob("base", &base.bytes);
+    let image = image(dir.path(), &base, &time(), Compression::Gzip);
+    let one = reference(&registry, "out:v1");
+    let two = reference(&registry, "copy:v2");
+
+    let pushed = rnk_builder::push(
+        &image,
+        &[one.clone(), two.clone()],
+        &client,
+        NonZeroUsize::new(4).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        pushed,
+        [(one, image.digest().clone()), (two, image.digest().clone())]
+    );
+
+    // `out`: the base layer mounted from `base`; the config and the built
+    // layer uploaded. `copy`: everything mounted from `out`.
+    assert_eq!(registry.count("PUT /v2/out/blobs/uploads/"), 2);
+    assert_eq!(registry.count("PUT /v2/copy/blobs/uploads/"), 0);
+    assert_eq!(registry.count("POST /v2/copy/blobs/uploads/?mount="), 3);
+    {
+        let state = registry.state();
+        for repo in ["out", "copy"] {
+            for layer in &image.layers {
+                assert!(
+                    state.blob_repos[layer.blob.digest.as_str()]
+                        .iter()
+                        .any(|r| r == repo)
+                );
+            }
+        }
+        let tag =
+            |repo: &str, tag: &str| state.manifests[&(repo.to_owned(), tag.to_owned())].clone();
+        assert_eq!(tag("out", "v1").1, image.manifest.bytes());
+        assert_eq!(tag("copy", "v2").0, MediaType::DOCKER_MANIFEST.as_str());
+    }
+
+    // Pushing again sends no blob.
+    let before = registry.count("PUT ");
+    rnk_builder::push(
+        &image,
+        &[reference(&registry, "out:v1")],
+        &client,
+        NonZeroUsize::MIN,
+    )
+    .await
+    .unwrap();
+    assert_eq!(registry.count("PUT "), before + 1, "the manifest only");
+}
+
+/// `skopeo inspect` of `target`, or `None` without skopeo (rootless, reads
+/// only the given file or directory).
+fn skopeo_inspect(target: &str) -> Option<String> {
+    let output = match Command::new("skopeo")
+        .args(["inspect", "--config", target])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => {
+            eprintln!("skipping the skopeo check: skopeo is not installed");
+            return None;
+        }
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config = String::from_utf8(output.stdout).unwrap();
+    let raw = Command::new("skopeo")
+        .args(["inspect", "--raw", target])
+        .output()
+        .unwrap();
+    assert!(
+        raw.status.success(),
+        "{}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
+    let manifest = String::from_utf8(raw.stdout).unwrap();
+    Some(format!(
+        "{config}\n{manifest}\n{}",
+        sha256(manifest.as_bytes())
+    ))
+}

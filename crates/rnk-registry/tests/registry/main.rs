@@ -131,9 +131,10 @@ async fn identity_tokens_are_exchanged_per_scope() {
     let target = reference(&registry, "copy:v1");
     let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
     let body = BlobBody::Bytes(Bytes::from(image.layer.clone()));
+    // `copy` does not hold the blob yet: it is uploaded under the push scope.
     assert_eq!(
         client.push_blob(&target, &blob, &body).await.unwrap(),
-        PushOutcome::Existed
+        PushOutcome::Uploaded
     );
     client.pull_manifest(&source).await.unwrap();
 

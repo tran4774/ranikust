@@ -65,7 +65,6 @@ impl LayerDemand {
     }
 }
 
-
 /// A finished layer that has not been encoded yet: the snapshot exporter's
 /// side of lazy export.
 pub trait LayerSource: Send {
