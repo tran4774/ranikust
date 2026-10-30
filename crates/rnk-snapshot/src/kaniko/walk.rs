@@ -23,15 +23,18 @@
 use std::ffi::OsStr;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rnk_rootfs::{FileTime, FileType, IgnoreList, OpenHow, RootPath};
-use rustix::fs::{AtFlags, Mode, OFlags, RawDir, ResolveFlags, Statx, StatxAttributes, StatxFlags};
+use rustix::fs::{
+    AtFlags, Mode, OFlags, PROC_SUPER_MAGIC, RawDir, ResolveFlags, Statx, StatxAttributes,
+    StatxFlags,
+};
 use rustix::io::Errno;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -51,6 +54,9 @@ pub const DEFAULT_WALK_WORKERS: NonZeroUsize = match NonZeroUsize::new(8) {
 /// pkg/util/stat_hash_cache.go:29-41`): timestamps are coarser than the
 /// clock, so a file written twice within one tick keeps its key.
 const RACY_WINDOW_SECS: i64 = 2;
+
+/// The type bits of `st_mode`.
+const S_IFMT: u16 = 0o170_000;
 
 /// Bytes read per `read(2)` while hashing.
 const READ_BUF: usize = 128 * 1024;
@@ -375,6 +381,13 @@ impl Walker {
                 path: PathBuf::new(),
             });
         }
+        // Regular files are pinned with `O_PATH`, checked, then reopened for
+        // reading through ranikust's own `/proc/self/fd`, as
+        // `rnk_rootfs::RootPath::open_regular`: only `full` reads files.
+        let proc = match self.opts.mode {
+            SnapshotMode::Full => Some(proc_fd_dir()?),
+            SnapshotMode::Redo | SnapshotMode::Time => None,
+        };
         let prev = self.prev.as_ref();
         let seen: Vec<AtomicU8> = (0..prev.map_or(0, Tree::len))
             .map(|_| AtomicU8::new(UNSEEN))
@@ -384,6 +397,7 @@ impl Walker {
         }
         let ctx = Ctx {
             prev,
+            proc,
             seen: &seen,
             ignore,
             root_mnt: root.mnt_id(),
@@ -430,8 +444,7 @@ impl Walker {
         changed.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         let mut deleted = Vec::new();
         if want && let Some(p) = prev {
-            for (id, state) in seen.iter().enumerate().skip(1) {
-                let id = u32::try_from(id).unwrap_or(u32::MAX);
+            for (state, id) in seen.iter().zip(0_u32..).skip(1) {
                 let parent = seen
                     .get(p.parent(id) as usize)
                     .map(|s| s.load(Ordering::Relaxed));
@@ -460,7 +473,7 @@ impl Walker {
         span.record("max_threads", stats.max_threads);
         let root_meta = root_rec.meta;
         drop(seen);
-        self.prev = Some(Tree::build(root_rec, into_inner(dirs)));
+        self.prev = Some(Tree::build(root_rec, into_inner(dirs))?);
         Ok(WalkDiff {
             root: (want && root_changed).then_some(root_meta),
             changed: if want { changed } else { Vec::new() },
@@ -480,6 +493,8 @@ fn into_inner<T>(m: Mutex<T>) -> T {
 /// What every task of one walk shares.
 struct Ctx<'a> {
     prev: Option<&'a Tree>,
+    /// `/proc/self/fd` (`O_PATH`), in `full` mode.
+    proc: Option<OwnedFd>,
     seen: &'a [AtomicU8],
     ignore: &'a IgnoreList,
     root_mnt: u64,
@@ -575,6 +590,30 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// A subdirectory's task: opens it in its parent, here rather than in
+    /// the parent's task, so a directory waiting for a worker holds no
+    /// descriptor of its own (only its parent's, shared), checks it is the
+    /// directory the parent's `statx` saw, then walks it.
+    fn child_task<'s>(
+        &'s self,
+        s: &rayon::Scope<'s>,
+        parent: Arc<OwnedFd>,
+        name: Vec<u8>,
+        st: Statx,
+        path: Vec<u8>,
+        prev: Option<u32>,
+    ) {
+        if self.failed.load(Ordering::Relaxed) {
+            return;
+        }
+        let opened = open_dir(parent.as_fd(), &name, &st, as_path(&path));
+        drop(parent);
+        match opened {
+            Ok(dir) => self.dir_task(s, dir, path, prev),
+            Err(e) => self.fail(e),
+        }
+    }
+
     fn dir_entries<'s>(
         &'s self,
         s: &rayon::Scope<'s>,
@@ -583,6 +622,7 @@ impl<'a> Ctx<'a> {
         prev: Option<u32>,
     ) -> Result<()> {
         let names = read_names(dir.as_fd(), &path)?;
+        let dir = Arc::new(dir);
         let mut out = DirOut {
             path,
             ..DirOut::default()
@@ -607,7 +647,7 @@ impl<'a> Ctx<'a> {
                 self.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            let Some(rec) = self.entry(s, dir.as_fd(), name, &child_path, prev_child)? else {
+            let Some(rec) = self.entry(s, &dir, name, &child_path, prev_child)? else {
                 continue;
             };
             if self.want {
@@ -626,7 +666,7 @@ impl<'a> Ctx<'a> {
                 }
             }
             self.mark(prev_child, if rec.is_dir() { SEEN_DIR } else { SEEN_OTHER });
-            out.push(name, rec);
+            out.push(name, rec)?;
         }
         self.entries.fetch_add(walked, Ordering::Relaxed);
         if !changed.is_empty() {
@@ -647,12 +687,13 @@ impl<'a> Ctx<'a> {
     fn entry<'s>(
         &'s self,
         s: &rayon::Scope<'s>,
-        dir: BorrowedFd<'_>,
+        parent: &Arc<OwnedFd>,
         name: &[u8],
         path: &[u8],
         prev: Option<u32>,
     ) -> Result<Option<Record>> {
         let shown = as_path(path);
+        let dir = parent.as_fd();
         let st = match statx_at(
             dir,
             name,
@@ -677,30 +718,15 @@ impl<'a> Ctx<'a> {
         let mut rec = self.record(&st);
         match rec.meta.kind {
             FileType::Directory => {
-                let child = match open_beneath(dir, name, OFlags::RDONLY | OFlags::DIRECTORY, shown)
-                {
-                    Ok(fd) => fd,
-                    Err(Error::Walk {
-                        errno: Errno::NOENT,
-                        ..
-                    }) => return Ok(None),
-                    // A mount appeared on it since `statx`: skipped as one.
-                    Err(Error::Walk {
-                        errno: Errno::XDEV, ..
-                    }) => {
-                        self.mark(prev, KEPT);
-                        self.skipped.fetch_add(1, Ordering::Relaxed);
-                        return Ok(None);
-                    }
-                    Err(e) => return Err(e),
-                };
-                same_inode(child.as_fd(), &st, shown)?;
                 if self.mode == SnapshotMode::Full {
-                    rec.xattrs = xattr_hash(child.as_fd(), shown)?;
+                    // Opened only for its xattrs, and closed again: the
+                    // walk of its entries opens it in its own task.
+                    let fd = open_dir(dir, name, &st, shown)?;
+                    rec.xattrs = xattr_hash(fd.as_fd(), shown)?;
                 }
                 let prev_dir = old.filter(|o| o.is_dir()).and(prev);
-                let child_path = path.to_vec();
-                s.spawn(move |s| self.dir_task(s, child, child_path, prev_dir));
+                let (parent, name, child_path) = (Arc::clone(parent), name.to_vec(), path.to_vec());
+                s.spawn(move |s| self.child_task(s, parent, name, st, child_path, prev_dir));
             }
             FileType::Regular if self.mode == SnapshotMode::Full => {
                 match old.filter(|o| o.cacheable && o.meta.kind == FileType::Regular) {
@@ -710,11 +736,10 @@ impl<'a> Ctx<'a> {
                         self.cache_hits.fetch_add(1, Ordering::Relaxed);
                     }
                     _ => {
-                        let Some(fd) = self.open_file(dir, name, shown)? else {
+                        let Some(fd) = self.open_file(dir, name, &st, shown)? else {
                             return Ok(None);
                         };
-                        same_inode(fd.as_fd(), &st, shown)?;
-                        let (hash, read) = hash_content(fd.as_fd(), shown)?;
+                        let (hash, read) = hash_content(fd.as_fd(), st.stx_size, shown)?;
                         rec.content = hash;
                         rec.xattrs = xattr_hash(fd.as_fd(), shown)?;
                         self.files_hashed.fetch_add(1, Ordering::Relaxed);
@@ -741,27 +766,45 @@ impl<'a> Ctx<'a> {
         Ok(Some(rec))
     }
 
-    /// Opens a regular file for hashing: `O_NONBLOCK`, so a FIFO swapped in
-    /// since `statx` cannot block the walk; `O_NOATIME` where the caller owns
-    /// the file. `None` when it is gone.
-    fn open_file(&self, dir: BorrowedFd<'_>, name: &[u8], shown: &Path) -> Result<Option<OwnedFd>> {
-        let base = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY;
-        let opened = match open_beneath(dir, name, base | OFlags::NOATIME, shown) {
-            // `O_NOATIME` needs ownership or `CAP_FOWNER`.
-            Err(Error::Walk {
-                errno: Errno::PERM, ..
-            }) => open_beneath(dir, name, base, shown),
-            r => r,
+    /// Opens the regular file `name` of `dir`, which `statx` saw as `st`,
+    /// for hashing. It is pinned with `O_PATH` first, which opens nothing,
+    /// and checked to be that same regular file; only then is the pinned
+    /// inode reopened for reading through `/proc/self/fd`, so a FIFO or a
+    /// device node swapped in meanwhile is never opened, and no driver's
+    /// `open` runs as root. `O_NOATIME` where the caller owns the file.
+    /// `None` when it is gone.
+    fn open_file(
+        &self,
+        dir: BorrowedFd<'_>,
+        name: &[u8],
+        st: &Statx,
+        shown: &Path,
+    ) -> Result<Option<OwnedFd>> {
+        let Some(proc) = &self.proc else {
+            return Err(walk_err("open", shown, Errno::NOTSUP));
         };
-        match opened {
-            Ok(fd) => Ok(Some(fd)),
-            Err(Error::Walk {
-                errno: Errno::NOENT,
-                ..
-            }) => Ok(None),
-            Err(e) => Err(e),
-        }
+        open_regular(proc.as_fd(), dir, name, st, shown)
     }
+}
+
+/// [`Ctx::open_file`] with `/proc/self/fd` given.
+fn open_regular(
+    proc: BorrowedFd<'_>,
+    dir: BorrowedFd<'_>,
+    name: &[u8],
+    st: &Statx,
+    shown: &Path,
+) -> Result<Option<OwnedFd>> {
+    let pinned = match open_beneath(dir, name, OFlags::PATH, shown) {
+        Ok(fd) => fd,
+        Err(Error::Walk {
+            errno: Errno::NOENT,
+            ..
+        }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    same_inode(pinned.as_fd(), st, shown)?;
+    reopen_regular(proc, pinned.as_fd(), shown).map(Some)
 }
 
 fn now() -> FileTime {
@@ -829,15 +872,68 @@ fn open_beneath(dir: BorrowedFd<'_>, name: &[u8], flags: OFlags, shown: &Path) -
     }
 }
 
-/// The opened entry is the one `statx` saw.
+/// `/proc/self/fd`, checked to be procfs, for [`reopen_regular`].
+fn proc_fd_dir() -> Result<OwnedFd> {
+    let shown = Path::new("/proc/self/fd");
+    let fd = rustix::fs::open(
+        shown,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| walk_err("open", shown, e))?;
+    let fs = rustix::fs::fstatfs(&fd).map_err(|e| walk_err("fstatfs", shown, e))?;
+    if fs.f_type != PROC_SUPER_MAGIC {
+        return Err(walk_err("fstatfs", shown, Errno::NOTSUP));
+    }
+    Ok(fd)
+}
+
+/// Reopens the regular file pinned by the `O_PATH` fd `pinned` for
+/// reading: exactly that inode, whatever its name points to now.
+fn reopen_regular(proc: BorrowedFd<'_>, pinned: BorrowedFd<'_>, shown: &Path) -> Result<OwnedFd> {
+    let num = pinned.as_raw_fd().to_string();
+    let base = OFlags::RDONLY | OFlags::NOCTTY | OFlags::CLOEXEC;
+    match rustix::fs::openat(proc, num.as_str(), base | OFlags::NOATIME, Mode::empty()) {
+        // `O_NOATIME` needs ownership or `CAP_FOWNER`.
+        Err(Errno::PERM) => rustix::fs::openat(proc, num.as_str(), base, Mode::empty()),
+        r => r,
+    }
+    .map_err(|e| walk_err("reopen", shown, e))
+}
+
+/// Opens the directory `name` of `dir`, which `statx` saw as `st`, for
+/// reading: `O_DIRECTORY` refuses anything else before opening it. Gone,
+/// replaced or covered by a mount since `statx` is [`Error::Changed`]:
+/// the root must not change during a walk.
+fn open_dir(dir: BorrowedFd<'_>, name: &[u8], st: &Statx, shown: &Path) -> Result<OwnedFd> {
+    let fd = match open_beneath(dir, name, OFlags::RDONLY | OFlags::DIRECTORY, shown) {
+        Ok(fd) => fd,
+        Err(Error::Walk {
+            errno: Errno::NOENT | Errno::XDEV | Errno::NOTDIR | Errno::LOOP,
+            ..
+        }) => {
+            return Err(Error::Changed {
+                path: shown.to_path_buf(),
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    same_inode(fd.as_fd(), st, shown)?;
+    Ok(fd)
+}
+
+/// The opened entry is the one `statx` saw: same type, inode, device and
+/// mount.
 fn same_inode(fd: BorrowedFd<'_>, st: &Statx, shown: &Path) -> Result<()> {
     let now = statx_at(fd, c"", AtFlags::EMPTY_PATH, shown)?;
     if (
+        now.stx_mode & S_IFMT,
         now.stx_ino,
         now.stx_dev_major,
         now.stx_dev_minor,
         now.stx_mnt_id,
     ) == (
+        st.stx_mode & S_IFMT,
         st.stx_ino,
         st.stx_dev_major,
         st.stx_dev_minor,
@@ -867,8 +963,14 @@ fn read_names(dir: BorrowedFd<'_>, path: &[u8]) -> Result<Vec<u8>> {
     Ok(names)
 }
 
-/// xxh3-128 of everything `fd` reads, and how many bytes that was.
-fn hash_content(fd: BorrowedFd<'_>, shown: &Path) -> Result<(u128, u64)> {
+/// xxh3-128 of the content of `fd`, whose `statx` size was `size`, and
+/// how many bytes that was. At most `size + 1` bytes are read: a file
+/// longer or shorter than `statx` said is changing, which is an error, so
+/// a file that never ends cannot hold the walk.
+fn hash_content(fd: BorrowedFd<'_>, size: u64, shown: &Path) -> Result<(u128, u64)> {
+    let changed = || Error::Changed {
+        path: shown.to_path_buf(),
+    };
     READ.with_borrow_mut(|buf| {
         if buf.len() < READ_BUF {
             buf.resize(READ_BUF, 0);
@@ -876,7 +978,12 @@ fn hash_content(fd: BorrowedFd<'_>, shown: &Path) -> Result<(u128, u64)> {
         let mut h = Xxh3::new();
         let mut total = 0_u64;
         loop {
-            match rustix::io::read(fd, &mut buf[..]) {
+            let room = size.saturating_add(1).saturating_sub(total);
+            if room == 0 {
+                return Err(changed());
+            }
+            let want = buf.len().min(usize::try_from(room).unwrap_or(usize::MAX));
+            match rustix::io::read(fd, buf.get_mut(..want).unwrap_or_default()) {
                 Ok(0) => break,
                 Ok(n) => {
                     h.update(buf.get(..n).unwrap_or_default());
@@ -885,6 +992,9 @@ fn hash_content(fd: BorrowedFd<'_>, shown: &Path) -> Result<(u128, u64)> {
                 Err(Errno::INTR) => {}
                 Err(e) => return Err(walk_err("read", shown, e)),
             }
+        }
+        if total != size {
+            return Err(changed());
         }
         Ok((h.digest128(), total))
     })

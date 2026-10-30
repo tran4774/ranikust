@@ -394,3 +394,136 @@ fn the_tree_finds_children_by_name() {
     }
     assert_eq!(t.child(ROOT, b"d"), None);
 }
+
+/// `statx` of `name` in `dir`, and `dir` opened.
+fn stat_in(dir: &Path, name: &str) -> (OwnedFd, Statx) {
+    let fd = rustix::fs::open(dir, OFlags::DIRECTORY | OFlags::RDONLY, Mode::empty()).unwrap();
+    let st = statx_at(fd.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW, Path::new(name)).unwrap();
+    (fd, st)
+}
+
+fn is_changed<T: std::fmt::Debug>(r: Result<T>) -> bool {
+    matches!(r, Err(Error::Changed { .. }))
+}
+
+#[test]
+fn a_fifo_in_the_tree_is_listed_and_never_opened() {
+    let f = Fixture::new();
+    f.write("file", b"x");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        f.p("fifo"),
+        rustix::fs::FileType::Fifo,
+        Mode::from_raw_mode(0o644),
+        0,
+    )
+    .unwrap();
+    // A FIFO without a writer blocks a reader's `open`: the walk returning
+    // at all shows it was not opened.
+    let mut w = walker(SnapshotMode::Full, 2);
+    let d = w.diff(&f.root, &none()).unwrap();
+    assert_eq!(d.stats.files_hashed, 1);
+    let fifo = d
+        .changed
+        .iter()
+        .find(|c| c.path == Path::new("fifo"))
+        .unwrap();
+    assert_eq!(fifo.meta.kind, FileType::Fifo);
+}
+
+#[test]
+fn a_fifo_swapped_in_for_a_regular_file_is_never_opened() {
+    let f = Fixture::new();
+    f.write("x", b"data");
+    let (dir, st) = stat_in(&f.host, "x");
+    fs::remove_file(f.p("x")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        f.p("x"),
+        rustix::fs::FileType::Fifo,
+        Mode::from_raw_mode(0o644),
+        0,
+    )
+    .unwrap();
+    let proc = proc_fd_dir().unwrap();
+    let r = open_regular(proc.as_fd(), dir.as_fd(), b"x", &st, Path::new("x"));
+    assert!(is_changed(r), "a FIFO must be refused on the pinned fd");
+}
+
+#[test]
+fn a_regular_file_swapped_for_another_is_refused() {
+    let f = Fixture::new();
+    f.write("x", b"data");
+    let (dir, st) = stat_in(&f.host, "x");
+    f.write("y", b"other");
+    fs::rename(f.p("y"), f.p("x")).unwrap();
+    let proc = proc_fd_dir().unwrap();
+    let r = open_regular(proc.as_fd(), dir.as_fd(), b"x", &st, Path::new("x"));
+    assert!(is_changed(r));
+    // Unchanged, it opens and reads.
+    let (dir, st) = stat_in(&f.host, "x");
+    let fd = open_regular(proc.as_fd(), dir.as_fd(), b"x", &st, Path::new("x"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(hash_content(fd.as_fd(), 5, Path::new("x")).unwrap().1, 5);
+}
+
+#[test]
+#[ignore = "T2: mknod of a device node needs root"]
+fn a_device_node_swapped_in_for_a_regular_file_is_never_opened() {
+    let f = Fixture::new();
+    f.write("x", b"data");
+    let (dir, st) = stat_in(&f.host, "x");
+    fs::remove_file(f.p("x")).unwrap();
+    // 1:5 is /dev/zero: read, it never ends.
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        f.p("x"),
+        rustix::fs::FileType::CharacterDevice,
+        Mode::from_raw_mode(0o644),
+        rustix::fs::makedev(1, 5),
+    )
+    .unwrap();
+    let proc = proc_fd_dir().unwrap();
+    let r = open_regular(proc.as_fd(), dir.as_fd(), b"x", &st, Path::new("x"));
+    assert!(is_changed(r));
+    let mut w = walker(SnapshotMode::Full, 2);
+    let d = w.diff(&f.root, &none()).unwrap();
+    assert_eq!(d.stats.files_hashed, 0);
+}
+
+#[test]
+fn hashing_reads_no_more_than_the_size_statx_gave() {
+    let f = Fixture::new();
+    f.write("x", b"12345");
+    let open = || rustix::fs::open(f.p("x"), OFlags::RDONLY, Mode::empty()).unwrap();
+    assert!(hash_content(open().as_fd(), 5, Path::new("x")).is_ok());
+    assert!(is_changed(hash_content(open().as_fd(), 4, Path::new("x"))));
+    assert!(is_changed(hash_content(open().as_fd(), 6, Path::new("x"))));
+    // A file that never ends stops after size + 1 bytes.
+    let zero = rustix::fs::open("/dev/zero", OFlags::RDONLY, Mode::empty()).unwrap();
+    assert!(is_changed(hash_content(
+        zero.as_fd(),
+        10,
+        Path::new("zero")
+    )));
+}
+
+#[test]
+fn a_wide_directory_is_walked() {
+    let f = Fixture::new();
+    for i in 0..3000 {
+        f.mkdir(&format!("w/{i}"));
+    }
+    let mut w = walker(SnapshotMode::Full, 1);
+    let d = w.diff(&f.root, &none()).unwrap();
+    assert_eq!(d.changed.len(), 3001);
+}
+
+#[test]
+fn arena_offsets_beyond_u32_are_errors() {
+    assert!(matches!(
+        super::super::tree::len_u32_for_tests(usize::MAX),
+        Err(Error::WalkTooLarge)
+    ));
+}

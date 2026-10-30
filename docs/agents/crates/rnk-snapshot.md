@@ -90,10 +90,22 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   whose `statx` key (`dev, ino, size, mtime, ctime, mode, uid, gid`) is
   unchanged and whose `mtime` and `ctime` were 2 s older than that walk's
   start reuses its hashes.
-- xattrs are hashed on regular files and directories (through the fd
-  already open), not on symlinks or device nodes [inferred: only
-  `security.*` and `trusted.*` can sit there, and a relabel alone is not a
-  change kaniko sees either].
+- A regular file is pinned with `O_PATH` (which opens nothing), checked
+  against its `statx` (type, inode, device, mount id), and only then
+  reopened read-only through `/proc/self/fd`, as `RootPath::open_regular`:
+  a FIFO or device node swapped in is never opened, so no driver's `open`
+  runs as root. At most `size + 1` bytes are read; a longer or shorter file
+  is `Error::Changed`. A directory is opened with `O_DIRECTORY` and checked
+  the same way, inside its own task from its parent's shared descriptor
+  (`Arc<OwnedFd>`): a directory waiting for a worker holds no descriptor of
+  its own. A path arena beyond `u32` offsets is `Error::WalkTooLarge`.
+- Known limits: xattrs are hashed on regular files and directories only,
+  not on symlinks or device nodes [inferred: only `security.*` and
+  `trusted.*` can sit there, and a relabel alone is not a change kaniko
+  sees either]; each directory task copies its path, so path bytes grow
+  with depth squared on very deep trees.
+- `IgnoreList::contains` is an exact match; once `feat/kaniko-ignore-list`
+  lands, the walk switches to `covers` (an ignored ancestor or glob).
 
 - `Base::Image` takes layers in image order (the config's `diff_ids`,
   bottom first); the lower stack is topmost first. `Base::Stage` shares
@@ -166,7 +178,11 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   file, symlinks hashed by target and never followed, hard links sharing
   `(dev, ino)`, ignored paths neither walked nor deleted, 1 against 8
   workers identical on a 1,360-entry tree, the stat cache and its racy
-  window, xattrs but overlay's, a tree deeper than `PATH_MAX`;
+  window, xattrs but overlay's, a tree deeper than `PATH_MAX`, a FIFO
+  listed and never opened, a FIFO or another file swapped in for a regular
+  file refused on the pinned fd, the read bounded by `statx`'s size
+  (`/dev/zero` included), 3,000 subdirectories in one directory, arena
+  offsets beyond `u32`; T2 (VM): a device node swapped in is never opened;
   `tests/spans.rs` the walk spans. To do: property `apply(base, diff) ==
   tree` (with the exporter, task 5), an unchanged `RUN` giving an empty
   layer (task 6).

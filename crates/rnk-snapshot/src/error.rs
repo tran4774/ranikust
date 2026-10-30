@@ -132,6 +132,9 @@ pub enum Error {
         /// The entry, relative to the root.
         path: PathBuf,
     },
+    /// A walk too large for its path arena's `u32` offsets.
+    #[error("walk: more than 4 GiB of names or 4 billion entries")]
+    WalkTooLarge,
     /// The walk's thread pool could not start.
     #[error("walk: cannot start {workers} workers: {reason}")]
     Pool {
@@ -173,6 +176,7 @@ impl Error {
             | Self::ProbeCheck(_)
             | Self::Store(_)
             | Self::Changed { .. }
+            | Self::WalkTooLarge
             | Self::Pool { .. }
             | Self::Layer(_) => None,
         }

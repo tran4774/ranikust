@@ -89,6 +89,11 @@ squashing, which folds a parent stage into the child that builds on it
   change, which kaniko's `time` mode misses when the mtime matches.
 - xattrs are hashed on regular files and directories only, through the
   descriptor the walk already holds.
+- A regular file is opened only after its `O_PATH` pin matches its `statx`
+  (type, inode, device, mount), then through `/proc/self/fd`, so nothing
+  swapped in is ever opened; hashing reads at most `size + 1` bytes. A
+  subdirectory is opened in its own task, from its parent's shared
+  descriptor, so waiting directories hold no descriptor of their own.
 
 ## Ignore list
 
