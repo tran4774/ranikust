@@ -138,6 +138,7 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 | Any diff; `rnk-rootfs`, `rnk-sandbox`, `rnk-layer`, `rnk-registry` | `/code-review`; `/security-review` |
 | Rust review; flag design; property tests | Trail of Bits `rust-review`, `sharp-edges`, `property-based-testing` (user scope, if installed) |
 | Milestones only | vendored `security-audit` (spawns many agents) |
+| End of a phase, when the maintainer asks | `refactor` skill: behaviour-preserving clean-up, one crate per branch, digests held fixed |
 
 `.claude/settings.json` denies `sudo`, `mount`, `unshare` and the like, and
 asks before `cargo add`/`install`/`run`, `docker`, `podman`, `git commit`,
