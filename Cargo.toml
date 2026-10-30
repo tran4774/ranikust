@@ -53,6 +53,8 @@ mimalloc = { version = "0.1.52", default-features = false }
 # `oci-client`: the distribution API under `rnk-registry`; its default
 # `rustls-tls` feature would select `aws-lc-rs` (ADR-0024).
 oci-client = { version = "0.18.0", default-features = false, features = ["rustls-tls-no-provider"] }
+# `rayon`: the kaniko-mode walk's pool, one task per directory (ADR-0039).
+rayon = "1.12.0"
 # `regex`: no Unicode tables; `rnk-ignore` writes its classes out itself.
 regex = { version = "1.12", default-features = false, features = ["std", "perf"] }
 # `reqwest`: the identity-token exchange `oci-client` lacks; the version and
@@ -83,6 +85,9 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry", "std"] }
 # `webpki-root-certs`: embedded public roots as DER certificates (ADR-0024).
 webpki-root-certs = "1.0.11"
+# `xxhash-rust`: xxh3-128, the kaniko-mode walk's content and xattr hash
+# (ADR-0039); nothing else of the crate.
+xxhash-rust = { version = "0.8.19", default-features = false, features = ["xxh3"] }
 # `zstd`: bundled libzstd built by cargo-zigbuild (ADR-0020); no legacy formats or dictionary training.
 zstd = { version = "0.14.3", default-features = false }
 

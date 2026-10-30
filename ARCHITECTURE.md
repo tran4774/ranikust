@@ -173,7 +173,10 @@ directory per instruction, overlay/OCI whiteout conversion, extraction of
 base layers into the store's `layers/` (`rnk-layer`'s decoder chained into
 `rnk-rootfs::extract_overlay`), and the probe of its own capabilities: the overlay
 mount and `fsconfig` with `lowerdir+`. Its exporter feeds diff entries to
-`rnk-layer`'s writer. kaniko: parallel walk and hash, `LayeredMap`, path
+`rnk-layer`'s writer. kaniko: the parallel walk and hash (`Walker`, built:
+a `rayon` pool over `openat2` and `getdents64`, xxh3-128, a stat cache, the
+diff computed while walking over a path arena, kaniko's `LayeredMap`;
+[ADR-0039](docs/adr/0039-kaniko-mode-walk-and-hash-crates.md)), path
 resolution, filesystem deletion.
 **Must not** run instructions, encode diffs as layers itself, own the store
 (`rnk-store`), or expose a stage root as anything but a `RootPath`.

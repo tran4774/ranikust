@@ -6,8 +6,9 @@
 //! overlay form, one overlay mount per layer with a fresh upper directory
 //! (`ADR-0016` options), and the exporter that turns an upper directory
 //! into an OCI layer through `rnk-layer`'s writer ([`LayerDiff`]). kaniko
-//! mode (walk and hash, `LayeredMap`, filesystem deletion) implements the
-//! same traits in Phase 2.
+//! mode's walk is [`Walker`]: a parallel walk and hash of a root, diffed
+//! against the previous walk while walking ([`WalkDiff`], ADR-0039); its
+//! stage roots and deletion implement the same traits later in Phase 2.
 //!
 //! Also probes its own capability, which the binary runs at start-up:
 //! [`probe`], the overlay mount with the ADR-0016 options, with
@@ -25,6 +26,7 @@
 
 mod error;
 mod export;
+mod kaniko;
 mod layer;
 mod lowers;
 mod mount;
@@ -33,6 +35,10 @@ mod stage;
 
 pub use error::{Error, Result};
 pub use export::{DiffCounts, LayerDiff};
+pub use kaniko::{
+    Change, Changed, DEFAULT_WALK_WORKERS, EntryMeta, SnapshotMode, WalkDiff, WalkOptions,
+    WalkStats, Walker,
+};
 pub use layer::LayerDir;
 pub use mount::{MAX_LOWERS, MountApi, OVERLAY_OPTIONS};
 pub use probe::{OverlayCaps, probe};

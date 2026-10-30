@@ -122,6 +122,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   accepted with kaniko's meaning; in overlay mode those that would change
   the image are refused. New flag `--snapshot-workers` (default 8) sizes
   kaniko mode's walk. Kaniko-mode builds still stop after the set-up.
+- The kaniko-mode walk in `rnk-snapshot` (not yet used by a build):
+  `Walker` walks a root on 8 threads by default (`WalkOptions::workers`),
+  each directory opened by descriptor relative to its parent, never
+  following a symlink or crossing a mount; hashes files with xxh3-128,
+  content and xattrs, reusing the previous walk's hash for files unchanged
+  outside a 2 s window; and diffs against the previous walk while walking,
+  with kaniko's `--snapshot-mode=full|redo|time` meaning. The result does
+  not depend on the thread count.
 
 ### Changed
 

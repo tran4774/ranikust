@@ -25,9 +25,9 @@ the code.
 | [x] | `--mode=auto` picks kaniko mode when root may not mount, and says why; the probe's per-stage outcome (can mount, overlay unusable) | `ranikust` |
 | [ ] | Ignore list: mount points under the root from `/proc/self/mountinfo`, `--ignore-path`, `/proc`, `/sys`, `/dev`, all of `/ranikust`, the state directory, `/etc/mtab`, `/tmp/apt-key-gpghome`, and `/var/run` while `--ignore-var-run` is true (`ADR-0038`, Q-035) | `rnk-snapshot`, on `rnk-rootfs::IgnoreList` |
 | [ ] | Base-layer extraction into a live root: whiteouts applied (`Whiteouts::Apply`), ignored paths never written, mount points kept | `rnk-rootfs` |
-| [ ] | Parallel walk relative to each parent fd (`openat2` `RESOLVE_BENEATH \| NO_SYMLINKS \| NO_MAGICLINKS \| NO_XDEV`, `statx` per entry, mount-id guard), 8 workers by default, `--snapshot-workers` (`ADR-0039`); content and xattr hash (`*.overlay.*` excluded); stat cache with the 2 s racy window; the diff computed during the walk over a path arena (kaniko's `LayeredMap`); `--snapshot-mode=full\|redo\|time` | `rnk-snapshot` |
+| [x] | Parallel walk relative to each parent fd (`openat2` `RESOLVE_BENEATH \| NO_SYMLINKS \| NO_MAGICLINKS \| NO_XDEV`, `statx` per entry, mount-id guard), 8 workers by default, `--snapshot-workers` (`ADR-0039`); content and xattr hash (`*.overlay.*` excluded); stat cache with the 2 s racy window; the diff computed during the walk over a path arena (kaniko's `LayeredMap`); `--snapshot-mode=full\|redo\|time` | `rnk-snapshot` |
 | [ ] | Walk diff → OCI layer: one whiteout at the topmost deleted path, parent headers, a hardlink into a lower layer written as a regular file, an empty layer for a `RUN` that changes nothing | `rnk-snapshot` → `rnk-layer` |
-| [ ] | `StageRootfs`/`Snapshotter` for kaniko mode, on the shared `/` and on a per-stage directory; revisit the interim signature ([open: Q-024]) | `rnk-snapshot` |
+| [ ] | `StageRootfs`/`Snapshotter` for kaniko mode (with one policy, as kaniko, for an entry that vanishes or is swapped during the walk: today a directory fails the walk with `Error::Changed` while a file is skipped; run the T2 device-swap test of the walk first), on the shared `/` and on a per-stage directory; revisit the interim signature ([open: Q-024]) | `rnk-snapshot` |
 | [ ] | Safe deletion between stages and on release, with the ignore list (mechanism done in `rnk_rootfs::delete_contents`), from `Workdir::root()`, never a reopened path; `Workdir::mark` before the first write; a state directory inside the workdir (`<cwd>/.ranikust` with the cwd in the workdir) neither counts against the marker check nor is deleted; kaniko mode requires root | `rnk-snapshot` |
 | [~] | Sequential flow: kaniko's stage squashing (`squash_for_shared_root`); what later stages need (`COPY --from` files, a stage image built `FROM`) kept in the state directory before the root is emptied | `rnk-dockerfile`, `rnk-builder` |
 | [~] | Scheduler: a stage on the shared `/` runs alone, `--jobs` ignored there with one warning; per-stage directories scheduled as overlay stages | `rnk-sched` |
@@ -50,7 +50,7 @@ Three tracks after task 0: set-up (1, 2), the snapshot (3–6) and execution
 | 1 | Workdir checks, lock, marker, `RLIMIT_NOFILE` (`ranikust`, `rnk-rootfs`) (done) | | |
 | 2 | State directory default, `--mode=auto` picking kaniko mode, the refused flags accepted (done, `ADR-0040`) | 1 | |
 | 3 | Ignore list from mountinfo and the fixed paths; extraction into a live root | 1 | |
-| 4 | Parallel walk, hash, stat cache, diff during the walk | 0, 3 | |
+| 4 | Parallel walk, hash, stat cache, diff during the walk (done; switches to `IgnoreList::covers` when task 3 lands) | 0, 3 | |
 | 5 | Walk diff → layer exporter | 4 | |
 | 6 | `KanikoRoot` (`StageRootfs`, `Snapshotter`) on `/` and per-stage directories; safe deletion between stages | 3, 4, 5 | Q-024 revisited here |
 | 7 | `RUN` with `Isolation::Direct` on the shared root; placed files and mtime restore | 6 | |
@@ -66,7 +66,7 @@ task 3's list; the sandbox half of task 7 (`Isolation::Direct`, the placed
 files' journal and mtime restore), testable on any root without
 `KanikoRoot`; and the logic half of task 8 (squashing, the lazy-snapshot
 rule from the stage graph, the shared-`/` exclusivity in `rnk-sched`).
-Task 5 waits for task 4's diff type; task 6 joins 3, 4 and 5, and wires
+Task 5 waits for task 4's diff type (`rnk_snapshot::WalkDiff`); task 6 joins 3, 4 and 5, and wires
 the halves of 7 and 8 in.
 
 Every task instruments its crate as its card's `## Metrics` and
