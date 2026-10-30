@@ -14,10 +14,25 @@ the rules that hold across all of them.
 | Tier | Where | Use for |
 |---|---|---|
 | T0 | `cargo test`, `just check` | everything that needs no privilege: parsers, encoders, path handling on temp dirs, the CLI as a black box |
-| T1 | `just smoke` (rootless podman) | the binary in a container without root |
-| T2 | `just test-vm [unit\|smoke\|push\|e2e]` | real root, mounts, `pivot_root`, rootful Docker; never on the host |
+| T1 | `just smoke-case [name]`, `just smoke` (rootless podman) | the binary in a container without root |
+| T2 | `just test-vm [unit\|smoke\|quick\|push\|e2e]` | real root, mounts, `pivot_root`, rootful Docker; never on the host |
 
 A T2-only check still gets a T0 test for its logic where one is possible.
+
+## Smoke and proofs of concept: the quick cases, not nextjs
+
+A build to see something work, a smoke test or a proof of concept uses a
+small Dockerfile from `tests/smoke/cases/<name>/` (alpine or scratch, a few
+seconds per build): `just smoke-case <name>` in rootless podman, `just
+test-vm quick` (`RANIKUST_QUICK_CASES="<name> ..."`) as real root. Add a
+case there rather than reaching for a big project; one concern per case,
+its checks in `case.sh` (helpers in `tests/smoke/cases.bash`).
+
+The nextjs-kaniko workloads (`just test-vm e2e`: W1–W3 with kaniko,
+BuildKit and ranikust, a 12 GiB VM, 45–60 minutes for 3 rounds) are only
+for a large benchmark or an acceptance measurement. Even then start with
+`RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1`; run all builders
+and 3 rounds only when official numbers are needed.
 
 ## Write tests the way large Rust CLIs do
 

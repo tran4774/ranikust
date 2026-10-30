@@ -134,10 +134,16 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
   These land in the releases that follow; the decisions are recorded now.
 
-[Unreleased]: https://github.com/tran4774/ranikust/commits/main
 ### Removed
 
 - `RANIKUST_METRICS_FILE`: the metrics report is asked for with
   `--metrics-file` only, which now works with every subcommand; a warning
   names the flag when the variable is set.
 
+### Fixed
+
+- A `RUN` heredoc whose body starts with `#!` failed with "resolve a mount
+  target in the root"; its script now runs from `/dev/pipes`, as in
+  BuildKit.
+
+[Unreleased]: https://github.com/tran4774/ranikust/commits/main

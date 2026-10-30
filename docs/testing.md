@@ -113,7 +113,8 @@ runs as root on the host:
 |---|---|
 | `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass |
 | `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image. The `ranikust` binary then builds `tests/smoke/e2e` in the same environment (the workdir a volume in Docker, since overlay refuses an upper directory on the container's own overlay root; the `SYS_ADMIN` variant has no `NET_ADMIN`, so it passes `--allow network.none-userns`, [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md), and the build checks `lo` is up). In the `SYS_ADMIN` variant a `RUN --network=none` without that flag must be refused naming it, and with it, after `modprobe ip_tables ip6_tables af_key` in the VM, `tests/smoke/netns-check.py` must find, as root in the `RUN`, loopback up and working; `EPERM` for `setns` into the user namespace owning the network namespace (`NS_GET_USERNS`), `unshare(CLONE_NEWUSER)`, `IPT_SO_SET_REPLACE`, `IPT_SO_GET_INFO`, `IP6T_SO_GET_INFO`, `TCP_REPAIR` and `socket(AF_KEY)`; `EPROTONOSUPPORT` for `NETLINK_NETFILTER` and `NETLINK_XFRM`; rtnetlink and audit netlink open; and a later `RUN --network=none useradd` must succeed: it must reach overlay mode as root with the same root entry and a real overlay probe (either mount API) and print a digest; no stub or secret may reach a blob, and Docker loads the tar and runs the image as user `app`. In every variant the e2e Dockerfile checks that a `RUN --network=none` sees only `lo` (in `/sys/class/net` and `/proc/net/dev`) and reaches nothing outside, and compares the secret by its sha256, so the value appears in no instruction. On the VM itself (Phase 1 acceptance): `--reproducible` must give one digest with `--jobs 1`, the default, 2 s later and with `--metrics-file`; the secret must be in no build log and no metrics report (`smoke_check_no_secret_in`); a cache mount written by one build must be read by the next with the same state directory, and not by a fresh one. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
-| `e2e` | The Phase 1 workloads of `nextjs-kaniko` ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust`; times, image comparison, metrics. Not part of the default `just test-vm` |
+| `quick` | The quick smoke cases ([below](#quick-smoke-cases)) built by the `ranikust` binary as real root on the VM, Docker loading and running each image; `RANIKUST_QUICK_CASES` picks cases. A minute or two: the suite for a smoke test or a proof of concept that needs real root. Not part of the default `just test-vm` |
+| `e2e` | The Phase 1 workloads of `nextjs-kaniko` ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust`; times, image comparison, metrics. A 12 GiB VM and 45–60 minutes for 3 rounds: only for a large benchmark or an acceptance measurement, and then `RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1` unless official numbers are needed. Not part of the default `just test-vm` |
 | `push` | One `ranikust build` as real root pushing to three registries and writing `--tar-path` and `--oci-layout-path` ([below](#test-registries)): a `registry:2` on the VM's loopback (plain HTTP, anonymous, unasked), the host's HTTP test registry as `10.0.2.2:5000` with `--insecure-registry`, and the host's HTTPS one as `10.0.2.2:5443` with `--registry-certificate` and credentials from a `config.json`. Each manifest read back must hash to the printed digest, the HTTPS one must refuse an anonymous read, Docker pulls and runs the loopback image and loads and runs the tarball and the layout, and every layout blob must hash to its name. Needs `just registry-up`; not part of the default `just test-vm` |
 
 ### Test registries
@@ -323,3 +324,33 @@ runs it, checks that no stub or secret reached a blob, and that
 in a user namespace there, so real-root behaviour (T17, T18 of the threat
 model, `MS_MOVE` under Docker's seccomp) is checked by the `smoke` suite of
 `just test-vm` instead.
+
+## Quick smoke cases
+
+Small Dockerfiles in `tests/smoke/cases/<name>/`, one concern each, built
+by the `ranikust` binary in a few seconds from `alpine:3.20` or `scratch`.
+They are the default for a smoke test or a proof of concept; the
+nextjs-kaniko workloads (`e2e`) are for large benchmarks only.
+
+| Case | What it checks |
+|---|---|
+| `minimal` | One `RUN` and a `CMD`; the image runs |
+| `scratch` | `FROM scratch` with a root built in another stage, an exec-form `ENTRYPOINT`, the default `PATH` added to a config without one (ADR-0032) |
+| `metadata` | The image config as BuildKit writes it: `ARG` before `FROM`, `ARG`/`ENV` expansion, relative and absolute `WORKDIR`, `USER name:group`, `LABEL`, `EXPOSE` (tcp, udp, a range expanded), `STOPSIGNAL`, `HEALTHCHECK`, `SHELL`, exec-form `ENTRYPOINT` with `CMD`; with `--target shellform`, a shell-form `ENTRYPOINT` that clears the `CMD` inherited from its base stage |
+| `copy` | `COPY` wildcards, one matching nothing (not an error), `.dockerignore` with an exception, `--chown`, `--chmod` octal and symbolic, a symlinked source (followed), a directory into a new destination, a heredoc; checked inside the image |
+| `multistage` | Two independent stages at `--jobs 2`, `FROM <stage>`, `COPY --from` all of them |
+| `run` | `RUN` in shell and exec form, a heredoc and a `#!` heredoc, a cache mount a second build sees, a secret as a file (`0400`, by its sha256) and as `env=`, `--network=none` seeing only `lo`, a `RUN` that changes nothing giving an empty layer |
+| `reproducible` | `--reproducible`: one digest across builds a second apart and at `--jobs 1` and `2`, `created` at the epoch, another digest without the flag |
+
+Every build is also checked for a stub or the secret in any blob and the
+secret in the build log. `tests/smoke/cases.bash` runs them; a case is a
+`Dockerfile`, its context and a `case.sh` with a `case_run` function using
+its helpers (`build`, `run`, `expect`, `expect_config`, `config`, `out`).
+
+- `just smoke-case [name...]` (T1): the binary in rootless `podman run
+  --privileged`, podman loading and running the images. All seven take
+  under a minute once the binary is built. The shared workdir under
+  `target/smoke/cases/.work` keeps the store between runs.
+- `just test-vm quick` (T2): the same as real root on the VM, Docker
+  loading and running the images; `RANIKUST_QUICK_CASES="run copy"` picks
+  cases.
