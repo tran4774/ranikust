@@ -12,7 +12,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +42,7 @@ use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, Stdi
 #[derive(Debug)]
 pub struct Sandbox {
     runner: Runner,
+    running: Running,
     requests: Option<mpsc::Sender<Request>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -75,6 +76,7 @@ impl Sandbox {
             .map_err(|e| sys_err("start the spawner thread", e))?;
         Ok(Self {
             runner,
+            running: Running::default(),
             requests: Some(requests),
             thread: Some(thread),
         })
@@ -90,17 +92,25 @@ impl Sandbox {
     /// [`Error::InvalidSpec`], [`Error::Rootfs`] for the `USER` lookup or a
     /// stub, [`Error::Setup`] with the failing step and errno, [`Error::Exec`]
     /// when the command cannot be executed, [`Error::Privilege`] for
-    /// [`Isolation::Full`] without `CAP_SYS_ADMIN` or without [`Caps`], or a
-    /// host-side error.
+    /// [`Isolation::Full`] without `CAP_SYS_ADMIN` or without [`Caps`],
+    /// [`Error::Cancelled`] after [`Sandbox::cancel`], or a host-side error.
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus> {
         let requests = self.requests.as_ref().ok_or(Error::SpawnerGone)?;
-        self.runner.run(spec, true, |job| {
+        self.runner.run(spec, Some(&self.running), |job| {
             let (reply, answer) = mpsc::sync_channel(1);
             requests
                 .send(Request { job, reply })
                 .map_err(|_| Error::SpawnerGone)?;
             answer.recv().map_err(|_| Error::SpawnerGone)?
         })
+    }
+
+    /// Cancels the build's `RUN`s: kills every one running with `SIGKILL`,
+    /// as BuildKit does on a cancel, and makes every later [`Sandbox::run`]
+    /// fail with [`Error::Cancelled`]. Stubs are cleaned up as after any
+    /// `RUN`, before `run` returns. Any thread may call it.
+    pub fn cancel(&self) {
+        self.running.cancel();
     }
 }
 
@@ -293,14 +303,16 @@ impl Runner {
         &self.state_dir
     }
 
-    /// Runs `spec`, cloning through `spawn`. With `traced`, records the
-    /// `rnk_sandbox.setup` and `rnk_sandbox.run` spans.
+    /// Runs `spec`, cloning through `spawn`. With `running` (a
+    /// [`Sandbox`]'s, not the probe's), the `RUN` can be cancelled and
+    /// records the `rnk_sandbox.setup` and `rnk_sandbox.run` spans.
     pub(crate) fn run(
         &self,
         mut spec: RunSpec,
-        traced: bool,
+        running: Option<&Running>,
         spawn: impl FnOnce(Job) -> Result<Spawned>,
     ) -> Result<ExitStatus> {
+        let traced = running.is_some();
         spec.validate()?;
         let root_entry = match (spec.isolation, self.root_entry) {
             (Isolation::Full, None) => return Err(Error::Privilege("the RUN sandbox")),
@@ -334,7 +346,7 @@ impl Runner {
         } else {
             Span::none()
         };
-        let result = span.in_scope(|| execute(job, spawn, &program));
+        let result = span.in_scope(|| execute(job, spawn, &program, running));
         match &result {
             Ok((status, usage)) => {
                 record_usage(&span, usage);
@@ -641,26 +653,104 @@ fn cstring(s: impl AsRef<OsStr>) -> Result<CString> {
         .map_err(|_| Error::InvalidSpec(format!("contains a NUL byte: {s:?}")))
 }
 
-/// Clones the child, learns whether it reached `execve`, and reaps it.
+/// The `RUN`s running now, for [`Sandbox::cancel`].
+#[derive(Debug, Default)]
+pub(crate) struct Running(Mutex<RunningState>);
+
+#[derive(Debug, Default)]
+struct RunningState {
+    cancelled: bool,
+    pids: Vec<(Pid, Isolation)>,
+}
+
+impl Running {
+    fn state(&self) -> MutexGuard<'_, RunningState> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Kills every running `RUN`, and every later one as soon as it is
+    /// cloned.
+    fn cancel(&self) {
+        let mut state = self.state();
+        state.cancelled = true;
+        for &(pid, isolation) in &state.pids {
+            kill_run(pid, isolation);
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.state().cancelled
+    }
+
+    /// Records a cloned child; kills it at once after a cancel.
+    fn add(&self, pid: Pid, isolation: Isolation) {
+        let mut state = self.state();
+        state.pids.push((pid, isolation));
+        if state.cancelled {
+            kill_run(pid, isolation);
+        }
+    }
+
+    /// Forgets a child that has exited and is not reaped yet, so that its pid
+    /// cannot have been reused; returns whether the build was cancelled.
+    fn remove(&self, pid: Pid) -> bool {
+        let mut state = self.state();
+        state.pids.retain(|&(p, _)| p != pid);
+        state.cancelled
+    }
+}
+
+/// `SIGKILL` to a `RUN`, as BuildKit kills the process on a cancel
+/// (`executor/runcexecutor/executor.go`). A `Full` child is PID 1 of its
+/// namespace, so the kernel kills the rest; a `Direct` one leads its process
+/// group. Called only while the child is not reaped, so the pid is its own;
+/// `ESRCH` (already gone) is no error.
+fn kill_run(pid: Pid, isolation: Isolation) {
+    // Nothing to report: the RUN is gone either way, and the caller's reap
+    // says how it ended.
+    let _ = rustix::process::kill_process(pid, Signal::KILL);
+    if isolation == Isolation::Direct {
+        // No group yet when the child has not reached `setpgid`; the kill of
+        // the pid above covers it.
+        let _ = rustix::process::kill_process_group(pid, Signal::KILL);
+    }
+}
+
+/// Clones the child, learns whether it reached `execve`, and reaps it. With
+/// `running`, the child can be killed by [`Sandbox::cancel`] until it exits.
 fn execute(
     job: Job,
     spawn: impl FnOnce(Job) -> Result<Spawned>,
     program: &str,
+    running: Option<&Running>,
 ) -> Result<(ExitStatus, libc::rusage)> {
     let isolation = job.isolation;
+    if running.is_some_and(Running::is_cancelled) {
+        return Err(Error::Cancelled);
+    }
     let Spawned { pid, failures } = spawn(job)?;
-    // The child is reaped whatever the read or the kill gave.
+    if let Some(r) = running {
+        r.add(pid, isolation);
+    }
+    // The child is reaped whatever the read, the wait or the kill gave.
     let failure = read_failure(&failures);
     drop(failures);
-    let killed = if isolation == Isolation::Direct {
-        kill_leftovers(pid)
-    } else {
+    // Waits for the exit without reaping: until the reap, the pid cannot be
+    // reused, so neither a cancel nor the group kill can reach another
+    // process.
+    let exited = wait_exited(pid);
+    let cancelled = running.is_some_and(|r| r.remove(pid));
+    let killed = match (exited, isolation) {
+        (Ok(()), Isolation::Direct) => kill_leftovers(pid),
         // The child is PID 1 of its namespace: when it exits, the kernel
         // kills the rest.
-        Ok(())
+        (r, _) => r,
     };
     let (status, usage) = reap(pid)?;
     killed?;
+    if cancelled {
+        return Err(Error::Cancelled);
+    }
     match failure? {
         None => Ok((status, usage)),
         Some((Step::Exec, errno)) => Err(Error::Exec {
@@ -697,21 +787,25 @@ fn read_failure(fd: &OwnedFd) -> Result<Option<(Step, i32)>> {
     }
 }
 
-/// Kills what a `Direct` command left in its process group, as kaniko does,
-/// once the command itself has exited. The leader is waited for without
-/// being reaped: while it is a zombie, its pid, the group's id, cannot be
-/// reused.
-fn kill_leftovers(pid: Pid) -> Result<()> {
+/// Waits until `pid` has exited, without reaping it: while it is a zombie,
+/// its pid cannot be reused.
+fn wait_exited(pid: Pid) -> Result<()> {
     loop {
         match rustix::process::waitid(
             WaitId::Pid(pid),
             WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
         ) {
-            Ok(_) => break,
+            Ok(_) => return Ok(()),
             Err(Errno::INTR) => {}
             Err(e) => return Err(sys_err("waitid", e)),
         }
     }
+}
+
+/// Kills what a `Direct` command left in its process group, as kaniko does,
+/// once the command itself has exited ([`wait_exited`]): the leader is a
+/// zombie, so its pid, the group's id, is not reused.
+fn kill_leftovers(pid: Pid) -> Result<()> {
     match rustix::process::kill_process_group(pid, Signal::KILL) {
         // No group: the child failed before `setpgid`.
         Ok(()) | Err(Errno::SRCH) => Ok(()),
@@ -910,6 +1004,78 @@ mod tests {
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
         drop(sandbox);
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
+
+    /// A cancel kills a registered child, and the exit is seen before the
+    /// reap, so the pid is still the child's when the kill comes.
+    #[test]
+    fn a_cancel_kills_running_children_and_later_ones() {
+        let running = Running::default();
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        running.add(pid, Isolation::Direct);
+        let start = std::time::Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                running.cancel();
+            });
+            wait_exited(pid).unwrap();
+        });
+        assert!(running.remove(pid), "the cancel is reported");
+        let (status, _) = reap(pid).unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        // After the cancel, a new child dies as soon as it is recorded.
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        running.add(pid, Isolation::Full);
+        wait_exited(pid).unwrap();
+        assert!(running.remove(pid));
+        assert_eq!(reap(pid).unwrap().0.signal(), Some(libc::SIGKILL));
+    }
+
+    #[test]
+    fn after_a_cancel_no_run_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        let missing = empty.path().canonicalize().unwrap().join("missing");
+        let sandbox = Sandbox::start(None, dir.path()).unwrap();
+        sandbox.cancel();
+        assert!(matches!(
+            sandbox.run(direct(&missing, Path::new("/"))),
+            Err(Error::Cancelled)
+        ));
+        drop(sandbox);
+        assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
+
+    /// A real `RUN` killed mid-way: root is needed for `setgroups`, so it
+    /// runs in the T2 VM, on the VM's own `/bin/sleep`.
+    #[test]
+    #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+    fn a_cancel_kills_a_running_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = Sandbox::start(None, dir.path()).unwrap();
+        let mut spec = RunSpec::new("/", vec!["/bin/sleep".into(), "60".into()]);
+        spec.isolation = Isolation::Direct;
+        spec.workdir = "/".into();
+        let start = std::time::Instant::now();
+        let r = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                sandbox.cancel();
+            });
+            sandbox.run(spec)
+        });
+        assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(20));
     }
 
     #[test]

@@ -226,6 +226,10 @@ pub enum Error {
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,
+    /// [`crate::Sandbox::cancel`] was called: the `RUN` was killed, or was
+    /// not started.
+    #[error("RUN cancelled")]
+    Cancelled,
     /// A filesystem operation inside the root failed.
     #[error(transparent)]
     Rootfs(#[from] rnk_rootfs::Error),

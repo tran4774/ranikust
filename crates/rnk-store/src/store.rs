@@ -49,6 +49,43 @@ impl BuildPaths {
     }
 }
 
+/// How a cache mount is shared: BuildKit's `sharing=` of
+/// `RUN --mount=type=cache`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CacheSharing {
+    /// Every user at once.
+    #[default]
+    Shared,
+    /// One user at a time; the others wait.
+    Locked,
+    /// One user at a time; another gets a new empty cache of the same key.
+    Private,
+}
+
+/// A cache directory held for one `RUN` ([`Store::cache_lease`]); the hold
+/// ends when the lease drops, or when the process dies.
+#[derive(Debug)]
+pub struct CacheLease {
+    path: PathBuf,
+    created: bool,
+    _lock: OwnedFd,
+}
+
+impl CacheLease {
+    /// The directory, for the `RUN`'s bind mount.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether this lease made the directory: the caller then applies the
+    /// mount's owner and mode, once, as BuildKit does.
+    #[must_use]
+    pub fn created(&self) -> bool {
+        self.created
+    }
+}
+
 /// An entry being filled, in `tmp/<build-id>/` until it is published.
 ///
 /// A blob is a new, empty regular file opened for reading and writing; a
@@ -261,6 +298,123 @@ impl Store {
         let rel = Path::new("caches").join(Digest::from_sha256_bytes(&hash).encoded());
         self.state.create_dir_all(&rel, 0o755)?;
         Ok(self.host(&rel))
+    }
+
+    /// A directory of the `RUN --mount=type=cache` key `key`, held for one
+    /// `RUN` as `sharing` says, as BuildKit's cache mounts
+    /// (`solver/llbsolver/mounts/mount.go` `getRefCacheDir`):
+    ///
+    /// - [`CacheSharing::Shared`]: the first directory of the key no build
+    ///   holds alone, used by every shared holder at once;
+    /// - [`CacheSharing::Locked`]: a directory no one else holds, waiting
+    ///   (and polling `cancelled` every 100 ms) while every one is held;
+    /// - [`CacheSharing::Private`]: a directory no one else holds, or a new
+    ///   empty one of the same key when every one is held.
+    ///
+    /// The first directory of a key is `caches/<sha256(key)>` (as
+    /// [`Store::cache_dir`]), the next `caches/<sha256(key)>-<n>`. A lease
+    /// is an `flock` on `locks/caches/<name>.lock`, shared or exclusive, kept
+    /// until the lease drops; the kernel releases it if the process dies.
+    /// [`CacheLease::created`] tells the caller to apply the mount's owner
+    /// and mode, which BuildKit applies only when a cache is made.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Cancelled`] when `cancelled` turns true while waiting;
+    /// [`Error::Rootfs`] or [`Error::Io`] when a directory or lock file
+    /// cannot be made or locked; [`Error::BadEntry`] when one is not what
+    /// the store made.
+    pub fn cache_lease(
+        &self,
+        key: &str,
+        sharing: CacheSharing,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<CacheLease> {
+        let hash: [u8; 32] = Sha256::digest(key.as_bytes()).into();
+        let base = Digest::from_sha256_bytes(&hash).encoded().to_owned();
+        let locks = Path::new("locks").join("caches");
+        self.state.create_dir_all(&locks, DIR_MODE)?;
+        let name = |n: usize| {
+            if n == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            }
+        };
+        loop {
+            // The pool lock orders the scan and the creation of a new
+            // directory between builds; it is held only for that.
+            let pool = lock::open(&self.state, &locks.join(format!("{base}.pool")))?;
+            lock::lock(&pool).map_err(|e| self.io_err("flock", &locks, e))?;
+            let mut n = 0;
+            let mut any = false;
+            while self.cache_entry_exists(&name(n))? {
+                any = true;
+                let fd = lock::open(&self.state, &locks.join(format!("{}.lock", name(n))))?;
+                let got = match sharing {
+                    CacheSharing::Shared => lock::try_lock_shared(&fd),
+                    CacheSharing::Locked | CacheSharing::Private => lock::try_lock(&fd),
+                }
+                .map_err(|e| self.io_err("flock", &locks, e))?;
+                if got {
+                    let rel = Path::new("caches").join(name(n));
+                    return Ok(CacheLease {
+                        path: self.host(&rel),
+                        created: false,
+                        _lock: fd,
+                    });
+                }
+                n += 1;
+            }
+            if sharing == CacheSharing::Locked && any {
+                drop(pool);
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            let fd = lock::open(&self.state, &locks.join(format!("{}.lock", name(n))))?;
+            let got = match sharing {
+                CacheSharing::Shared => lock::try_lock_shared(&fd),
+                CacheSharing::Locked | CacheSharing::Private => lock::try_lock(&fd),
+            }
+            .map_err(|e| self.io_err("flock", &locks, e))?;
+            if !got {
+                // Only a lock file left by a cache removed under it; the
+                // pool lock keeps other builds out, so try again.
+                drop(pool);
+                continue;
+            }
+            let rel = Path::new("caches").join(name(n));
+            self.state.create_dir_all(&rel, 0o755)?;
+            return Ok(CacheLease {
+                path: self.host(&rel),
+                created: true,
+                _lock: fd,
+            });
+        }
+    }
+
+    /// Whether `caches/<name>` exists, as a directory of the state
+    /// directory's mount; anything else there is refused.
+    fn cache_entry_exists(&self, name: &str) -> Result<bool> {
+        let rel = Path::new("caches").join(name);
+        match self.state.statx(&rel) {
+            Ok(st)
+                if st.file_type() == FileType::Directory
+                    && !st.mount_root
+                    && st.mnt_id == self.state.mnt_id() =>
+            {
+                Ok(true)
+            }
+            Ok(_) => Err(Error::BadEntry {
+                path: rel,
+                reason: "a cache must be a directory on the state directory's mount",
+            }),
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Ends the build: removes `builds/<build-id>` and `tmp/<build-id>`,
