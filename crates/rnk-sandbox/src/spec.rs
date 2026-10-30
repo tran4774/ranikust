@@ -60,6 +60,39 @@ pub struct BindMount {
     pub read_only: bool,
 }
 
+/// A `RUN --mount=type=secret` file, as BuildKit's secret mount
+/// (`solver/llbsolver/mounts/secretmount_unix.go`): the child writes `data`
+/// to a file on a tmpfs of its own (`nodev`, `nosuid`, `noexec`), gives it
+/// `uid`:`gid` and `mode`, binds it read-only at `target` and detaches the
+/// tmpfs. The bytes never reach a disk; they live in this value and in the
+/// child's memory until the `RUN` ends.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretFile {
+    /// The secret.
+    pub data: Vec<u8>,
+    /// Absolute path inside the root. Created as a journaled stub when
+    /// missing.
+    pub target: PathBuf,
+    /// Owner of the file.
+    pub uid: u32,
+    /// Group of the file.
+    pub gid: u32,
+    /// Permission bits of the file; other bits are dropped.
+    pub mode: u32,
+}
+
+impl std::fmt::Debug for SecretFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretFile")
+            .field("data", &format_args!("<{} bytes hidden>", self.data.len()))
+            .field("target", &self.target)
+            .field("uid", &self.uid)
+            .field("gid", &self.gid)
+            .field("mode", &format_args!("{:o}", self.mode))
+            .finish()
+    }
+}
+
 /// Where a standard stream of the command goes.
 #[derive(Debug, Default)]
 pub enum Stdio {
@@ -72,8 +105,8 @@ pub enum Stdio {
     Fd(OwnedFd),
 }
 
-/// One `RUN` command and its environment.
-#[derive(Debug)]
+/// One `RUN` command and its environment. Its `Debug` shows environment
+/// names only: a value may be a secret (`RUN --mount=type=secret,env=`).
 #[non_exhaustive]
 pub struct RunSpec {
     /// Absolute, canonical host path of the stage root (no symlinks).
@@ -95,6 +128,8 @@ pub struct RunSpec {
     pub hostname: String,
     /// `RUN --mount` binds.
     pub mounts: Vec<BindMount>,
+    /// `RUN --mount=type=secret` files, written on a tmpfs by the child.
+    pub secrets: Vec<SecretFile>,
     /// Standard input; `/dev/null` by default, as a `RUN` under Docker.
     pub stdin: Stdio,
     /// Standard output.
@@ -104,6 +139,30 @@ pub struct RunSpec {
     /// Isolation.
     pub isolation: Isolation,
 }
+
+impl std::fmt::Debug for RunSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: Vec<&OsStr> = self.env.iter().map(|(k, _)| k.as_os_str()).collect();
+        f.debug_struct("RunSpec")
+            .field("root_dir", &self.root_dir)
+            .field("argv", &self.argv)
+            .field("env (names)", &env)
+            .field("user", &self.user)
+            .field("workdir", &self.workdir)
+            .field("network", &self.network)
+            .field("hostname", &self.hostname)
+            .field("mounts", &self.mounts)
+            .field("secrets", &self.secrets)
+            .field("stdin", &self.stdin)
+            .field("stdout", &self.stdout)
+            .field("stderr", &self.stderr)
+            .field("isolation", &self.isolation)
+            .finish()
+    }
+}
+
+/// The largest secret file the child writes: BuildKit's limit, 500 KiB.
+pub(crate) const MAX_SECRET_BYTES: usize = 500 * 1024;
 
 /// The `PATH` Docker gives a container whose image sets none.
 pub(crate) const DEFAULT_PATH: &str =
@@ -128,6 +187,7 @@ impl RunSpec {
             network: Network::Host,
             hostname: DEFAULT_HOSTNAME.to_owned(),
             mounts: Vec::new(),
+            secrets: Vec::new(),
             stdin: Stdio::Null,
             stdout: Stdio::Inherit,
             stderr: Stdio::Inherit,
@@ -164,7 +224,12 @@ impl RunSpec {
                 )));
             }
             no_nul("an environment name", key)?;
-            no_nul("an environment value", value)?;
+            // Only the name: the value may be a secret.
+            if value.as_bytes().contains(&0) {
+                return Err(Error::InvalidSpec(format!(
+                    "the value of environment variable {key:?} contains a NUL byte"
+                )));
+            }
         }
         if self.hostname.len() > 64 || self.hostname.as_bytes().contains(&0) {
             return Err(Error::InvalidSpec(format!(
@@ -179,13 +244,26 @@ impl RunSpec {
                 return Err(Error::InvalidSpec("a mount cannot cover /".into()));
             }
         }
+        for s in &self.secrets {
+            absolute_clean("a secret target", &s.target)?;
+            if s.target == Path::new("/") {
+                return Err(Error::InvalidSpec("a secret cannot cover /".into()));
+            }
+            if s.data.len() > MAX_SECRET_BYTES {
+                return Err(Error::InvalidSpec(format!(
+                    "a secret for {:?} is larger than {MAX_SECRET_BYTES} bytes",
+                    s.target
+                )));
+            }
+        }
         if self.isolation == Isolation::Direct {
             if self.root_dir != Path::new("/") {
                 return Err(Error::InvalidSpec(
                     "Isolation::Direct runs on / only; root_dir must be /".into(),
                 ));
             }
-            if !self.mounts.is_empty() || self.network == Network::None {
+            if !self.mounts.is_empty() || !self.secrets.is_empty() || self.network == Network::None
+            {
                 return Err(Error::InvalidSpec(
                     "Isolation::Direct cannot mount or create a network namespace".into(),
                 ));
@@ -240,6 +318,41 @@ mod tests {
         assert_eq!(s.hostname, DEFAULT_HOSTNAME);
         assert!(matches!(s.stdin, Stdio::Null));
         assert!(s.validate().is_ok());
+    }
+
+    /// An environment value may be a secret: neither an error nor `Debug`
+    /// shows it, nor a secret file's bytes.
+    #[test]
+    fn values_and_secrets_stay_out_of_messages() {
+        let mut s = spec();
+        s.env.push(("TOKEN".into(), "top\0Zq9val".into()));
+        let e = s.validate().unwrap_err().to_string();
+        assert!(e.contains("TOKEN"), "{e}");
+        assert!(!e.contains("Zq9val"), "{e}");
+        s.secrets.push(SecretFile {
+            data: b"Zq9bytes".to_vec(),
+            target: "/run/secrets/t".into(),
+            uid: 0,
+            gid: 0,
+            mode: 0o400,
+        });
+        let d = format!("{s:?}");
+        assert!(d.contains("TOKEN") && !d.contains("Zq9"), "{d}");
+        // A secret needs the full sandbox and a clean target.
+        let mut s = spec();
+        s.secrets.push(SecretFile {
+            data: Vec::new(),
+            target: "/a/../b".into(),
+            uid: 0,
+            gid: 0,
+            mode: 0o400,
+        });
+        assert!(s.validate().is_err());
+        s.secrets[0].target = "/b".into();
+        assert!(s.validate().is_ok());
+        s.root_dir = "/".into();
+        s.isolation = Isolation::Direct;
+        assert!(s.validate().is_err());
     }
 
     #[test]

@@ -551,21 +551,20 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             spec.workdir = workdir;
             spec.network = network;
             spec.mounts = std::mem::take(&mut mounts.binds);
+            spec.secrets = std::mem::take(&mut mounts.secrets);
             // Held until the RUN's process tree is gone (ADR-0013).
             let Some(permit) = b.cx.run_gate.enter() else {
-                mounts.finish()?;
+                mounts.finish();
                 return Err(Error::Cancelled);
             };
             let status = b.cx.sandbox.run(spec);
             drop(permit);
-            // The RUN is gone: its secret files and cache leases end before
-            // anything else can fail; the RUN's own error comes first.
-            let finished = mounts.finish();
+            // The RUN is gone: its cache leases end.
+            mounts.finish();
             let status = match status {
                 Err(rnk_sandbox::Error::Cancelled) => return Err(Error::Cancelled),
                 s => s?,
             };
-            finished?;
             if status.success() {
                 return Ok(());
             }

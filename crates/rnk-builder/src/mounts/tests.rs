@@ -16,14 +16,6 @@ fn never() -> bool {
     false
 }
 
-/// The caller's own ids on `m`: a regular user cannot give a file to
-/// root, so T0 tests ask for the owner they already are.
-fn owned(mut m: Mount) -> Mount {
-    m.uid = Some(rustix::process::geteuid().as_raw());
-    m.gid = Some(rustix::process::getegid().as_raw());
-    m
-}
-
 fn store(dir: &Path) -> Store {
     Store::open(&BuildPaths::new(dir, dir.join(".ranikust"))).unwrap()
 }
@@ -96,15 +88,15 @@ fn cache_mounts_follow_sharing() {
     );
     assert_eq!(a.binds[0].target, PathBuf::from("/cache"));
     let first = a.binds[0].source.clone();
-    a.finish().unwrap();
-    b.finish().unwrap();
+    a.finish();
+    b.finish();
     m.sharing = None;
     let s1 = run_mounts(&[m.clone()], Path::new("/"), &store, &secrets, &never).unwrap();
     let s2 = run_mounts(&[m.clone()], Path::new("/"), &store, &secrets, &never).unwrap();
     assert_eq!(s1.binds[0].source, first, "shared: the first cache");
     assert_eq!(s2.binds[0].source, first);
-    s1.finish().unwrap();
-    s2.finish().unwrap();
+    s1.finish();
+    s2.finish();
     // A key with one cache: a locked user waits while it is held.
     m.target = "/locked".into();
     m.sharing = Some(Sharing::Locked);
@@ -114,7 +106,57 @@ fn cache_mounts_follow_sharing() {
         matches!(cancelled, Err(Error::Store(rnk_store::Error::Cancelled))),
         "{cancelled:?}"
     );
-    held.finish().unwrap();
+    held.finish();
+}
+
+/// One RUN mounting a locked key twice shares one lease, as BuildKit
+/// shares one ref per key within an exec, instead of waiting for itself.
+#[test]
+fn a_key_mounted_twice_by_one_run_uses_one_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let mut a = mount(MountType::Cache);
+    a.target = "/a".into();
+    a.cache_id = "k".into();
+    a.sharing = Some(Sharing::Locked);
+    let mut b = a.clone();
+    b.target = "/b".into();
+    let r = run_mounts(&[a, b], Path::new("/"), &store, &BTreeMap::new(), &|| true).unwrap();
+    assert_eq!(r.binds.len(), 2);
+    assert_eq!(r.binds[0].source, r.binds[1].source);
+    assert_eq!(r.binds[0].target, PathBuf::from("/a"));
+    assert_eq!(r.binds[1].target, PathBuf::from("/b"));
+    r.finish();
+}
+
+/// Two RUNs with the same locked caches in opposite orders: both take
+/// them in key order, so neither holds one the other waits for.
+#[test]
+fn locked_caches_in_opposite_orders_do_not_deadlock() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let locked = |id: &str, target: &str| {
+        let mut m = mount(MountType::Cache);
+        m.cache_id = id.into();
+        m.target = target.into();
+        m.sharing = Some(Sharing::Locked);
+        m
+    };
+    let ab = [locked("a", "/a"), locked("b", "/b")];
+    let ba = [locked("b", "/b"), locked("a", "/a")];
+    std::thread::scope(|s| {
+        for mounts in [&ab, &ba, &ab, &ba] {
+            let store = &store;
+            s.spawn(move || {
+                for _ in 0..20 {
+                    let r = run_mounts(mounts, Path::new("/"), store, &BTreeMap::new(), &never)
+                        .unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    r.finish();
+                }
+            });
+        }
+    });
 }
 
 #[test]
@@ -134,51 +176,51 @@ fn secret_mounts_follow_buildkit_defaults() {
     let wd = Path::new("/app");
     let one = |m: &Mount| run_mounts(std::slice::from_ref(m), wd, &store, &secrets, &never);
 
-    // The id from the target's last name; a private copy, 0400.
-    let mut m = owned(mount(MountType::Secret));
+    // The id from the target's last name; 0400 and root's by default; no
+    // copy anywhere: the sandbox writes it on the RUN's tmpfs.
+    let mut m = mount(MountType::Secret);
     m.target = "/etc/token".into();
     let r = one(&m).unwrap();
-    let b = &r.binds[0];
-    assert_eq!(b.target, PathBuf::from("/etc/token"));
-    assert!(b.read_only);
-    assert!(
-        b.source.starts_with(store.build_dir()),
-        "a copy in the build directory"
+    assert!(r.binds.is_empty());
+    assert_eq!(
+        r.secrets,
+        vec![SecretFile {
+            data: b"s3cret".to_vec(),
+            target: "/etc/token".into(),
+            uid: 0,
+            gid: 0,
+            mode: 0o400,
+        }]
     );
-    assert_eq!(fs::read(&b.source).unwrap(), b"s3cret");
-    let meta = fs::metadata(&b.source).unwrap();
-    assert_eq!(meta.permissions().mode() & 0o7777, 0o400);
-    let copy = b.source.clone();
-    r.finish().unwrap();
-    assert!(!copy.exists(), "removed after the RUN");
+    assert!(
+        !format!("{r:?}").contains("s3cret"),
+        "Debug hides the bytes"
+    );
+    r.finish();
 
-    // The target from the id; source= names the id; mode is honoured.
-    let mut m = owned(mount(MountType::Secret));
+    // The target from the id; source= names the id; mode and owner are
+    // honoured, permission bits only.
+    let mut m = mount(MountType::Secret);
     m.source = "token".into();
     m.mode = Some(0o4755);
-    let r = one(&m).unwrap();
-    assert_eq!(r.binds[0].target, PathBuf::from("/run/secrets/token"));
-    let mode = fs::metadata(&r.binds[0].source)
-        .unwrap()
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o7777, 0o755, "permission bits only");
-    r.finish().unwrap();
+    m.uid = Some(1000);
+    m.gid = Some(1001);
+    let f = &one(&m).unwrap().secrets[0];
+    assert_eq!(f.target, PathBuf::from("/run/secrets/token"));
+    assert_eq!((f.uid, f.gid, f.mode), (1000, 1001, 0o755));
 
     // env= alone: a variable, no file; with a target: both.
     let mut m = mount(MountType::Secret);
     m.cache_id = "token".into();
     m.env = Some("TOKEN".into());
     let r = one(&m).unwrap();
-    assert!(r.binds.is_empty());
+    assert!(r.secrets.is_empty());
     assert_eq!(r.env, vec![("TOKEN".into(), "s3cret".into())]);
-    r.finish().unwrap();
-    let mut m = owned(m);
+    assert!(!format!("{r:?}").contains("s3cret"), "Debug hides values");
     m.target = "t".into();
     let r = one(&m).unwrap();
-    assert_eq!(r.binds[0].target, PathBuf::from("/app/t"));
+    assert_eq!(r.secrets[0].target, PathBuf::from("/app/t"));
     assert_eq!(r.env.len(), 1);
-    r.finish().unwrap();
 
     // An unset variable reads as empty, as BuildKit's os.Getenv.
     let mut m = mount(MountType::Secret);
@@ -190,7 +232,7 @@ fn secret_mounts_follow_buildkit_defaults() {
     let mut m = mount(MountType::Secret);
     m.cache_id = "other".into();
     let r = one(&m).unwrap();
-    assert!(r.binds.is_empty() && r.env.is_empty());
+    assert!(r.secrets.is_empty() && r.env.is_empty());
     m.required = true;
     assert!(one(&m).is_err());
     assert!(one(&mount(MountType::Secret)).is_err());
@@ -201,12 +243,31 @@ fn secret_mounts_follow_buildkit_defaults() {
     assert_eq!(
         fs::read_dir(store.build_dir()).unwrap().count(),
         0,
-        "nothing left"
+        "nothing written"
     );
 }
 
+/// A NUL byte cannot be in a variable; the error names the id, never the
+/// value.
 #[test]
-fn a_secret_over_the_limit_is_refused() {
+fn a_nul_in_an_env_secret_is_refused_without_its_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let host = dir.path().join("token");
+    fs::write(&host, b"top\0secret").unwrap();
+    let secrets: BTreeMap<String, Secret> = [("token".to_owned(), Secret::File(host))].into();
+    let mut m = mount(MountType::Secret);
+    m.cache_id = "token".into();
+    m.env = Some("TOKEN".into());
+    let e = run_mounts(&[m], Path::new("/"), &store, &secrets, &never)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("\"token\""), "{e}");
+    assert!(!e.contains("top"), "the value never: {e}");
+}
+
+#[test]
+fn a_secret_over_the_limit_or_not_a_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big");
     fs::write(
@@ -215,12 +276,26 @@ fn a_secret_over_the_limit_is_refused() {
     )
     .unwrap();
     assert!(Secret::File(path.clone()).read("big").is_err());
+    assert!(Secret::File(path.clone()).check("big").is_err());
     fs::write(&path, vec![b'x'; usize::try_from(MAX_SECRET_SIZE).unwrap()]).unwrap();
-    assert!(Secret::File(path).read("big").is_ok());
+    assert!(Secret::File(path.clone()).read("big").is_ok());
+    assert!(Secret::File(path).check("big").is_ok());
+    // A FIFO is refused at once, never opened for a blocking read.
+    let fifo = dir.path().join("fifo");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    assert!(Secret::File(fifo.clone()).check("f").is_err());
+    assert!(Secret::File(fifo).read("f").is_err());
+    assert!(Secret::File(dir.path().to_owned()).check("d").is_err());
 }
 
-/// The owner a secret or a new cache gets needs root to `chown`; as a
-/// regular user only the user's own ids work.
+/// A new cache's owner and mode are the store's to set, once.
 #[test]
 fn owners_apply_to_new_caches_only() {
     let dir = tempfile::tempdir().unwrap();
@@ -244,38 +319,11 @@ fn owners_apply_to_new_caches_only() {
     let meta = fs::metadata(&path).unwrap();
     assert_eq!(meta.permissions().mode() & 0o7777, 0o710);
     assert_eq!((meta.uid(), meta.gid()), (uid, gid));
-    r.finish().unwrap();
+    r.finish();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
     let r = run_mounts(&[m], Path::new("/"), &store, &BTreeMap::new(), &never).unwrap();
     assert_eq!(r.binds[0].source, path);
     let mode = fs::metadata(&path).unwrap().permissions().mode();
     assert_eq!(mode & 0o7777, 0o750, "not applied again");
-    r.finish().unwrap();
-}
-
-/// BuildKit's default owner of a secret file is root: `chown` needs root,
-/// so this runs in the T2 VM.
-#[test]
-#[ignore = "T2: gives a file to root; run as root in the test VM only"]
-fn secret_files_default_to_root_and_0400() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = store(dir.path());
-    let host = dir.path().join("token");
-    fs::write(&host, b"s").unwrap();
-    fs::set_permissions(&host, fs::Permissions::from_mode(0o644)).unwrap();
-    std::os::unix::fs::chown(&host, Some(1000), Some(1000)).unwrap();
-    let secrets: BTreeMap<String, Secret> = [("token".to_owned(), Secret::File(host))].into();
-    let mut m = mount(MountType::Secret);
-    m.cache_id = "token".into();
-    let r = run_mounts(&[m.clone()], Path::new("/"), &store, &secrets, &never).unwrap();
-    let meta = fs::metadata(&r.binds[0].source).unwrap();
-    assert_eq!((meta.uid(), meta.gid()), (0, 0));
-    assert_eq!(meta.permissions().mode() & 0o7777, 0o400);
-    r.finish().unwrap();
-    m.uid = Some(1000);
-    m.gid = Some(1001);
-    let r = run_mounts(&[m], Path::new("/"), &store, &secrets, &never).unwrap();
-    let meta = fs::metadata(&r.binds[0].source).unwrap();
-    assert_eq!((meta.uid(), meta.gid()), (1000, 1001));
-    r.finish().unwrap();
+    r.finish();
 }

@@ -51,4 +51,4 @@ pub use error::{Error, Result, Step};
 pub use probe::{Caps, probe};
 pub use setup::enter_build_namespace;
 pub use spawner::Sandbox;
-pub use spec::{BindMount, Isolation, MountKind, Network, RunSpec, Stdio};
+pub use spec::{BindMount, Isolation, MountKind, Network, RunSpec, SecretFile, Stdio};

@@ -1,18 +1,17 @@
-//! `RUN --mount=type=cache|secret` as the sandbox's binds, as BuildKit
-//! makes them (ADR-0032): cache mounts leased from the store with their
-//! `sharing=`, secrets written to a private file or passed as one
-//! variable of the `RUN`.
+//! `RUN --mount=type=cache|secret` for the sandbox, as BuildKit makes them
+//! (ADR-0032): cache mounts leased from the store with their `sharing=`,
+//! secrets handed to the sandbox, which writes them on a tmpfs of the
+//! `RUN`'s own, or passed as one variable of the `RUN`.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 
 use rnk_dockerfile::{Mount, MountType, Sharing};
-use rnk_rootfs::{OpenHow, RootPath};
-use rnk_sandbox::{BindMount, MountKind};
-use rnk_store::{CacheLease, CacheSharing, Store};
+use rnk_sandbox::{BindMount, MountKind, SecretFile};
+use rnk_store::{CacheLease, CacheOwner, CacheSharing, Store};
 
 use crate::error::{Error, Result};
 use crate::sources;
@@ -32,11 +31,25 @@ pub enum Secret {
 }
 
 impl Secret {
+    /// Checks a file secret as BuildKit's store does at the start: it exists
+    /// and fits [`MAX_SECRET_SIZE`]; also that it is a regular file.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the file cannot be opened, [`Error::Invalid`] when
+    /// it is not a regular file or is too large.
+    pub fn check(&self, id: &str) -> Result<()> {
+        if let Self::File(path) = self {
+            open_secret(id, path)?;
+        }
+        Ok(())
+    }
+
     /// The secret's bytes.
     fn read(&self, id: &str) -> Result<Vec<u8>> {
         let data = match self {
             Self::File(path) => {
-                let f = std::fs::File::open(path).map_err(Error::io("open the secret", path))?;
+                let f = open_secret(id, path)?;
                 let mut data = Vec::new();
                 // One byte more than the limit tells a file that grew since
                 // the start-up check.
@@ -56,34 +69,71 @@ impl Secret {
     }
 }
 
-/// What a `RUN`'s mounts hold until it ends: the binds and variables it
-/// gets, the cache leases and the secret files.
-#[derive(Debug, Default)]
+/// Opens a secret file without blocking on a FIFO or a device, and checks
+/// that it is a regular file of at most [`MAX_SECRET_SIZE`] bytes.
+fn open_secret(id: &str, path: &Path) -> Result<std::fs::File> {
+    use rustix::fs::{FileType, Mode, OFlags};
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| Error::io("open the secret", path)(e.into()))?;
+    let st = rustix::fs::fstat(&fd).map_err(|e| Error::io("stat the secret", path)(e.into()))?;
+    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+        return Err(Error::Invalid(format!(
+            "secret {id:?}: {} is not a regular file",
+            path.display()
+        )));
+    }
+    if u64::try_from(st.st_size).unwrap_or(u64::MAX) > MAX_SECRET_SIZE {
+        return Err(Error::Invalid(format!(
+            "secret {id:?}: {} is larger than {MAX_SECRET_SIZE} bytes",
+            path.display()
+        )));
+    }
+    Ok(std::fs::File::from(fd))
+}
+
+/// What a `RUN`'s mounts hold until it ends: the binds, secret files and
+/// variables it gets, and the cache leases. Its `Debug` hides the variables'
+/// values and the secrets' bytes.
+#[derive(Default)]
 pub(crate) struct RunMounts {
     pub(crate) binds: Vec<BindMount>,
+    /// Secrets the sandbox writes on the `RUN`'s own tmpfs.
+    pub(crate) secrets: Vec<SecretFile>,
     /// Secrets passed with `env=`: never in the image config or a log.
     pub(crate) env: Vec<(OsString, OsString)>,
     leases: Vec<CacheLease>,
-    files: Vec<tempfile::NamedTempFile>,
 }
 
-impl RunMounts {
-    /// Ends the mounts once the `RUN`'s processes are gone: removes the
-    /// secret files and ends the cache leases. A crash leaves the files in
-    /// the build directory, which the next start removes.
-    pub(crate) fn finish(self) -> Result<()> {
-        drop(self.leases);
-        for f in self.files {
-            let path = f.path().to_owned();
-            f.close()
-                .map_err(Error::io("remove the secret file", path))?;
-        }
-        Ok(())
+impl std::fmt::Debug for RunMounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: Vec<&OsString> = self.env.iter().map(|(k, _)| k).collect();
+        f.debug_struct("RunMounts")
+            .field("binds", &self.binds)
+            .field("secrets", &self.secrets)
+            .field("env (names)", &env)
+            .field("leases", &self.leases)
+            .finish()
     }
 }
 
-/// `RUN --mount` values as binds; the mounts of the types this phase lacks
-/// are refused. `cancelled` ends a wait for a `locked` cache.
+impl RunMounts {
+    /// Ends the cache leases once the `RUN`'s processes are gone. Nothing
+    /// of a secret is left: it lived on the `RUN`'s tmpfs.
+    pub(crate) fn finish(self) {
+        drop(self.leases);
+    }
+}
+
+/// `RUN --mount` values for the sandbox; the mounts of the types this phase
+/// lacks are refused. Cache leases are taken in the order of their keys, so
+/// two `RUN`s with the same `locked` caches cannot wait for each other, and
+/// a key mounted twice by one `RUN` uses one lease, as BuildKit shares one
+/// ref per key within an exec (`mount.go` `getRefCacheDir`). `cancelled`
+/// ends a wait for a `locked` cache.
 pub(crate) fn run_mounts(
     mounts: &[Mount],
     workdir: &Path,
@@ -92,6 +142,7 @@ pub(crate) fn run_mounts(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<RunMounts> {
     let mut out = RunMounts::default();
+    let mut caches: Vec<(String, &Mount)> = Vec::new();
     for m in mounts {
         match m.kind {
             MountType::Cache => {
@@ -105,24 +156,9 @@ pub(crate) fn run_mounts(
                         "RUN --mount=type=cache needs a target".to_owned(),
                     ));
                 }
-                let sharing = match m.sharing {
-                    None | Some(Sharing::Shared) => CacheSharing::Shared,
-                    Some(Sharing::Locked) => CacheSharing::Locked,
-                    Some(Sharing::Private) => CacheSharing::Private,
-                };
-                let lease = store.cache_lease(&cache_key(m), sharing, cancelled)?;
-                if lease.created() {
-                    set_cache_owner(lease.path(), m)?;
-                }
-                out.binds.push(BindMount {
-                    source: lease.path().to_owned(),
-                    target: mount_target(&m.target, workdir),
-                    kind: MountKind::Directory,
-                    read_only: m.read_only,
-                });
-                out.leases.push(lease);
+                caches.push((cache_key(m), m));
             }
-            MountType::Secret => secret_mount(m, workdir, store, secrets, &mut out)?,
+            MountType::Secret => secret_mount(m, workdir, secrets, &mut out)?,
             MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
                 return Err(Error::Invalid(format!(
                     "RUN --mount=type={} is not supported yet (Phase 5)",
@@ -130,6 +166,37 @@ pub(crate) fn run_mounts(
                 )));
             }
         }
+    }
+    let mut order: Vec<usize> = (0..caches.len()).collect();
+    order.sort_by(|&a, &b| caches[a].0.cmp(&caches[b].0));
+    let mut leased: BTreeMap<&str, PathBuf> = BTreeMap::new();
+    let mut sources: Vec<Option<PathBuf>> = vec![None; caches.len()];
+    for i in order {
+        let (key, m) = &caches[i];
+        let path = match leased.get(key.as_str()) {
+            Some(path) => path.clone(),
+            None => {
+                let sharing = match m.sharing {
+                    None | Some(Sharing::Shared) => CacheSharing::Shared,
+                    Some(Sharing::Locked) => CacheSharing::Locked,
+                    Some(Sharing::Private) => CacheSharing::Private,
+                };
+                let lease = store.cache_lease(key, sharing, cache_owner(m), cancelled)?;
+                let path = lease.path().to_owned();
+                out.leases.push(lease);
+                leased.insert(key, path.clone());
+                path
+            }
+        };
+        sources[i] = Some(path);
+    }
+    for ((_, m), source) in caches.iter().zip(sources) {
+        out.binds.push(BindMount {
+            source: source.unwrap_or_default(),
+            target: mount_target(&m.target, workdir),
+            kind: MountKind::Directory,
+            read_only: m.read_only,
+        });
     }
     Ok(out)
 }
@@ -161,38 +228,24 @@ pub(crate) fn cache_id(m: &Mount) -> String {
 /// owners or modes are other caches.
 fn cache_key(m: &Mount) -> String {
     let id = cache_id(m);
+    match cache_owner(m) {
+        None => id,
+        Some(o) => format!("{id}\0uid={},gid={},mode={:o}", o.uid, o.gid, o.mode),
+    }
+}
+
+/// A new cache's owner and mode when the mount sets any of them, BuildKit's
+/// defaults filling the rest: uid and gid 0, mode `0755`. The store applies
+/// them when it makes the cache, set-id bits dropped.
+fn cache_owner(m: &Mount) -> Option<CacheOwner> {
     if m.uid.is_none() && m.gid.is_none() && m.mode.is_none() {
-        return id;
+        return None;
     }
-    let (uid, gid, mode) = cache_owner(m);
-    format!("{id}\0uid={uid},gid={gid},mode={mode:o}")
-}
-
-/// A cache's owner and mode when the mount sets any of them, BuildKit's
-/// defaults filling the rest: uid and gid 0, mode `0755`.
-fn cache_owner(m: &Mount) -> (u32, u32, u32) {
-    (
-        m.uid.unwrap_or(0),
-        m.gid.unwrap_or(0),
-        m.mode.unwrap_or(0o755),
-    )
-}
-
-/// Applies a new cache's owner and mode, once, as BuildKit's `mkdir` of the
-/// cache's base: through a descriptor of the directory itself, never by a
-/// path a symlink could redirect. Only permission bits and the sticky bit
-/// are taken from `mode`: no set-id bit on a host directory.
-fn set_cache_owner(dir: &Path, m: &Mount) -> Result<()> {
-    if m.mode.is_none() && m.uid.is_none() && m.gid.is_none() {
-        return Ok(());
-    }
-    let (uid, gid, mode) = cache_owner(m);
-    let root = RootPath::open(dir)?;
-    let fd = root.open_at(".", &OpenHow::read().directory().no_follow())?;
-    set_owner(&fd, uid, gid).map_err(Error::io("chown", dir))?;
-    rustix::fs::fchmod(&fd, rustix::fs::Mode::from_raw_mode(mode & 0o1777))
-        .map_err(|e| Error::io("chmod", dir)(e.into()))?;
-    Ok(())
+    Some(CacheOwner {
+        uid: m.uid.unwrap_or(0),
+        gid: m.gid.unwrap_or(0),
+        mode: m.mode.unwrap_or(0o755),
+    })
 }
 
 /// A `RUN --mount=type=secret`, as BuildKit's `dispatchSecret` and secret
@@ -203,13 +256,12 @@ fn set_cache_owner(dir: &Path, m: &Mount) -> Result<()> {
 ///   out;
 /// - with `env=`, the value is that variable of this `RUN` only;
 /// - without `env=`, or with a `target=`, the value is a file at the
-///   target, else at `/run/secrets/<id>`: a private copy, mode `mode`
-///   (default `0400`, permission bits only) and owner `uid`:`gid`
-///   (default root), bound read-only.
+///   target, else at `/run/secrets/<id>`, mode `mode` (default `0400`,
+///   permission bits only) and owner `uid`:`gid` (default root), which the
+///   sandbox writes on a tmpfs of the `RUN`'s own and binds read-only.
 fn secret_mount(
     m: &Mount,
     workdir: &Path,
-    store: &Store,
     secrets: &BTreeMap<String, Secret>,
     out: &mut RunMounts,
 ) -> Result<()> {
@@ -238,9 +290,15 @@ fn secret_mount(
     };
     let data = secret.read(&id)?;
     if let Some(name) = &m.env {
-        if name.is_empty() || name.contains('=') {
+        if name.is_empty() || name.contains(['=', '\0']) {
             return Err(Error::Invalid(format!(
                 "RUN --mount=type=secret,env={name:?} is not a variable name"
+            )));
+        }
+        // Never the value in a message: only the id.
+        if data.contains(&0) {
+            return Err(Error::Invalid(format!(
+                "secret {id:?} contains a NUL byte and cannot be a variable"
             )));
         }
         out.env
@@ -257,50 +315,13 @@ fn secret_mount(
     } else {
         mount_target(&m.target, workdir)
     };
-    let file = write_secret(store.build_dir(), &data, m)?;
-    out.binds.push(BindMount {
-        source: file.path().to_owned(),
+    out.secrets.push(SecretFile {
+        data,
         target,
-        kind: MountKind::File,
-        read_only: true,
+        uid: m.uid.unwrap_or(0),
+        gid: m.gid.unwrap_or(0),
+        mode: m.mode.unwrap_or(0o400) & 0o777,
     });
-    out.files.push(file);
-    Ok(())
-}
-
-/// The secret's private copy in the build directory (`0700`, root's): made
-/// `0600`, written, then given the mount's owner and mode through its
-/// descriptor. BuildKit writes it to a private tmpfs instead
-/// [open: Q-230].
-fn write_secret(dir: &Path, data: &[u8], m: &Mount) -> Result<tempfile::NamedTempFile> {
-    let mut f = tempfile::Builder::new()
-        .prefix(".secret-")
-        .tempfile_in(dir)
-        .map_err(Error::io("create a secret file in", dir))?;
-    f.write_all(data)
-        .map_err(Error::io("write", f.path().to_owned()))?;
-    set_owner(f.as_file(), m.uid.unwrap_or(0), m.gid.unwrap_or(0))
-        .map_err(Error::io("chown", f.path().to_owned()))?;
-    rustix::fs::fchmod(
-        f.as_file(),
-        rustix::fs::Mode::from_raw_mode(m.mode.unwrap_or(0o400) & 0o777),
-    )
-    .map_err(|e| Error::io("chmod", f.path().to_owned())(e.into()))?;
-    Ok(f)
-}
-
-/// Gives `fd` the owner `uid`:`gid`, unless it has it already: a file this
-/// process just made is its own, and only a change needs `CAP_CHOWN`.
-fn set_owner(fd: impl std::os::fd::AsFd, uid: u32, gid: u32) -> std::io::Result<()> {
-    let st = rustix::fs::fstat(&fd)?;
-    if (st.st_uid, st.st_gid) == (uid, gid) {
-        return Ok(());
-    }
-    rustix::fs::fchown(
-        &fd,
-        Some(rustix::fs::Uid::from_raw(uid)),
-        Some(rustix::fs::Gid::from_raw(gid)),
-    )?;
     Ok(())
 }
 

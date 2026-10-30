@@ -79,10 +79,12 @@ pub enum Step {
     MaskPath,
     /// Joining a new session keyring.
     SessionKeyring,
+    /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
+    Secret,
 }
 
 impl Step {
-    const ALL: [Step; 33] = [
+    const ALL: [Step; 34] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -116,6 +118,7 @@ impl Step {
         Step::ReadonlyPath,
         Step::MaskPath,
         Step::SessionKeyring,
+        Step::Secret,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -169,6 +172,7 @@ impl Step {
             Step::ReadonlyPath => "make a /proc path read-only",
             Step::MaskPath => "mask a /proc or /sys path",
             Step::SessionKeyring => "join a new session keyring",
+            Step::Secret => "write and bind a secret file",
         }
     }
 }

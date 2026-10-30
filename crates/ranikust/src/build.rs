@@ -206,18 +206,9 @@ fn prepare(
     for (id, source) in &config.secrets {
         // As BuildKit's store: a file secret must exist and fit at the
         // start, not first at the RUN that mounts it.
-        if let rnk_builder::Secret::File(path) = source {
-            let size = std::fs::metadata(path)
-                .map_err(|e| format!("--secret id={id}: {}: {e}", path.display()))?
-                .len();
-            if size > rnk_builder::MAX_SECRET_SIZE {
-                return Err(format!(
-                    "--secret id={id}: {} is larger than {} bytes",
-                    path.display(),
-                    rnk_builder::MAX_SECRET_SIZE
-                ));
-            }
-        }
+        source
+            .check(id)
+            .map_err(|e| format!("--secret id={id}: {e}"))?;
         secrets.insert(id.clone(), source.clone());
     }
     Ok(Shared {

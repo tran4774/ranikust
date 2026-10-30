@@ -26,13 +26,16 @@ use tracing::Span;
 use tracing::field::Empty;
 
 use crate::caps;
-use crate::child::{self, ChildArgs, ChildFds, ChildMount, ChildStdio, ExecPtrs, RootEntry};
+use crate::child::{
+    self, ChildArgs, ChildFds, ChildMount, ChildSecret, ChildSecrets, ChildStdio, ExecPtrs,
+    RootEntry,
+};
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
 use crate::journal::{self, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
-use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, Stdio};
+use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, SecretFile, Stdio};
 
 /// Runs `RUN` commands.
 ///
@@ -382,12 +385,22 @@ impl Runner {
             std::mem::take(&mut spec.stderr),
         ];
         if direct {
-            return Ok((self.job(spec, &user, Vec::new(), stdio, root_entry)?, None));
+            return Ok((
+                self.job(spec, &user, Vec::new(), None, stdio, root_entry)?,
+                None,
+            ));
         }
         let mut journal = Journal::create(&self.runs_dir, &self.next_id(), &spec.root_dir, root)?;
         match place(&mut journal, spec).and_then(|files| {
             let mounts = plan::mount_plan(spec, &files);
-            self.job(spec, &user, mounts, stdio, root_entry)
+            self.job(
+                spec,
+                &user,
+                mounts,
+                Some(journal.scratch()),
+                stdio,
+                root_entry,
+            )
         }) {
             Ok(job) => Ok((job, Some(journal))),
             Err(e) => {
@@ -404,6 +417,7 @@ impl Runner {
         spec: &RunSpec,
         user: &User,
         mounts: Vec<MountOp>,
+        scratch: Option<&Path>,
         stdio: [Stdio; 3],
         root_entry: RootEntry,
     ) -> Result<Job> {
@@ -428,13 +442,26 @@ impl Runner {
                 let mut kv = k.as_bytes().to_vec();
                 kv.push(b'=');
                 kv.extend_from_slice(v.as_bytes());
-                cstring(OsStr::from_bytes(&kv))
+                // The name only: the value may be a secret.
+                CString::new(kv).map_err(|_| {
+                    Error::InvalidSpec(format!("environment variable {k:?} contains a NUL byte"))
+                })
             })
             .collect::<Result<_>>()?;
+        let secrets = match (scratch, spec.secrets.is_empty()) {
+            (_, true) => None,
+            (None, false) => {
+                return Err(Error::InvalidSpec(
+                    "secret files need the full sandbox".into(),
+                ));
+            }
+            (Some(dir), false) => Some(child_secrets(dir, &spec.secrets)?),
+        };
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
             mounts,
+            secrets,
             dev_remount,
             root_entry,
             hostname: hostname(spec).as_bytes().to_vec(),
@@ -647,10 +674,36 @@ fn write_scratch(p: &Path, data: &[u8]) -> Result<()> {
         .map_err(|e| io_err("chmod", p, e))
 }
 
+/// For arguments, paths and names, never an environment value.
 fn cstring(s: impl AsRef<OsStr>) -> Result<CString> {
     let s = s.as_ref();
     CString::new(s.as_bytes())
         .map_err(|_| Error::InvalidSpec(format!("contains a NUL byte: {s:?}")))
+}
+
+/// The child's secrets: files `0`, `1`… on a tmpfs over `dir`, sized for
+/// them plus a page each, mode 0700.
+fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
+    let bytes: usize = secrets.iter().map(|s| s.data.len() + 4096).sum();
+    let options = format!("size={},mode=0700", bytes.max(16 * 1024));
+    Ok(ChildSecrets {
+        dir: cstring(dir)?,
+        options: cstring(options)?,
+        files: secrets
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                Ok(ChildSecret {
+                    name: cstring(i.to_string())?,
+                    data: s.data.clone(),
+                    target: cstring(&s.target)?,
+                    uid: Uid::from_raw(s.uid),
+                    gid: Gid::from_raw(s.gid),
+                    mode: Mode::from_raw_mode(s.mode & 0o777),
+                })
+            })
+            .collect::<Result<_>>()?,
+    })
 }
 
 /// The `RUN`s running now, for [`Sandbox::cancel`].
@@ -738,7 +791,14 @@ fn execute(
     // Waits for the exit without reaping: until the reap, the pid cannot be
     // reused, so neither a cancel nor the group kill can reach another
     // process.
-    let exited = wait_exited(pid);
+    // A wait that fails for another reason than a signal must not leave a
+    // child running after `run` returns (its writes would reach the layer):
+    // kill it while it is still registered, and wait again. A second failure
+    // fails the RUN, and so the build.
+    let exited = wait_exited(pid).or_else(|e| {
+        kill_run(pid, isolation);
+        wait_exited(pid).map_err(|_| e)
+    });
     let cancelled = running.is_some_and(|r| r.remove(pid));
     let killed = match (exited, isolation) {
         (Ok(()), Isolation::Direct) => kill_leftovers(pid),

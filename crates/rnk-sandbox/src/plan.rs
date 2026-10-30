@@ -148,6 +148,11 @@ pub(crate) fn mount_targets(spec: &RunSpec) -> Vec<(PathBuf, MountKind)> {
         (PathBuf::from(HOSTNAME), MountKind::File),
     ];
     targets.extend(spec.mounts.iter().map(|m| (m.target.clone(), m.kind)));
+    targets.extend(
+        spec.secrets
+            .iter()
+            .map(|s| (s.target.clone(), MountKind::File)),
+    );
     targets
 }
 
