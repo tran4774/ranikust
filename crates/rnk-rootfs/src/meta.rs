@@ -280,6 +280,9 @@ pub(crate) enum Xattrs {
     /// but overlay's own (`trusted.overlay.*`, `user.overlay.*`); the
     /// escaped content xattrs `user.overlay.overlay.*` are kept.
     Layer,
+    /// Every xattr, overlay's own included: for code that reads overlay's
+    /// markers (`rnk-snapshot`'s exporter).
+    All,
 }
 
 /// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
@@ -333,7 +336,7 @@ pub(crate) fn read_xattrs(
     let mut buf = vec![0; XATTR_MAX];
     let names: Vec<OsString> = match which {
         Xattrs::Capability => vec![OsString::from(CAPABILITY)],
-        Xattrs::Layer => match list(&mut buf[..]) {
+        Xattrs::Layer | Xattrs::All => match list(&mut buf[..]) {
             Ok(n) => buf[..n]
                 .split(|&b| b == 0)
                 .filter(|s| !s.is_empty())

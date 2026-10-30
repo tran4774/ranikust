@@ -872,3 +872,19 @@ fn lower_targets_never_leave_the_lower_roots() {
     assert_eq!(fs::read_link(f.host("h")).unwrap(), out.join("sentinel"));
     assert_eq!(snapshot(&out), before);
 }
+
+#[test]
+fn extract_overlay_reports_whether_the_layer_set_the_root() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.file("f", 0o644, b"x");
+    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[]).unwrap();
+    assert!(!r.root_set);
+
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.dir("./", 0o555).file("f", 0o644, b"x");
+    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[]).unwrap();
+    assert!(r.root_set);
+    assert_eq!(f.root.statx("").unwrap().permissions(), 0o555);
+}

@@ -373,6 +373,48 @@ fn set_meta_xattrs() {
 }
 
 #[test]
+fn xattrs_lists_all_without_following_or_opening() {
+    let f = Fixture::new();
+    fs::write(f.host("f"), b"x").unwrap();
+    fs::create_dir(f.host("d")).unwrap();
+    symlink("f", f.host("l")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        f.host("fifo"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    for (p, n) in [
+        ("f", "user.b"),
+        ("f", "user.overlay.opaque"),
+        ("d", "user.a"),
+        ("", "user.r"),
+    ] {
+        rustix::fs::setxattr(f.host(p), n, b"y", rustix::fs::XattrFlags::empty()).unwrap();
+    }
+    let names = |p: &str| -> Vec<String> {
+        f.root
+            .xattrs(p)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n.into_string().unwrap())
+            .collect()
+    };
+    // Sorted, overlay's own names included.
+    assert_eq!(names("f"), ["user.b", "user.overlay.opaque"]);
+    assert_eq!(names("d"), ["user.a"]);
+    assert_eq!(names(""), ["user.r"]);
+    // The symlink's own (none), not its target's.
+    assert!(names("l").is_empty());
+    // A FIFO is read without being opened, which would block.
+    assert!(names("fifo").is_empty());
+    let e = f.root.xattrs("missing").unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::NOENT), "{e}");
+}
+
+#[test]
 fn sub_root_is_its_own_root() {
     let f = Fixture::new();
     fs::create_dir_all(f.host("stages/1/rootfs/etc")).unwrap();

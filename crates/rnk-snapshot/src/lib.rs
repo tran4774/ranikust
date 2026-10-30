@@ -1,15 +1,17 @@
 //! Per-stage root filesystems and their per-instruction diffs.
 //!
-//! Defines the `StageRootfs` and `Snapshotter` traits and their two
-//! implementations: overlay mode (overlay mounts, one upper dir per
-//! instruction, overlay/OCI whiteout conversion, extraction of base layers
-//! into the store's `layers/`) and kaniko mode (parallel walk and hash,
-//! `LayeredMap`, path resolution, filesystem deletion). The `Snapshotter`
-//! signature is still open (Q-024 in `docs/open-questions.md`); it is designed
-//! at Phase 1 task 9.
+//! Defines the [`Snapshotter`] and [`StageRootfs`] traits ([open: Q-024],
+//! interim signature from Phase 1 task 9) and their overlay implementation,
+//! [`Overlay`]: base layers extracted into the store's `layers/` in the
+//! overlay form, one overlay mount per layer with a fresh upper directory
+//! (`ADR-0016` options), and the exporter that turns an upper directory
+//! into an OCI layer through `rnk-layer`'s writer ([`LayerDiff`]). kaniko
+//! mode (walk and hash, `LayeredMap`, filesystem deletion) implements the
+//! same traits in Phase 2.
 //!
-//! Also probes its own capabilities, which the binary runs at start-up: the
-//! overlay mount with the ADR-0016 options, and `fsconfig` with `lowerdir+`.
+//! Also probes its own capability, which the binary runs at start-up:
+//! [`probe`], the overlay mount with the ADR-0016 options, with
+//! `fsconfig(lowerdir+)` or else `mount(2)`.
 //!
 //! # Boundaries
 //!
@@ -18,4 +20,20 @@
 //! - Does not own the store (`rnk-store`): it fills store entries and uses
 //!   `layers/` as lower directories.
 //! - Exposes a stage root as an `rnk-rootfs` `RootPath`, never as a bare host
-//!   path.
+//!   path; the one host path it hands out is the mount point, for the
+//!   sandbox to enter.
+
+mod error;
+mod export;
+mod layer;
+mod lowers;
+mod mount;
+mod probe;
+mod stage;
+
+pub use error::{Error, Result};
+pub use export::{DiffCounts, LayerDiff};
+pub use layer::LayerDir;
+pub use mount::{MAX_LOWERS, MountApi, OVERLAY_OPTIONS};
+pub use probe::{OverlayCaps, probe};
+pub use stage::{Base, Overlay, OverlayStage, Snapshotter, StageRootfs};
