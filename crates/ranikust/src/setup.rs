@@ -204,11 +204,12 @@ const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switchin
 /// A [`Refusal`]: not root, an unsafe state directory, the store, a probe.
 pub(crate) fn set_up_kaniko(
     state_dir: &Path,
-    workdir: Option<&Path>,
+    claimed: Option<&crate::workdir::Workdir>,
     can_mount: bool,
     nofile: rnk_sandbox::NofileLimit,
 ) -> Result<KanikoSetup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
+    let workdir = claimed.map(crate::workdir::Workdir::path);
     if euid != 0 {
         return Err(Refusal {
             reason: format!("kaniko mode cannot run as uid {euid}"),
@@ -242,8 +243,8 @@ pub(crate) fn set_up_kaniko(
     } else {
         rnk_sandbox::Isolation::Direct
     };
-    let started = match workdir {
-        Some(root) => Sandbox::start_with_root(caps, &sandbox_dir, root),
+    let started = match claimed {
+        Some(w) => Sandbox::start_with_root(caps, &sandbox_dir, w.path(), w.root()),
         None => Sandbox::start(caps, &sandbox_dir),
     };
     let mut sandbox = started.map_err(|e| Refusal {

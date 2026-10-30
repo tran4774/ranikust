@@ -58,7 +58,8 @@ impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk
 //   extracts each blob with extract_live, diff ID checked. prepare(Stage(p)): takes the root over
 //   from p if p still holds it (a squashed chain), else Error::State.
 // end_layer: walk + diff when layers are needed, else an empty diff and no walk.
-// release: gives the root up; the next base or finish() empties it (delete_contents + ignore list).
+// release: gives the root up; the next base or finish() empties it (delete_contents + ignore list),
+//   a workdir root getting its own owner and mode back.
 // Overlay: Snapshotter<Root = OverlayStage>
 pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
 pub struct LayerDiff;                              // upper + lowers; lazily exported

@@ -73,6 +73,9 @@ struct Hold {
 struct Shared {
     root: RootPath,
     path: PathBuf,
+    /// The root's owner and mode when the build began, given back each
+    /// time a workdir root is emptied: a base's `./` may change them.
+    original: Option<rnk_rootfs::Meta>,
     ignore: IgnoreList,
     walk: WalkOptions,
     hold: Mutex<Hold>,
@@ -97,10 +100,17 @@ impl Kaniko {
     /// build's ignore list (`kaniko::ignore_list`) and walk options.
     #[must_use]
     pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions) -> Self {
+        let original = root.statx("/").ok().map(|st| rnk_rootfs::Meta {
+            uid: Some(st.uid),
+            gid: Some(st.gid),
+            mode: Some(st.mode & 0o7777),
+            ..rnk_rootfs::Meta::default()
+        });
         Self {
             shared: Arc::new(Shared {
                 root,
                 path,
+                original,
                 ignore,
                 walk,
                 hold: Mutex::new(Hold {
@@ -147,6 +157,12 @@ fn empty_root(shared: &Shared, hold: &mut Hold) -> Result<()> {
     let span = tracing::info_span!("rnk_snapshot.empty");
     let _entered = span.enter();
     delete_contents(&shared.root, &shared.ignore)?;
+    // A workdir gets its owner and mode back; `/` is never emptied whole.
+    if !shared.is_slash()
+        && let Some(meta) = &shared.original
+    {
+        shared.root.set_meta("", meta)?;
+    }
     hold.walked = false;
     if let Some(w) = hold.walker.as_mut() {
         w.forget();

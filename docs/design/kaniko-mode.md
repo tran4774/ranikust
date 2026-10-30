@@ -97,17 +97,21 @@ settles them (Q-024):
   It is used by extraction, the walk and deletion alike. A state directory
   outside the root by path that is a directory of the root reached through
   another mount (a bind mount of a directory inside it, found by the
-  mounts' device and `fs_root` in mountinfo) is refused, since the list
-  knows it by path only.
+  mounts' device and `fs_root` in mountinfo), or one that holds the root
+  that way, is refused, since the list knows it by path only.
 - **The operator's paths stay out of the root.** The context, the outputs
-  (`--tar-path`, `--oci-layout-path`, the digest files) and file secrets
+  (`--tar-path`, `--oci-layout-path`, the digest files), `--metrics-file`
+  and file secrets
   are refused before the root changes when they lie in it, unless the
   ignore list keeps them (a volume, `/ranikust`, `--ignore-path`).
 - **A host workdir is private** ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md)):
-  an image's setuid files land in it, so the workdir must be root's and
-  not writable by others, its ancestors not writable by others (but a
-  root-owned sticky `/tmp`) and owned by root or one other user, and one
-  ancestor `0700`; a filesystem without `nosuid,nodev` gets a warning.
+  an image's setuid files land in it, so some real parent, walked from
+  the workdir's descriptor, must keep group and others out, and it and
+  everything below it down to the workdir must be root's and not writable
+  by others; a filesystem without `nosuid,nodev` gets a warning. Each
+  emptying gives the workdir its own owner and mode back. The sandbox is
+  started with the claimed root's descriptor and refuses a `RUN` on any
+  other path or directory.
 - **Layers.** A stage whose layers are needed (`set_layers_needed`, from the
   lazy-snapshot rule) takes a baseline walk after its base, then
   `end_layer` walks and diffs, and the diff, held with the root, is the

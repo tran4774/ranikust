@@ -21,9 +21,9 @@ neither owner nor mode of the workdir or its ancestors (Q-320).
 
 ## Considered Options
 
-- (a) Require a private chain: the workdir and its ancestors owned and
-  writable by root (and the operator) only, and a directory above the
-  workdir that others cannot search.
+- (a) Require a private chain: a directory above the workdir that no one
+  but root can search, and it and everything between it and the workdir
+  owned and writable by root only.
 - (b) Only warn.
 - (c) Mount the workdir `nosuid`: impossible without mounting.
 
@@ -31,22 +31,27 @@ neither owner nor mode of the workdir or its ancestors (Q-320).
 
 Chosen by the maintainer: (a), checked as root before anything is
 written in the workdir (`ranikust::workdir::check_private`, the rule in
-`check_chain`). The chain is the workdir, then each ancestor up to `/`:
+`check_chain`). The chain is the workdir, then its real parents up to
+`/`, walked from the workdir's locked descriptor with `..` (each opened
+`O_PATH`), never by path, so a rename between the claim and the check
+cannot show a decoy:
 
-1. the workdir is owned by root and not writable by group or others;
-2. no ancestor is writable by group or others, except a root-owned sticky
-   directory (`/tmp`, `/var/tmp`);
-3. every directory is owned by root or by one and the same other user,
-   the operator who owns the home it sits in;
-4. some ancestor lets neither group nor others search it (mode `0700` or
-   stricter in those bits).
+1. some ancestor lets neither group nor others search it (no `g+x`, no
+   `o+x`): the private one, the nearest that qualifies;
+2. it, every directory between it and the workdir, and the workdir are
+   owned by root and not writable by group or others;
+3. directories above the private one may belong to anyone: no one but
+   root gets past it.
 
-Of the two ways to meet rule 4 that Q-320 named, a parent without search
+Of the two ways Q-320 named to keep others out, a parent without search
 for others or a `0700` wrapper ranikust would create, the check takes the
 first: it keeps the workdir itself the root of the build, as kaniko mode
-designs it, and keeps `/home/<user>/w` usable once `/home/<user>` is
-`0700`, or `/var/tmp/<dir>/w` once `<dir>` is root's `0700`. When the
-workdir's filesystem lacks `nosuid` or `nodev`, a warning says so.
+designs it. A workdir in a home needs a root-owned `0700` directory in
+between, which the refusal names: `sudo install -d -m 0700
+/home/<user>/rnk`, then `--workdir=/home/<user>/rnk/w`; a `/home/<user>`
+of the user's own does not count, since its owner could reach the setuid
+files or open it up later. When the workdir's filesystem lacks `nosuid`
+or `nodev`, a warning says so.
 
 The rule applies inside a container too: a `--workdir` there is usually a
 volume whose host side the check cannot see, so it fails closed; a build
@@ -58,10 +63,8 @@ on the container's own `/` is not a host workdir and is not checked.
   image, nor hardlink it, while the build runs or after.
 - Good, because a planted or swapped directory in the chain needs the
   write access the rule denies.
-- Bad, because a workdir under a `0755` home or straight under `/tmp` is
-  refused until the operator adds a `0700` directory above it.
-- Neutral, because the operator's own account can still reach the
-  workdir: the operator is trusted (threat model, "the operator").
+- Bad, because a workdir under a home or straight under `/tmp` is
+  refused until the operator adds a root-owned `0700` directory above it.
 
 ## Evidence
 

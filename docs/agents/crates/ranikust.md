@@ -89,9 +89,9 @@ below); without, the root `/`, refused outside a container
 root is required, `RLIMIT_NOFILE` raised (`NofileLimit::current()` read
 before, for `RUN`), `--jobs` ignored with a warning, `--single-snapshot`
 refused, the workdir's chain checked private (`workdir::check_private`,
-ADR-0047: root's, a `0700` ancestor, no ancestor writable by others but a
-root sticky one, one non-root owner at most; a warning without
-`nosuid,nodev`), the workdir marked (`Workdir::mark`) before anything is
+ADR-0047: the real parents walked from the workdir's descriptor with
+`..`; a parent without group/other search, and it and everything below it
+root's and not writable by others; a warning without `nosuid,nodev`), the workdir marked (`Workdir::mark`) before anything is
 written,
 the state directory (`/ranikust/state` on `/`, `<cwd>/.ranikust` with a
 workdir) set up by `setup::set_up_kaniko` (store; on a host workdir where

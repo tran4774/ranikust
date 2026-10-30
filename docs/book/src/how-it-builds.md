@@ -85,9 +85,9 @@ with the default security profile or in most Kubernetes pods.
   hold a `.ranikust-root` file, which says its contents may be deleted; an
   empty one gets it when the build starts writing. The work directory must be
   out of other users' reach, since the image's setuid programs land in
-  it: owned by root and writable only by root, inside a directory of mode
-  `0700` (for example `/home/<you>/w` once `/home/<you>` is `0700`), with
-  no directory above it writable by others except `/tmp` and `/var/tmp`
+  it: inside a directory that root owns with mode `0700`, everything from
+  there down owned and writable by root only. For example, `sudo install
+  -d -m 0700 /home/<you>/rnk`, then `--workdir=/home/<you>/rnk/w`
   ([ADR-0047](https://github.com/tran4774/ranikust/blob/main/docs/adr/0047-kaniko-workdir-chain-is-private.md)).
   The context, the outputs and secret files must not be inside it. Only one build at a time may use a work directory.
 

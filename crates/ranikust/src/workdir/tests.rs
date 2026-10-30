@@ -158,11 +158,13 @@ fn dir(path: &str, uid: u32, mode: u32) -> ChainDir {
     }
 }
 
-/// `/home/u/w` under a `0700` home: the chain ADR-0047 accepts.
+/// `/home/u/rnk/w` with `rnk` root's `0700`: the chain ADR-0047 accepts;
+/// `/home/u` may be the user's.
 fn home_chain() -> Vec<ChainDir> {
     vec![
-        dir("/home/u/w", 0, 0o700),
-        dir("/home/u", 1000, 0o700),
+        dir("/home/u/rnk/w", 0, 0o755),
+        dir("/home/u/rnk", 0, 0o700),
+        dir("/home/u", 1000, 0o750),
         dir("/home", 0, 0o755),
         dir("/", 0, 0o755),
     ]
@@ -173,10 +175,10 @@ fn chain_refusal(chain: &[ChainDir]) -> String {
 }
 
 #[test]
-fn a_private_chain_passes_also_through_a_root_sticky_tmp() {
+fn a_root_private_ancestor_passes_whoever_owns_what_is_above() {
     check_chain(&home_chain()).unwrap();
     check_chain(&[
-        dir("/tmp/b/w", 0, 0o755),
+        dir("/tmp/b/w", 0, 0o700),
         dir("/tmp/b", 0, 0o700),
         dir("/tmp", 0, 0o1777),
         dir("/", 0, 0o755),
@@ -195,35 +197,58 @@ fn a_workdir_not_owned_by_root_or_writable_by_others_is_refused() {
 }
 
 #[test]
-fn an_ancestor_writable_by_others_is_refused_unless_root_sticky() {
-    let mut c = home_chain();
-    c[2].mode = 0o777;
-    assert!(chain_refusal(&c).contains("/home is writable"));
-    let mut c = home_chain();
-    c[1].mode = 0o1777;
+fn a_private_ancestor_of_another_user_is_refused() {
+    // `/home/u/w` with only `/home/u` private: u reaches the setuid files.
+    let c = vec![
+        dir("/home/u/w", 0, 0o700),
+        dir("/home/u", 1000, 0o700),
+        dir("/home", 0, 0o755),
+        dir("/", 0, 0o755),
+    ];
     let why = chain_refusal(&c);
-    assert!(
-        why.contains("/home/u is writable"),
-        "sticky but not root's: {why}"
-    );
+    assert!(why.contains("/home/u is owned by uid 1000"), "{why}");
+    assert!(why.contains("install -d -m 0700"), "{why}");
 }
 
 #[test]
-fn two_other_owners_in_the_chain_are_refused() {
+fn a_writable_directory_below_the_private_one_is_refused() {
     let mut c = home_chain();
-    c[2].uid = 1001;
-    assert!(chain_refusal(&c).contains("uid 1001"));
+    c.insert(1, dir("/home/u/rnk/mid", 0, 0o777));
+    c[0].path = PathBuf::from("/home/u/rnk/mid/w");
+    assert!(chain_refusal(&c).contains("mid is writable"));
 }
 
 #[test]
 fn a_chain_others_can_search_is_refused() {
     let mut c = home_chain();
     c[1].mode = 0o750;
+    let why = chain_refusal(&c);
     assert!(
-        chain_refusal(&c).contains("0700"),
-        "group may search /home/u"
+        why.contains("not root") || why.contains("keeps group"),
+        "{why}"
     );
-    let mut c = home_chain();
-    c[1].mode = 0o701;
-    assert!(chain_refusal(&c).contains("0700"));
+    let all_open = vec![
+        dir("/srv/w", 0, 0o755),
+        dir("/srv", 0, 0o755),
+        dir("/", 0, 0o755),
+    ];
+    assert!(chain_refusal(&all_open).contains("keeps group and others out"));
+}
+
+#[test]
+fn the_real_parents_are_walked_from_the_descriptor() {
+    // As a test user nothing is root's: the walk reaches the temp dir's
+    // owner and stops there; what matters is that it read the chain.
+    let tmp = tempfile::tempdir().unwrap();
+    let wd = tmp.path().join("w");
+    fs::create_dir(&wd).unwrap();
+    let claimed = claim(&wd).unwrap();
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let why = check_private(&claimed).unwrap_err().0;
+    assert!(
+        why.contains(&format!("{} is owned by uid", wd.display())),
+        "{why}"
+    );
 }

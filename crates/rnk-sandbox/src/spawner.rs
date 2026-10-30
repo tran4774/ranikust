@@ -74,20 +74,35 @@ impl Sandbox {
     /// following a symlink, and refused when it is the host's `/`, `/etc` or
     /// `/dev` by device and inode (a bind mount of `/` included): nothing is
     /// placed there. Journals are matched to it by identity, never by path.
+    /// `checked` is the root as the caller opened and checked it: the path
+    /// must still lead to that directory (device, inode, mount id), and
+    /// every later `RUN` must be on that path and that directory.
     ///
     /// # Errors
     ///
     /// As [`Sandbox::start`], and [`Error::InvalidSpec`] when `shared_root`
-    /// is not absolute or is the host's `/`, `/etc` or `/dev`.
-    pub fn start_with_root(caps: Option<Caps>, dir: &Path, shared_root: &Path) -> Result<Self> {
+    /// is not absolute, is the host's `/`, `/etc` or `/dev`, or is no longer
+    /// the directory `checked` is.
+    pub fn start_with_root(
+        caps: Option<Caps>,
+        dir: &Path,
+        shared_root: &Path,
+        checked: &RootPath,
+    ) -> Result<Self> {
         if !shared_root.is_absolute() {
             return Err(Error::InvalidSpec(format!(
                 "the shared root must be absolute: {shared_root:?}"
             )));
         }
+        let id = root_id(checked)?;
         let root = RootPath::open(shared_root)?.stay_on_mount();
+        if root_id(&root)? != id {
+            return Err(Error::InvalidSpec(format!(
+                "the shared root {} is not the directory the caller checked",
+                shared_root.display()
+            )));
+        }
         journal::refuse_host_system_dir(&root, shared_root)?;
-        let id = root_id(&root)?;
         let mut sandbox = Self::start_inner(caps, dir, Some(&root))?;
         sandbox.runner.shared_root = Some((shared_root.to_owned(), id));
         Ok(sandbox)
@@ -713,14 +728,20 @@ impl Runner {
         let root = RootPath::open(&spec.root_dir)?;
         // The shared root is reopened by path for each `RUN`: it must still
         // be the directory checked at the start, for `Full` and `Direct`.
-        if let Some((path, id)) = &self.shared_root
-            && *path == spec.root_dir
-            && root_id(&root)? != *id
-        {
-            return Err(Error::InvalidSpec(format!(
-                "the shared root {} is no longer the directory it was at the start",
-                path.display()
-            )));
+        if let Some((path, id)) = &self.shared_root {
+            if *path != spec.root_dir {
+                return Err(Error::InvalidSpec(format!(
+                    "a RUN on {} while the build's shared root is {}",
+                    spec.root_dir.display(),
+                    path.display()
+                )));
+            }
+            if root_id(&root)? != *id {
+                return Err(Error::InvalidSpec(format!(
+                    "the shared root {} is no longer the directory it was at the start",
+                    path.display()
+                )));
+            }
         }
         let user = rnk_rootfs::lookup_user(&root, spec.user_spec())?;
         let stdio = [
@@ -1673,7 +1694,8 @@ mod tests {
         let wd = tempfile::tempdir().unwrap();
         let wd = wd.path().canonicalize().unwrap();
         let (ino, old) = direct_root(&wd);
-        let sandbox = Sandbox::start_with_root(None, dir.path(), &wd).unwrap();
+        let sandbox =
+            Sandbox::start_with_root(None, dir.path(), &wd, &RootPath::open(&wd).unwrap()).unwrap();
         let mut spec = RunSpec::new(&wd, vec!["/missing".into()]);
         spec.isolation = Isolation::Direct;
         match sandbox.run(spec) {
@@ -1689,7 +1711,15 @@ mod tests {
         assert_direct_root_restored(&wd, ino, old);
         drop(sandbox);
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
-        assert!(Sandbox::start_with_root(None, dir.path(), Path::new("/")).is_err());
+        assert!(
+            Sandbox::start_with_root(
+                None,
+                dir.path(),
+                Path::new("/"),
+                &RootPath::open("/").unwrap()
+            )
+            .is_err()
+        );
     }
 
     /// Where the probe found the full sandbox possible, a bare `chroot` is
@@ -1715,7 +1745,15 @@ mod tests {
             let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
             assert!(matches!(r, Err(Error::InvalidSpec(_))), "{host}: {r:?}");
         }
-        assert!(Sandbox::start_with_root(None, dir.path(), Path::new("/etc")).is_err());
+        assert!(
+            Sandbox::start_with_root(
+                None,
+                dir.path(),
+                Path::new("/etc"),
+                &RootPath::open("/etc").unwrap()
+            )
+            .is_err()
+        );
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
     }
 
@@ -1743,6 +1781,24 @@ mod tests {
             };
             assert!(why.contains("no longer"), "{why}");
         }
+        // A RUN on another path than the shared root is refused too.
+        let mut runner = Runner::new(dir.path(), None).unwrap();
+        runner.shared_root = Some((wd.clone(), id));
+        let other = parent.path().canonicalize().unwrap().join("moved");
+        let mut spec = RunSpec::new(&other, vec!["/missing".into()]);
+        spec.isolation = Isolation::Direct;
+        let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
+        assert!(
+            matches!(&r, Err(Error::InvalidSpec(w)) if w.contains("shared root is")),
+            "{r:?}"
+        );
+        // And a start on a path that is not the checked directory.
+        let e = Sandbox::start_with_root(None, dir.path(), &wd, &RootPath::open(&other).unwrap());
+        assert!(
+            matches!(&e, Err(Error::InvalidSpec(w)) if w.contains("caller checked")),
+            "{:?}",
+            e.err()
+        );
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
     }
 
@@ -1758,7 +1814,8 @@ mod tests {
         let wd = wd.path().canonicalize().unwrap();
         let (ino, old) = direct_root(&wd);
         copy_with_libraries(Path::new("/bin/sh"), &wd);
-        let mut sandbox = Sandbox::start_with_root(None, dir.path(), &wd).unwrap();
+        let mut sandbox =
+            Sandbox::start_with_root(None, dir.path(), &wd, &RootPath::open(&wd).unwrap()).unwrap();
         let hard = crate::NofileLimit::current().hard;
         sandbox.set_nofile_limit(crate::NofileLimit {
             soft: Some(777),

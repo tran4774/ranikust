@@ -604,10 +604,10 @@ Entry format:
 
 ### Q-320: What keeps a kaniko-mode host workdir out of other users' reach?
 
-- **Answer (2026-10-31):** option (a), chosen by the maintainer: the
-  workdir root's and not writable by others, its ancestors not writable by
-  others (but a root-owned sticky directory) and owned by root or one other
-  user, and one ancestor that others cannot search; a missing
+- **Answer (2026-10-31):** option (a), chosen by the maintainer: a real
+  parent of the workdir that group and others cannot search, and it and
+  everything below it down to the workdir owned by root and not writable
+  by others; directories above it may belong to anyone; a missing
   `nosuid,nodev` is warned about. Recorded in
   [ADR-0047](adr/0047-kaniko-workdir-chain-is-private.md).
 

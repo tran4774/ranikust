@@ -26,6 +26,10 @@ impl Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let host = fs::canonicalize(tmp.path()).unwrap().join("root");
         fs::create_dir_all(host.join("state")).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&host, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         fs::write(host.join("state/blob"), b"kept").unwrap();
         let mut ignore = IgnoreList::new();
         ignore.insert("/state").unwrap();
@@ -132,6 +136,8 @@ fn an_image_stage_empties_the_root_extracts_and_walks_only_when_needed() {
     );
     assert!(f.kaniko.finish().unwrap());
     assert_eq!(f.names(), ["state"]);
+    let mode = fs::metadata(&f.host).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o700, "the workdir's own mode is given back");
 }
 
 #[test]
