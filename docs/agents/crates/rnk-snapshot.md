@@ -77,6 +77,13 @@ pub struct WalkDiff { pub root: Option<EntryMeta>, pub changed: Vec<Changed>, pu
 pub struct Changed { pub path: PathBuf, pub change: Change, pub meta: EntryMeta } // Change::{Added, Modified}
 pub struct EntryMeta { pub kind: FileType, pub mode, uid, gid, size, mtime: FileTime, rdev, dev, ino, nlink } // #[non_exhaustive]
 pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits, skipped, max_threads }
+
+// kaniko mode's exporter, built (Phase 2 task 5, src/kaniko/export.rs)
+impl WalkDiff {
+    pub fn is_empty(&self) -> bool;                // nothing changed: still an (empty) layer
+    pub fn export<W: Write>(&self, root: &RootPath, o: EncodeOptions, out: W) -> Result<(LayerDigests, DiffCounts)>;
+    pub fn entries(&self, root: &RootPath) -> Result<Vec<Entry>>; // what export feeds, without the writer's parents
+}
 ```
 
 - `WalkDiff` is what task 5's exporter consumes: paths relative to the
@@ -188,9 +195,17 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   file refused on the pinned fd, the read bounded by `statx`'s size
   (`/dev/zero` included), 3,000 subdirectories in one directory, arena
   offsets beyond `u32`; T2 (VM): a device node swapped in is never opened (passed, kernel 6.8, 2026-10-31);
-  `tests/spans.rs` the walk spans. To do: property `apply(base, diff) ==
-  tree` (with the exporter, task 5), an unchanged `RUN` giving an empty
-  layer (task 6).
+  `tests/spans.rs` the walk spans. kaniko exporter built
+  (`src/kaniko/export/tests.rs`): an unchanged root gives an empty tar, a
+  deleted directory one whiteout under its parents, a deep new file its
+  unchanged parents read from the root, a link into a lower layer a
+  regular file, links within the layer tar hardlinks (a `chmod` of a
+  linked inode writes every name), symlinks and FIFOs written never
+  followed or opened, a file or FIFO swapped in since the walk refused, 1
+  against 8 walk workers the same digest, and the property `apply(base
+  layer, diff layer) == tree` on random trees (proptest, 48 cases; 3,000
+  passed once); `tests/spans.rs` its spans. To do: an unchanged `RUN`
+  giving an empty layer in a build (task 6).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
 - **T2** (VM only): overlay as real root; kernel 5.15 fallback; kaniko mode
@@ -202,6 +217,12 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   Phase 2 walk spans ([rows](../../design/metrics.md#rnk-snapshot)).
 - Overlay records `rnk_snapshot.diff` inside `export`, which is the walk
   that classifies the entries, so a diff never exported is not recorded.
+  The kaniko exporter (`WalkDiff::export`) records the same pair:
+  `rnk_snapshot.export` (`entries`, `bytes_read`) around
+  `rnk_snapshot.diff` (`files_added`, `whiteouts`, `bytes`; the others 0),
+  which there only turns the walk's diff into entries.
+- The kaniko exporter writes what changed, not the targets of changed
+  symlinks kaniko adds, nor a socket's parents (`ADR-0045`).
   `blocks_read` is not recorded yet; `rnk_snapshot.extract` is not a span:
   base layers nest `rnk_store.fill`, `rnk_layer.decode` and
   `rnk_rootfs.extract`.

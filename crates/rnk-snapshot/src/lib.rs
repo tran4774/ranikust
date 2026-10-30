@@ -7,8 +7,10 @@
 //! (`ADR-0016` options), and the exporter that turns an upper directory
 //! into an OCI layer through `rnk-layer`'s writer ([`LayerDiff`]). kaniko
 //! mode's walk is [`Walker`]: a parallel walk and hash of a root, diffed
-//! against the previous walk while walking ([`WalkDiff`], ADR-0039); its
-//! stage roots and deletion implement the same traits later in Phase 2.
+//! against the previous walk while walking ([`WalkDiff`], ADR-0039), and
+//! [`WalkDiff::export`], which writes that diff as a layer through the same
+//! writer; its stage roots and deletion implement the same traits later in
+//! Phase 2.
 //!
 //! Also probes its own capability, which the binary runs at start-up:
 //! [`probe`], the overlay mount with the ADR-0016 options, with

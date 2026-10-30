@@ -1,7 +1,9 @@
 //! kaniko mode: the root is walked and hashed instead of mounted
 //! (`design/kaniko-mode.md`): the ignore list, the parallel walk, its hashes
-//! and the diff it computes (`#walk-hash-and-diff`, ADR-0039).
+//! and the diff it computes (`#walk-hash-and-diff`, ADR-0039), and the
+//! exporter that writes that diff as a layer (`WalkDiff::export`).
 
+mod export;
 mod ignore;
 mod tree;
 mod walk;

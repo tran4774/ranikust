@@ -210,7 +210,7 @@ attempts.
 | `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | Phase 2 (built, `Walker`): one walk with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (3.18 s, `exp-07`). |
 | `rnk_snapshot.resolve` | `paths` | Phase 2: path resolution; kaniko's `snapshot.resolve` (2.48 s, `exp-07`). |
 | `rnk_snapshot.syncfs` | | Phase 2: kaniko's `snapshot.syncfs` (0.48 s, `exp-07`). |
-| `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`. `blocks_read` is the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread: the disk re-reads `exp-07` and `exp-08` found under memory pressure (183–538 MB per layer). Omitted if reads fan out to a pool. Not recorded yet: the overlay exporter records `entries` and `bytes_read`. |
+| `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`: an overlay upper directory (`LayerDiff::export`) or a kaniko walk diff (`WalkDiff::export`, `rnk_snapshot.diff` inside it as in overlay mode). `blocks_read` is the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread: the disk re-reads `exp-07` and `exp-08` found under memory pressure (183–538 MB per layer). Omitted if reads fan out to a pool. Not recorded yet: both exporters record `entries` and `bytes_read`. |
 | `rnk_snapshot.release` | `entries` | Deleting diff directories or a stage root; kaniko's `fs.delete`. |
 | `rnk_snapshot.probe` | `ok`, `api` | One overlay mount attempt of the probe: `api` is `LowerdirPlus` or `Mount2`, tried in that order. |
 

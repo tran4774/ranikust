@@ -184,8 +184,10 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   `--force`), and anywhere else in a `--workdir` that passes the workdir
   checks (ADR-0038, ADR-0040).
 - **Parent directories.** kaniko writes ancestor directory headers
-  (`pkg/snapshot/snapshot.go:432`); ranikust's exporter must too
-  (`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`).
+  (`pkg/snapshot/snapshot.go:432`); ranikust's exporters do too
+  (`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`,
+  `design/kaniko-mode.md#exporter-requirements-specific-to-the-walk`), but
+  not for a socket alone, which both leave out (`ADR-0045`).
 - **Following BuildKit** (`ADR-0032`). Where kaniko and BuildKit differ
   on what the image or a `RUN` sees, ranikust does what BuildKit does:
   - OCI media types by default, whatever the base and `--reproducible`
@@ -198,6 +200,10 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
     (kaniko keeps the go-containerregistry fields; Q-132).
   - Loopback registries are reached over plain HTTP without a flag (Q-065).
   - Layers carry only the `security.capability` xattr (Q-025).
+  - A kaniko-mode layer holds what changed: not the unchanged target of a
+    changed symlink, which kaniko's `ResolvePaths` adds
+    (`pkg/filesystem/resolve.go:69-98`), nor the parents of a changed
+    socket (`ADR-0045`).
   - A `COPY` wildcard that matches nothing is no error, and several
     sources need no trailing `/` (kaniko's `IsSrcsValid`; Q-080);
     sockets become empty files and `--chmod` takes symbolic modes (Q-120).

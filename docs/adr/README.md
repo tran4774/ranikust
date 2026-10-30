@@ -115,3 +115,4 @@ when new measurements contradict its evidence.
 | [0041](0041-live-root-extraction-skips-device-nodes.md) | Extraction into a live root creates no device node or FIFO, as kaniko | Accepted | 2026-10-31 | Q-270, kaniko source |
 | [0043](0043-direct-run-on-a-workdir-chroots-with-placed-files.md) | A `Direct` `RUN` on a workdir other than `/` enters it with `chroot`, with journaled placed files and the original `RLIMIT_NOFILE` | Accepted | 2026-10-31 | kaniko source, exp 12, `rnk-sandbox` tests |
 | [0044](0044-kaniko-mode-walks-every-kept-stage.md) | Sequential kaniko mode walks every stage whose image is kept for a later `FROM` | Accepted | 2026-10-31 | Q-300 |
+| [0045](0045-kaniko-mode-layer-holds-what-changed.md) | A kaniko-mode layer holds what changed, not the targets of changed symlinks | Accepted | 2026-10-31 | kaniko `pkg/filesystem/resolve.go`, follows BuildKit |

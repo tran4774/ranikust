@@ -197,14 +197,52 @@ workdir through the descriptor that was checked, never by its path.
 The common rules are in [overlay-snapshot](overlay-snapshot.md#exporting-a-diff-as-an-oci-layer).
 In addition:
 
+Built as `WalkDiff::export` (`rnk-snapshot`, `src/kaniko/export.rs`), after
+kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
+
 - The parent-header rule matters most here: a walk diff often holds a deep
   file whose ancestors did not change (the 1,813 pnpm-store files of
   experiment 06 under `/root`), and those ancestors must still be emitted,
-  as kaniko does.
-- A hardlink whose target lies in a lower layer (`ln /etc/passwd /x`) must be
-  written as a regular file, since the target is not in this layer
-  [inferred].
-- A `RUN` that changes nothing produces an empty layer; this has a test.
+  as kaniko does. kaniko adds every parent of an added path and of a
+  whiteout, but never the root, with its metadata read from the root at
+  export time (`addParentDirectories`, `:432-447`; `addedPaths[RootDir]`,
+  `:348`); the exporter does the same through `rnk-layer`'s parent lookup.
+  `WalkDiff::root` is therefore never written.
+- One whiteout per topmost deleted path, mode 0, owner 0:0, time 0, as
+  kaniko's `Tar.Whiteout` (`pkg/util/tar_util.go:162-176`). What a
+  directory replaced by a non-directory held gets no whiteout, as kaniko's
+  `parentPathIncludesNonDirectory` (`:393-408`).
+- A hardlink whose target lies in a lower layer (`ln /etc/passwd /x`) is
+  written as a regular file: the walk does not report a link-count change,
+  so the target is not in this layer, and `rnk-layer` links only entries
+  of one layer. Names of one inode that are both in the layer become a
+  file and tar hardlinks to it.
+- Of the xattrs, only `security.capability` is kept (ADR-0032); sockets
+  are left out, as kaniko (`pkg/util/tar_util.go:74-77`), but without the
+  parents kaniko still writes for them (`ADR-0045`).
+- What changed is written, nothing more: the unchanged target of a changed
+  symlink, which kaniko's `ResolvePaths` adds
+  (`pkg/filesystem/resolve.go:69-98`), is not, as BuildKit and overlay
+  mode (`ADR-0045`). The exporter never resolves a symlink.
+- The root is live: every entry is pinned once with `RootPath::pin`, its
+  physical path resolved with no symlink in any component and without
+  leaving the root's mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`,
+  `O_PATH | O_NOFOLLOW`), and the pin's `statx` checked against the walk's
+  record (type, device, inode). The link target, the xattrs and the
+  content are read from that pin, the content through a reopen of exactly
+  that inode, so a parent swapped for a symlink or a mount, or a FIFO or
+  device swapped in, is never opened. An entry changed since the walk
+  fails the export. Names of one inode in the walk that disagree on type,
+  size, mode, owner or mtime (an inode number reused during the walk) are
+  written as separate files, not linked. Not caught, as in kaniko: a file rewritten in
+  place between walk and export with the same inode and size is written
+  with its new content and the walked metadata; nothing may write the root
+  between the two.
+- A `RUN` that changes nothing produces an empty layer, an empty tar as
+  kaniko's `TakeSnapshotFS` writes; `WalkDiff::is_empty` tells the caller.
+- Applying the base layer and a diff's layer rebuilds the walked tree:
+  a property test on random trees, which compares content, modes and
+  mtimes but not hardlink structure across layers (`ADR-0012`).
 
 ## Per-stage directories
 

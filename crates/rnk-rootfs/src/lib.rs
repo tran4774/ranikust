@@ -46,6 +46,6 @@ pub use extract::{Extracted, Whiteouts, extract, extract_live, extract_overlay};
 pub use ignore::IgnoreList;
 pub use meta::{FileTime, FileType, Meta, Stat};
 pub use mode::{Chmod, ModeSet};
-pub use root::{OpenHow, RootPath};
+pub use root::{OpenHow, Pinned, RootPath};
 pub use support::{Cause, Unsupported, probe_support};
 pub use user::{Owner, User, lookup_owner, lookup_user};
