@@ -69,6 +69,34 @@ impl Fixture {
         .unwrap();
     }
 
+    /// Sets `rel`'s modification time, not following a symlink: a file
+    /// extracted from a tar has whole seconds (`nanos` 0).
+    fn mtime(&self, rel: &str, secs: i64, nanos: i64) {
+        let t = rustix::fs::Timespec {
+            tv_sec: secs,
+            tv_nsec: nanos,
+        };
+        rustix::fs::utimensat(
+            CWD,
+            self.p(rel),
+            &rustix::fs::Timestamps {
+                last_access: t,
+                last_modification: t,
+            },
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+    }
+
+    /// `rel` in `l1` and in `upper` with these bodies, the same mode and
+    /// the modification time `secs`.`nanos`: a copy-up.
+    fn pair(&self, rel: &str, lower: &[u8], upper: &[u8], secs: i64, nanos: i64) {
+        self.file(&format!("l1/{rel}"), lower);
+        self.file(&format!("upper/{rel}"), upper);
+        self.mtime(&format!("l1/{rel}"), secs, nanos);
+        self.mtime(&format!("upper/{rel}"), secs, nanos);
+    }
+
     fn diff(&self) -> LayerDiff {
         LayerDiff {
             upper: self.p("upper"),
@@ -134,17 +162,151 @@ fn a_name_hidden_in_a_higher_lower_needs_no_whiteout() {
 }
 
 #[test]
-fn an_opaque_dir_is_opaque_only_over_a_lower_dir() {
+fn an_opaque_dir_is_written_as_whiteouts_of_what_it_hides() {
+    // As BuildKit: no `.wh..wh..opq`, but a walk of the lower directory
+    // against the upper one (continuity's double-walking differ).
     let f = Fixture::new();
     f.file("l2/d/old", b"x");
-    f.dir("upper/d");
+    f.file("l2/d/sub/deep", b"x");
+    f.file("l2/d/hidden", b"x");
+    f.dir("l1/d");
+    f.whiteout("l1/d/hidden");
+    f.pair("d/keep", b"same", b"same", 1_000, 0);
+    fs::rename(f.p("l1/d/keep"), f.p("l2/d/keep")).unwrap();
+    f.file("upper/d/new", b"n");
     f.xattr("upper/d", OPAQUE, b"y");
     f.dir("upper/fresh");
     f.xattr("upper/fresh", OPAQUE, b"y");
     let e = f.entries();
-    assert_eq!(names(&e), ["d", "fresh"]);
-    assert_eq!(e[0].1, EntryKind::OpaqueDir);
-    assert_eq!(e[1].1, EntryKind::Dir);
+    // `d` keeps its mode and owner: unchanged, so written only as a
+    // parent; `d/sub` is one whiteout for the whole directory; `hidden`
+    // was already gone below; `keep` is unchanged.
+    assert_eq!(names(&e), ["d/new", "d/old", "d/sub", "fresh"]);
+    assert_eq!(e[0].1, EntryKind::File { size: 1 });
+    assert_eq!(e[1].1, EntryKind::Whiteout);
+    assert_eq!(e[2].1, EntryKind::Whiteout);
+    assert_eq!(e[3].1, EntryKind::Dir);
+}
+
+#[test]
+fn an_unchanged_copied_up_file_is_dropped() {
+    let f = Fixture::new();
+    f.pair("etc/f", b"abc", b"abc", 1_000, 0);
+    f.pair("etc/ns", b"old", b"new", 1_000, 5);
+    assert!(f.entries().is_empty(), "{:?}", f.entries());
+}
+
+#[test]
+fn equal_stat_with_whole_seconds_compares_contents() {
+    let f = Fixture::new();
+    f.pair("same", b"abc", b"abc", 1_000, 0);
+    f.pair("changed", b"abc", b"xyz", 1_000, 0);
+    assert_eq!(names(&f.entries()), ["changed"]);
+}
+
+#[test]
+fn nanoseconds_decide_when_not_whole_seconds() {
+    let f = Fixture::new();
+    // Same seconds and nanoseconds: trusted as unchanged, unread.
+    f.pair("trusted", b"abc", b"xyz", 1_000, 7);
+    // One side truncated, the other not: changed.
+    f.pair("half", b"abc", b"abc", 1_000, 0);
+    f.mtime("upper/half", 1_000, 7);
+    f.pair("other_ns", b"abc", b"abc", 1_000, 7);
+    f.mtime("upper/other_ns", 1_000, 8);
+    f.pair("other_s", b"abc", b"abc", 1_000, 0);
+    f.mtime("upper/other_s", 1_001, 0);
+    f.pair("size", b"abc", b"abcd", 1_000, 0);
+    assert_eq!(names(&f.entries()), ["half", "other_ns", "other_s", "size"]);
+}
+
+#[test]
+fn symlinks_compare_targets_and_empty_files_are_equal() {
+    let f = Fixture::new();
+    symlink("aaa", f.p("l1/s1")).unwrap();
+    symlink("aaa", f.p("upper/s1")).unwrap();
+    symlink("aaa", f.p("l1/s2")).unwrap();
+    symlink("bbb", f.p("upper/s2")).unwrap();
+    for s in ["s1", "s2"] {
+        f.mtime(&format!("l1/{s}"), 1_000, 0);
+        f.mtime(&format!("upper/{s}"), 1_000, 0);
+    }
+    f.pair("empty", b"", b"", 1_000, 0);
+    let e = f.entries();
+    assert_eq!(names(&e), ["s2"]);
+    assert_eq!(e[0].1, EntryKind::Symlink(b"bbb".to_vec()));
+}
+
+#[test]
+fn a_changed_type_or_mode_is_kept() {
+    let f = Fixture::new();
+    f.pair("mode", b"abc", b"abc", 1_000, 0);
+    fs::set_permissions(f.p("upper/mode"), fs::Permissions::from_mode(0o600)).unwrap();
+    f.mtime("upper/mode", 1_000, 0);
+    f.file("l1/t", b"");
+    f.mtime("l1/t", 1_000, 0);
+    symlink("x", f.p("upper/t")).unwrap();
+    f.mtime("upper/t", 1_000, 0);
+    assert_eq!(names(&f.entries()), ["mode", "t"]);
+}
+
+#[test]
+fn a_directory_is_compared_without_its_mtime() {
+    // BuildKit's `sameDirent` checks size and times only for non-dirs.
+    let f = Fixture::new();
+    f.dir("l1/d");
+    f.dir("upper/d");
+    f.mtime("l1/d", 1_000, 0);
+    f.mtime("upper/d", 2_000, 5);
+    assert!(f.entries().is_empty(), "{:?}", f.entries());
+}
+
+#[test]
+fn capabilities_take_part_in_the_comparison() {
+    // `security.capability` needs CAP_SETFCAP to set, so compare stats.
+    let f = Fixture::new();
+    f.file("upper/f", b"abc");
+    let st = RootPath::open(f.p("upper")).unwrap().statx("f").unwrap();
+    let cap = |v: &[u8]| vec![(OsString::from("security.capability"), v.to_vec())];
+    assert!(meta_equal(&st, &st, &cap(b"a"), &cap(b"a")));
+    assert!(!meta_equal(&st, &st, &cap(b"a"), &cap(b"b")));
+    assert!(!meta_equal(&st, &st, &cap(b"a"), &[]));
+}
+
+#[test]
+fn unchanged_hardlinks_are_dropped_outside_opaque_dirs() {
+    // BuildKit's overlay differ drops them whatever their link count.
+    let f = Fixture::new();
+    f.pair("h1", b"same", b"same", 1_000, 0);
+    fs::hard_link(f.p("upper/h1"), f.p("upper/h2")).unwrap();
+    f.file("l1/h2", b"same");
+    f.mtime("l1/h2", 1_000, 0);
+    assert!(f.entries().is_empty(), "{:?}", f.entries());
+}
+
+#[test]
+fn under_an_opaque_dir_an_unchanged_hardlink_links_to_a_changed_one() {
+    // continuity's `ChangeKindUnmodified`: kept only to link to a changed
+    // name of its inode.
+    let f = Fixture::new();
+    f.dir("l1/d");
+    f.file("l1/d/h1", b"aaa");
+    f.mtime("l1/d/h1", 1_000, 0);
+    f.file("l1/d/h2", b"bbb");
+    f.mtime("l1/d/h2", 1_000, 0);
+    f.file("l1/d/lone", b"ccc");
+    f.mtime("l1/d/lone", 1_000, 0);
+    f.file("upper/d/h1", b"aaa");
+    f.mtime("upper/d/h1", 1_000, 0);
+    fs::hard_link(f.p("upper/d/h1"), f.p("upper/d/h2")).unwrap();
+    f.file("upper/d/lone", b"ccc");
+    f.mtime("upper/d/lone", 1_000, 0);
+    f.xattr("upper/d", OPAQUE, b"y");
+    let e = f.diff().entries().unwrap();
+    let got: Vec<_> = e.iter().map(|x| x.path.to_string()).collect();
+    assert_eq!(got, ["d/h1", "d/h2"]);
+    assert!(e[0].inode.is_some());
+    assert_eq!(e[0].inode, e[1].inode);
 }
 
 #[test]
@@ -242,6 +404,8 @@ fn export_gives_the_same_bytes_for_any_thread_count_with_parents_from_the_lower(
             whiteouts: 0,
             opaque_dirs: 0,
             bytes: 300_000,
+            unchanged: 1,
+            bytes_compared: 0,
         }
     );
     // The skipped `root` comes back as a parent, with its real 0700.

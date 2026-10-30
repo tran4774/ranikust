@@ -4,6 +4,7 @@
 //! Every layer is read through its own [`RootPath`]: a layer's content came
 //! from an image or from a `RUN`, so nothing in it is followed.
 
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
@@ -135,6 +136,31 @@ impl<'a> Lowers<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// The names the merged view shows in the directory `dir` (relative,
+    /// no `..`): every name some layer has there, kept when
+    /// [`Lowers::lookup`] shows it, so whiteouts, opaque directories and
+    /// non-directories on the way hide what they hide in overlay.
+    pub(crate) fn list(&self, dir: &Path) -> Result<BTreeSet<OsString>> {
+        let mut names = BTreeSet::new();
+        for layer in self.layers {
+            match layer.statx(dir) {
+                Ok(st) if st.file_type() == FileType::Directory => {
+                    names.extend(crate::export::list(layer, dir)?);
+                }
+                Ok(_) => {}
+                Err(e) if is_missing(&e) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let mut shown = BTreeSet::new();
+        for name in names {
+            if self.lookup(&dir.join(&name))?.is_some() {
+                shown.insert(name);
+            }
+        }
+        Ok(shown)
     }
 }
 
