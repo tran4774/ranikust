@@ -50,7 +50,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `RUN` in shell, exec and heredoc form with `--mount=type=cache`,
   `--mount=type=secret` and `--network=none`, as BuildKit: cache
   `sharing=shared|locked|private` with `uid`/`gid`/`mode` when a cache is
-  made, secrets as a `0400` root file (or the requested mode and owner)
+  made, secrets as a `0400` root file on a tmpfs of the `RUN`'s own,
+  never on a disk (or the requested mode and owner)
   or with `env=` as a variable of that `RUN`. `--secret` takes kaniko's
   and buildctl's syntax: a file (`src=`) or a variable (`env=`,
   `type=env`). `RUN --network=host` under `--network=none` needs

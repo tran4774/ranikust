@@ -47,7 +47,9 @@ impl Sandbox {
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation */ }  // #[non_exhaustive]; RunSpec::new
-pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache|secret
+pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache
+pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // RunSpec::secrets: written
+    // by the child on its own tmpfs, bound read-only; Debug hides the bytes, as RunSpec's the env values
 pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; BareChroot { fake_proc } [design], Phase 2

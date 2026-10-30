@@ -249,15 +249,17 @@ through a descriptor of its directory.
 - [open: Q-180] `VOLUME` records the config only.
 - `RUN --mount` (`mounts.rs`), as BuildKit (ADR-0032): a cache mount is
   leased from the store with its `sharing=` (`Store::cache_lease`: shared,
-  locked waits, private gets a new empty cache); its id defaults to the
-  cleaned target, and `uid`/`gid`/`mode` key the cache and apply only
-  when it is made. A secret's id is `id=`, else `source=`, else the
-  target's name; with `env=` it is a variable of that `RUN` only, and
-  without `env=` or with a `target=` a private copy in the build directory
-  (default `0400`, root's; permission bits only), bound read-only at the
-  target or `/run/secrets/<id>` and removed after the `RUN`. BuildKit
-  keeps that copy on a tmpfs [open: Q-230]. A cancel kills the running
-  `RUN` (`Sandbox::cancel`).
+  locked waits, private gets a new empty cache); a `RUN` takes its leases
+  in key order, and a key mounted twice shares one lease; the id defaults
+  to the cleaned target, and `uid`/`gid`/`mode` key the cache and are set
+  by the store when it makes it. A secret's id is `id=`, else `source=`,
+  else the target's name; with `env=` it is a variable of that `RUN` only
+  (a NUL byte is refused, naming the id), and without `env=` or with a
+  `target=` a `rnk_sandbox::SecretFile` (default `0400`, root's;
+  permission bits only) that the sandbox writes on the `RUN`'s own tmpfs
+  and binds read-only at the target or `/run/secrets/<id>`: no copy
+  reaches a disk. Secret files are opened non-blocking and must be
+  regular files. A cancel kills the running `RUN` (`Sandbox::cancel`).
 - [open: Q-029] Interim: `rnk-sched` builds each stage's demand with
   `LayerDemand::for_stage`; the rule lives here.
 - [open: Q-006] Interim: kaniko's format rule, `image_format`.
