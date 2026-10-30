@@ -165,14 +165,22 @@ impl Snapshotter for Overlay {
     }
 
     fn prepare(&self, base: Base<'_, OverlayStage>) -> Result<OverlayStage> {
-        let (lowers, parent): (Vec<PathBuf>, _) = match base {
-            Base::Scratch => (Vec::new(), None),
-            Base::Image(layers) => (layers.iter().rev().map(|l| l.path.clone()).collect(), None),
+        let (lowers, built, parent): (Vec<PathBuf>, _, _) = match base {
+            Base::Scratch => (Vec::new(), 0, None),
+            Base::Image(layers) => (
+                layers.iter().rev().map(|l| l.path.clone()).collect(),
+                0,
+                None,
+            ),
             Base::Stage(parent) => {
                 if parent.mounted == Mounted::Layer {
                     return Err(Error::State("the parent stage has a layer open"));
                 }
-                (parent.lowers.clone(), Some(Arc::clone(&parent.children)))
+                (
+                    parent.lowers.clone(),
+                    parent.built,
+                    Some(Arc::clone(&parent.children)),
+                )
             }
         };
         let span = tracing::info_span!("rnk_snapshot.prepare", layers = lowers.len());
@@ -194,6 +202,7 @@ impl Snapshotter for Overlay {
             root,
             api: self.api,
             lowers,
+            built,
             next: 0,
             mounted: Mounted::Nothing,
             open: None,
@@ -233,6 +242,9 @@ pub struct OverlayStage {
     api: MountApi,
     /// Lower layers, topmost first: earlier diffs, then the base.
     lowers: Vec<PathBuf>,
+    /// How many of the topmost `lowers` are diffs made by this build (this
+    /// stage's or a parent stage's), as opposed to extracted image layers.
+    built: usize,
     /// The number of layers begun.
     next: u64,
     /// What is mounted on `rootfs/`.
@@ -372,8 +384,10 @@ impl StageRootfs for OverlayStage {
         let diff = LayerDiff {
             upper: upper.clone(),
             lowers: self.lowers.clone(),
+            built: self.built,
         };
         self.lowers.insert(0, upper);
+        self.built += 1;
         Ok(diff)
     }
 

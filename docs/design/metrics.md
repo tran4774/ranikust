@@ -200,9 +200,9 @@ attempts.
 | Span | Fields | Why |
 |---|---|---|
 | `rnk_snapshot.prepare` | `layers` | A stage root: overlay mount over the store, or extraction plus baseline (extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`). |
-| `rnk_snapshot.mount` | `lowers` | One instruction's overlay mount; with `umount`, the cost overlay adds per instruction (`exp-06`; mount reuse, `Q-049`). |
+| `rnk_snapshot.mount` | `lowers` | One instruction's overlay mount; with `umount`, the cost overlay adds per instruction (`exp-06`; mount reuse, `Q-245`). |
 | `rnk_snapshot.umount` | | One instruction's unmount. |
-| `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs`, `bytes` | Record: one instruction's diff; kaniko's `snapshot.command`. `exp-06`: 0.51–0.58 s overlay against 2.3–3.7 s walk for five steps. |
+| `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs` (always 0 since ADR-0034), `bytes`, `unchanged`, `bytes_compared` | Record: one instruction's diff; kaniko's `snapshot.command`. `exp-06`: 0.51–0.58 s overlay against 2.3–3.7 s walk for five steps. |
 | `rnk_snapshot.baseline` | `entries` | Record, Phase 2: the walk a kaniko-mode stage starts from; kaniko's `snapshot.init` (0.36 s on W1, `exp-07`). |
 | `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | Phase 2: one walk with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (3.18 s, `exp-07`). |
 | `rnk_snapshot.resolve` | `paths` | Phase 2: path resolution; kaniko's `snapshot.resolve` (2.48 s, `exp-07`). |

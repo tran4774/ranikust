@@ -138,8 +138,14 @@ host's `nextjs-kaniko` containers:
   compared pairwise (`guest/e2e/compare.py`), with experiment 07's
   non-deterministic W1 files counted as noise and hardlinked entries apart
   (ADR-0012); configs are compared field by field. `check-blobs.py` checks
-  that every gzip layer describes itself. The W3 digests at each `--jobs`
-  value must be equal. kaniko's `metrics.json` and `ranikust`'s report are
+  that every gzip layer describes itself. On W3 the raw digests at each
+  `--jobs` value are reported, and the images are compared by flattened
+  content against the first value (`compare-jobs<a>-jobs<b>.txt`), with
+  the workload's `du`-derived files (`/out/a.txt`, `/out/b.txt`,
+  `/out/c.txt`, `/out/all.txt`) passed to `compare.py --noise`; any other
+  difference fails the suite
+  ([Q-187](open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output)).
+  kaniko's `metrics.json` and `ranikust`'s report are
   put side by side through the phase map of
   [metrics](design/metrics.md#comparing-with-kaniko)
   (`guest/e2e/metrics.py`).
@@ -181,10 +187,11 @@ on W1 (a pnpm state file and an npm log named after the time), 1 on W2
 (`MANIFEST.sha256`, 3 bytes) and 3 on W3 (`/out/a.txt`, see below; kaniko's
 `/out` owner and mode and its missing `/out/all.txt`), configs equal;
 compared with BuildKit, the same counts as kaniko's against BuildKit
-(the setgid directories), plus that `MANIFEST.sha256` on W2. The suite
-still fails on its W3 check: `--jobs 1` and the default give one digest,
-`--jobs 2` another, through `/out/a.txt` alone, which records `du -sk
-node_modules`: disk usage, not the files
+(the setgid directories), plus that `MANIFEST.sha256` on W2. On W3 the
+raw digests can differ across `--jobs` through the files that record
+`du -sk node_modules`, disk usage rather than the files: later runs saw
+`/out/a.txt`, `/out/b.txt` and `/out/all.txt` differ between `--jobs 1`
+and the default and nothing else, so the content comparison passes
 ([Q-187](open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output)).
 
 Not covered yet: cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a

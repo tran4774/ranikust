@@ -89,9 +89,12 @@ pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused 
 - `layers/<id>` is immutable, only ever a lower, and is published through
   `rnk-store`: extracted into its `tmp/` entry, renamed, per-digest lock.
 - Exporter: whiteouts are converted before hardlinks are found by
-  `(dev, ino)`; `.wh.<name>` and `.wh..wh..opq` only where a lower has the
-  name; an unchanged copied-up directory is no change by itself, yet every
-  emitted entry's ancestors are emitted; `*.overlay.*` xattrs are stripped,
+  `(dev, ino)`; `.wh.<name>` only where the lower stack shows the name,
+  with time 0; an entry unchanged by BuildKit's `sameDirent` is left out
+  (ADR-0034; contents compared when both times are whole seconds, and
+  over this build's own diffs whenever the stat matches), yet
+  every emitted entry's ancestors are emitted; an opaque directory over a
+  lower one becomes whiteouts of what it hides, never `.wh..wh..opq`; `*.overlay.*` xattrs are stripped,
   `security.capability` kept; a redirect is an error; modes are raw; the
   `rnk-layer` writer sorts, so the bytes never depend on thread count.
 - Walk: directories open from the parent fd with `RESOLVE_BENEATH`,
@@ -208,5 +211,4 @@ pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused 
 - Deferred: the kaniko implementation, per-stage directories and lazy
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
 - [open: Q-024] The signature (interim above). (Q-026, ADR-0032) Merging
-  layers near 500 lowers. [open: Q-049] One mount across instructions;
-  the export-time hash filter. [open: Q-152].
+  layers near 500 lowers. [open: Q-245] One mount across instructions. [open: Q-152].

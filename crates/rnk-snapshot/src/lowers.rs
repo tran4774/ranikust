@@ -4,6 +4,7 @@
 //! Every layer is read through its own [`RootPath`]: a layer's content came
 //! from an image or from a `RUN`, so nothing in it is followed.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
@@ -76,6 +77,8 @@ pub(crate) struct Lowers<'a> {
 pub(crate) struct Found<'a> {
     /// The layer the entry comes from.
     pub(crate) layer: &'a RootPath,
+    /// That layer's position in the stack, topmost 0.
+    pub(crate) index: usize,
     /// Its `statx`.
     pub(crate) stat: Stat,
 }
@@ -86,26 +89,18 @@ impl<'a> Lowers<'a> {
     /// opaque directory or a non-directory on the way. `None` when nothing
     /// shows there. The root itself is the topmost layer's root.
     pub(crate) fn lookup(&self, p: &Path) -> Result<Option<Found<'a>>> {
-        let names: Vec<&OsStr> = p
-            .components()
-            .filter_map(|c| match c {
-                Component::Normal(n) => Some(n),
-                Component::RootDir
-                | Component::CurDir
-                | Component::ParentDir
-                | Component::Prefix(_) => None,
-            })
-            .collect();
+        let names = components(p);
         let Some(top) = self.layers.first() else {
             return Ok(None);
         };
         if names.is_empty() {
             return Ok(Some(Found {
                 layer: top,
+                index: 0,
                 stat: top.statx("")?,
             }));
         }
-        for layer in self.layers {
+        for (index, layer) in self.layers.iter().enumerate() {
             // Whether a directory on the way is opaque in this layer: then
             // the layers below cannot show the path either.
             let mut opaque = false;
@@ -126,7 +121,11 @@ impl<'a> Lowers<'a> {
                     return Ok(None);
                 }
                 if i + 1 == names.len() {
-                    return Ok(Some(Found { layer, stat: st }));
+                    return Ok(Some(Found {
+                        layer,
+                        index,
+                        stat: st,
+                    }));
                 }
                 if st.file_type() != FileType::Directory {
                     return Ok(None);
@@ -136,6 +135,73 @@ impl<'a> Lowers<'a> {
         }
         Ok(None)
     }
+
+    /// The names the merged view shows in the directory `dir` (relative,
+    /// no `..`), in one pass from the top as overlay's `readdir`: each
+    /// layer's `dir` is reached without following anything (every
+    /// component must be a directory, so a symlink in a lower is never
+    /// followed), the topmost layer with a name decides it (a whiteout hides
+    /// it), and the pass stops at a layer where `dir` or a directory above
+    /// it is a whiteout or not a directory, or after one where it is opaque.
+    pub(crate) fn list(&self, dir: &Path) -> Result<BTreeSet<OsString>> {
+        let names = components(dir);
+        // The first layer with a name decides whether it shows.
+        let mut seen: BTreeMap<OsString, bool> = BTreeMap::new();
+        'layers: for layer in self.layers {
+            let mut opaque = false;
+            let mut prefix = PathBuf::new();
+            for name in &names {
+                prefix.push(name);
+                let st = match layer.statx(&prefix) {
+                    Ok(st) => st,
+                    Err(e) if is_missing(&e) => {
+                        if opaque {
+                            break 'layers;
+                        }
+                        continue 'layers;
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                if is_whiteout(&st) || st.file_type() != FileType::Directory {
+                    break 'layers;
+                }
+                opaque = opaque || is_opaque(layer, &prefix)?;
+            }
+            for name in crate::export::list(layer, &prefix)? {
+                if seen.contains_key(&name) {
+                    continue;
+                }
+                match layer.statx(prefix.join(&name)) {
+                    Ok(st) => {
+                        seen.insert(name, !is_whiteout(&st));
+                    }
+                    // Gone since the listing: as if never there.
+                    Err(e) if is_missing(&e) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            if opaque {
+                break;
+            }
+        }
+        Ok(seen
+            .into_iter()
+            .filter_map(|(name, shown)| shown.then_some(name))
+            .collect())
+    }
+}
+
+/// The normal components of `p`.
+fn components(p: &Path) -> Vec<&OsStr> {
+    p.components()
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n),
+            Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir
+            | Component::Prefix(_) => None,
+        })
+        .collect()
 }
 
 /// `ENOENT` or `ENOTDIR`: the layer does not have the path.

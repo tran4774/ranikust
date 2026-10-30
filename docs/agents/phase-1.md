@@ -158,7 +158,7 @@ rule: `RUN --network=none` without `CAP_NET_ADMIN`
 ([Q-183](../open-questions.md#q-183-what-does-run---networknone-do-without-cap_net_admin)),
 remote repository contexts (Q-045, Phase 5, since decided in
 [ADR-0035](../adr/0035-git-contexts-built-in-or-external-git.md)) and filtering unchanged
-copied-up files (Q-049, after Phase 1).
+copied-up files (Q-049, settled by ADR-0034: BuildKit's full rule).
 
 Every open question, in task order, is in
 [open-questions.md](../open-questions.md#open).

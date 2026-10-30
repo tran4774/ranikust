@@ -667,27 +667,17 @@ Entry format:
   `ranikust push` and `ranikust login` are clap errors (exit code 2).
 - **Raised:** 2026-10-30
 
-### Q-049: Which overlay optimizations come after Phase 1?
+### Q-245: Should one overlay mount serve consecutive instructions?
 
 - **Blocks:** nothing yet; **Area:** `rnk-snapshot`
-- **Context:** keeping one mount for consecutive instructions (its gain
-  against the `volatile` remount rules), and an export-time filter dropping
-  copied-up files identical to their lower version. BuildKit does filter:
-  its overlay differ skips any upper entry equal to its lower, comparing
-  stat fields and capabilities and, when both mtimes are whole seconds, the
-  contents (`buildkit@cd8ee244 util/overlay/overlay_linux.go:233-241`,
-  `:348-445`); ranikust filters directories only
-  ([overlay-snapshot](design/overlay-snapshot.md#the-volatile-lifecycle),
-  [open questions](design/overlay-snapshot.md#open-questions),
-  [rnk-snapshot](agents/crates/rnk-snapshot.md#phase-1)).
-- **Options:** for the filter, (a) BuildKit's full rule (layer parity,
-  extra reads); (b) the stat-only part (cheap, differs when only content
-  equality would drop a file); (c) directories only, as now. Keeping one
-  mount for consecutive instructions has no BuildKit counterpart.
+- **Context:** each instruction mounts and unmounts its own overlay; one
+  mount for several consecutive instructions would save that cost, against
+  the `volatile` remount rules
+  ([overlay-snapshot](design/overlay-snapshot.md#the-volatile-lifecycle)).
+  BuildKit mounts per exec, so it has no counterpart. Split out of Q-049.
+- **Options:** (a) build it after Phase 1; (b) drop it.
 - **Recommendation:** none
 - **Interim:** none
-- **Escalated:** to the maintainer under the ADR-0032 rule (B2: BuildKit's
-  full filter reads both files when only content can tell them apart).
 - **Raised:** 2026-10-30
 
 ### Q-057: Does ranikust offer CPU and heap profiling?
@@ -744,6 +734,16 @@ Entry format:
 - **Raised:** 2026-10-30
 
 ## Answered
+
+### Q-049: Which overlay optimizations come after Phase 1?
+
+- **Answer (2026-10-30):** the maintainer chose option (a): the exporter
+  leaves out every unchanged copy-up by BuildKit's full `sameDirent` rule,
+  contents compared when both times are whole seconds, and writes an
+  opaque directory as whiteouts of what it hides. Recorded in
+  [ADR-0034](adr/0034-unchanged-copy-ups-left-out-of-layers.md). Keeping
+  one mount for consecutive instructions moved to
+  [Q-245](#q-245-should-one-overlay-mount-serve-consecutive-instructions).
 
 ### Q-001: Who owns the persistent store and `BuildPaths`?
 
@@ -1113,8 +1113,11 @@ Entry format:
 - **Answer (2026-10-30):** option (b): the acceptance criterion compares
   `--jobs 1` with the default (equal on 2026-10-30); the e2e suite compares
   the W3 images across `--jobs` by flattened content with the workload's
-  `du`-derived files (`/out/a.txt`, `/out/all.txt`) on its noise list,
-  because those files depend on disk block allocation, not on ranikust.
+  `du`-derived files on its noise list, because those files depend on disk
+  block allocation, not on ranikust. Every W3 stage writes `du`, so the
+  list is `/out/a.txt`, `/out/b.txt`, `/out/c.txt` and `/out/all.txt`
+  (`/out/b.txt` was seen to differ too; corrected on the branch that made
+  the harness change).
   `nextjs-kaniko` is a separate project and is not changed here.
 
 ### Q-200: How does the e2e suite's `ranikust` reach a plain-HTTP registry?
