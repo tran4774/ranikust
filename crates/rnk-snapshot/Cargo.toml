@@ -17,9 +17,10 @@ rnk-oci.workspace = true
 rnk-rootfs.workspace = true
 rnk-store.workspace = true
 # `mount`: overlay mounts (`fsopen`, `fsconfig`, `fsmount`, `move_mount`,
-# `mount(2)`, `umount2`).
-rustix = { workspace = true, features = ["mount"] }
-# Short names of the `mount(2)` fallback, from the lower's path.
+# `mount(2)`, `umount2`); `thread` and `process`: `unshare(CLONE_FS)` and
+# `fchdir` on the thread of a `mount(2)` with relative lowers.
+rustix = { workspace = true, features = ["mount", "process", "thread"] }
+# Chain IDs of extracted layers.
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -29,7 +30,7 @@ tracing.workspace = true
 flate2.workspace = true
 rnk-metrics.workspace = true
 # `process`: the umask in the exporter's tests.
-rustix = { workspace = true, features = ["mount", "process"] }
+rustix = { workspace = true, features = ["mount", "process", "thread"] }
 # Reading exported layers back in tests.
 tar.workspace = true
 tempfile.workspace = true
