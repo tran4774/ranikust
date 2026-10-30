@@ -88,8 +88,16 @@ with `rnk_metrics::Capture`; a task is not done without it.
 - [ ] Flattened content `(path, type, mode, uid, gid, size, sha256, link,
       xattrs)` and config compared with kaniko and BuildKit: only `ADR-0012`
       differences, plus W1's 1,654 non-deterministic files (`exp-07` §3).
-- [ ] Push to a loopback and a real network registry; `--tar-path` loads in
-      podman or docker; `--oci-layout-path` is a valid layout.
+- [x] Push to a loopback and a real network registry; `--tar-path` loads in
+      podman or docker; `--oci-layout-path` is a valid layout. `just
+      test-vm push` on noble (2026-10-30): one build as real root pushed to
+      the VM's loopback registry (plain HTTP, anonymous) and over the
+      network to the host's test registries (`tests/registry`): HTTP with
+      `--insecure-registry`, HTTPS with a self-signed CA through
+      `--registry-certificate` and basic auth from a `config.json`. All
+      three manifests read back with the printed digest; Docker ran the
+      pulled image, the tarball and the layout, whose blobs all hash to
+      their names.
 - [ ] gzip and zstd run in parallel, tar streamed into the compressor, and
       give the same bytes at 1 and N threads.
 - [ ] `--reproducible`: two builds at different times, same digest.
