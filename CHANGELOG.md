@@ -107,7 +107,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   (compared by device and inode, so `//` and symlinks are caught), a
   directory another build has locked, and a non-empty directory without a
   `.ranikust-root` marker. Kaniko-mode builds themselves still stop after
-  these checks, before anything is written.
+  builds themselves still stop after these checks, before anything is written.
+- Groundwork for kaniko mode's ignore list: mount points below the root
+  from `/proc/self/mountinfo`, kaniko's defaults (`/etc/mtab`, what is
+  below `/tmp/apt-key-gpghome`, `/var/run`), `/proc`, `/sys`, `/dev`,
+  `/ranikust` and the state directory; `--ignore-path` entries match as
+  globs, as in kaniko. Base layers can be extracted into a live root
+  without writing an ignored path or below a mount point. Not yet used by
+  a build.
 
 ### Changed
 

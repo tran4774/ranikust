@@ -25,6 +25,7 @@
 
 mod error;
 mod export;
+pub mod kaniko;
 mod layer;
 mod lowers;
 mod mount;

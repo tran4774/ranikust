@@ -18,6 +18,7 @@ use tar::EntryType;
 use crate::copy;
 use crate::delete::{self, Counts, Keep};
 use crate::error::{Error, Result, io_err};
+use crate::ignore::IgnoreList;
 use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat, Xattrs};
 use crate::path;
 use crate::root::{self, Mounts, RootPath};
@@ -30,9 +31,8 @@ pub enum Whiteouts {
     /// `.wh..wh..opq` empties its directory of everything this layer did not
     /// put there. Nothing is written for them.
     ///
-    /// Entries on or below a mount inside the root are refused, not skipped:
-    /// there is no ignore list here yet, so a live root with mounts (kaniko
-    /// mode on `/`) is not supported (Phase 2).
+    /// [`extract`] refuses entries on or below a mount inside the root;
+    /// [`extract_live`] skips them, and the paths of its ignore list.
     Apply,
     /// Keep them in overlayfs form, for an extracted layer used as a lower
     /// directory (`layers/<id>`, mounted with `userxattr`): `.wh.<name>`
@@ -75,7 +75,37 @@ const PARENT_MODE: u32 = 0o755;
 /// entry, [`Error::Io`] when the filesystem refuses an operation (for
 /// example a device node or a foreign owner without privileges).
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
-    extract_with(dst, tar, wh, &[]).map(drop)
+    extract_with(dst, tar, wh, &[], None).map(drop)
+}
+
+/// Extracts the plain tar stream `tar` into a live root, as kaniko mode
+/// extracts a base image into the root it builds in
+/// (`kaniko@44aa7ddc0 pkg/util/fs_util.go:209-278`, `:410-433`): as
+/// [`extract`] with [`Whiteouts::Apply`], except that what `keep` covers
+/// and what lies on another mount are left alone instead of refused.
+///
+/// Each entry is checked at its physical path, where it lands once the
+/// symlinks of the root are followed, not only by its name: a layer
+/// cannot write into an ignored directory (the state directory, `/proc`)
+/// through a symlink to it. Skipped, and counted as `ignored`:
+///
+/// - an entry at or below an ignored path, or on or below a mount point;
+/// - a hardlink whose target is ignored or on another mount;
+/// - an entry that would replace a directory holding an ignored path or a
+///   mount point: what is not ignored in that directory is removed first,
+///   as kaniko's `FF_KANIKO_PRESERVE_MOUNTED_PATHS` does (`:343-370`);
+/// - a whiteout of an ignored path or of a directory holding one, as
+///   kaniko skips it (`:248-266`).
+///
+/// An opaque whiteout empties its directory of everything the layer did not
+/// put there, except ignored paths and mounts.
+///
+/// # Errors
+///
+/// As [`extract`]; [`Error::Entry`] when the physical path of a directory
+/// cannot be told (`/proc/self/fd` gives a path outside the root).
+pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
+    extract_with(dst, tar, Whiteouts::Apply, &[], Some(keep)).map(drop)
 }
 
 /// Extracts the plain tar stream `tar` into `dst` in the overlay form
@@ -105,7 +135,7 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// As [`extract`]; [`Error::Entry`] when the target is in no layer or hidden,
 /// is a directory, or lies below a symlink in a lower layer.
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted> {
-    extract_with(dst, tar, Whiteouts::Overlay, lowers)
+    extract_with(dst, tar, Whiteouts::Overlay, lowers, None)
 }
 
 /// What [`extract_overlay`] reports about a layer.
@@ -122,10 +152,15 @@ fn extract_with(
     tar: impl Read,
     wh: Whiteouts,
     lowers: &[&RootPath],
+    keep: Option<&IgnoreList>,
 ) -> Result<Extracted> {
     let span = tracing::info_span!(
         "rnk_rootfs.extract",
-        mode = ?wh,
+        mode = if keep.is_some() {
+            "Live"
+        } else {
+            mode_name(wh)
+        },
         lowers = lowers.len(),
         entries = tracing::field::Empty,
         files = tracing::field::Empty,
@@ -135,14 +170,20 @@ fn extract_with(
         hardlinks_copied = tracing::field::Empty,
         nodes = tracing::field::Empty,
         whiteouts = tracing::field::Empty,
+        ignored = tracing::field::Empty,
         bytes_in = tracing::field::Empty,
         bytes_written = tracing::field::Empty,
     );
     let _entered = span.enter();
+    let live = match keep {
+        Some(keep) => Some(Live::new(dst, keep)?),
+        None => None,
+    };
     let mut ex = Extractor {
         root: dst,
         wh,
         lowers,
+        live,
         dirs: BTreeMap::new(),
         created: HashSet::new(),
         ancestors: HashSet::new(),
@@ -183,6 +224,7 @@ struct Stats {
     hardlinks_copied: u64,
     nodes: u64,
     whiteouts: u64,
+    ignored: u64,
     bytes_in: u64,
     bytes_written: u64,
 }
@@ -197,6 +239,7 @@ impl Stats {
         span.record("hardlinks_copied", self.hardlinks_copied);
         span.record("nodes", self.nodes);
         span.record("whiteouts", self.whiteouts);
+        span.record("ignored", self.ignored);
         span.record("bytes_in", self.bytes_in);
         span.record("bytes_written", self.bytes_written);
     }
@@ -207,6 +250,8 @@ struct Extractor<'r> {
     wh: Whiteouts,
     /// [`extract_overlay`]: the layers below, the nearest first.
     lowers: &'r [&'r RootPath],
+    /// [`extract_live`]: the ignore list and physical paths.
+    live: Option<Live<'r>>,
     /// Lower inodes copied for a hardlink, by index in `lowers`, device and
     /// inode, and where the copy is, so that every further link to any of
     /// their names links to it.
@@ -305,6 +350,20 @@ impl Extractor<'_> {
         };
         let meta = self.header_meta(entry, &raw)?;
 
+        if let Some(live) = &self.live
+            && (live.keep.covers(&path)
+                || matches!(&kind, Kind::Hardlink(t) if live.keep.covers(t)))
+        {
+            self.stats.ignored += 1;
+            return Ok(());
+        }
+        if let Kind::Hardlink(t) = &kind
+            && !self.live_target_ok(t, &raw)?
+        {
+            self.stats.ignored += 1;
+            return Ok(());
+        }
+
         if path.as_os_str().is_empty() {
             // The layer's root directory: its metadata applies to the root.
             return match kind {
@@ -315,13 +374,28 @@ impl Extractor<'_> {
             };
         }
         let (parent, name) = path::entry(&path)?;
-        let pfd = self
-            .root
-            .mkdir_all(&parent, PARENT_MODE, Mounts::Stay)
-            .map_err(|e| on_mount(e, &raw))?;
         let name = name.to_owned();
+        // In a live root, `path` becomes where the entry lands on disk.
+        let Some((pfd, path)) = self.parent_dir(&parent, &name, &raw)? else {
+            self.stats.ignored += 1;
+            return Ok(());
+        };
         let is_dir = matches!(kind, Kind::Dir);
-        let existing_dir = self.make_room(&path, pfd.as_fd(), &name, is_dir, &raw)?;
+        let existing_dir = match self.make_room(&path, pfd.as_fd(), &name, is_dir, &raw)? {
+            Room::Free => false,
+            Room::Merge => true,
+            Room::Skip => {
+                self.stats.ignored += 1;
+                return Ok(());
+            }
+        };
+        if matches!(kind, Kind::Symlink(_) | Kind::Hardlink(_))
+            && let Some(live) = &mut self.live
+        {
+            // A new symlink (a hardlink may link one) can move where a
+            // cached parent lands.
+            live.last = None;
+        }
 
         match kind {
             Kind::Dir => {
@@ -601,9 +675,9 @@ impl Extractor<'_> {
         Ok(())
     }
 
-    /// Clears the name `name` in `pfd` for a new entry at `path`. Returns
-    /// whether a directory is already there and the new entry, a directory
-    /// too, merges into it. A mount point is never replaced or merged into.
+    /// Clears the name `name` in `pfd` for a new entry at `path`. A mount
+    /// point is never replaced or merged into: refused, or skipped in a
+    /// live root, as is a directory holding an ignored path or a mount.
     fn make_room(
         &mut self,
         path: &Path,
@@ -611,57 +685,72 @@ impl Extractor<'_> {
         name: &OsStr,
         dir: bool,
         raw: &Path,
-    ) -> Result<bool> {
+    ) -> Result<Room> {
         let st = match meta::statx_at(pfd, name, path) {
             Ok(st) => st,
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                return Ok(Room::Free);
+            }
             Err(e) => return Err(e),
         };
         if st.mnt_id != self.root.mnt_id() || st.mount_root {
-            return Err(crosses_mount(raw));
+            return match self.live {
+                Some(_) => Ok(Room::Skip),
+                None => Err(crosses_mount(raw)),
+            };
         }
         let is_dir = st.file_type() == FileType::Directory;
         if is_dir && dir {
-            return Ok(true);
+            return Ok(Room::Merge);
+        }
+        if let Some(live) = &mut self.live {
+            live.last = None;
         }
         if is_dir {
-            self.remove_dir_tree(path, pfd, name, &st)?;
+            if !self.remove_dir_tree(path, pfd, name, &st)? {
+                return Ok(Room::Skip);
+            }
         } else {
             rustix::fs::unlinkat(pfd, name, AtFlags::empty())
                 .map_err(|e| io_err("unlink", path, e))?;
         }
-        Ok(false)
+        Ok(Room::Free)
     }
 
     /// Removes the directory `name` in `pfd` (at `path`, as `st` described
     /// it) and everything in it, through the deletion walker started from
-    /// that very directory; forgets its pending metadata.
+    /// that very directory; forgets its pending metadata. In a live root,
+    /// ignored paths and mounts below it stay, and so does the directory:
+    /// returns whether it was removed.
     fn remove_dir_tree(
         &mut self,
         path: &Path,
         pfd: BorrowedFd<'_>,
         name: &OsStr,
         st: &Stat,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut counts = Counts::default();
         let start = delete::open_dir_checked(pfd, name, st, path)?;
-        let all = delete::remove_below(
-            self.root,
-            start,
-            path,
-            &mut |_, _| Keep::Remove,
-            &mut counts,
-        )?;
+        let keep = self.live.as_ref().map(|l| l.keep);
+        let mut decide = |p: &Path, _: FileType| match keep {
+            Some(keep) if keep.covers(p) => Keep::Whole,
+            Some(_) | None => Keep::Remove,
+        };
+        let all = delete::remove_below(self.root, start, path, &mut decide, &mut counts)?;
         if !all {
-            return Err(Error::Entry {
-                path: path.to_owned(),
-                reason: "replaces a directory holding a mount point".to_owned(),
-            });
+            self.stats.ignored += counts.kept;
+            return match self.live {
+                Some(_) => Ok(false),
+                None => Err(Error::Entry {
+                    path: path.to_owned(),
+                    reason: "replaces a directory holding a mount point".to_owned(),
+                }),
+            };
         }
         rustix::fs::unlinkat(pfd, name, AtFlags::REMOVEDIR)
             .map_err(|e| io_err("rmdir", path, e))?;
         self.dirs.retain(|p, _| !p.starts_with(path));
-        Ok(())
+        Ok(true)
     }
 
     fn whiteout(&mut self, path: &Path, name: &[u8], raw: &Path) -> Result<()> {
@@ -717,23 +806,47 @@ impl Extractor<'_> {
                 .map_err(|e| io_err("mknod whiteout", &target, e))
             }
             Whiteouts::Apply => {
+                if let Some(live) = &mut self.live {
+                    live.last = None;
+                    if live.keep.covers(&target) || live.keep.has_below(&target) {
+                        self.stats.ignored += 1;
+                        return Ok(());
+                    }
+                }
                 let pfd = match self.root.resolve_dir_in(&dir, Mounts::Stay) {
                     Ok(fd) => fd,
                     // Nothing below a missing directory to hide.
-                    Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                    Err(e) if is_noent(&e) => return Ok(()),
+                    Err(e) if self.live.is_some() && is_xdev(&e) => {
+                        self.stats.ignored += 1;
                         return Ok(());
                     }
                     Err(e) => return Err(on_mount(e, raw)),
                 };
+                let target = match &self.live {
+                    Some(live) => {
+                        let t = live.physical(pfd.as_fd(), &dir)?.join(hidden);
+                        if live.keep.covers(&t) || live.keep.has_below(&t) {
+                            self.stats.ignored += 1;
+                            return Ok(());
+                        }
+                        t
+                    }
+                    None => target,
+                };
                 match meta::statx_at(pfd.as_fd(), hidden, &target) {
-                    Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(()),
+                    Err(e) if is_noent(&e) => Ok(()),
                     Err(e) => Err(e),
-                    Ok(st) if st.mnt_id != self.root.mnt_id() || st.mount_root => {
-                        Err(crosses_mount(raw))
-                    }
-                    Ok(st) if st.file_type() == FileType::Directory => {
-                        self.remove_dir_tree(&target, pfd.as_fd(), hidden, &st)
-                    }
+                    Ok(st) if st.mnt_id != self.root.mnt_id() || st.mount_root => match self.live {
+                        Some(_) => {
+                            self.stats.ignored += 1;
+                            Ok(())
+                        }
+                        None => Err(crosses_mount(raw)),
+                    },
+                    Ok(st) if st.file_type() == FileType::Directory => self
+                        .remove_dir_tree(&target, pfd.as_fd(), hidden, &st)
+                        .map(drop),
                     Ok(_) => rustix::fs::unlinkat(&pfd, hidden, AtFlags::empty())
                         .map_err(|e| io_err("unlink", &target, e)),
                 }
@@ -741,10 +854,49 @@ impl Extractor<'_> {
         }
     }
 
-    /// Empties `dir` of everything this layer did not create.
+    /// Empties `dir` of everything this layer did not create (nor, in a
+    /// live root, what is ignored or on another mount).
     fn apply_opaque(&mut self, dir: &Path, raw: &Path) -> Result<()> {
+        if let Some(live) = &mut self.live {
+            live.last = None;
+            if live.keep.covers(dir) {
+                self.stats.ignored += 1;
+                return Ok(());
+            }
+        }
+        let start = match delete::open_dir(self.root, dir) {
+            Ok(fd) => fd,
+            // A directory missing from the root hides nothing. Only the
+            // start may be missing: an `ENOENT` during the walk is an error.
+            Err(e) if is_noent(&e) => return Ok(()),
+            Err(e) if self.live.is_some() && is_xdev(&e) => {
+                self.stats.ignored += 1;
+                return Ok(());
+            }
+            Err(e) => return Err(on_mount(e, raw)),
+        };
+        let physical;
+        let (dir, keep) = match &self.live {
+            Some(live) => {
+                physical = live.physical(start.as_fd(), dir)?;
+                if live.keep.covers(&physical) {
+                    self.stats.ignored += 1;
+                    return Ok(());
+                }
+                (physical.as_path(), Some(live.keep))
+            }
+            None => (dir, None),
+        };
         let (created, ancestors) = (&self.created, &self.ancestors);
         let mut decide = |p: &Path, t: FileType| {
+            if let Some(keep) = keep {
+                if keep.covers(p) {
+                    return Keep::Whole;
+                }
+                if keep.has_below(p) {
+                    return Keep::Descend;
+                }
+            }
             if created.contains(p) {
                 if t == FileType::Directory {
                     Keep::Descend
@@ -757,17 +909,93 @@ impl Extractor<'_> {
                 Keep::Remove
             }
         };
-        let start = match delete::open_dir(self.root, dir) {
-            Ok(fd) => fd,
-            // A directory missing from the root hides nothing. Only the
-            // start may be missing: an `ENOENT` during the walk is an error.
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(()),
-            Err(e) => return Err(on_mount(e, raw)),
-        };
         // Pending directory metadata needs no cleanup: it belongs to
         // directories of this layer, which are all kept.
         let mut counts = Counts::default();
         delete::remove_below(self.root, start, dir, &mut decide, &mut counts).map(drop)
+    }
+
+    /// The parent directory `parent` of a new entry `name`, created if
+    /// missing, and the path the entry gets inside the root: `parent/name`,
+    /// or in a live root its physical path. `None` in a live root when the
+    /// entry is ignored there or the parent is on another mount.
+    fn parent_dir(
+        &mut self,
+        parent: &Path,
+        name: &OsStr,
+        raw: &Path,
+    ) -> Result<Option<(OwnedFd, PathBuf)>> {
+        let Some(live) = &mut self.live else {
+            let pfd = self
+                .root
+                .mkdir_all(parent, PARENT_MODE, Mounts::Stay)
+                .map_err(|e| on_mount(e, raw))?;
+            return Ok(Some((pfd, parent.join(name))));
+        };
+        let physical = match &live.last {
+            Some((lexical, physical)) if lexical == parent => physical.clone(),
+            Some(_) | None => {
+                // The deepest directory of `parent` that exists, then the
+                // names still to create, which land below it as named.
+                let mut existing = parent.to_owned();
+                let mut missing = Vec::new();
+                let fd = loop {
+                    match self.root.resolve_dir_in(&existing, Mounts::Stay) {
+                        Ok(fd) => break fd,
+                        Err(e) if is_noent(&e) => {
+                            let Some(n) = existing.file_name() else {
+                                return Err(e);
+                            };
+                            missing.push(n.to_owned());
+                            existing.pop();
+                        }
+                        Err(e) if is_xdev(&e) => return Ok(None),
+                        Err(e) => return Err(e),
+                    }
+                };
+                let mut physical = live.physical(fd.as_fd(), &existing)?;
+                for n in missing.iter().rev() {
+                    physical.push(n);
+                }
+                live.last = Some((parent.to_owned(), physical.clone()));
+                physical
+            }
+        };
+        let path = physical.join(name);
+        if live.keep.covers(&path) {
+            return Ok(None);
+        }
+        match self.root.mkdir_all(parent, PARENT_MODE, Mounts::Stay) {
+            Ok(pfd) => Ok(Some((pfd, path))),
+            Err(e) if is_xdev(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// In a live root, whether the hardlink target `target` may be linked:
+    /// not ignored at its physical path, not on another mount. Always true
+    /// otherwise; a missing target is left for [`Extractor::hardlink`] to
+    /// report.
+    fn live_target_ok(&self, target: &Path, raw: &Path) -> Result<bool> {
+        let Some(live) = &self.live else {
+            return Ok(true);
+        };
+        let (tparent, tname) = path::entry(target)?;
+        let fd = match self.root.resolve_dir_in(&tparent, Mounts::Stay) {
+            Ok(fd) => fd,
+            Err(e) if is_noent(&e) => return Ok(true),
+            Err(e) if is_xdev(&e) => return Ok(false),
+            Err(e) => return Err(on_mount(e, raw)),
+        };
+        let t = live.physical(fd.as_fd(), &tparent)?.join(tname);
+        if live.keep.covers(&t) {
+            return Ok(false);
+        }
+        match meta::statx_at(fd.as_fd(), tname, &t) {
+            Ok(st) => Ok(st.mnt_id == self.root.mnt_id() && !st.mount_root),
+            Err(e) if is_noent(&e) => Ok(true),
+            Err(e) => Err(e),
+        }
     }
 
     /// Records `path` as created by this layer, for opaque whiteouts.
@@ -795,6 +1023,84 @@ impl Extractor<'_> {
         }
         Ok(())
     }
+}
+
+/// What [`Extractor::make_room`] left at a name.
+enum Room {
+    /// Nothing: the entry can be created.
+    Free,
+    /// A directory, which the new directory merges into.
+    Merge,
+    /// Something a live root keeps: the entry is skipped.
+    Skip,
+}
+
+/// What [`extract_live`] needs besides the root.
+struct Live<'r> {
+    keep: &'r IgnoreList,
+    /// `/proc/self/fd`, checked to be procfs.
+    proc: OwnedFd,
+    /// Where the root is on the host, as `/proc/self/fd` shows it.
+    root_host: Vec<u8>,
+    /// The last parent directory resolved: its path in the layer and its
+    /// physical path. Dropped whenever the layer removes something or
+    /// adds a symlink, which may move it.
+    last: Option<(PathBuf, PathBuf)>,
+}
+
+impl<'r> Live<'r> {
+    fn new(root: &RootPath, keep: &'r IgnoreList) -> Result<Self> {
+        let proc = meta::proc_fd_dir(Path::new(""))?;
+        let root_host = read_fd_link(proc.as_fd(), root.fd(), Path::new(""))?;
+        Ok(Self {
+            keep,
+            proc,
+            root_host,
+            last: None,
+        })
+    }
+
+    /// The physical path inside the root of the directory `fd` (reached
+    /// as `at`), from the kernel's own name for it: `""` for the root.
+    fn physical(&self, fd: BorrowedFd<'_>, at: &Path) -> Result<PathBuf> {
+        let link = read_fd_link(self.proc.as_fd(), fd, at)?;
+        let rel = if self.root_host == b"/" {
+            link.strip_prefix(b"/")
+        } else {
+            link.strip_prefix(&self.root_host[..]).and_then(|r| {
+                if r.is_empty() {
+                    Some(r)
+                } else {
+                    r.strip_prefix(b"/")
+                }
+            })
+        };
+        rel.and_then(|r| path::clean(Path::new(OsStr::from_bytes(r))))
+            .ok_or_else(|| Error::Entry {
+                path: at.to_owned(),
+                reason: "cannot tell where this directory lies in the root".to_owned(),
+            })
+    }
+}
+
+/// The target of `/proc/self/fd/<fd>`: the kernel's path of `fd`.
+fn read_fd_link(proc: BorrowedFd<'_>, fd: BorrowedFd<'_>, at: &Path) -> Result<Vec<u8>> {
+    use std::os::fd::AsRawFd as _;
+    rustix::fs::readlinkat(proc, fd.as_raw_fd().to_string(), Vec::new())
+        .map(std::ffi::CString::into_bytes)
+        .map_err(|e| io_err("readlink /proc/self/fd", at, e))
+}
+
+/// The `mode` of the extraction span.
+fn mode_name(wh: Whiteouts) -> &'static str {
+    match wh {
+        Whiteouts::Apply => "Apply",
+        Whiteouts::Overlay => "Overlay",
+    }
+}
+
+fn is_xdev(e: &Error) -> bool {
+    e.raw_os_error() == Some(Errno::XDEV.raw_os_error())
 }
 
 /// What one layer in the overlay form shows at a directory path.
