@@ -126,9 +126,10 @@ fn a_name_hidden_in_a_higher_lower_needs_no_whiteout() {
     f.dir("l1/opq");
     f.xattr("l1/opq", OPAQUE, b"y");
     f.dir("upper/opq");
-    f.copy_meta("opq", "l1");
     f.whiteout("upper/gone");
     f.whiteout("upper/opq/inside");
+    // After the whiteout inside it, which sets the directory's mtime.
+    f.copy_meta("opq", "l1");
     assert!(f.entries().is_empty(), "{:?}", f.entries());
 }
 
