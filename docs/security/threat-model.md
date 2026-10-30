@@ -131,6 +131,11 @@ before 1.0:
 - races during extraction and deletion, and concurrent builds on one store,
   including a crash halfway;
 - `--seccomp` and `--userns` end to end;
+- git contexts (Phase 5, ADR-0035): an untrusted repository or context
+  argument must not run code on the host through the external `git`
+  (hooks, `core.fsmonitor`, `ext::` and `file://` submodules, a ref or URL
+  starting with `-`, host configuration read unasked), and a clone is read
+  only through `RootPath`;
 - overlay stage roots as real root (T2 VM, `rnk-snapshot`'s
   `tests/overlay.rs`): mounting, unmounting and releasing leave no mount
   under the state directory, and the read-only view refuses writes. Not
