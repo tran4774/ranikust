@@ -46,21 +46,7 @@
       "Bash(git branch *)",
       "Bash(git stash *)"
     ],
-    "ask": [
-      "Bash(cargo run *)",
-      "Bash(cargo add *)",
-      "Bash(cargo remove *)",
-      "Bash(cargo update *)",
-      "Bash(cargo install *)",
-      "Bash(./target/*)",
-      "Bash(target/*)",
-      "Bash(podman *)",
-      "Bash(docker *)",
-      "Bash(git push *)",
-      "Bash(git merge *)",
-      "Bash(git rebase *)",
-      "Bash(git reset --hard *)"
-    ],
+    "ask": [],
     "deny": [
       "Bash(sudo *)",
       "Bash(pkexec *)",
