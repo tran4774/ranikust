@@ -63,7 +63,7 @@ pub struct SquashedStage {
 /// Layers (`ADR-0038`, Q-034): a unit is walked when it is the result, or
 /// when a walked unit is built `FROM` it. A unit whose image is kept for a
 /// later `FROM` is walked as well, since the shared root can only be
-/// rebuilt from that image ([open: Q-300]).
+/// rebuilt from that image (ADR-0044).
 ///
 /// Order and contents depend on the graph only.
 #[must_use]

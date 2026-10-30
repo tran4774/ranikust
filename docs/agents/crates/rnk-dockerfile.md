@@ -137,7 +137,7 @@ pub fn layers_needed(g: &StageGraph) -> Vec<usize>;                     // [done
   another `--target` is still built on its own; every stage of a chain
   but the last runs without its `ONBUILD` instructions. kaniko does not
   know `RUN --mount from=`; here it blocks folding as `COPY --from` does.
-  A saved image (a later unit builds `FROM` it) is walked [open: Q-300].
+  A saved image (a later unit builds `FROM` it) is walked ADR-0044.
 - Deferred: `ONBUILD` execution, `--mount=type=bind`,
   `COPY --link/--parents/--exclude`, `ADD <url>`/git (phase 5). They are
   parsed ([Q-009](../../open-questions.md#q-009-does-the-parser-accept-instructions-deferred-to-phase-5),

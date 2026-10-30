@@ -504,24 +504,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-300: Is a stage whose image is kept for a later `FROM` walked in sequential kaniko mode?
-
-- **Blocks:** Phase 2 tasks 6, 8; **Area:** `rnk-dockerfile`, `rnk-snapshot`
-- **Context:** ADR-0038 walks a stage when it is the result or a walked
-  stage builds `FROM` it. On the shared root a stage that two stages build
-  `FROM` (or one, while `COPY --from` also reads it) is not folded, and
-  the root is emptied after it; a child that is itself not walked (only
-  read by `COPY --from`) must still start from that stage's root.
-- **Options:** (a) walk every stage whose image is kept, so the child
-  starts from its layers, as kaniko's `SaveStage` does; (b) keep a copy of
-  the whole root in the state directory instead, without a walk.
-- **Recommendation:** (a): kaniko's behaviour, one walk, no second copy of
-  the root.
-- **Interim:** (a), in `rnk_dockerfile::squash_for_shared_root`
-  (`feat/kaniko-sequential-plan`): `layers_needed` is true for every unit
-  with `save_image`. Reversible: one condition.
-- **Raised:** 2026-10-31
-
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?
@@ -578,6 +560,12 @@ Entry format:
   The walk runs on 8 workers by default; the maintainer asked for a flag to
   change it, `--snapshot-workers`. Recorded in
   [ADR-0039](adr/0039-kaniko-mode-walk-and-hash-crates.md).
+
+### Q-300: Is a stage whose image is kept for a later `FROM` walked in sequential kaniko mode?
+
+- **Answer (2026-10-31):** option (a), kaniko's `SaveStage` behaviour:
+  every unit with `save_image` is walked. Recorded in
+  [ADR-0044](adr/0044-kaniko-mode-walks-every-kept-stage.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

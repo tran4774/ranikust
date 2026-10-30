@@ -299,7 +299,7 @@ so no deletion ever has to be detected after a skipped walk. With
 `--cache` (Phase 4) more stages may need their layers; the rule stays.
 On the shared root a unit whose image is kept for a later `FROM` is walked
 too, since that image is the only way to rebuild the root for the child
-[open: Q-300]. `rnk_dockerfile::squash_for_shared_root` sets
+(ADR-0044). `rnk_dockerfile::squash_for_shared_root` sets
 `layers_needed` per unit; `rnk_dockerfile::layers_needed` gives the rule
 for per-stage directories.
 

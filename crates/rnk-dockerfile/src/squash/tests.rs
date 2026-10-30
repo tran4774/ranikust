@@ -58,7 +58,7 @@ fn a_base_also_read_by_copy_from_is_not_folded() {
     let plan = squash_for_shared_root(&g);
     check_covers(&g, &plan);
     // The image of stage1 is kept for the FROM, so it is walked
-    // ([open: Q-300]).
+    // (ADR-0044).
     assert_eq!(
         shape(&plan),
         [(0, vec![0], true, true), (1, vec![1], false, true)]
