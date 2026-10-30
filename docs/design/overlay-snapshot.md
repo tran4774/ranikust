@@ -41,7 +41,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
         └── rootfs/             mount point of stage n
 ```
 
-`layers/` is `layers/<algorithm>/<hex>/`, named by the layer's chain ID,
+`layers/` is `layers/v2/<algorithm>/<hex>/`, named by the layer's chain ID,
 as BuildKit and containerd key unpacked snapshots (ADR-0032, Q-150): a
 hardlink into a lower layer is copied from the layers below (Q-055), so an
 extraction depends on its stack. A bottom layer's chain ID is its diff ID;

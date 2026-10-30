@@ -71,7 +71,7 @@ fn a_layer_is_extracted_once_in_the_overlay_form() {
     assert_eq!(l.diff_id(), &id);
     assert!(
         l.path()
-            .ends_with(format!("layers/sha256/{}", id.encoded()))
+            .ends_with(format!("layers/v2/sha256/{}", id.encoded()))
     );
     assert_eq!(
         fs::read(l.path().join("etc/os-release")).unwrap(),

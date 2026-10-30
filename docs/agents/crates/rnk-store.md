@@ -70,7 +70,7 @@ on a blocking thread, because the lock may wait.
 - Locks are `flock` on lock files in the state directory, released by the
   kernel when the process dies; no `flock` support is a start-up error
   (`Error::NoFlock`). Per-digest lock files are
-  `locks/{blobs,layers}/<algorithm>/<hex>` and are never removed (until
+  `locks/{blobs,layers/v2}/<algorithm>/<hex>` and are never removed (until
   `prune`), so no lock is ever taken on an unlinked file.
 - A build is alive while it holds the lock on `builds/<id>.lock`; it
   takes it before creating `builds/<id>` and `tmp/<id>`, so a clean-up never
