@@ -95,10 +95,7 @@ log "image $IMG_NAME sha256 $want (verified)"
 
 mkdir -p "$TARGET/vm"
 RUN="$(mktemp -d "$TARGET/vm/run.XXXXXX")"
-# A Unix socket path must fit in 108 bytes, which a run directory in a deep
-# checkout (a git worktree) does not.
-SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
-MONITOR="$SOCKDIR/monitor.sock"
+SOCKDIR=
 RESULTS="$TARGET/vm/results/$RELEASE"
 rm -rf "$RESULTS"
 QEMU_PID=
@@ -116,7 +113,7 @@ s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n");
     kill -9 "$QEMU_PID" 2>/dev/null
   fi
   mkdir -p "$RESULTS" && cp "$RUN/serial.log" "$RESULTS/serial.log" 2>/dev/null
-  rm -rf "$RUN" "$SOCKDIR"
+  rm -rf "$RUN" ${SOCKDIR:+"$SOCKDIR"}
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     echo "error: QEMU (pid $QEMU_PID) is still running" >&2
     status=1
@@ -125,6 +122,11 @@ s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n");
 }
 trap teardown EXIT
 trap 'exit 130' INT TERM
+
+# A Unix socket path must fit in 108 bytes, which a run directory in a deep
+# checkout (a git worktree) does not.
+SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
+MONITOR="$SOCKDIR/monitor.sock"
 
 ssh-keygen -q -t ed25519 -N '' -C "ranikust-vm" -f "$RUN/key"
 mkdir "$RUN/seed"
