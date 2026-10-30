@@ -331,6 +331,16 @@ impl NetNs {
         if fs_type != NSFS_MAGIC {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
+        // A new namespace, not this process's own.
+        let own = rustix::fs::open(
+            "/proc/self/ns/net",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let (new, mine) = (rustix::fs::fstat(&fd)?, rustix::fs::fstat(&own)?);
+        if (new.st_dev, new.st_ino) == (mine.st_dev, mine.st_ino) {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
         Ok(Self { fd })
     }
 

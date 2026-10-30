@@ -26,7 +26,8 @@
 //!   the namespace: at `SOL_IP`, `IP_IPSEC_POLICY` and `IP_XFRM_POLICY`
 //!   (16–17), ip_tables (64–67), arp_tables (96–99), ebtables (128–132),
 //!   multicast routing (200–212) and IPVS (1152–1167); at `SOL_IPV6`,
-//!   `IPV6_IPSEC_POLICY` and `IPV6_XFRM_POLICY` (34–35), ip6_tables (64–69)
+//!   `IPV6_IPSEC_POLICY` and `IPV6_XFRM_POLICY` (34–35), ip6_tables (64–65,
+//!   68–69; 66–67 are `IPV6_RECVTCLASS` and `IPV6_TCLASS`)
 //!   and multicast routing (200–212); at `SOL_TCP`, `TCP_REPAIR` (19).
 //!
 //! Every other refusal is `EPERM`. A syscall of another architecture than
@@ -87,9 +88,12 @@ const SOL_IP_REFUSED: [(u32, u32); 6] = [
 
 /// Option ranges at `SOL_IPV6` (`linux/in6.h`,
 /// `netfilter_ipv6/ip6_tables.h`, `mroute6.h`), inclusive.
-const SOL_IPV6_REFUSED: [(u32, u32); 3] = [
-    (34, 35),   // IPV6_IPSEC_POLICY, IPV6_XFRM_POLICY
-    (64, 69),   // IP6T_SO_*: IP6T_BASE_CTL .. IP6T_SO_GET_MAX
+const SOL_IPV6_REFUSED: [(u32, u32); 4] = [
+    (34, 35), // IPV6_IPSEC_POLICY, IPV6_XFRM_POLICY
+    // IP6T_SO_*: IP6T_BASE_CTL .. IP6T_SO_GET_MAX, around IPV6_RECVTCLASS
+    // (66) and IPV6_TCLASS (67), which share the numbers at this level.
+    (64, 65),
+    (68, 69),
     (200, 212), // MRT6_BASE .. MRT6_MAX
 ];
 
@@ -425,6 +429,12 @@ mod tests {
                         fail(refused_with(opt(level, lo - 1), libc::EBADF));
                     }
                 }
+                // IPV6_RECVTCLASS and IPV6_TCLASS sit between the
+                // ip6_tables options and stay open.
+                fail(refused_with(opt(SOL_IPV6, 66), libc::EBADF));
+                fail(refused_with(opt(SOL_IPV6, 67), libc::EBADF));
+                fail(refused_with(getopt(SOL_IPV6, 66), libc::EBADF));
+                fail(refused_with(getopt(SOL_IPV6, 67), libc::EBADF));
                 // Other levels are untouched.
                 fail(refused_with(opt(1, 64), libc::EBADF)); // SOL_SOCKET
                 libc::_exit(0);

@@ -89,7 +89,8 @@ BuildKit's `--allow`, opts in to (c).
     `IP_IPSEC_POLICY` and `IP_XFRM_POLICY` (16–17), ip_tables (64–67),
     arp_tables (96–99), ebtables (128–132), multicast routing (200–212)
     and IPVS (1152–1167); at `SOL_IPV6`, `IPV6_IPSEC_POLICY` and
-    `IPV6_XFRM_POLICY` (34–35), ip6_tables (64–69) and multicast routing
+    `IPV6_XFRM_POLICY` (34–35), ip6_tables (64–65 and 68–69, around
+    `IPV6_RECVTCLASS` and `IPV6_TCLASS`, 66–67) and multicast routing
     (200–212); at `SOL_TCP`, `TCP_REPAIR` (19);
   - `EPERM` for every syscall of another architecture than the binary's
     (i386 and x32 on x86_64), whose numbers the rules would not match;
