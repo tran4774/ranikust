@@ -154,7 +154,9 @@ impl Journal {
             id: id.to_owned(),
             scratch: runs_dir.join(id),
             path,
-            root,
+            // What the journal places and undoes stays on the root's own
+            // mount: a mount below it is never written through.
+            root: root.stay_on_mount(),
             stubs: Vec::new(),
             unsynced: false,
         };
@@ -322,8 +324,12 @@ impl Journal {
             parent_mtime: before.mtime,
             placed_mtime: None,
         });
-        if let Some(aside) = &aside {
-            self.root.rename_noreplace(path, aside)?;
+        if let Some(aside) = &aside
+            && let Err(e) = self.root.rename_noreplace(path, aside)
+        {
+            // Nothing moved: an undo would only see the aside name missing.
+            self.stubs.pop();
+            return Err(e.into());
         }
         match content {
             Content::File(data) => {
@@ -446,7 +452,7 @@ pub(crate) struct Replayed {
 pub(crate) fn replay(
     runs_dir: &Path,
     confine: &Path,
-    shared_root: Option<&Path>,
+    shared_root: Option<&RootPath>,
 ) -> Result<Replayed> {
     let mut done = Replayed::default();
     let entries = match fs::read_dir(runs_dir) {
@@ -498,7 +504,11 @@ fn remove_unlocked(path: &Path) {
 }
 
 /// Replays one journal; `None` when a live run still holds it.
-fn replay_one(path: &Path, confine: &Path, shared_root: Option<&Path>) -> Result<Option<usize>> {
+fn replay_one(
+    path: &Path,
+    confine: &Path,
+    shared_root: Option<&RootPath>,
+) -> Result<Option<usize>> {
     let mut file = File::options()
         .read(true)
         .write(true)
@@ -524,7 +534,7 @@ fn replay_locked(
     file: &mut File,
     path: &Path,
     confine: &Path,
-    shared_root: Option<&Path>,
+    shared_root: Option<&RootPath>,
 ) -> Result<Option<usize>> {
     // Its owner removed it between our open and our lock: already clean.
     let st =
@@ -537,14 +547,31 @@ fn replay_locked(
         .map_err(|e| io_err("read the stub journal", path, e))?;
     let (root_dir, stubs) = parse(&text);
     let mut removed = 0;
-    if let Some(root_dir) = root_dir
-        // `None`: the root is gone, and its stubs with it.
-        && let Some(root_dir) = confined_root(&root_dir, confine, shared_root)?
-    {
-        match RootPath::open(&root_dir) {
-            Ok(root) => removed = remove_stubs(&root, &stubs)?,
-            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
-            Err(e) => return Err(e.into()),
+    if let Some(root_dir) = root_dir {
+        if let Some(shared) = shared_root
+            && is_shared_root(&root_dir, shared)
+        {
+            // The checked descriptor, never the journal's path reopened. On
+            // it only what `place_direct` makes: swaps and the `/etc` and
+            // `/dev` stubs.
+            let stubs: Vec<StubRecord> = stubs
+                .into_iter()
+                .filter(|s| match &s.kind {
+                    Placed::Swap { .. } => true,
+                    Placed::Stub(MountKind::Directory) => {
+                        s.path == Path::new("/etc") || s.path == Path::new("/dev")
+                    }
+                    Placed::Stub(MountKind::File) => false,
+                })
+                .collect();
+            removed = remove_stubs(shared, &stubs)?;
+        } else if let Some(root_dir) = confined_root(&root_dir, confine)? {
+            // `None` above: the root is gone, and its stubs with it.
+            match RootPath::open(&root_dir) {
+                Ok(root) => removed = remove_stubs(&root.stay_on_mount(), &stubs)?,
+                Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
     }
     remove_scratch(&path.with_extension(""))?;
@@ -568,7 +595,32 @@ fn remove_stubs(root: &RootPath, stubs: &[StubRecord]) -> Result<usize> {
 /// them.
 fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
     let parent = stub.path.parent().unwrap_or(Path::new("/"));
-    let parent_mtime = root.statx(parent).ok().map(|st| st.mtime);
+    // `root` stays on its mount, so no parent below another mount resolves
+    // (`EXDEV`); an entry that is itself a mount point (a mount root, or on
+    // another mount) is left alone.
+    let parent_st = match root.statx(parent) {
+        Ok(st) => Some(st),
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => return Ok(false),
+        Err(_) => None,
+    };
+    if parent_st.is_some_and(|st| st.mnt_id != root.mnt_id()) {
+        return Ok(false);
+    }
+    let on_root_mount = |p: &Path| {
+        root.statx(p)
+            .is_ok_and(|st| st.mnt_id == root.mnt_id() && !st.mount_root)
+    };
+    let mut targets = vec![stub.path.as_path()];
+    if let Placed::Swap { aside: Some(aside) } = &stub.kind {
+        targets.push(aside);
+    }
+    if targets
+        .iter()
+        .any(|p| root.statx(p).is_ok() && !on_root_mount(p))
+    {
+        return Ok(false);
+    }
+    let parent_mtime = parent_st.map(|st| st.mtime);
     let gone = match &stub.kind {
         Placed::Stub(MountKind::Directory) => ok_unless(
             root.remove_dir(&stub.path),
@@ -647,26 +699,57 @@ fn ok_unless(r: rnk_rootfs::Result<()>, expected: &[i32]) -> Result<bool> {
     }
 }
 
+/// Whether the journal's root, opened without following a symlink, is the
+/// directory `shared` holds: same device, inode and mount.
+fn is_shared_root(root_dir: &Path, shared: &RootPath) -> bool {
+    let (Ok(root), Ok(want)) = (
+        RootPath::open(root_dir).and_then(|r| r.statx("/")),
+        shared.statx("/"),
+    ) else {
+        return false;
+    };
+    identity(&root) == identity(&want) && root.mnt_id == want.mnt_id
+}
+
+/// `(dev major, dev minor, ino)`: what identifies a directory whatever path
+/// or bind mount reaches it.
+fn identity(st: &rnk_rootfs::Stat) -> (u32, u32, u64) {
+    (st.dev_major, st.dev_minor, st.ino)
+}
+
+/// Refuses a root that is the host's `/`, `/etc` or `/dev` by device and
+/// inode, through whatever path or bind mount (`/proc/1/root` included) it
+/// was opened: placing files there would rename and replace the host's.
+pub(crate) fn refuse_host_system_dir(root: &RootPath, shown: &Path) -> Result<()> {
+    let st = root.statx("/")?;
+    for host in ["/", "/etc", "/dev"] {
+        let Ok(h) = rustix::fs::statx(
+            rustix::fs::CWD,
+            host,
+            rustix::fs::AtFlags::empty(),
+            rustix::fs::StatxFlags::BASIC_STATS,
+        ) else {
+            continue;
+        };
+        if (h.stx_dev_major, h.stx_dev_minor, h.stx_ino) == identity(&st) {
+            return Err(Error::InvalidSpec(format!(
+                "{} is the host's {host}: nothing is placed there",
+                shown.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The journal's root, resolved, if it still exists and lies strictly below
-/// `confine` or is `shared_root` (not `/`); an error for a root elsewhere,
-/// which a journal planted in the state directory could name to remove host
-/// files.
-fn confined_root(
-    root_dir: &Path,
-    confine: &Path,
-    shared_root: Option<&Path>,
-) -> Result<Option<PathBuf>> {
+/// `confine`; an error for a root elsewhere, which a journal planted in the
+/// state directory could name to remove host files.
+fn confined_root(root_dir: &Path, confine: &Path) -> Result<Option<PathBuf>> {
     let root = match root_dir.canonicalize() {
         Ok(root) => root,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io_err("resolve the journaled root", root_dir, e)),
     };
-    if root != Path::new("/")
-        && let Some(shared) = shared_root
-        && shared.canonicalize().is_ok_and(|shared| shared == root)
-    {
-        return Ok(Some(root));
-    }
     let base = confine
         .canonicalize()
         .map_err(|e| io_err("resolve the state directory", confine, e))?;
@@ -1348,11 +1431,20 @@ mod tests {
             Replayed::default()
         );
         assert_eq!(fs::read(wd.join("etc/hosts")).unwrap(), b"ours");
-        // `/` is never a shared root.
-        replay(&f.runs, f.base(), Some(Path::new("/"))).unwrap();
+        // Another directory is not the journal's root, whatever its name.
+        let other = tempfile::tempdir().unwrap();
+        let other = RootPath::open(other.path()).unwrap();
+        replay(&f.runs, f.base(), Some(&other)).unwrap();
         assert!(f.runs.join("dead.journal").exists());
+        // `/` is refused before any replay, by identity.
+        let host = RootPath::open("/").unwrap();
+        assert!(refuse_host_system_dir(&host, Path::new("/")).is_err());
+        let etc = RootPath::open("/etc").unwrap();
+        assert!(refuse_host_system_dir(&etc, Path::new("/etc")).is_err());
 
-        let done = replay(&f.runs, f.base(), Some(&wd)).unwrap();
+        let shared = RootPath::open(&wd).unwrap().stay_on_mount();
+        assert!(refuse_host_system_dir(&shared, &wd).is_ok());
+        let done = replay(&f.runs, f.base(), Some(&shared)).unwrap();
         assert_eq!(
             done,
             Replayed {
@@ -1389,5 +1481,51 @@ mod tests {
         assert_eq!(fs::read(f.root_dir.join("etc/passwd")).unwrap(), b"p");
         assert_eq!(fs::read(f.root_dir.join("etc/shadow")).unwrap(), b"s");
         assert!(!f.root_dir.join("etc/hosts").exists());
+    }
+
+    /// On a shared root a replay undoes only what `place_direct` makes: a
+    /// planted stub record elsewhere is skipped.
+    #[test]
+    fn replay_on_the_shared_root_skips_other_stub_records() {
+        let f = fixture();
+        let workdir = tempfile::tempdir().unwrap();
+        let wd = workdir.path().canonicalize().unwrap();
+        fs::create_dir(wd.join("keep")).unwrap();
+        fs::write(wd.join("empty"), b"").unwrap();
+        fs::create_dir(wd.join("etc")).unwrap();
+        let text = format!(
+            "root\t{}\nstub\td\t{}\t1.0\t2.0\nstub\tf\t{}\t1.0\t2.0\nstub\td\t{}\t1.0\t2.0\n",
+            hex(wd.as_os_str().as_bytes()),
+            hex(b"/keep"),
+            hex(b"/empty"),
+            hex(b"/etc"),
+        );
+        fs::write(f.runs.join("x.journal"), text.as_bytes()).unwrap();
+        let shared = RootPath::open(&wd).unwrap().stay_on_mount();
+        let done = replay(&f.runs, f.base(), Some(&shared)).unwrap();
+        assert_eq!(done.journals, 1);
+        assert!(wd.join("keep").is_dir());
+        assert!(wd.join("empty").is_file());
+        assert!(!wd.join("etc").exists(), "the empty /etc stub goes");
+    }
+
+    /// A swap whose rename aside fails leaves no entry behind.
+    #[test]
+    fn a_failed_rename_aside_is_forgotten() {
+        let f = fixture();
+        fs::write(f.root_dir.join("etc/hosts"), b"image").unwrap();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        // The aside name is taken: `RENAME_NOREPLACE` refuses.
+        let aside = format!("etc/{ASIDE_PREFIX}1-hosts");
+        fs::write(f.root_dir.join(&aside), b"taken").unwrap();
+        assert!(
+            j.swap_in(Path::new("/etc/hosts"), Content::File(b"x"))
+                .is_err()
+        );
+        assert_eq!(j.stub_count(), 0);
+        j.finish().unwrap();
+        assert_eq!(fs::read(f.root_dir.join("etc/hosts")).unwrap(), b"image");
+        assert_eq!(fs::read(f.root_dir.join(&aside)).unwrap(), b"taken");
     }
 }

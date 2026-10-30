@@ -4,16 +4,20 @@
 //! pkg/commands/run.go:288-411`: `exec.Command` with `Setpgid`, the `USER`
 //! credentials, `WORKDIR` and the environment, nothing else): its own
 //! process group (here a session), the `USER` ids, `WORKDIR`, then `execve`.
-//! On a root other than `/` (a host `--workdir`) it first `chroot`s into it,
-//! which kaniko, always on `/`, never does. No namespace, mount or
-//! capability change; the container or host ranikust runs in is the only
-//! isolation.
+//! On a root other than `/` (a host `--workdir`, only where the full sandbox
+//! cannot run) it first `chroot`s into it, which kaniko, always on `/`,
+//! never does, checks that the new `/` is the directory the parent checked,
+//! and cuts its capabilities to Docker's defaults. No namespace or mount;
+//! the container or host ranikust runs in is the only isolation.
 //!
 //! The same rules as in [`crate::child`] hold: no allocation, no lock, only
 //! system calls between `clone` and `execve`.
 
+use rustix::io::Errno;
+
 use crate::child::{
-    ChildArgs, ChildFds, ExecPtrs, ParentCheck, arm_death_signal, check, switch_user_and_exec,
+    ChildArgs, ChildFds, ExecPtrs, ParentCheck, arm_death_signal, check, drop_capabilities, fail,
+    switch_user_and_exec,
 };
 use crate::error::Step;
 
@@ -27,7 +31,7 @@ use crate::error::Step;
 pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -> ! {
     let parent = ParentCheck::open(fds.err_w, fds.parent);
     arm_death_signal(fds.err_w, parent);
-    if args.chroot {
+    if let Some(want) = args.chroot {
         // `ParentCheck` holds its `/proc` descriptor from before: the root
         // has no `/proc`.
         check(
@@ -36,6 +40,25 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
             rustix::process::chroot(args.root_dir.as_c_str()),
         );
         check(fds.err_w, Step::Chroot, rustix::process::chdir(c"/"));
+        // The path was looked up again here: it must still name the
+        // directory the parent checked and placed the files in.
+        let st = check(
+            fds.err_w,
+            Step::Chroot,
+            rustix::fs::statx(
+                rustix::fs::CWD,
+                c"/",
+                rustix::fs::AtFlags::empty(),
+                rustix::fs::StatxFlags::BASIC_STATS,
+            ),
+        );
+        if (st.stx_dev_major, st.stx_dev_minor, st.stx_ino) != want {
+            fail(fds.err_w, Step::Chroot, Errno::XDEV);
+        }
+        // Root in a bare `chroot` must not keep what would let it leave or
+        // mount: the bounding set, effective and permitted sets go to
+        // Docker's defaults, as in the full sandbox.
+        drop_capabilities(fds.err_w, args);
     }
     // `setsid` there also makes the process group the parent kills once the
     // command exits, as kaniko does.

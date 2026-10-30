@@ -70,23 +70,27 @@ impl Sandbox {
     /// directory (a host `--workdir`, already checked and locked by the
     /// caller): journals of [`Isolation::Direct`] `RUN`s on exactly that
     /// root are replayed too, which [`Sandbox::start`] refuses for any root
-    /// outside the state directory. `/` is never accepted as such a root:
-    /// nothing is placed there.
+    /// outside the state directory. The root is opened once, without
+    /// following a symlink, and refused when it is the host's `/`, `/etc` or
+    /// `/dev` by device and inode (a bind mount of `/` included): nothing is
+    /// placed there. Journals are matched to it by identity, never by path.
     ///
     /// # Errors
     ///
     /// As [`Sandbox::start`], and [`Error::InvalidSpec`] when `shared_root`
-    /// is not absolute or is `/`.
+    /// is not absolute or is the host's `/`, `/etc` or `/dev`.
     pub fn start_with_root(caps: Option<Caps>, dir: &Path, shared_root: &Path) -> Result<Self> {
-        if !shared_root.is_absolute() || shared_root == Path::new("/") {
+        if !shared_root.is_absolute() {
             return Err(Error::InvalidSpec(format!(
-                "the shared root must be an absolute directory other than /: {shared_root:?}"
+                "the shared root must be absolute: {shared_root:?}"
             )));
         }
-        Self::start_inner(caps, dir, Some(shared_root))
+        let root = RootPath::open(shared_root)?.stay_on_mount();
+        journal::refuse_host_system_dir(&root, shared_root)?;
+        Self::start_inner(caps, dir, Some(&root))
     }
 
-    fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&Path>) -> Result<Self> {
+    fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
         let runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
         let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
         if replayed.journals > 0 {
@@ -623,6 +627,15 @@ impl Runner {
         spec.validate()?;
         let root_entry = match (spec.isolation, self.root_entry) {
             (Isolation::Full, None) => return Err(Error::Privilege("the RUN sandbox")),
+            // A bare `chroot` is never used where mounting is possible: the
+            // full sandbox runs that root (ADR-0014, ADR-0043).
+            (Isolation::Direct, Some(_)) if spec.root_dir != Path::new("/") => {
+                return Err(Error::InvalidSpec(
+                    "Isolation::Direct on a root other than / where the full sandbox can \
+                     run: use Isolation::Full"
+                        .into(),
+                ));
+            }
             // Unused by `Direct`.
             (_, entry) => entry.unwrap_or(RootEntry::PivotRoot),
         };
@@ -691,14 +704,23 @@ impl Runner {
         if direct && spec.root_dir == Path::new("/") {
             // As kaniko: the container's own files, nothing placed.
             return Ok((
-                self.job(spec, &user, Vec::new(), None, stdio, root_entry)?,
+                self.job(spec, &user, Vec::new(), None, stdio, root_entry, None)?,
                 None,
             ));
         }
+        let chroot = if direct {
+            // By identity, not by name: a bind mount of `/` passes any
+            // string check, and placing would replace the host's files.
+            journal::refuse_host_system_dir(&root, &spec.root_dir)?;
+            let st = root.statx("/")?;
+            Some((st.dev_major, st.dev_minor, st.ino))
+        } else {
+            None
+        };
         let mut journal = Journal::create(&self.runs_dir, &self.next_id(), &spec.root_dir, root)?;
         if direct {
             return match place_direct(&mut journal)
-                .and_then(|()| self.job(spec, &user, Vec::new(), None, stdio, root_entry))
+                .and_then(|()| self.job(spec, &user, Vec::new(), None, stdio, root_entry, chroot))
             {
                 Ok(job) => Ok((job, Some(journal))),
                 Err(e) => {
@@ -718,6 +740,7 @@ impl Runner {
                 Some(journal.scratch()),
                 stdio,
                 root_entry,
+                None,
             )
         }) {
             Ok(job) => Ok((job, Some(journal))),
@@ -730,6 +753,12 @@ impl Runner {
         }
     }
 
+    /// The child's arguments. `chroot`: a `Direct` root other than `/`, by
+    /// the identity the child checks after entering it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the spec and the parts the parent resolved for it"
+    )]
     fn job(
         &self,
         spec: &RunSpec,
@@ -738,14 +767,14 @@ impl Runner {
         scratch: Option<&Path>,
         stdio: [Stdio; 3],
         root_entry: RootEntry,
+        chroot: Option<(u32, u32, u64)>,
     ) -> Result<Job> {
         let env = plan::environment(&spec.env, &user.home);
         let candidates = plan::exec_candidates(&spec.argv[0], plan::path_var(&env));
         let mut keep = Vec::new();
-        let chroot = spec.isolation == Isolation::Direct && spec.root_dir != Path::new("/");
         // In a `chroot`, `/dev/null` is the image's entry, or missing where
         // `mknod` is refused: the host's is opened here instead.
-        let stdio = if chroot {
+        let stdio = if chroot.is_some() {
             stdio.map(|s| match s {
                 Stdio::Null => host_null().map(Stdio::Fd),
                 s => Ok(s),
@@ -1634,6 +1663,33 @@ mod tests {
         drop(sandbox);
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
         assert!(Sandbox::start_with_root(None, dir.path(), Path::new("/")).is_err());
+    }
+
+    /// Where the probe found the full sandbox possible, a bare `chroot` is
+    /// refused before anything is placed; so is a root that is the host's
+    /// `/etc` or `/dev` by identity.
+    #[test]
+    fn direct_off_slash_is_refused_where_it_must_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = tempfile::tempdir().unwrap();
+        let wd = wd.path().canonicalize().unwrap();
+        let (ino, old) = direct_root(&wd);
+        let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot)).unwrap();
+        let mut spec = RunSpec::new(&wd, vec!["/missing".into()]);
+        spec.isolation = Isolation::Direct;
+        let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
+        assert!(matches!(r, Err(Error::InvalidSpec(_))), "{r:?}");
+        assert_direct_root_restored(&wd, ino, old);
+
+        let runner = Runner::new(dir.path(), None).unwrap();
+        for host in ["/etc", "/dev"] {
+            let mut spec = RunSpec::new(host, vec!["/missing".into()]);
+            spec.isolation = Isolation::Direct;
+            let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
+            assert!(matches!(r, Err(Error::InvalidSpec(_))), "{host}: {r:?}");
+        }
+        assert!(Sandbox::start_with_root(None, dir.path(), Path::new("/etc")).is_err());
+        assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
     }
 
     /// A real `Direct` `RUN` in a `chroot`, as root in the VM: the shell and

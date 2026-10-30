@@ -41,6 +41,17 @@ image's entries renamed aside and back; every `RUN` gets the
 
 - On `/` nothing changes and nothing is placed: the command sees the
   container's own mounts, as under kaniko.
+- Off `/` only where the full sandbox cannot run: with a probe result
+  (mounting possible) such a `RUN` is refused and the caller uses
+  `Isolation::Full` on that root, as ADR-0014 keeps a bare `chroot` from
+  any environment that can mount. In the `chroot` the child checks that
+  the new `/` is the directory the parent checked (device and inode), then
+  cuts the bounding, effective and permitted sets to Docker's defaults
+  before switching user, as the full sandbox does.
+- A root that is the host's `/`, `/etc` or `/dev` by device and inode,
+  whatever path or bind mount (`/proc/1/root` included) reaches it, is
+  refused before anything is placed, in `Sandbox::run` and in
+  `Sandbox::start_with_root`.
 - Placed paths are fixed (`journal::PLACEABLE`): `/etc/resolv.conf`,
   `/etc/hosts` (the host's, plus the host name), `/etc/hostname` (the real
   host name: there is no UTS namespace), `/dev/{null,zero,full,random,
@@ -53,12 +64,17 @@ image's entries renamed aside and back; every `RUN` gets the
   first: the aside entry is renamed back over whatever is at the path, or,
   with none, the placed entry is removed unless it became a directory; the
   parent's times go back to m0 only if its mtime is still m1, as for stubs
-  (`design/kaniko-mode.md#per-stage-directories`).
-- Replay: `Sandbox::start_with_root(caps, dir, workdir)` also replays
-  journals whose root is exactly the given workdir, which lies outside the
-  state directory on a host; never `/`. A `swap` record naming another
-  path, or an aside name not of the form `<dir>/.ranikust-aside-<id>-<name>`,
-  is skipped, so a planted journal cannot remove or replace other files.
+  (`design/kaniko-mode.md#per-stage-directories`). Placing and undoing stay
+  on the root's own mount (`rnk_rootfs::RootPath::stay_on_mount`,
+  `RESOLVE_NO_XDEV`); an entry on another mount, or a mount point, is left
+  alone. A failed rename aside forgets its record.
+- Replay: `Sandbox::start_with_root(caps, dir, workdir)` opens the workdir
+  once and also replays journals whose root is that directory, matched by
+  device, inode and mount on the opened descriptor, never by path; on it
+  only `swap` records and the `/etc` and `/dev` stubs are undone. A `swap`
+  record naming another path, or an aside name not of the form
+  `<dir>/.ranikust-aside-<id>-<name>`, is skipped, so a planted journal
+  cannot remove or replace other files.
 - No `/proc` and no `/sys`: `Direct` cannot mount. The child opens the
   host's `/dev/null` for `Stdio::Null` before entering the root.
 - `NofileLimit::current()` is read by `ranikust` before it raises its own
@@ -73,10 +89,12 @@ image's entries renamed aside and back; every `RUN` gets the
 - Good, because the image's entries keep their inode, owner, mode, times
   and xattrs: they are renamed, never rewritten.
 - Bad, because the `RUN` can see the aside entries (`ls -a /etc`) and has
-  no `/proc`; a host that can mount should run that workdir with the full
-  sandbox instead (for the caller, Phase 2 tasks 6 and 8).
-- Bad, because a bare `chroot` is no boundary for root: as on `/`, the
-  host or container ranikust runs in is the only isolation (threat T5).
+  no `/proc`; a host that can mount runs that workdir with the full sandbox
+  instead, which the sandbox enforces (the caller picks it, Phase 2 tasks 6
+  and 8).
+- Bad, because a bare `chroot` is no boundary for root, even with Docker's
+  default capabilities (`CAP_SYS_CHROOT` is one): as on `/`, the host or
+  container ranikust runs in is the only isolation (threat T5).
 - Neutral, because a `RUN` that rewrites a placed file loses the change,
   as under BuildKit's bind and kaniko's mount point.
 
@@ -92,8 +110,14 @@ image's entries renamed aside and back; every `RUN` gets the
   every layer.
 - `rnk-sandbox` T0 tests: the swap, undo and replay
   (`journal::tests::swapped_files_*`, `replay_puts_swapped_files_*`,
-  `planted_swap_records_*`), and a `Direct` `RUN` on a temp workdir that
-  stops at `chroot` as a normal user with everything restored. The T2 test
+  `planted_swap_records_*`, `replay_on_the_shared_root_skips_*`,
+  `a_failed_rename_aside_*`), a `Direct` `RUN` on a temp workdir that
+  stops at `chroot` as a normal user with everything restored, and the
+  refusals (`direct_off_slash_is_refused_*`: with a probe result, and on
+  the host's `/etc` and `/dev`); `rnk-rootfs`
+  `stay_on_mount_refuses_to_resolve_into_another_mount`. The host-safety
+  review of the first version found the capability, identity and mount
+  gaps these close. The T2 test
   `direct_runs_in_a_chroot_with_placed_files_as_root` covers the real run
   in the VM [not run yet].
 

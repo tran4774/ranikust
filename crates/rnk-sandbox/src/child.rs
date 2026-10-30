@@ -148,8 +148,9 @@ pub(crate) struct ChildArgs {
     pub(crate) groups: Vec<Gid>,
     pub(crate) workdir: CString,
     /// `Isolation::Direct` on a root other than `/`: `chroot` into
-    /// `root_dir` first.
-    pub(crate) chroot: bool,
+    /// `root_dir` first, and check that the new `/` is this directory,
+    /// `(dev major, dev minor, ino)`, the one the parent checked.
+    pub(crate) chroot: Option<(u32, u32, u64)>,
     /// The `RLIMIT_NOFILE` the command starts with; `None` keeps ranikust's.
     pub(crate) nofile: Option<rustix::process::Rlimit>,
     pub(crate) stdio: [ChildStdio; 3],
@@ -1167,7 +1168,7 @@ fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
 /// empty, as Docker since 20.10.14. Root keeps the defaults through
 /// `execve`; any other user loses them at `setresuid` and can regain at
 /// most the defaults through a setuid binary or file capabilities.
-fn drop_capabilities(err: RawFd, args: &ChildArgs) {
+pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
     let (drops, len) = &args.drops;
     for &cap in drops.iter().take(*len) {
         let set = CapabilitySet::from_bits_retain(1u64.checked_shl(cap).unwrap_or(0));
@@ -1508,7 +1509,7 @@ mod tests {
             gid: Gid::ROOT,
             groups: Vec::new(),
             workdir: c"/".into(),
-            chroot: false,
+            chroot: None,
             nofile: None,
             stdio: [ChildStdio::Inherit; 3],
             argv: vec![c"sh".into(), c"-c".into()],

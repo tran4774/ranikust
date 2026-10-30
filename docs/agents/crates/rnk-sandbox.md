@@ -44,7 +44,7 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
-    pub fn start_with_root(caps, dir, shared_root: &Path) -> Result<Self>; // also replays journals of that workdir (outside the state dir; never /)
+    pub fn start_with_root(caps, dir, shared_root: &Path) -> Result<Self>; // also replays journals of that workdir, by identity; refuses the host's /, /etc, /dev
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
@@ -125,13 +125,20 @@ from `rnk-store`, secret file) and passes `--network`.
 - `Direct`: no namespace, mount or capability change; the command gets its
   own session, whose process group is killed with `SIGKILL` once the
   command exits (waited with `WNOWAIT`, so the group id cannot be reused),
-  as kaniko does. On `/` nothing is placed. On another root the child
-  `chroot`s into it first (`Step::Chroot`), after the parent swapped in
-  ranikust's `resolv.conf`, `hosts` (real host name: no UTS namespace),
+  as kaniko does. On `/` nothing is placed. Another root is refused where
+  the probe found the full sandbox possible, and when it is the host's
+  `/`, `/etc` or `/dev` by device and inode (bind mounts included).
+  Otherwise the child `chroot`s into it (`Step::Chroot`), checks the new
+  `/` is the directory the parent checked, and drops to Docker's
+  capabilities (bounding, effective, permitted), after the parent swapped
+  in ranikust's `resolv.conf`, `hosts` (real host name: no UTS namespace),
   `hostname` and `mknod` `/dev` nodes (a refused node left out), each
   journaled as a `swap` before the image's entry is renamed aside to
   `.ranikust-aside-<id>-<name>`; `Stdio::Null` is the host's `/dev/null`,
   opened by the parent. No `/proc` (`ADR-0043`).
+- The journal places and undoes on the root's own mount only
+  (`RootPath::stay_on_mount`): a parent below another mount does not
+  resolve, and an entry that is a mount point or on another mount is left.
 - Every `RUN` (`Full` or `Direct`) gets the `RLIMIT_NOFILE` of
   `Sandbox::set_nofile_limit`, set after the close-on-exec pass, right
   before `execve` (`Step::FileLimit`); unset, it inherits ranikust's.
@@ -144,7 +151,9 @@ from `rnk-store`, secret file) and passes `--network`.
   opened with `O_NOFOLLOW` and the scratch files removed with `unlinkat`
   through descriptors, a journal's root must resolve strictly below the
   state directory (the parent of `dir`) or be the workdir given to
-  `Sandbox::start_with_root` (never `/`), a `swap` record must name one of
+  `Sandbox::start_with_root`, opened once and matched by device, inode and
+  mount, never by path (on it only swaps and the `/etc`, `/dev` stubs are
+  undone), a `swap` record must name one of
   the nine `PLACEABLE` paths and an aside of the `.ranikust-aside-` form,
   and `dir` or `dir/runs` being a symlink is an error. A journal failing a
   check is left with a warning. Replay and crash unlock the journal's

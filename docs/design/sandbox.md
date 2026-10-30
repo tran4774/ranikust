@@ -197,9 +197,14 @@ a `swap` record, synced before anything changes, names one of the fixed
 paths (`resolv.conf`, `hosts`, `hostname`, six `/dev` nodes) and the name the
 image's entry is renamed to in the same directory; after the `RUN` the
 entry is renamed back, or the placed one removed, and the parent's times
-restored as for stubs. A replay accepts only those paths and aside names,
-and a root that is the state directory's or the shared workdir given to
-`Sandbox::start_with_root`. A replay or a crashed run releases the journal's
+restored as for stubs. Placing and undoing never resolve through another
+mount below the root. A replay accepts only those paths and aside names,
+and a root below the state directory or the shared workdir given to
+`Sandbox::start_with_root`, opened once and matched by device, inode and
+mount. A root that is the host's `/`, `/etc` or `/dev` by device and inode
+is refused before anything is placed, and a `Direct` `RUN` off `/` is
+refused wherever the full sandbox can run; in its `chroot` the child checks
+the root's identity again and drops to Docker's capabilities. A replay or a crashed run releases the journal's
 `flock` explicitly: the lock belongs to the open file description, which a
 child cloned meanwhile shares until it executes or exits.
 
@@ -214,7 +219,7 @@ own for the kaniko-mode walk; the child sets it right before `execve`.
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root: the old root stays mounted underneath, and `..` stops at the moved root only then [inferred] ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)) |
 | Rootless (user namespace) | Multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail |
-| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own session, whose process group is killed once the command exits ([kaniko-mode](kaniko-mode.md)). On a root other than `/` (a host `--workdir`) the child `chroot`s into it, with ranikust's `resolv.conf`, `hosts`, `hostname` and `/dev` nodes swapped in for the `RUN` and journaled, no `/proc` ([ADR-0043](../adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)) |
+| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own session, whose process group is killed once the command exits ([kaniko-mode](kaniko-mode.md)). On a root other than `/` (a host `--workdir`, only where the full sandbox cannot run) the child `chroot`s into it with Docker's default capabilities, with ranikust's `resolv.conf`, `hosts`, `hostname` and `/dev` nodes swapped in for the `RUN` and journaled, no `/proc` ([ADR-0043](../adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)) |
 | `--parallel-stages` | Bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
 ## Differences from Docker

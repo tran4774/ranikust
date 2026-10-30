@@ -44,6 +44,7 @@ impl RootPath {
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (ranikust's workdir marker check)
+    pub fn stay_on_mount(self) -> Self;                  // built: every later resolution with RESOLVE_NO_XDEV, sub_root included (rnk-sandbox's journal, ADR-0043)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // built: every xattr, overlay's too, sorted; no follow, no open of a FIFO or device (rnk-snapshot's exporter)
     // built: create_dir, create_dir_all, symlink, read_link, hard_link,
