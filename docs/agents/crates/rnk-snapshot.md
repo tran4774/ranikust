@@ -28,20 +28,35 @@ metadata on the upper root, whiteouts before hardlinks; delete via `rnk-rootfs`.
 ## API
 
 ```rust
-pub trait StageRootfs {                            // [open: Q-024] interim, task 9
+pub trait ExportLayer: Send {                      // ADR-0046: a closed layer, LayerDiff or KanikoDiff
+    fn export(self, o: EncodeOptions, out: &mut dyn Write) -> Result<(LayerDigests, DiffCounts)>;
+}
+pub trait StageRootfs {                            // ADR-0046
+    type Diff: ExportLayer + 'static;
+    fn set_layers_needed(&mut self, needed: bool) {} // once after prepare; kaniko walks only when true
     fn root(&self) -> Result<&RootPath>;           // writable root of the open layer (COPY, ADD, WORKDIR)
     fn mount_point(&self) -> &Path;                // host path, only for rnk-sandbox to enter for RUN
     fn begin_layer(&mut self) -> Result<()>;       // overlay: diff-k, work-k, root metadata, mount
-    fn end_layer(&mut self) -> Result<LayerDiff>;  // overlay: unmount; diff-k becomes the top lower
+    fn end_layer(&mut self) -> Result<Self::Diff>; // overlay: unmount, diff-k the top lower; kaniko: walk + diff
     fn view(&mut self) -> Result<&RootPath>;       // read-only between layers (USER lookup, COPY --from)
     fn release(self) -> Result<()>;                // unmount, delete the stage directory, diffs included
 }
-pub trait Snapshotter {                            // [open: Q-024] interim, task 9
+pub trait Snapshotter {                            // ADR-0046
     type Root: StageRootfs;
-    fn base_layer<R: Read>(&self, diff_id: &Digest, blob: R, below: &[LayerDir]) -> Result<LayerDir>;
-    fn prepare(&self, base: Base<'_, Self::Root>) -> Result<Self::Root>;  // Scratch | Image(&[LayerDir]) | Stage(&Root)
+    type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (the blob)
+    fn base_layer(&self, diff_id: &Digest, blob: &Path, below: &[Self::Layer]) -> Result<Self::Layer>;
+    fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;  // Scratch | Image(&[Layer]) | Stage(&Root)
 }
-impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>; }
+impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
+    pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
+// kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
+impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions) -> Self;
+    pub fn empty(&self) -> Result<()>; }           // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
+// prepare(Scratch|Image): refuses while a stage holds the root; empties it; a workdir root 0755;
+//   extracts each blob with extract_live, diff ID checked. prepare(Stage(p)): takes the root over
+//   from p if p still holds it (a squashed chain), else Error::State.
+// end_layer: walk + diff when layers are needed, else an empty diff and no walk.
+// release: empties the root (delete_contents + ignore list), Walker::forget; nothing if handed over.
 // Overlay: Snapshotter<Root = OverlayStage>
 pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
 pub struct LayerDiff;                              // upper + lowers; lazily exported
@@ -300,5 +315,5 @@ impl WalkDiff {
   against kaniko; T1 mounting in a user namespace (Phase 3).
 - Deferred: the kaniko implementation, per-stage directories and lazy
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
-- [open: Q-024] The signature (interim above). (Q-026, ADR-0032) Merging
+- The signature: ADR-0046 (Q-024). (Q-026, ADR-0032) Merging
   layers near 500 lowers. [open: Q-245] One mount across instructions. [open: Q-152].

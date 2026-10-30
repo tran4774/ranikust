@@ -95,6 +95,9 @@ fn an_image_stage_empties_the_root_extracts_and_walks_only_when_needed() {
     let base = f.layer("l1", &[("etc-release", b"v1\n")]);
     let mut root = f.kaniko.prepare(Base::Image(&[base])).unwrap();
     assert_eq!(f.names(), ["etc-release", "state"], "emptied, state kept");
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = fs::metadata(&f.host).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o755, "a workdir root starts as an image root");
     assert_eq!(fs::read(f.host.join("state/blob")).unwrap(), b"kept");
     root.set_layers_needed(true);
 

@@ -143,6 +143,16 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   globs, as in kaniko. Base layers can be extracted into a live root
   without writing an ignored path or below a mount point, and, as kaniko,
   without creating device nodes or FIFOs. Not yet used by a build.
+- Kaniko mode builds: `--mode=kaniko` (or `--mode=auto` where root may not
+  mount) runs the stages one after another on the root, `/` in a container
+  or a `--workdir`, as kaniko does: base layers unpacked into it, each
+  instruction's layer found by walking it, the root emptied between stages
+  and at the end, kaniko's stage squashing and lazy snapshots. `RUN` runs
+  directly, as kaniko; on a workdir where root may mount, in the full
+  sandbox. It needs root. Not yet: a Dockerfile whose later stage reads an
+  earlier one (`COPY --from`, a `FROM` after the root was emptied),
+  `RUN --mount`, `#!` heredocs and `--network=none` without the sandbox,
+  and `--single-snapshot`.
 - The sandbox can run a kaniko-mode `RUN` on a host work directory without
   mounting: it enters the directory with `chroot`, with ranikust's
   `/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname` and `/dev` nodes put in

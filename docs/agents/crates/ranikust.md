@@ -86,9 +86,18 @@ and goes to kaniko mode, else continues as overlay mode. Kaniko mode:
 with `--workdir`, `workdir::claim` (the checks and lock of `ADR-0038`,
 below); without, the root `/`, refused outside a container
 (`container::detect`) unless `--force`, with kaniko's warning; then its
-state directory is named (`/ranikust/state` on `/`, `<cwd>/.ranikust`
-with a workdir), `raise_nofile_limit`, and a stop with exit code 2 before
-anything is written. Overlay mode: the state directory, `--state-dir` or
+root is required, `RLIMIT_NOFILE` raised (`NofileLimit::current()` read
+before, for `RUN`), `--jobs` ignored with a warning, `--single-snapshot`
+refused, the workdir marked (`Workdir::mark`) before anything is written,
+the state directory (`/ranikust/state` on `/`, `<cwd>/.ranikust` with a
+workdir) set up by `setup::set_up_kaniko` (store; on a host workdir where
+the namespace could be entered, the sandbox probe and `RUN` in the full
+sandbox, else `Isolation::Direct`; `Sandbox::start_with_root` on a
+workdir), the ignore list built (`kaniko_snapshotter`: mountinfo, the
+flags, the state directory, physical paths), then `build::run` with
+`Snapshots::Kaniko`: kaniko's squashed units one at a time on the shared
+root (`kaniko_units`, refusing a plan whose later unit reads an emptied
+one), the root emptied after each unit and at the end. Overlay mode: the state directory, `--state-dir` or
 `<workdir>/.ranikust`, else a usage error [open: Q-110] →
 `setup::enter_namespace` (`rnk_sandbox::enter_build_namespace`: refuses in
 a plain `chroot`, then `unshare(CLONE_NEWNS)`, `/` rslave) →
@@ -101,8 +110,7 @@ owned by the effective uid, or group/world-writable) → `rnk_store::Store::open
 replay, spawner thread) → the store is closed → stop with exit code 2,
 "set up for …, but building is not implemented yet". Still to
 come [design]: `rnk-store` open and clean-up before the spawner (task 7) (Q-111) →
-kaniko mode: the store in its state directory and the "can mount" probe
-(Phase 2 tasks 6, 9) → tokio runtime → `rnk-sched`.
+per-stage directories (Phase 2 task 9).
 
 Kaniko-mode workdir checks (`src/workdir.rs`, `ADR-0038`), before anything
 is written: canonicalize; refuse `/` and any of the 30 `SYSTEM_DIRS` or

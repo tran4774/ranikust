@@ -55,6 +55,10 @@ privileged container, or as a regular user who may create user namespaces.
 Used when ranikust runs as root but may not mount, as in a Docker container
 with the default security profile or in most Kubernetes pods.
 
+> Built so far: sequential builds on `/` or a `--workdir`. Not yet: a
+> stage that reads an earlier stage with `COPY --from`, `RUN --mount`,
+> `--parallel-stages` and per-stage directories.
+
 - It works the way kaniko does. The build root is the container's own `/`:
   base image layers are unpacked there, `RUN` commands run there, and changes
   are found by walking and hashing the filesystem after each instruction.

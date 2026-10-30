@@ -354,5 +354,8 @@ its helpers (`build`, `run`, `expect`, `expect_config`, `config`, `out`).
   under a minute once the binary is built. The shared workdir under
   `target/smoke/cases/.work` keeps the store between runs.
 - `just test-vm quick` (T2): the same as real root on the VM, Docker
-  loading and running the images; `RANIKUST_QUICK_CASES="run copy"` picks
-  cases.
+  loading and running the images; `RANIKUST_QUICK_MODE=kaniko` builds them
+  in kaniko mode on the workdir (`RANIKUST_CASE_MODE=kaniko` does the same
+  for `just smoke-case`, in a default rootless podman container where root
+  may not mount, so `RUN` runs `Direct`); `RANIKUST_QUICK_CASES="run copy"`
+  picks cases.

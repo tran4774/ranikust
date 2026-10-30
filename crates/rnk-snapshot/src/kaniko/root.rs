@@ -172,6 +172,12 @@ impl Snapshotter for Kaniko {
                 let span = tracing::info_span!("rnk_snapshot.prepare", layers = layers.len());
                 let _entered = span.enter();
                 empty_root(shared, &mut hold)?;
+                // A workdir root starts as overlay mode's stage roots do:
+                // `0755` and the epoch, unless a layer sets `./`. On `/`
+                // the container's root stays as it is, as under kaniko.
+                if shared.path != Path::new("/") {
+                    shared.root.set_meta("", &crate::layer::default_root())?;
+                }
                 for layer in layers {
                     extract_blob(shared, layer)?;
                 }
