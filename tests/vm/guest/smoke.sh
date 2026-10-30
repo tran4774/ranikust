@@ -228,12 +228,13 @@ for v in "${VARIANTS[@]}"; do
       sudo tee "$p/write/Dockerfile" >/dev/null
     printf 'FROM %s\nARG NONCE\nRUN --mount=type=cache,id=persist,target=/c test "$(cat /c/n 2>/dev/null)" = "$NONCE"\n' "$IMAGE" |
       sudo tee "$p/read/Dockerfile" >/dev/null
+    plog="$(mktemp)"
     persist() {
       sudo "$RNK" --context "$p/$1" --no-push --workdir "$p/$2" --build-arg "NONCE=$nonce" \
-        >>"$p/log" 2>&1
+        >>"$plog" 2>&1
     }
-    persist write w || { echo "error: the cache-writing build failed" >&2; cat "$p/log" >&2; exit 1; }
-    persist read w || { echo "error: the cache did not persist into the next build" >&2; cat "$p/log" >&2; exit 1; }
+    persist write w || { echo "error: the cache-writing build failed" >&2; cat "$plog" >&2; exit 1; }
+    persist read w || { echo "error: the cache did not persist into the next build" >&2; cat "$plog" >&2; exit 1; }
     ! persist read w2 || { echo "error: a fresh state directory saw the cache" >&2; exit 1; }
     echo "host: a cache mount persists across builds sharing a state directory, and only there"
     # A cancel kills the running RUN, as BuildKit (ADR-0032): SIGINT while
