@@ -23,13 +23,23 @@
 //!   an image root is reached only through `rnk-rootfs`.
 
 mod error;
+mod glob;
 mod image;
 mod layer;
 mod output;
+mod pull;
+mod sources;
+mod stage;
 mod time;
 
 pub use error::{Error, Result};
 pub use image::{HISTORY_AUTHOR, Image, assemble, image_format, layer_history};
 pub use layer::{BlobLayer, EntriesLayer, LayerDemand, LayerExporter, LayerSource};
 pub use output::{Outputs, UNSET_DESTINATION, push, write_docker_tar, write_oci_layout};
+pub use pull::{PulledImage, pull_image};
+pub use sources::ContextFiles;
+pub use stage::{
+    BuildCx, ImageSource, RunGate, SourceRoot, StageBase, StageDone, StageInput, Ungated,
+    build_stage,
+};
 pub use time::BuildTime;

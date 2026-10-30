@@ -37,7 +37,7 @@ mod support;
 mod test_util;
 mod user;
 
-pub use copy::{CopyOpts, copy};
+pub use copy::{CopyOpts, copy, copy_filtered};
 pub use delete::{IgnoreList, delete_contents};
 pub use error::{Error, Result};
 pub use extract::{Extracted, Whiteouts, extract, extract_overlay};
