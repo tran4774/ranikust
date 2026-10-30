@@ -72,6 +72,9 @@ check-aarch64:
 # Skipped there, with the reason:
 # - `open_gives_cloexec_path_fd_and_mount_id`: qemu-user's statx leaves
 #   `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id it asserts is not seen;
+# - `without_root_the_set_up_refuses_before_touching_the_workdir`: qemu-user
+#   runs a thread of its own, so the set-up stops at its single-thread check
+#   before the privilege refusal the test expects;
 # - without a binfmt_misc entry for aarch64, ranikust's `cli` and `metrics`
 #   tests, which spawn the binary themselves (CI registers one and requires it).
 
@@ -104,7 +107,8 @@ test-aarch64 *args:
       exit 1
     fi
     "$qemu" "$BIN" version
-    skip=(--skip root::tests::open_gives_cloexec_path_fd_and_mount_id)
+    skip=(--skip root::tests::open_gives_cloexec_path_fd_and_mount_id
+      --skip without_root_the_set_up_refuses_before_touching_the_workdir)
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
       cargo-zigbuild test --workspace --locked --target $target {{ args }} -- "${skip[@]}"
     else
