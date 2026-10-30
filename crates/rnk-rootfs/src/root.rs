@@ -328,6 +328,44 @@ impl RootPath {
         .map_err(|e| io_err("open", p, e))
     }
 
+    /// Pins the entry `p` with an `O_PATH | O_NOFOLLOW` descriptor, reached
+    /// with no symlink in any component and without leaving the root's own
+    /// mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`), and `statx`s it on
+    /// that descriptor. For a physical path, such as one the kaniko-mode
+    /// walk saw: every later read goes through the pinned inode, so a
+    /// parent swapped for a symlink or a mount since cannot redirect it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `EXDEV` for a
+    /// parent on another mount, `ENOENT` when `p` is gone.
+    pub fn pin(&self, p: impl AsRef<Path>) -> Result<Pinned> {
+        let p = p.as_ref();
+        let resolve = IN_ROOT
+            .union(ResolveFlags::NO_SYMLINKS)
+            .union(ResolveFlags::NO_XDEV);
+        let fd = openat2_retry(
+            self.fd(),
+            path::relative(p).as_os_str(),
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+            resolve,
+        )
+        .map_err(|e| match e {
+            Errno::NOSYS => Error::Unsupported {
+                feature: "openat2",
+                source: e.into(),
+            },
+            e => io_err("open", p, e),
+        })?;
+        let stat = meta::statx_at(fd.as_fd(), OsStr::new(""), p)?;
+        Ok(Pinned {
+            fd,
+            stat,
+            path: p.to_owned(),
+        })
+    }
+
     /// Opens the directory `p` as a new root, for example a stage's `rootfs/`
     /// or the source of `COPY --from`. Symlinks are followed inside this root.
     ///
@@ -667,6 +705,79 @@ fn openat2_retry(
             Err(Errno::AGAIN) if tries < EAGAIN_RETRIES => tries += 1,
             r => return r,
         }
+    }
+}
+
+/// An entry pinned by [`RootPath::pin`]: its `O_PATH` descriptor and what
+/// `statx` said of it. Every read goes through the descriptor, so it is
+/// always this inode, whatever its name points to now.
+#[derive(Debug)]
+pub struct Pinned {
+    fd: OwnedFd,
+    stat: Stat,
+    path: PathBuf,
+}
+
+impl Pinned {
+    /// What `statx` said of the pinned entry.
+    #[must_use]
+    pub fn stat(&self) -> &Stat {
+        &self.stat
+    }
+
+    /// The target of the pinned symlink (`readlinkat(fd, "")`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] when the entry is not a symlink; [`Error::Io`]
+    /// when the read fails.
+    pub fn read_link(&self) -> Result<PathBuf> {
+        if self.stat.file_type() != FileType::Symlink {
+            return Err(Error::InvalidPath {
+                path: self.path.clone(),
+                reason: "not a symlink",
+            });
+        }
+        let target = rustix::fs::readlinkat(&self.fd, "", Vec::new())
+            .map_err(|e| io_err("readlink", &self.path, e))?;
+        Ok(PathBuf::from(OsString::from_vec(target.into_bytes())))
+    }
+
+    /// The extended attributes of the pinned entry, sorted, read through its
+    /// magic link in ranikust's own `/proc/self/fd`; none for a symlink,
+    /// whose xattrs can be read only by name.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when a read fails.
+    pub fn xattrs(&self) -> Result<Vec<(OsString, Vec<u8>)>> {
+        let mut out = meta::read_xattrs(
+            self.fd.as_fd(),
+            self.stat.file_type(),
+            None,
+            Xattrs::All,
+            &self.path,
+        )?;
+        out.sort();
+        Ok(out)
+    }
+
+    /// Opens the pinned regular file for reading, through ranikust's own
+    /// `/proc/self/fd`: a FIFO or a device node is never opened, since only
+    /// a regular file is reopened.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] when the entry is not a regular file;
+    /// [`Error::Io`] when it cannot be opened.
+    pub fn open_regular(&self) -> Result<OwnedFd> {
+        if self.stat.file_type() != FileType::Regular {
+            return Err(Error::InvalidPath {
+                path: self.path.clone(),
+                reason: "not a regular file",
+            });
+        }
+        meta::reopen(self.fd.as_fd(), OFlags::RDONLY, &self.path)
     }
 }
 

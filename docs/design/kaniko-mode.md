@@ -224,10 +224,17 @@ kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
   symlink, which kaniko's `ResolvePaths` adds
   (`pkg/filesystem/resolve.go:69-98`), is not, as BuildKit and overlay
   mode (`ADR-0045`). The exporter never resolves a symlink.
-- The root is live: a file's content is read through the descriptor
-  `RootPath::open_regular` pins, checked by device and inode against the
-  walk's record; a symlink target or xattrs are read after a `statx` of
-  the same check. An entry changed since the walk fails the export.
+- The root is live: every entry is pinned once with `RootPath::pin`, its
+  physical path resolved with no symlink in any component and without
+  leaving the root's mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`,
+  `O_PATH | O_NOFOLLOW`), and the pin's `statx` checked against the walk's
+  record (type, device, inode). The link target, the xattrs and the
+  content are read from that pin, the content through a reopen of exactly
+  that inode, so a parent swapped for a symlink or a mount, or a FIFO or
+  device swapped in, is never opened. An entry changed since the walk
+  fails the export. Names of one inode in the walk that disagree on type,
+  size, mode, owner or mtime (an inode number reused during the walk) are
+  written as separate files, not linked.
 - A `RUN` that changes nothing produces an empty layer, an empty tar as
   kaniko's `TakeSnapshotFS` writes; `WalkDiff::is_empty` tells the caller.
 - Applying the base layer and a diff's layer rebuilds the walked tree:

@@ -22,25 +22,27 @@
 //! - A diff with nothing in it is still a layer: the empty tar kaniko's
 //!   `TakeSnapshotFS` writes for a `RUN` that changes nothing.
 //!
-//! The root is live, so every read checks that the entry is still the one
-//! the walk saw: a file's content is read through the descriptor
-//! `RootPath::open_regular` pins, compared by device and inode with the
-//! walk's record, and a symlink or xattr read is preceded by a `statx` of
-//! the same check. A FIFO or a device node is never opened, and no symlink
-//! is followed out of the root.
+//! The root is live, so every entry is pinned once with `RootPath::pin`:
+//! its physical path resolved with no symlink in any component and without
+//! leaving the root's mount, the `O_PATH` descriptor's `statx` compared
+//! with the walk's record (type, device, inode). The link target, the
+//! xattrs and a file's content are read from that pin, the content through
+//! a reopen of exactly that inode. A FIFO or a device node is never opened,
+//! no symlink is followed, and an entry changed since the walk fails the
+//! export. Names the walk saw as one inode that disagree on what they are
+//! (an inode number reused during the walk) are not linked.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::Path;
 
 use rnk_layer::{
     EncodeOptions, Entry, EntryKind, EntryPath, EntrySource, LayerDigests, LayerWriter,
 };
-use rnk_rootfs::{FileType, RootPath, Stat};
+use rnk_rootfs::{FileType, Pinned, RootPath, Stat};
 
 use super::walk::{EntryMeta, WalkDiff};
 use crate::error::{Error, Result};
@@ -158,20 +160,24 @@ impl WalkDiff {
             counts.files_added += 1;
             entries.push(e);
         }
+        split_reused_inodes(&mut entries);
         Ok((entries, counts))
     }
 }
 
 /// The layer entry for `p`, which the walk saw as `meta`; `None` for a
-/// socket.
+/// socket. The entry is pinned once ([`RootPath::pin`]: no symlink in any
+/// component, on the root's mount) and checked to be the walk's inode;
+/// its link target and xattrs are read from that pin.
 fn make_entry(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Option<Entry>> {
+    if meta.kind == FileType::Socket {
+        return Ok(None);
+    }
+    let pinned = pin_same(root, p, meta)?;
     let kind = match meta.kind {
         FileType::Directory => EntryKind::Dir,
         FileType::Regular => EntryKind::File { size: meta.size },
-        FileType::Symlink => {
-            check_same(root, p, meta)?;
-            EntryKind::Symlink(root.read_link(p)?.into_os_string().into_vec())
-        }
+        FileType::Symlink => EntryKind::Symlink(pinned.read_link()?.into_os_string().into_vec()),
         FileType::CharDevice => EntryKind::Char(meta.rdev.0, meta.rdev.1),
         FileType::BlockDevice => EntryKind::Block(meta.rdev.0, meta.rdev.1),
         FileType::Fifo => EntryKind::Fifo,
@@ -187,8 +193,7 @@ fn make_entry(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Option<Entr
     // Only files and directories carry xattrs the walk compares; of those,
     // only `security.capability` reaches the layer.
     let xattrs = if matches!(meta.kind, FileType::Regular | FileType::Directory) {
-        check_same(root, p, meta)?;
-        lowers::layer_xattrs(root.xattrs(p)?)
+        lowers::layer_xattrs(pinned.xattrs()?)
     } else {
         Vec::new()
     };
@@ -209,12 +214,41 @@ fn meta_dev(meta: &EntryMeta) -> u64 {
     (u64::from(meta.dev.0) << 32) | u64::from(meta.dev.1)
 }
 
-/// Fails unless `p` is still the entry the walk saw: the same type, device
-/// and inode.
-fn check_same(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<()> {
-    let st = root.statx(p)?;
-    if same_stat(&st, meta) {
-        Ok(())
+/// Clears the hardlink key of every entry whose inode group does not agree
+/// on type, size, mode, owner and mtime: names of one inode always agree,
+/// so a disagreement means the inode number was reused during the walk,
+/// and linking them would give one name the other's content.
+fn split_reused_inodes(entries: &mut [Entry]) {
+    let mut first: HashMap<(u64, u64), usize> = HashMap::new();
+    let mut bad = HashSet::new();
+    for (i, e) in entries.iter().enumerate() {
+        let Some(key) = e.inode else { continue };
+        match first.get(&key).and_then(|&j| entries.get(j)) {
+            Some(f) => {
+                if (&f.kind, f.mode, f.uid, f.gid, f.mtime)
+                    != (&e.kind, e.mode, e.uid, e.gid, e.mtime)
+                {
+                    bad.insert(key);
+                }
+            }
+            None => {
+                first.insert(key, i);
+            }
+        }
+    }
+    for e in entries.iter_mut() {
+        if e.inode.is_some_and(|k| bad.contains(&k)) {
+            e.inode = None;
+        }
+    }
+}
+
+/// Pins `p` ([`RootPath::pin`]) and fails unless it is still the entry the
+/// walk saw: the same type, device and inode.
+fn pin_same(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Pinned> {
+    let pinned = root.pin(p)?;
+    if same_stat(pinned.stat(), meta) {
+        Ok(pinned)
     } else {
         Err(changed(p))
     }
@@ -229,13 +263,6 @@ fn changed(p: &Path) -> Error {
         path: p.to_owned(),
         reason: "it changed between the walk and the export",
     }
-}
-
-/// Whether the open file `fd` is the inode the walk saw as `meta`.
-fn same_inode(fd: &OwnedFd, meta: &EntryMeta) -> io::Result<bool> {
-    let got = rustix::fs::fstat(fd).map_err(io::Error::from)?;
-    Ok(got.st_ino == meta.ino
-        && (rustix::fs::major(got.st_dev), rustix::fs::minor(got.st_dev)) == meta.dev)
 }
 
 /// File contents and parent directories for the writer, from the live
@@ -254,12 +281,12 @@ impl EntrySource for Source<'_> {
             .files
             .get(p)
             .ok_or_else(|| io::Error::other(format!("{} is not in the diff", p.display())))?;
-        // Pinned with `O_PATH`, checked to be a regular file, then reopened:
-        // a FIFO or device swapped in is never opened.
-        let fd = self.root.open_regular(p).map_err(io::Error::other)?;
-        if !same_inode(&fd, &meta)? {
-            return Err(io::Error::other(changed(p)));
-        }
+        // Pinned with `O_PATH` on the physical path, checked to be the
+        // walk's regular file, then reopened: a FIFO or device swapped in,
+        // or a parent turned into a symlink or a mount, is never opened.
+        let fd = pin_same(self.root, p, &meta)
+            .and_then(|pinned| Ok(pinned.open_regular()?))
+            .map_err(io::Error::other)?;
         if let EntryKind::File { size } = entry.kind {
             self.bytes_read += size;
         }
@@ -268,11 +295,12 @@ impl EntrySource for Source<'_> {
 
     fn parent(&mut self, path: &EntryPath) -> io::Result<Option<Entry>> {
         let p = Path::new(OsStr::from_bytes(path.as_bytes()));
-        let st = self.root.statx(p).map_err(io::Error::other)?;
+        let pinned = self.root.pin(p).map_err(io::Error::other)?;
+        let st = pinned.stat();
         if st.file_type() != FileType::Directory {
             return Ok(None);
         }
-        let xattrs = self.root.xattrs(p).map_err(io::Error::other)?;
+        let xattrs = pinned.xattrs().map_err(io::Error::other)?;
         Ok(Some(Entry {
             path: path.clone(),
             kind: EntryKind::Dir,

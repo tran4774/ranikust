@@ -44,12 +44,14 @@ impl RootPath {
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (ranikust's workdir marker check)
+    pub fn pin(&self, p) -> Result<Pinned>;              // built: O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (a physical path: the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // built: every later resolution with RESOLVE_NO_XDEV, sub_root included (rnk-sandbox's journal, ADR-0043)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // built: every xattr, overlay's too, sorted; no follow, no open of a FIFO or device (rnk-snapshot's exporter)
     // built: create_dir, create_dir_all, symlink, read_link, hard_link,
     // rename, remove_file, remove_dir; mnt_id()
 }
+pub struct Pinned;                                      // built: stat(), read_link() (readlinkat(fd, "")), xattrs() (none for a symlink), open_regular() (reopen of the pinned inode)
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // built: kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
@@ -143,7 +145,8 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 - `chown` clears setuid, setgid, `security.capability`: owner first.
 - Reading a file moves an old atime (relatime): check times before reading.
 - An image's file opened as root may be a FIFO (hang) or a device node (the
-  host's device): use `open_regular`.
+  host's device): use `open_regular`, or `pin` then `Pinned::open_regular`
+  for a physical path (no symlink followed, no mount crossed).
 - `extract` never crosses a mount and refuses sparse entries; extension
   headers are unbounded for now (Q-056). Overlay form: a hardlink into a
   lower layer has no target in `layers/<id>`; `extract_overlay` copies it

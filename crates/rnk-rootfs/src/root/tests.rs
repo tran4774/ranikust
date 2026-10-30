@@ -274,6 +274,56 @@ fn stay_on_mount_refuses_to_resolve_into_another_mount() {
 }
 
 #[test]
+fn pin_refuses_a_symlink_in_a_parent_and_reads_through_the_pin() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/f"), b"abc").unwrap();
+    fs::create_dir(f.host("other")).unwrap();
+    fs::write(f.host("other/f"), b"zzz").unwrap();
+    symlink("other", f.host("l")).unwrap();
+    symlink("d/f", f.host("s")).unwrap();
+
+    let e = f.root.pin("l/f").unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::LOOP), "{e}");
+
+    let pinned = f.root.pin("d/f").unwrap();
+    assert_eq!(pinned.stat().file_type(), FileType::Regular);
+    // The name now leads elsewhere; the pin still reads the inode it holds.
+    fs::rename(f.host("d"), f.host("gone")).unwrap();
+    symlink("other", f.host("d")).unwrap();
+    let mut content = String::new();
+    std::fs::File::from(pinned.open_regular().unwrap())
+        .read_to_string(&mut content)
+        .unwrap();
+    assert_eq!(content, "abc");
+    assert!(pinned.read_link().is_err());
+
+    let link = f.root.pin("s").unwrap();
+    assert_eq!(link.stat().file_type(), FileType::Symlink);
+    assert_eq!(link.read_link().unwrap(), Path::new("d/f"));
+    assert!(link.open_regular().is_err(), "a symlink is never opened");
+    assert!(link.xattrs().unwrap().is_empty());
+}
+
+#[test]
+fn pin_never_opens_a_fifo() {
+    let f = Fixture::new();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        f.host("p"),
+        rustix::fs::FileType::Fifo,
+        Mode::from_raw_mode(0o644),
+        0,
+    )
+    .unwrap();
+    let pinned = f.root.pin("p").unwrap();
+    assert_eq!(pinned.stat().file_type(), FileType::Fifo);
+    assert!(pinned.open_regular().is_err());
+    // Reading xattrs goes through the magic link without opening the FIFO.
+    pinned.xattrs().unwrap();
+}
+
+#[test]
 fn read_names_lists_entries_without_following_symlinks() {
     let f = Fixture::new();
     assert!(f.root.read_names("/").unwrap().is_empty());

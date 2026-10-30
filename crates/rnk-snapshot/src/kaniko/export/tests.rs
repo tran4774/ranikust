@@ -250,6 +250,50 @@ fn a_fifo_swapped_in_for_a_file_is_never_opened() {
 }
 
 #[test]
+fn a_parent_swapped_for_a_symlink_is_never_followed() {
+    let f = Fixture::new();
+    f.write("d/f", b"before");
+    // Rewritten in place: `d` itself is unchanged, only `d/f` is in the diff.
+    let d = diff_after(&f, |f| f.write("d/f", b"walked"));
+    assert_eq!(d.changed.len(), 1);
+    // `d` now leads, through a symlink, to another file of the same name
+    // and size: following it would put other content in the layer.
+    fs::rename(f.p("d"), f.p("d0")).unwrap();
+    f.write("other/f", b"secret");
+    symlink("other", f.p("d")).unwrap();
+    for e in [
+        d.export(&f.root, options(), Vec::new()).unwrap_err(),
+        d.entries(&f.root).unwrap_err(),
+    ] {
+        // `RESOLVE_NO_SYMLINKS`: ELOOP, nothing opened through the link.
+        assert!(
+            e.to_string().to_lowercase().contains("symbolic link"),
+            "{e}"
+        );
+    }
+}
+
+#[test]
+fn names_of_a_reused_inode_are_not_linked() {
+    let entry = |p: &[u8], size: u64| Entry {
+        path: EntryPath::new(p).unwrap(),
+        kind: EntryKind::File { size },
+        mode: 0o100_644,
+        uid: 0,
+        gid: 0,
+        mtime: 1,
+        xattrs: BTreeMap::new(),
+        inode: Some((1, 7)),
+    };
+    let mut same = vec![entry(b"a", 3), entry(b"b", 3)];
+    split_reused_inodes(&mut same);
+    assert!(same.iter().all(|e| e.inode == Some((1, 7))));
+    let mut reused = vec![entry(b"a", 3), entry(b"b", 4), entry(b"c", 3)];
+    split_reused_inodes(&mut reused);
+    assert!(reused.iter().all(|e| e.inode.is_none()));
+}
+
+#[test]
 fn the_layer_does_not_depend_on_the_walk_worker_count() {
     let f = Fixture::new();
     for i in 0..40 {

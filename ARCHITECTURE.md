@@ -119,7 +119,9 @@ policy, or define the store layout (`rnk-store`).
 
 All filesystem access inside a build root. `RootPath` resolves every path
 through file descriptors (`openat2` with `RESOLVE_IN_ROOT`), so `..` and
-symlinks cannot escape. Built on it: layer extraction from an already
+symlinks cannot escape; `RootPath::pin` pins a physical path, one with no
+symlink in any component and on the root's own mount, for reads that must
+be the entry a walk saw (`Pinned`). Built on it: layer extraction from an already
 decompressed tar stream, writing whiteouts in the form the caller asks for;
 copy, ownership, xattrs; `USER` and `--chown` name lookup in the root's
 `/etc/passwd` and `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the
