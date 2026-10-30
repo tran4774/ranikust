@@ -86,9 +86,9 @@ from `rnk-store`, secret file) and passes `--network`.
   [design, Phase 3], network for `--network=none`, with `lo` up: the
   clone's own; where `CAP_NET_ADMIN` is missing, refused, or with
   `Sandbox::allow_userns_network` (`--allow network.none-userns`) one a
-  holder process creates in a user namespace of its own, which the child
-  joins by pidfd and runs under the `seccomp` module's filter; probed once,
-  ADR-0033, `NetHolder`, `probe_network`). Mounts
+  helper creates in a user namespace of its own and hands over as an nsfs
+  descriptor, which the child joins and runs under the `seccomp` module's
+  denylist filter; probed once, ADR-0033, `NetNs`, `probe_network`). Mounts
   exist only in the child, so the parent diffs the root as the image left
   it.
 - Mount order: all mounts private, self-bind remounted `nodev`, `proc`,

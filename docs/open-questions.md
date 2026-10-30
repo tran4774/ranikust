@@ -1084,7 +1084,7 @@ Entry format:
 - **Answer (2026-10-30):** (a) by default: refused where the build
   process cannot bring up `lo`; `--allow network.none-userns` opts in to
   (c), a network namespace owned by a user namespace of its own, with a
-  seccomp filter on the `RUN`, since its root holds every capability in
-  that user namespace. Phase 3 moves the opt-in to running the `RUN`
+  seccomp filter on the `RUN` (a denylist; rtnetlink stays open), since its
+  root holds every capability in that user namespace. Phase 3 moves the opt-in to running the `RUN`
   inside the user namespace. Recorded in
   [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md).

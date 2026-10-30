@@ -255,7 +255,7 @@ pub enum Error {
     },
     /// `RUN --network=none` cannot bring up loopback, with
     /// `--allow network.none-userns` either: user namespaces, or joining one
-    /// by pidfd, are denied (ADR-0033).
+    /// by `setns`, are denied (ADR-0033).
     #[error(
         "RUN --network=none: cannot bring up the loopback interface: without \
          CAP_NET_ADMIN ({direct}), and through a user namespace ({userns}); \

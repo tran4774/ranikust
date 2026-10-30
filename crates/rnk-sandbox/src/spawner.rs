@@ -194,7 +194,7 @@ pub(crate) struct Spawned {
     /// Read end of the error pipe: end-of-file once `execve` succeeded.
     failures: OwnedFd,
     /// The network namespace the child joined, closed once it is reaped.
-    holder: Option<NetNs>,
+    netns: Option<NetNs>,
 }
 
 /// This process's pid as `/proc` numbers it: the parent pid its children
@@ -248,7 +248,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let err_w = above_stdio(err_w)?;
     // Last before the clone: nothing can fail between it and the clone
     // without ending it.
-    let holder = if hold_network {
+    let netns = if hold_network {
         let ns =
             NetNs::create(true).map_err(|e| sys_err("create the RUN's network namespace", e))?;
         args.netns = Some(ns.fd.as_raw_fd());
@@ -281,7 +281,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     drop(keep);
     if ret < 0 {
         let e = io::Error::last_os_error();
-        drop(holder);
+        drop(netns);
         return Err(match e.raw_os_error() {
             Some(libc::EPERM) => Error::Privilege("creating the RUN namespaces"),
             _ => sys_err("clone", e),
@@ -295,7 +295,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     Ok(Spawned {
         pid,
         failures,
-        holder,
+        netns,
     })
 }
 
@@ -1091,7 +1091,7 @@ fn execute(
     let Spawned {
         pid,
         failures,
-        holder,
+        netns,
     } = spawn(job)?;
     if let Some(r) = running {
         r.add(pid, isolation);
@@ -1124,7 +1124,7 @@ fn execute(
     };
     let reaped = reap(pid);
     // The child is reaped: its namespace can end with this descriptor.
-    drop(holder);
+    drop(netns);
     let (status, usage) = reaped?;
     killed?;
     if cancelled {
