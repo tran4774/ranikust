@@ -358,28 +358,6 @@ Entry format:
   exporter's directory and one rename.
 - **Raised:** 2026-10-30
 
-### Q-183: What does `RUN --network=none` do without `CAP_NET_ADMIN`?
-
-- **Blocks:** Phase 1 acceptance (`--network=none`); Phase 3;
-  **Area:** `rnk-sandbox`
-- **Context:** the sandbox brings up loopback in the `RUN`'s new network
-  namespace, which needs `CAP_NET_ADMIN` over it. In a container with
-  Docker's or podman's default capabilities plus `SYS_ADMIN` (the
-  `MS_MOVE` environment) that step fails with `EPERM`, measured with the
-  e2e build in rootless podman; `--privileged` and real root work.
-- **Options:** (a) refuse, as now (`RUN sandbox: bring up the loopback
-  interface: Operation not permitted`); (b) run with loopback down when
-  it cannot be brought up, with a warning; (c) create the network
-  namespace inside a user namespace, whose root may bring it up.
-- **Recommendation:** none
-- **Interim:** (a); the VM's `SYS_ADMIN` variant adds `NET_ADMIN` for
-  the e2e build. Reversible: one step of the child's set-up.
-- **Escalated:** to the maintainer under the ADR-0032 rule (B1: BuildKit
-  always has loopback up through runc, inside a user namespace when
-  rootless, while the `MS_MOVE` environment may deny `CAP_NET_ADMIN` and
-  user namespaces).
-- **Raised:** 2026-10-30
-
 ### Q-029: Which crate computes LayerDemand?
 
 - **Blocks:** Phase 1 tasks 11, 12; **Area:** `rnk-builder`, `rnk-sched`
@@ -1100,3 +1078,11 @@ Entry format:
   `--insecure-registry <host>` (repeatable) with kaniko's meaning
   (`ADR-0011`), HTTPS first and plain HTTP when it fails
   (`feat/rnk-builder-executors`).
+
+### Q-183: What does `RUN --network=none` do without `CAP_NET_ADMIN`?
+
+- **Answer (2026-10-30):** option (c) with fallback (a): where the build
+  process cannot bring up `lo`, the network namespace is created inside a
+  user namespace of its own, as rootless BuildKit does; where user
+  namespaces are denied too, the `RUN` is refused. Recorded in
+  [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md).

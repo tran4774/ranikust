@@ -48,6 +48,23 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 `CLONE_NEWIPC`, plus `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`, plus
 `CLONE_NEWNET` for `--network=none`.
 
+`--network=none` needs `lo` up, which needs `CAP_NET_ADMIN` over the new
+network namespace. The first such `RUN` probes it once
+([ADR-0033](../adr/0033-network-none-loopback-through-a-user-namespace.md)):
+where the build process can bring `lo` up in a namespace of its own (root
+on a host, `--privileged`, rootless podman), the clone creates the network
+namespace and the child brings `lo` up after entering the root, as before.
+Where it cannot (Docker's default capabilities plus `SYS_ADMIN`), a holder
+process creates a user namespace and a network namespace owned by it,
+brings `lo` up there and waits; the child is cloned without
+`CLONE_NEWNET` and joins that namespace through the holder's pidfd
+(`setns`) as its first step, before any mount, so `sysfs` shows it. Only
+the network namespace changes owner: the child stays in the build's user
+namespace with its uid, gid and capabilities. The holder closes every
+descriptor it inherited, dies with the spawner thread, and is killed and
+reaped after the `RUN`. Where user namespaces are denied too, the `RUN` is
+refused with both errnos.
+
 1. `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then check that the parent process
    did not die before: `getppid()` is 0 in a new PID namespace, so the child
    reads the parent pid in its own `/proc/self/stat` of the outer procfs,

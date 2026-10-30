@@ -35,6 +35,11 @@ privileged container, or as a regular user who may create user namespaces.
   itself sees (so Kubernetes `hostAliases` keep working), or only loopback
   names with `--network=none`
   ([ADR-0031](https://github.com/tran4774/ranikust/blob/main/docs/adr/0031-run-host-name-and-hosts-file.md)).
+  A `RUN --network=none` sees only a loopback interface, which is up. In a
+  container without `CAP_NET_ADMIN`, ranikust needs user namespaces for it,
+  as rootless BuildKit does; where they are denied too, such a `RUN` stops
+  the build with an error that says so
+  ([ADR-0033](https://github.com/tran4774/ranikust/blob/main/docs/adr/0033-network-none-loopback-through-a-user-namespace.md)).
 - Stages that do not depend on each other build in parallel, up to `--jobs`
   at a time, which defaults to the number of CPUs available to ranikust
   ([ADR-0013](https://github.com/tran4774/ranikust/blob/main/docs/adr/0013-jobs-default-available-parallelism.md)).

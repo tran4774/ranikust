@@ -103,3 +103,4 @@ when new measurements contradict its evidence.
 | [0030](0030-phase-1-dependency-picks.md) | Phase 1 dependencies: rustix, sha2, gzip by hand, reqwest, own config.json reader, clap | Accepted | 2026-10-30 | Q-012 (Phase 1 O5), Exp 05 |
 | [0031](0031-run-host-name-and-hosts-file.md) | A RUN sees the fixed host name `ranikust` and the host's /etc/hosts, or loopback without network | Accepted | 2026-10-30 | Q-075, Q-076, kaniko source |
 | [0032](0032-observable-behaviour-follows-buildkit.md) | Observable build behaviour follows BuildKit | Accepted | 2026-10-30 | 28 open questions, BuildKit source |
+| [0033](0033-network-none-loopback-through-a-user-namespace.md) | `RUN --network=none` gets loopback through a user namespace where `CAP_NET_ADMIN` is missing | Accepted | 2026-10-30 | Q-183, VM smoke suite |
