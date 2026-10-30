@@ -55,7 +55,7 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | rootless overlay | Overlay mode inside a user namespace (`userxattr`); Phase 3 | `design/modes-and-detection.md#outcomes` |
 | `RootPath` | `rnk-rootfs` handle for paths in a root, resolved with `openat2(RESOLVE_IN_ROOT)` so `..` and symlinks cannot escape | [crates/rnk-rootfs.md](crates/rnk-rootfs.md) |
 | `--snapshot-mode` | kaniko's flag, same meaning: what the kaniko-mode walk compares (`full`, `redo`, `time`); ignored with a warning in overlay mode | `ADR-0023` |
-| `Snapshotter` | `rnk-snapshot` trait that yields an instruction's diff; overlay and kaniko implementations; signature `[open: Q-024]` until Phase 1 task 9 | `ARCHITECTURE.md#rnk-snapshot` |
+| `Snapshotter` | `rnk-snapshot` trait that yields an instruction's diff; overlay and kaniko implementations; signature in ADR-0046 | `ARCHITECTURE.md#rnk-snapshot` |
 | spawner thread | The one thread that forks every `RUN` child, alive for the whole build | `design/sandbox.md#process-set-up-once-per-build` |
 | stage squashing | kaniko folds a base stage into its only child; ranikust does it only in sequential kaniko mode | [kaniko-map.md](kaniko-map.md#behaviour-to-match) |
 | `StageRootfs` | `rnk-snapshot` trait for a stage's root: a shared `/` runs alone, a private directory may run in parallel | `design/kaniko-mode.md#variants` |

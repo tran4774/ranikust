@@ -165,24 +165,6 @@ Entry format:
   usage error, exit code 2. Reversible: one check in `main.rs`.
 - **Raised:** 2026-10-30
 
-### Q-024: What is the Snapshotter signature?
-
-- **Blocks:** Phase 1 task 9; **Area:** `rnk-snapshot`
-- **Context:** `ADR-0002` names the trait; its signature is designed in
-  task 9 ([rnk-snapshot](agents/crates/rnk-snapshot.md#api),
-  [glossary](agents/glossary.md#terms),
-  [ARCHITECTURE.md](../ARCHITECTURE.md#rnk-snapshot)).
-- **Options:** the card's sketch (`prepare(base, parent)`, `final_root`),
-  or the shape task 9 arrives at.
-- **Recommendation:** none
-- **Interim:** task 9's shape (`feat/rnk-snapshot`):
-  `Snapshotter::{base_layer, prepare(Base::Scratch | Image | Stage)}` and
-  `StageRootfs::{root, mount_point, begin_layer, end_layer -> LayerDiff,
-  view, release}`; `final_root` became `view` (a read-only mount between
-  layers), and `sharing` waits for kaniko mode (Phase 2). Reversible: one
-  implementation, and no caller until `rnk-builder` (task 11).
-- **Raised:** 2026-10-30
-
 ### Q-152: How are read-only layer roots published without root?
 
 - **Blocks:** Phase 3 (rootless overlay); **Area:** `rnk-store`,
@@ -592,6 +574,15 @@ Entry format:
 - **Answer (2026-10-31):** option (a), kaniko's `SaveStage` behaviour:
   every unit with `save_image` is walked. Recorded in
   [ADR-0044](adr/0044-kaniko-mode-walks-every-kept-stage.md).
+
+### Q-024: What is the Snapshotter signature?
+
+- **Answer (2026-10-31):** the interim shape, with associated types:
+  `Snapshotter::Layer` (a base layer as the mode keeps it) and
+  `StageRootfs::Diff: ExportLayer` (a closed layer), and
+  `StageRootfs::set_layers_needed` for lazy snapshots, so overlay and kaniko
+  mode share one builder. Recorded in
+  [ADR-0046](adr/0046-snapshotter-signature.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

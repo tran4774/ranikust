@@ -62,6 +62,54 @@ its image is kept for a later `FROM` (`save_image`); both are kept in the
 state directory before the root is emptied. `rnk-sched` runs the units one
 at a time, in plan order (`Placement::Shared`).
 
+## Stage roots on the shared root
+
+`rnk_snapshot::Kaniko` is the kaniko-mode `Snapshotter`, `KanikoRoot` its
+`StageRootfs`, on the traits as [ADR-0046](../adr/0046-snapshotter-signature.md)
+settles them (Q-024):
+
+- **One root, one holder.** `Kaniko` holds the root as a `RootPath` opened
+  once: the claimed workdir's (`ranikust::workdir::Workdir::root`), or `/`
+  in a container; never a path opened again. At most one `KanikoRoot` holds
+  it at a time; `prepare(Base::Stage(parent))` takes it over from `parent`
+  when nothing emptied the root since (a squashed chain), and fails
+  otherwise.
+- **Base layers are blobs.** `base_layer` records the blob in the store and
+  extracts nothing: the root is the only copy. `prepare` empties the root,
+  then decodes each base layer into it with `rnk_rootfs::extract_live`,
+  checking its diff ID as overlay mode does.
+- **The ignore list** is built once per build from `/proc/self/mountinfo`,
+  `--ignore-path`, `--ignore-var-run` and the state directory, with the root
+  and state directory paths read back from `/proc/self/fd` of the
+  descriptors actually used (`rnk_snapshot::kaniko::ignore_list`). It is
+  used by extraction, the walk and deletion alike.
+- **Layers.** A stage whose layers are needed (`set_layers_needed`, from the
+  lazy-snapshot rule) takes a baseline walk after its base, then
+  `end_layer` walks and diffs, and the diff, held with the root, is the
+  layer source; `rnk-builder` encodes it before the next instruction, into
+  a temporary blob that is dropped on error (`LayerExporter::export`). An
+  unchanged `RUN` gives an empty layer. A stage whose layers are not needed
+  is never walked: `end_layer` returns an empty diff that is never encoded.
+  `begin_layer` and `view` do nothing but hand out the root.
+- **Release** empties the root with `rnk_rootfs::delete_contents` and the
+  ignore list (the state directory, mounts and the workdir marker stay),
+  then `Walker::forget`.
+- **A vanished or swapped entry fails the walk** (`Error::Changed`),
+  directories and files alike, as kaniko's walk fails on a callback or
+  hash error (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1688-1691`,
+  `pkg/snapshot/layered_map.go:160-163`): nothing may change the root while
+  it is walked.
+- **`RUN`** gets `Isolation::Direct` on the root's path (`/` or the
+  workdir), `RLIMIT_NOFILE` as ranikust started (`NofileLimit::current()`
+  before the raise, `Sandbox::set_nofile_limit`).
+- **Not on this path yet** (Phase 2 task 8 integration): keeping a stage's
+  `COPY --from` files and saved image in the state directory before the
+  root is emptied. Until then a sequential build whose stages read an
+  earlier, emptied stage stops with a message naming the stage; squashed
+  chains and single-stage builds run.
+- **Refused:** kaniko mode without root, per-stage directories (task 9)
+  and `--parallel-stages` (task 10), each with its reason.
+
 ## Walk, hash and diff
 
 - **Parallel walk**: one task per directory on a `rayon` pool. A directory is
