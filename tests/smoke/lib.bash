@@ -97,3 +97,16 @@ smoke_check_no_secret() {
     fi
   done
 }
+
+# The secret $1 must not appear in the files after it: build logs, the
+# metrics report.
+smoke_check_no_secret_in() {
+  local secret="$1" f
+  shift
+  for f in "$@"; do
+    if grep -aq -- "$secret" "$f"; then
+      echo "error: the secret leaked into $f" >&2
+      return 1
+    fi
+  done
+}

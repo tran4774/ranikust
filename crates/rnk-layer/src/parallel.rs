@@ -385,3 +385,118 @@ impl StreamHash {
 fn stopped() -> io::Error {
     io::Error::other("a compression worker thread stopped")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Counts compressions running at once; the block bytes pass through.
+    #[derive(Clone)]
+    struct Probe {
+        active: Arc<AtomicUsize>,
+        most: Arc<AtomicUsize>,
+    }
+
+    impl Codec for Probe {
+        type Block = Vec<u8>;
+        type State = ();
+        type Scratch = ();
+        const BLOCK_SIZE: usize = 8;
+        const NAME: &'static str = "probe";
+        const BLOCK_FOR_EMPTY_INPUT: bool = false;
+
+        fn header(&self) -> Vec<u8> {
+            Vec::new()
+        }
+        fn carry(&self, _block: &[u8]) -> Vec<u8> {
+            Vec::new()
+        }
+        fn scratch(&self) -> io::Result<()> {
+            Ok(())
+        }
+        fn compress(&self, _scratch: &mut (), _carried: &[u8], data: &[u8]) -> io::Result<Vec<u8>> {
+            let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most.fetch_max(now, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(5));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(data.to_vec())
+        }
+        fn absorb(_state: &mut (), block: Vec<u8>) -> Vec<u8> {
+            block
+        }
+        fn trailer(&self, _state: ()) -> Vec<u8> {
+            Vec::new()
+        }
+    }
+
+    /// A writer the test can read while the encoder still owns it.
+    #[derive(Clone, Default)]
+    struct Shared(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Shared {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| io::Error::other("poisoned"))?
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn probe() -> Probe {
+        Probe {
+            active: Arc::new(AtomicUsize::new(0)),
+            most: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    // Phase 1 acceptance: blocks are compressed on several threads at once.
+    #[test]
+    fn blocks_are_compressed_on_several_threads_at_once() {
+        let codec = probe();
+        let threads = NonZeroUsize::new(4).unwrap();
+        let mut enc = BlockEncoder::new(Shared::default(), codec.clone(), threads).unwrap();
+        let input: Vec<u8> = (0..=255u8).cycle().take(64 * 8).collect();
+        enc.write_all(&input).unwrap();
+        let (out, (_, read), (_, written)) = enc.finish().unwrap();
+        assert_eq!(*out.0.lock().unwrap(), input);
+        assert_eq!((read, written), (512, 512));
+        assert!(
+            codec.most.load(Ordering::SeqCst) >= 2,
+            "never more than one compression at once"
+        );
+    }
+
+    // Phase 1 acceptance: the tar is streamed into the compressor. Output
+    // grows while input still arrives, and the blocks held in flight stay
+    // bounded whatever the input size.
+    #[test]
+    fn output_is_written_while_input_still_arrives() {
+        let out = Shared::default();
+        let threads = NonZeroUsize::new(2).unwrap();
+        let mut enc = BlockEncoder::new(out.clone(), probe(), threads).unwrap();
+        let limit = 2 * QUEUE_PER_THREAD;
+        for i in 0..100u8 {
+            enc.write_all(&[i; 8]).unwrap();
+            let in_flight = usize::try_from(enc.next_submit - enc.next_write).unwrap();
+            assert!(
+                in_flight < limit,
+                "{in_flight} blocks in flight after block {i}"
+            );
+        }
+        let before_finish = out.0.lock().unwrap().len();
+        assert!(
+            before_finish >= (100 - limit) * 8,
+            "only {before_finish} bytes written before finish"
+        );
+        enc.finish().unwrap();
+        assert_eq!(out.0.lock().unwrap().len(), 800);
+    }
+}

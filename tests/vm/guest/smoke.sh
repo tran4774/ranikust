@@ -202,12 +202,40 @@ for v in "${VARIANTS[@]}"; do
     { echo "error: $name: the e2e image does not run as $SMOKE_E2E_USER" >&2; exit 1; }
   sudo docker rmi -f localhost/rnk-e2e:latest >/dev/null
   if [ "$name" = host ]; then
-    # --reproducible: one digest, whatever --jobs.
+    # Phase 1 acceptance, --reproducible: one digest whatever --jobs, for
+    # builds at different times, and with metrics on and off.
     a="$(e2e "$name" "$syscall" --reproducible)"
     b="$(e2e "$name" "$syscall" --reproducible --jobs 1)"
-    [ "$a" = "$b" ] ||
-      { echo "error: --reproducible digests differ: $a with the default jobs, $b with 1" >&2; exit 1; }
-    echo "host: --reproducible gives $a with --jobs 1 and the default"
+    sleep 2
+    m="$W/host/e2e/metrics.json"
+    c="$(e2e "$name" "$syscall" --reproducible --metrics-file "$m")"
+    [ "$a" = "$b" ] && [ "$a" = "$c" ] ||
+      { echo "error: --reproducible digests differ: $a (default jobs), $b (--jobs 1), $c (later, with metrics)" >&2; exit 1; }
+    sudo test -s "$m" || { echo "error: no metrics report at $m" >&2; exit 1; }
+    echo "host: --reproducible gives $a with --jobs 1 and the default, 2 s later, and with metrics on"
+    # Phase 1 acceptance: the secret reaches no build log and no metrics
+    # report (the blobs are checked above, the RUN environments in the
+    # Dockerfile).
+    sudo bash -c "$(declare -f smoke_check_no_secret_in); \
+      smoke_check_no_secret_in '$SMOKE_E2E_SECRET' '$W/host/e2e.log' '$m'"
+    echo "host: the secret is in no log and no metrics report"
+    # Phase 1 acceptance: a cache mount persists across builds with the
+    # same state directory, and only through it.
+    p="$W/host/persist"
+    nonce="$(od -An -N8 -tx8 /dev/urandom | tr -d ' ')"
+    sudo mkdir -m 700 -p "$p/w" "$p/w2" "$p/write" "$p/read"
+    printf 'FROM %s\nARG NONCE\nRUN --mount=type=cache,id=persist,target=/c echo "$NONCE" > /c/n\n' "$IMAGE" |
+      sudo tee "$p/write/Dockerfile" >/dev/null
+    printf 'FROM %s\nARG NONCE\nRUN --mount=type=cache,id=persist,target=/c test "$(cat /c/n 2>/dev/null)" = "$NONCE"\n' "$IMAGE" |
+      sudo tee "$p/read/Dockerfile" >/dev/null
+    persist() {
+      sudo "$RNK" --context "$p/$1" --no-push --workdir "$p/$2" --build-arg "NONCE=$nonce" \
+        >>"$p/log" 2>&1
+    }
+    persist write w || { echo "error: the cache-writing build failed" >&2; cat "$p/log" >&2; exit 1; }
+    persist read w || { echo "error: the cache did not persist into the next build" >&2; cat "$p/log" >&2; exit 1; }
+    ! persist read w2 || { echo "error: a fresh state directory saw the cache" >&2; exit 1; }
+    echo "host: a cache mount persists across builds sharing a state directory, and only there"
     # A cancel kills the running RUN, as BuildKit (ADR-0032): SIGINT while
     # a RUN sleeps ends the build at once, and no RUN process is left. The
     # RUN mounts the secret, which lives only on the RUN's own tmpfs: it is

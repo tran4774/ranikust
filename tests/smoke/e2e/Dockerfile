@@ -13,10 +13,15 @@ COPY . /ctx/
 RUN test -f /ctx/app.txt && test ! -e /ctx/ignored.txt && test -f conf/a.conf && test -f conf/b.conf
 RUN echo "$GREETING from ranikust" > hello && cat app.txt >> hello
 RUN --mount=type=cache,target=/cache echo cached > /cache/stamp && ls /cache > cache-list
-RUN --network=none test "$(ls /sys/class/net)" = lo
+# Phase 1 acceptance: `--network=none` sees only loopback, and nothing
+# outside answers.
+RUN --network=none test "$(ls /sys/class/net)" = lo && test "$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ')" = lo
+RUN --network=none sh -c '! wget -q -T 3 -O /dev/null http://1.1.1.1/'
 # Loopback is up (IFF_UP), also without CAP_NET_ADMIN (ADR-0033).
 RUN --network=none test $(( $(cat /sys/class/net/lo/flags) & 1 )) = 1
-RUN --mount=type=secret,id=token test "$(cat /run/secrets/token)" = s3cr3t
+# The secret's value never appears in the Dockerfile, so that it may be
+# searched for in logs and blobs: this is its sha256.
+RUN --mount=type=secret,id=token test "$(sha256sum < /run/secrets/token | cut -d' ' -f1)" = 4e738ca5563c06cfd0018299933d58db1dd8bf97f6973dc99bf6cdc64b5550bd
 # BuildKit's secret file: 0400 and root's unless asked; env= alone gives a
 # variable of this RUN and no file (ADR-0032).
 RUN --mount=type=secret,id=token test "$(stat -c %a:%u:%g /run/secrets/token)" = 400:0:0
