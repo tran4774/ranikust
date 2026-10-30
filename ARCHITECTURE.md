@@ -179,7 +179,8 @@ Runs the stage DAG. Each stage is an async task started when its
 dependencies finish; root-independent work (base pulls, cache lookups)
 starts for all stages up front. `--jobs` bounds concurrent `RUN`s, available
 memory bounds how many stages run at once, a stage on the shared `/` runs
-alone, the first failure cancels the rest, logs are tagged per stage. A
+alone (Phase 2), the first failure cancels the rest, logs are tagged per
+stage. A
 stage is built through the `StageRunner` trait, which the builder's side
 implements and tests fake.
 **Must not** know how a stage is built, or let output depend on execution
@@ -260,7 +261,8 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
    store and look up the cache, in parallel (`rnk-registry`, `rnk-store`,
    `rnk-cache`).
 5. **Schedule** (`rnk-sched`): start each stage once its dependencies are
-   done, at most `--jobs` `RUN`s at a time; one at a time on a shared `/`.
+   done, at most `--jobs` `RUN`s at a time; one at a time on a shared `/`
+   (Phase 2).
 6. **Build a stage** (`rnk-builder`): prepare the root (`rnk-snapshot`:
    overlay mount over the layer store, or extraction plus a baseline walk).
    For each instruction compute the cache key; on a hit add the cached

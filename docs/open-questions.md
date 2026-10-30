@@ -733,10 +733,16 @@ Entry format:
 - **Interim:** add the hook and measure in Phase 1; thresholds stay open
   ([rnk-sched](agents/crates/rnk-sched.md#phase-1)). On branch
   `feat/rnk-sched` the hook is the `MemoryGate` trait, checked before each
-  stage starts; `SystemMemory` admits a stage while free memory (cgroup v2
-  `memory.max` − `memory.current`, else `MemAvailable`) is at least an
-  eighth of the limit and at least 512 MiB, and always when no stage runs.
-  Reversible: one function, and the gate is replaceable.
+  stage starts; `SystemMemory` admits a stage while free memory is at
+  least an eighth of the limit and at least 512 MiB, and always when no
+  stage runs. Free memory under a cgroup v2 limit is `memory.max` less the
+  working set, `memory.current` minus `inactive_file` from `memory.stat`
+  (the kubelet's measure): page cache from pulls and extraction would
+  otherwise hold every later stage back. Without a limit it is
+  `MemAvailable`. The gate admits at most one stage per fresh reading,
+  500 ms or more after its last admission, so stages that become ready
+  together (W3's peak) do not all start on one reading. Reversible: one
+  function and two constants, and the gate is replaceable.
 - **Raised:** 2026-10-30
 
 ### Q-031: How does per-stage log grouping fit the kaniko log flags?

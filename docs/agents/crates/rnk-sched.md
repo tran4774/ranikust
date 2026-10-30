@@ -5,15 +5,16 @@
 
 **TL;DR:** Runs the stage DAG: each stage is an async task that starts when
 its dependencies finish, `--jobs` bounds concurrent `RUN`s, memory bounds
-concurrent stages, a stage on the shared `/` runs alone, the first failure
-cancels the rest. Output never depends on execution order: `--jobs 1` and the
-default give the same digests.
+concurrent stages, a stage on the shared `/` runs alone (Phase 2), the first
+failure cancels the rest. Output never depends on execution order: `--jobs 1`
+and the default give the same digests.
 
 ## Owns
 
 - One async task per stage, started when every stage it depends on is done.
 - Root-independent work for all stages up front: base pulls, cache lookups.
-- Limits: `--jobs` on `RUN`s, memory on stages, exclusivity for a shared `/`.
+- Limits: `--jobs` on `RUN`s, memory on stages, exclusivity for a shared `/`
+  (Phase 2).
 - Cancellation on the first failure, the exit code, per-stage log tags.
 
 ## Must not
@@ -51,7 +52,7 @@ pub struct SystemMemory;  // cgroup v2 memory.max - memory.current, else MemAvai
 pub struct Unlimited;
 pub struct LogTag { pub name: String, pub k: usize, pub n: usize }  // Display: [name k/n]
 pub struct BuildSummary<O> { pub stages: Vec<(usize, Arc<O>)>, pub target: usize }  // file order
-pub enum Error<E> { Stage { stage, name, source: E }, Prepare { .. }, Cancelled, Graph { stage, dependency } }
+pub enum Error<E> { Stage { stage, name, source: E }, Prepare { .. }, Cancelled, Graph { stage, reason } }
 pub use tokio_util::sync::CancellationToken;
 ```
 
@@ -69,11 +70,22 @@ pub use tokio_util::sync::CancellationToken;
 - `LayerDemand` is `rnk-builder`'s; which crate derives it from the graph
   and the outputs is [open: Q-029]. `StageJob` carries `graph` and `stage`,
   enough for either answer.
-- Memory gate: another stage starts while free memory is at least an
-  eighth of the limit, and at least 512 MiB; a stage always starts when
-  none runs; a stage held back asks again when one finishes, at the latest
-  every 250 ms. The algorithm and thresholds are [open: Q-030]; the gate is
-  a trait, so the placeholder is one function.
+- Memory gate: another stage starts while free memory (cgroup `memory.max`
+  less the working set, `memory.current` minus `inactive_file`; else
+  `MemAvailable`) is at least an eighth of the limit, and at least
+  512 MiB; at most one stage per fresh reading (500 ms after the last
+  admission); a stage always starts when none runs; a stage held back asks
+  again when one finishes, at the latest every 250 ms. The algorithm and
+  thresholds are [open: Q-030]; the gate is a trait, so the placeholder is
+  one function and two constants.
+- `--jobs` relies on the runner: `build` must call `run_slot` before each
+  `RUN` (ADR-0013). Later, the `RUN` entry point (`rnk-sandbox` through
+  `rnk-builder`) should take a `&RunPermit`, so a `RUN` without a permit
+  does not compile.
+- Clean-up belongs to the runner: on failure `run` drops the outputs and
+  unbuilt `Prepared` values, so the runner journals and removes its roots
+  and pulls itself. `run` is not cancel safe: cancel the token and keep
+  awaiting.
 - Log lines carry `[<stage-name> <k>/<n>]`, `k` the position among the
   stages the build runs; grouping per stage is [open: Q-031].
 
@@ -86,7 +98,8 @@ pub use tokio_util::sync::CancellationToken;
 - `--jobs` counts `RUN`s across all stages; the default honours the cgroup
   CPU quota and the affinity mask and is at least 1.
 - A stage whose root is `Shared` (`/`) runs alone; sequential kaniko mode
-  ignores `--jobs` for stages, while pulls and compression stay parallel.
+  ignores `--jobs` for stages, while pulls and compression stay parallel
+  (Phase 2: not built yet).
 - Edges: `FROM <stage>`, `COPY --from`, `RUN --mount=...,from=<stage>`,
   `ONBUILD` of a base stage. Stages off the path to `--target` (or the last
   stage) are dropped; overlay mode never squashes stages.
@@ -150,7 +163,10 @@ pub use tokio_util::sync::CancellationToken;
   caller's token, log tags, outputs in file order (property test over
   random DAGs, completion orders and `--jobs`), the spans. Left: the
   `StageRunner` impl for `rnk-builder` (task 11), the W3 digest test with
-  `--jobs` 1, 2 and default (task 13), measuring the gate (Q-030). The
+  `--jobs` 1, 2 and default (task 13), measuring the gate (Q-030), and
+  for Phase 2 the hook that runs a stage on the shared `/` alone (the
+  runner telling the scheduler a stage's root kind before it is admitted).
+  The
   first failure is the first by completion time, as in BuildKit; two
   failures at once may be reported either way.
 - Memory-aware limit: decided (ADR-0013); add the hook and measure now, the

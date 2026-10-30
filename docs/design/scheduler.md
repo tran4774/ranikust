@@ -66,14 +66,18 @@ is answered; the first is the result.
   the cgroup CPU quota and the affinity mask. Network transfers and
   compression have their own limits.
 - **Memory-aware limit**: memory, not CPU, is the binding constraint for
-  parallel stages. Before starting another `RUN`, the scheduler checks
-  memory headroom: cgroup `memory.current` against `memory.max` when a limit
-  exists, otherwise `MemAvailable`. In kaniko mode the estimate includes the
+  parallel stages. Before starting another stage, the scheduler checks
+  memory headroom: the cgroup's working set (`memory.current` less
+  `inactive_file`) against `memory.max` when a limit exists, otherwise
+  `MemAvailable`. In kaniko mode the estimate includes the
   page cache each running stage will re-read to hash and tar its writes
   [inferred: the exact algorithm is not designed yet]. The gate sits in
   front of each stage, not each `RUN`: a stage starts while free memory is
   at least an eighth of the limit and at least 512 MiB, and always when no
-  stage runs, so the gate can slow a build but not stop it. These numbers
+  stage runs, so the gate can slow a build but not stop it. It admits at
+  most one stage per fresh reading, taken 500 ms or more after the last
+  admission, so stages that become ready together do not all start on the
+  same free memory. These numbers
   are a placeholder until measured
   ([Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds)).
 - Sequential kaniko mode ignores `--jobs` for stage execution; pulls and
