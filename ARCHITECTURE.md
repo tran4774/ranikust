@@ -166,7 +166,7 @@ is [open: Q-024] until Phase 1 task 9). Overlay: mounts with the
 [ADR-0016](docs/adr/0016-overlay-mount-options.md) options, one upper
 directory per instruction, overlay/OCI whiteout conversion, extraction of
 base layers into the store's `layers/` (`rnk-layer`'s decoder chained into
-`rnk-rootfs::extract`), and the probe of its own capabilities: the overlay
+`rnk-rootfs::extract_overlay`), and the probe of its own capabilities: the overlay
 mount and `fsconfig` with `lowerdir+`. Its exporter feeds diff entries to
 `rnk-layer`'s writer. kaniko: parallel walk and hash, `LayeredMap`, path
 resolution, filesystem deletion.

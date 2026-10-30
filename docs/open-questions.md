@@ -573,6 +573,57 @@ Entry format:
 - **Interim:** (a).
 - **Raised:** 2026-10-30
 
+### Q-120: Where kaniko and BuildKit copy differently, which does `copy` follow?
+
+- **Blocks:** Phase 1 task 11; **Area:** `rnk-rootfs`, `rnk-builder`
+- **Context:** `rnk_rootfs::copy` copies one resolved `COPY`/`ADD`
+  source ([rootfs](design/rootfs.md#copy)). Where the two differ: (1) a
+  symlinked source: kaniko copies the link
+  (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`), BuildKit follows it
+  [inferred]; (2) xattrs: kaniko copies only `security.capability`
+  (`pkg/util/fs_util.go:1533`), BuildKit all of them [inferred];
+  (3) an existing destination directory: kaniko chowns it and sets its
+  times (`pkg/util/fs_util.go:871-888`), BuildKit leaves it [inferred];
+  (4) special files: kaniko reads device nodes and sockets as files unless
+  `FF_KANIKO_COPY_SKIP_SPECIAL_FILES` (`pkg/commands/copy.go:170`) and
+  recreates FIFOs; (5) `--chmod` on directories: kaniko applies it to every
+  copied directory (`pkg/util/fs_util.go:898`); (6) symbolic `--chmod`
+  (`u+x`): kaniko accepts it (`pkg/util/command_util.go:447`).
+- **Options:** per item, (a) kaniko or (b) BuildKit, settled by a golden
+  against both (`kaniko-parity`).
+- **Recommendation:** none
+- **Interim:** on branch `feat/rnk-rootfs-copy`: (1) BuildKit, followed
+  inside the source root; (2) kaniko, which also keeps host labels such as
+  `security.selinux` out of layers; (3) BuildKit, left as it is; (4)
+  sockets skipped, FIFOs and device nodes recreated, never opened; (5)
+  kaniko; (6) octal only (`CopyOpts::chmod: Option<u32>`). Reversible:
+  each is one branch in `crates/rnk-rootfs/src/copy.rs` and its tests;
+  nothing calls `copy` yet.
+- **Raised:** 2026-10-30
+
+### Q-121: Which overlay forms does the lower-layer lookup recognise?
+
+- **Blocks:** Phase 1 task 9; **Area:** `rnk-rootfs`, `rnk-snapshot`
+- **Context:** `extract_overlay` finds a hardlink target in the lower
+  layers as overlay's merged view would
+  ([rootfs](design/rootfs.md#extraction)). It recognises the form
+  ranikust's own extraction writes for a `userxattr` mount (`ADR-0016`):
+  whiteouts as the device 0/0, opaque directories as
+  `user.overlay.opaque=y`. Overlay also knows `trusted.overlay.opaque`
+  (mounts without `userxattr`), the value `x` (Linux 6.7: a directory
+  holding "xwhiteouts", regular files marked `overlay.whiteout`, which is
+  not opaque) and redirects. A `layers/<id>` written by anything else, or
+  a later switch to `trusted.*`, would be misread.
+- **Options:** (a) only ranikust's own form, `layers/` being written by
+  ranikust alone; (b) also `trusted.overlay.opaque=y`; (c) the full set,
+  xwhiteouts and redirects included.
+- **Recommendation:** (a) while `rnk-store` holds the only writers.
+- **Interim:** (a), on branch `feat/rnk-rootfs-copy`; overlay's own
+  xattrs (`trusted.overlay.*`, `user.overlay.*` but the escaped
+  `user.overlay.overlay.*`) are never copied up. Reversible: one function,
+  `walk_layer` in `crates/rnk-rootfs/src/extract.rs`.
+- **Raised:** 2026-10-30
+
 ### Q-080: Who resolves COPY sources against the context, and how?
 
 - **Blocks:** Phase 1 task 11; **Area:** `rnk-builder`, `rnk-context`
@@ -1034,6 +1085,10 @@ Entry format:
   hardlink as overlay copy-up does (`ADR-0012`). Recorded in
   [rootfs](design/rootfs.md#extraction); implemented with base-layer
   extraction (Phase 1 task 9).
+- **Implemented (2026-10-30):** `rnk_rootfs::extract_overlay(dst, tar,
+  lowers)` looks the target up in the lower layers as overlay's merged
+  view (whiteouts, opaque directories) and copies it with its metadata
+  and xattrs; `rnk-snapshot` still has to call it.
 
 ### Q-012: Which crates fill the Phase 1 dependency picks?
 

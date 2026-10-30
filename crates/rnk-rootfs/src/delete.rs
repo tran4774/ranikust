@@ -100,7 +100,8 @@ impl IgnoreList {
 /// whatever is left stays.
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
     let span = tracing::info_span!(
-        "rnk_rootfs.delete_contents",
+        "rnk_rootfs.delete",
+        entries = tracing::field::Empty,
         files = tracing::field::Empty,
         dirs = tracing::field::Empty,
         kept = tracing::field::Empty,
@@ -153,6 +154,7 @@ pub(crate) struct Counts {
 
 impl Counts {
     fn record(&self, span: &tracing::Span) {
+        span.record("entries", self.files + self.dirs);
         span.record("files", self.files);
         span.record("dirs", self.dirs);
         span.record("kept", self.kept);
@@ -319,7 +321,7 @@ pub(crate) fn open_dir_checked(
 
 /// The names in a directory, without `.` and `..`. A directory removed
 /// since it was opened (`ENOENT` on reopening `.`) is a change.
-fn read_names(fd: BorrowedFd<'_>, path: &Path) -> Result<Vec<OsString>> {
+pub(crate) fn read_names(fd: BorrowedFd<'_>, path: &Path) -> Result<Vec<OsString>> {
     let dir = rustix::fs::Dir::read_from(fd).map_err(|e| match e {
         Errno::NOENT => Error::Changed {
             path: path.to_owned(),

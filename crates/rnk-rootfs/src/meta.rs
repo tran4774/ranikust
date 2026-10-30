@@ -1,7 +1,8 @@
 //! File metadata: what `statx` reports and what `set_meta` writes.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use rustix::fs::{
@@ -251,6 +252,132 @@ pub(crate) fn proc_fd_dir(path: &Path) -> Result<OwnedFd> {
 
 fn proc_path(fd: BorrowedFd<'_>) -> String {
     format!("/proc/self/fd/{}", fd.as_raw_fd())
+}
+
+/// Reopens the entry pinned by the `O_PATH` fd `pinned` with `flags`
+/// (`O_RDONLY`, plus `O_DIRECTORY` for a directory) through ranikust's own
+/// `/proc/self/fd`: exactly that inode, whatever its name points to now.
+/// The caller checks the type on the pinned fd first, so a FIFO or a device
+/// node is never opened. `path` is only for error messages.
+pub(crate) fn reopen(pinned: BorrowedFd<'_>, flags: OFlags, path: &Path) -> Result<OwnedFd> {
+    let proc = proc_fd_dir(path)?;
+    let num = pinned.as_raw_fd().to_string();
+    rustix::fs::openat(
+        &proc,
+        num.as_str(),
+        flags | OFlags::CLOEXEC | OFlags::NOCTTY,
+        Mode::empty(),
+    )
+    .map_err(|e| io_err("open", path, e))
+}
+
+/// Which extended attributes [`read_xattrs`] returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Xattrs {
+    /// Only `security.capability`, as kaniko's `CopyCapabilities`.
+    Capability,
+    /// What overlay's copy-up keeps of an inode in an extracted layer: all
+    /// but overlay's own (`trusted.overlay.*`, `user.overlay.*`); the
+    /// escaped content xattrs `user.overlay.overlay.*` are kept.
+    Layer,
+}
+
+/// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
+/// `XATTR_SIZE_MAX`).
+const XATTR_MAX: usize = 64 << 10;
+const CAPABILITY: &str = "security.capability";
+
+/// The extended attributes of the pinned entry `fd` of type `file_type`.
+///
+/// Read as [`apply`] writes them: through the fd's magic link in ranikust's
+/// own `/proc/self/fd`, except for a symlink, which is named in its pinned
+/// parent `parent` (`lgetxattr` never follows the last name); a symlink
+/// without a parent has none. A filesystem without xattrs (`ENOTSUP`) has
+/// none. `path` is only for error messages.
+pub(crate) fn read_xattrs(
+    fd: BorrowedFd<'_>,
+    file_type: FileType,
+    parent: Option<(BorrowedFd<'_>, &OsStr)>,
+    which: Xattrs,
+    path: &Path,
+) -> Result<Vec<(OsString, Vec<u8>)>> {
+    proc_fd_dir(path)?;
+    // A symlink: its name in the pinned parent, with the `l*` calls, which
+    // never follow the last name. Anything else: the fd's magic link, with
+    // the plain calls, which follow it to exactly the pinned inode.
+    let (target, follow) = if file_type == FileType::Symlink {
+        let Some((pfd, name)) = parent else {
+            return Ok(Vec::new());
+        };
+        let mut p = OsString::from(proc_path(pfd));
+        p.push("/");
+        p.push(name);
+        (p, false)
+    } else {
+        (OsString::from(proc_path(fd)), true)
+    };
+    let list = |buf: &mut [u8]| {
+        if follow {
+            rustix::fs::listxattr(&target, buf)
+        } else {
+            rustix::fs::llistxattr(&target, buf)
+        }
+    };
+    let get = |n: &OsStr, buf: &mut [u8]| {
+        if follow {
+            rustix::fs::getxattr(&target, n, buf)
+        } else {
+            rustix::fs::lgetxattr(&target, n, buf)
+        }
+    };
+    let mut buf = vec![0; XATTR_MAX];
+    let names: Vec<OsString> = match which {
+        Xattrs::Capability => vec![OsString::from(CAPABILITY)],
+        Xattrs::Layer => match list(&mut buf[..]) {
+            Ok(n) => buf[..n]
+                .split(|&b| b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| OsStr::from_bytes(s).to_owned())
+                .collect(),
+            Err(Errno::NOTSUP) => return Ok(Vec::new()),
+            Err(e) => return Err(io_err("listxattr", path, e)),
+        },
+    };
+    let mut out = Vec::new();
+    for n in names {
+        if which == Xattrs::Layer && is_overlay_own(n.as_bytes()) {
+            continue;
+        }
+        match get(n.as_os_str(), &mut buf[..]) {
+            Ok(len) => out.push((n, buf[..len].to_vec())),
+            Err(Errno::NODATA | Errno::NOTSUP) => {}
+            Err(e) => return Err(io_err("getxattr", path, e)),
+        }
+    }
+    if let (false, Some((pfd, name))) = (follow, parent) {
+        // The symlink was read by name: check that the name still is the
+        // pinned symlink, not an entry swapped in meanwhile.
+        let pinned = statx_at(fd, OsStr::new(""), path)?;
+        let named = statx_at(pfd, name, path)?;
+        if (named.ino, named.dev_major, named.dev_minor)
+            != (pinned.ino, pinned.dev_major, pinned.dev_minor)
+        {
+            return Err(Error::Changed {
+                path: path.to_owned(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// An xattr overlayfs itself keeps on a layer's entries (`trusted.overlay.*`,
+/// `user.overlay.*`), as opposed to the escaped content xattrs
+/// `user.overlay.overlay.*` (`ADR-0016`).
+fn is_overlay_own(name: &[u8]) -> bool {
+    if name.starts_with(b"user.overlay.overlay.") {
+        return false;
+    }
+    name.starts_with(b"trusted.overlay.") || name.starts_with(b"user.overlay.")
 }
 
 /// Applies `m` to the entry behind `h`. `path` is only for error messages.

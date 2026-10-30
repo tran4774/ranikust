@@ -4,10 +4,10 @@
 //! records); every filesystem change goes through `RootPath`. Its `unpack`
 //! family, which joins entry names onto a host path, is never used.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -15,9 +15,10 @@ use rustix::fs::{AtFlags, FileType as RawFileType, Mode, OFlags};
 use rustix::io::Errno;
 use tar::EntryType;
 
+use crate::copy;
 use crate::delete::{self, Counts, Keep};
 use crate::error::{Error, Result, io_err};
-use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat};
+use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat, Xattrs};
 use crate::path;
 use crate::root::{self, Mounts, RootPath};
 
@@ -74,30 +75,80 @@ const PARENT_MODE: u32 = 0o755;
 /// entry, [`Error::Io`] when the filesystem refuses an operation (for
 /// example a device node or a foreign owner without privileges).
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
+    extract_with(dst, tar, wh, &[])
+}
+
+/// Extracts the plain tar stream `tar` into `dst` in the overlay form
+/// ([`Whiteouts::Overlay`]), as one layer above `lowers`: the extracted
+/// directories of the layers below it, the one right below first, as in
+/// overlay's `lowerdir=`.
+///
+/// Everything is as [`extract`], except a hardlink whose target is not in
+/// this layer: the target is looked up in `lowers` as the merged view
+/// would show it (a whiteout, an opaque directory or a non-directory on the
+/// way in a higher layer hides it) and copied as a regular file, owner,
+/// mode, times and xattrs included, which splits the hardlink as overlay's
+/// copy-up does (Q-055, `ADR-0012`). Overlay's own xattrs on the lower
+/// inode (`trusted.overlay.*`, `user.overlay.*`) are left behind; the
+/// escaped content xattrs `user.overlay.overlay.*` are kept. Further
+/// hardlinks in this layer to the same lower inode, by any of its names,
+/// link to that copy, so the bytes written stay bounded by the lower
+/// layers' size. The lower layers are only read.
+///
+/// # Errors
+///
+/// As [`extract`]; [`Error::Entry`] when the target is in no layer or hidden,
+/// is a directory, or lies below a symlink in a lower layer.
+pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<()> {
+    extract_with(dst, tar, Whiteouts::Overlay, lowers)
+}
+
+fn extract_with(dst: &RootPath, tar: impl Read, wh: Whiteouts, lowers: &[&RootPath]) -> Result<()> {
     let span = tracing::info_span!(
         "rnk_rootfs.extract",
-        whiteouts = ?wh,
+        mode = ?wh,
+        lowers = lowers.len(),
         entries = tracing::field::Empty,
         files = tracing::field::Empty,
         dirs = tracing::field::Empty,
         symlinks = tracing::field::Empty,
         hardlinks = tracing::field::Empty,
+        hardlinks_copied = tracing::field::Empty,
         nodes = tracing::field::Empty,
-        whiteout_entries = tracing::field::Empty,
-        bytes = tracing::field::Empty,
+        whiteouts = tracing::field::Empty,
+        bytes_in = tracing::field::Empty,
+        bytes_written = tracing::field::Empty,
     );
     let _entered = span.enter();
     let mut ex = Extractor {
         root: dst,
         wh,
+        lowers,
         dirs: BTreeMap::new(),
         created: HashSet::new(),
         ancestors: HashSet::new(),
+        copied: HashMap::new(),
         stats: Stats::default(),
     };
-    let r = ex.run(tar);
+    let mut tar = Counting { inner: tar, n: 0 };
+    let r = ex.run(&mut tar);
+    ex.stats.bytes_in = tar.n;
     ex.stats.record(&span);
     r
+}
+
+/// Counts the bytes read from the tar stream.
+struct Counting<R> {
+    inner: R,
+    n: u64,
+}
+
+impl<R: Read> Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.n += n as u64;
+        Ok(n)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -107,9 +158,11 @@ struct Stats {
     dirs: u64,
     symlinks: u64,
     hardlinks: u64,
+    hardlinks_copied: u64,
     nodes: u64,
     whiteouts: u64,
-    bytes: u64,
+    bytes_in: u64,
+    bytes_written: u64,
 }
 
 impl Stats {
@@ -119,15 +172,23 @@ impl Stats {
         span.record("dirs", self.dirs);
         span.record("symlinks", self.symlinks);
         span.record("hardlinks", self.hardlinks);
+        span.record("hardlinks_copied", self.hardlinks_copied);
         span.record("nodes", self.nodes);
-        span.record("whiteout_entries", self.whiteouts);
-        span.record("bytes", self.bytes);
+        span.record("whiteouts", self.whiteouts);
+        span.record("bytes_in", self.bytes_in);
+        span.record("bytes_written", self.bytes_written);
     }
 }
 
 struct Extractor<'r> {
     root: &'r RootPath,
     wh: Whiteouts,
+    /// [`extract_overlay`]: the layers below, the nearest first.
+    lowers: &'r [&'r RootPath],
+    /// Lower inodes copied for a hardlink, by index in `lowers`, device and
+    /// inode, and where the copy is, so that every further link to any of
+    /// their names links to it.
+    copied: HashMap<(usize, u32, u32, u64), PathBuf>,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
@@ -264,7 +325,7 @@ impl Extractor<'_> {
                     path: path.clone(),
                     source,
                 })?;
-                self.stats.bytes += n;
+                self.stats.bytes_written += n;
                 self.stats.files += 1;
                 meta::apply(&Handle::Open(file.as_fd()), &meta, &path)?;
             }
@@ -275,33 +336,7 @@ impl Extractor<'_> {
                 let m = Meta { mode: None, ..meta };
                 root::set_meta_at(pfd.as_fd(), &name, &m, None, &path)?;
             }
-            Kind::Hardlink(target) => {
-                // In the overlay form the root holds only this layer, so a
-                // target in a lower layer is missing. Q-055: copy its content
-                // from the lower layers instead (Phase 1 task 9); until then,
-                // an error.
-                let missing = || Error::Entry {
-                    path: raw.clone(),
-                    reason: format!(
-                        "the hardlink target {} is neither in this layer nor in the root",
-                        target.display()
-                    ),
-                };
-                let is_noent = |e: &Error| e.raw_os_error() == Some(Errno::NOENT.raw_os_error());
-                let (tparent, tname) = path::entry(&target)?;
-                let tpfd = match self.root.resolve_dir_in(&tparent, Mounts::Stay) {
-                    Ok(fd) => fd,
-                    Err(e) if is_noent(&e) => return Err(missing()),
-                    Err(e) => return Err(on_mount(e, &raw)),
-                };
-                // Flags 0: a symlink target is linked itself, not followed.
-                match rustix::fs::linkat(&tpfd, tname, &pfd, &name, AtFlags::empty()) {
-                    Ok(()) => {}
-                    Err(Errno::NOENT) => return Err(missing()),
-                    Err(e) => return Err(io_err("link", &path, e)),
-                }
-                self.stats.hardlinks += 1;
-            }
+            Kind::Hardlink(target) => self.hardlink(&target, pfd.as_fd(), &name, &path, &raw)?,
             Kind::Node(t, major, minor) => {
                 rustix::fs::mknodat(
                     &pfd,
@@ -364,6 +399,130 @@ impl Extractor<'_> {
             mtime: Some(mtime),
             xattrs,
         })
+    }
+
+    /// The hardlink `name` in `pfd` (at `path`) to `target`: linked within
+    /// this layer; else, in [`extract_overlay`], to an earlier copy of the
+    /// same target, or copied from the nearest lower layer that shows it.
+    fn hardlink(
+        &mut self,
+        target: &Path,
+        pfd: BorrowedFd<'_>,
+        name: &OsStr,
+        path: &Path,
+        raw: &Path,
+    ) -> Result<()> {
+        let missing = |why: &str| Error::Entry {
+            path: raw.to_owned(),
+            reason: format!("the hardlink target {} {why}", target.display()),
+        };
+        let (tparent, tname) = path::entry(target)?;
+        let tpfd = match self.root.resolve_dir_in(&tparent, Mounts::Stay) {
+            Ok(fd) => Some(fd),
+            Err(e) if is_noent(&e) => None,
+            Err(e) => return Err(on_mount(e, raw)),
+        };
+        if let Some(tpfd) = &tpfd {
+            // A whiteout hides the name; linking it would link the device.
+            if self.wh == Whiteouts::Overlay
+                && meta::statx_at(tpfd.as_fd(), tname, target).is_ok_and(|st| is_whiteout(&st))
+            {
+                return Err(missing("is whited out in this layer"));
+            }
+            // Flags 0: a symlink target is linked itself, not followed.
+            match rustix::fs::linkat(tpfd, tname, pfd, name, AtFlags::empty()) {
+                Ok(()) => {
+                    self.stats.hardlinks += 1;
+                    return Ok(());
+                }
+                Err(Errno::NOENT) => {}
+                Err(e) => return Err(io_err("link", path, e)),
+            }
+        }
+        if self.lowers.is_empty() {
+            return Err(missing("is neither in this layer nor in the root"));
+        }
+        let (dirs, last) = components(target);
+        let hidden_here = match walk_layer(self.root, &dirs, target)? {
+            Walk::Absent => false,
+            Walk::Hidden => true,
+            Walk::Dir { opaque, .. } => opaque,
+        };
+        if hidden_here {
+            return Err(missing("is hidden by this layer"));
+        }
+        let Some((layer, lpfd)) = self.find_lower(&dirs, last, target)? else {
+            return Err(missing("is in no layer below, or hidden there"));
+        };
+        let pin = root::open_name(
+            lpfd.as_fd(),
+            last,
+            OFlags::PATH | OFlags::NOFOLLOW,
+            0,
+            true,
+            target,
+        )?;
+        // Taken before the content is read, which may move the atime.
+        let st = meta::statx_at(pin.as_fd(), OsStr::new(""), target)?;
+        if st.file_type() == FileType::Directory {
+            return Err(missing("is a directory"));
+        }
+        // One copy per lower inode, whichever of its names a link targets:
+        // keyed by path, a layer linking each of a lower file's many names
+        // would copy its content once per name.
+        let key = (layer, st.dev_major, st.dev_minor, st.ino);
+        if let Some(copy) = self.copied.get(&key) {
+            let (cparent, cname) = path::entry(copy)?;
+            let cpfd = self
+                .root
+                .resolve_dir_in(&cparent, Mounts::Stay)
+                .map_err(|e| on_mount(e, raw))?;
+            rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
+                .map_err(|e| io_err("link", path, e))?;
+            self.stats.hardlinks += 1;
+            return Ok(());
+        }
+        let m = Meta {
+            uid: Some(st.uid),
+            gid: Some(st.gid),
+            mode: Some(st.permissions()),
+            atime: Some(st.atime),
+            mtime: Some(st.mtime),
+            xattrs: Vec::new(),
+        };
+        let sparent = Some((lpfd.as_fd(), last));
+        self.stats.bytes_written +=
+            copy::copy_node(pin.as_fd(), &st, sparent, Xattrs::Layer, pfd, name, m, path)?;
+        self.stats.hardlinks_copied += 1;
+        self.copied.insert(key, path.to_owned());
+        Ok(())
+    }
+
+    /// The index in `lowers` and the directory holding `target` (`dirs`
+    /// then `last`) of the nearest lower layer that has it, as overlay's
+    /// merged view finds it; `None` when no layer has it or a higher one
+    /// hides it.
+    fn find_lower(
+        &self,
+        dirs: &[&OsStr],
+        last: &OsStr,
+        target: &Path,
+    ) -> Result<Option<(usize, OwnedFd)>> {
+        for (i, lower) in self.lowers.iter().enumerate() {
+            let (fd, opaque) = match walk_layer(lower, dirs, target)? {
+                Walk::Absent => continue,
+                Walk::Hidden => return Ok(None),
+                Walk::Dir { fd, opaque } => (fd, opaque),
+            };
+            match meta::statx_at(fd.as_fd(), last, target) {
+                Ok(st) if is_whiteout(&st) => return Ok(None),
+                Ok(_) => return Ok(Some((i, fd))),
+                Err(e) if is_noent(&e) && !opaque => {}
+                Err(e) if is_noent(&e) => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
     }
 
     /// The name an xattr from the layer is stored under.
@@ -605,6 +764,63 @@ impl Extractor<'_> {
         }
         Ok(())
     }
+}
+
+/// What one layer in the overlay form shows at a directory path.
+enum Walk {
+    /// The layer does not have the path; lower layers may.
+    Absent,
+    /// A whiteout or a non-directory on the way, or a missing directory
+    /// below an opaque one: lower layers are hidden.
+    Hidden,
+    /// The directory, `O_RDONLY`; `opaque` when it or a directory above it
+    /// is opaque, so that what this layer lacks below it is hidden.
+    Dir { fd: OwnedFd, opaque: bool },
+}
+
+/// Walks the directories `dirs` in the extracted layer `layer`, by name,
+/// following no symlink and crossing no mount. `target` is only for
+/// messages.
+fn walk_layer(layer: &RootPath, dirs: &[&OsStr], target: &Path) -> Result<Walk> {
+    let mut cur = layer.resolve_dir_in(Path::new(""), Mounts::Stay)?;
+    let mut opaque = false;
+    for d in dirs {
+        match meta::statx_at(cur.as_fd(), d, target) {
+            Ok(st) if st.file_type() == FileType::Directory => {}
+            Ok(_) => return Ok(Walk::Hidden),
+            Err(e) if is_noent(&e) && opaque => return Ok(Walk::Hidden),
+            Err(e) if is_noent(&e) => return Ok(Walk::Absent),
+            Err(e) => return Err(e),
+        }
+        cur = root::open_name(
+            cur.as_fd(),
+            d,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            0,
+            true,
+            target,
+        )?;
+        let mut v = [0; 2];
+        opaque |= rustix::fs::fgetxattr(&cur, OVERLAY_OPAQUE, &mut v[..])
+            .is_ok_and(|n| v.get(..n) == Some(&b"y"[..]));
+    }
+    Ok(Walk::Dir { fd: cur, opaque })
+}
+
+/// The parent directories and the last name of a cleaned, non-empty path.
+fn components(p: &Path) -> (Vec<&OsStr>, &OsStr) {
+    let mut names: Vec<&OsStr> = p.iter().collect();
+    let last = names.pop().unwrap_or_default();
+    (names, last)
+}
+
+/// An overlay whiteout: the character device 0/0.
+fn is_whiteout(st: &Stat) -> bool {
+    st.file_type() == FileType::CharDevice && st.rdev_major == 0 && st.rdev_minor == 0
+}
+
+fn is_noent(e: &Error) -> bool {
+    e.raw_os_error() == Some(Errno::NOENT.raw_os_error())
 }
 
 /// The error for an entry on or below a mount point inside the root.
