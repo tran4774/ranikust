@@ -128,6 +128,59 @@ jobs:
           tool: cargo-zigbuild@0.24.0
       - run: cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl
 
+  # The static aarch64 binary and the T0 tests under qemu-user (ADR-0009).
+  # `just test-aarch64` runs the same; the binfmt entry lets ranikust's own
+  # tests spawn the aarch64 binary, so here it is required.
+  test-aarch64:
+    name: test (aarch64 musl, qemu-user)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0,just@1.59.0
+      # Ubuntu 24.04's qemu-user is QEMU 8.2, which has no openat2 (ENOSYS);
+      # Debian 13's static qemu-user is QEMU 10.0. Pinned by version and
+      # SHA-256; snapshot.debian.org keeps the file once the pool moves on.
+      # The binfmt entry names the same binary the runner uses, with `F` so
+      # the kernel opens it once, at registration.
+      - name: Install qemu-user 10.0 and its binfmt entry for aarch64
+        env:
+          QEMU_DEB: qemu-user_10.0.13+ds-0+deb13u1_amd64.deb
+          QEMU_SHA256: ca6ede739327a20ae5a3498230c8a3a9a072c586e131bc6bcc1201eb1725e336
+          QEMU_SHA1: dec1373851d29f91642c197f4a339d0d2ad25ed0
+          QEMU: /usr/local/bin/qemu-aarch64
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo "$QEMU_DEB" "https://deb.debian.org/debian/pool/main/q/qemu/$QEMU_DEB" ||
+            curl -fsSLo "$QEMU_DEB" "https://snapshot.debian.org/file/$QEMU_SHA1"
+          echo "$QEMU_SHA256  $QEMU_DEB" | sha256sum -c -
+          dpkg -x "$QEMU_DEB" qemu
+          sudo install -m 0755 qemu/usr/bin/qemu-aarch64 "$QEMU"
+          "$QEMU" --version
+          B=/proc/sys/fs/binfmt_misc
+          grep -q " $B binfmt_misc " /proc/mounts || sudo mount -t binfmt_misc binfmt_misc "$B"
+          # The runner image may already register an aarch64 entry with
+          # another QEMU: remove it so that ours is the only one.
+          if [ -e "$B/qemu-aarch64" ]; then echo -1 | sudo tee "$B/qemu-aarch64" >/dev/null; fi
+          printf '%s' ':qemu-aarch64:M::\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:'"$QEMU"':F' |
+            sudo tee "$B/register" >/dev/null
+          grep -x enabled "$B/qemu-aarch64"
+          grep -x "interpreter $QEMU" "$B/qemu-aarch64"
+          echo "QEMU_AARCH64=$QEMU" >> "$GITHUB_ENV"
+      - run: just test-aarch64
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-24.04
