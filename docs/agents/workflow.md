@@ -44,7 +44,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just test [args]` | `cargo test --workspace --locked [args]` (T0) | `test` |
 | `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; fails on a loader, `NEEDED`, non-PIE or no `.symtab`; runs `ranikust version` | `static-build` |
 | `just check-aarch64` | `cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl` | `check-aarch64` |
-| `just test-aarch64 [args]` | static aarch64 musl release build (no loader, no `NEEDED`; runs `ranikust version`), then the T0 tests, all under qemu-user through cargo's target runner; skips one test qemu cannot pass and, without a binfmt entry, ranikust's `cli` and `metrics` tests ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` |
+| `just test-aarch64 [args]` | static aarch64 musl release build (no loader, no `NEEDED`; runs `ranikust version`), then the T0 tests: natively on an aarch64 host (CI's `ubuntu-24.04-arm`), else under qemu-user through cargo's target runner, skipping three tests qemu cannot pass and, without a binfmt entry, ranikust's `cli` and `metrics` tests ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` |
 | `just deny` | `cargo deny --locked check` | `deny` |
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |
 | `just changelog [args]` | `git cliff --unreleased`, a draft to stdout | |

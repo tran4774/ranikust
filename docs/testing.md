@@ -211,8 +211,11 @@ write only below a temporary directory.
 
 ## aarch64 under qemu-user
 
-`just test-aarch64` (CI job `test-aarch64`, `ADR-0009`) cross-builds with
-cargo-zigbuild and runs everything under `qemu-aarch64` on an x86_64 host:
+`just test-aarch64` (CI job `test-aarch64`, `ADR-0009`) builds with
+cargo-zigbuild. On an aarch64 host, which is where CI runs it (GitHub's
+free `ubuntu-24.04-arm` runner for public repositories), everything runs
+natively and no test is skipped. On an x86_64 host it runs everything under
+`qemu-aarch64`, as below:
 
 1. The static release binary: no loader and no `NEEDED` entries, then
    `ranikust version`. It is not static-pie, unlike x86_64 [open: Q-140].
@@ -227,21 +230,24 @@ QEMU 9.1 or later is needed, and the recipe refuses an older one: QEMU
 `qemu-aarch64-static` or `qemu-aarch64` on `PATH`; `apt download
 qemu-user` (if the distribution's is 9.1 or later) or the Debian 13 package
 CI pins, unpacked with `dpkg -x`, gives one without installing it. The
-recipe prints the binfmt entry's interpreter; CI points the entry at the
-same binary as cargo's runner. Three exceptions, all from emulation:
+recipe prints the binfmt entry's interpreter. Four exceptions, all from
+emulation (the native CI job runs them all):
 
 - `root::tests::open_gives_cloexec_path_fd_and_mount_id` is skipped:
   qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so
   other mount-id comparisons pass only because both sides are 0. The
   mount-ID checks that guard deletion (T4 of the threat model) are
-  therefore not exercised on aarch64.
+  therefore not exercised under emulation; the native CI job covers them.
 - `without_root_the_set_up_refuses_before_touching_the_workdir` is
   skipped: qemu-user runs a thread of its own, so the set-up stops at its
-  single-thread check before the privilege refusal the test expects. Seen
-  first in CI with binfmt registered; the x86_64 job still runs it.
-- ranikust's `cli` and `metrics` tests spawn the binary; without a
-  binfmt_misc entry for aarch64 the kernel cannot execute it, so the
-  recipe skips them with a warning. CI registers the entry and requires it.
+  single-thread check before the privilege refusal the test expects.
+- `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` is
+  skipped: the filter is written for aarch64 syscall numbers, and qemu-user
+  cannot install it in the x86_64 host kernel.
+- The tests that spawn an aarch64 binary themselves (ranikust's `cli` and
+  `metrics`, rnk-store's `processes`): without a binfmt_misc entry for
+  aarch64 the kernel cannot execute it, so the recipe skips them with a
+  warning.
 
 Checked locally with QEMU 10.0.13 (CI's) and 10.2.1, without binfmt.
 Real aarch64 hardware is Phase 6.
