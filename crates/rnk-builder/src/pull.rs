@@ -1,7 +1,7 @@
 //! Pulling an image for `FROM` or `COPY --from`: its manifest and config,
-//! its blobs into the store, and its layers extracted as lower layers.
+//! its blobs into the store, and its layers as the snapshotter keeps them
+//! (extracted lower layers in overlay mode, the blobs in kaniko mode).
 
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,9 +14,10 @@ use tokio::io::AsyncWriteExt as _;
 use crate::error::{Error, Result};
 use crate::layer::BlobLayer;
 
-/// A pulled image: what a stage built on it starts from.
+/// A pulled image: what a stage built on it starts from. `L` is the
+/// snapshotter's base layer (`Snapshotter::Layer`).
 #[derive(Debug)]
-pub struct PulledImage {
+pub struct PulledImage<L = LayerDir> {
     /// The reference as pulled, its default tag added.
     pub reference: Reference,
     /// Its config.
@@ -25,13 +26,14 @@ pub struct PulledImage {
     pub format: ImageFormat,
     /// Its layers as blobs in the store, image order, for the outputs.
     pub blobs: Vec<BlobLayer>,
-    /// Its layers extracted in the store, image order, as lower layers.
-    pub layers: Vec<LayerDir>,
+    /// Its layers as the snapshotter keeps them, image order.
+    pub layers: Vec<L>,
 }
 
 /// Pulls `reference` for `platform`: the manifest, the config, every layer
 /// blob into the store (`blobs/`, verified while it streams) and every
-/// layer extracted (`layers/`, checked against the config's diff IDs).
+/// layer made a base layer by the snapshotter (in overlay mode extracted in
+/// `layers/`, checked against the config's diff IDs).
 ///
 /// Blocking work (the store's locked fills, extraction) runs on blocking
 /// threads of the current runtime.
@@ -46,7 +48,7 @@ pub async fn pull_image<S>(
     snapshotter: &Arc<S>,
     reference: &str,
     platform: &Platform,
-) -> Result<PulledImage>
+) -> Result<PulledImage<S::Layer>>
 where
     S: Snapshotter + Send + Sync + 'static,
 {
@@ -84,15 +86,14 @@ where
         ));
     }
 
-    let mut layers: Vec<LayerDir> = Vec::with_capacity(blobs.len());
+    let mut layers: Vec<S::Layer> = Vec::with_capacity(blobs.len());
     for blob in &blobs {
         let snapshotter = Arc::clone(snapshotter);
         let below = layers.clone();
         let diff_id = blob.diff_id.clone();
         let path = blob.path.clone();
-        let dir = tokio::task::spawn_blocking(move || -> Result<LayerDir> {
-            let file = File::open(&path).map_err(Error::io("open", &path))?;
-            Ok(snapshotter.base_layer(&diff_id, file, &below)?)
+        let dir = tokio::task::spawn_blocking(move || -> Result<S::Layer> {
+            Ok(snapshotter.base_layer(&diff_id, &path, &below)?)
         })
         .await
         .map_err(|e| Error::Invalid(format!("extracting a layer: {e}")))??;

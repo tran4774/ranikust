@@ -63,9 +63,9 @@ fn build(api: MountApi) -> Build {
         ("bin/old", EntryType::Regular, 0o755, b"old"),
     ]);
     let (t2, id2) = layer(&[("etc/hostname", EntryType::Regular, 0o644, b"h\n")]);
-    let l1 = overlay.base_layer(&id1, t1.as_slice(), &[]).unwrap();
+    let l1 = overlay.base_layer_from(&id1, t1.as_slice(), &[]).unwrap();
     let l2 = overlay
-        .base_layer(&id2, t2.as_slice(), std::slice::from_ref(&l1))
+        .base_layer_from(&id2, t2.as_slice(), std::slice::from_ref(&l1))
         .unwrap();
     Build {
         _dir: dir,
@@ -232,7 +232,7 @@ fn mount2_takes_many_lowers_from_a_deep_state_directory() {
     for i in 0..LAYERS {
         let name = format!("f{i}");
         let (t, id) = layer(&[(&name, EntryType::Regular, 0o644, name.as_bytes())]);
-        let l = overlay.base_layer(&id, t.as_slice(), &base).unwrap();
+        let l = overlay.base_layer_from(&id, t.as_slice(), &base).unwrap();
         base.push(l);
     }
     let cwd = std::env::current_dir().unwrap();

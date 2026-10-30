@@ -75,10 +75,6 @@ pub(crate) struct Workdir {
     /// The readable fd holding `flock(LOCK_EX)`.
     _lock: OwnedFd,
     /// The workdir was empty: [`Workdir::mark`] gives it the marker.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by `mark`, used from Phase 2 task 6")
-    )]
     unmarked: bool,
 }
 
@@ -92,10 +88,6 @@ impl Workdir {
     }
 
     /// The workdir as a root.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the kaniko-mode root, used from Phase 2 task 6")
-    )]
     pub(crate) fn root(&self) -> &RootPath {
         &self.root
     }
@@ -109,13 +101,6 @@ impl Workdir {
     ///
     /// [`Refused`] when the marker cannot be created or the workdir is no
     /// longer empty.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called before the first write, from Phase 2 task 6"
-        )
-    )]
     pub(crate) fn mark(&mut self) -> Result<(), Refused> {
         if !self.unmarked {
             return Ok(());

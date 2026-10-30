@@ -31,6 +31,8 @@
 #                        ../nextjs-kaniko next to the repository
 #   RANIKUST_E2E_*       options of the e2e suite (tests/vm/guest/e2e.sh)
 #   RANIKUST_QUICK_CASES the cases `quick` runs, space-separated; default all
+#   RANIKUST_QUICK_MODE  `kaniko` builds the `quick` cases in kaniko mode on
+#                        the workdir (default: the probed mode, overlay)
 #   RANIKUST_VM_IMAGE_REGISTRY  where the guest pulls Docker Hub images
 #                        from: default mirror.gcr.io (Google's public Docker
 #                        Hub mirror, no pull rate limit); docker.io to pull
@@ -125,7 +127,7 @@ cp "$REPO/tests/smoke/netns-check.py" "$STAGE/guest/netns-check.py"
 cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
 cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
 cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
-env | grep '^RANIKUST_QUICK_CASES=' | sed 's/^/export /' >"$STAGE/quick.env" || true
+env | grep -E '^RANIKUST_QUICK_(CASES|MODE)=' | sed 's/^/export /' >"$STAGE/quick.env" || true
 zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}"; }
 
 if wants unit; then

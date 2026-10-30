@@ -25,11 +25,18 @@ sudo rm -rf "$W" && sudo mkdir -m 700 -p "$W/w"
 printf %s "$SMOKE_CASE_SECRET" | sudo tee "$SECRET" >/dev/null
 mkdir -p "$CASES_OUT"
 
+# RANIKUST_QUICK_MODE=kaniko: kaniko mode on the workdir, its state
+# directory beside it; the VM's root may mount, so RUN gets the full
+# sandbox (ADR-0043).
+MODE_ARGS=()
+[ "${RANIKUST_QUICK_MODE:-}" = kaniko ] && MODE_ARGS=(--mode=kaniko --state-dir "$W/kstate")
+
 rnk_run() {
   local ctx="$1" o="$2" rc=0
   shift 2
-  sudo "$RNK" --context "$ctx" --workdir "$W/w" --no-push --oci-layout-path "$o/oci" \
-    --tar-path "$o/image.tar" --secret "id=tok,src=$SECRET" "$@" || rc=$?
+  sudo "$RNK" --context "$ctx" --workdir "$W/w" "${MODE_ARGS[@]}" --no-push \
+    --oci-layout-path "$o/oci" --tar-path "$o/image.tar" --secret "id=tok,src=$SECRET" \
+    "$@" || rc=$?
   sudo chown -R "$(id -u):$(id -g)" "$o"
   return "$rc"
 }

@@ -67,7 +67,7 @@ fn a_layer_is_extracted_once_in_the_overlay_form() {
         .entry("etc/os-release", EntryType::Regular, 0o644, b"ID=test\n")
         .entry("etc/.wh.gone", EntryType::Regular, 0o644, b"")
         .finish();
-    let l = s.base_layer(&id, tar.as_slice(), &[]).unwrap();
+    let l = s.base_layer_from(&id, tar.as_slice(), &[]).unwrap();
     assert_eq!(l.diff_id(), &id);
     assert!(
         l.path()
@@ -81,7 +81,7 @@ fn a_layer_is_extracted_once_in_the_overlay_form() {
     assert!(wh.file_type().is_char_device());
     assert_eq!(wh.rdev(), 0);
     // Published: a second extraction reads nothing and gives the same.
-    let again = s.base_layer(&id, &b"not a tar"[..], &[]).unwrap();
+    let again = s.base_layer_from(&id, &b"not a tar"[..], &[]).unwrap();
     assert_eq!(again, l);
 }
 
@@ -96,7 +96,7 @@ fn a_layer_without_a_root_entry_is_marked_to_inherit_the_root() {
     let (tar, id) = Tar::new()
         .entry("f", EntryType::Regular, 0o644, b"")
         .finish();
-    let l = s.base_layer(&id, tar.as_slice(), &[]).unwrap();
+    let l = s.base_layer_from(&id, tar.as_slice(), &[]).unwrap();
     assert!(has_inherit_mark(l.path()));
 
     // 0750, not an image's usual 0555: publishing renames the directory to
@@ -104,7 +104,7 @@ fn a_layer_without_a_root_entry_is_marked_to_inherit_the_root() {
     let (tar, id) = Tar::new()
         .entry("./", EntryType::Directory, 0o750, b"")
         .finish();
-    let l = s.base_layer(&id, tar.as_slice(), &[]).unwrap();
+    let l = s.base_layer_from(&id, tar.as_slice(), &[]).unwrap();
     assert!(!has_inherit_mark(l.path()));
     assert_eq!(fs::metadata(l.path()).unwrap().mode() & 0o7777, 0o750);
 }
@@ -145,7 +145,7 @@ fn a_tar_that_does_not_hash_to_the_diff_id_is_not_published() {
         .entry("f", EntryType::Regular, 0o644, b"x")
         .finish();
     let wrong = Digest::from_sha256_bytes(&[7; 32]);
-    let e = s.base_layer(&wrong, tar.as_slice(), &[]).unwrap_err();
+    let e = s.base_layer_from(&wrong, tar.as_slice(), &[]).unwrap_err();
     assert!(e.to_string().contains("diff ID"), "{e}");
     assert!(matches!(e, Error::Store(_)), "{e}");
     assert!(
@@ -169,7 +169,7 @@ fn a_gzip_blob_is_decoded_and_checked_against_the_tar() {
         w.write_all(&tar).unwrap();
         w.finish().unwrap();
     }
-    let l = s.base_layer(&id, gz.as_slice(), &[]).unwrap();
+    let l = s.base_layer_from(&id, gz.as_slice(), &[]).unwrap();
     assert!(l.path().join("bin").is_dir());
 }
 
@@ -180,7 +180,7 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
         .entry("usr/", EntryType::Directory, 0o755, b"")
         .entry("usr/a", EntryType::Regular, 0o644, b"lower")
         .finish();
-    let l1 = s.base_layer(&id1, t1.as_slice(), &[]).unwrap();
+    let l1 = s.base_layer_from(&id1, t1.as_slice(), &[]).unwrap();
     let mut t = Tar::new();
     let mut h = Header::new_gnu();
     h.set_path("usr/b").unwrap();
@@ -195,7 +195,7 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
     t.out.extend_from_slice(h.as_bytes());
     let (t2, id2) = t.finish();
     let l2 = s
-        .base_layer(&id2, t2.as_slice(), std::slice::from_ref(&l1))
+        .base_layer_from(&id2, t2.as_slice(), std::slice::from_ref(&l1))
         .unwrap();
     assert_eq!(fs::read(l2.path().join("usr/b")).unwrap(), b"lower");
 }
@@ -216,17 +216,17 @@ fn layers_are_keyed_by_chain_id() {
     let (tc, idc) = Tar::new()
         .entry("c", EntryType::Regular, 0o644, b"c")
         .finish();
-    let a = s.base_layer(&ida, ta.as_slice(), &[]).unwrap();
+    let a = s.base_layer_from(&ida, ta.as_slice(), &[]).unwrap();
     assert!(
         a.path().ends_with(ida.to_string().replace(':', "/")),
         "{a:?}"
     );
-    let b = s.base_layer(&idb, tb.as_slice(), &[]).unwrap();
+    let b = s.base_layer_from(&idb, tb.as_slice(), &[]).unwrap();
     let c_on_a = s
-        .base_layer(&idc, tc.as_slice(), std::slice::from_ref(&a))
+        .base_layer_from(&idc, tc.as_slice(), std::slice::from_ref(&a))
         .unwrap();
     let c_on_b = s
-        .base_layer(&idc, tc.as_slice(), std::slice::from_ref(&b))
+        .base_layer_from(&idc, tc.as_slice(), std::slice::from_ref(&b))
         .unwrap();
     assert_ne!(c_on_a.path(), c_on_b.path());
     assert_eq!(c_on_a.diff_id(), &idc);
@@ -239,7 +239,7 @@ fn layers_are_keyed_by_chain_id() {
     );
     // The same stack again reuses the extraction.
     let again = s
-        .base_layer(&idc, &b"not a tar"[..], std::slice::from_ref(&a))
+        .base_layer_from(&idc, &b"not a tar"[..], std::slice::from_ref(&a))
         .unwrap();
     assert_eq!(again.path(), c_on_a.path());
 }

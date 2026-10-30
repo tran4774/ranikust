@@ -6,6 +6,12 @@
 //! thread of its own, which asks the task for a `--jobs` permit before each
 //! `RUN` (ADR-0013). Stage roots are released here, children before
 //! parents, on success and on failure alike; the store is closed last.
+//!
+//! Generic over the snapshotter (ADR-0046): overlay mode builds every
+//! stage on a root of its own; kaniko mode runs kaniko's squashed units
+//! one at a time on the shared root, empties it after each unit that no
+//! later unit needs, and runs `RUN` with `Isolation::Direct` where nothing
+//! can be mounted (`design/kaniko-mode.md#stage-roots-on-the-shared-root`).
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -25,21 +31,44 @@ use rnk_dockerfile::{Dockerfile, GraphOptions, StageGraph};
 use rnk_layer::{Compression, EncodeOptions};
 use rnk_oci::Platform;
 use rnk_registry::{Client, ClientOptions, Credentials, TrustStore};
-use rnk_sandbox::Sandbox;
-use rnk_sched::{CancellationToken, PrepareJob, Scheduler, StageJob, StageRunner};
-use rnk_snapshot::{Overlay, OverlayStage};
+use rnk_sandbox::{Isolation, Sandbox};
+use rnk_sched::{
+    CancellationToken, PrepareJob, Scheduler, StageJob, StageRunner, Unit, own_root_units,
+    shared_root_units,
+};
+use rnk_snapshot::{Kaniko, Overlay, Snapshotter};
 use rnk_store::Store;
 
 use crate::config::{self, BuildConfig};
 
-type Stage = StageDone<OverlayStage>;
-type ImageRoot = ImageSource<OverlayStage>;
+type Stage<S> = StageDone<<S as Snapshotter>::Root>;
+type ImageRoot<S> = ImageSource<<S as Snapshotter>::Root, <S as Snapshotter>::Layer>;
+
+/// The snapshots of a build, as the set-up picked them.
+pub(crate) enum Snapshots {
+    /// Overlay mode, with what the probe found.
+    Overlay(rnk_snapshot::OverlayCaps),
+    /// Kaniko mode on its shared root; `RUN` with `isolation`: the full
+    /// sandbox on a host workdir where mounting works, else `Direct`.
+    Kaniko {
+        snapshotter: Kaniko,
+        isolation: Isolation,
+    },
+}
 
 /// Everything the stages share; owned by the build, borrowed by each
 /// stage's thread through an `Arc`.
-struct Shared {
-    overlay: Arc<Overlay>,
+struct Shared<S: Snapshotter> {
+    snapshotter: Arc<S>,
     sandbox: Sandbox,
+    /// How `RUN` is isolated.
+    isolation: Isolation,
+    /// What the scheduler runs: every stage on its own root, or kaniko's
+    /// squashed units on the shared root.
+    units: Vec<Unit>,
+    /// Kaniko mode: per stage, whether its unit's layers are needed (the
+    /// lazy-snapshot rule, ADR-0038, ADR-0044); `None` in overlay mode.
+    layers_needed: Option<Vec<bool>>,
     store: Arc<Store>,
     context: Context,
     context_files: ContextFiles,
@@ -58,8 +87,8 @@ struct Shared {
     /// `--label`s, for the pushed stage.
     labels: Vec<(String, String)>,
     /// Every root made, for the release at the end.
-    stages: Mutex<Vec<(usize, Arc<Stage>)>>,
-    images: Mutex<Vec<Arc<ImageRoot>>>,
+    stages: Mutex<Vec<(usize, Arc<Stage<S>>)>>,
+    images: Mutex<Vec<Arc<ImageRoot<S>>>>,
 }
 
 /// What a build reports on success.
@@ -74,13 +103,64 @@ pub(crate) fn run(
     config: &BuildConfig,
     store: Arc<Store>,
     sandbox: Sandbox,
-    overlay_caps: rnk_snapshot::OverlayCaps,
+    snapshots: Snapshots,
 ) -> Result<Built, String> {
+    match snapshots {
+        Snapshots::Overlay(caps) => {
+            let overlay = match Overlay::new(Arc::clone(&store), caps) {
+                Ok(o) => Arc::new(o),
+                Err(e) => {
+                    close_store(store);
+                    return Err(e.to_string());
+                }
+            };
+            run_with(config, store, sandbox, overlay, Isolation::Full, false)
+        }
+        Snapshots::Kaniko {
+            snapshotter,
+            isolation,
+        } => {
+            let snapshotter = Arc::new(snapshotter);
+            let r = run_with(
+                config,
+                store,
+                sandbox,
+                Arc::clone(&snapshotter),
+                isolation,
+                true,
+            );
+            // Whatever happened, the shared root is left empty, as every
+            // unit's release leaves it.
+            if let Err(e) = snapshotter.empty() {
+                tracing::warn!("emptying the root at the end of the build: {e}");
+            }
+            r
+        }
+    }
+}
+
+fn run_with<S: Snapshotter + Send + Sync + 'static>(
+    config: &BuildConfig,
+    store: Arc<Store>,
+    sandbox: Sandbox,
+    snapshotter: Arc<S>,
+    isolation: Isolation,
+    shared_root: bool,
+) -> Result<Built, String>
+where
+    S::Root: Send + Sync,
+{
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("starting the async runtime: {e}"))?;
-    let prepared = prepare(config, Arc::clone(&store), sandbox, overlay_caps);
+    let prepared = prepare(
+        config,
+        Arc::clone(&store),
+        sandbox,
+        snapshotter,
+        (isolation, shared_root),
+    );
     let shared = match prepared {
         Ok(s) => Arc::new(s),
         Err(e) => {
@@ -93,7 +173,7 @@ pub(crate) fn run(
     drop(runtime);
     match Arc::into_inner(shared) {
         Some(s) => {
-            drop(s.overlay);
+            drop(s.snapshotter);
             drop(s.sandbox);
             drop(s.exporter);
         }
@@ -115,12 +195,13 @@ fn close_store(store: Arc<Store>) {
 }
 
 /// Reads the Dockerfile and the context and makes the shared state.
-fn prepare(
+fn prepare<S: Snapshotter>(
     config: &BuildConfig,
     store: Arc<Store>,
     sandbox: Sandbox,
-    overlay_caps: rnk_snapshot::OverlayCaps,
-) -> Result<Shared, String> {
+    snapshotter: Arc<S>,
+    (isolation, shared_root): (Isolation, bool),
+) -> Result<Shared<S>, String> {
     let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
         .map_err(|e| format!("opening the build context: {e}"))?;
     let source = dockerfile_source(&config.dockerfile);
@@ -185,8 +266,12 @@ fn prepare(
     let credentials = credentials()?;
     let client = Client::new(options, TrustStore::load(), credentials)
         .map_err(|e| format!("setting up the registry client: {e}"))?;
-    let overlay =
-        Arc::new(Overlay::new(Arc::clone(&store), overlay_caps).map_err(|e| e.to_string())?);
+    let (units, layers_needed) = if shared_root {
+        let (units, needed) = kaniko_units(&graph)?;
+        (units, Some(needed))
+    } else {
+        (own_root_units(&graph), None)
+    };
 
     let in_target = in_target(&graph);
     let mut secrets = BTreeMap::new();
@@ -199,8 +284,11 @@ fn prepare(
         secrets.insert(id.clone(), source.clone());
     }
     Ok(Shared {
-        overlay,
+        snapshotter,
         sandbox,
+        isolation,
+        units,
+        layers_needed,
         store,
         context,
         context_files,
@@ -466,6 +554,45 @@ fn write_digest_files(config: &BuildConfig, digest: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// The units of a sequential kaniko-mode build, kaniko's squashed plan
+/// (ADR-0044), and per stage whether its unit's layers are needed. A plan
+/// in which a later unit reads an emptied unit's root (`COPY --from`,
+/// `RUN --mount from=`) or starts from its saved image is refused until
+/// the state directory keeps those (Phase 2 task 8).
+fn kaniko_units(graph: &StageGraph) -> Result<(Vec<Unit>, Vec<bool>), String> {
+    let plan = rnk_dockerfile::squash_for_shared_root(graph);
+    let name = |i: usize| graph.stages[i].display_name.clone();
+    for unit in &plan {
+        if let Some(&(reader, _)) = unit.readers.first() {
+            return Err(format!(
+                "kaniko mode cannot build this Dockerfile yet: stage {} reads stage {} \
+                 (COPY --from or RUN --mount from=), whose files are not kept once the \
+                 root is emptied (Phase 2); use --mode=overlay as root",
+                name(reader),
+                name(unit.stage)
+            ));
+        }
+        if let rnk_dockerfile::Base::Stage(b) = unit.base {
+            return Err(format!(
+                "kaniko mode cannot build this Dockerfile yet: stage {} builds FROM stage {} \
+                 after the root was emptied, and its image is not kept (Phase 2); use \
+                 --mode=overlay as root",
+                name(unit.chain.first().copied().unwrap_or(unit.stage)),
+                name(b)
+            ));
+        }
+    }
+    let mut needed = vec![false; graph.stages.len()];
+    for unit in &plan {
+        for &s in &unit.chain {
+            if let Some(n) = needed.get_mut(s) {
+                *n = unit.layers_needed;
+            }
+        }
+    }
+    Ok((shared_root_units(&plan), needed))
+}
+
 /// Per stage: whether the target's image inherits its layers, through
 /// `FROM <stage>` from the primary target.
 fn in_target(graph: &StageGraph) -> Vec<bool> {
@@ -482,14 +609,20 @@ fn in_target(graph: &StageGraph) -> Vec<bool> {
 }
 
 /// The stages, then the outputs.
-async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, String> {
+async fn build<S: Snapshotter + Send + Sync + 'static>(
+    config: &BuildConfig,
+    shared: &Arc<Shared<S>>,
+) -> Result<Built, String>
+where
+    S::Root: Send + Sync,
+{
     let runner = Runner {
         shared: Arc::clone(shared),
     };
     let cancel = CancellationToken::new();
     let signals = tokio::spawn(cancel_on_signals(cancel.clone()));
     let summary = Scheduler::new(config.jobs)
-        .run(&shared.graph, &runner, &cancel)
+        .run_units(&shared.graph, &shared.units, &runner, &cancel)
         .await;
     signals.abort();
     let summary = summary.map_err(|e| e.to_string())?;
@@ -499,7 +632,7 @@ async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, Stri
         .find(|(i, _)| *i == summary.target)
         .map(|(_, d)| Arc::clone(d))
         .ok_or("the target stage was not built")?;
-    let done: &Stage = &target;
+    let done: &Stage<S> = &target;
     let format = requested_format(config);
     let image = assemble_annotated(
         done.config.clone(),
@@ -567,7 +700,7 @@ async fn cancel_on_signals(cancel: CancellationToken) {
 
 /// Releases every root, children before parents: later stages first, the
 /// roots of `COPY --from` images last.
-fn release_all(shared: &Shared) {
+fn release_all<S: Snapshotter>(shared: &Shared<S>) {
     let mut stages =
         std::mem::take(&mut *shared.stages.lock().unwrap_or_else(PoisonError::into_inner));
     stages.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
@@ -598,22 +731,22 @@ fn release_all(shared: &Shared) {
     }
 }
 
-struct Runner {
-    shared: Arc<Shared>,
+struct Runner<S: Snapshotter> {
+    shared: Arc<Shared<S>>,
 }
 
-/// What a stage's preparation pulled; no root is made yet.
-struct Prepared {
-    base: Option<Arc<PulledImage>>,
-    images: BTreeMap<String, Arc<PulledImage>>,
+/// What a unit's preparation pulled; no root is made yet.
+struct Prepared<L> {
+    base: Option<Arc<PulledImage<L>>>,
+    images: BTreeMap<String, Arc<PulledImage<L>>>,
 }
 
-/// Pulls a stage's base image and the images its `COPY --from` reads.
-async fn prepare_stage(
-    shared: &Arc<Shared>,
+/// Pulls a unit's base image and the images its `COPY --from` reads.
+async fn prepare_stage<S: Snapshotter + Send + Sync + 'static>(
+    shared: &Arc<Shared<S>>,
     base: Option<String>,
     images: Vec<String>,
-) -> Result<Prepared, Error> {
+) -> Result<Prepared<S::Layer>, Error> {
     let mut prepared = Prepared {
         base: None,
         images: BTreeMap::new(),
@@ -622,7 +755,7 @@ async fn prepare_stage(
         let image = pull_image(
             &shared.client,
             &shared.store,
-            &shared.overlay,
+            &shared.snapshotter,
             &r,
             &shared.platform,
         )
@@ -633,7 +766,7 @@ async fn prepare_stage(
         let image = pull_image(
             &shared.client,
             &shared.store,
-            &shared.overlay,
+            &shared.snapshotter,
             &r,
             &shared.platform,
         )
@@ -660,27 +793,42 @@ async fn await_pulls<T>(
     r
 }
 
-impl StageRunner for Runner {
-    type Prepared = Arc<Prepared>;
-    type Output = Arc<Stage>;
+impl<S: Snapshotter + Send + Sync + 'static> StageRunner for Runner<S>
+where
+    S::Root: Send + Sync,
+{
+    type Prepared = Arc<Prepared<S::Layer>>;
+    type Output = Arc<Stage<S>>;
     type Error = Error;
 
     fn prepare(
         &self,
         job: PrepareJob<'_>,
-    ) -> impl Future<Output = Result<Arc<Prepared>, Error>> + Send {
+    ) -> impl Future<Output = Result<Self::Prepared, Error>> + Send {
         let shared = Arc::clone(&self.shared);
-        let node = job.node;
         let cancel = job.cancel.clone();
-        let base = match &node.base {
+        // A unit starts from the base of the first stage it runs; it reads
+        // the images every stage of it reads.
+        let first = job.folded.first().copied().unwrap_or(job.stage);
+        let base = match &job.graph.stages[first].base {
             rnk_dockerfile::Base::Image(r) => Some(r.clone()),
             rnk_dockerfile::Base::Scratch | rnk_dockerfile::Base::Stage(_) => None,
         };
-        let platform_ok = node
-            .platform
-            .as_deref()
-            .is_none_or(|p| p == config::PLATFORM);
-        let images: Vec<String> = node.images().into_iter().map(str::to_owned).collect();
+        let chain: Vec<usize> = job.folded.iter().copied().chain([job.stage]).collect();
+        let platform_ok = chain.iter().all(|&i| {
+            job.graph.stages[i]
+                .platform
+                .as_deref()
+                .is_none_or(|p| p == config::PLATFORM)
+        });
+        let mut images: Vec<String> = Vec::new();
+        for &i in &chain {
+            for r in job.graph.stages[i].images() {
+                if !images.iter().any(|x| x == r) {
+                    images.push(r.to_owned());
+                }
+            }
+        }
         async move {
             if !platform_ok {
                 return Err(Error::Invalid(format!(
@@ -707,11 +855,12 @@ impl StageRunner for Runner {
     fn build(
         &self,
         job: StageJob<'_, Self>,
-    ) -> impl Future<Output = Result<Arc<Stage>, Error>> + Send {
+    ) -> impl Future<Output = Result<Arc<Stage<S>>, Error>> + Send {
         let shared = Arc::clone(&self.shared);
         async move {
             let index = job.stage;
-            let deps: Vec<(usize, Arc<Stage>)> = job
+            let folded = job.folded.to_vec();
+            let deps: Vec<(usize, Arc<Stage<S>>)> = job
                 .deps
                 .iter()
                 .map(|(i, d)| (*i, Arc::clone(&**d)))
@@ -726,7 +875,7 @@ impl StageRunner for Runner {
                 .name(format!("stage-{index}"))
                 .spawn(move || {
                     let gate = ChannelGate { requests };
-                    let r = run_stage(&s, index, &deps, &prepared, &gate, &flag);
+                    let r = run_unit(&s, &folded, index, &deps, &prepared, &gate, &flag);
                     // Let go of the build before reporting, so that the
                     // caller can close the store once every stage is done.
                     drop((s, deps, prepared, gate));
@@ -819,25 +968,73 @@ impl RunGate for ChannelGate {
     }
 }
 
-/// Builds stage `index` on the calling thread.
-fn run_stage(
-    shared: &Shared,
+/// Builds a unit on the calling thread: the stages folded into it, base
+/// first, then stage `index`, each built on the root the one before ended
+/// with. On the shared root the unit's root is emptied as soon as it is
+/// built, unless it is the target (`kaniko_units` refuses a plan in which
+/// a later unit needs it).
+fn run_unit<S: Snapshotter>(
+    shared: &Shared<S>,
+    folded: &[usize],
     index: usize,
-    deps: &[(usize, Arc<Stage>)],
-    prepared: &Prepared,
+    deps: &[(usize, Arc<Stage<S>>)],
+    prepared: &Prepared<S::Layer>,
     gate: &ChannelGate,
     cancelled: &AtomicBool,
-) -> Result<Arc<Stage>, Error> {
+) -> Result<Arc<Stage<S>>, Error> {
+    let mut previous: Option<Arc<Stage<S>>> = None;
+    for &stage in folded.iter().chain([&index]) {
+        let done = run_stage(
+            shared,
+            stage,
+            previous.as_deref(),
+            deps,
+            prepared,
+            gate,
+            cancelled,
+        );
+        let done = match done {
+            Ok(done) => done,
+            Err(e) => {
+                if let Some(p) = &previous
+                    && let Err(r) = p.root.release()
+                {
+                    tracing::warn!("releasing the root of a folded stage: {r}");
+                }
+                return Err(e);
+            }
+        };
+        previous = Some(done);
+    }
+    let done = previous.ok_or_else(|| Error::Invalid("an empty unit".to_owned()))?;
+    if shared.layers_needed.is_some() && index != shared.graph.primary_target() {
+        done.root.release()?;
+    }
+    Ok(done)
+}
+
+/// Builds stage `index` on the calling thread, on `folded_base` when it is
+/// folded onto the stage before it in its unit.
+fn run_stage<S: Snapshotter>(
+    shared: &Shared<S>,
+    index: usize,
+    folded_base: Option<&Stage<S>>,
+    deps: &[(usize, Arc<Stage<S>>)],
+    prepared: &Prepared<S::Layer>,
+    gate: &ChannelGate,
+    cancelled: &AtomicBool,
+) -> Result<Arc<Stage<S>>, Error> {
     let node = &shared.graph.stages[index];
-    let base = match &node.base {
-        rnk_dockerfile::Base::Scratch => StageBase::Scratch,
-        rnk_dockerfile::Base::Image(_) => StageBase::Image(
+    let base = match (&node.base, folded_base) {
+        (rnk_dockerfile::Base::Stage(_), Some(parent)) => StageBase::Stage(parent),
+        (rnk_dockerfile::Base::Scratch, _) => StageBase::Scratch,
+        (rnk_dockerfile::Base::Image(_), _) => StageBase::Image(
             prepared
                 .base
                 .as_deref()
                 .ok_or_else(|| Error::Invalid("the base image was not pulled".to_owned()))?,
         ),
-        rnk_dockerfile::Base::Stage(b) => StageBase::Stage(
+        (rnk_dockerfile::Base::Stage(b), None) => StageBase::Stage(
             deps.iter()
                 .find(|(i, _)| i == b)
                 .map(|(_, d)| &**d)
@@ -848,7 +1045,7 @@ fn run_stage(
     // reads them, and released with the build.
     let mut sources = Vec::with_capacity(prepared.images.len());
     for (r, image) in &prepared.images {
-        let root = Arc::new(ImageSource::new(&*shared.overlay, Arc::clone(image))?);
+        let root = Arc::new(ImageSource::new(&*shared.snapshotter, Arc::clone(image))?);
         shared
             .images
             .lock()
@@ -863,7 +1060,14 @@ fn run_stage(
         base,
         stages: deps.iter().map(|(i, d)| (*i, &**d)).collect(),
         images: sources.iter().map(|(k, v)| (k.clone(), &**v)).collect(),
-        demand: LayerDemand::for_stage(shared.in_target[index], &shared.outputs, false),
+        demand: LayerDemand::for_stage(
+            shared
+                .layers_needed
+                .as_ref()
+                .map_or(shared.in_target[index], |n| n[index]),
+            &shared.outputs,
+            false,
+        ),
         labels: if index == shared.graph.primary_target() {
             &shared.labels
         } else {
@@ -872,8 +1076,9 @@ fn run_stage(
     };
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
     let cx = BuildCx {
-        snapshotter: &*shared.overlay,
+        snapshotter: &*shared.snapshotter,
         sandbox: &shared.sandbox,
+        isolation: shared.isolation,
         store: &shared.store,
         context: &shared.context,
         context_files: &shared.context_files,

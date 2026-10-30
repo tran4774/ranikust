@@ -206,7 +206,21 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
         "build settings validated"
     );
     match config.mode {
-        config::Mode::Kaniko => kaniko(&config, "--mode=kaniko"),
+        config::Mode::Kaniko => {
+            // Whether root may mount picks how `RUN` is isolated on a host
+            // workdir (ADR-0043); kaniko mode itself never mounts.
+            let span = tracing::debug_span!("ranikust.setup");
+            let can_mount = match span.in_scope(setup::enter_namespace) {
+                Ok(()) => true,
+                // Kaniko mode does not need the namespace: it only tells
+                // whether `RUN` may get the full sandbox.
+                Err(refusal) => {
+                    tracing::debug!("RUN without the full sandbox: {}", refusal.reason);
+                    false
+                }
+            };
+            kaniko(&config, "--mode=kaniko", can_mount)
+        }
         config::Mode::Overlay => {
             overlay_flags(args)?;
             let state_dir = overlay_state_dir(&config)?;
@@ -229,7 +243,7 @@ fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
                 Err(refusal) if refusal.needs_kaniko_mode() => {
                     let why = refusal.reason;
                     tracing::info!("kaniko mode, because root may not mount here: {why}");
-                    kaniko(&config, "--mode=auto")
+                    kaniko(&config, "--mode=auto", false)
                 }
                 Err(refusal) => Err(Failure::error(refusal.to_string())),
             }
@@ -272,20 +286,34 @@ fn overlay(config: &BuildConfig, state_dir: &Path, span: &tracing::Span) -> Resu
     tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
     tracing::info!("set up for {}", setup.outcome);
     let setup::Outcome::OverlayRoot { overlay, .. } = setup.outcome;
-    let built = build::run(config, setup.store, setup.sandbox, overlay).map_err(Failure::error)?;
+    let built = build::run(
+        config,
+        setup.store,
+        setup.sandbox,
+        build::Snapshots::Overlay(overlay),
+    )
+    .map_err(Failure::error)?;
     tracing::info!("built image {}", built.digest);
     // The digest is the build's result: failing to print it fails the run.
     writeln!(std::io::stdout(), "{}", built.digest)
         .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
 }
 
-/// Kaniko mode, as far as Phase 2 has built it, chosen by `how`: the root
-/// is a host `--workdir`, checked and locked (ADR-0038), or `/`, only
-/// inside a container unless `--force` (ADR-0040); then the state directory
-/// is named, `RLIMIT_NOFILE` raised, and the run stops before anything is
-/// written.
-fn kaniko(config: &BuildConfig, how: &str) -> Result<(), Failure> {
-    let claimed = match config.workdir.as_deref() {
+/// Kaniko mode, chosen by `how`: the root is a host `--workdir`, checked,
+/// locked and marked (ADR-0038), or `/`, only inside a container unless
+/// `--force` (ADR-0040); then `RLIMIT_NOFILE` is raised (the original kept
+/// for `RUN`), the state directory and store set up, the ignore list built,
+/// and the stages run one unit at a time on the shared root
+/// (`design/kaniko-mode.md#stage-roots-on-the-shared-root`). `can_mount` is
+/// whether the build's mount namespace could be entered.
+fn kaniko(config: &BuildConfig, how: &str, can_mount: bool) -> Result<(), Failure> {
+    if config.single_snapshot {
+        return Err(Failure::usage(
+            "--single-snapshot is not implemented in kaniko mode yet (Phase 2)",
+        ));
+    }
+    let nofile = rnk_sandbox::NofileLimit::current();
+    let mut claimed = match config.workdir.as_deref() {
         Some(dir) => Some(
             tracing::debug_span!("ranikust.workdir")
                 .in_scope(|| workdir::claim(dir))
@@ -306,27 +334,111 @@ fn kaniko(config: &BuildConfig, how: &str) -> Result<(), Failure> {
             None
         }
     };
-    let root = claimed
-        .as_ref()
-        .map_or_else(|| "/".to_owned(), |w| w.path().display().to_string());
-    // Always `Some` in kaniko mode.
-    let state_dir = config.state_dir_for(config::Mode::Kaniko);
+    if rustix::process::geteuid().as_raw() != 0 {
+        return Err(Failure::error(format!(
+            "{how}: kaniko mode needs root (chown, chroot, switching users), as kaniko does; \
+             run ranikust as root in the container or VM that builds"
+        )));
+    }
     match workdir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
         // The walk still runs, with fewer descriptors to hold directories.
         Err(e) => tracing::warn!("cannot raise RLIMIT_NOFILE to its hard limit: {e}"),
     }
-    tracing::debug!(
-        %root,
-        ?state_dir,
-        workers = config.snapshot_workers.get(),
-        snapshot_mode = %config::name(config.snapshot_mode),
-        "kaniko mode set up"
-    );
-    Err(Failure::usage(format!(
-        "{how}: kaniko mode on {root} passed its checks, but kaniko-mode builds are not \
-         implemented yet (Phase 2); use --mode=overlay as root"
-    )))
+    if config.jobs.is_some() {
+        tracing::warn!(
+            "--jobs is ignored in kaniko mode: stages run one at a time on the shared root"
+        );
+    }
+    // The marker before anything else is written in the workdir, the
+    // state directory included when it lies inside.
+    if let Some(w) = claimed.as_mut() {
+        w.mark()
+            .map_err(|refused| Failure::error(refused.to_string()))?;
+    }
+    // Always `Some` in kaniko mode.
+    let state_dir = config
+        .state_dir_for(config::Mode::Kaniko)
+        .ok_or_else(|| Failure::error("kaniko mode has no state directory"))?;
+    let root_path = claimed
+        .as_ref()
+        .map_or_else(|| std::path::PathBuf::from("/"), |w| w.path().to_owned());
+    let setup = tracing::debug_span!("ranikust.setup")
+        .in_scope(|| {
+            setup::set_up_kaniko(
+                &state_dir,
+                claimed.as_ref().map(workdir::Workdir::path),
+                can_mount,
+                nofile,
+            )
+        })
+        .map_err(|refusal| Failure::error(refusal.to_string()))?;
+    let snapshotter = kaniko_snapshotter(config, claimed.as_ref(), &root_path, &state_dir)?;
+    let built = build::run(
+        config,
+        setup.store,
+        setup.sandbox,
+        build::Snapshots::Kaniko {
+            snapshotter,
+            isolation: setup.isolation,
+        },
+    )
+    .map_err(Failure::error)?;
+    // The lock is held to the end of the build.
+    drop(claimed);
+    tracing::info!("built image {}", built.digest);
+    writeln!(std::io::stdout(), "{}", built.digest)
+        .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
+}
+
+/// Kaniko mode's snapshotter on the claimed root: the root opened from the
+/// workdir's checked descriptor (or `/`), the ignore list from mountinfo,
+/// the flags and the state directory, and the walk's options. The paths
+/// given to the ignore list are physical: the workdir's canonical path,
+/// opened without following a symlink by `claim`, and the state
+/// directory's, opened the same way here.
+fn kaniko_snapshotter(
+    config: &BuildConfig,
+    claimed: Option<&workdir::Workdir>,
+    root_path: &Path,
+    state_dir: &Path,
+) -> Result<rnk_snapshot::Kaniko, Failure> {
+    let fail = |what: &str, e: &dyn std::fmt::Display| Failure::error(format!("{what}: {e}"));
+    let root = match claimed {
+        Some(w) => w
+            .root()
+            .sub_root("/")
+            .map_err(|e| fail("reopening the workdir", &e))?,
+        None => rnk_rootfs::RootPath::open("/").map_err(|e| fail("opening /", &e))?,
+    };
+    let state = std::fs::canonicalize(state_dir)
+        .map_err(|e| fail(&format!("resolving {}", state_dir.display()), &e))?;
+    rnk_rootfs::RootPath::open(&state)
+        .map_err(|e| fail(&format!("opening {}", state.display()), &e))?;
+    let mounts =
+        rnk_snapshot::kaniko::read_mountinfo().map_err(|e| fail("reading mountinfo", &e))?;
+    let spec = rnk_snapshot::kaniko::IgnoreSpec {
+        root: root_path,
+        state_dir: Some(&state),
+        ignore_paths: &config.ignore_paths,
+        ignore_var_run: config.ignore_var_run,
+    };
+    let ignore = rnk_snapshot::kaniko::ignore_list(&spec, &mounts)
+        .map_err(|e| fail("building the ignore list", &e))?;
+    let walk = rnk_snapshot::WalkOptions {
+        workers: config.snapshot_workers,
+        mode: match config.snapshot_mode {
+            config::SnapshotMode::Full => rnk_snapshot::SnapshotMode::Full,
+            config::SnapshotMode::Redo => rnk_snapshot::SnapshotMode::Redo,
+            config::SnapshotMode::Time => rnk_snapshot::SnapshotMode::Time,
+        },
+    };
+    Ok(rnk_snapshot::Kaniko::new(
+        root,
+        root_path.to_owned(),
+        ignore,
+        walk,
+    ))
 }
 
 /// Why kaniko mode refuses the root `/` outside a container (ADR-0040).

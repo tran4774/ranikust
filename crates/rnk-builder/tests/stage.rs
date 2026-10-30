@@ -65,17 +65,13 @@ fn plant(dir: &Path, entries: &[(&str, &[u8])]) {
 
 impl Snapshotter for FakeSnapshotter {
     type Root = FakeRoot;
+    type Layer = LayerDir;
 
-    fn base_layer<R: std::io::Read>(
-        &self,
-        _: &Digest,
-        _: R,
-        _: &[LayerDir],
-    ) -> rnk_snapshot::Result<LayerDir> {
+    fn base_layer(&self, _: &Digest, _: &Path, _: &[LayerDir]) -> rnk_snapshot::Result<LayerDir> {
         unreachable!("no image in these tests")
     }
 
-    fn prepare(&self, base: Base<'_, FakeRoot>) -> rnk_snapshot::Result<FakeRoot> {
+    fn prepare(&self, base: Base<'_, FakeRoot, LayerDir>) -> rnk_snapshot::Result<FakeRoot> {
         let n = self.next.fetch_add(1, Ordering::Relaxed);
         let path = self.dir.join(format!("stage-{n}"));
         fs::create_dir(&path).unwrap();
@@ -104,6 +100,8 @@ impl Snapshotter for FakeSnapshotter {
 }
 
 impl StageRootfs for FakeRoot {
+    type Diff = LayerDiff;
+
     fn root(&self) -> rnk_snapshot::Result<&RootPath> {
         if self.open {
             Ok(&self.root)
@@ -201,6 +199,7 @@ fn build_seeded(
     let secrets = BTreeMap::new();
     let never = || false;
     let cx = BuildCx {
+        isolation: rnk_sandbox::Isolation::Full,
         snapshotter: &snapshotter,
         sandbox: &sandbox,
         store: &store,
