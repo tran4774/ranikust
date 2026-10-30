@@ -1090,8 +1090,11 @@ Entry format:
 - **Answer (2026-10-30):** option (b): the acceptance criterion compares
   `--jobs 1` with the default (equal on 2026-10-30); the e2e suite compares
   the W3 images across `--jobs` by flattened content with the workload's
-  `du`-derived files (`/out/a.txt`, `/out/all.txt`) on its noise list,
-  because those files depend on disk block allocation, not on ranikust.
+  `du`-derived files on its noise list, because those files depend on disk
+  block allocation, not on ranikust. Every W3 stage writes `du`, so the
+  list is `/out/a.txt`, `/out/b.txt`, `/out/c.txt` and `/out/all.txt`
+  (`/out/b.txt` was seen to differ too; corrected on the branch that made
+  the harness change).
   `nextjs-kaniko` is a separate project and is not changed here.
 
 ### Q-200: How does the e2e suite's `ranikust` reach a plain-HTTP registry?

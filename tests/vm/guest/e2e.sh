@@ -235,7 +235,12 @@ for w in "${WORKLOADS[@]}"; do
   if [ -f "$wd/kaniko-r1/metrics.json" ] && [ -f "$rnk/metrics.json" ] && [ -f "$rnk/digest" ]; then
     "${PY[@]}" guest/e2e/metrics.py "$wd/kaniko-r1/metrics.json" "$rnk/metrics.json" >"$wd/metrics-kaniko-ranikust.md"
   fi
-  # W3 with --reproducible: every --jobs value must give the same digest.
+  # W3 with --reproducible across --jobs (Q-187): the raw digests are
+  # reported, and the images are compared by flattened content against the
+  # first --jobs value. W3's stages write `du -sk node_modules` into
+  # /out/{a,b,c}.txt, and /out/all.txt concatenates them: those depend on
+  # disk block allocation, not on ranikust, so they are noise here. Any
+  # other difference fails the suite.
   if [ "$w" = w3 ]; then
     : >"$wd/digests.txt"
     for j in "${JOBS[@]}"; do
@@ -243,11 +248,24 @@ for w in "${WORKLOADS[@]}"; do
     done
     if [ -s "$wd/digests.txt" ]; then
       if [ "$(cut -d' ' -f2 "$wd/digests.txt" | sort -u | wc -l)" = 1 ]; then
-        echo "same digest at every --jobs value" >>"$wd/digests.txt"
+        echo "raw digests: the same at every --jobs value" >>"$wd/digests.txt"
       else
-        echo "error: the digest depends on --jobs" | tee -a "$wd/digests.txt" >&2
-        failed=1
+        echo "raw digests: differ across --jobs (compared by content below)" >>"$wd/digests.txt"
       fi
+      du_noise=(--noise /out/a.txt --noise /out/b.txt --noise /out/c.txt --noise /out/all.txt)
+      first="${JOBS[0]}"
+      for j in "${JOBS[@]:1}"; do
+        da="$wd/ranikust-j$first-r1" db="$wd/ranikust-j$j-r1"
+        [ -f "$da/listing.tsv.gz" ] && [ -f "$db/listing.tsv.gz" ] || continue
+        "${PY[@]}" guest/e2e/compare.py "${du_noise[@]}" "jobs=$first" "$da" "jobs=$j" "$db" \
+          >"$wd/compare-jobs$first-jobs$j.txt"
+        result="$(tail -1 "$wd/compare-jobs$first-jobs$j.txt")"
+        echo "content jobs=$first vs jobs=$j: $result" >>"$wd/digests.txt"
+        if [[ "$result" != *"other=0 hardlink=0 "*"config=0" ]]; then
+          echo "error: W3's content depends on --jobs ($j)" | tee -a "$wd/digests.txt" >&2
+          failed=1
+        fi
+      done
     fi
   fi
 done

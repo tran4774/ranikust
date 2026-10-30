@@ -1,4 +1,5 @@
-"""Compare two flattened images: python3 -I compare.py <name-a> <dir-a> <name-b> <dir-b>
+"""Compare two flattened images:
+python3 -I compare.py [--noise PATH]... <name-a> <dir-a> <name-b> <dir-b>
 
 Each directory holds `listing.tsv.gz` and `config.json` from flatten.py. Prints
 the paths only one side has, the paths whose metadata differs and those whose
@@ -7,7 +8,8 @@ differ. Differences fall in three classes:
 
 - noise: files that are not deterministic between two runs of the same
   builder on W1 (experiment 07, section "Image check": the pnpm store,
-  node's compile cache, npm's cache, two pnpm state files, /etc/hostname);
+  node's compile cache, npm's cache, two pnpm state files, /etc/hostname),
+  plus each path given with --noise (W3's `du`-derived files, Q-187);
 - hardlink: an entry that is a hardlink on either side (ADR-0012: overlay
   splits hardlinks on copy-up, kaniko rewrites every name);
 - other: everything else, which the Phase 1 acceptance criterion requires to
@@ -37,8 +39,8 @@ def load(d):
     return entries, json.load(open(f"{d}/config.json"))
 
 
-def noise(path):
-    return (path.startswith(NOISE_PREFIXES) or path in NOISE_PATHS
+def noise(path, extra=()):
+    return (path.startswith(NOISE_PREFIXES) or path in NOISE_PATHS or path in extra
             or path.rsplit("/", 1)[-1] in NOISE_NAMES)
 
 
@@ -48,13 +50,19 @@ def group(paths, n=5):
 
 
 def main():
-    na, da, nb, db = sys.argv[1:5]
+    args, extra = sys.argv[1:], []
+    while args[:1] == ["--noise"]:
+        extra.append(args[1])
+        args = args[2:]
+    if len(args) != 4:
+        sys.exit(__doc__)
+    na, da, nb, db = args
     a, ca = load(da)
     b, cb = load(db)
     classes = {"other": [], "hardlink": [], "noise": []}
 
     def classify(kind, path, ea, eb):
-        if noise(path):
+        if noise(path, extra):
             cls = "noise"
         elif (ea and ea[6] == "h") or (eb and eb[6] == "h"):
             cls = "hardlink"
