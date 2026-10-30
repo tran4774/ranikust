@@ -11,7 +11,7 @@ Code: `crates/rnk-metrics`, wired in `crates/ranikust/src/main.rs`.
 
 ## Invariants
 
-- **Opt-in, and off means off.** Without `RANIKUST_METRICS_FILE` (or
+- **Opt-in, and off means off.** Without `--metrics-file` (or
   `RANIKUST_METRICS_SUMMARY`) the metrics layer and the panic hook are not
   installed; a `debug_span!` is rejected by tracing's level check, one
   comparison.
@@ -33,19 +33,21 @@ Code: `crates/rnk-metrics`, wired in `crates/ranikust/src/main.rs`.
 
 | Variable | Effect |
 |---|---|
-| `RANIKUST_METRICS_FILE=<path>` | Collect, and write the report there at exit. A relative path is resolved at start-up; the parent directory is created; the file is written to a temporary name and renamed. |
+| `--metrics-file=<path>` (a flag, `ADR-0037`) | Collect, and write the report there at exit. A relative path is resolved at start-up; the parent directory is created; the file is written to a temporary name and renamed. |
 | `RANIKUST_METRICS_SUMMARY=1` | Collect, and print a short summary to stderr at exit (anything but empty or `0`). |
 
-`build --metrics-file=<path>` takes the report path's place; the other
-variable still applies. Whether kaniko's `KANIKO_METRICS_FILE` is honoured
-too is part of
-[Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted)
-(interim: not read).
+The report path comes only from `--metrics-file`, a flag of every
+subcommand; `RANIKUST_METRICS_FILE` is no longer read, and when it is set
+ranikust says so in a warning ([ADR-0037](../adr/0037-metrics-report-path-from-the-flag-only.md)). kaniko's `KANIKO_METRICS_FILE` is not honoured: it
+is named in the start-up warning about unread `KANIKO_*` variables
+([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)). The log level and
+format (`--verbosity`, `--log-format`, `--log-timestamp`) apply to the log
+layer only and never change the report.
 
-Logs are a separate layer: stderr, `INFO` until the verbosity and format
-flags are decided ([Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted),
-[Q-031](../open-questions.md#q-031-how-does-per-stage-log-grouping-fit-the-kaniko-log-flags)).
-Each layer has its own filter, so the log level never hides a metric span.
+Logs are a separate layer: stderr, at kaniko's `--verbosity` and written as
+kaniko's `--log-format` and `--log-timestamp` write it, other crates at
+`INFO` at most ([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)). Each
+layer has its own filter, so the log level never hides a metric span.
 
 ## Emitting spans
 
@@ -366,7 +368,7 @@ export and push; in kaniko mode, even a path inside `/` is written after
 every walk. No library reads metric state, and span fields are only
 recorded, so layer and config bytes do not depend on metrics being on. The
 check, as in kaniko: a `--reproducible` build gives the same digests with
-`RANIKUST_METRICS_FILE` set and unset; `rnk-builder` adds it as a test with
+`--metrics-file` given and not; `rnk-builder` adds it as a test with
 its outputs (Phase 1 task 11).
 
 ## Testing hooks
@@ -397,8 +399,6 @@ its outputs (Phase 1 task 11).
   [Q-057](../open-questions.md#q-057-does-ranikust-offer-cpu-and-heap-profiling).
 - Export formats besides the file (OTLP, Prometheus):
   [Q-058](../open-questions.md#q-058-which-metric-export-formats-come-after-the-json-report).
-- `KANIKO_METRICS_FILE` and the flag name:
-  [Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted).
 
 ## References
 

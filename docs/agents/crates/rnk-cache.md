@@ -107,8 +107,8 @@ pub trait LayerCache {                               // [design] RegistryCache, 
 - Nothing to build: the MVP has no registry layer cache
   ([survey 04](../../research/survey/04-risks-and-roadmap.md) §2). Keep the
   crate a skeleton with no dependencies.
-- [open: Q-021] Whether Phase 1 rejects `--cache`/`--cache-repo` with a
-  clear message or accepts them as no-ops (ADR-0011 accepts the flags).
+- Phase 1 refuses `--cache` and `--cache-repo` naming Phase 4, and accepts
+  `--cache=false` (Q-021, ADR-0036).
 - The Phase 1 persistent store is `rnk-store` (ADR-0021), not this crate.
 - Phase 4: fix the key fields with W2, then `CacheKey`, both caches,
   lookahead and skipping fully cached stages (with `rnk-sched`, `rnk-builder`).

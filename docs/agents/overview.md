@@ -36,7 +36,7 @@ in I/O. Full text: [`ARCHITECTURE.md`](../../ARCHITECTURE.md#data-flow-of-a-buil
 | 9 | Image assembly: config, manifest | `rnk-builder`, `rnk-oci` | |
 | 10 | Output: parallel push with cross-repository mounts, Docker tar, OCI layout | `rnk-registry`, `rnk-builder` | |
 
-Every step emits `tracing` spans; with `RANIKUST_METRICS_FILE` set,
+Every step emits `tracing` spans; with `--metrics-file=<path>`,
 `rnk-metrics` writes them as one JSON report at exit (`ADR-0025`,
 `design/metrics.md`).
 
@@ -99,7 +99,7 @@ ADR-0027 puts the matcher inside the walk).
 | State directory | `--state-dir` (kaniko's `--kaniko-dir`); default `<workdir>/.ranikust` in overlay mode, `/ranikust/state` in kaniko mode (`ADR-0022`) | the store, `builds/<id>/` (`design/overlay-snapshot.md#state-directory-layout`), stub journal, `deps/` for `COPY --from`, stage images, secrets. In kaniko mode on the ignore list: never walked, snapshotted or deleted |
 | Store | in the state directory, owned by `rnk-store` (`ADR-0021`) | `blobs/sha256/`, `layers/<id>/`, `caches/`, `tmp/`: content-addressed, immutable, per-digest `flock`, atomic rename, shared by concurrent builds (`ADR-0006`, `ADR-0007`) |
 | Outputs | `--destination`, `--tar-path`, `--oci-layout-path` | the image; the only other place written, besides the metrics report |
-| Metrics report | `RANIKUST_METRICS_FILE` (opt-in) | one JSON file written at exit, never during the build (`ADR-0025`) |
+| Metrics report | `--metrics-file` (opt-in, `ADR-0037`) | one JSON file written at exit, never during the build (`ADR-0025`) |
 
 One state directory serves every mode (`ADR-0022`); the default for kaniko
 mode outside a container is `[open: Q-036]`

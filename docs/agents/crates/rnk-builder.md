@@ -192,7 +192,7 @@ through a descriptor of its directory.
 - The instruction record `rnk_builder.instruction` (`stage`, `index`,
   `line`, `kind`, `text` as written, never expanded, `cache_hit`); `stage`,
   `execute`, `layer` (`skipped`), `assemble`, `output` ([rows](../../design/metrics.md#rnk-builder)).
-- Test: with `--reproducible`, digests equal with `RANIKUST_METRICS_FILE`
+- Test: with `--reproducible`, digests equal with `--metrics-file`
   set and unset.
 
 ## Pitfalls

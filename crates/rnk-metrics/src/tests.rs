@@ -23,17 +23,14 @@ fn fake_host(dir: &Path) -> HostPaths {
 
 #[test]
 fn config_reads_the_environment_values() {
-    assert!(!Config::from_vars(None, None).is_enabled());
-    assert!(!Config::from_vars(Some("".into()), Some("0".into())).is_enabled());
-    assert!(!Config::from_vars(None, Some("".into())).is_enabled());
+    assert!(!Config::from_vars(None).is_enabled());
+    assert!(!Config::from_vars(Some("0".into())).is_enabled());
+    assert!(!Config::from_vars(Some("".into())).is_enabled());
 
-    let summary = Config::from_vars(None, Some("1".into()));
+    // The summary only: the report path never comes from the environment
+    // (ADR-0037).
+    let summary = Config::from_vars(Some("1".into()));
     assert_eq!((summary.file, summary.summary), (None, true));
-
-    let relative = Config::from_vars(Some("out/m.json".into()), None);
-    let file = relative.file.expect("file");
-    assert!(file.is_absolute());
-    assert!(file.ends_with("out/m.json"));
 }
 
 #[test]
@@ -44,10 +41,46 @@ fn disabled_path_installs_nothing() {
     assert!(dispatch.downcast_ref::<MetricsLayer>().is_none());
     // `build` returns `logs_only()` when disabled. Its level hint is the log
     // layer's: tracing rejects `debug_span!` with one comparison against it.
-    assert_eq!(logs_only().max_level_hint(), Some(LevelFilter::INFO));
+    assert_eq!(
+        logs_only(LogOptions::default()).max_level_hint(),
+        Some(LevelFilter::INFO)
+    );
     // Whether a `debug_span!` is then disabled depends on the process-wide
     // callsite cache, which the other tests' subscribers share: checked in
     // `tests/init_disabled.rs`, a process of its own.
+}
+
+#[test]
+fn the_log_level_is_the_log_layers_hint_in_every_format() {
+    for format in [LogFormat::Text, LogFormat::Color, LogFormat::Json] {
+        for (level, timestamp) in [(LevelFilter::DEBUG, true), (LevelFilter::ERROR, false)] {
+            let options = LogOptions {
+                level,
+                format,
+                timestamp,
+            };
+            assert_eq!(
+                logs_only(options).max_level_hint(),
+                Some(level),
+                "{options:?}"
+            );
+        }
+    }
+}
+
+/// `-v trace` shows ranikust's own events, never a dependency's below
+/// `INFO` (T11: request internals); `-v error` hides everyone's warnings.
+#[test]
+fn dependencies_log_at_info_at_most() {
+    use tracing::Level;
+    let trace = log_filter(LevelFilter::TRACE);
+    assert!(trace.would_enable("rnk_registry::client", &Level::TRACE));
+    assert!(trace.would_enable("ranikust::build", &Level::DEBUG));
+    assert!(!trace.would_enable("hyper::proto::h1", &Level::DEBUG));
+    assert!(trace.would_enable("hyper::proto::h1", &Level::INFO));
+    let error = log_filter(LevelFilter::ERROR);
+    assert!(!error.would_enable("ranikust::main", &Level::WARN));
+    assert!(!error.would_enable("hyper", &Level::WARN));
 }
 
 #[test]
@@ -56,6 +89,7 @@ fn log_level_never_hides_a_metric_span() {
     let config = Config {
         file: Some(tmp.path().join("m.json")),
         summary: false,
+        ..Config::default()
     };
     let (dispatch, collector) = build(&config, fake_host(tmp.path()));
     let collector = collector.expect("collector");

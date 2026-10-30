@@ -57,40 +57,53 @@ naming the reason, never silently ignored.
 | `--dockerfile`, `-f` | `:337` | `Dockerfile` | accept | parsed |
 | `--destination`, `-d` | `:332` | none; required unless `--no-push` (`:201`) | accept | parsed, with kaniko's check |
 | `--no-push` | `:349` | false | accept | parsed; pflag booleans (`--no-push=false`) |
-| `--tar-path` | `:346` | none | accept; kaniko rejects it with zstd or `--image-format=oci` (`:182`, `:185`) | parsed; zstd with it refused |
+| `--tar-path` | `:346` | none | accept; kaniko rejects it with zstd or `--image-format=oci` (`:182`, `:185`) | parsed; zstd with it refused; OCI media types allowed, unlike kaniko (ADR-0036); `--tarPath` an alias with kaniko's warning |
 | `--oci-layout-path` | `:356` | none | accept | parsed |
 | `--build-arg` | `:343` | none | accept | parsed; `KEY` alone allowed |
 | `--target` | `:333` | last stage; a list, the first is pushed | accept; list semantics `[open: Q-008]` | parsed as a list, comma-separated or repeated (Q-008 interim) |
 | `--reproducible` | `:348` | false | accept | parsed |
 | `--compression` | `:357` | unset (gzip) | accept (gzip, zstd) | parsed |
-| `--cache`, `--cache-repo` | `:360`, `:351` | false; inferred from destination, `oci:` prefix = layout | accept; behaviour before Phase 4 `[open: Q-021]` | refused until Phase 4 (Q-021 interim) |
+| `--cache`, `--cache-repo` | `:360`, `:351` | false; inferred from destination, `oci:` prefix = layout | Phase 4; `--cache=false` accepted (Q-021, ADR-0036) | refused until Phase 4; `--cache=false` accepted |
 | `--registry-certificate` | `:402` | none | accept; added to host CAs plus embedded roots (`ADR-0024`) | parsed (`REGISTRY=PATH`) |
 | `--insecure-registry` | `:399` | none | accept: plain HTTP to push and pull, HTTPS tried first (`ClientOptions::insecure`); `(Q-200)` interim (a) | accepted, repeatable |
 | `--ignore-path` | `:371` | none | accept | refused until Phase 2 (kaniko mode) |
 | `--kaniko-dir` | `:345` | `/kaniko` | renamed `--state-dir` (`ADR-0011`); default `/ranikust/state` in kaniko mode, `<workdir>/.ranikust` in overlay mode (`ADR-0022`) | refused, naming `--state-dir`; `--state-dir` parsed |
-| `--snapshot-mode` | `:341` | `full` (`full\|redo\|time`, `build.go:2474`) | accept, kaniko's meaning: what the kaniko-mode walk compares; ignored with a warning in overlay mode (`ADR-0023`) | parsed; warning with `--mode=overlay` |
-| `--custom-platform` | `:342` | host | `--platform`, `linux/amd64` only at first (`ADR-0009`); alias `[open: Q-020]` | refused, naming `--platform` (Q-020 interim); `--platform` parsed |
-| `--force` | `:63` | false | replaced by the workdir checks; accept or reject `[open: Q-023]` | refused (Q-023 interim) |
+| `--snapshot-mode` | `:341` | `full` (`full\|redo\|time`, `build.go:2474`) | accept, kaniko's meaning: what the kaniko-mode walk compares; ignored with a warning in overlay mode (`ADR-0023`) | parsed; warning with `--mode=overlay`; `--snapshotMode` an alias with kaniko's warning |
+| `--custom-platform` | `:342` | host | alias of `--platform`, `linux/amd64` only at first (`ADR-0009`; Q-020, ADR-0036) | alias; `--customPlatform` too, with kaniko's warning |
+| `--force` | `:63` | false | ignored with a warning: ranikust runs on hosts and checks `--workdir` (ADR-0036) | accepted, warning |
 | `--secret` | `:378` | none | kaniko's and buildctl's syntax (ADR-0032): `type=file\|env`, `src=`, `env=`, the id as variable or file by default | accepted, same meaning |
 | `--registry-mirror`, `--registry-map`, `--credential-helpers` | `:407`, `:406`, `:409` | none; helpers: all | Phase 5 (mirrors, helpers); names `[open: Q-047]` | refused (Phase 5) |
-| `--cache-dir` | `:352` | `/cache` | warmer's base-image cache; the store replaces it `[inferred]`; `[open: Q-023]` | refused (Q-023 interim) |
+| `--cache-dir` | `:352` | `/cache` | warmer's base-image cache; the warmer is out of scope, the store replaces it; ignored with a warning (ADR-0036) | accepted, warning |
 | `--git`, `--bucket` | `:368`, `:340` | none | git context Phase 5: `--git` keeps kaniko's keys (`branch`, `single-branch`, `depth`, `recurse-submodules`, `insecure-skip-tls`) and `GIT_USERNAME`/`GIT_PASSWORD`/`GIT_TOKEN`/`GIT_PULL_METHOD` keep their meaning; ranikust adds `--git-backend`, `--git-binary`, `--git-config`, `--git-arg`, `--git-host-config` (ADR-0035); GCS out of scope | refused (`-b` too) |
-| `FF_KANIKO_*` | `pkg/config/featureflags.go` | | not carried over: the design is the default (`ADR-0011`) | not read |
+| `FF_KANIKO_*` | `pkg/config/featureflags.go` | | not carried over: the design is the default (`ADR-0011`); how ranikust compares with each is on the book's usage page | not read; named in one start-up warning when set (ADR-0036) |
 
-`[open: Q-023]`, decided with the list: `--verbosity`, `--log-format`,
-`--log-timestamp`, `--label`, `--annotation`, `--image-format`,
-`--compression-level`, `--digest-file`, `--image-name-with-digest-file`,
-`--image-name-tag-with-digest-file`, `--insecure`, `--insecure-pull`, `--skip-tls-verify*`,
-`--registry-client-cert`, `--skip-default-registry-fallback`, `--push-retry`,
-`--push-ignore-immutable-tag-errors`, `--image-download-retry`,
-`--image-fs-extract-retry`, `--context-sub-path`, `--single-snapshot`,
-`--use-new-run`, `--cleanup`, `--pre-cleanup`, `--preserve-context`,
-`--materialize`, `--ignore-var-run`, `--cache-ttl`, `--cache-*-layers`,
-`--compressed-caching`, `--no-push-cache`, `--skip-push-permission-check`,
-`--dryrun`, and the deprecated forms (`:67`, `:384`–`:388`). Now: all
-refused with the reason (Q-023 interim); the deprecated forms name their
-replacement. `KANIKO_REGISTRY_MIRROR`, `KANIKO_NO_PUSH`,
-`KANIKO_REGISTRY_MAP` and `KANIKO_METRICS_FILE` are not read.
+The rest of kaniko's flags, as decided by ADR-0036 (the meaning tests are
+listed there):
+
+| kaniko flags | ranikust |
+|---|---|
+| `-v`/`--verbosity`, `--log-format`, `--log-timestamp` (`:60-62`) | accepted, written as logrus (`pkg/logging/logging.go:48-60`): `color` forced with seconds since start, `text` `time=… level=… msg=…`, `json` with `level`/`msg`/`time`; `--log-timestamp` the full time in `color`; level case-insensitive, `warning` accepted, `fatal`/`panic` as `error`; times UTC (logrus: local); other crates at `info` at most |
+| `--label` (`:366`), `--annotation` (`:374`) | accepted: labels on the pushed stage before its first instruction (`build.go:190-191,275-285`), annotations on the manifest |
+| `--image-format` (`:358`) | accepted; default OCI (`ADR-0032`); `docker` with zstd exits 2 (`:178`) |
+| `--compression-level` (`:359`) | accepted: gzip -1 is 6, 0-9; zstd 1-19; gzip -2 and zstd 20-22 refused |
+| `--digest-file`, `--image-name-with-digest-file`, `--image-name-tag-with-digest-file` (`:353-355`) | accepted, kaniko's formats (`push.go:194-256`); both name files need a destination (`:212-217`); missing parent made `0700`; an `https://` path (kaniko `PUT`s it, `push.go:150-166`) refused |
+| `--insecure`, `--insecure-pull`, `--skip-tls-verify`, `--skip-tls-verify-pull`, `--skip-tls-verify-registry` (`:392-400`) | accepted, as per-registry sets: destinations for the push flags, `FROM` and `COPY --from` registries for the pull flags; credentials go over plain HTTP only to `--insecure-registry` and destinations under `--insecure`, never to a registry only `--insecure-pull` allows (T11); `index.docker.io` is `docker.io` |
+| `--push-retry`, `--image-download-retry` (`:396`, `:398`) | accepted as kaniko's outer loops (`util.go:221`, 1 s doubling, any error) around the client's own retries: the whole push (`push.go:364`), the image manifest fetch (`remote.go:79,121`) |
+| `--skip-push-permission-check` (`:372`), `--preserve-context` (`:375`) | accepted: their meaning holds without code in overlay mode |
+| `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | accepted and ignored with a warning: the image is the same without them in overlay mode |
+| `--context-sub-path` (`:339`) | joined onto a `dir://` context, inside it (`root.go:599-631`, `buildcontext/dir.go:25`); ignored with a warning for a plain path, as kaniko |
+| `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
+| `--single-snapshot`, `--materialize`, `--ignore-var-run` (Q-035), `--whitelist-var-run` | refused until Phase 2 (kaniko mode) |
+| `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-ignore-immutable-tag-errors` | refused until Phase 5 |
+| `--dryrun` | refused, not scheduled |
+| `--azure-container-registry-config` (hidden, `:413`), `bake` | refused for good (`ADR-0008`) |
+
+Variables: `KANIKO_NO_PUSH` overrides `--no-push` (`:83-89`);
+`KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP` exit 2 (Phase 5);
+`DOCKER_AUTH_CONFIG` is read before `config.json` (`pkg/creds/creds.go:39`), `auths` only;
+`KANIKO_PRESERVE_CONTEXT` is honoured; `KANIKO_DIR` warns naming
+`--state-dir`; every other set `KANIKO_*`/`FF_KANIKO_*` variable, among them
+`KANIKO_METRICS_FILE`, is named in one start-up warning.
 
 ranikust-only flags: `--workdir`, `--state-dir`,
 `--mode=auto|overlay|kaniko` (new, `ADR-0023`), `--jobs`, `--network`,

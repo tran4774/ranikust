@@ -19,7 +19,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   aarch64 check, cargo-deny, docs), architecture decision records, the
   research that preceded the code, a user guide skeleton, and contributor
   and security policies.
-- Opt-in build metrics: with `RANIKUST_METRICS_FILE=<path>` set, ranikust
+- Opt-in build metrics: with `--metrics-file=<path>`, ranikust
   writes one JSON report when it exits, also after an error or a panic:
   time, counts and bytes per build phase, per stage, per instruction and
   per snapshot, bytes per registry host, CPU and peak memory of ranikust and
@@ -85,9 +85,30 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - A start-up check: on a kernel older than Linux 5.8, or where seccomp
   blocks `openat2` or `statx`, ranikust stops at once with a message naming
   the kernel.
+- kaniko's flags, as listed in the user guide's command-line page:
+  `-v`/`--verbosity`, `--log-format`, `--log-timestamp`, `--label`,
+  `--annotation`, `--image-format`, `--compression-level`, the three digest
+  files, `--insecure`, `--insecure-pull`, the `--skip-tls-verify` flags,
+  `--push-retry`, `--image-download-retry`, `--context-sub-path` (for
+  `dir://` contexts), `--custom-platform`, `--cache=false`, and kaniko's
+  deprecated `--tarPath`, `--snapshotMode` and `--customPlatform`.
+  Credentials go over plain HTTP only to registries named with
+  `--insecure-registry` or destinations under `--insecure`, never to one a
+  Dockerfile names under `--insecure-pull`. Flags that change nothing in the
+  image built, such as
+  `--force`, `--cache-dir` and `--cleanup`, are accepted with a warning;
+  the others are refused with the release that brings them.
+- kaniko's variables: `KANIKO_NO_PUSH`, `DOCKER_AUTH_CONFIG` (read before
+  `config.json`), and a warning naming every other `KANIKO_*` or
+  `FF_KANIKO_*` variable that is set. `KANIKO_REGISTRY_MIRROR` and
+  `KANIKO_REGISTRY_MAP` stop the build until mirrors are supported.
 
 ### Changed
 
+- Log lines look like kaniko's: `INFO[0005] message` by default, with the
+  full time under `--log-timestamp`; `--log-format=text` and `json` write
+  logrus's plain and JSON forms.
+- Libraries ranikust uses log at `info` at most, whatever `--verbosity`.
 - Layers leave out files a `RUN` copied up without changing them, and
   write an opaque directory as whiteouts of what it hides, as BuildKit's
   overlay differ does (ADR-0034).
@@ -114,3 +135,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   These land in the releases that follow; the decisions are recorded now.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main
+### Removed
+
+- `RANIKUST_METRICS_FILE`: the metrics report is asked for with
+  `--metrics-file` only, which now works with every subcommand; a warning
+  names the flag when the variable is set.
+

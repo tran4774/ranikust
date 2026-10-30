@@ -169,6 +169,11 @@ pub struct StageInput<'a, R> {
     pub images: BTreeMap<String, &'a ImageSource<R>>,
     /// Which of its layers are encoded.
     pub demand: LayerDemand,
+    /// kaniko's `--label`s, set on the stage's config before its first
+    /// instruction, so a `LABEL` of the same key wins. kaniko gives them to
+    /// the pushed stage only (`kaniko@44aa7ddc0 pkg/executor/build.go:190-191,
+    /// 275-285`): empty for every other stage. ADR-0036.
+    pub labels: &'a [(String, String)],
 }
 
 /// A built stage.
@@ -289,7 +294,14 @@ pub fn build_stage<S: Snapshotter>(
         cmd_set: false,
         scripts: Vec::new(),
     };
-    let result = b.run();
+    let result = if input.labels.is_empty() {
+        Ok(())
+    } else {
+        ConfigEdit::Label(input.labels.to_vec())
+            .apply(&mut b.config)
+            .map_err(|e| Error::Invalid(format!("--label: {e}")))
+    }
+    .and_then(|()| b.run());
     span.record("layers", b.new_layers);
     match result {
         Ok(()) => Ok(StageDone {

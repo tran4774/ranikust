@@ -17,8 +17,8 @@ use std::time::SystemTime;
 
 use rnk_builder::{
     BuildCx, BuildTime, ContextFiles, Error, ImageSource, LayerDemand, LayerExporter, Outputs,
-    PulledImage, RunGate, StageBase, StageDone, StageInput, assemble, build_stage, image_format,
-    pull_image,
+    PulledImage, RunGate, StageBase, StageDone, StageInput, assemble_annotated, build_stage,
+    image_format, pull_image,
 };
 use rnk_context::{Context, ContextSpec};
 use rnk_dockerfile::{Dockerfile, GraphOptions, StageGraph};
@@ -55,6 +55,8 @@ struct Shared {
     outputs: Outputs,
     /// Per stage: whether the target's image inherits its layers.
     in_target: Vec<bool>,
+    /// `--label`s, for the pushed stage.
+    labels: Vec<(String, String)>,
     /// Every root made, for the release at the end.
     stages: Mutex<Vec<(usize, Arc<Stage>)>>,
     images: Mutex<Vec<Arc<ImageRoot>>>,
@@ -177,24 +179,9 @@ fn prepare(
         BuildTime::at(SystemTime::now())
     };
     let threads = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-    let compression = match config.compression {
-        config::Compression::Gzip => Compression::Gzip,
-        config::Compression::Zstd => Compression::Zstd,
-    };
-    let encode = EncodeOptions {
-        compression,
-        level: match compression {
-            Compression::Zstd => 3,
-            Compression::Gzip | Compression::None => 6,
-        },
-        threads,
-        mtime: None,
-    };
-    let exporter = LayerExporter::new(store.build_dir(), encode, &time);
+    let exporter = LayerExporter::new(store.build_dir(), encode_options(config, threads), &time);
 
-    let mut options = ClientOptions::default();
-    options.registry_certificates = config.registry_certificates.clone();
-    options.insecure = config.insecure_registries.iter().cloned().collect();
+    let options = client_options(config, &graph)?;
     let credentials = credentials()?;
     let client = Client::new(options, TrustStore::load(), credentials)
         .map_err(|e| format!("setting up the registry client: {e}"))?;
@@ -231,6 +218,7 @@ fn prepare(
         graph,
         outputs,
         in_target,
+        labels: config.labels.clone(),
         stages: Mutex::new(Vec::new()),
         images: Mutex::new(Vec::new()),
     })
@@ -308,17 +296,174 @@ fn env_var(name: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// The docker CLI's `config.json`, as kaniko reads it; none when missing.
-fn credentials() -> Result<Credentials, String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let path = Credentials::config_path(
-        std::env::var_os("DOCKER_CONFIG").as_deref().map(OsStr::new),
-        home.as_deref(),
-    );
-    match path {
-        Some(p) if p.exists() => Credentials::load(&p).map_err(|e| e.to_string()),
-        _ => Ok(Credentials::none()),
+/// The registry client's settings: kaniko's per-direction flags turned into
+/// per-registry sets (ADR-0036). Destinations are pushed to; base images and
+/// `COPY --from` images are pulled from. A registry in both gets the union.
+///
+/// Plain HTTP is not the same as sending credentials over it: only
+/// registries the operator typed (`--insecure-registry`, destinations under
+/// `--insecure`) may receive them; registries only `--insecure-pull` allows
+/// come from the Dockerfile, which is untrusted, and are reached
+/// anonymously (threat model T11). Skipping TLS verification applies to
+/// everything the client sends to that registry, token realm included.
+fn client_options(config: &BuildConfig, graph: &StageGraph) -> Result<ClientOptions, String> {
+    let registry = |r: &str| {
+        rnk_oci::Reference::parse(r)
+            .map(|r| r.registry().to_owned())
+            .map_err(|e| format!("{r}: {e}"))
+    };
+    let pushed: Vec<String> = config
+        .destinations
+        .iter()
+        .map(|d| registry(d))
+        .collect::<Result<_, _>>()?;
+    let mut pulled = Vec::new();
+    for node in &graph.stages {
+        if let rnk_dockerfile::Base::Image(r) = &node.base {
+            pulled.push(registry(r)?);
+        }
+        for r in node.images() {
+            pulled.push(registry(r)?);
+        }
     }
+    let mut options = ClientOptions::default();
+    options.registry_certificates = config.registry_certificates.clone();
+    options.insecure = config.insecure_registries.iter().cloned().collect();
+    options.http_credentials = options.insecure.clone();
+    if config.insecure_push {
+        options.insecure.extend(pushed.iter().cloned());
+        options.http_credentials.extend(pushed.iter().cloned());
+    }
+    if config.insecure_pull {
+        options.insecure.extend(pulled.iter().cloned());
+    }
+    options.skip_tls_verify = config.skip_tls_verify_registries.iter().cloned().collect();
+    if config.skip_tls_verify_push {
+        options.skip_tls_verify.extend(pushed);
+    }
+    if config.skip_tls_verify_pull {
+        options.skip_tls_verify.extend(pulled);
+    }
+    options.manifest_retries = config.image_download_retry.unwrap_or(0);
+    Ok(options)
+}
+
+/// The credentials kaniko reads, in its order: `DOCKER_AUTH_CONFIG` first,
+/// then the docker CLI's `config.json` (`kaniko@44aa7ddc0
+/// pkg/creds/creds.go:39-49`); none when both are missing.
+fn credentials() -> Result<Credentials, String> {
+    credentials_from(
+        std::env::var_os("DOCKER_CONFIG").as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        std::env::var_os("DOCKER_AUTH_CONFIG").as_deref(),
+    )
+}
+
+/// [`credentials`] from the three variables, passed in so tests need not
+/// change the process's environment.
+fn credentials_from(
+    docker_config: Option<&OsStr>,
+    home: Option<&Path>,
+    auth_config: Option<&OsStr>,
+) -> Result<Credentials, String> {
+    let file = match Credentials::config_path(docker_config, home) {
+        Some(p) if p.exists() => Credentials::load(&p).map_err(|e| e.to_string())?,
+        _ => Credentials::none(),
+    };
+    match auth_config {
+        Some(v) if !v.is_empty() => Ok(Credentials::from_env_value(v.as_encoded_bytes())
+            .map_err(|e| e.to_string())?
+            .or(file)),
+        _ => Ok(file),
+    }
+}
+
+/// The layer encoder's settings: `--compression`, and
+/// `--compression-level` mapped by [`BuildConfig`] or ranikust's default.
+fn encode_options(config: &BuildConfig, threads: NonZeroUsize) -> EncodeOptions {
+    let compression = match config.compression {
+        config::Compression::Gzip => Compression::Gzip,
+        config::Compression::Zstd => Compression::Zstd,
+    };
+    EncodeOptions {
+        compression,
+        level: config.compression_level.unwrap_or(match compression {
+            Compression::Zstd => 3,
+            Compression::Gzip | Compression::None => 6,
+        }),
+        threads,
+        mtime: None,
+    }
+}
+
+/// The image format asked for: `--image-format`, else OCI (ADR-0032).
+fn requested_format(config: &BuildConfig) -> rnk_oci::ImageFormat {
+    match config.image_format {
+        Some(config::ImageFormatArg::Docker) => rnk_oci::ImageFormat::Docker,
+        Some(config::ImageFormatArg::Oci) => rnk_oci::ImageFormat::Oci,
+        None => image_format(),
+    }
+}
+
+/// kaniko's digest files (`kaniko@44aa7ddc0 pkg/executor/push.go:194-256`):
+/// the digest alone, then `repository[:tag]@digest` lines, one per
+/// destination, with go-containerregistry's names (Docker Hub as
+/// `index.docker.io`, a missing tag as `latest`).
+fn write_digest_files(config: &BuildConfig, digest: &str) -> Result<(), String> {
+    // kaniko creates a missing parent directory 0700 and writes the file
+    // 0644 (`push.go:168-176`). These are operator paths, not the image's.
+    let write = |path: &Path, text: &str| {
+        use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+        let fail = |e: std::io::Error| format!("writing {}: {e}", path.display());
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(fail)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o644)
+            .open(path)
+            .map_err(fail)?;
+        std::io::Write::write_all(&mut file, text.as_bytes()).map_err(fail)
+    };
+    if let Some(path) = &config.digest_file {
+        write(path, digest)?;
+    }
+    if config.image_name_digest_file.is_none() && config.image_name_tag_digest_file.is_none() {
+        return Ok(());
+    }
+    let mut plain = String::new();
+    let mut tagged = String::new();
+    for d in &config.destinations {
+        let r = rnk_oci::Reference::parse(d).map_err(|e| format!("{d}: {e}"))?;
+        let registry = match r.registry() {
+            "docker.io" => "index.docker.io",
+            other => other,
+        };
+        let repository = format!("{registry}/{}", r.repository());
+        plain.push_str(&format!("{repository}@{digest}\n"));
+        let tag = r.tag().unwrap_or("latest");
+        tagged.push_str(&format!("{repository}:{tag}@{digest}\n"));
+    }
+    // kaniko builds one text, with tags when the tag file is asked for, and
+    // writes it to both files (`push.go:231-256`).
+    let text = if config.image_name_tag_digest_file.is_some() {
+        &tagged
+    } else {
+        &plain
+    };
+    if let Some(path) = &config.image_name_digest_file {
+        write(path, text)?;
+    }
+    if let Some(path) = &config.image_name_tag_digest_file {
+        write(path, text)?;
+    }
+    Ok(())
 }
 
 /// Per stage: whether the target's image inherits its layers, through
@@ -355,13 +500,16 @@ async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, Stri
         .map(|(_, d)| Arc::clone(d))
         .ok_or("the target stage was not built")?;
     let done: &Stage = &target;
-    let image = assemble(
+    let format = requested_format(config);
+    let image = assemble_annotated(
         done.config.clone(),
         done.layers.clone(),
-        image_format(),
+        format,
         &shared.time,
+        &config.annotations,
     )
     .map_err(|e| e.to_string())?;
+    write_digest_files(config, image.digest().as_str())?;
     let outputs = &shared.outputs;
     if let Some(dir) = &outputs.oci_layout {
         rnk_builder::write_oci_layout(&image, dir).map_err(|e| e.to_string())?;
@@ -375,9 +523,13 @@ async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, Stri
             .jobs
             .or_else(|| std::thread::available_parallelism().ok())
             .unwrap_or(NonZeroUsize::MIN);
-        rnk_builder::push(&image, &outputs.destinations, &shared.client, jobs)
-            .await
-            .map_err(|e| e.to_string())?;
+        // kaniko's `--push-retry`: the whole push again, around the client's
+        // own per-request retries (`push.go:364`, ADR-0036).
+        rnk_registry::retry_kaniko(config.push_retry.unwrap_or(0), async || {
+            rnk_builder::push(&image, &outputs.destinations, &shared.client, jobs).await
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     }
     Ok(Built {
         digest: image.digest().to_string(),
@@ -712,6 +864,11 @@ fn run_stage(
         stages: deps.iter().map(|(i, d)| (*i, &**d)).collect(),
         images: sources.iter().map(|(k, v)| (k.clone(), &**v)).collect(),
         demand: LayerDemand::for_stage(shared.in_target[index], &shared.outputs, false),
+        labels: if index == shared.graph.primary_target() {
+            &shared.labels
+        } else {
+            &[]
+        },
     };
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
     let cx = BuildCx {
@@ -775,6 +932,180 @@ mod tests {
         let link = DockerfileSource::Context(PathBuf::from("escape"));
         let e = read_dockerfile(&link, &context).unwrap_err();
         assert!(!e.contains("SECRET"), "{e}");
+    }
+
+    fn config_of(flags: &[&str]) -> BuildConfig {
+        let argv = std::iter::once("ranikust").chain(flags.iter().copied());
+        let crate::cli::Command::Build(args) = crate::cli::parse(argv).unwrap().cli.into_command()
+        else {
+            panic!("expected build");
+        };
+        BuildConfig::from_args(&args).unwrap()
+    }
+
+    /// `--compression-level` reaches the encoder, `--image-format` the
+    /// assembly (ADR-0036).
+    #[test]
+    fn level_and_format_reach_the_encoder_and_assembly() {
+        let n = NonZeroUsize::MIN;
+        let e = encode_options(&config_of(&["--no-push"]), n);
+        assert_eq!((e.compression, e.level), (Compression::Gzip, 6));
+        let e = encode_options(&config_of(&["--no-push", "--compression-level=-1"]), n);
+        assert_eq!(e.level, 6);
+        let e = encode_options(
+            &config_of(&["--no-push", "--compression=zstd", "--compression-level=19"]),
+            n,
+        );
+        assert_eq!((e.compression, e.level), (Compression::Zstd, 19));
+        assert_eq!(
+            requested_format(&config_of(&["--no-push"])),
+            rnk_oci::ImageFormat::Oci
+        );
+        assert_eq!(
+            requested_format(&config_of(&["--no-push", "--image-format=docker"])),
+            rnk_oci::ImageFormat::Docker
+        );
+    }
+
+    /// `DOCKER_AUTH_CONFIG` is asked before the file, as kaniko's keychain.
+    #[test]
+    fn docker_auth_config_comes_before_config_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"auths":{"a.example":{"username":"file","password":"a"},
+                "b.example":{"username":"file","password":"b"}}}"#,
+        )
+        .unwrap();
+        let env = r#"{"auths":{"a.example":{"username":"env","password":"a"}}}"#;
+        let creds = credentials_from(
+            Some(dir.path().as_os_str()),
+            None,
+            Some(std::ffi::OsStr::new(env)),
+        )
+        .unwrap();
+        let user = |r: &str| match creds.get(r) {
+            Some(rnk_registry::Credential::Basic { username, .. }) => username.clone(),
+            other => panic!("{r}: {other:?}"),
+        };
+        assert_eq!(user("a.example"), "env");
+        assert_eq!(user("b.example"), "file");
+        let bad = credentials_from(
+            None,
+            None,
+            Some(std::ffi::OsStr::new(r#"{"credsStore":"x"}"#)),
+        );
+        assert!(bad.is_err());
+    }
+
+    /// kaniko's push and pull flags become per-registry sets (ADR-0036).
+    #[test]
+    fn insecure_and_tls_flags_apply_to_their_direction() {
+        let df =
+            rnk_dockerfile::parse("FROM pull.example/base:1\nCOPY --from=copy.example/x:1 /a /a\n")
+                .unwrap();
+        let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+        let o = client_options(
+            &config_of(&[
+                "-d",
+                "push.example/out:1",
+                "--insecure",
+                "--skip-tls-verify-pull",
+            ]),
+            &graph,
+        )
+        .unwrap();
+        assert_eq!(
+            o.insecure.iter().collect::<Vec<_>>(),
+            ["push.example"],
+            "--insecure is for destinations"
+        );
+        // A destination the operator typed under --insecure may receive
+        // credentials over plain HTTP.
+        assert_eq!(o.http_credentials, o.insecure);
+        assert_eq!(
+            o.skip_tls_verify.iter().collect::<Vec<_>>(),
+            ["copy.example", "pull.example"]
+        );
+        assert_eq!(o.manifest_retries, 0);
+        let o = client_options(
+            &config_of(&[
+                "-d",
+                "push.example/out:1",
+                "--insecure-pull",
+                "--insecure-registry=listed.example",
+                "--skip-tls-verify",
+                "--skip-tls-verify-registry=index.docker.io",
+                "--image-download-retry=3",
+            ]),
+            &graph,
+        )
+        .unwrap();
+        assert_eq!(
+            o.insecure.iter().collect::<Vec<_>>(),
+            ["copy.example", "listed.example", "pull.example"]
+        );
+        // Registries a Dockerfile names never receive credentials over plain
+        // HTTP (T11); a listed one does.
+        assert_eq!(
+            o.http_credentials.iter().collect::<Vec<_>>(),
+            ["listed.example"]
+        );
+        assert_eq!(
+            o.skip_tls_verify.iter().collect::<Vec<_>>(),
+            ["docker.io", "push.example"],
+            "index.docker.io is docker.io"
+        );
+        assert_eq!(o.manifest_retries, 3);
+    }
+
+    /// kaniko's formats (`push.go:194-256`): the digest without a newline;
+    /// one `repository[:tag]@digest` line per destination, Docker Hub as
+    /// `index.docker.io`, and the tagged text in both files when the tag
+    /// file is asked for.
+    #[test]
+    fn digest_files_are_written_as_kaniko_writes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |n: &str| dir.path().join(n).display().to_string();
+        let digest = "sha256:0123";
+        let (d, n) = (p("missing/sub/digest"), p("names"));
+        let c = config_of(&[
+            "-d",
+            "alpine",
+            "-d",
+            "r.example:5000/team/app:v1",
+            "--digest-file",
+            &d,
+            "--image-name-with-digest-file",
+            &n,
+        ]);
+        write_digest_files(&c, digest).unwrap();
+        assert_eq!(std::fs::read_to_string(&d).unwrap(), digest);
+        // A missing parent is made 0700, as kaniko's `MkdirAll`.
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(dir.path().join("missing/sub"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert_eq!(
+            std::fs::read_to_string(&n).unwrap(),
+            "index.docker.io/library/alpine@sha256:0123\n\
+             r.example:5000/team/app@sha256:0123\n"
+        );
+        let t = p("tags");
+        let c = config_of(&[
+            "-d",
+            "alpine",
+            "--image-name-with-digest-file",
+            &n,
+            "--image-name-tag-with-digest-file",
+            &t,
+        ]);
+        write_digest_files(&c, digest).unwrap();
+        let tagged = "index.docker.io/library/alpine:latest@sha256:0123\n";
+        assert_eq!(std::fs::read_to_string(&t).unwrap(), tagged);
+        assert_eq!(std::fs::read_to_string(&n).unwrap(), tagged);
     }
 
     #[test]

@@ -144,4 +144,3 @@ instruction run it once (BuildKit deduplicates such vertices).
 
 - [Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds) What are the memory-limit algorithm and thresholds?
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
-- [Q-031](../open-questions.md#q-031-how-does-per-stage-log-grouping-fit-the-kaniko-log-flags) How does per-stage log grouping fit the kaniko log flags?

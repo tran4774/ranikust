@@ -52,6 +52,13 @@ pub struct ClientOptions {
     /// registry not listed here is plain HTTP without trying HTTPS, as
     /// BuildKit (ADR-0032, Q-065).
     pub insecure: BTreeSet<String>,
+    /// Registries that may receive credentials over plain HTTP: only names
+    /// the operator typed (`--insecure-registry`, destinations under
+    /// `--insecure`), never one only a Dockerfile names nor a loopback
+    /// registry added implicitly, since a ranikust `RUN` shares the host's
+    /// network (threat model T11). Any other plain-HTTP registry is
+    /// accessed anonymously.
+    pub http_credentials: BTreeSet<String>,
     /// Registries whose TLS certificate is not verified
     /// (`--skip-tls-verify`, `--skip-tls-verify-pull`,
     /// `--skip-tls-verify-registry`).
@@ -61,6 +68,13 @@ pub struct ClientOptions {
     pub registry_certificates: Vec<(String, PathBuf)>,
     /// How failed requests are retried.
     pub retry: RetryPolicy,
+    /// kaniko's `--image-download-retry`: how many more times
+    /// [`Client::pull_image_manifest`] starts over after it failed, each
+    /// attempt with [`Self::retry`] inside, waiting 1 s, then twice as long
+    /// each time ([`retry_kaniko`](crate::retry_kaniko)). kaniko retries the
+    /// image's manifest fetch this way, not its blobs
+    /// (`kaniko@44aa7ddc0 pkg/image/remote/remote.go:79,121`). 0 by default.
+    pub manifest_retries: u32,
     /// Bound on establishing a connection; Go's default dialer uses 30 s.
     pub connect_timeout: Option<Duration>,
     /// Bound on waiting for data on an open connection.
@@ -73,9 +87,11 @@ impl Default for ClientOptions {
     fn default() -> Self {
         Self {
             insecure: BTreeSet::new(),
+            http_credentials: BTreeSet::new(),
             skip_tls_verify: BTreeSet::new(),
             registry_certificates: Vec::new(),
             retry: RetryPolicy::default(),
+            manifest_retries: 0,
             connect_timeout: Some(Duration::from_secs(30)),
             read_timeout: None,
             user_agent: concat!("ranikust/", env!("CARGO_PKG_VERSION")),
@@ -182,13 +198,14 @@ struct Host {
     /// Mount tokens by (destination, source) repository.
     mount_tokens: Mutex<BTreeMap<(String, String), ScopeToken>>,
     /// Credentials are configured but held back: plain HTTP to a registry
-    /// not listed as insecure.
+    /// not in `ClientOptions::http_credentials`.
     withheld: bool,
 }
 
 /// Why configured credentials are not sent, and how to send them.
 const WITHHELD: &str = "its credentials are not sent over plain HTTP to a \
-    registry not listed with --insecure-registry; list it to send them";
+    registry the operator did not name for it; list it with \
+    --insecure-registry (or, for a destination, use --insecure) to send them";
 
 /// Whether `e` is a registry refusing access: an authentication failure,
 /// or 401/403 and the distribution codes for them.
@@ -324,6 +341,17 @@ impl Client {
     /// Pulls the image manifest for `platform`: the manifest the reference
     /// names, or the one picked from the index it names.
     pub async fn pull_image_manifest(
+        &self,
+        reference: &Reference,
+        platform: &Platform,
+    ) -> Result<ImageManifests, Error> {
+        crate::retry_kaniko(self.options.manifest_retries, async || {
+            self.pull_image_manifest_once(reference, platform).await
+        })
+        .await
+    }
+
+    async fn pull_image_manifest_once(
         &self,
         reference: &Reference,
         platform: &Platform,
@@ -787,7 +815,6 @@ impl Client {
         result.map(|_location| manifest.digest().clone())
     }
 
-    /// The connection state for `registry`, created on first use.
     /// Adds to an access refusal by a registry whose credentials were held
     /// back over plain HTTP (see [`Client::connect`]) how to send them.
     async fn hint<T>(&self, registry: &str, r: Result<T, Error>) -> Result<T, Error> {
@@ -807,6 +834,7 @@ impl Client {
         Err(e)
     }
 
+    /// The connection state for `registry`, created on first use.
     async fn host(&self, registry: &str) -> Result<Arc<Host>, Error> {
         let mut hosts = self.hosts.lock().await;
         if let Some(host) = hosts.get(registry) {
@@ -917,11 +945,13 @@ impl Client {
         let configured = self.credentials.get(registry);
         // Unlike BuildKit's, a ranikust `RUN` shares the host's network
         // namespace and may sniff `lo` or serve a loopback port: credentials
-        // go over plain HTTP only to a registry the operator listed as
-        // insecure (threat model T11). Any other plain-HTTP registry, a
-        // loopback one, is accessed anonymously.
-        let withheld =
-            scheme == "http" && !self.options.insecure.contains(registry) && configured.is_some();
+        // go over plain HTTP only to a registry the operator named for it
+        // (`http_credentials`, threat model T11). Any other plain-HTTP
+        // registry, a loopback one or one only `--insecure-pull` allows, is
+        // accessed anonymously.
+        let withheld = scheme == "http"
+            && !self.options.http_credentials.contains(registry)
+            && configured.is_some();
         let credential = if withheld { None } else { configured };
         if withheld {
             if matches!(ping, Ping::Basic) {

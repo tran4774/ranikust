@@ -4,8 +4,8 @@
 //! `<crate>.<operation>` (`rnk_layer.encode`), with numeric fields that carry
 //! their unit (`bytes_in`, `files`, `user_ns`), recorded once per span. This
 //! crate installs the subscriber that turns them into logs and, when
-//! `RANIKUST_METRICS_FILE` is set, into one JSON report written when the
-//! process ends: totals per span name, one record per stage, instruction and
+//! [`Config::file`] is set (`ranikust --metrics-file`, ADR-0037), into one
+//! JSON report written when the process ends: totals per span name, one record per stage, instruction and
 //! snapshot, bytes per registry host, `getrusage` and cgroup v2 counters. The
 //! report follows kaniko's `KANIKO_METRICS_FILE` report where the meaning
 //! matches. Which span each crate emits is in `docs/design/metrics.md`; the
@@ -27,17 +27,19 @@
 //!   with [`Capture`].
 //! - Never influences a build: nothing here reaches a layer, a config, a
 //!   cache key or a digest. The only file it writes is the report, at exit.
-//! - Off means off: without `RANIKUST_METRICS_FILE` or
-//!   `RANIKUST_METRICS_SUMMARY`, neither the metrics layer nor the panic hook
+//! - Off means off: without a report file or `RANIKUST_METRICS_SUMMARY`,
+//!   neither the metrics layer nor the panic hook
 //!   is installed, and spans cost tracing's disabled-callsite check.
 //! - Aggregates only: no state per file or tar entry, no timer finer than a
 //!   span, no thread of its own (the process must stay single-threaded until
 //!   its namespaces are set up).
-//! - Log format and verbosity flags are not decided here ([open: Q-023],
-//!   [open: Q-031]); logs go to stderr at `INFO`.
+//! - Logs go to stderr at the level and in the format of
+//!   [`Config::logs`]: kaniko's `--verbosity`, `--log-format` and
+//!   `--log-timestamp`, which `ranikust` parses (ADR-0036).
 
 mod collector;
 mod layer;
+mod logfmt;
 mod report;
 mod resources;
 mod state;
@@ -50,7 +52,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 use tracing::Dispatch;
-use tracing_subscriber::filter::{LevelFilter, filter_fn};
+use tracing_subscriber::filter::{LevelFilter, Targets, filter_fn};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::{Layer as _, Registry};
 
@@ -59,11 +61,8 @@ use crate::layer::{MetricsLayer, Shared, is_metric_span};
 pub use crate::report::{Outcome, SCHEMA};
 use crate::resources::HostPaths;
 
-/// Path of the JSON report; unset or empty, metrics are off.
-pub const FILE_ENV: &str = "RANIKUST_METRICS_FILE";
-
 /// Set to anything but empty or `0`, prints a short summary to stderr at
-/// exit (and turns metrics on even without [`FILE_ENV`]).
+/// exit (and turns metrics on even without a report file).
 pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY";
 
 /// What to collect and where to write it.
@@ -73,24 +72,61 @@ pub struct Config {
     pub file: Option<PathBuf>,
     /// Print a short summary to stderr at exit.
     pub summary: bool,
+    /// How logs are written.
+    pub logs: LogOptions,
+}
+
+/// The log layer's settings: kaniko's `--verbosity`, `--log-format` and
+/// `--log-timestamp` (ADR-0036). They never change what the metrics layer
+/// sees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogOptions {
+    /// The most detailed level written; kaniko's default is `info`.
+    pub level: LevelFilter,
+    /// The format.
+    pub format: LogFormat,
+    /// kaniko's `--log-timestamp`: in the colored format, the full time
+    /// instead of the seconds since start (`INFO[0005]`); the text and JSON
+    /// formats always carry the time, as logrus's.
+    pub timestamp: bool,
+}
+
+impl Default for LogOptions {
+    fn default() -> Self {
+        Self {
+            level: LevelFilter::INFO,
+            format: LogFormat::Color,
+            timestamp: false,
+        }
+    }
+}
+
+/// kaniko's `--log-format`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogFormat {
+    /// logrus's plain text: `time=… level=… msg=…`, never colored.
+    Text,
+    /// logrus's forced colors, kaniko's default: `INFO[0005] message`.
+    #[default]
+    Color,
+    /// logrus's JSON: one object per line, with `level`, `msg` and `time`.
+    Json,
 }
 
 impl Config {
-    /// Reads [`FILE_ENV`] and [`SUMMARY_ENV`]. A relative report path is made
-    /// absolute now, against the current directory at start-up.
+    /// Reads [`SUMMARY_ENV`]. The report path has no variable: the caller
+    /// sets [`Config::file`] from its flag (ADR-0037).
     pub fn from_env() -> Self {
-        Self::from_vars(std::env::var_os(FILE_ENV), std::env::var_os(SUMMARY_ENV))
+        Self::from_vars(std::env::var_os(SUMMARY_ENV))
     }
 
-    fn from_vars(file: Option<OsString>, summary: Option<OsString>) -> Self {
-        let file = file.filter(|f| !f.is_empty()).map(|f| {
-            let path = PathBuf::from(f);
-            // `absolute` only fails without a current directory; the
-            // relative path is then the best there is.
-            std::path::absolute(&path).unwrap_or(path)
-        });
+    fn from_vars(summary: Option<OsString>) -> Self {
         let summary = summary.is_some_and(|s| !s.is_empty() && s != "0");
-        Self { file, summary }
+        Self {
+            file: None,
+            summary,
+            logs: LogOptions::default(),
+        }
     }
 
     /// Whether anything is collected.
@@ -149,32 +185,71 @@ pub fn init(config: Config) -> Telemetry {
     Telemetry { collector }
 }
 
-/// The log layer: stderr, `INFO` [open: Q-023] [open: Q-031]. Its per-layer
-/// filter keeps its level from hiding spans from the metrics layer.
-fn logs<S>() -> impl tracing_subscriber::Layer<S>
+/// ranikust's own crates: their events log at `options.level`; anything
+/// else (dependencies such as `hyper`, `rustls`) at `INFO` at most, so that
+/// `--verbosity=trace` cannot print a dependency's internals, request
+/// headers included (threat model T11).
+const OWN_TARGETS: &[&str] = &[
+    "ranikust",
+    "rnk_builder",
+    "rnk_cache",
+    "rnk_context",
+    "rnk_dockerfile",
+    "rnk_ignore",
+    "rnk_layer",
+    "rnk_metrics",
+    "rnk_oci",
+    "rnk_registry",
+    "rnk_rootfs",
+    "rnk_sandbox",
+    "rnk_sched",
+    "rnk_snapshot",
+    "rnk_store",
+];
+
+/// `level` for [`OWN_TARGETS`], at most `INFO` for the rest.
+fn log_filter(level: LevelFilter) -> Targets {
+    OWN_TARGETS.iter().fold(
+        Targets::new().with_default(level.min(LevelFilter::INFO)),
+        |t, own| t.with_target(*own, level),
+    )
+}
+
+/// The log layer: stderr, at `options.level`, written as kaniko's logrus
+/// writes it (`logfmt`; ADR-0036; per-stage grouping stays apart from the
+/// format, Q-031). Its per-layer filter keeps its level from hiding spans
+/// from the metrics layer.
+fn logs<S>(options: LogOptions) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
+    let filter = log_filter(options.level);
     tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .with_filter(LevelFilter::INFO)
+        .event_format(logfmt::Logrus {
+            format: options.format,
+            full_timestamp: options.timestamp,
+            start: Instant::now(),
+        })
+        .with_filter(filter)
+        .boxed()
 }
 
-/// The subscriber with metrics off: the log layer alone, whose `INFO` level
-/// hint lets tracing reject `debug_span!` with one comparison.
-fn logs_only() -> impl tracing::Subscriber + Send + Sync {
-    Registry::default().with(logs())
+/// The subscriber with metrics off: the log layer alone, whose level hint
+/// lets tracing reject `debug_span!` with one comparison at `INFO`.
+fn logs_only(options: LogOptions) -> impl tracing::Subscriber + Send + Sync {
+    Registry::default().with(logs(options))
 }
 
 /// Builds the subscriber without installing it.
 fn build(config: &Config, paths: HostPaths) -> (Dispatch, Option<Arc<Collector>>) {
     if !config.is_enabled() {
-        return (Dispatch::new(logs_only()), None);
+        return (Dispatch::new(logs_only(config.logs)), None);
     }
     let collector = Arc::new(Collector::new(config.file.clone(), config.summary, paths));
     let metrics =
         MetricsLayer::new(Arc::clone(&collector.shared)).with_filter(filter_fn(is_metric_span));
-    let subscriber = Registry::default().with(logs()).with(metrics);
+    let subscriber = Registry::default().with(logs(config.logs)).with(metrics);
     (Dispatch::new(subscriber), Some(collector))
 }
 

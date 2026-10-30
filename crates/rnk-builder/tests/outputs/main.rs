@@ -202,6 +202,37 @@ fn assembly_converts_media_types_and_is_stable() {
     );
     assert_eq!(again.digest(), image.digest());
 
+    // `--image-format=docker` (ADR-0036): Docker media types throughout.
+    let docker = support::image_in(
+        dir.path(),
+        &base,
+        &time,
+        Compression::Gzip,
+        ImageFormat::Docker,
+    );
+    assert_eq!(docker.format, ImageFormat::Docker);
+    let m = ImageManifest::from_json(docker.manifest.bytes()).unwrap();
+    assert_eq!(m.media_type, Some(MediaType::DOCKER_MANIFEST));
+    assert!(
+        m.layers
+            .iter()
+            .all(|l| l.media_type == MediaType::DOCKER_LAYER_GZIP)
+    );
+
+    // `--annotation` (ADR-0036): in the manifest, and nowhere when none.
+    assert!(manifest.annotations.is_none());
+    let annotated = rnk_builder::assemble_annotated(
+        ImageConfig::from_json(&image.config).unwrap(),
+        image.layers.clone(),
+        ImageFormat::Oci,
+        &time,
+        &BTreeMap::from([("org.example.a".to_owned(), "1".to_owned())]),
+    )
+    .unwrap();
+    let m = ImageManifest::from_json(annotated.manifest.bytes()).unwrap();
+    assert_eq!(m.annotations.unwrap()["org.example.a"], "1");
+    assert_ne!(annotated.digest(), image.digest());
+
     // zstd layers force OCI.
     let zstd = support::image(dir.path(), &base, &time, Compression::Zstd);
     assert_eq!(zstd.format, ImageFormat::Oci);

@@ -4,6 +4,8 @@
 //! once, with kaniko's flag rules applied. It lives in the binary for now;
 //! no design document assigns it to a library yet.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +47,63 @@ pub(crate) enum Compression {
     Gzip,
     /// zstd (OCI media types only).
     Zstd,
+}
+
+/// kaniko's `--image-format`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImageFormatArg {
+    /// Docker schema 2 media types.
+    Docker,
+    /// OCI media types, the default (Q-006, ADR-0032).
+    Oci,
+}
+
+/// kaniko's `--verbosity` levels (logrus's).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Verbosity {
+    Trace,
+    Debug,
+    #[default]
+    Info,
+    #[value(alias = "warning")]
+    Warn,
+    Error,
+    /// As `error`: ranikust has no level above it.
+    Fatal,
+    /// As `error`.
+    Panic,
+}
+
+/// kaniko's `--log-format`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum LogFormatArg {
+    /// Plain text.
+    Text,
+    /// logrus forced colors and seconds since start (kaniko's default).
+    #[default]
+    Color,
+    /// One JSON object per line.
+    Json,
+}
+
+/// The log settings of `args`, for `rnk_metrics::Config` (ADR-0036).
+pub(crate) fn log_options(args: &BuildArgs) -> rnk_metrics::LogOptions {
+    use tracing::level_filters::LevelFilter;
+    rnk_metrics::LogOptions {
+        level: match args.verbosity {
+            Verbosity::Trace => LevelFilter::TRACE,
+            Verbosity::Debug => LevelFilter::DEBUG,
+            Verbosity::Info => LevelFilter::INFO,
+            Verbosity::Warn => LevelFilter::WARN,
+            Verbosity::Error | Verbosity::Fatal | Verbosity::Panic => LevelFilter::ERROR,
+        },
+        format: match args.log_format {
+            LogFormatArg::Text => rnk_metrics::LogFormat::Text,
+            LogFormatArg::Color => rnk_metrics::LogFormat::Color,
+            LogFormatArg::Json => rnk_metrics::LogFormat::Json,
+        },
+        timestamp: args.log_timestamp,
+    }
 }
 
 /// The network `RUN` gets (ADR-0010).
@@ -118,6 +177,118 @@ pub(crate) struct BuildConfig {
     pub(crate) allow_network_host: bool,
     /// `--allow network.none-userns` (ADR-0033).
     pub(crate) allow_network_none_userns: bool,
+    /// The compression level, kaniko's range mapped to the encoder's;
+    /// `None`: ranikust's default.
+    pub(crate) compression_level: Option<i32>,
+    /// `--image-format`; `None`: OCI.
+    pub(crate) image_format: Option<ImageFormatArg>,
+    /// `--label`s, for the pushed stage.
+    pub(crate) labels: Vec<(String, String)>,
+    /// `--annotation`s, for the manifest.
+    pub(crate) annotations: BTreeMap<String, String>,
+    /// The digest files, absolute.
+    pub(crate) digest_file: Option<PathBuf>,
+    pub(crate) image_name_digest_file: Option<PathBuf>,
+    pub(crate) image_name_tag_digest_file: Option<PathBuf>,
+    /// `--push-retry` and `--image-download-retry`.
+    pub(crate) push_retry: Option<u32>,
+    pub(crate) image_download_retry: Option<u32>,
+    /// `--insecure` and `--insecure-pull`.
+    pub(crate) insecure_push: bool,
+    pub(crate) insecure_pull: bool,
+    /// `--skip-tls-verify`, `--skip-tls-verify-pull` and
+    /// `--skip-tls-verify-registry`.
+    pub(crate) skip_tls_verify_push: bool,
+    pub(crate) skip_tls_verify_pull: bool,
+    pub(crate) skip_tls_verify_registries: Vec<String>,
+}
+
+/// kaniko's `--compression-level` for `compression`, as the encoder takes
+/// it (ADR-0036): gzip -1 (Go's default) is 6, zstd 1 to 19. kaniko's
+/// gzip -2 (Huffman only) and zstd 20 to 22 are refused
+/// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:499-508`).
+fn compression_level(compression: Compression, level: i32) -> Result<i32, Invalid> {
+    match (compression, level) {
+        (Compression::Gzip, -1) => Ok(6),
+        (Compression::Gzip, 0..=9) | (Compression::Zstd, 1..=19) => Ok(level),
+        (Compression::Gzip, -2) => Err(Invalid(
+            "--compression-level=-2 (gzip Huffman-only) is not supported: use -1 to 9".to_owned(),
+        )),
+        (Compression::Zstd, 20..=22) => Err(Invalid(format!(
+            "--compression-level={level} is not supported for zstd: use 1 to 19"
+        ))),
+        (Compression::Gzip, _) => Err(Invalid(format!(
+            "--compression-level={level} is out of range for gzip, use -1 to 9"
+        ))),
+        (Compression::Zstd, _) => Err(Invalid(format!(
+            "--compression-level={level} is out of range for zstd, use 1 to 19"
+        ))),
+    }
+}
+
+/// A `KEY=VALUE` of `--label` or `--annotation`, split at the first `=`.
+fn key_value(flag: &str, arg: &str) -> Result<(String, String), Invalid> {
+    match arg.split_once('=') {
+        Some((k, v)) => Ok((k.to_owned(), v.to_owned())),
+        None => Err(Invalid(format!(
+            "--{flag}={arg}: expected key=value, as kaniko"
+        ))),
+    }
+}
+
+/// Applies kaniko's environment variables to `args` (ADR-0036) and returns
+/// the warnings for those ranikust does not honour.
+///
+/// `vars` is the environment, passed in so tests need not change the
+/// process's.
+///
+/// # Errors
+///
+/// [`Invalid`] for `KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP`, which
+/// would silently change where images come from, and for a `KANIKO_NO_PUSH`
+/// that is not a boolean.
+pub(crate) fn apply_env(
+    args: &mut BuildArgs,
+    vars: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Result<Vec<String>, Invalid> {
+    let mut ignored = Vec::new();
+    let mut warnings = Vec::new();
+    for (name, value) in vars {
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with("KANIKO_") || name.starts_with("FF_KANIKO_")) {
+            continue;
+        }
+        let value = value.to_string_lossy();
+        match name {
+            // `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:83-89`: overrides
+            // the flag.
+            "KANIKO_NO_PUSH" => {
+                args.no_push = crate::cli::parse_bool(&value)
+                    .map_err(|_| Invalid(format!("invalid value {value:?} for KANIKO_NO_PUSH")))?;
+            }
+            "KANIKO_PRESERVE_CONTEXT" => {
+                // Its meaning holds: overlay mode never touches the context.
+            }
+            "KANIKO_REGISTRY_MIRROR" | "KANIKO_REGISTRY_MAP" => {
+                return Err(Invalid(format!(
+                    "{name} is set, but registry mirrors and maps come in Phase 5 (Q-047): \
+                     unset it rather than pull from another registry than the one it names"
+                )));
+            }
+            "KANIKO_DIR" => warnings.push(
+                "KANIKO_DIR is ignored: ranikust's state directory is --state-dir".to_owned(),
+            ),
+            _ => ignored.push(name.to_owned()),
+        }
+    }
+    if !ignored.is_empty() {
+        ignored.sort();
+        warnings.push(format!(
+            "kaniko settings ranikust does not honour are ignored: {}",
+            ignored.join(", ")
+        ));
+    }
+    Ok(warnings)
 }
 
 /// Where a `--secret` comes from, as BuildKit's secrets store
@@ -162,6 +333,62 @@ impl BuildConfig {
                     .to_owned(),
             ));
         }
+        // kaniko `cmd/executor/cmd/root.go:178-180`. The other check there,
+        // `--tar-path` with `--image-format=oci`, is not kaniko's here:
+        // ranikust's tarball holds OCI media types by default (ADR-0036).
+        if args.image_format == Some(ImageFormatArg::Docker) && compression == Compression::Zstd {
+            return Err(Invalid(
+                "--compression=zstd cannot be used with --image-format=docker: the Docker \
+                 schema2 format has no zstd layer media type; use --image-format=oci"
+                    .to_owned(),
+            ));
+        }
+        // kaniko `cmd/executor/cmd/root.go:212-217`.
+        for (flag, set) in [
+            (
+                "--image-name-with-digest-file",
+                args.image_name_with_digest_file.is_some(),
+            ),
+            (
+                "--image-name-tag-with-digest-file",
+                args.image_name_tag_with_digest_file.is_some(),
+            ),
+        ] {
+            if set && args.destinations.is_empty() {
+                return Err(Invalid(format!(
+                    "you must provide --destination if setting {flag}"
+                )));
+            }
+        }
+        // kaniko PUTs a digest file whose path is an https:// URL
+        // (`pkg/executor/push.go:150-166`); ranikust writes local files
+        // only.
+        for (flag, path) in [
+            ("--digest-file", &args.digest_file),
+            (
+                "--image-name-with-digest-file",
+                &args.image_name_with_digest_file,
+            ),
+            (
+                "--image-name-tag-with-digest-file",
+                &args.image_name_tag_with_digest_file,
+            ),
+        ] {
+            if path
+                .as_deref()
+                .and_then(Path::to_str)
+                .is_some_and(|p| p.starts_with("https://"))
+            {
+                return Err(Invalid(format!(
+                    "{flag}: uploading the file to a URL, as kaniko can, is not supported; \
+                     give a local path"
+                )));
+            }
+        }
+        let compression_level = args
+            .compression_level
+            .map(|l| compression_level(compression, l))
+            .transpose()?;
         if let Some(platform) = &args.platform
             && platform != PLATFORM
         {
@@ -177,7 +404,7 @@ impl BuildConfig {
             return Err(Invalid("--target names an empty stage".to_owned()));
         }
         Ok(Self {
-            context: absolute(&context_dir(&args.context)?),
+            context: absolute(&context_with_sub_path(args)?),
             dockerfile: args.dockerfile.clone(),
             build_args: args
                 .build_args
@@ -209,6 +436,31 @@ impl BuildConfig {
             allow_network_none_userns: args
                 .allow
                 .contains(&crate::cli::Entitlement::NetworkNoneUserns),
+            compression_level,
+            image_format: args.image_format,
+            labels: args
+                .labels
+                .iter()
+                .map(|l| key_value("label", l))
+                .collect::<Result<_, _>>()?,
+            annotations: args
+                .annotations
+                .iter()
+                .map(|a| key_value("annotation", a))
+                .collect::<Result<_, _>>()?,
+            digest_file: args.digest_file.as_deref().map(absolute),
+            image_name_digest_file: args.image_name_with_digest_file.as_deref().map(absolute),
+            image_name_tag_digest_file: args
+                .image_name_tag_with_digest_file
+                .as_deref()
+                .map(absolute),
+            push_retry: args.push_retry,
+            image_download_retry: args.image_download_retry,
+            insecure_push: args.insecure,
+            insecure_pull: args.insecure_pull,
+            skip_tls_verify_push: args.skip_tls_verify,
+            skip_tls_verify_pull: args.skip_tls_verify_pull,
+            skip_tls_verify_registries: args.skip_tls_verify_registries.clone(),
         })
     }
 
@@ -259,6 +511,41 @@ pub(crate) fn name<T: ValueEnum>(value: T) -> String {
 
 /// The local directory of `--context`: `dir://` stripped; other schemes are
 /// refused with the phase that brings them.
+/// The context directory with kaniko's `--context-sub-path` applied: joined
+/// onto a `dir://` context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:599-631`,
+/// `pkg/buildcontext/dir.go:25`), staying inside it, so an absolute path
+/// or `..` is refused. kaniko returns before the join for a plain path, so
+/// there it is ignored ([`context_sub_path_ignored`]); other schemes are
+/// refused with their phase by [`context_dir`].
+fn context_with_sub_path(args: &BuildArgs) -> Result<PathBuf, Invalid> {
+    let dir = context_dir(&args.context)?;
+    let Some(sub) = args.context_sub_path.as_deref() else {
+        return Ok(dir);
+    };
+    if !args.context.starts_with("dir://") {
+        return Ok(dir);
+    }
+    let sub_path = Path::new(sub);
+    let inside = sub_path.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    if !inside {
+        return Err(Invalid(format!(
+            "--context-sub-path={sub}: must be a relative path inside the context, without .."
+        )));
+    }
+    Ok(dir.join(sub_path))
+}
+
+/// Whether `--context-sub-path` is given for a plain local path, where
+/// kaniko ignores it: the caller warns.
+pub(crate) fn context_sub_path_ignored(args: &BuildArgs) -> bool {
+    args.context_sub_path.is_some() && !args.context.contains("://")
+}
+
 fn context_dir(context: &str) -> Result<PathBuf, Invalid> {
     if context.is_empty() {
         return Err(Invalid("--context is empty".to_owned()));

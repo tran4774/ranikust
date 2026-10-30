@@ -185,71 +185,6 @@ Entry format:
 - **Interim:** the placeholder `--parallel-stages`.
 - **Raised:** 2026-10-30
 
-### Q-020: Is custom-platform accepted as an alias of platform?
-
-- **Blocks:** Phase 1 task 8; **Area:** `ranikust`
-- **Context:** `ADR-0009` gives ranikust `--platform`, `linux/amd64` only at
-  first; whether kaniko's `--custom-platform` is an alias is open
-  ([kaniko-map](agents/kaniko-map.md#flags),
-  [phase-1.md](agents/phase-1.md#open-questions-blocking-phase-1)).
-- **Options:** (a) accept `--custom-platform` as an alias; (b) reject it
-  with a message naming `--platform`.
-- **Recommendation:** none
-- **Interim:** option (b), in `feat/ranikust-cli`: `--custom-platform`
-  and the deprecated `--customPlatform` are refused with a message naming
-  `--platform`. Reversible: an alias is one clap attribute.
-- **Raised:** 2026-10-30
-
-### Q-021: What do the cache flags do before Phase 4?
-
-- **Blocks:** Phase 1 task 8; **Area:** `ranikust`, `rnk-cache`
-- **Context:** `ADR-0011` accepts `--cache` and `--cache-repo`, but the
-  layer cache is Phase 4 ([rnk-cache](agents/crates/rnk-cache.md#phase-1),
-  [kaniko-map](agents/kaniko-map.md#flags),
-  [phase-1.md](agents/phase-1.md#open-questions-blocking-phase-1)). An
-  accepted kaniko flag keeps its meaning or is rejected with a message
-  ([ranikust](agents/crates/ranikust.md#invariants)).
-- **Options:** (a) reject both with a clear message until Phase 4;
-  (b) accept them as no-ops.
-- **Recommendation:** none
-- **Interim:** option (a), in `feat/ranikust-cli`: `--cache` and
-  `--cache-repo` are refused with a message naming Phase 4, also
-  `--cache=false`. Reversible: accepting them is two flags.
-- **Raised:** 2026-10-30
-
-### Q-023: Which other kaniko flags and variables are accepted?
-
-- **Blocks:** Phase 1 tasks 8, 13; **Area:** `ranikust`
-- **Context:** about 30 kaniko flags are still to be decided with the list
-  ([kaniko-map](agents/kaniko-map.md#flags): `--verbosity`, `--log-format`,
-  `--label`, `--image-format`, `--digest-file`, `--insecure`,
-  `--insecure-pull` (`--insecure-registry` is accepted, Q-200),
-  `--push-retry`, `--single-snapshot`, `--cleanup`, `--dryrun`, deprecated
-  forms…), plus `--force` (replaced by the workdir checks), `--cache-dir`
-  (the store replaces it) and `KANIKO_REGISTRY_MIRROR`, `KANIKO_NO_PUSH`,
-  `KANIKO_REGISTRY_MAP` ([ranikust](agents/crates/ranikust.md#pitfalls)).
-  `ADR-0011` and `ADR-0023` fix the list in Phase 1. Also
-  `KANIKO_METRICS_FILE` (the maintainer's kaniko fork,
-  `kaniko@88b6d2b75`): honour it as an alias of `RANIKUST_METRICS_FILE`,
-  whose report follows the same sections but not the same phase names
-  (`ADR-0025`, [metrics](design/metrics.md#comparing-with-kaniko)), and the
-  final name of the `--metrics-file` flag.
-- **Options:** per flag, (a) accept with kaniko's meaning and a test;
-  (b) reject with a message; (c) accept and ignore with a warning, as
-  `--snapshot-mode` in overlay mode (`ADR-0023`).
-- **Recommendation:** none
-- **Interim:** `KANIKO_METRICS_FILE` is not read; only
-  `RANIKUST_METRICS_FILE` turns metrics on (`feat/rnk-metrics`). Reversible:
-  an alias is one more variable in `rnk_metrics::Config::from_env`. In
-  `feat/ranikust-cli`: option (b) for every flag listed here, `--force` and
-  `--cache-dir` included; each is refused with exit code 2 and a reason
-  (`crates/ranikust/src/cli.rs` `REFUSED`), the deprecated forms naming
-  their replacement. The flag keeps the name `--metrics-file` and wins over
-  the variable. `KANIKO_NO_PUSH`, `KANIKO_REGISTRY_MIRROR` and
-  `KANIKO_REGISTRY_MAP` are not read. Reversible: accepting a flag removes
-  a table row.
-- **Raised:** 2026-10-30
-
 ### Q-110: What is the overlay-mode state directory without `--workdir`?
 
 - **Blocks:** Phase 1 task 8; **Area:** `ranikust`
@@ -399,21 +334,6 @@ Entry format:
   500 ms or more after its last admission, so stages that become ready
   together (W3's peak) do not all start on one reading. Reversible: one
   function and two constants, and the gate is replaceable.
-- **Raised:** 2026-10-30
-
-### Q-031: How does per-stage log grouping fit the kaniko log flags?
-
-- **Blocks:** Phase 1 task 12; **Area:** `rnk-sched`, `ranikust`
-- **Context:** lines carry `[<stage-name> <k>/<n>]` and an option groups
-  output per stage ([scheduler](design/scheduler.md#logging)); kaniko's
-  `--verbosity`, `--log-format` and `--log-timestamp` are still undecided
-  (Q-023). How the two interact is open
-  ([scheduler](design/scheduler.md#open-questions)).
-- **Options:** (a) grouping as its own option, independent of the format;
-  (b) grouping as a value of `--log-format`.
-- **Recommendation:** none
-- **Interim:** no grouping yet; `rnk-sched` hands each stage its
-  `LogTag` (`[<stage-name> <k>/<n>]`), which either option uses.
 - **Raised:** 2026-10-30
 
 ### Q-032: What remains to verify in the RUN sandbox?
@@ -712,6 +632,39 @@ Entry format:
 - **Raised:** 2026-10-30
 
 ## Answered
+
+### Q-020: Is custom-platform accepted as an alias of platform?
+
+- **Answer (2026-10-30):** the maintainer chose option (a):
+  `--custom-platform` is an alias of `--platform`, and the deprecated
+  `--customPlatform` too, with kaniko's warning. Recorded in
+  [ADR-0036](adr/0036-kaniko-flags-in-phase-1.md).
+
+### Q-021: What do the cache flags do before Phase 4?
+
+- **Answer (2026-10-30):** option (a) with one exception: `--cache`,
+  `--cache=true` and `--cache-repo` are refused naming Phase 4, and
+  `--cache=false`, which asks for what Phase 1 does, is accepted. Recorded
+  in [ADR-0036](adr/0036-kaniko-flags-in-phase-1.md).
+
+### Q-023: Which other kaniko flags and variables are accepted?
+
+- **Answer (2026-10-30):** the maintainer approved the per-flag list:
+  accepted with kaniko's meaning, accepted and ignored with a warning where
+  the image is the same without the flag (extending `ADR-0023`), refused
+  until a named phase, or refused for good; `KANIKO_NO_PUSH` overrides the
+  flag, `KANIKO_REGISTRY_MIRROR`/`_MAP` exit 2, `DOCKER_AUTH_CONFIG` is read
+  before `config.json`, every other set `KANIKO_*`/`FF_KANIKO_*` variable
+  gets one warning, and there is no `KANIKO_METRICS_FILE` alias. Recorded in
+  [ADR-0036](adr/0036-kaniko-flags-in-phase-1.md); the table is in
+  [kaniko-map](agents/kaniko-map.md#flags).
+
+### Q-031: How does per-stage log grouping fit the kaniko log flags?
+
+- **Answer (2026-10-30):** option (a): `--verbosity`, `--log-format` and
+  `--log-timestamp` take kaniko's meaning, and per-stage grouping stays a
+  separate matter, independent of the format. Recorded in
+  [ADR-0036](adr/0036-kaniko-flags-in-phase-1.md).
 
 ### Q-049: Which overlay optimizations come after Phase 1?
 

@@ -32,11 +32,17 @@ while streaming; never log a credential.
 ```rust
 pub struct TrustStore;   // load(): host CAs + webpki-root-certs; with_pem_file(path); host_len/embedded_len/len
 pub struct Credentials;  // none(); config_path(DOCKER_CONFIG, HOME); load(path); get(registry) -> Option<&Credential>; helper(registry)
+    // from_env_value(DOCKER_AUTH_CONFIG bytes): `auths` only; or(fallback): asked when these say nothing (ADR-0036)
 pub enum Credential { Basic { username, password }, IdentityToken(String), RegistryToken(String) } // Debug redacts
-#[non_exhaustive] pub struct ClientOptions { pub insecure: BTreeSet<String>, pub skip_tls_verify: BTreeSet<String>,
+#[non_exhaustive] pub struct ClientOptions { pub insecure: BTreeSet<String>,
+    pub http_credentials: BTreeSet<String>,  // may get credentials over plain HTTP: operator-typed names only (T11)
+    pub skip_tls_verify: BTreeSet<String>,   // everything sent to the registry, token realm included
     pub registry_certificates: Vec<(String, PathBuf)>, pub retry: RetryPolicy,
+    pub manifest_retries: u32,               // kaniko's --image-download-retry around pull_image_manifest
     pub connect_timeout: Option<Duration>, pub read_timeout: Option<Duration>, pub user_agent: &'static str }
 pub struct RetryPolicy { pub attempts: u32, pub initial_delay: Duration, pub factor: u32 } // default 3, 1 s, ×3
+pub async fn retry_kaniko<T, E: Display>(retries: u32, op: impl AsyncFn() -> Result<T, E>) -> Result<T, E>;
+    // kaniko's outer Retry (1 s, doubling, any error): --push-retry, --image-download-retry
 pub struct RawManifest;  // new(media_type, bytes) hashes; media_type(), digest(), bytes(), size(), descriptor()
 pub struct ImageManifests { pub manifest: RawManifest, pub index: Option<RawManifest> }
 pub enum PushOutcome { Existed, Mounted, Uploaded }
@@ -178,9 +184,12 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP
   unasked, as BuildKit (ADR-0032, Q-065); private-network addresses are
   not special. Unlike BuildKit, credentials go over plain HTTP only to a
-  registry listed with `--insecure-registry`: BuildKit's `RUN` has its own
-  network namespace, ranikust's shares the host's and could sniff `lo` or
-  serve the port (threat model T11). An unlisted loopback registry is
-  accessed anonymously, a refusal names the flag. [open: Q-048] `login`.
+  registry in `ClientOptions::http_credentials`, which `ranikust` fills
+  with names the operator typed (`--insecure-registry`, destinations under
+  `--insecure`; ADR-0036): BuildKit's `RUN` has its own network namespace,
+  ranikust's shares the host's and could sniff `lo` or serve the port
+  (threat model T11). Any other plain-HTTP registry, a loopback one or one
+  a Dockerfile names under `--insecure-pull`, is accessed anonymously, and
+  a refusal names the flags. [open: Q-048] `login`.
   Only a loopback registry was measured
   ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).

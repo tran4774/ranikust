@@ -149,15 +149,16 @@ struct Build {
 /// Dockerfile is replaced by `uid:gid` of the test process, for `--chown`
 /// (an unprivileged process cannot give files to root).
 fn build(dockerfile: &str, files: &[(&str, &[u8])]) -> (Build, Result<(), Error>) {
-    build_seeded(dockerfile, files, &[])
+    build_seeded(dockerfile, files, &[], &[])
 }
 
 /// [`build`] with `FROM scratch` roots that start with `seed` (as
-/// [`plant`] reads it).
+/// [`plant`] reads it), and `labels` (`--label`) for the target stage.
 fn build_seeded(
     dockerfile: &str,
     files: &[(&str, &[u8])],
     seed: &[(&str, &str)],
+    labels: &[(String, String)],
 ) -> (Build, Result<(), Error>) {
     let dir = tempfile::tempdir().unwrap();
     let ctx = dir.path().join("ctx");
@@ -240,6 +241,11 @@ fn build_seeded(
             demand: LayerDemand {
                 target: true,
                 ..LayerDemand::default()
+            },
+            labels: if i == graph.primary_target() {
+                labels
+            } else {
+                &[]
             },
         };
         match build_stage(&cx, input) {
@@ -518,6 +524,34 @@ fn symlinked_sources_cannot_reach_ignored_files() {
     assert_eq!(fs::read(root_of(&b, 0).join("dst/to-a")).unwrap(), b"a");
 }
 
+/// kaniko's `--label`: the pushed stage only, set before its first
+/// instruction, so a `LABEL` of the same key wins
+/// (`kaniko@44aa7ddc0 pkg/executor/build.go:190-191,275-285`).
+#[test]
+fn labels_go_to_the_target_stage_and_a_label_instruction_wins() {
+    let _capture = Capture::new();
+    let labels = [
+        ("from-flag".to_owned(), "flag".to_owned()),
+        ("both".to_owned(), "flag".to_owned()),
+    ];
+    let (b, r) = build_seeded(
+        "FROM scratch AS base\n\
+         LABEL base=yes\n\
+         FROM base\n\
+         LABEL both=dockerfile\n",
+        &[],
+        &[],
+        &labels,
+    );
+    r.unwrap();
+    let base = b.stages[0].config.config.clone().unwrap().labels.unwrap();
+    assert!(!base.contains_key("from-flag"), "{base:?}");
+    let target = b.stages[1].config.config.clone().unwrap().labels.unwrap();
+    assert_eq!(target["from-flag"], "flag");
+    assert_eq!(target["both"], "dockerfile");
+    assert_eq!(target["base"], "yes");
+}
+
 #[test]
 fn a_copy_onto_a_symlink_to_a_directory_goes_inside_it() {
     let _capture = Capture::new();
@@ -525,6 +559,7 @@ fn a_copy_onto_a_symlink_to_a_directory_goes_inside_it() {
         "FROM scratch\nCOPY --chown={ID} a.txt /link\n",
         &[("a.txt", b"a")],
         &[("real/", ""), ("link", "->real")],
+        &[],
     );
     r.unwrap();
     let root = root_of(&b, 0);

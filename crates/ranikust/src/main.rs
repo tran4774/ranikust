@@ -9,7 +9,7 @@
 //! refused kaniko flags are reported first) → the Linux 5.8 check of
 //! ADR-0028 (`rnk_rootfs::probe_support`), for every subcommand but
 //! `version` → logs and the opt-in metrics of `rnk-metrics`, which start no
-//! thread, with `--metrics-file` over `RANIKUST_METRICS_FILE` → flag
+//! thread, the report asked for with `--metrics-file` only (ADR-0037) → flag
 //! validation into a `BuildConfig` → the process set-up of `setup`: a
 //! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`
 //! (the latter a seam until task 9), the outcome, the spawner thread →
@@ -34,6 +34,7 @@ mod setup;
 mod startup;
 
 use std::io::Write as _;
+use std::path::Path;
 use std::process::ExitCode;
 
 use rnk_metrics::{Config, Outcome, Telemetry};
@@ -79,8 +80,11 @@ impl Failure {
 }
 
 fn main() -> ExitCode {
-    let command = match cli::parse(std::env::args_os()) {
-        Ok(cli) => cli.into_command(),
+    let (mut command, metrics_file, mut warnings) = match cli::parse(std::env::args_os()) {
+        Ok(parsed) => {
+            let file = parsed.cli.metrics_file().map(Path::to_path_buf);
+            (parsed.cli.into_command(), file, parsed.warnings)
+        }
         Err(ParseError::Clap(err)) => {
             // Prints usage errors to stderr and `--help`/`--version` to
             // stdout; a closed stream is no reason to panic.
@@ -94,6 +98,17 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
     };
+    // kaniko's environment variables (ADR-0036), before anything reads the
+    // flags they stand for.
+    if let Command::Build(args) = &mut command {
+        match config::apply_env(args, std::env::vars_os()) {
+            Ok(more) => warnings.extend(more),
+            Err(invalid) => {
+                report(&invalid.0);
+                return ExitCode::from(EXIT_USAGE);
+            }
+        }
+    }
     let fault = std::env::var(DEBUG_FAULT_ENV).ok();
 
     // ADR-0028: before any other work. `version` needs no filesystem access
@@ -105,8 +120,18 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let telemetry = rnk_metrics::init(metrics_config(&command));
+    // ADR-0037: the report path comes only from the flag.
+    if std::env::var_os("RANIKUST_METRICS_FILE").is_some_and(|v| !v.is_empty()) {
+        warnings.push(
+            "RANIKUST_METRICS_FILE is ignored: ask for the metrics report with --metrics-file"
+                .to_owned(),
+        );
+    }
+    let telemetry = rnk_metrics::init(metrics_config(&command, metrics_file.as_deref()));
     telemetry.set_meta("ranikust_version", env!("CARGO_PKG_VERSION"));
+    for warning in &warnings {
+        tracing::warn!("{warning}");
+    }
     let result = tracing::debug_span!("ranikust.run")
         .in_scope(|| run(&command, &telemetry, fault.as_deref()));
     let (code, outcome) = match &result {
@@ -129,15 +154,15 @@ fn report(message: &str) {
     let _ = writeln!(std::io::stderr(), "ranikust: error: {message}");
 }
 
-/// The metrics settings: the environment, with `--metrics-file` taking the
-/// report path's place.
-fn metrics_config(command: &Command) -> Config {
+/// The metrics settings: the report path from `--metrics-file` only
+/// (ADR-0037), the summary from `RANIKUST_METRICS_SUMMARY`, and the log
+/// settings of `build`.
+fn metrics_config(command: &Command, metrics_file: Option<&Path>) -> Config {
     let mut config = Config::from_env();
-    if let Command::Build(args) = command
-        && let Some(file) = &args.metrics_file
-    {
-        config.file = Some(std::path::absolute(file).unwrap_or_else(|_| file.clone()));
+    if let Command::Build(args) = command {
+        config.logs = config::log_options(args);
     }
+    config.file = metrics_file.map(|f| std::path::absolute(f).unwrap_or_else(|_| f.to_path_buf()));
     config
 }
 
@@ -164,6 +189,12 @@ fn run(command: &Command, telemetry: &Telemetry, fault: Option<&str>) -> Result<
 
 fn build(args: &BuildArgs, telemetry: &Telemetry) -> Result<(), Failure> {
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
+    if config::context_sub_path_ignored(args) {
+        tracing::warn!(
+            "--context-sub-path is ignored: kaniko applies it to dir:// and fetched contexts \
+             only, not to a plain path"
+        );
+    }
     telemetry.set_meta("mode", config::name(config.mode));
     telemetry.set_meta("options", config.meta_options());
     tracing::debug!(

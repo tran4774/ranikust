@@ -5,7 +5,7 @@ use super::*;
 /// `build`'s flags from `args`, after `--no-push` unless they push.
 fn args(args: &[&str]) -> BuildArgs {
     let argv = std::iter::once("ranikust").chain(args.iter().copied());
-    match crate::cli::parse(argv).expect("parses").into_command() {
+    match crate::cli::parse(argv).expect("parses").cli.into_command() {
         crate::cli::Command::Build(args) => *args,
         crate::cli::Command::Version => panic!("expected build"),
     }
@@ -30,6 +30,167 @@ fn zstd_cannot_go_into_a_docker_tarball() {
     assert!(err.0.contains("--oci-layout-path"), "{}", err.0);
     assert!(config(&["--no-push", "--oci-layout-path=/l", "--compression=zstd"]).is_ok());
     assert!(config(&["--no-push", "--tar-path=/t.tar", "--compression=gzip"]).is_ok());
+}
+
+/// kaniko's ranges, mapped to the encoder's (ADR-0036).
+#[test]
+fn compression_levels_follow_kaniko_where_the_encoder_can() {
+    let level = |flags: &[&str]| config(flags).map(|c| c.compression_level);
+    assert_eq!(level(&["--no-push"]), Ok(None));
+    assert_eq!(level(&["--no-push", "--compression-level=-1"]), Ok(Some(6)));
+    assert_eq!(level(&["--no-push", "--compression-level=9"]), Ok(Some(9)));
+    assert_eq!(
+        level(&["--no-push", "--compression=zstd", "--compression-level=19"]),
+        Ok(Some(19))
+    );
+    for (flags, why) in [
+        (&["--no-push", "--compression-level=-2"][..], "Huffman"),
+        (
+            &["--no-push", "--compression-level=10"],
+            "out of range for gzip",
+        ),
+        (
+            &["--no-push", "--compression=zstd", "--compression-level=22"],
+            "not supported for zstd",
+        ),
+        (
+            &["--no-push", "--compression=zstd", "--compression-level=0"],
+            "out of range for zstd",
+        ),
+    ] {
+        let err = level(flags).expect_err("refused");
+        assert!(err.0.contains(why), "{flags:?}: {}", err.0);
+    }
+}
+
+#[test]
+fn image_format_labels_annotations_and_digest_files() {
+    let c = config(&[
+        "-d",
+        "r.example/a:1",
+        "--image-format=docker",
+        "--label=a=b=c",
+        "--annotation",
+        "org.example=1",
+        "--digest-file=d",
+        "--image-name-with-digest-file=n",
+    ])
+    .expect("valid");
+    assert_eq!(c.image_format, Some(ImageFormatArg::Docker));
+    assert_eq!(c.labels, [("a".to_owned(), "b=c".to_owned())]);
+    assert_eq!(c.annotations["org.example"], "1");
+    assert!(c.digest_file.as_deref().is_some_and(Path::is_absolute));
+    // kaniko `root.go:178`, `:212`.
+    let err = config(&["--no-push", "--image-format=docker", "--compression=zstd"])
+        .expect_err("zstd docker");
+    assert!(err.0.contains("--image-format=oci"), "{}", err.0);
+    let err = config(&["--no-push", "--image-name-with-digest-file=n"]).expect_err("no dest");
+    assert!(err.0.contains("--destination"), "{}", err.0);
+    // kaniko `root.go:215-217`: the tag file needs a destination too.
+    let err = config(&["--no-push", "--image-name-tag-with-digest-file=n"]).expect_err("no dest");
+    assert!(
+        err.0.contains("--image-name-tag-with-digest-file"),
+        "{}",
+        err.0
+    );
+    // kaniko PUTs an https:// path; ranikust writes local files only.
+    let err = config(&["--no-push", "--digest-file=https://bucket.example/d"]).expect_err("a URL");
+    assert!(err.0.contains("local path"), "{}", err.0);
+    let err = config(&["--no-push", "--label=nokey"]).expect_err("no =");
+    assert!(err.0.contains("key=value"), "{}", err.0);
+    // ADR-0036: an OCI tarball is allowed, unlike kaniko.
+    assert!(config(&["--no-push", "--tar-path=/t", "--image-format=oci"]).is_ok());
+}
+
+/// kaniko's `--context-sub-path`: joined onto a `dir://` context, inside
+/// it; ignored for a plain path, as kaniko returns before the join
+/// (`root.go:599-631`).
+#[test]
+fn context_sub_path_applies_to_dir_contexts() {
+    let c = config(&[
+        "--no-push",
+        "--context=dir:///ctx",
+        "--context-sub-path=app/x",
+    ])
+    .expect("valid");
+    assert_eq!(c.context, Path::new("/ctx/app/x"));
+    for bad in ["../up", "/abs", "a/../../b"] {
+        let flag = format!("--context-sub-path={bad}");
+        let err = config(&["--no-push", "--context=dir:///ctx", &flag]).expect_err(bad);
+        assert!(err.0.contains("inside the context"), "{bad}: {}", err.0);
+    }
+    let a = args(&["--no-push", "--context=/ctx", "--context-sub-path=app"]);
+    assert_eq!(
+        BuildConfig::from_args(&a).unwrap().context,
+        Path::new("/ctx")
+    );
+    assert!(context_sub_path_ignored(&a));
+    let a = args(&[
+        "--no-push",
+        "--context=dir:///ctx",
+        "--context-sub-path=app",
+    ]);
+    assert!(!context_sub_path_ignored(&a));
+}
+
+#[test]
+fn log_options_map_kanikos_levels() {
+    use tracing::level_filters::LevelFilter;
+    let o = log_options(&args(&["--no-push", "-v", "panic", "--log-format=text"]));
+    assert_eq!(o.level, LevelFilter::ERROR);
+    assert_eq!(o.format, rnk_metrics::LogFormat::Text);
+    assert!(!o.timestamp);
+    let o = log_options(&args(&[
+        "--no-push",
+        "--verbosity=trace",
+        "--log-timestamp",
+    ]));
+    assert_eq!(o.level, LevelFilter::TRACE);
+    assert!(o.timestamp);
+}
+
+fn env(vars: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vars.iter()
+        .map(|(k, v)| ((*k).into(), (*v).into()))
+        .collect()
+}
+
+/// kaniko's variables (ADR-0036): `KANIKO_NO_PUSH` overrides the flag as in
+/// kaniko, mirrors and maps are refused, the rest get one warning.
+#[test]
+fn kaniko_variables_are_honoured_refused_or_named() {
+    let mut a = args(&["-d", "r/a:1"]);
+    let w = apply_env(
+        &mut a,
+        env(&[
+            ("KANIKO_NO_PUSH", "true"),
+            ("FF_KANIKO_COPY_LINK", "1"),
+            ("KANIKO_METRICS_FILE", "/m.json"),
+            ("KANIKO_DIR", "/kaniko"),
+            ("PATH", "/bin"),
+        ]),
+    )
+    .expect("applies");
+    assert!(a.no_push);
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(w[0].contains("--state-dir"), "{w:?}");
+    assert!(
+        w[1].contains("FF_KANIKO_COPY_LINK, KANIKO_METRICS_FILE"),
+        "{w:?}"
+    );
+    let mut a = args(&["--no-push"]);
+    assert!(apply_env(&mut a, env(&[("KANIKO_NO_PUSH", "false")])).is_ok());
+    assert!(!a.no_push, "the variable overrides the flag");
+    let err = apply_env(&mut a, env(&[("KANIKO_NO_PUSH", "maybe")])).expect_err("bad bool");
+    assert!(err.0.contains("KANIKO_NO_PUSH"), "{}", err.0);
+    let err =
+        apply_env(&mut a, env(&[("KANIKO_REGISTRY_MIRROR", "m.example")])).expect_err("mirror");
+    assert!(err.0.contains("Phase 5"), "{}", err.0);
+    assert!(
+        apply_env(&mut a, env(&[("KANIKO_PRESERVE_CONTEXT", "true")]))
+            .expect("honoured")
+            .is_empty()
+    );
 }
 
 #[test]

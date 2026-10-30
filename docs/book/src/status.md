@@ -6,7 +6,7 @@ ranikust is **pre-alpha**. There is no release. The binary builds a
 Dockerfile in overlay mode as root, stages in parallel, and writes an OCI
 layout, a Docker tar or pushes ([Command line](usage.md)); it has not yet
 been measured against kaniko on real projects. Its build metrics already work:
-with `RANIKUST_METRICS_FILE=<path>` or `--metrics-file=<path>`, it writes a
+with `--metrics-file=<path>`, it writes a
 JSON report of where the run spent time and resources when it exits.
 
 What exists:

@@ -1,5 +1,7 @@
 //! Image assembly: the final config, its layers and the manifest.
 
+use std::collections::BTreeMap;
+
 use bytes::Bytes;
 use rnk_oci::{
     Descriptor, Digest, History, ImageConfig, ImageFormat, ImageManifest, to_canonical_json,
@@ -86,10 +88,29 @@ impl Image {
 /// [`Error::Inconsistent`] when the diff IDs disagree, [`Error::Oci`] when a
 /// layer's media type has no OCI equivalent either or serializing fails.
 pub fn assemble(
+    config: ImageConfig,
+    layers: Vec<BlobLayer>,
+    format: ImageFormat,
+    time: &BuildTime,
+) -> Result<Image> {
+    assemble_annotated(config, layers, format, time, &BTreeMap::new())
+}
+
+/// [`assemble`], with `annotations` in the manifest: kaniko's
+/// `--annotation` (`kaniko@44aa7ddc0 pkg/executor/build.go:2128`). The base
+/// image's annotations are not carried over, as in BuildKit and kaniko's
+/// default (`FF_KANIKO_NO_PROPAGATE_ANNOTATIONS`). Empty: no `annotations`
+/// field. ADR-0036.
+///
+/// # Errors
+///
+/// As [`assemble`].
+pub fn assemble_annotated(
     mut config: ImageConfig,
     mut layers: Vec<BlobLayer>,
     format: ImageFormat,
     time: &BuildTime,
+    annotations: &BTreeMap<String, String>,
 ) -> Result<Image> {
     let format = match format {
         ImageFormat::Docker
@@ -122,11 +143,14 @@ pub fn assemble(
         sha256(&config_bytes),
         u64::try_from(config_bytes.len()).unwrap_or(u64::MAX),
     );
-    let manifest = ImageManifest::new(
+    let mut manifest = ImageManifest::new(
         format,
         config_descriptor.clone(),
         layers.iter().map(|l| l.blob.clone()).collect(),
     );
+    if !annotations.is_empty() {
+        manifest.annotations = Some(annotations.clone());
+    }
     let manifest = RawManifest::new(format.manifest_media_type(), to_canonical_json(&manifest)?);
     span.record("bytes_out", config_descriptor.size + manifest.size());
     Ok(Image {
