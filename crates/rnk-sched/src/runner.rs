@@ -19,6 +19,13 @@ use crate::slots::{RunPermit, RunSlots};
 /// the runner's own threads. Both should return soon after their token
 /// fires; the scheduler waits for every call to end before it returns,
 /// since clean-up must not rely on `Drop`.
+///
+/// The runner owns the clean-up of what it creates: stage roots, mounts,
+/// pulled blobs in `tmp/`. It journals them before creating them and
+/// removes them itself, on success and on failure alike. The scheduler
+/// drops `Output` and unbuilt `Prepared` values when a build fails, and
+/// that drop must not be the only clean-up (release builds abort on
+/// panic).
 pub trait StageRunner: Sync {
     /// What up-front work hands to the stage's build (a pulled base).
     type Prepared: Send;
@@ -35,8 +42,17 @@ pub trait StageRunner: Sync {
         job: PrepareJob<'_>,
     ) -> impl Future<Output = Result<Self::Prepared, Self::Error>> + Send;
 
-    /// Builds one stage, its instructions in order. Takes a `--jobs` permit
-    /// per `RUN` with [`StageJob::run_slot`].
+    /// Builds one stage, its instructions in order.
+    ///
+    /// Must take a `--jobs` permit with [`StageJob::run_slot`] before each
+    /// `RUN` and hold it until the `RUN`'s process tree has exited
+    /// (ADR-0013); `None` means the build was cancelled. Nothing enforces
+    /// it yet.
+    ///
+    /// The future is polled on the task that awaits
+    /// [`crate::Scheduler::run`], together with every other stage's: it
+    /// must not block that task (a `RUN`, extraction and compression go to
+    /// the runner's own threads).
     fn build(
         &self,
         job: StageJob<'_, Self>,

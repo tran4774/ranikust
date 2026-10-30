@@ -1320,6 +1320,7 @@ dependencies = [
  "proptest",
  "rnk-dockerfile",
  "rnk-metrics",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",

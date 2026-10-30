@@ -102,6 +102,17 @@ impl Scheduler {
     ///
     /// Must run inside a tokio runtime with its timer enabled.
     ///
+    /// On failure the stages' outputs and any unbuilt `Prepared` values are
+    /// dropped; the runner must not rely on that to clean up (see
+    /// [`StageRunner`]).
+    ///
+    /// # Cancel safety
+    ///
+    /// Not cancel safe: dropping the future drops every stage's `prepare`
+    /// and `build` mid-way, and nothing undoes what they started. To stop
+    /// a build, cancel `cancel` and keep awaiting until `run` returns
+    /// [`Error::Cancelled`].
+    ///
     /// # Errors
     ///
     /// The first stage that failed ([`Error::Stage`], [`Error::Prepare`]),
@@ -160,8 +171,10 @@ impl Scheduler {
             .enumerate()
             .map(|(k, rx)| ctx.stage(k, rx))
             .collect();
-        // `join` polls the preparations first, so all of them start before
-        // any stage is built.
+        // `join` polls the preparations first, so they start before the
+        // stages are built. Not a guarantee: `FuturesUnordered` yields
+        // after 32 polls, so on a wider graph a build may start before the
+        // last preparations do.
         join(async { while preps.next().await.is_some() {} }, async {
             while stages.next().await.is_some() {}
         })
@@ -219,17 +232,25 @@ impl<'a> Plan<'a> {
     fn new<E: std::error::Error>(graph: &'a StageGraph) -> Result<Self, Error<E>> {
         let n = graph.needed.len();
         let pos = |s: usize| graph.needed.iter().position(|&x| x == s);
+        let bad = |stage: usize, reason: String| Error::Graph { stage, reason };
         let mut stages = Vec::with_capacity(n);
         for (k, &stage) in graph.needed.iter().enumerate() {
-            let node = graph.stages.get(stage).ok_or(Error::Graph {
-                stage,
-                dependency: stage,
-            })?;
+            if pos(stage) != Some(k) {
+                return Err(bad(stage, "listed twice in `needed`".to_owned()));
+            }
+            let node = graph
+                .stages
+                .get(stage)
+                .ok_or_else(|| bad(stage, "not in the graph".to_owned()))?;
             let mut deps = Vec::new();
             for d in node.dependencies() {
-                let p = pos(d).ok_or(Error::Graph {
-                    stage,
-                    dependency: d,
+                // A dependency comes earlier in `needed`, so the plan has no
+                // cycle and every wait ends.
+                let p = pos(d).filter(|&p| p < k).ok_or_else(|| {
+                    bad(
+                        stage,
+                        format!("depends on stage {d}, which is not needed before it"),
+                    )
                 })?;
                 deps.push((d, p));
             }
@@ -434,4 +455,16 @@ fn base_text<'a>(graph: &'a StageGraph, node: &'a StageNode) -> &'a str {
         Base::Image(i) => i,
         Base::Stage(s) => graph.stages.get(*s).map_or("", |b| b.display_name.as_str()),
     }
+}
+
+/// Compile-time check: `run`'s future is `Send` for every runner, so a
+/// caller may spawn it on a multi-thread runtime.
+fn _run_is_send<R: StageRunner>(
+    sched: &Scheduler,
+    graph: &StageGraph,
+    runner: &R,
+    cancel: &CancellationToken,
+) {
+    fn send<T: Send>(_: T) {}
+    send(sched.run(graph, runner, cancel));
 }

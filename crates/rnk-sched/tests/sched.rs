@@ -12,6 +12,7 @@ use rnk_sched::{
     CancellationToken, Error, MemoryCheck, MemoryGate, PrepareJob, Scheduler, StageJob,
     StageRunner, Unlimited,
 };
+use tokio::sync::Notify;
 
 fn graph(src: &str, targets: &[&str]) -> StageGraph {
     let opts = GraphOptions {
@@ -55,6 +56,10 @@ struct Fake {
     fail_prepare: Vec<usize>,
     /// Stages that run until cancelled.
     hang: Vec<usize>,
+    /// Stages whose preparation runs until cancelled.
+    hang_prepare: Vec<usize>,
+    /// Notified when a build starts.
+    built: Notify,
     in_run: AtomicUsize,
     max_in_run: AtomicUsize,
     building: AtomicUsize,
@@ -88,12 +93,18 @@ impl StageRunner for Fake {
         if self.fail_prepare.contains(&job.stage) {
             return Err(FakeError::Failed(job.stage));
         }
+        if self.hang_prepare.contains(&job.stage) {
+            job.cancel.cancelled().await;
+            self.event(format!("prepare {} cancelled", job.stage));
+            return Err(FakeError::Cancelled);
+        }
         Ok(format!("base-of-{}", job.node.display_name))
     }
 
     async fn build(&self, job: StageJob<'_, Self>) -> Result<String, FakeError> {
         let stage = job.stage;
         self.event(format!("build {stage}"));
+        self.built.notify_one();
         let now = self.building.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_building.fetch_max(now, Ordering::SeqCst);
         let res = async {
@@ -167,7 +178,7 @@ fn a_diamond_runs_each_stage_after_its_dependencies() {
 }
 
 #[test]
-fn every_preparation_starts_before_any_build() {
+fn preparations_start_before_builds_on_a_small_graph() {
     let g = graph(DIAMOND, &[]);
     let fake = Fake::default();
     rt().block_on(sched(4).run(&g, &fake, &CancellationToken::new()))
@@ -343,27 +354,95 @@ fn the_callers_token_cancels_the_build() {
         hang: vec![0],
         ..Fake::default()
     };
-    let cancel = CancellationToken::new();
-    let rt = rt();
-    let err = rt
-        .block_on(async {
-            let c = cancel.clone();
-            let canceller = async move {
-                for _ in 0..20 {
-                    tokio::task::yield_now().await;
-                }
-                c.cancel();
-            };
-            let (res, ()) = futures_join(sched(2).run(&g, &fake, &cancel), canceller).await;
-            res
-        })
-        .unwrap_err();
+    let err = cancel_once_built(&sched(2), &g, &fake);
     assert!(matches!(err, Error::Cancelled), "{err:?}");
     assert!(fake.events().contains(&"done 0".to_owned()));
 }
 
-async fn futures_join<A: Future, B: Future>(a: A, b: B) -> (A::Output, B::Output) {
-    tokio::join!(a, b)
+/// Runs `fake` and cancels the build once a stage has started building.
+fn cancel_once_built(s: &Scheduler, g: &StageGraph, fake: &Fake) -> Error<FakeError> {
+    let cancel = CancellationToken::new();
+    rt().block_on(async {
+        let canceller = async {
+            fake.built.notified().await;
+            // Let the other stages reach their waits before the cancel.
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            cancel.cancel();
+        };
+        let (res, ()) = tokio::join!(s.run(g, fake, &cancel), canceller);
+        res.unwrap_err()
+    })
+}
+
+#[test]
+fn cancelling_reaches_a_stage_waiting_in_the_memory_gate() {
+    let g = graph(WIDE, &[]);
+    let fake = Fake {
+        hang: (0..6).collect(),
+        ..Fake::default()
+    };
+    let s = Scheduler::new(NonZeroUsize::new(4)).with_memory_gate(AtMost(1));
+    let err = cancel_once_built(&s, &g, &fake);
+    assert!(matches!(err, Error::Cancelled), "{err:?}");
+    let ev = fake.events();
+    // One stage was building; the others waited in the gate and never
+    // started.
+    assert_eq!(
+        ev.iter().filter(|e| e.starts_with("build")).count(),
+        1,
+        "{ev:?}"
+    );
+    assert_eq!(
+        ev.iter().filter(|e| e.starts_with("done")).count(),
+        1,
+        "{ev:?}"
+    );
+}
+
+#[test]
+fn a_running_preparation_is_awaited_after_a_failure() {
+    let g = graph(
+        "FROM scratch AS bad\nFROM alpine AS slow\nFROM scratch AS t\n\
+         COPY --from=bad / /\nCOPY --from=slow / /\n",
+        &[],
+    );
+    let fake = Fake {
+        fail: vec![0],
+        hang_prepare: vec![1],
+        ..Fake::default()
+    };
+    let err = rt()
+        .block_on(sched(2).run(&g, &fake, &CancellationToken::new()))
+        .unwrap_err();
+    assert!(matches!(err, Error::Stage { stage: 0, .. }), "{err:?}");
+    // `run` returned only after the hanging preparation saw the cancel.
+    assert!(
+        fake.events().contains(&"prepare 1 cancelled".to_owned()),
+        "{:?}",
+        fake.events()
+    );
+}
+
+#[test]
+fn an_inconsistent_graph_is_refused() {
+    let mut g = graph(DIAMOND, &[]);
+    let fake = Fake::default();
+    let run = |g: &StageGraph| {
+        rt().block_on(sched(1).run(g, &fake, &CancellationToken::new()))
+            .unwrap_err()
+    };
+    // `d` (3) needs `b` (1), which is no longer listed before it.
+    g.needed = vec![0, 2, 3, 1];
+    let err = run(&g);
+    assert!(matches!(err, Error::Graph { stage: 3, .. }), "{err}");
+    assert!(err.to_string().contains("depends on stage 1"), "{err}");
+    g.needed = vec![0, 0];
+    assert!(matches!(run(&g), Error::Graph { stage: 0, .. }));
+    g.needed = vec![7];
+    assert!(matches!(run(&g), Error::Graph { stage: 7, .. }));
+    assert!(fake.events().is_empty());
 }
 
 #[test]

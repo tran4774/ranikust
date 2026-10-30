@@ -3,8 +3,9 @@
 //! Each stage is an async task that starts once its dependencies finish;
 //! steps that do not touch a rootfs (base pulls, cache lookups) start for all
 //! stages up front. `--jobs` bounds concurrent `RUN`s, available memory bounds
-//! how many stages run at once, a stage whose rootfs is the shared `/` runs
-//! alone, the first failure cancels the rest, and logs are tagged per stage.
+//! how many stages run at once, the first failure cancels the rest, and logs
+//! are tagged per stage. Running a stage whose rootfs is the shared `/`
+//! alone comes with kaniko mode (Phase 2).
 //!
 //! How a stage is built is behind [`StageRunner`]: `rnk-builder` provides
 //! it, tests use fakes. The scheduler drives every stage's future from the

@@ -22,7 +22,7 @@ pub struct RunPermit<'a> {
 impl RunSlots {
     /// `jobs` permits.
     #[must_use]
-    pub fn new(jobs: std::num::NonZeroUsize) -> Self {
+    pub(crate) fn new(jobs: std::num::NonZeroUsize) -> Self {
         Self {
             sem: Semaphore::new(jobs.get()),
         }
