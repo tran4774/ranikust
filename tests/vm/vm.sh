@@ -2,7 +2,7 @@
 # The T2 harness: runs test suites as real root in a disposable QEMU/KVM VM,
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
-#   tests/vm/vm.sh [suite]...     suites: unit, smoke, e2e; default unit smoke
+#   tests/vm/vm.sh [suite]...     suites: unit, smoke, e2e, push; default unit smoke
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
@@ -44,7 +44,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 SUITES=("$@")
 [ ${#SUITES[@]} -gt 0 ] || SUITES=(unit smoke)
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke | e2e) ;; *) die "unknown suite '$s' (unit, smoke, e2e)" ;; esac
+  case "$s" in unit | smoke | e2e | push) ;; *) die "unknown suite '$s' (unit, smoke, e2e, push)" ;; esac
 done
 case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 [ "$(id -u)" != 0 ] || die "run as a regular user: QEMU needs /dev/kvm, not root"
@@ -66,6 +66,15 @@ if wants e2e; then
   NEXTJS="${RANIKUST_NEXTJS_KANIKO:-$(dirname "$MAIN")/nextjs-kaniko}"
   [ -f "$NEXTJS/bench/run-fair.sh" ] || die "no nextjs-kaniko checkout at $NEXTJS (set RANIKUST_NEXTJS_KANIKO)"
   command -v podman >/dev/null || die "missing podman (e2e saves the reference images from it)"
+fi
+if wants push; then
+  # The host's test registries (tests/registry, `just registry-up`), which
+  # the guest reaches as 10.0.2.2: QEMU's user network maps it to the
+  # host's loopback, where they listen.
+  REGDATA="$REPO/tests/registry/_data"
+  curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ &&
+    curl -fsS -o /dev/null --cacert "$REGDATA/certs/ca.crt" -u "$(cat "$REGDATA/auth/credentials")" https://localhost:5443/v2/ ||
+    die "the push suite needs the host's test registries: run \`just registry-up\`"
 fi
 
 # --- Build: static binaries and the guest tree -------------------------------
@@ -95,7 +104,7 @@ if wants unit; then
     jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
-if wants smoke || wants e2e; then
+if wants smoke || wants e2e || wants push; then
   log "building the smoke-build example and the ranikust binary"
   (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
   cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
@@ -122,6 +131,10 @@ if wants e2e; then
     echo "$id ${E2E_NAMES[$i]}" >>"$STAGE/e2e-images.txt"
   done
   env | grep '^RANIKUST_E2E_' | sed 's/^/export /' >"$STAGE/e2e.env" || true
+fi
+if wants push; then
+  mkdir -p "$STAGE/registry"
+  cp "$REGDATA/certs/ca.crt" "$REGDATA/auth/credentials" "$STAGE/registry/"
 fi
 # Read by guest/run.sh: the suites pull Docker Hub images from here.
 printf 'export RANIKUST_VM_IMAGE_REGISTRY=%q\n' "$IMAGE_REGISTRY" >"$STAGE/vm.env"

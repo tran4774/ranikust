@@ -215,6 +215,16 @@ smoke image="docker.io/library/alpine:3.20":
     [ "$a" = "$b" ] || { echo "error: --reproducible digests differ: $a, $b" >&2; exit 1; }
     echo "smoke: ok"
 
-# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker; `e2e`, only when named: the nextjs-kaniko workloads against kaniko and BuildKit) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
+# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker; `e2e`, only when named: the nextjs-kaniko workloads against kaniko and BuildKit; `push`, only when named: pushes to a loopback and the host's test registries, needs `just registry-up`) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
 test-vm *suites:
     tests/vm/vm.sh {{ suites }}
+
+# Start the test registries (tests/registry/compose.yaml): plain HTTP on 127.0.0.1:5000 and HTTPS with a self-signed CA and basic auth on 127.0.0.1:5443, data in tests/registry/_data; then push and read back an image in each. Requires podman (compose), openssl, python3-bcrypt, skopeo.
+registry-up:
+    tests/registry/setup.sh
+    SUPPRESS_BOLTDB_WARNING=1 podman compose -f tests/registry/compose.yaml up -d
+    tests/registry/check.sh
+
+# Stop the test registries; their data stays in tests/registry/_data.
+registry-down:
+    SUPPRESS_BOLTDB_WARNING=1 podman compose -f tests/registry/compose.yaml down

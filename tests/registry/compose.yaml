@@ -1,0 +1,37 @@
+# Two local test registries for ranikust's push checks
+# (docs/testing.md#test-registries): `http` (plain HTTP, anonymous) on
+# 127.0.0.1:5000 and `https` (TLS from a self-signed CA, basic auth) on
+# 127.0.0.1:5443. Everything they store lives in ./_data, which is
+# git-ignored. `just registry-up` first makes the certificates and the
+# htpasswd file (tests/registry/setup.sh).
+#
+# Bound to loopback only: the T2 VM reaches them as 10.0.2.2, which QEMU's
+# user-mode network maps to the host's loopback.
+name: ranikust-registries
+
+services:
+  http:
+    # registry:2.8.3, pinned by digest.
+    image: docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+    restart: unless-stopped
+    ports: ["127.0.0.1:5000:5000"]
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - ./_data/http:/var/lib/registry:Z
+
+  https:
+    image: docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+    restart: unless-stopped
+    ports: ["127.0.0.1:5443:5000"]
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/server.crt
+      REGISTRY_HTTP_TLS_KEY: /certs/server.key
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: ranikust-test
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+    volumes:
+      - ./_data/https:/var/lib/registry:Z
+      - ./_data/certs:/certs:ro,Z
+      - ./_data/auth:/auth:ro,Z
