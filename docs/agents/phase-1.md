@@ -3,7 +3,8 @@
 **TL;DR:** Build real Dockerfiles in overlay mode as root, with parallel
 stages, lazy export and all three outputs, measured against kaniko and
 BuildKit. Start with the foundations; O1–O5 are resolved (ADR-0021 to
-ADR-0024, ADR-0030).
+ADR-0024, ADR-0030). **Done** (every acceptance criterion ticked,
+2026-10-30); the next phase is [phase-2.md](phase-2.md).
 
 Source: survey 04 §2–§3 and survey 00 §4 (`docs/research/survey/`), an
 internal milestone of 8–12 weeks for one person `[inferred]`. Tick items here
@@ -19,11 +20,11 @@ the code.
 | [x] | OCI and Docker v2s2 manifests, index, config, media types; config edits of the metadata instructions, history and `diff_ids` appends, docker-save `manifest.json` and OCI layout types (Q-007; config edits, history and empty fields follow BuildKit, `ADR-0032`, code to follow) | `rnk-oci` |
 | [x] | Dockerfile front end: lexer, directives, heredocs, `ARG`/`ENV` expansion, instructions, stage DAG; BuildKit goldens on kaniko's 200 Dockerfiles | `rnk-dockerfile` |
 | [x] | `.dockerignore` with exact `patternmatcher` semantics | `rnk-ignore` |
-| [~] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion (done; the workdir checks wait for Q-011) | `rnk-rootfs` |
+| [~] | `RootPath` (`openat2` + `RESOLVE_IN_ROOT`); extraction of a decompressed tar into the overlay whiteout form; copy, ownership, raw modes, xattrs; `USER`/`--chown` name lookup in the root; safe deletion (done; the workdir checks moved to Phase 2 task 1, `ADR-0038`) | `rnk-rootfs` |
 | [x] | Deterministic tar (the writer sorts entries and adds missing parent headers), pigz-style parallel gzip, parallel zstd as independent 1 MiB frames, gzip/zstd decoder for pulled blobs, streaming digests | `rnk-layer` |
 | [x] | Pulls from public registries and with docker `config.json` auth; rustls with `ring`, trusting host CAs plus webpki roots (`ADR-0024`); `--registry-certificate` (the client; the flags come with task 8) | `rnk-registry` |
 | [x] | Persistent store in `--state-dir`: `blobs/`, `layers/`, `caches/`, `tmp/`, per-digest `flock`, atomic rename, start-up cleanup; `BuildPaths` (`ADR-0006`, `ADR-0021`, `ADR-0022`); T0 across threads, processes and `SIGKILL` (`ranikust` still has to open and close it) | `rnk-store` |
-| [~] | Process set-up: flags (`--mode`, `ADR-0023`) and validation into `BuildConfig`; private mount namespace (refused in a plain `chroot`), the store opened before the probes (marker, start-up clean-up; Q-111), the probes in order, the outcome, spawner thread, all while single-threaded (done; T0, T1 `just smoke`, T2 `just test-vm smoke`); left: workdir checks [open: Q-011], workdir `flock` in kaniko mode | `ranikust` |
+| [~] | Process set-up: flags (`--mode`, `ADR-0023`) and validation into `BuildConfig`; private mount namespace (refused in a plain `chroot`), the store opened before the probes (marker, start-up clean-up; Q-111), the probes in order, the outcome, spawner thread, all while single-threaded (done; T0, T1 `just smoke`, T2 `just test-vm smoke`); left: workdir checks and the kaniko-mode workdir `flock`, moved to [Phase 2](phase-2.md) task 1 (`ADR-0038`) | `ranikust` |
 | [~] | Overlay-root probe (steps 1, 3, 4 of `design/modes-and-detection.md`): namespaces, `proc`, `pivot_root`, `sysfs`; overlay mount and `lowerdir+`; refusal with the diagnosis `[inferred]` (the sandbox's step 3 is done: the real sequence, `pivot_root` else `MS_MOVE`; the overlay steps 1 and 4 are done: `rnk_snapshot::probe` mounts with `lowerdir+`, else `mount(2)`, and checks a write through it; `ranikust` runs both and refuses with guidance; left: the user-namespace steps, Phase 3) | `rnk-sandbox`, `rnk-snapshot`; run by `ranikust` |
 | [~] | `RUN` sandbox: namespaces, mounts, `pivot_root`/`MS_MOVE`, capability drop, `USER` from the root, stubs and journal, PDEATHSIG (done; runs in rootless podman, `just smoke`, and as real root in the VM, `just test-vm`, on kernels 5.15 and 6.8: `pivot_root` on the host and in `docker run --privileged`, `MS_MOVE` under Docker's seccomp profile) | `rnk-sandbox` |
 | [~] | `RUN --mount=type=cache\|secret`; `--network=none` (done, as BuildKit (ADR-0032): cache mounts leased from the store with `sharing=`, secrets as a private `0400` file or `env=`, `--secret` in kaniko's and buildctl's syntax, `RUN --network=none` and `--network=none`, `--allow network.host`; the e2e build checks loopback only, the secret file's mode and owner, and that the secret reaches no blob; a cache persists across builds, `just test-vm smoke`) | `rnk-sandbox`, `rnk-builder` |
@@ -56,7 +57,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 1 | `rnk-oci` types (done) | | |
 | 2 | `rnk-dockerfile` parser with BuildKit goldens | | |
 | 3 | `rnk-ignore` | | |
-| 4 | `rnk-rootfs`: `RootPath` → extraction → copy, ownership, xattrs → safe deletion (done but `check_workdir`, Q-011) | | |
+| 4 | `rnk-rootfs`: `RootPath` → extraction → copy, ownership, xattrs → safe deletion (done; the workdir checks are Phase 2 task 1) | | |
 | 5 | `rnk-layer`: tar → gzip → digests → zstd (done) | 5a | |
 | 5a | cargo-zigbuild toolchain in the `justfile` and CI (`ADR-0020`, Q-052); mimalloc (done) | | |
 | 6 | `rnk-registry`: auth, TLS (`ADR-0024`), streamed pull (done; also pushes, mounts and retries for task 11; `ring` needs 5a for the musl targets) | 1 | |
@@ -193,14 +194,14 @@ with `rnk_metrics::Capture`; a task is not done without it.
 - **O5 Dependency picks left open in survey 03 §3.** Resolved for Phase 1:
   `rustix`, `sha2`, gzip by hand, `reqwest`, no `docker_credential`, `clap`
   ([ADR-0030](../adr/0030-phase-1-dependency-picks.md), Q-012).
-  Still open, Phase 2 picks (`highway` or `xxhash-rust`, `jwalk` or `rayon` +
-  `getdents64`):
+  The Phase 2 picks (`highway` or `xxhash-rust`, `jwalk` or `rayon` +
+  `getdents64`) wait for the benchmark of [Phase 2](phase-2.md) task 0:
   [Q-038](../open-questions.md#q-038-which-crates-fill-the-phase-2-dependency-picks).
 
 Also open, not blocking a start:
 
-- the final `--parallel-stages` name:
-  [Q-019](../open-questions.md#q-019-what-is-the-final-name-of-the-parallel-stages-flag);
+- the final `--parallel-stages` name (Q-019, since kept as is in
+  [ADR-0038](../adr/0038-kaniko-mode-settings-for-phase-2.md));
 - the memory-limit algorithm (`design/scheduler.md#limits`):
   [Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds).
 

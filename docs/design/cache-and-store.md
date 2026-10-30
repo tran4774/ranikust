@@ -164,7 +164,6 @@ other and carry that mode's accepted differences
 
 ## Open questions
 
-- [Q-036](../open-questions.md#q-036-what-is-the-state-directory-default-for-kaniko-mode-on-a-host) What is the state directory default for kaniko mode on a host?
 - [Q-018](../open-questions.md#q-018-where-does-the-probe-mount-its-test-overlay) Where does the probe mount its test overlay?
 - [Q-016](../open-questions.md#q-016-how-is-the-store-lock-protocol-proven-under-crashes-and-races) How is the store lock protocol proven under crashes and races?
 - [Q-043](../open-questions.md#q-043-what-are-the-prune-defaults) What are the prune defaults?

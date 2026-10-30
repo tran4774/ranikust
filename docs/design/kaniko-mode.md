@@ -11,7 +11,8 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0018](../adr/0018-no-proot-in-1-0.md),
 [ADR-0019](../adr/0019-java-tool-options-on-parallel-path.md),
 [ADR-0022](../adr/0022-common-state-dir.md),
-[ADR-0023](../adr/0023-mode-flag.md).
+[ADR-0023](../adr/0023-mode-flag.md),
+[ADR-0038](../adr/0038-kaniko-mode-settings-for-phase-2.md).
 
 ## Variants
 
@@ -33,9 +34,12 @@ overlay mode).
 - The walk and the deletion never follow symlinks and never cross a mount
   point.
 - The state directory is never walked, snapshotted or deleted; otherwise its
-  files leak into layers. Inside a container it is `/ranikust/state`, inside
-  the root and on the ignore list, as kaniko's `/kaniko`
-  ([ADR-0022](../adr/0022-common-state-dir.md)).
+  files leak into layers. With the root `/` (in a container) it is
+  `/ranikust/state`, inside the root and on the ignore list, as kaniko's
+  `/kaniko` ([ADR-0022](../adr/0022-common-state-dir.md)); with any other
+  root it is `<cwd>/.ranikust`, the directory ranikust was started in, and
+  on the ignore list whenever it lies inside the root (`ADR-0038`).
+  `--state-dir` replaces either default.
 - Anything ranikust places in a root (stubs, `hosts`, `resolv.conf`, `/dev`
   nodes, fake `/proc`) is removed, and its parent directory's metadata
   restored, before the diff.
@@ -71,8 +75,11 @@ squashing, which folds a parent stage into the child that builds on it
 - Compute the diff during the walk (mark entries seen; unseen old entries are
   deletions) rather than comparing two maps afterwards; store entries
   compactly (path arena), since a 269k-entry map took about 200 MB.
-- Cap the walk at about 8 workers: 32 workers were slower than 8
-  [inferred from one machine].
+- The walk is a `rayon` scope over `openat2` and `getdents64`, hashing with
+  xxh3-128 ([ADR-0039](../adr/0039-kaniko-mode-walk-and-hash-crates.md)), on
+  8 workers by default: 16 and 32 were slower than 8 on the benchmark
+  machine. `--snapshot-workers N` changes the count; it never changes a
+  layer.
 - **`--snapshot-mode`** picks what is compared, as in kaniko
   ([ADR-0023](../adr/0023-mode-flag.md)): `full` (default) everything above,
   content included; `redo` mode, mtime, size, uid and gid, without reading
@@ -83,9 +90,12 @@ squashing, which folds a parent stage into the child that builds on it
 
 Mount points below the root, read from `/proc/self/mountinfo` (excluding the
 root itself), plus `--ignore-path`, plus the state directory when it lies
-inside the root (`/ranikust/state` in a container). Matching is by exact
-path; the walk never descends into an ignored path. `/proc`, `/sys` and
-`/dev` are always ignored.
+inside the root, plus, as kaniko (`ADR-0038`), all of `/ranikust` (an image
+may keep the binary there, as kaniko keeps `/kaniko/executor`),
+`/etc/mtab`, `/tmp/apt-key-gpghome` and, while `--ignore-var-run` is true
+(the default), `/var/run`. Matching is by exact physical path; the walk
+never descends into an ignored path. `/proc`, `/sys` and `/dev` are always
+ignored.
 On a host the mount part is usually empty. Inside a container it covers
 `/proc`, `/dev`, `/sys` and their submounts, `/etc/hosts`, `/etc/hostname`,
 `/etc/resolv.conf` and volumes.
@@ -116,7 +126,11 @@ Before touching a workdir outside a container:
 2. Open the workdir with `openat2(RESOLVE_NO_SYMLINKS)` and take
    `flock(LOCK_EX | LOCK_NB)`: one build per kaniko-mode workdir.
 3. A non-empty workdir without a regular file `.ranikust-root` is refused; a
-   marker that is a symlink is refused; an empty workdir gets a marker.
+   marker that is a symlink is refused; an empty workdir gets a marker. A
+   workdir holding only mount points is not empty: it needs the marker.
+
+`ranikust` runs these checks during process set-up and holds the lock for
+the whole build; `rnk-rootfs` provides the primitives (`ADR-0038`).
 
 ## Exporter requirements specific to the walk
 
@@ -166,7 +180,8 @@ that `RUN` has no `/proc`.
 ### Fake `/proc`
 
 A static snapshot of the files that runtimes read to size themselves, enabled
-by default on this path. Fourteen files per cgroup version:
+by default on this path. Fourteen files per cgroup version; `memory.stat`
+is added only once a build fails without it (`ADR-0038`):
 
 | # | File | Notes |
 |---|---|---|
@@ -261,9 +276,14 @@ output.
 
 ## Lazy snapshots
 
-A stage used only through `COPY --from` or `FROM <stage>`, whose layers are
-not pushed, cached or exported, is not snapshotted at all: no baseline walk,
-no walk and hash, no tar.
+A stage whose layers are not needed is not snapshotted at all: no baseline
+walk, no walk and hash, no tar. The decision is taken once, from the stage
+graph and the outputs, before the build (`ADR-0038`): a stage's layers are
+needed when it is the target, or when a stage whose layers are needed
+builds `FROM` it (squashed or not). Any other stage, used only through
+`COPY --from`, is skipped. Nothing changes the decision during the build,
+so no deletion ever has to be detected after a skipped walk. With
+`--cache` (Phase 4) more stages may need their layers; the rule stays.
 
 ## Memory
 
@@ -282,11 +302,7 @@ them. The scheduler's memory limit counts page cache
 
 ## Open questions
 
-- [Q-034](../open-questions.md#q-034-when-must-a-lazily-skipped-stage-still-be-snapshotted) When must a lazily skipped stage still be snapshotted?
-- [Q-011](../open-questions.md#q-011-who-owns-the-workdir-checks-and-what-counts-as-empty) Who owns the workdir checks, and what counts as empty?
-- [Q-035](../open-questions.md#q-035-what-does-the-kaniko-mode-ignore-list-hold) What does the kaniko-mode ignore list hold?
 - [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
-- [Q-037](../open-questions.md#q-037-what-else-must-the-fake-proc-cover) What else must the fake proc cover?
 
 ## References
 

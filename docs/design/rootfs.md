@@ -266,7 +266,7 @@ directory an extracted entry replaces, and applies OCI whiteouts.
   root (the walk never follows a symlink, so a path through one never
   matches); `..` above the root and the root itself are refused. A kept
   entry keeps its ancestors, which are not empty. What goes on the list is
-  the caller's: [Q-035](../open-questions.md#q-035-what-does-the-kaniko-mode-ignore-list-hold).
+  the caller's ([kaniko-mode](kaniko-mode.md#ignore-list), `ADR-0038`).
 - The walk starts from an opened directory fd: the root, a path opened
   with `RESOLVE_NO_XDEV`, or the directory a caller just checked by
   `statx`, so the directory checked is the one emptied.
@@ -293,8 +293,6 @@ stream, `bytes_written`), `rnk_rootfs.copy` (`files`, `dirs`, `bytes`) and
 
 ## Open questions
 
-- [Q-011](../open-questions.md#q-011-who-owns-the-workdir-checks-and-what-counts-as-empty)
-  Who owns the workdir checks?
 - [Q-120](../open-questions.md#q-120-where-kaniko-and-buildkit-copy-differently-which-does-copy-follow)
   Where kaniko and BuildKit copy differently, which does `copy` follow?
 - [Q-121](../open-questions.md#q-121-which-overlay-forms-does-the-lower-layer-lookup-recognise)

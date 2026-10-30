@@ -26,7 +26,7 @@ log writer) before `unshare`, the probes and the kaniko-mode workdir lock.
 - Keep global state (paths as `rnk-store`'s `BuildPaths`, settings as
   values), probe a capability itself (each crate probes its own; the kernel
   check is `rnk_rootfs::probe_support`), or re-implement the workdir checks
-  or stub cleanup [open: Q-011].
+  or stub cleanup.
 
 ## API
 
@@ -62,7 +62,7 @@ enum Outcome { OverlayRoot { sandbox: rnk_sandbox::Caps, overlay: OverlayCaps } 
 struct Refusal { reason: String, guidance: &'static str }        // what failed, what to do
 struct Setup { outcome: Outcome, state_dir: PathBuf, store: Arc<rnk_store::Store>, sandbox: rnk_sandbox::Sandbox }  // the hand-off
 fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal>;  // namespace → state dir → store → probes → outcome → spawner
-fn prepare_state_dir(state_dir, workdir, euid) -> Result<(), Refusal>; // 0700; no symlink, owner euid, no g/o write up to the workdir [open: Q-011]
+fn prepare_state_dir(state_dir, workdir, euid) -> Result<(), Refusal>; // 0700; no symlink, owner euid, no g/o write up to the workdir
 fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal>; // rnk_snapshot::probe in builds/<id>/overlay-probe
 struct PushArgs { path: PathBuf, destination: Vec<String> } // [open: Q-048] kaniko pushes a docker-save tar or OCI layout
 ```
@@ -83,7 +83,7 @@ owned by the effective uid, or group/world-writable) → `rnk_store::Store::open
 `builds/<id>/overlay-probe` → outcome → `Sandbox::start` (stub-journal
 replay, spawner thread) → the store is closed → stop with exit code 2,
 "set up for …, but building is not implemented yet". Still to
-come [design]: workdir checks [open: Q-011] before the namespace →
+come [design]: workdir checks (`ADR-0038`, Phase 2 task 1) before the namespace →
 `rnk-store` open and clean-up before the spawner (task 7) (Q-111) →
 kaniko mode: `flock` the workdir → tokio runtime → `rnk-sched`.
 
@@ -147,7 +147,7 @@ error, a refused kaniko flag, an invalid combination, and for now every
   (`MS_MOVE`); refused inside a plain `chroot` (`tests/smoke/lib.bash`
   `smoke_check_setup`).
 - To do: refusal of a non-empty unmarked `--workdir` under a fresh temp dir
-  (with Q-011). T3: `just build-static`.
+  (Phase 2 task 1). T3: `just build-static`.
 - T2 only, in the VM: `--workdir` at `/`, `/home`, other system directories
   ([testing](../../testing.md#planned-test-suites)).
 
@@ -231,8 +231,8 @@ error, a refused kaniko flag, an invalid combination, and for now every
   kills the running `RUN`s (`Sandbox::cancel`, as BuildKit); a second
   signal exits at once. A release that fails leaves the stages below it to the
   next build's clean-up.
-- Left: the workdir checks [open: Q-011], the kaniko-mode lock
-  (Phase 2), the acceptance runs (task 13).
+- Left for Phase 2 ([phase-2.md](../phase-2.md)): the workdir checks and
+  the kaniko-mode workdir lock, owned here (`ADR-0038`, Q-011).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push` and

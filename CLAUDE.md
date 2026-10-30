@@ -5,12 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ranikust is a daemonless container image builder in Rust, a successor to
 kaniko: it reads a Dockerfile, runs it, and pushes an OCI image from one
 static musl binary that works inside a container or directly on a host.
-Pre-alpha: Phase 1 (MVP) is in progress on branch `phase-1`; most crates are
-still documented skeletons.
+Pre-alpha: Phase 1 (MVP, overlay mode as root) is done; Phase 2 (kaniko
+mode) is in progress, planned in `docs/agents/phase-2.md`.
 
 **For anything beyond this page, start at
 [`docs/agents/README.md`](docs/agents/README.md):** it routes each kind of task
-to the few short files worth reading (crate cards, rules, Phase 1 plan,
+to the few short files worth reading (crate cards, rules, Phase 2 plan,
 kaniko map, glossary, refs). Load long documents only when a card points to
 them.
 

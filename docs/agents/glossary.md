@@ -43,7 +43,7 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | OCI layout | Directory image format (`oci-layout`, `index.json`, `blobs/`) written by `--oci-layout-path`; also a cache target | [refs.md](refs.md#specs) |
 | opaque dir | Directory hiding all lower contents: overlay `user.overlay.opaque=y` ↔ OCI `.wh..wh..opq` | `design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer` |
 | overlay mode | Each instruction writes into a fresh upperdir, which is the diff; stages run in parallel; needs mount privileges | `ADR-0002`, `design/overlay-snapshot.md` |
-| `--parallel-stages` | Opt-in parallel stages in kaniko mode without mounts: a directory per stage, bare `chroot`, fake `/proc`; placeholder name | `ADR-0014` |
+| `--parallel-stages` | Opt-in parallel stages in kaniko mode without mounts: a directory per stage, bare `chroot`, fake `/proc` | `ADR-0014`, `ADR-0038` |
 | PDEATHSIG | `prctl(PR_SET_PDEATHSIG, SIGKILL)`: the child dies with its parent *thread*, hence the spawner thread | `design/sandbox.md` |
 | phases (metrics) | Report section: totals per span name (`count`, `total_ns`, `max_ns`, `wall_ns`, summed fields); kaniko's word for its timed stats | `design/metrics.md#the-report` |
 | `pivot_root` | Swaps the root mount for `RUN`; root escapes a bare `chroot` | `exp-02`, `exp-06a` |

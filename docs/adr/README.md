@@ -28,7 +28,8 @@ blocked Phase 1 ([phase-1](../agents/phase-1.md)); they were accepted on
 ADR-0026 to ADR-0029 record decisions made while implementing Phase 1;
 ADR-0030 and ADR-0031 answer open questions Q-012, Q-075 and Q-076.
 ADR-0032 settles the remaining questions about observable behaviour by
-following BuildKit.
+following BuildKit. ADR-0038 answers the questions that blocked Phase 2
+(kaniko mode).
 
 ## Status lifecycle
 
@@ -108,3 +109,5 @@ when new measurements contradict its evidence.
 | [0035](0035-git-contexts-built-in-or-external-git.md) | Git contexts use a built-in git by default, an external `git` on request, with its flags configurable | Accepted | 2026-10-30 | Q-045, kaniko and BuildKit source |
 | [0036](0036-kaniko-flags-in-phase-1.md) | Kaniko flags in Phase 1: accepted, ignored with a warning, or refused with the phase | Accepted | 2026-10-30 | Q-023, Q-020, Q-021, Q-031, kaniko source |
 | [0037](0037-metrics-report-path-from-the-flag-only.md) | The metrics report path comes only from `--metrics-file` | Accepted | 2026-10-30 | maintainer, partly supersedes ADR-0025 |
+| [0038](0038-kaniko-mode-settings-for-phase-2.md) | Kaniko-mode settings for Phase 2: workdir checks in `ranikust`, state directory, ignore list, lazy snapshots, fake `/proc`, `--parallel-stages` | Accepted | 2026-10-30 | Q-011, Q-019, Q-034, Q-035, Q-036, Q-037 |
+| [0039](0039-kaniko-mode-walk-and-hash-crates.md) | The kaniko-mode walk uses rayon over `getdents64` and hashes with xxh3-128 | Accepted | 2026-10-30 | Q-038, `tests/bench/walk-hash` |
