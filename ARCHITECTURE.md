@@ -211,8 +211,14 @@ keys only, and carry a format version.
 Builds one stage: one executor per instruction (`commands` module), cache
 checks, lazy layer export (a layer is encoded only if pushed, cached or part
 of the target), image config updates, then image assembly and output.
+The output side exists: `LayerExporter` encodes a snapshot's
+`LayerSource` into the build directory when its `LayerDemand` needs it,
+`assemble` writes the canonical config and manifest at one `BuildTime`,
+and `push`, `write_docker_tar` and `write_oci_layout` write the image.
 **Must not** keep global state (paths arrive as `rnk-store`'s
-`BuildPaths`), order stages, or parse flags.
+`BuildPaths`, the clock and `SOURCE_DATE_EPOCH` as values), order stages,
+parse flags, or write tar itself (`rnk-layer` writes layers and the Docker
+tarball).
 
 ### `rnk-metrics`
 

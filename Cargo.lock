@@ -1187,6 +1187,25 @@ dependencies = [
 [[package]]
 name = "rnk-builder"
 version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rnk-layer",
+ "rnk-metrics",
+ "rnk-oci",
+ "rnk-registry",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "rnk-cache"

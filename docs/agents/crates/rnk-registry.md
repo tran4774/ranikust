@@ -126,8 +126,17 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   the client uses `push_blob_stream` with `use_monolithic_push`.
 - A refused mount (`202` with an upload session) is a `SpecViolationError`
   and the session is dropped: upload yourself, as kaniko does (Q4;
-  `push.go:324-334`). The mount token covers only the target repository,
-  so registries that check pull access on the source refuse it.
+  `push.go:324-334`). `oci-client`'s tokens cover one repository, and a
+  token registry refuses a mount without pull access to the source: on a
+  token registry `mount_or_push` fetches one token for both scopes itself
+  (a `GET` to the realm with two `scope`s, or the identity-token exchange
+  with both) and sends the mount with it, as go-containerregistry's
+  `maybeUpdateScopes` does; open, basic and static-token registries keep
+  `oci-client`'s path.
+- The test fake answers `HEAD` and `GET` of a blob only in repositories
+  that hold it, checks the source scope of a mount under bearer
+  authentication, and stores a pushed manifest with its `Content-Type`:
+  without these, mounts and per-repository reads were never exercised.
 - `oci-client` panics in `push_manifest_raw` when a registry omits
   `Location` and the reference has a digest, and unwraps a header built from
   a token: `push_manifest` takes tags only, and identity-token responses
@@ -163,7 +172,8 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   manifest, index and blob pulls with platform selection; one-PUT blob and
   raw manifest pushes; `blob_exists`; mounts; retries; spans.
 - Deferred: mirrors, credential helpers (phase 5); cache-repo use by
-  `rnk-cache` (phase 4). [open: Q-014] Whether task 11 mounts.
+  `rnk-cache` (phase 4). [open: Q-014] Task 11 mounts (interim, on
+  `feat/rnk-builder-outputs`).
   [open: Q-065] HTTP fallback for local registries. [open: Q-048] `login`.
   Only a loopback registry was measured
   ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).

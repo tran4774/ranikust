@@ -31,8 +31,8 @@ the code.
 | [ ] | Upperdir → OCI layer exporter, `WriteUpperdir`-style: whiteouts first, raw modes, overlay xattrs stripped; entries fed to the `rnk-layer` writer, which sorts them and adds parent headers | `rnk-snapshot` → `rnk-layer` |
 | [ ] | Executors: `FROM` (also `<stage>`), `ARG` (also before `FROM`), `ENV`, `RUN` (shell, exec, heredoc), local `COPY`/`ADD` (`--chown`, `--chmod`, `--from`), `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `VOLUME`, `ENTRYPOINT`, `CMD`, `SHELL`, `STOPSIGNAL`, `HEALTHCHECK` | `rnk-builder` |
 | [x] | Local directory context; locating the ignore file (`<Dockerfile>.dockerignore` first); the context walk as BuildKit's filtered walk (`ADR-0027`) | `rnk-context` |
-| [~] | Lazy export, config updates, image assembly; canonical JSON with sorted keys | `rnk-builder`, `rnk-oci` |
-| [ ] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` | `rnk-builder`, `rnk-registry`, `rnk-layer` |
+| [~] | Lazy export, config updates, image assembly; canonical JSON with sorted keys (`LayerDemand`, `LayerExporter` over a `LayerSource`, `assemble`, done; the executors that fill the config and the snapshot exporter's `LayerSource` are left) | `rnk-builder`, `rnk-oci` |
+| [~] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` (done in `rnk-builder`, T0 against the fake registry and `skopeo inspect`; `ranikust` still has to call them; base layers under `--reproducible` [open: Q-160]) | `rnk-builder`, `rnk-registry`, `rnk-layer` |
 | [~] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix (done with fake runners, T0; left: the `rnk-builder` runner, the W3 digest test, the memory thresholds [open: Q-030]) | `rnk-sched` |
 | [~] | Common kaniko flags and the subcommands (`ADR-0011`): `build` and `version`, accepted flags parsed and validated, the others refused with a reason (done); final list [open: Q-023], `--cache` [open: Q-021], `--secret` [open: Q-022], `push`/`login` [open: Q-048] | `ranikust` |
 | [~] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests under qemu-user 10.0 (`ADR-0009`; `just test-aarch64` passes locally; CI job `test-aarch64` has not run yet); the release binary is static but not static-pie [open: Q-140] | CI |
@@ -64,7 +64,7 @@ Two mostly independent tracks (survey 04 §3): front end
 | 8 | `ranikust` set-up and flags (`ADR-0023`), the Linux 5.8 check (`ADR-0028`); `rnk-sandbox` sandbox and its probes; `ranikust` runs them and picks the outcome (done; left: store open with 7, overlay probe with 9) | 4 | |
 | 9 | `rnk-snapshot` overlay roots, overlay probes, extraction (hardlinks into lower layers copied, Q-055) and exporter; design the `Snapshotter` signature | 4, 5, 7 | |
 | 10 | `rnk-context` local directory (done); `COPY` sources are resolved in 11 (Q-080) | 3 | |
-| 11 | `rnk-builder`: executors, lazy export, assembly, outputs and push | 1, 2, 6, 8, 9, 10 | |
+| 11 | `rnk-builder`: executors, lazy export, assembly, outputs and push (lazy export, assembly and outputs done; executors left) | 1, 2, 6, 8, 9, 10 | |
 | 12 | `rnk-sched`: DAG, `--jobs`, cancellation (done behind the `StageRunner` trait, tested with fakes; the builder's runner comes with 11) | 2, 11 | |
 | 13 | CLI end to end, outputs, acceptance runs | all | |
 

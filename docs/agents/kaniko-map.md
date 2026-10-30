@@ -132,7 +132,10 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   follows: current time by default; under `--reproducible` tar headers and
   config get a fixed epoch, or `SOURCE_DATE_EPOCH` when set (kaniko never
   reads it: no match in `pkg/` or `cmd/`); same bytes for any thread count.
-  The media type under `--reproducible` is `[open: Q-006]`.
+  The media type under `--reproducible` is `[open: Q-006]`. kaniko also
+  rewrites the base image's layers and writes Go's zero time
+  (`0001-01-01T00:00:00Z`); ranikust keeps base layers `[open: Q-160]` and
+  writes the Unix epoch `[open: Q-161]`.
 - **Cache keys.** kaniko chains composite keys
   (`pkg/executor/build.go:322`, `pkg/executor/composite_cache.go:35`).
   ranikust has its own versioned, mode-independent key and neither reads nor
