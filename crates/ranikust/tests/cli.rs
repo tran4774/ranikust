@@ -127,6 +127,11 @@ fn kaniko_mode_needs_root_and_on_slash_a_container() {
 
 #[test]
 fn kaniko_mode_flags_are_checked_against_the_mode() {
+    if running_as_root() {
+        // `--mode=kaniko --force` as root would build on the host's `/`.
+        eprintln!("skipped: kaniko mode on / as root runs only in the VM");
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
     let out = ranikust(
         tmp.path(),

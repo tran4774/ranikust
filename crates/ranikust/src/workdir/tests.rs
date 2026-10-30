@@ -149,3 +149,81 @@ fn the_nofile_limit_ends_at_the_hard_limit() {
     let now = rustix::process::getrlimit(rustix::process::Resource::Nofile);
     assert_eq!(now.current, hard);
 }
+
+fn dir(path: &str, uid: u32, mode: u32) -> ChainDir {
+    ChainDir {
+        path: PathBuf::from(path),
+        uid,
+        mode,
+    }
+}
+
+/// `/home/u/w` under a `0700` home: the chain ADR-0047 accepts.
+fn home_chain() -> Vec<ChainDir> {
+    vec![
+        dir("/home/u/w", 0, 0o700),
+        dir("/home/u", 1000, 0o700),
+        dir("/home", 0, 0o755),
+        dir("/", 0, 0o755),
+    ]
+}
+
+fn chain_refusal(chain: &[ChainDir]) -> String {
+    check_chain(chain).unwrap_err().0
+}
+
+#[test]
+fn a_private_chain_passes_also_through_a_root_sticky_tmp() {
+    check_chain(&home_chain()).unwrap();
+    check_chain(&[
+        dir("/tmp/b/w", 0, 0o755),
+        dir("/tmp/b", 0, 0o700),
+        dir("/tmp", 0, 0o1777),
+        dir("/", 0, 0o755),
+    ])
+    .unwrap();
+}
+
+#[test]
+fn a_workdir_not_owned_by_root_or_writable_by_others_is_refused() {
+    let mut c = home_chain();
+    c[0].uid = 1000;
+    assert!(chain_refusal(&c).contains("not root"));
+    let mut c = home_chain();
+    c[0].mode = 0o770;
+    assert!(chain_refusal(&c).contains("writable by group or others"));
+}
+
+#[test]
+fn an_ancestor_writable_by_others_is_refused_unless_root_sticky() {
+    let mut c = home_chain();
+    c[2].mode = 0o777;
+    assert!(chain_refusal(&c).contains("/home is writable"));
+    let mut c = home_chain();
+    c[1].mode = 0o1777;
+    let why = chain_refusal(&c);
+    assert!(
+        why.contains("/home/u is writable"),
+        "sticky but not root's: {why}"
+    );
+}
+
+#[test]
+fn two_other_owners_in_the_chain_are_refused() {
+    let mut c = home_chain();
+    c[2].uid = 1001;
+    assert!(chain_refusal(&c).contains("uid 1001"));
+}
+
+#[test]
+fn a_chain_others_can_search_is_refused() {
+    let mut c = home_chain();
+    c[1].mode = 0o750;
+    assert!(
+        chain_refusal(&c).contains("0700"),
+        "group may search /home/u"
+    );
+    let mut c = home_chain();
+    c[1].mode = 0o701;
+    assert!(chain_refusal(&c).contains("0700"));
+}

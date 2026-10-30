@@ -44,7 +44,7 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
-    pub fn start_with_root(caps, dir, shared_root: &Path) -> Result<Self>; // also replays journals of that workdir, by identity; refuses the host's /, /etc, /dev
+    pub fn start_with_root(caps, dir, shared_root: &Path) -> Result<Self>; // also replays journals of that workdir, by identity; refuses the host's /, /etc, /dev; a later RUN whose reopened root differs (dev, ino, mnt_id) is refused
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled

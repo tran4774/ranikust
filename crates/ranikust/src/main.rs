@@ -14,10 +14,11 @@
 //! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`
 //! (the latter a seam until task 9), the outcome, the spawner thread →
 //! hand-off. `--mode=auto` picks kaniko mode where root may not mount
-//! (ADR-0040). In kaniko mode, the set-up so far is the workdir checks and
-//! lock of `workdir` (ADR-0038) for a `--workdir`, or the container check
-//! of `container` for the root `/`; kaniko-mode builds stop there with exit
-//! code 2 until the rest of Phase 2 lands.
+//! (ADR-0040). Kaniko mode: the workdir checks, lock and privacy of
+//! `workdir` (ADR-0038, ADR-0047) for a `--workdir`, or the container check
+//! of `container` for the root `/`; root required; the store, the sandbox,
+//! the ignore list; then the build on the shared root
+//! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`).
 //!
 //! The metrics report is written on every way out.
 //!
@@ -61,6 +62,7 @@ const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 const EXIT_USAGE: u8 = 2;
 
 /// How a run ends when it does not succeed.
+#[derive(Debug)]
 struct Failure {
     code: u8,
     message: String,
@@ -350,6 +352,10 @@ fn kaniko(config: &BuildConfig, how: &str, can_mount: bool) -> Result<(), Failur
             "--jobs is ignored in kaniko mode: stages run one at a time on the shared root"
         );
     }
+    // Other users must not reach what the image brings (ADR-0047).
+    if let Some(w) = claimed.as_ref() {
+        workdir::check_private(w).map_err(|refused| Failure::error(refused.to_string()))?;
+    }
     // The marker before anything else is written in the workdir, the
     // state directory included when it lies inside.
     if let Some(w) = claimed.as_mut() {
@@ -413,8 +419,9 @@ fn kaniko_snapshotter(
     };
     let state = std::fs::canonicalize(state_dir)
         .map_err(|e| fail(&format!("resolving {}", state_dir.display()), &e))?;
-    rnk_rootfs::RootPath::open(&state)
+    let state_root = rnk_rootfs::RootPath::open(&state)
         .map_err(|e| fail(&format!("opening {}", state.display()), &e))?;
+    same_mount_only_inside(&root, root_path, &state_root, &state)?;
     let mounts =
         rnk_snapshot::kaniko::read_mountinfo().map_err(|e| fail("reading mountinfo", &e))?;
     let spec = rnk_snapshot::kaniko::IgnoreSpec {
@@ -425,6 +432,7 @@ fn kaniko_snapshotter(
     };
     let ignore = rnk_snapshot::kaniko::ignore_list(&spec, &mounts)
         .map_err(|e| fail("building the ignore list", &e))?;
+    paths_outside_the_root(config, root_path, &ignore)?;
     let walk = rnk_snapshot::WalkOptions {
         workers: config.snapshot_workers,
         mode: match config.snapshot_mode {
@@ -439,6 +447,114 @@ fn kaniko_snapshotter(
         ignore,
         walk,
     ))
+}
+
+/// A state directory outside the root by path but on the root's
+/// filesystem through another mount (a bind mount of a directory inside the
+/// root, say) is refused: the ignore list knows it by path only, and
+/// emptying the root would delete the live store.
+fn same_mount_only_inside(
+    root: &rnk_rootfs::RootPath,
+    root_path: &Path,
+    state: &rnk_rootfs::RootPath,
+    state_path: &Path,
+) -> Result<(), Failure> {
+    if state_path.starts_with(root_path) {
+        return Ok(());
+    }
+    let (r, s) = match (root.statx("/"), state.statx("/")) {
+        (Ok(r), Ok(s)) => (r, s),
+        (Err(e), _) | (_, Err(e)) => {
+            return Err(Failure::error(format!("checking the state directory: {e}")));
+        }
+    };
+    let same_fs = (r.dev_major, r.dev_minor) == (s.dev_major, s.dev_minor);
+    if same_fs && root.mnt_id() != state.mnt_id() {
+        return Err(Failure::usage(format!(
+            "the state directory {} is on the root's filesystem through another mount (a bind \
+             mount?): emptying {} could delete it; pass a --state-dir on another filesystem \
+             or inside the root",
+            state_path.display(),
+            root_path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// The operator's paths that the build reads or writes while the root
+/// changes (the context, the outputs, file secrets) must not be in the
+/// root, where extracting a base or emptying it would replace or delete
+/// them, unless the ignore list keeps them (a volume, `/ranikust`,
+/// `--ignore-path`). Checked before the root changes. A path that does
+/// not exist yet is judged by its nearest existing ancestor.
+fn paths_outside_the_root(
+    config: &BuildConfig,
+    root: &Path,
+    ignore: &rnk_rootfs::IgnoreList,
+) -> Result<(), Failure> {
+    let mut paths: Vec<(&str, &Path)> = vec![("the build context", config.context.as_path())];
+    let outputs = [
+        ("--tar-path", &config.tar_path),
+        ("--oci-layout-path", &config.oci_layout_path),
+        ("--digest-file", &config.digest_file),
+        (
+            "--image-name-with-digest-file",
+            &config.image_name_digest_file,
+        ),
+        (
+            "--image-name-tag-with-digest-file",
+            &config.image_name_tag_digest_file,
+        ),
+    ];
+    for (flag, p) in &outputs {
+        if let Some(p) = p {
+            paths.push((flag, p.as_path()));
+        }
+    }
+    for (_, secret) in &config.secrets {
+        if let rnk_builder::Secret::File(p) = secret {
+            paths.push(("--secret", p.as_path()));
+        }
+    }
+    for (what, path) in paths {
+        let physical = physical_path(path);
+        let Ok(rel) = physical.strip_prefix(root) else {
+            continue;
+        };
+        let rel = Path::new("/").join(rel);
+        if !ignore.covers(&rel) {
+            return Err(Failure::usage(format!(
+                "{what} {} lies in kaniko mode's root {}, which the build replaces and \
+                 empties: put it on a volume or outside the root",
+                path.display(),
+                root.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `path` made absolute with its nearest existing ancestor resolved.
+fn physical_path(path: &Path) -> std::path::PathBuf {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    let mut rest = Vec::new();
+    let mut at = abs.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            let mut out = real;
+            for c in rest.iter().rev() {
+                out.push(c);
+            }
+            return out;
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                at = parent;
+            }
+            _ => return abs,
+        }
+    }
 }
 
 /// Why kaniko mode refuses the root `/` outside a container (ADR-0040).
@@ -456,4 +572,57 @@ fn deliberate_panic() -> ! {
     let unwound = std::panic::catch_unwind(panic_now);
     debug_assert!(unwound.is_err());
     std::process::abort()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_of(flags: &[&str]) -> BuildConfig {
+        let argv = std::iter::once("ranikust").chain(flags.iter().copied());
+        let Command::Build(args) = cli::parse(argv).unwrap().cli.into_command() else {
+            panic!("expected build");
+        };
+        BuildConfig::from_args(&args).unwrap()
+    }
+
+    #[test]
+    fn operator_paths_in_the_root_are_refused_unless_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = base.join("w");
+        std::fs::create_dir_all(root.join("vol")).unwrap();
+        let outside = base.join("out");
+        let mut ignore = rnk_rootfs::IgnoreList::new();
+        ignore.insert("/vol").unwrap();
+        let ctx = format!("--context={}", outside.display());
+        let check = |extra: &str| {
+            let config = config_of(&["--no-push", &ctx, extra]);
+            paths_outside_the_root(&config, &root, &ignore)
+        };
+        let tar = |p: &Path| format!("--tar-path={}", p.display());
+        check(&tar(&outside.join("i.tar"))).unwrap();
+        check(&tar(&root.join("vol/i.tar"))).unwrap();
+        let e = check(&tar(&root.join("not-yet/i.tar"))).unwrap_err();
+        assert!(e.message.contains("--tar-path"), "{}", e.message);
+        let secret = format!("--secret=id=s,src={}", root.join("s").display());
+        let e = check(&secret).unwrap_err();
+        assert!(e.message.contains("--secret"), "{}", e.message);
+        let in_root = format!("--context={}", root.display());
+        let config = config_of(&["--no-push", &in_root]);
+        let e = paths_outside_the_root(&config, &root, &ignore).unwrap_err();
+        assert!(e.message.contains("context"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_state_directory_beside_the_root_on_its_mount_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        for d in ["w", "s"] {
+            std::fs::create_dir(base.join(d)).unwrap();
+        }
+        let open = |d: &str| rnk_rootfs::RootPath::open(base.join(d)).unwrap();
+        same_mount_only_inside(&open("w"), &base.join("w"), &open("s"), &base.join("s")).unwrap();
+        // A bind mount of `w/x` at `s` is refused (T2: it needs a mount).
+    }
 }

@@ -3,9 +3,18 @@
 //!
 //! The root (`/` in a container, the claimed workdir on a host) is opened
 //! once by the caller and held by at most one [`KanikoRoot`] at a time.
-//! Base layers stay blobs in the store; a stage on an image empties the
-//! root and extracts them into it. Layers come from the walk, only for a
-//! stage whose layers are needed.
+//! Base layers stay blobs in the store; a stage on an image extracts them
+//! into the root, which is emptied first unless nothing has changed it yet
+//! and it is `/`. Layers come from the walk, only for a stage whose layers
+//! are needed.
+//!
+//! When the root is emptied follows kaniko on `/` (`kaniko@44aa7ddc0
+//! pkg/executor/build.go`): the first base is extracted over what is there
+//! (`:632-641`, no deletion without `--pre-cleanup`, `:1944-1947`), the root
+//! is emptied between stages (`:2179`), and the end of the build leaves it
+//! (only `--cleanup` empties it, `:1955-1957`). A host workdir, which the
+//! operator gave ranikust to empty, is emptied before the first base too,
+//! and at the end of a build that changed it ([`Kaniko::finish`]).
 
 use std::fs::File;
 use std::io::Write;
@@ -55,6 +64,9 @@ struct Hold {
     /// Created at the first walk, after the process set-up: it owns a
     /// thread pool.
     walker: Option<Walker>,
+    /// Whether a stage of this build changed the root (a base extracted
+    /// into it): only then is there anything of the build's to empty.
+    touched: bool,
 }
 
 #[derive(Debug)]
@@ -95,24 +107,39 @@ impl Kaniko {
                     holder: None,
                     walked: false,
                     walker: None,
+                    touched: false,
                 }),
                 next_id: AtomicU64::new(0),
             }),
         }
     }
 
-    /// Empties the root, keeping what the ignore list holds; the walker
-    /// forgets it. For the end of a build.
+    /// The end of the build: a host workdir that a stage changed is
+    /// emptied, keeping what the ignore list holds; `/` is left as it is,
+    /// as kaniko leaves it without `--cleanup`; a root no stage changed
+    /// (the build failed before its first base) is never touched. Returns
+    /// whether it emptied the root.
     ///
     /// # Errors
     ///
     /// [`Error::State`] while a stage holds the root; [`Error::Rootfs`].
-    pub fn empty(&self) -> Result<()> {
+    pub fn finish(&self) -> Result<bool> {
         let mut hold = self.shared.hold();
         if hold.holder.is_some() {
             return Err(Error::State("a stage holds the shared root"));
         }
-        empty_root(&self.shared, &mut hold)
+        if !hold.touched || self.shared.is_slash() {
+            return Ok(false);
+        }
+        empty_root(&self.shared, &mut hold)?;
+        hold.touched = false;
+        Ok(true)
+    }
+}
+
+impl Shared {
+    fn is_slash(&self) -> bool {
+        self.path == Path::new("/")
     }
 }
 
@@ -171,11 +198,19 @@ impl Snapshotter for Kaniko {
                 };
                 let span = tracing::info_span!("rnk_snapshot.prepare", layers = layers.len());
                 let _entered = span.enter();
-                empty_root(shared, &mut hold)?;
+                // On `/` the first base goes over what is there, as kaniko
+                // (see the module doc); later ones, and every base on a
+                // workdir, start from an empty root.
+                if hold.touched || !shared.is_slash() {
+                    empty_root(shared, &mut hold)?;
+                } else {
+                    hold.walked = false;
+                }
+                hold.touched = true;
                 // A workdir root starts as overlay mode's stage roots do:
                 // `0755` and the epoch, unless a layer sets `./`. On `/`
                 // the container's root stays as it is, as under kaniko.
-                if shared.path != Path::new("/") {
+                if !shared.is_slash() {
                     shared.root.set_meta("", &crate::layer::default_root())?;
                 }
                 for layer in layers {
@@ -304,14 +339,14 @@ impl StageRootfs for KanikoRoot {
         Ok(&self.shared.root)
     }
 
+    /// Gives the root up; the next stage on a base empties it, and the end
+    /// of the build ([`Kaniko::finish`]) empties a workdir. Nothing when the
+    /// root was handed over to a child stage built on this one.
     fn release(self) -> Result<()> {
         let mut hold = self.shared.hold();
-        // Handed over to a child stage built on it: nothing to do.
-        if hold.holder != Some(self.id) {
-            return Ok(());
+        if hold.holder == Some(self.id) {
+            hold.holder = None;
         }
-        empty_root(&self.shared, &mut hold)?;
-        hold.holder = None;
         Ok(())
     }
 }

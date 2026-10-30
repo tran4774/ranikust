@@ -267,6 +267,128 @@ fn dir_id(dir: &Path) -> Option<Id> {
     Some((rustix::fs::major(dev), rustix::fs::minor(dev), md.ino()))
 }
 
+/// The owner and mode of one directory of a workdir's chain.
+#[derive(Clone, Debug)]
+pub(crate) struct ChainDir {
+    pub(crate) path: PathBuf,
+    pub(crate) uid: u32,
+    /// The raw `st_mode` permission bits, sticky included.
+    pub(crate) mode: u32,
+}
+
+/// Whether a build as root may fill the workdir: an image can bring setuid
+/// and setgid files, which must stay out of other users' reach
+/// (ADR-0047). Run as root on the claimed workdir before anything is
+/// written; refuses unless [`check_chain`] passes. Warns when the
+/// workdir's filesystem honours setuid bits or device nodes.
+///
+/// # Errors
+///
+/// [`Refused`] naming the directory and the rule it breaks.
+pub(crate) fn check_private(w: &Workdir) -> Result<(), Refused> {
+    let st = w
+        .root
+        .statx("/")
+        .map_err(|e| Refused(format!("cannot stat the workdir {}: {e}", w.path.display())))?;
+    let mut chain = vec![ChainDir {
+        path: w.path.clone(),
+        uid: st.uid,
+        mode: st.mode & 0o7777,
+    }];
+    for dir in w.path.ancestors().skip(1) {
+        let md = std::fs::metadata(dir)
+            .map_err(|e| Refused(format!("cannot stat {}: {e}", dir.display())))?;
+        chain.push(ChainDir {
+            path: dir.to_owned(),
+            uid: md.uid(),
+            mode: md.mode() & 0o7777,
+        });
+    }
+    check_chain(&chain)?;
+    match rustix::fs::statvfs(&w.path) {
+        Ok(vfs) => {
+            use rustix::fs::StatVfsMountFlags as F;
+            if !vfs.f_flag.contains(F::NOSUID | F::NODEV) {
+                tracing::warn!(
+                    "the workdir {} is on a filesystem mounted without nosuid,nodev: setuid \
+                     files the image brings work there while the build runs",
+                    w.path.display()
+                );
+            }
+        }
+        Err(e) => tracing::warn!("cannot statvfs the workdir {}: {e}", w.path.display()),
+    }
+    Ok(())
+}
+
+/// ADR-0047's rule on `chain`, the workdir first, then each ancestor up
+/// to `/`:
+///
+/// 1. the workdir is owned by root and not writable by group or others;
+/// 2. no ancestor is writable by group or others, unless it is root's and
+///    sticky (`/tmp`);
+/// 3. every directory is owned by root or by one and the same other user
+///    (the operator, as for `/home/<user>/w`);
+/// 4. an ancestor lets neither group nor others search it (`chmod 700`),
+///    so no other user reaches the workdir: a `/home/<user>/w` qualifies
+///    once `/home/<user>` is `0700`.
+///
+/// # Errors
+///
+/// [`Refused`] naming the first rule broken.
+pub(crate) fn check_chain(chain: &[ChainDir]) -> Result<(), Refused> {
+    let refuse = |d: &ChainDir, why: &str| {
+        Refused(format!(
+            "the workdir's chain is not private: {} {why}; kaniko mode fills the workdir with \
+             the image's files, setuid ones included, so other users must not reach it \
+             (ADR-0047)",
+            d.path.display()
+        ))
+    };
+    let Some((workdir, ancestors)) = chain.split_first() else {
+        return Ok(());
+    };
+    if workdir.uid != 0 {
+        return Err(refuse(
+            workdir,
+            &format!("is owned by uid {}, not root", workdir.uid),
+        ));
+    }
+    if workdir.mode & 0o022 != 0 {
+        return Err(refuse(workdir, "is writable by group or others"));
+    }
+    let mut other_owner: Option<u32> = None;
+    for d in ancestors {
+        let sticky_root = d.uid == 0 && d.mode & 0o1000 != 0;
+        if d.mode & 0o022 != 0 && !sticky_root {
+            return Err(refuse(d, "is writable by group or others"));
+        }
+        if d.uid != 0 {
+            match other_owner {
+                None => other_owner = Some(d.uid),
+                Some(u) if u == d.uid => {}
+                Some(u) => {
+                    return Err(refuse(
+                        d,
+                        &format!(
+                            "is owned by uid {}, while another is owned by uid {u}",
+                            d.uid
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    if !ancestors.iter().any(|d| d.mode & 0o011 == 0) {
+        return Err(Refused(format!(
+            "the workdir's chain is not private: every directory above {} lets group or others \
+             search it; put the workdir in a directory of mode 0700 (ADR-0047)",
+            workdir.path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Raises `RLIMIT_NOFILE`'s soft limit to its hard limit: the kaniko-mode
 /// walk holds a directory fd per worker and depth (`ADR-0038`). Returns the
 /// new soft limit, `None` when unlimited.

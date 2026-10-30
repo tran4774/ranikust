@@ -130,10 +130,11 @@ pub fn read_mountinfo() -> Result<Vec<MountInfo>> {
 ///
 /// `root` and `state_dir` are compared with mount points and with the
 /// physical paths `rnk_rootfs::extract_live` reaches, byte for byte: they
-/// must be the kernel's own names for the directories actually used. The
-/// caller derives them from the open fds (`readlink` of `/proc/self/fd/N`
-/// of the workdir's and the state directory's fds), never from the flags as
-/// typed; a path that is not normalized is refused.
+/// must be the kernel's own names for the directories actually used: the
+/// caller passes canonical paths it has opened without following a
+/// symlink (`RESOLVE_NO_SYMLINKS`), as `ranikust` does with the claimed
+/// workdir and the state directory, never the flags as typed; a path that
+/// is not normalized is refused.
 #[derive(Clone, Copy, Debug)]
 pub struct IgnoreSpec<'a> {
     /// The build root on the host, physical: `/` in a container, the

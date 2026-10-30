@@ -152,7 +152,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   sandbox. It needs root. Not yet: a Dockerfile whose later stage reads an
   earlier one (`COPY --from`, a `FROM` after the root was emptied),
   `RUN --mount`, `#!` heredocs and `--network=none` without the sandbox,
-  and `--single-snapshot`.
+  and `--single-snapshot`. On `/`, the base goes over what is there and
+  the end of the build leaves `/` as it is, as kaniko without `--cleanup`;
+  a `--workdir` is emptied at the end. A `--workdir` must be out of other
+  users' reach (root's, inside a `0700` directory), and the context,
+  outputs and secret files must not lie in the root.
 - The sandbox can run a kaniko-mode `RUN` on a host work directory without
   mounting: it enters the directory with `chroot`, with ranikust's
   `/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname` and `/dev` nodes put in

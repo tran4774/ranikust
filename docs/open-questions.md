@@ -34,6 +34,24 @@ Entry format:
 
 <!-- Entries are added below this line. -->
 
+### Q-321: Is the container check enough to guard a kaniko-mode build on `/`?
+
+- **Blocks:** nothing yet; **Area:** `ranikust`
+- **Context:** kaniko mode without `--workdir` builds on `/`: it extracts
+  the base over it and empties it between stages. Outside a container only
+  `--force` lets it run (ADR-0040), and whether ranikust is in a container
+  is kaniko's heuristic (`container::detect`: marker files, cgroup names,
+  the `container` variable, an overlay `/`), which a host can match by
+  accident (an overlay root, a leftover `/.dockerenv`).
+- **Options:** (a) keep kaniko's heuristic and `--force`, as kaniko; (b)
+  also require an explicit flag naming `/` (for example `--workdir=/`) when
+  the heuristic is the only evidence; (c) a first-run confirmation, which
+  does not fit an unattended CI job.
+- **Recommendation:** (a) for kaniko parity, revisited if a host is ever
+  seen to match the heuristic; (b) is the cheap hardening if that happens.
+- **Interim:** (a), unchanged.
+- **Raised:** 2026-10-31
+
 ### Q-008: What does a repeated target flag mean?
 
 - **Blocks:** Phase 1 tasks 2, 8; **Area:** `rnk-dockerfile`, `ranikust`
@@ -583,6 +601,15 @@ Entry format:
   `StageRootfs::set_layers_needed` for lazy snapshots, so overlay and kaniko
   mode share one builder. Recorded in
   [ADR-0046](adr/0046-snapshotter-signature.md).
+
+### Q-320: What keeps a kaniko-mode host workdir out of other users' reach?
+
+- **Answer (2026-10-31):** option (a), chosen by the maintainer: the
+  workdir root's and not writable by others, its ancestors not writable by
+  others (but a root-owned sticky directory) and owned by root or one other
+  user, and one ancestor that others cannot search; a missing
+  `nosuid,nodev` is warned about. Recorded in
+  [ADR-0047](adr/0047-kaniko-workdir-chain-is-private.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

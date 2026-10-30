@@ -88,13 +88,20 @@ below); without, the root `/`, refused outside a container
 (`container::detect`) unless `--force`, with kaniko's warning; then its
 root is required, `RLIMIT_NOFILE` raised (`NofileLimit::current()` read
 before, for `RUN`), `--jobs` ignored with a warning, `--single-snapshot`
-refused, the workdir marked (`Workdir::mark`) before anything is written,
+refused, the workdir's chain checked private (`workdir::check_private`,
+ADR-0047: root's, a `0700` ancestor, no ancestor writable by others but a
+root sticky one, one non-root owner at most; a warning without
+`nosuid,nodev`), the workdir marked (`Workdir::mark`) before anything is
+written,
 the state directory (`/ranikust/state` on `/`, `<cwd>/.ranikust` with a
 workdir) set up by `setup::set_up_kaniko` (store; on a host workdir where
 the namespace could be entered, the sandbox probe and `RUN` in the full
 sandbox, else `Isolation::Direct`; `Sandbox::start_with_root` on a
 workdir), the ignore list built (`kaniko_snapshotter`: mountinfo, the
-flags, the state directory, physical paths), then `build::run` with
+flags, the state directory, physical paths; a state directory on the
+root's filesystem through another mount refused,
+`same_mount_only_inside`; the context, outputs and file secrets refused in
+the root unless ignored, `paths_outside_the_root`), then `build::run` with
 `Snapshots::Kaniko`: kaniko's squashed units one at a time on the shared
 root (`kaniko_units`, refusing a plan whose later unit reads an emptied
 one), the root emptied after each unit and at the end. Overlay mode: the state directory, `--state-dir` or

@@ -17,6 +17,12 @@ struct Fixture {
 impl Fixture {
     /// A root with `state/` ignored, as the state directory inside it.
     fn new() -> Self {
+        Self::at(None)
+    }
+
+    /// As [`Fixture::new`], the snapshotter told its root is `path` (only
+    /// `/` changes anything); the root itself is always a temp directory.
+    fn at(path: Option<&str>) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let host = fs::canonicalize(tmp.path()).unwrap().join("root");
         fs::create_dir_all(host.join("state")).unwrap();
@@ -28,7 +34,8 @@ impl Fixture {
             workers: NonZeroUsize::new(2).unwrap(),
             mode: SnapshotMode::Full,
         };
-        let kaniko = Kaniko::new(root, host.clone(), ignore, walk);
+        let shown = path.map_or_else(|| host.clone(), PathBuf::from);
+        let kaniko = Kaniko::new(root, shown, ignore, walk);
         Self { tmp, host, kaniko }
     }
 
@@ -118,6 +125,12 @@ fn an_image_stage_empties_the_root_extracts_and_walks_only_when_needed() {
     assert_eq!(names_in(diff), Vec::<String>::new());
 
     root.release().unwrap();
+    assert_eq!(
+        f.names(),
+        ["etc-release", "new", "state"],
+        "release keeps the root"
+    );
+    assert!(f.kaniko.finish().unwrap());
     assert_eq!(f.names(), ["state"]);
 }
 
@@ -154,6 +167,7 @@ fn a_squashed_child_goes_on_from_its_parent_and_baselines_when_needed() {
     let diff = child.end_layer().unwrap();
     assert_eq!(names_in(diff), ["from-child"]);
     child.release().unwrap();
+    assert!(f.kaniko.finish().unwrap());
     assert_eq!(f.names(), ["state"]);
 }
 
@@ -165,7 +179,7 @@ fn the_shared_root_has_one_holder() {
         f.kaniko.prepare(Base::Scratch),
         Err(Error::State(_))
     ));
-    assert!(matches!(f.kaniko.empty(), Err(Error::State(_))));
+    assert!(matches!(f.kaniko.finish(), Err(Error::State(_))));
     let other = f.kaniko.prepare(Base::Stage(&first)).unwrap();
     // The first stage no longer holds it.
     assert!(matches!(
@@ -195,4 +209,39 @@ fn a_wrong_diff_id_is_refused() {
     };
     let e = f.kaniko.prepare(Base::Image(&[bad])).unwrap_err();
     assert!(matches!(e, Error::DiffIdMismatch { .. }), "{e}");
+}
+
+#[test]
+fn a_build_that_never_prepared_a_base_leaves_the_root_alone() {
+    let f = Fixture::new();
+    fs::write(f.host.join("precious"), b"x").unwrap();
+    assert!(!f.kaniko.finish().unwrap());
+    assert!(f.host.join("precious").exists());
+}
+
+#[test]
+fn on_slash_the_first_base_goes_over_the_root_and_the_end_leaves_it() {
+    let f = Fixture::at(Some("/"));
+    fs::write(f.host.join("context"), b"x").unwrap();
+    let base = f.layer("l1", &[("a", b"a")]);
+    let root = f
+        .kaniko
+        .prepare(Base::Image(std::slice::from_ref(&base)))
+        .unwrap();
+    assert_eq!(
+        f.names(),
+        ["a", "context", "state"],
+        "extracted over, as kaniko"
+    );
+    root.release().unwrap();
+    // The next stage starts from an empty root, as after kaniko's
+    // DeleteFilesystem between stages.
+    let root = f.kaniko.prepare(Base::Image(&[base])).unwrap();
+    assert_eq!(f.names(), ["a", "state"]);
+    root.release().unwrap();
+    assert!(
+        !f.kaniko.finish().unwrap(),
+        "no --cleanup: / is left as it is"
+    );
+    assert_eq!(f.names(), ["a", "state"]);
 }

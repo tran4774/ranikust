@@ -129,10 +129,13 @@ pub(crate) fn run(
                 isolation,
                 true,
             );
-            // Whatever happened, the shared root is left empty, as every
-            // unit's release leaves it.
-            if let Err(e) = snapshotter.empty() {
-                tracing::warn!("emptying the root at the end of the build: {e}");
+            // A host workdir that a stage changed is emptied; `/` is left as
+            // kaniko leaves it; a build that failed before its first base
+            // touches nothing (`Kaniko::finish`).
+            match snapshotter.finish() {
+                Ok(true) => tracing::debug!("the workdir is emptied"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("emptying the workdir at the end of the build: {e}"),
             }
             r
         }
@@ -563,6 +566,16 @@ fn kaniko_units(graph: &StageGraph) -> Result<(Vec<Unit>, Vec<bool>), String> {
     let plan = rnk_dockerfile::squash_for_shared_root(graph);
     let name = |i: usize| graph.stages[i].display_name.clone();
     for unit in &plan {
+        for &s in &unit.chain {
+            if let Some(image) = graph.stages[s].images().first() {
+                return Err(format!(
+                    "kaniko mode cannot build this Dockerfile yet: stage {} reads the image \
+                     {image} (COPY --from or RUN --mount from=), which would be unpacked into \
+                     the shared root (Phase 2); use --mode=overlay as root",
+                    name(s)
+                ));
+            }
+        }
         if let Some(&(reader, _)) = unit.readers.first() {
             return Err(format!(
                 "kaniko mode cannot build this Dockerfile yet: stage {} reads stage {} \
@@ -1103,6 +1116,22 @@ fn run_stage<S: Snapshotter>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kaniko_units_refuse_what_the_shared_root_cannot_keep_yet() {
+        let units = |text: &str| {
+            let df = rnk_dockerfile::parse(text).unwrap();
+            let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+            kaniko_units(&graph)
+        };
+        let (u, needed) = units("FROM alpine AS a\nRUN true\nFROM a\nRUN true\n").unwrap();
+        assert_eq!(u.len(), 1, "a FROM chain is squashed into one unit");
+        assert_eq!(needed, [true, true]);
+        let e = units("FROM alpine\nCOPY --from=busybox /bin/sh /x\n").unwrap_err();
+        assert!(e.contains("reads the image busybox"), "{e}");
+        let e = units("FROM alpine AS a\nFROM alpine\nCOPY --from=a / /x\n").unwrap_err();
+        assert!(e.contains("reads stage a"), "{e}");
+    }
 
     #[test]
     fn the_target_inherits_layers_of_its_from_stages_only() {

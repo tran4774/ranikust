@@ -117,3 +117,4 @@ when new measurements contradict its evidence.
 | [0044](0044-kaniko-mode-walks-every-kept-stage.md) | Sequential kaniko mode walks every stage whose image is kept for a later `FROM` | Accepted | 2026-10-31 | Q-300 |
 | [0045](0045-kaniko-mode-layer-holds-what-changed.md) | A kaniko-mode layer holds what changed, not the targets of changed symlinks | Accepted | 2026-10-31 | kaniko `pkg/filesystem/resolve.go`, follows BuildKit |
 | [0046](0046-snapshotter-signature.md) | `Snapshotter` names its base-layer and diff types, so overlay and kaniko mode share one builder | Accepted | 2026-10-31 | Q-024 |
+| [0047](0047-kaniko-workdir-chain-is-private.md) | A kaniko-mode host workdir must be out of other users' reach | Accepted | 2026-10-31 | Q-320 |

@@ -21,7 +21,9 @@ CASES_OUT="$HOME/rnk/out/quick"
 W=/var/tmp/rnk-quick
 SECRET="$W/secret"
 
-sudo rm -rf "$W" && sudo mkdir -m 700 -p "$W/w"
+# $W itself 0700: kaniko mode's workdir must be out of other users' reach
+# (ADR-0047).
+sudo rm -rf "$W" && sudo mkdir -m 700 "$W" && sudo mkdir -m 700 "$W/w"
 printf %s "$SMOKE_CASE_SECRET" | sudo tee "$SECRET" >/dev/null
 mkdir -p "$CASES_OUT"
 

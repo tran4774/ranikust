@@ -30,21 +30,24 @@ printf %s "$SMOKE_CASE_SECRET" >"$SECRET"
 # state directory of its own.
 PODMAN_ARGS=(--privileged)
 MODE_ARGS=()
+WORKDIR_IN=/w
 if [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; then
   PODMAN_ARGS=()
   WORK="$CASES_OUT/.kaniko-work"
   STATE="$CASES_OUT/.kaniko-state"
   mkdir -p "$WORK" "$STATE" && chmod 700 "$WORK" "$STATE"
-  PODMAN_ARGS=(-v "$STATE:/s")
+  # The workdir sits in a 0700 directory, which ADR-0047 requires.
+  PODMAN_ARGS=(--tmpfs /k:mode=0700 -v "$STATE:/s")
   MODE_ARGS=(--mode=kaniko --state-dir /s)
+  WORKDIR_IN=/k/w
 fi
 
 rnk_run() {
   local ctx="$1" o="$2"
   shift 2
-  podman run --rm "${PODMAN_ARGS[@]}" -v "$RNK:/ranikust:ro" -v "$ctx:/ctx:ro" -v "$WORK:/w" \
-    -v "$o:/out" -v "$SECRET:/secret:ro" "$BASE" \
-    /ranikust --context /ctx --workdir /w "${MODE_ARGS[@]}" --no-push \
+  podman run --rm "${PODMAN_ARGS[@]}" -v "$RNK:/ranikust:ro" -v "$ctx:/ctx:ro" \
+    -v "$WORK:$WORKDIR_IN" -v "$o:/out" -v "$SECRET:/secret:ro" "$BASE" \
+    /ranikust --context /ctx --workdir "$WORKDIR_IN" "${MODE_ARGS[@]}" --no-push \
     --oci-layout-path /out/oci --tar-path /out/image.tar --secret id=tok,src=/secret "$@"
 }
 

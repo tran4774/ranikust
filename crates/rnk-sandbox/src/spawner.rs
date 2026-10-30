@@ -87,7 +87,10 @@ impl Sandbox {
         }
         let root = RootPath::open(shared_root)?.stay_on_mount();
         journal::refuse_host_system_dir(&root, shared_root)?;
-        Self::start_inner(caps, dir, Some(&root))
+        let id = root_id(&root)?;
+        let mut sandbox = Self::start_inner(caps, dir, Some(&root))?;
+        sandbox.runner.shared_root = Some((shared_root.to_owned(), id));
+        Ok(sandbox)
     }
 
     fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
@@ -576,6 +579,18 @@ pub(crate) struct Runner {
     userns_network: bool,
     /// The `RLIMIT_NOFILE` every `RUN` starts with; `None` inherits.
     nofile: Option<crate::NofileLimit>,
+    /// Kaniko mode's shared root given to [`Sandbox::start_with_root`] and
+    /// its identity then (device, inode, mount id): a `RUN` on that path
+    /// whose reopened root is another directory is refused.
+    shared_root: Option<(PathBuf, RootId)>,
+}
+
+/// What identifies a root directory: device, inode and mount id.
+type RootId = (u32, u32, u64, u64);
+
+fn root_id(root: &RootPath) -> Result<RootId> {
+    let st = root.statx("/")?;
+    Ok((st.dev_major, st.dev_minor, st.ino, st.mnt_id))
 }
 
 impl Runner {
@@ -595,6 +610,7 @@ impl Runner {
             net_mode: OnceLock::new(),
             userns_network: false,
             nofile: None,
+            shared_root: None,
         })
     }
 
@@ -695,6 +711,17 @@ impl Runner {
     fn prepare(&self, spec: &mut RunSpec, root_entry: RootEntry) -> Result<(Job, Option<Journal>)> {
         let direct = spec.isolation == Isolation::Direct;
         let root = RootPath::open(&spec.root_dir)?;
+        // The shared root is reopened by path for each `RUN`: it must still
+        // be the directory checked at the start, for `Full` and `Direct`.
+        if let Some((path, id)) = &self.shared_root
+            && *path == spec.root_dir
+            && root_id(&root)? != *id
+        {
+            return Err(Error::InvalidSpec(format!(
+                "the shared root {} is no longer the directory it was at the start",
+                path.display()
+            )));
+        }
         let user = rnk_rootfs::lookup_user(&root, spec.user_spec())?;
         let stdio = [
             std::mem::take(&mut spec.stdin),
@@ -1689,6 +1716,33 @@ mod tests {
             assert!(matches!(r, Err(Error::InvalidSpec(_))), "{host}: {r:?}");
         }
         assert!(Sandbox::start_with_root(None, dir.path(), Path::new("/etc")).is_err());
+        assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_shared_root_swapped_since_the_start_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let wd = parent.path().canonicalize().unwrap().join("w");
+        fs::create_dir(&wd).unwrap();
+        let id = root_id(&RootPath::open(&wd).unwrap()).unwrap();
+        fs::rename(&wd, parent.path().join("moved")).unwrap();
+        fs::create_dir(&wd).unwrap();
+        // `Direct` where nothing can mount, `Full` where the probe passed.
+        for (isolation, entry) in [
+            (Isolation::Direct, None),
+            (Isolation::Full, Some(RootEntry::PivotRoot)),
+        ] {
+            let mut runner = Runner::new(dir.path(), entry).unwrap();
+            runner.shared_root = Some((wd.clone(), id));
+            let mut spec = RunSpec::new(&wd, vec!["/missing".into()]);
+            spec.isolation = isolation;
+            let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
+            let Err(Error::InvalidSpec(why)) = r else {
+                panic!("{isolation:?}: {r:?}");
+            };
+            assert!(why.contains("no longer"), "{why}");
+        }
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
     }
 
