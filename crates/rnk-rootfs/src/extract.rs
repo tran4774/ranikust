@@ -87,10 +87,13 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// this layer: the target is looked up in `lowers` as the merged view
 /// would show it (a whiteout, an opaque directory or a non-directory on the
 /// way in a higher layer hides it) and copied as a regular file, owner,
-/// mode, times and all xattrs included, which splits the hardlink as
-/// overlay's copy-up does (Q-055, `ADR-0012`). Further hardlinks in this
-/// layer to the same target link to that copy. The lower layers are only
-/// read.
+/// mode, times and xattrs included, which splits the hardlink as overlay's
+/// copy-up does (Q-055, `ADR-0012`). Overlay's own xattrs on the lower
+/// inode (`trusted.overlay.*`, `user.overlay.*`) are left behind; the
+/// escaped content xattrs `user.overlay.overlay.*` are kept. Further
+/// hardlinks in this layer to the same lower inode, by any of its names,
+/// link to that copy, so the bytes written stay bounded by the lower
+/// layers' size. The lower layers are only read.
 ///
 /// # Errors
 ///
@@ -182,9 +185,10 @@ struct Extractor<'r> {
     wh: Whiteouts,
     /// [`extract_overlay`]: the layers below, the nearest first.
     lowers: &'r [&'r RootPath],
-    /// Hardlink targets copied from a lower layer, and where the copy is,
-    /// so that further links to the same target link to it.
-    copied: HashMap<PathBuf, PathBuf>,
+    /// Lower inodes copied for a hardlink, by index in `lowers`, device and
+    /// inode, and where the copy is, so that every further link to any of
+    /// their names links to it.
+    copied: HashMap<(usize, u32, u32, u64), PathBuf>,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
@@ -438,17 +442,6 @@ impl Extractor<'_> {
         if self.lowers.is_empty() {
             return Err(missing("is neither in this layer nor in the root"));
         }
-        if let Some(copy) = self.copied.get(target) {
-            let (cparent, cname) = path::entry(copy)?;
-            let cpfd = self
-                .root
-                .resolve_dir_in(&cparent, Mounts::Stay)
-                .map_err(|e| on_mount(e, raw))?;
-            rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
-                .map_err(|e| io_err("link", path, e))?;
-            self.stats.hardlinks += 1;
-            return Ok(());
-        }
         let (dirs, last) = components(target);
         let hidden_here = match walk_layer(self.root, &dirs, target)? {
             Walk::Absent => false,
@@ -458,7 +451,7 @@ impl Extractor<'_> {
         if hidden_here {
             return Err(missing("is hidden by this layer"));
         }
-        let Some(lpfd) = self.find_lower(&dirs, last, target)? else {
+        let Some((layer, lpfd)) = self.find_lower(&dirs, last, target)? else {
             return Err(missing("is in no layer below, or hidden there"));
         };
         let pin = root::open_name(
@@ -474,6 +467,21 @@ impl Extractor<'_> {
         if st.file_type() == FileType::Directory {
             return Err(missing("is a directory"));
         }
+        // One copy per lower inode, whichever of its names a link targets:
+        // keyed by path, a layer linking each of a lower file's many names
+        // would copy its content once per name.
+        let key = (layer, st.dev_major, st.dev_minor, st.ino);
+        if let Some(copy) = self.copied.get(&key) {
+            let (cparent, cname) = path::entry(copy)?;
+            let cpfd = self
+                .root
+                .resolve_dir_in(&cparent, Mounts::Stay)
+                .map_err(|e| on_mount(e, raw))?;
+            rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
+                .map_err(|e| io_err("link", path, e))?;
+            self.stats.hardlinks += 1;
+            return Ok(());
+        }
         let m = Meta {
             uid: Some(st.uid),
             gid: Some(st.gid),
@@ -484,17 +492,23 @@ impl Extractor<'_> {
         };
         let sparent = Some((lpfd.as_fd(), last));
         self.stats.bytes_written +=
-            copy::copy_node(pin.as_fd(), &st, sparent, Xattrs::All, pfd, name, m, path)?;
+            copy::copy_node(pin.as_fd(), &st, sparent, Xattrs::Layer, pfd, name, m, path)?;
         self.stats.hardlinks_copied += 1;
-        self.copied.insert(target.to_owned(), path.to_owned());
+        self.copied.insert(key, path.to_owned());
         Ok(())
     }
 
-    /// The directory holding `target` (`dirs` then `last`) in the nearest
-    /// lower layer that has it, as overlay's merged view finds it; `None`
-    /// when no layer has it or a higher one hides it.
-    fn find_lower(&self, dirs: &[&OsStr], last: &OsStr, target: &Path) -> Result<Option<OwnedFd>> {
-        for lower in self.lowers {
+    /// The index in `lowers` and the directory holding `target` (`dirs`
+    /// then `last`) of the nearest lower layer that has it, as overlay's
+    /// merged view finds it; `None` when no layer has it or a higher one
+    /// hides it.
+    fn find_lower(
+        &self,
+        dirs: &[&OsStr],
+        last: &OsStr,
+        target: &Path,
+    ) -> Result<Option<(usize, OwnedFd)>> {
+        for (i, lower) in self.lowers.iter().enumerate() {
             let (fd, opaque) = match walk_layer(lower, dirs, target)? {
                 Walk::Absent => continue,
                 Walk::Hidden => return Ok(None),
@@ -502,7 +516,7 @@ impl Extractor<'_> {
             };
             match meta::statx_at(fd.as_fd(), last, target) {
                 Ok(st) if is_whiteout(&st) => return Ok(None),
-                Ok(_) => return Ok(Some(fd)),
+                Ok(_) => return Ok(Some((i, fd))),
                 Err(e) if is_noent(&e) && !opaque => {}
                 Err(e) if is_noent(&e) => return Ok(None),
                 Err(e) => return Err(e),

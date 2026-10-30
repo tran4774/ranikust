@@ -276,8 +276,10 @@ pub(crate) fn reopen(pinned: BorrowedFd<'_>, flags: OFlags, path: &Path) -> Resu
 pub(crate) enum Xattrs {
     /// Only `security.capability`, as kaniko's `CopyCapabilities`.
     Capability,
-    /// All of them, as overlay's copy-up keeps them.
-    All,
+    /// What overlay's copy-up keeps of an inode in an extracted layer: all
+    /// but overlay's own (`trusted.overlay.*`, `user.overlay.*`); the
+    /// escaped content xattrs `user.overlay.overlay.*` are kept.
+    Layer,
 }
 
 /// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
@@ -331,7 +333,7 @@ pub(crate) fn read_xattrs(
     let mut buf = vec![0; XATTR_MAX];
     let names: Vec<OsString> = match which {
         Xattrs::Capability => vec![OsString::from(CAPABILITY)],
-        Xattrs::All => match list(&mut buf[..]) {
+        Xattrs::Layer => match list(&mut buf[..]) {
             Ok(n) => buf[..n]
                 .split(|&b| b == 0)
                 .filter(|s| !s.is_empty())
@@ -343,13 +345,39 @@ pub(crate) fn read_xattrs(
     };
     let mut out = Vec::new();
     for n in names {
+        if which == Xattrs::Layer && is_overlay_own(n.as_bytes()) {
+            continue;
+        }
         match get(n.as_os_str(), &mut buf[..]) {
             Ok(len) => out.push((n, buf[..len].to_vec())),
             Err(Errno::NODATA | Errno::NOTSUP) => {}
             Err(e) => return Err(io_err("getxattr", path, e)),
         }
     }
+    if let (false, Some((pfd, name))) = (follow, parent) {
+        // The symlink was read by name: check that the name still is the
+        // pinned symlink, not an entry swapped in meanwhile.
+        let pinned = statx_at(fd, OsStr::new(""), path)?;
+        let named = statx_at(pfd, name, path)?;
+        if (named.ino, named.dev_major, named.dev_minor)
+            != (pinned.ino, pinned.dev_major, pinned.dev_minor)
+        {
+            return Err(Error::Changed {
+                path: path.to_owned(),
+            });
+        }
+    }
     Ok(out)
+}
+
+/// An xattr overlayfs itself keeps on a layer's entries (`trusted.overlay.*`,
+/// `user.overlay.*`), as opposed to the escaped content xattrs
+/// `user.overlay.overlay.*` (`ADR-0016`).
+fn is_overlay_own(name: &[u8]) -> bool {
+    if name.starts_with(b"user.overlay.overlay.") {
+        return false;
+    }
+    name.starts_with(b"trusted.overlay.") || name.starts_with(b"user.overlay.")
 }
 
 /// Applies `m` to the entry behind `h`. `path` is only for error messages.

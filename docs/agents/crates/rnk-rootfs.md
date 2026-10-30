@@ -145,6 +145,17 @@ pub fn check_workdir(dir: &Path) -> Result<Workdir>;             // [open: Q-011
 - `copy` follows the source's own symlink and the destination
   directory's, inside their roots, but never one inside the copied tree;
   where kaniko and BuildKit differ it picks one ([open: Q-120]).
+- Source roots never contain live mounts: a rule for the builder. `copy`
+  does not cross a mount below the source it is given (`EXDEV` stops it),
+  so a `/proc` or `/sys` there is refused rather than read as files.
+- A destination inside the source (`COPY . /workspace/sub` on a live
+  root) recursed without end; `copy` refuses a source directory that is a
+  directory it wrote into, as `cp` does.
+- `copy` holds two fds per directory level, deletion one: the caller
+  raises `RLIMIT_NOFILE` for deep trees.
+- Copying a hardlink target from a lower layer once per name let a few
+  MB of tar write a lower file's size per name; copies are keyed by the
+  lower inode.
 
 ## Phase 1
 

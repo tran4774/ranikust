@@ -8,7 +8,7 @@
 //! ever opened for reading. The destination is written as extraction writes
 //! it: never following a last name, never crossing a mount.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
@@ -77,8 +77,10 @@ pub struct CopyOpts {
 /// [`Error::Io`] from the first failing operation (a missing source,
 /// `ENOTDIR` on the way to `to`, a device node or a foreign owner without
 /// privileges); [`Error::InvalidPath`] when `to` climbs above the root,
-/// names the root for a file, lies on or below a mount inside `dst`, or a
-/// file meets a directory.
+/// names the root for a file, lies on or below a mount inside `dst`, or
+/// inside the source directory (one root as both, as `cp` refuses), when a
+/// file meets a directory, or when the source tree holds a mount below
+/// `from` (source roots must not hold live mounts).
 pub fn copy(
     src: &RootPath,
     from: impl AsRef<Path>,
@@ -96,7 +98,7 @@ pub fn copy(
     let mut c = Copier {
         dst,
         o: *o,
-        dirs: BTreeMap::new(),
+        dst_dirs: HashSet::new(),
         links: HashMap::new(),
         stats: Stats::default(),
     };
@@ -114,23 +116,33 @@ struct Stats {
     bytes: u64,
 }
 
+/// An inode: device major and minor, inode number.
+type Inode = (u32, u32, u64);
+
 struct Copier<'r> {
     dst: &'r RootPath,
     o: CopyOpts,
-    /// Directory mode and times, set at the end, deepest first.
-    dirs: BTreeMap<PathBuf, Meta>,
-    /// The first copy of each source inode with several links, by device
-    /// and inode, so that later names link to it.
-    links: HashMap<(u32, u32, u64), PathBuf>,
+    /// Every destination directory this copy created or entered. A source
+    /// directory among them is the destination inside the source (`COPY .
+    /// /workspace/sub` on a live root), which would recurse without end.
+    dst_dirs: HashSet<Inode>,
+    /// The first copy of each source inode with several links, so that
+    /// later names link to it.
+    links: HashMap<Inode, PathBuf>,
     stats: Stats,
 }
 
-/// One source directory being copied.
+/// One source directory being copied. One frame per level holds two fds,
+/// so a deep tree needs a raised `RLIMIT_NOFILE`, as deletion does.
 struct Frame {
     /// The source directory, `O_RDONLY | O_DIRECTORY`.
     src: OwnedFd,
     /// The destination directory, `O_PATH | O_DIRECTORY`.
     dst: OwnedFd,
+    /// The destination's mode and times, set through `dst` when the frame
+    /// is done, so that its entries neither move the mtime nor hit a
+    /// read-only directory; `None` leaves an existing destination as it is.
+    pending: Option<Meta>,
     /// Their paths inside their roots, for messages and bookkeeping.
     from: PathBuf,
     to: PathBuf,
@@ -149,52 +161,76 @@ impl Copier<'_> {
         match st.file_type() {
             FileType::Directory => {
                 let sfd = meta::reopen(pinned.as_fd(), OFlags::RDONLY | OFlags::DIRECTORY, from)?;
-                let dfd = self.top_dir(&to, &st)?;
-                self.walk(sfd, dfd, from, &to)?;
+                let (dfd, pending) = self.top_dir(&to, &st)?;
+                self.check_not_inside(&st, from)?;
+                self.walk(sfd, dfd, pending, from, &to)
             }
-            FileType::Socket => {}
+            FileType::Socket => Ok(()),
             _ => {
                 let (parent, name) = path::entry(&to)?;
                 let pfd = self.parents(&parent)?;
-                self.node(pinned.as_fd(), &st, None, pfd.as_fd(), name, &to)?;
+                self.node(pinned.as_fd(), &st, None, pfd.as_fd(), name, &to)
             }
         }
-        self.finish()
     }
 
-    fn walk(&mut self, src: OwnedFd, dst: OwnedFd, from: &Path, to: &Path) -> Result<()> {
+    fn walk(
+        &mut self,
+        src: OwnedFd,
+        dst: OwnedFd,
+        pending: Option<Meta>,
+        from: &Path,
+        to: &Path,
+    ) -> Result<()> {
         let names = sorted_names(src.as_fd(), from)?;
         let mut stack = vec![Frame {
             src,
             dst,
+            pending,
             from: from.to_owned(),
             to: to.to_owned(),
             names,
         }];
         while let Some(top) = stack.last_mut() {
             let Some(name) = top.names.pop() else {
-                stack.pop();
+                // Its entries are done: the directory's own mode and times,
+                // through the fd it was written through, deepest first.
+                if let Some(frame) = stack.pop()
+                    && let Some(m) = &frame.pending
+                {
+                    let h = Handle::Path {
+                        fd: frame.dst.as_fd(),
+                        file_type: FileType::Directory,
+                        parent: None,
+                    };
+                    meta::apply(&h, m, &frame.to)?;
+                }
                 continue;
             };
             let from = top.from.join(&name);
             let to = top.to.join(&name);
+            // Below the source given, never into another mount: a live
+            // `/proc` or `/sys` there would be read as files.
             let pin = root::open_name(
                 top.src.as_fd(),
                 &name,
                 OFlags::PATH | OFlags::NOFOLLOW,
                 0,
-                false,
+                true,
                 &from,
-            )?;
+            )
+            .map_err(|e| on_mount(e, &from))?;
             let st = meta::statx_at(pin.as_fd(), OsStr::new(""), &from)?;
             match st.file_type() {
                 FileType::Directory => {
+                    self.check_not_inside(&st, &from)?;
                     let s = meta::reopen(pin.as_fd(), OFlags::RDONLY | OFlags::DIRECTORY, &from)?;
-                    let d = self.dir_entry(top.dst.as_fd(), &name, &to, &st)?;
+                    let (d, m) = self.dir_entry(top.dst.as_fd(), &name, &to, &st)?;
                     let names = sorted_names(s.as_fd(), &from)?;
                     stack.push(Frame {
                         src: s,
                         dst: d,
+                        pending: Some(m),
                         from,
                         to,
                         names,
@@ -212,23 +248,27 @@ impl Copier<'_> {
         Ok(())
     }
 
-    /// The destination directory of a directory's contents: created, or
-    /// existing and left as it is.
-    fn top_dir(&mut self, to: &Path, st: &Stat) -> Result<OwnedFd> {
+    /// The destination directory of a directory's contents, and its
+    /// pending metadata: created (mode `0755`, the source's times), or
+    /// existing and left as it is (`None`).
+    fn top_dir(&mut self, to: &Path, st: &Stat) -> Result<(OwnedFd, Option<Meta>)> {
         if to.as_os_str().is_empty() {
-            return self.dst.resolve_dir_in(Path::new(""), Mounts::Stay);
+            let fd = self.dst.resolve_dir_in(Path::new(""), Mounts::Stay)?;
+            return self.entered(fd, None, to);
         }
         let (parent, name) = path::entry(to)?;
         let pfd = self.parents(&parent)?;
         match self.existing(pfd.as_fd(), name, to)? {
             Some(e) if e.file_type() == FileType::Directory => {
-                return open_dir(pfd.as_fd(), name, to);
+                let fd = open_dir(pfd.as_fd(), name, to)?;
+                return self.entered(fd, None, to);
             }
             Some(e) if e.file_type() == FileType::Symlink => {
-                return self
+                let fd = self
                     .dst
                     .resolve_dir_in(to, Mounts::Stay)
-                    .map_err(|e| on_mount(e, to));
+                    .map_err(|e| on_mount(e, to))?;
+                return self.entered(fd, None, to);
             }
             Some(_) => unlink(pfd.as_fd(), name, to)?,
             None => {}
@@ -238,28 +278,25 @@ impl Copier<'_> {
         let fd = open_dir(pfd.as_fd(), name, to)?;
         let (uid, gid) = self.owner_of(st);
         self.set_owner(fd.as_fd(), pfd.as_fd(), name, uid, gid, to)?;
-        self.dirs.insert(
-            to.to_owned(),
-            Meta {
-                mode: Some(CREATED_DIR_MODE),
-                atime: Some(st.mtime),
-                mtime: Some(st.mtime),
-                ..Meta::default()
-            },
-        );
         self.stats.dirs += 1;
-        Ok(fd)
+        let pending = Meta {
+            mode: Some(CREATED_DIR_MODE),
+            atime: Some(st.mtime),
+            mtime: Some(st.mtime),
+            ..Meta::default()
+        };
+        self.entered(fd, Some(pending), to)
     }
 
-    /// A directory inside the copied tree: created, or merged into an
-    /// existing one; either way it gets the source's metadata.
+    /// A directory inside the copied tree, created or merged into an
+    /// existing one, and the source's mode and times for it.
     fn dir_entry(
         &mut self,
         pfd: BorrowedFd<'_>,
         name: &OsStr,
         to: &Path,
         st: &Stat,
-    ) -> Result<OwnedFd> {
+    ) -> Result<(OwnedFd, Meta)> {
         match self.existing(pfd, name, to)? {
             Some(e) if e.file_type() == FileType::Directory => {}
             Some(_) => {
@@ -271,17 +308,42 @@ impl Copier<'_> {
         let fd = open_dir(pfd, name, to)?;
         let (uid, gid) = self.owner_of(st);
         self.set_owner(fd.as_fd(), pfd, name, uid, gid, to)?;
-        self.dirs.insert(
-            to.to_owned(),
-            Meta {
-                mode: Some(self.mode_of(st)),
-                atime: Some(st.mtime),
-                mtime: Some(st.mtime),
-                ..Meta::default()
-            },
-        );
         self.stats.dirs += 1;
-        Ok(fd)
+        let pending = Meta {
+            mode: Some(self.mode_of(st)),
+            atime: Some(st.mtime),
+            mtime: Some(st.mtime),
+            ..Meta::default()
+        };
+        let (fd, _) = self.entered(fd, None, to)?;
+        Ok((fd, pending))
+    }
+
+    /// Records the destination directory `fd` as written by this copy.
+    fn entered(
+        &mut self,
+        fd: OwnedFd,
+        pending: Option<Meta>,
+        to: &Path,
+    ) -> Result<(OwnedFd, Option<Meta>)> {
+        let st = meta::statx_at(fd.as_fd(), OsStr::new(""), to)?;
+        self.dst_dirs.insert((st.dev_major, st.dev_minor, st.ino));
+        Ok((fd, pending))
+    }
+
+    /// Refuses the source directory `st` when this copy writes into it: the
+    /// destination lies inside the source, as `cp` refuses.
+    fn check_not_inside(&self, st: &Stat, from: &Path) -> Result<()> {
+        if self
+            .dst_dirs
+            .contains(&(st.dev_major, st.dev_minor, st.ino))
+        {
+            return Err(Error::InvalidPath {
+                path: from.to_owned(),
+                reason: "the destination lies inside the source directory",
+            });
+        }
+        Ok(())
     }
 
     /// Copies the non-directory `pin` (`st`) to `name` in `pfd`, or links
@@ -427,14 +489,6 @@ impl Copier<'_> {
         self.o
             .chmod
             .map_or(st.permissions(), |m| m & meta::PERMISSION_BITS)
-    }
-
-    /// Directory modes and times, deepest first.
-    fn finish(&mut self) -> Result<()> {
-        for (p, m) in self.dirs.iter().rev() {
-            self.dst.set_dir_meta(p, m)?;
-        }
-        Ok(())
     }
 }
 

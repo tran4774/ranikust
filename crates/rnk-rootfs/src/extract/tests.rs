@@ -734,6 +734,38 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
 }
 
 #[test]
+fn every_name_of_a_lower_inode_shares_one_copy() {
+    // A lower file with many names, and a layer linking each name: one
+    // copy, not one per name.
+    let lower = Fixture::new();
+    fs::write(lower.host("big"), b"content").unwrap();
+    for n in ["n1", "n2", "n3"] {
+        fs::hard_link(lower.host("big"), lower.host(n)).unwrap();
+    }
+    rustix::fs::setxattr(
+        lower.host("big"),
+        "user.overlay.origin",
+        b"overlay's own",
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("a", "big")
+        .hardlink("b", "n1")
+        .hardlink("c", "n2")
+        .hardlink("d", "n3");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    let a = fs::metadata(f.host("a")).unwrap();
+    assert_eq!(a.nlink(), 4);
+    for n in ["b", "c", "d"] {
+        assert_eq!(fs::metadata(f.host(n)).unwrap().ino(), a.ino(), "{n}");
+    }
+    // Overlay's own xattrs stay in the lower layer.
+    assert_eq!(xattr(&f.host("a"), "user.overlay.origin"), None);
+}
+
+#[test]
 fn the_nearest_lower_layer_shows_the_target() {
     let top = Fixture::new();
     let bottom = Fixture::new();

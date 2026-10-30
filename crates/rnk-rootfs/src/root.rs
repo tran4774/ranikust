@@ -509,12 +509,14 @@ impl RootPath {
     }
 
     /// [`RootPath::set_meta`] only if `p` is a directory, checked on the
-    /// pinned entry itself; `Ok(false)` when it is something else.
+    /// pinned entry itself; `Ok(false)` when it is something else. For the
+    /// extraction, which never writes across a mount: the parent is resolved
+    /// on the root's own mount ([`Mounts::Stay`]).
     pub(crate) fn set_dir_meta(&self, p: &Path, m: &Meta) -> Result<bool> {
         match path::target(p)? {
             Target::Root => self.set_meta(p, m).map(|()| true),
             Target::Entry { parent, name } => {
-                let pfd = self.resolve_dir(&parent)?;
+                let pfd = self.resolve_dir_in(&parent, Mounts::Stay)?;
                 set_meta_at(pfd.as_fd(), name, m, Some(FileType::Directory), p)
             }
         }

@@ -521,6 +521,29 @@ Entry format:
   nothing calls `copy` yet.
 - **Raised:** 2026-10-30
 
+### Q-121: Which overlay forms does the lower-layer lookup recognise?
+
+- **Blocks:** Phase 1 task 9; **Area:** `rnk-rootfs`, `rnk-snapshot`
+- **Context:** `extract_overlay` finds a hardlink target in the lower
+  layers as overlay's merged view would
+  ([rootfs](design/rootfs.md#extraction)). It recognises the form
+  ranikust's own extraction writes for a `userxattr` mount (`ADR-0016`):
+  whiteouts as the device 0/0, opaque directories as
+  `user.overlay.opaque=y`. Overlay also knows `trusted.overlay.opaque`
+  (mounts without `userxattr`), the value `x` (Linux 6.7: a directory
+  holding "xwhiteouts", regular files marked `overlay.whiteout`, which is
+  not opaque) and redirects. A `layers/<id>` written by anything else, or
+  a later switch to `trusted.*`, would be misread.
+- **Options:** (a) only ranikust's own form, `layers/` being written by
+  ranikust alone; (b) also `trusted.overlay.opaque=y`; (c) the full set,
+  xwhiteouts and redirects included.
+- **Recommendation:** (a) while `rnk-store` holds the only writers.
+- **Interim:** (a), on branch `feat/rnk-rootfs-copy`; overlay's own
+  xattrs (`trusted.overlay.*`, `user.overlay.*` but the escaped
+  `user.overlay.overlay.*`) are never copied up. Reversible: one function,
+  `walk_layer` in `crates/rnk-rootfs/src/extract.rs`.
+- **Raised:** 2026-10-30
+
 ### Q-080: Who resolves COPY sources against the context, and how?
 
 - **Blocks:** Phase 1 task 11; **Area:** `rnk-builder`, `rnk-context`

@@ -377,3 +377,27 @@ fn foreign_owners_fail_cleanly_unprivileged() {
     let e = copy(&s.root, "a/f", &d.root, "f", &o).unwrap_err();
     assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
 }
+
+#[test]
+fn a_destination_inside_the_source_is_refused() {
+    // One root as both source and destination, as kaniko mode on a live
+    // root copies (`COPY . /workspace/sub`): without the check this recurses
+    // until the fds or the disk run out.
+    for (from, to) in [
+        ("", "sub"),
+        ("a", "a/b/c"),
+        ("a", "a"),
+        ("a", "a/new/deeper"),
+    ] {
+        let s = source();
+        let e = copy(&s.root, from, &s.root, to, &CopyOpts::default()).unwrap_err();
+        assert!(
+            matches!(e, Error::InvalidPath { reason, .. } if reason.contains("inside")),
+            "{from} -> {to}: {e}"
+        );
+    }
+    // Next to the source, not inside it: fine.
+    let s = source();
+    copy(&s.root, "a/ro", &s.root, "a/ro2", &CopyOpts::default()).unwrap();
+    assert!(s.host("a/ro2/inside").is_file());
+}

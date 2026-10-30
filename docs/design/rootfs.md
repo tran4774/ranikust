@@ -124,9 +124,14 @@ never called. A hand-written reader would repeat that parsing for no gain.
   a missing directory below an opaque one hides everything below; an
   opaque directory hides what its layer lacks. The copy is a regular file
   (or symlink, FIFO, device node) with the lower inode's owner, mode, times
-  and every xattr as stored, which splits the hardlink as overlay's copy-up
-  does (`ADR-0012`); later links in the layer to the same target link to
-  that copy. A target in no layer, hidden, or a directory is an
+  and xattrs as stored, overlay's own (`trusted.overlay.*`,
+  `user.overlay.*` but the escaped `user.overlay.overlay.*`) left behind,
+  which splits the hardlink as overlay's copy-up does (`ADR-0012`). Copies
+  are keyed by lower layer and inode: later links to any name of the same
+  lower inode link to that copy, so the bytes written stay bounded by the
+  lower layers' size, however many names a layer links. Only the
+  `user.overlay.opaque=y` form ranikust writes is recognised
+  ([open: Q-121]). A target in no layer, hidden, or a directory is an
   `Error::Entry`; so is any missing target for plain `extract`. Lower
   layers are only read.
 - **`Whiteouts::Overlay`** (`layers/<id>`, mounted with `userxattr`,
@@ -161,7 +166,10 @@ is `extract`.
   directory has its contents copied; anything else is copied to exactly
   `to`.
 - **Reading.** The source tree is walked by `(directory fd, name)`: each
-  entry is pinned with `O_PATH | O_NOFOLLOW` and `statx`ed through that fd.
+  entry is pinned with `O_PATH | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, so the
+  walk never enters another mount below `from` (source roots must not hold
+  live mounts: a `/proc` there would be read as files), and `statx`ed
+  through that fd.
   Only a pinned regular file or directory is reopened, through ranikust's
   own `/proc/self/fd`, for reading; a FIFO or device node is recreated with
   `mknodat`, never opened; a symlink is copied with `readlinkat` on the
@@ -187,8 +195,16 @@ is `extract`.
   owned by `opts.owner` (`to`: else the source directory's owner, with its
   times), as kaniko's `MkdirAllWithPermissions` and
   `createParentDirectory` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1287`,
-  `:1562`); an existing `to` keeps its metadata. Directory modes and times
-  are set last, deepest first.
+  `:1562`); an existing `to` keeps its metadata. A directory's mode and
+  times are set through the fd it was written through when its entries
+  are done, deepest first; nothing is re-resolved by path, and memory and
+  fds stay bounded by the depth (two fds per level: the caller raises
+  `RLIMIT_NOFILE` for deep trees, as for deletion).
+- **Into itself.** The device and inode of every destination directory
+  the copy writes into are recorded; a source directory among them (the
+  destination inside the source, one root as both, as kaniko mode on a
+  live root has) is refused before it is listed, as `cp` does, instead
+  of recursing until the fds or the disk run out.
 - **Owners by source.** The builder passes `0:0` for context sources
   without `--chown` (Docker's documented rule; kaniko only behind its
   `FF_KANIKO_COPY_AS_ROOT`, `kaniko@44aa7ddc0 pkg/commands/copy.go:84`),
@@ -269,6 +285,8 @@ stream, `bytes_written`), `rnk_rootfs.copy` (`files`, `dirs`, `bytes`) and
   Who owns the workdir checks?
 - [Q-120](../open-questions.md#q-120-where-kaniko-and-buildkit-copy-differently-which-does-copy-follow)
   Where kaniko and BuildKit copy differently, which does `copy` follow?
+- [Q-121](../open-questions.md#q-121-which-overlay-forms-does-the-lower-layer-lookup-recognise)
+  Which overlay forms does the lower-layer lookup recognise?
   What is the minimum kernel, and who checks it?
   How does overlay-form extraction handle a hardlink into a lower layer?
   How are tar extension headers bounded?
