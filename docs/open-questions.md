@@ -340,7 +340,12 @@ Entry format:
   ([kaniko-mode](design/kaniko-mode.md#walk-hash-and-diff)).
 - **Options:** hash: (a) `highway` or (b) `xxhash-rust`; walk: (c) `jwalk`
   or (d) `rayon` + `getdents64`.
-- **Recommendation:** none
+- **Recommendation:** (b) and (d), from the benchmark: the fd walk is the
+  fastest measured and the only one that meets the walk's invariants
+  (`jwalk` 0.9.0 reads by full path and is unmaintained); xxh3 is 2.5
+  times as fast as HighwayHash on one thread. Proposed in
+  [ADR-0039](adr/0039-kaniko-mode-walk-and-hash-crates.md), waiting for the
+  maintainer.
 - **Interim:** the maintainer asked for a benchmark first (2026-10-30):
   Phase 2 task 0 ([phase-2](agents/phase-2.md#task-order)) measures each
   candidate on a node rootfs, and the picks go into an ADR.
