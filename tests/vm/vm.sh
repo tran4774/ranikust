@@ -273,8 +273,10 @@ shown=0 lost=0
 while :; do
   # The whole log each time (small), printed from where the last poll
   # stopped; then the exit status once the suites have finished.
-  if vssh 'cat rnk/suite.log 2>/dev/null' >"$RUN/suite.log" &&
-     rc="$(vssh 'cat rnk/suite.rc 2>/dev/null')"; then
+  # Each command succeeds in the guest whether or not the files exist yet,
+  # so a failure here is SSH itself.
+  if vssh 'cat rnk/suite.log 2>/dev/null; true' >"$RUN/suite.log" &&
+     rc="$(vssh 'cat rnk/suite.rc 2>/dev/null; true')"; then
     lost=0
     size=$(stat -c %s "$RUN/suite.log")
     [ "$size" -le "$shown" ] || { tail -c +$((shown + 1)) "$RUN/suite.log"; shown=$size; }
