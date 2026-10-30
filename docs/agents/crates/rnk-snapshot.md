@@ -58,7 +58,7 @@ pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
 pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused beyond, no merging yet
 // kaniko mode (Phase 2), module `kaniko`:
 pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf], pub ignore_var_run: bool }
-pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>; // mounts below the root, kaniko's defaults, /proc /sys /dev /ranikust, the state dir
+pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>; // mounts below the root, kaniko's defaults, /proc /sys /dev /ranikust, the state dir, a host workdir's marker; root and state_dir physical and normalized
 pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // octal escapes, optional fields; a malformed line is an error
 ```
 

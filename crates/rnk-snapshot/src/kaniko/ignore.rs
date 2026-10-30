@@ -127,12 +127,19 @@ pub fn read_mountinfo() -> Result<Vec<MountInfo>> {
 }
 
 /// What the kaniko-mode ignore list is built from, besides the mounts.
+///
+/// `root` and `state_dir` are compared with mount points and with the
+/// physical paths `rnk_rootfs::extract_live` reaches, byte for byte: they
+/// must be the kernel's own names for the directories actually used. The
+/// caller derives them from the open fds (`readlink` of `/proc/self/fd/N`
+/// of the workdir's and the state directory's fds), never from the flags as
+/// typed; a path that is not normalized is refused.
 #[derive(Clone, Copy, Debug)]
 pub struct IgnoreSpec<'a> {
-    /// The build root on the host, canonical: `/` in a container, the
+    /// The build root on the host, physical: `/` in a container, the
     /// workdir on a host. Mount points below it are ignored.
     pub root: &'a Path,
-    /// The state directory on the host, canonical; ignored when it lies
+    /// The state directory on the host, physical; ignored when it lies
     /// inside the root.
     pub state_dir: Option<&'a Path>,
     /// `--ignore-path`, paths in the image, each a glob per component.
@@ -147,20 +154,31 @@ const FIXED: [&str; 5] = ["/proc", "/sys", "/dev", "/ranikust", "/etc/mtab"];
 /// kaniko's `PrefixMatchOnly` entry: only what is below it.
 const BELOW_ONLY: &str = "/tmp/apt-key-gpghome";
 
+/// The workdir marker (`ranikust`'s workdir checks), ignored in a root that
+/// is not `/`: the walk never reports it and deletion never removes it.
+const WORKDIR_MARKER: &str = "/.ranikust-root";
+
 /// Builds the kaniko-mode ignore list for `spec` and the mounts of
 /// `mounts` (from [`read_mountinfo`]): physical paths inside the root.
 ///
 /// # Errors
 ///
-/// [`Error::Ignore`] when the root is not absolute, or the state directory
-/// is the root itself; [`Error::Rootfs`] for an `--ignore-path` that leaves
-/// the root, names it, or is a malformed glob.
+/// [`Error::Ignore`] when the root or the state directory is not an
+/// absolute, normalized path (no `.`, `..` or empty component), or the
+/// state directory is the root or an ancestor of it; [`Error::Rootfs`] for
+/// an `--ignore-path` that leaves the root, names it, or is a malformed
+/// glob.
 pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<IgnoreList> {
-    if !spec.root.is_absolute() {
-        return Err(Error::Ignore(format!(
-            "the root {} is not an absolute path",
-            spec.root.display()
-        )));
+    normalized("root", spec.root)?;
+    if let Some(state) = spec.state_dir {
+        normalized("state directory", state)?;
+        if spec.root.starts_with(state) {
+            return Err(Error::Ignore(format!(
+                "the state directory {} is the root {} or an ancestor of it",
+                state.display(),
+                spec.root.display()
+            )));
+        }
     }
     let mut list = IgnoreList::new();
     for m in mounts {
@@ -172,24 +190,38 @@ pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<Ignore
         list.insert(p)?;
     }
     list.insert_below(BELOW_ONLY)?;
+    if spec.root != Path::new("/") {
+        list.insert(WORKDIR_MARKER)?;
+    }
     if spec.ignore_var_run {
         list.insert("/var/run")?;
     }
     for p in spec.ignore_paths {
         list.insert_glob(p)?;
     }
-    if let Some(state) = spec.state_dir {
-        if state == spec.root {
-            return Err(Error::Ignore(format!(
-                "the state directory {} is the root itself",
-                state.display()
-            )));
-        }
-        if let Some(inside) = strictly_inside(spec.root, state) {
-            list.insert(inside)?;
-        }
+    if let Some(inside) = spec.state_dir.and_then(|s| strictly_inside(spec.root, s)) {
+        list.insert(inside)?;
     }
     Ok(list)
+}
+
+/// Refuses `p` unless it is absolute and normalized: `/`, or `/` followed
+/// by names that are not empty, `.` or `..`, without a trailing `/`.
+fn normalized(what: &str, p: &Path) -> Result<()> {
+    let bytes = p.as_os_str().as_bytes();
+    let ok = bytes == b"/"
+        || bytes.strip_prefix(b"/").is_some_and(|rest| {
+            rest.split(|b| *b == b'/')
+                .all(|c| !c.is_empty() && c != b"." && c != b"..")
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Ignore(format!(
+            "the {what} {} is not an absolute, normalized path",
+            p.display()
+        )))
+    }
 }
 
 /// `p` relative to `root` when it lies strictly below it, compared by

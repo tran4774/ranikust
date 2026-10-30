@@ -1045,3 +1045,53 @@ fn live_extraction_skips_real_mounts() {
     assert!(Path::new(&dir).join("bind").is_dir());
     assert!(Path::new(&dir).join("tmpfs").is_dir());
 }
+
+/// A thread swaps the parent directory of every entry with a symlink to the
+/// ignored state directory while a live extraction runs: whatever fails,
+/// nothing may land in the state directory, nor its directories' metadata
+/// change.
+#[test]
+fn a_racing_swap_never_leads_a_live_extraction_into_an_ignored_path() {
+    for _ in 0..20 {
+        let f = Fixture::new();
+        fs::create_dir_all(f.host("ranikust/state")).unwrap();
+        fs::create_dir(f.host("d")).unwrap();
+        symlink("/ranikust/state", f.host("swap")).unwrap();
+        let mut t = Tar::new(&f);
+        t.dir("d/", 0o700);
+        for i in 0..200 {
+            t.file(&format!("d/f{i}"), 0o644, b"x")
+                .dir(&format!("d/s{i}/"), 0o700);
+        }
+        let bytes = t.bytes();
+        let state_mode = mode_of(&f.host("ranikust/state"));
+        let host_dir = fs::File::open(&f.host).unwrap();
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let r = rustix::fs::renameat_with(
+                        &host_dir,
+                        "d",
+                        &host_dir,
+                        "swap",
+                        rustix::fs::RenameFlags::EXCHANGE,
+                    );
+                    if r.is_err() {
+                        break;
+                    }
+                }
+            });
+            // Failing is fine; writing into the state directory is not.
+            let _ = extract_live(&f.root, bytes.as_slice(), &live_keep());
+            stop.store(true, Ordering::Relaxed);
+        });
+        let left: Vec<_> = fs::read_dir(f.host("ranikust/state")).unwrap().collect();
+        assert!(
+            left.is_empty(),
+            "{} entries in the state directory",
+            left.len()
+        );
+        assert_eq!(mode_of(&f.host("ranikust/state")), state_mode);
+    }
+}

@@ -118,7 +118,19 @@ symlink. Ignored entries and entries on another mount are skipped; a
 whiteout of an ignored path, or of a directory holding one, is skipped as
 kaniko skips it (`:248-266`); an entry replacing a directory holding an
 ignored path removes the rest and is skipped (`FF_KANIKO_PRESERVE_MOUNTED_PATHS`,
-`:343-370`); an opaque whiteout keeps ignored paths and mounts.
+`:343-370`); an opaque whiteout keeps ignored paths and mounts. The
+physical path is read from `/proc/self/fd` of the directory fd that the
+entry is then written through: missing directories are created one name
+at a time relative to it, without following a symlink or leaving the
+mount, so a concurrent swap of a name for a symlink into an ignored path
+cannot redirect a write; directory metadata set at the end re-checks the
+parent's physical path. Device nodes from the image are still created,
+where kaniko skips them [open: Q-270].
+
+The root and state directory handed to the list must be the kernel's
+names for the directories in use (`readlink` of their fds), absolute and
+normalized; a state directory that is the root or an ancestor of it is
+refused. A host workdir's `.ranikust-root` marker is on the list.
 On a host the mount part is usually empty. Inside a container it covers
 `/proc`, `/dev`, `/sys` and their submounts, `/etc/hosts`, `/etc/hostname`,
 `/etc/resolv.conf` and volumes.

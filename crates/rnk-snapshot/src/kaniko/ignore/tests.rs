@@ -84,6 +84,7 @@ fn in_a_container_mounts_and_kanikos_defaults_are_ignored() {
         "/tmp/apt-key-gpghome",
         "/var/cache",
         "/usr",
+        "/.ranikust-root",
     ] {
         assert!(!list.covers(p), "{p}");
     }
@@ -124,6 +125,8 @@ fn on_a_host_only_mounts_below_the_workdir_count() {
     // is not an entry.
     assert!(!list.covers("/x"));
     assert!(!list.covers("/etc"));
+    // The workdir marker of a host root, never walked or deleted.
+    assert!(list.covers("/.ranikust-root"));
 
     let outside = ignore_list(&spec("/home/u/w", Some("/home/u/.ranikust"), &[]), &mounts).unwrap();
     assert!(!outside.covers("/.ranikust"));
@@ -132,14 +135,21 @@ fn on_a_host_only_mounts_below_the_workdir_count() {
 #[test]
 fn bad_inputs_are_refused() {
     let none: [MountInfo; 0] = [];
-    assert!(matches!(
-        ignore_list(&spec("w", None, &[]), &none),
-        Err(Error::Ignore(_))
-    ));
-    assert!(matches!(
-        ignore_list(&spec("/w", Some("/w"), &[]), &none),
-        Err(Error::Ignore(_))
-    ));
+    // Not physical: compared byte for byte, a `.` or `..` would fail open.
+    for root in ["w", "", "/w/", "//w", "/w/./x", "/w/../x", "/w/."] {
+        let r = ignore_list(&spec(root, None, &[]), &none);
+        assert!(matches!(r, Err(Error::Ignore(_))), "{root:?}: {r:?}");
+    }
+    for state in [
+        "/w",
+        "/",
+        "/w/x/../.ranikust",
+        "/w//.ranikust",
+        "w/.ranikust",
+    ] {
+        let r = ignore_list(&spec("/w", Some(state), &[]), &none);
+        assert!(matches!(r, Err(Error::Ignore(_))), "{state:?}: {r:?}");
+    }
     for bad in ["/../etc", "/", "/x/[a"] {
         let paths = [PathBuf::from(bad)];
         let r = ignore_list(&spec("/", None, &paths), &none);
