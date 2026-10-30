@@ -7,10 +7,10 @@
 //! nothing here reads an image root.
 
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::fs::{self, File};
+use std::io::{BufWriter, Read as _, Write};
 use std::num::NonZeroUsize;
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
@@ -20,6 +20,8 @@ use rnk_oci::{
     to_canonical_json,
 };
 use rnk_registry::{BlobBody, Client, PushOutcome};
+use sha2::Digest as _;
+use tempfile::NamedTempFile;
 use tracing::{Instrument as _, debug_span};
 
 use crate::error::{Error, Result};
@@ -41,6 +43,8 @@ pub struct Outputs {
     pub docker_tar: Option<PathBuf>,
     /// An OCI image layout to write (`--oci-layout-path`).
     pub oci_layout: Option<PathBuf>,
+    /// The destinations as typed, for the tar's `RepoTags`.
+    tar_tags: Vec<String>,
 }
 
 impl Outputs {
@@ -58,43 +62,51 @@ impl Outputs {
         docker_tar: Option<PathBuf>,
         oci_layout: Option<PathBuf>,
     ) -> Result<Self> {
-        let destinations = destinations
-            .iter()
-            .map(|d| {
-                let reference = Reference::parse(d).map_err(|_| Error::Destination {
+        let mut references = Vec::with_capacity(destinations.len());
+        let mut tar_tags = Vec::with_capacity(destinations.len());
+        for d in destinations {
+            let reference = Reference::parse(d).map_err(|_| Error::Destination {
+                destination: d.clone(),
+                reason: "not an image reference",
+            })?;
+            if reference.digest().is_some() {
+                return Err(Error::Destination {
                     destination: d.clone(),
-                    reason: "not an image reference",
-                })?;
-                if reference.digest().is_some() {
-                    return Err(Error::Destination {
-                        destination: d.clone(),
-                        reason: "a destination is pushed by tag and cannot name a digest",
-                    });
-                }
-                Ok(reference.with_default_tag())
-            })
-            .collect::<Result<Vec<_>>>()?;
-        if push && destinations.is_empty() {
+                    reason: "a destination is pushed by tag and cannot name a digest",
+                });
+            }
+            // go-containerregistry's `tag.String()` is the reference as
+            // typed; `tarball.Write` adds `:latest` when no tag was given
+            // (`kaniko@44aa7ddc0 vendor/github.com/google/go-containerregistry/pkg/v1/tarball/write.go:347-350`).
+            tar_tags.push(match reference.tag() {
+                Some(_) => d.clone(),
+                None => format!("{d}:{}", Reference::DEFAULT_TAG),
+            });
+            references.push(reference.with_default_tag());
+        }
+        if push && references.is_empty() {
             return Err(Error::Destination {
                 destination: String::new(),
                 reason: "pushing needs at least one --destination, or --no-push",
             });
         }
+        if tar_tags.is_empty() {
+            tar_tags.push(UNSET_DESTINATION.to_owned());
+        }
         Ok(Self {
-            destinations,
+            destinations: references,
             push,
             docker_tar,
             oci_layout,
+            tar_tags,
         })
     }
 
-    /// The tags a Docker tar loads as: the destinations, or kaniko's
-    /// placeholder when there are none.
-    pub fn tar_tags(&self) -> Vec<String> {
-        if self.destinations.is_empty() {
-            return vec![UNSET_DESTINATION.to_owned()];
-        }
-        self.destinations.iter().map(ToString::to_string).collect()
+    /// The tags a Docker tar loads as: the destinations as typed, `:latest`
+    /// added when they name no tag, or kaniko's placeholder when there are
+    /// none.
+    pub fn tar_tags(&self) -> &[String] {
+        &self.tar_tags
     }
 }
 
@@ -184,12 +196,14 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
     let mut layer_paths = Vec::with_capacity(image.layers.len());
     let mut seen = BTreeSet::new();
     for layer in &image.layers {
-        let compression = layer.blob.media_type.layer_compression().ok_or_else(|| {
-            Error::Inconsistent(format!(
-                "{} is not a layer media type",
-                layer.blob.media_type
-            ))
-        })?;
+        let compression =
+            layer
+                .blob
+                .media_type
+                .layer_compression()
+                .ok_or_else(|| Error::UnknownLayerType {
+                    media_type: layer.blob.media_type.clone(),
+                })?;
         let name = DockerTarImage::layer_path(&layer.blob.digest, compression);
         if seen.insert(name.clone()) {
             add(
@@ -226,12 +240,17 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
 ///
 /// A base layer is first mounted from the repository it came from, and
 /// every blob from the first destination for later ones on the same
-/// registry; a refused mount falls back to an upload (Q-014: mounts are in
-/// Phase 1, interim). Blobs the registry has are not sent again.
+/// registry; a refused mount falls back to an upload. Blobs the registry
+/// has are not sent again. [open: Q-014] Interim: mounts are part of
+/// Phase 1.
 ///
 /// # Errors
 ///
-/// [`Error::Registry`] for the first failed request after its retries.
+/// [`Error::Push`] for the first destination that fails, wrapping the
+/// failed request after its retries. The first failed blob cancels the
+/// other transfers to that destination, and its manifest is not pushed.
+/// The destinations before it stay pushed and are listed in the error; the
+/// ones after it are not tried.
 pub async fn push(
     image: &Image,
     destinations: &[Reference],
@@ -246,7 +265,7 @@ pub async fn push(
             layers = image.layers.len(),
             bytes_out = tracing::field::Empty
         );
-        let bytes_out = push_one(
+        let result = push_one(
             image,
             destination,
             first.filter(|f| *f != destination),
@@ -254,9 +273,20 @@ pub async fn push(
             jobs,
         )
         .instrument(span.clone())
-        .await?;
-        span.record("bytes_out", bytes_out);
-        pushed.push((destination.clone(), image.digest().clone()));
+        .await;
+        match result {
+            Ok(bytes_out) => {
+                span.record("bytes_out", bytes_out);
+                pushed.push((destination.clone(), image.digest().clone()));
+            }
+            Err(source) => {
+                return Err(Error::Push {
+                    destination: Box::new(destination.clone()),
+                    pushed,
+                    source: Box::new(source),
+                });
+            }
+        }
     }
     Ok(pushed)
 }
@@ -278,6 +308,8 @@ async fn push_one(
             blobs.push((&layer.blob, BlobBody::File(layer.path.clone()), from));
         }
     }
+    // `try_collect` stops at the first error and drops the transfers still
+    // running, which cancels them.
     let uploaded: Vec<u64> = stream::iter(blobs)
         .map(|(blob, body, from)| async move {
             let outcome = match from {
@@ -315,15 +347,12 @@ enum BlobFrom<'a> {
     File(&'a Path),
 }
 
-/// Puts a blob into a layout's `blobs/` unless a file of the same size is
-/// there; returns the bytes written.
+/// Puts a blob into a layout's `blobs/` unless a regular file with exactly
+/// its bytes is there (hashed, not trusted by size); returns the bytes
+/// written.
 fn put_blob(dir: &Path, digest: &Digest, from: BlobFrom<'_>) -> Result<u64> {
     let path = dir.join(OciLayout::blob_path(digest));
-    let size = match &from {
-        BlobFrom::Bytes(b) => u64::try_from(b.len()).unwrap_or(u64::MAX),
-        BlobFrom::File(f) => fs::metadata(f).map_err(Error::io("stat", *f))?.len(),
-    };
-    if fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && m.len() == size) {
+    if holds(&path, digest)? {
         return Ok(0);
     }
     if let Some(parent) = path.parent() {
@@ -333,12 +362,32 @@ fn put_blob(dir: &Path, digest: &Digest, from: BlobFrom<'_>) -> Result<u64> {
         BlobFrom::Bytes(bytes) => out
             .write_all(bytes)
             .map_err(Error::io("write", &path))
-            .map(|()| size),
+            .map(|()| u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
         BlobFrom::File(src) => {
             let mut file = File::open(src).map_err(Error::io("open", src))?;
             std::io::copy(&mut file, out).map_err(Error::io("copy", src))
         }
     })
+}
+
+/// Whether `path` is a regular file (not a symlink) whose sha256 is
+/// `digest`.
+fn holds(path: &Path, digest: &Digest) -> Result<bool> {
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+        return Ok(false);
+    }
+    let mut file = File::open(path).map_err(Error::io("open", path))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0; 128 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(Error::io("read", path))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let hash: [u8; 32] = hasher.finalize().into();
+    Ok(Digest::from_sha256_bytes(&hash) == *digest)
 }
 
 /// Writes a small file of a layout, replacing what is there.
@@ -352,36 +401,40 @@ fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> Result<u64> {
 
 /// Writes `path` through a temporary sibling renamed into place, so a
 /// failed or interrupted write never leaves a partial output under the
-/// name; on error the temporary file is removed.
+/// name.
+///
+/// The temporary file has a random name and is created exclusively
+/// (`O_CREAT | O_EXCL`), so nothing planted beside the output is followed or
+/// overwritten. On every error it is removed when dropped; only a killed
+/// process leaves one behind.
 fn write_atomically<T>(
     path: &Path,
-    write: impl FnOnce(&mut BufWriter<File>) -> Result<T>,
+    write: impl FnOnce(&mut BufWriter<NamedTempFile>) -> Result<T>,
 ) -> Result<T> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        Some(_) | None => Path::new("."),
+    };
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.ranikust-tmp"));
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o644)
-        .open(&tmp)
-        .map_err(Error::io("create", &tmp))?;
-    let mut out = BufWriter::new(file);
-    let result = write(&mut out).and_then(|value| {
-        let file = out
-            .into_inner()
-            .map_err(|e| Error::io("write", &tmp)(e.into_error()))?;
-        file.sync_all().map_err(Error::io("sync", &tmp))?;
-        fs::rename(&tmp, path).map_err(Error::io("rename", &tmp))?;
-        Ok(value)
-    });
-    if result.is_err() {
-        // The write error is what matters; a leftover temporary file is
-        // only clutter next to the output.
-        let _ = fs::remove_file(&tmp);
-    }
-    result
+    let tmp = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .suffix(".ranikust-tmp")
+        .permissions(fs::Permissions::from_mode(0o644))
+        .tempfile_in(parent)
+        .map_err(Error::io("create a temporary file in", parent))?;
+    let tmp_path = tmp.path().to_owned();
+    let mut out = BufWriter::new(tmp);
+    let value = write(&mut out)?;
+    let tmp = out
+        .into_inner()
+        .map_err(|e| Error::io("write", &tmp_path)(e.into_error()))?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(Error::io("sync", &tmp_path))?;
+    tmp.persist(path)
+        .map_err(|e| Error::io("rename", &tmp_path)(e.error))?;
+    Ok(value)
 }

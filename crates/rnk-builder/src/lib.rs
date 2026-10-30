@@ -13,9 +13,9 @@
 //!
 //! # Boundaries
 //!
-//! - No global state: paths arrive as a `BuildPaths` value from `rnk-store`
-//!   (encoded layers go to its build directory), the clock and
-//!   `SOURCE_DATE_EPOCH` as values.
+//! - No global state: every path is a value from the caller (encoded layers
+//!   go to the build directory `rnk-store` gives; the stage executor will
+//!   take `BuildPaths`), and so are the clock and `SOURCE_DATE_EPOCH`.
 //! - Does not order stages (`rnk-sched`) or parse flags (`ranikust`).
 //! - Does not write tar itself: layers and the Docker tarball go through
 //!   `rnk-layer`'s writer.

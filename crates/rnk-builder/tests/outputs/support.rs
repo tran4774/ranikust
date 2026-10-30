@@ -69,7 +69,8 @@ pub(crate) fn layer(seed: u8, files: usize) -> EntriesLayer<Files> {
     EntriesLayer::new(entries, Files(contents))
 }
 
-pub(crate) fn options(compression: Compression, threads: usize, time: &BuildTime) -> EncodeOptions {
+/// Encoding options; the exporter sets `mtime` from the build's time.
+pub(crate) fn options(compression: Compression, threads: usize) -> EncodeOptions {
     EncodeOptions {
         compression,
         level: match compression {
@@ -77,7 +78,7 @@ pub(crate) fn options(compression: Compression, threads: usize, time: &BuildTime
             Compression::Gzip | Compression::None => 1,
         },
         threads: NonZeroUsize::new(threads).unwrap(),
-        mtime: time.layer_mtime(),
+        mtime: None,
     }
 }
 
@@ -135,7 +136,7 @@ pub(crate) fn image(
     time: &BuildTime,
     compression: Compression,
 ) -> rnk_builder::Image {
-    let exporter = LayerExporter::new(dir, options(compression, 4, time));
+    let exporter = LayerExporter::new(dir, options(compression, 4), time);
     let built = exporter.export(Box::new(layer(1, 20))).unwrap();
     let mut config = base.config.clone();
     config.push_layer(built.diff_id.clone(), layer_history("RUN make", time));
@@ -153,6 +154,27 @@ pub(crate) fn time() -> BuildTime {
 
 /// A client for the plain-HTTP fake registry, with fast retries.
 pub(crate) fn client(registry: &FakeRegistry) -> Client {
+    client_with(registry, Credentials::none())
+}
+
+/// A client with basic credentials for `registry`, from a `config.json`.
+pub(crate) fn client_with_basic(registry: &FakeRegistry, user: &str, password: &str) -> Client {
+    use base64::Engine as _;
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"auths":{{"{}":{{"auth":"{auth}"}}}}}}"#,
+            registry.host()
+        ),
+    )
+    .unwrap();
+    client_with(registry, Credentials::load(&path).unwrap())
+}
+
+fn client_with(registry: &FakeRegistry, credentials: Credentials) -> Client {
     let mut options = ClientOptions::default();
     options.insecure = BTreeSet::from([registry.host()]);
     options.retry = RetryPolicy {
@@ -160,7 +182,7 @@ pub(crate) fn client(registry: &FakeRegistry) -> Client {
         initial_delay: Duration::from_millis(1),
         factor: 2,
     };
-    Client::new(options, TrustStore::load(), Credentials::none()).unwrap()
+    Client::new(options, TrustStore::load(), credentials).unwrap()
 }
 
 pub(crate) fn reference(registry: &FakeRegistry, rest: &str) -> Reference {

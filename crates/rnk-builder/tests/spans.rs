@@ -24,7 +24,7 @@ use crate::support::{base, client, image, layer, options, reference};
 fn layers_count_skipped_exports() {
     let capture = Capture::new();
     let dir = tempfile::tempdir().unwrap();
-    let exporter = LayerExporter::new(dir.path(), options(Compression::Gzip, 2, &support::time()));
+    let exporter = LayerExporter::new(dir.path(), options(Compression::Gzip, 2), &support::time());
     capture.run(|| {
         exporter
             .export_if_needed(Box::new(layer(1, 3)), LayerDemand::default())

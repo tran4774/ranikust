@@ -51,7 +51,7 @@ pub struct BlobLayer { pub diff_id: Digest, pub blob: Descriptor, pub path: Path
 impl BlobLayer { pub fn base(diff_id: Digest, blob: Descriptor, path: PathBuf, from: Reference) -> Self; }
 pub struct LayerExporter;                               // into the build dir, blobs named by digest
 impl LayerExporter {
-    pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions) -> Self;  // dir: Store::build_dir()
+    pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self;  // dir: Store::build_dir(); mtime from time
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
 }
@@ -64,7 +64,7 @@ pub struct Outputs { pub destinations: Vec<Reference>, pub push: bool,
                      pub docker_tar: Option<PathBuf>, pub oci_layout: Option<PathBuf> }
 impl Outputs {
     pub fn new(destinations: &[String], push: bool, docker_tar: Option<PathBuf>, oci_layout: Option<PathBuf>) -> Result<Self>;
-    pub fn tar_tags(&self) -> Vec<String>;              // UNSET_DESTINATION without a destination, as kaniko
+    pub fn tar_tags(&self) -> &[String];                // as typed, `:latest` added; UNSET_DESTINATION without one
 }
 pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()>;
 pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<()>;
@@ -74,7 +74,12 @@ pub async fn push(image: &Image, destinations: &[Reference], client: &Client, jo
 
 The caller writes the outputs in kaniko's order: OCI layout, Docker tar,
 push. `export` and the two file outputs block: call them from a blocking
-thread when a runtime runs.
+thread when a runtime runs. Every file is written to a randomly named,
+exclusively created temporary file and renamed into place, so a planted
+name is never followed and an error leaves no partial output. `push`
+fails with `Error::Push`, naming the destination that failed and those
+already pushed; the first failed blob cancels the other transfers to that
+destination, and later destinations are not tried.
 
 Planned:
 
@@ -165,8 +170,13 @@ pub trait Executor {                                 // [design] one per instruc
 - The Docker tar goes through `rnk-layer`'s writer, which sorts entries:
   layers, `manifest.json`, then the config, not go-containerregistry's
   order; loaders read the whole archive, so only the file's bytes differ.
-  `RepoTags` are normalized references (`docker.io/library/x:tag`) where
-  go-containerregistry writes `index.docker.io/...`.
+  `RepoTags` are the destinations as typed, `:latest` added when no tag was
+  given, as go-containerregistry's `tag.String()` (not the normalized
+  `docker.io/library/...`).
+- `assemble` writes OCI when Docker is asked for but a layer has no Docker
+  media type (a zstd base layer under `--reproducible`): `Image::format` is
+  what was written, not what was asked.
+- An OCI layout's existing blob is kept only if its bytes hash to its name.
 - `push` mounts from the base repository first, then from the first
   destination. `rnk-registry`'s fake registry answers `HEAD` only for
   repositories that hold a blob; otherwise no mount is ever tried.

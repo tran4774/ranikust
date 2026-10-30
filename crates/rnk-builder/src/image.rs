@@ -81,16 +81,32 @@ impl Image {
 /// `mutate.Canonical` does: every history entry gets `time` and no author,
 /// and `container`, `docker_version` and `config.Hostname` are dropped.
 ///
+/// `format` is the format asked for ([`image_format`]); the image is written
+/// in OCI instead when a layer has no Docker media type, such as a zstd layer
+/// of an OCI base image under `--reproducible`: a pulled blob's bytes, and
+/// so its compression, do not change [open: Q-160]. [`Image::format`] is the
+/// format written.
+///
 /// # Errors
 ///
 /// [`Error::Inconsistent`] when the diff IDs disagree, [`Error::Oci`] when a
-/// layer's media type has no equivalent in `format` or serializing fails.
+/// layer's media type has no OCI equivalent either or serializing fails.
 pub fn assemble(
     mut config: ImageConfig,
     mut layers: Vec<BlobLayer>,
     format: ImageFormat,
     time: &BuildTime,
 ) -> Result<Image> {
+    let format = match format {
+        ImageFormat::Docker
+            if layers
+                .iter()
+                .any(|l| l.blob.media_type.to_format(ImageFormat::Docker).is_err()) =>
+        {
+            ImageFormat::Oci
+        }
+        ImageFormat::Docker | ImageFormat::Oci => format,
+    };
     let span = debug_span!("rnk_builder.assemble", bytes_out = tracing::field::Empty);
     let _entered = span.enter();
     let diff_ids: Vec<&Digest> = layers.iter().map(|l| &l.diff_id).collect();

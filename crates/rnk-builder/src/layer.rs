@@ -8,11 +8,9 @@
 //! saved 1.3–6.6 s on W3). Base-image layers are already blobs and become
 //! [`BlobLayer`]s directly.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
-use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 
 use rnk_layer::{
     Compression, EncodeOptions, Entry, EntryPath, EntrySource, LayerDigests, LayerWriter,
@@ -22,6 +20,7 @@ use tracing::debug_span;
 
 use crate::error::{Error, Result};
 use crate::output::Outputs;
+use crate::time::BuildTime;
 
 /// Why a stage's layers are encoded: any reason is enough.
 ///
@@ -142,22 +141,28 @@ impl BlobLayer {
 /// Encodes the layers of one build into a build-private directory.
 ///
 /// Holds no global state: the directory (`rnk_store::Store::build_dir`, or
-/// a directory under it) and the options come from the caller. Encoded
-/// blobs are named by digest, so identical layers share one file.
+/// a directory under it), the options and the build's time come from the
+/// caller. Encoded blobs are named by digest, so identical layers share one
+/// file. [open: Q-162] Interim: the blobs stay in the build directory and
+/// are deleted with it, instead of being published in the store.
 #[derive(Debug)]
 pub struct LayerExporter {
     dir: PathBuf,
     options: EncodeOptions,
-    next: AtomicU64,
 }
 
 impl LayerExporter {
-    /// An exporter writing into `dir`, which must exist.
-    pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions) -> Self {
+    /// An exporter writing into `dir`, which must exist, with `options`
+    /// whose `mtime` is replaced by `time`'s: the fixed time under
+    /// `--reproducible`, else each file's own. Taking the time here means a
+    /// caller cannot encode a reproducible build's layers with file times.
+    pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self {
         Self {
             dir: dir.into(),
-            options,
-            next: AtomicU64::new(0),
+            options: EncodeOptions {
+                mtime: time.layer_mtime(),
+                ..options
+            },
         }
     }
 
@@ -187,33 +192,33 @@ impl LayerExporter {
 
     /// Encodes `source` into the exporter's directory.
     ///
+    /// The blob is written to a uniquely named temporary file, created
+    /// exclusively (so a name planted there is never followed), then renamed
+    /// to its digest; exporters sharing a directory do not collide.
+    ///
     /// # Errors
     ///
     /// [`Error::Layer`] when encoding fails, [`Error::Io`] when the file
-    /// cannot be written; nothing is left behind.
+    /// cannot be written or renamed; the temporary file is removed.
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer> {
         let span = debug_span!("rnk_builder.layer", skipped = false);
         let _entered = span.enter();
-        let n = self.next.fetch_add(1, Ordering::Relaxed);
-        let tmp = self.dir.join(format!("tmp-{n}"));
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(Error::io("create", &tmp))?;
-        let digests = match encode_into(source, self.options, file, &tmp) {
-            Ok(d) => d,
-            Err(e) => {
-                // The encoding error is what matters; a leftover file is
-                // removed with the build directory anyway.
-                let _ = fs::remove_file(&tmp);
-                return Err(e);
-            }
-        };
+        let tmp = tempfile::Builder::new()
+            .prefix(".layer-")
+            .tempfile_in(&self.dir)
+            .map_err(Error::io("create a temporary file in", &self.dir))?;
+        let tmp_path = tmp.path().to_owned();
+        let mut out = BufWriter::new(tmp);
+        let digests = source.encode(self.options, &mut out)?;
+        let tmp = out
+            .into_inner()
+            .map_err(|e| Error::io("write", &tmp_path)(e.into_error()))?;
         let digest = Digest::from_sha256_bytes(digests.digest.as_bytes());
         let path = self.dir.join(digest.encoded());
-        fs::rename(&tmp, &path).map_err(Error::io("rename", &tmp))?;
+        // On failure the temporary file comes back inside the error and is
+        // removed when it is dropped.
+        tmp.persist(&path)
+            .map_err(|e| Error::io("rename", &tmp_path)(e.error))?;
         let media_type = ImageFormat::Oci.layer_media_type(oci_compression(digests.compression))?;
         Ok(BlobLayer {
             diff_id: Digest::from_sha256_bytes(digests.diff_id.as_bytes()),
@@ -222,18 +227,6 @@ impl LayerExporter {
             mount_from: None,
         })
     }
-}
-
-fn encode_into(
-    source: Box<dyn LayerSource>,
-    options: EncodeOptions,
-    file: File,
-    path: &Path,
-) -> Result<LayerDigests> {
-    let mut out = BufWriter::new(file);
-    let digests = source.encode(options, &mut out)?;
-    out.flush().map_err(Error::io("write", path))?;
-    Ok(digests)
 }
 
 /// `rnk-layer`'s compression as `rnk-oci` names it.

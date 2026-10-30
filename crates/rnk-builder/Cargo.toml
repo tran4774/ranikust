@@ -19,6 +19,9 @@ rnk-oci.workspace = true
 rnk-registry.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# `tempfile`: uniquely named, exclusively created temporary files beside
+# each output and encoded layer, renamed into place.
+tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -32,5 +35,4 @@ hyper-util.workspace = true
 rnk-metrics.workspace = true
 # `tar`: reading the Docker tarball back in tests.
 tar.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

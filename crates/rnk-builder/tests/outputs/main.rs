@@ -3,6 +3,7 @@
 
 #[path = "../../../rnk-registry/tests/registry/fake.rs"]
 mod fake;
+mod robust;
 mod support;
 
 use std::collections::BTreeMap;
@@ -39,7 +40,7 @@ fn layer_bytes_do_not_depend_on_the_thread_count() {
         let mut seen = Vec::new();
         for threads in [1, 2, 8] {
             let dir = tempfile::tempdir().unwrap();
-            let exporter = LayerExporter::new(dir.path(), options(compression, threads, &time));
+            let exporter = LayerExporter::new(dir.path(), options(compression, threads), &time);
             let blob = exporter.export(Box::new(layer(3, 60))).unwrap();
             let bytes = std::fs::read(&blob.path).unwrap();
             assert_eq!(sha256(&bytes), blob.blob.digest.as_str());
@@ -58,7 +59,7 @@ fn layer_bytes_do_not_depend_on_the_thread_count() {
 #[test]
 fn a_layer_nothing_needs_is_not_encoded() {
     let dir = tempfile::tempdir().unwrap();
-    let exporter = LayerExporter::new(dir.path(), options(Compression::Gzip, 2, &time()));
+    let exporter = LayerExporter::new(dir.path(), options(Compression::Gzip, 2), &time());
     let skipped = exporter
         .export_if_needed(Box::new(layer(1, 5)), LayerDemand::default())
         .unwrap();
@@ -111,7 +112,9 @@ fn outputs_are_checked_like_kaniko() {
         names,
         ["docker.io/library/alpine:latest", "r.example:5000/a/b:v1"]
     );
-    assert_eq!(out.tar_tags(), names);
+    // RepoTags as go-containerregistry writes them: as typed, `:latest`
+    // added when no tag was given.
+    assert_eq!(out.tar_tags(), ["alpine:latest", "r.example:5000/a/b:v1"]);
 
     let none = Outputs::new(&[], false, Some("/x.tar".into()), None).unwrap();
     assert_eq!(none.tar_tags(), [UNSET_DESTINATION]);
@@ -420,10 +423,11 @@ fn skopeo_inspect(target: &str) -> Option<String> {
         .output()
     {
         Ok(output) => output,
-        Err(_) => {
-            eprintln!("skipping the skopeo check: skopeo is not installed");
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping the skopeo check of {target}: skopeo is not installed");
             return None;
         }
+        Err(e) => panic!("running skopeo: {e}"),
     };
     assert!(
         output.status.success(),

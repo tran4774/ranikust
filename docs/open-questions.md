@@ -637,6 +637,10 @@ Entry format:
 - **Interim:** (a), on branch `feat/rnk-builder-outputs`: `assemble` keeps
   base `BlobLayer`s; only built layers get the fixed mtime. Reversible: (b)
   is a `LayerSource` over a pulled blob, exported like a built layer.
+  Because a kept base layer keeps its compression, a zstd base layer has no
+  Docker media type: `assemble` then writes OCI although `--reproducible`
+  asks for Docker v2s2 (Q-006). Under (b) the layer would be re-encoded
+  and Docker would hold.
 - **Raised:** 2026-10-30
 
 ### Q-161: Which fixed time does `--reproducible` write?

@@ -54,6 +54,28 @@ pub enum Error {
         /// Why it is refused.
         reason: &'static str,
     },
+
+    /// A layer's media type, from a base image's manifest, is not one of
+    /// the layer types an output can name (a Docker tar needs to know its
+    /// compression).
+    #[error("a layer has the media type {media_type}, which is not a known layer type")]
+    UnknownLayerType {
+        /// The media type, as the base manifest gave it.
+        media_type: rnk_oci::MediaType,
+    },
+
+    /// Pushing to one destination failed. The destinations in `pushed` were
+    /// pushed completely before it and stay so; later ones were not tried.
+    #[error("pushing to {destination}: {source}")]
+    Push {
+        /// The destination that failed.
+        destination: Box<rnk_oci::Reference>,
+        /// The destinations pushed before it, with the image's digest.
+        pushed: Vec<(rnk_oci::Reference, rnk_oci::Digest)>,
+        /// What failed.
+        #[source]
+        source: Box<Error>,
+    },
 }
 
 impl Error {
