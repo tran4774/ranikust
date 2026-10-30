@@ -74,7 +74,7 @@ naming the reason, never silently ignored.
 | `--secret` | `:378` | none | kaniko's and buildctl's syntax (ADR-0032): `type=file\|env`, `src=`, `env=`, the id as variable or file by default | accepted, same meaning |
 | `--registry-mirror`, `--registry-map`, `--credential-helpers` | `:407`, `:406`, `:409` | none; helpers: all | Phase 5 (mirrors, helpers); names `[open: Q-047]` | refused (Phase 5) |
 | `--cache-dir` | `:352` | `/cache` | warmer's base-image cache; the store replaces it `[inferred]`; `[open: Q-023]` | refused (Q-023 interim) |
-| `--git`, `--bucket` | `:368`, `:340` | none | git context Phase 5; GCS out of scope | refused (`-b` too) |
+| `--git`, `--bucket` | `:368`, `:340` | none | git context Phase 5: `--git` keeps kaniko's keys (`branch`, `single-branch`, `depth`, `recurse-submodules`, `insecure-skip-tls`) and `GIT_USERNAME`/`GIT_PASSWORD`/`GIT_TOKEN`/`GIT_PULL_METHOD` keep their meaning; ranikust adds `--git-backend`, `--git-binary`, `--git-config`, `--git-arg`, `--git-host-config` (ADR-0035); GCS out of scope | refused (`-b` too) |
 | `FF_KANIKO_*` | `pkg/config/featureflags.go` | | not carried over: the design is the default (`ADR-0011`) | not read |
 
 `[open: Q-023]`, decided with the list: `--verbosity`, `--log-format`,

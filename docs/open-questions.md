@@ -597,22 +597,45 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-045: How are git contexts fetched and addressed?
+### Q-250: Does a git context fall back between the two backends?
 
 - **Blocks:** Phase 5; **Area:** `rnk-context`
-- **Context:** a static binary in `scratch` has no `git` to call; kaniko's
-  `git://` reads `#ref#commit`, Docker uses `#ref:dir`; the git tests depend
-  on the choice ([rnk-context](agents/crates/rnk-context.md#pitfalls),
-  [tests](agents/crates/rnk-context.md#tests)).
-- **Options:** (a) a Rust git implementation (`gix`), with TLS through
-  `rnk-registry`; (b) an external `git` when present, else refuse; (c) both,
-  preferring the built-in. Fragments: Docker's `#ref:subdir` as BuildKit
-  (`buildkit@cd8ee244 util/gitutil/git_url.go:69-78`), and kaniko's
-  `#ref#commit` kept for `ADR-0011`; the two forms can be told apart.
+- **Context:** `ADR-0035` clones with a built-in `gix` backend by default
+  and an external `git` on request (`--git-backend`). The built-in may not
+  support a protocol or option the external `git` does.
+- **Options:** (a) no fallback: the built-in fails with an error naming
+  `--git-backend=external`; (b) fall back to an external `git` found in
+  `PATH`, with a warning.
+- **Recommendation:** (a): a fallback would read the host's `git` and
+  configuration unasked.
+- **Interim:** none
+- **Raised:** 2026-10-30
+
+### Q-251: Can kaniko's `#ref#commit` fragment name a subdirectory?
+
+- **Blocks:** Phase 5; **Area:** `rnk-context`
+- **Context:** kaniko's fragment is `#ref#commit` (`kaniko@44aa7ddc0
+  pkg/buildcontext/git.go:58`, `:126-128`) and has no subdirectory;
+  BuildKit's is `#ref:subdir` (`buildkit@cd8ee244
+  util/gitutil/git_url.go:71-79`). `ADR-0035` accepts both.
+- **Options:** (a) refuse a `:subdir` with kaniko's form; (b) accept
+  `#ref:subdir#commit`; (c) use `--context-sub-path` only.
 - **Recommendation:** none
 - **Interim:** none
-- **Escalated:** to the maintainer under the ADR-0032 rule (B1: BuildKit
-  runs the `git` binary, which a static ranikust in `scratch` lacks).
+- **Raised:** 2026-10-30
+
+### Q-252: Which `--git-config` keys does the built-in backend honour?
+
+- **Blocks:** Phase 5; **Area:** `rnk-context`
+- **Context:** `ADR-0035` passes `--git-config` to the external `git` as
+  `GIT_CONFIG_*` and to `gix` as configuration overrides; `gix` reads only
+  part of git's keys.
+- **Options:** (a) a documented allow-list (proxy, CA file, extra headers,
+  `url.*.insteadOf`, `core.sshCommand`), others refused; (b) pass every key
+  and let `gix` ignore the rest.
+- **Recommendation:** (a), so a key that silently does nothing cannot
+  surprise.
+- **Interim:** none
 - **Raised:** 2026-10-30
 
 ### Q-047: What are the mirror, registry-map and helper flags called?
@@ -1100,3 +1123,15 @@ Entry format:
   `--insecure-registry <host>` (repeatable) with kaniko's meaning
   (`ADR-0011`), HTTPS first and plain HTTP when it fails
   (`feat/rnk-builder-executors`).
+
+### Q-045: How are git contexts fetched and addressed?
+
+- **Answer (2026-10-30):** option (c): a built-in `gix` backend by default,
+  an external `git` with `--git-backend=external`, its binary, extra
+  configuration (`--git-config`, passed through `GIT_CONFIG_*`), extra
+  global options (`--git-arg`) and the host configuration
+  (`--git-host-config`) configurable; kaniko's `--git` and `GIT_*`
+  variables kept; the external `git` isolated and hardened as BuildKit's,
+  plus hooks and `fsmonitor` off; both fragments, `#ref:subdir` and
+  `#ref#commit`. Decided by the maintainer; recorded in
+  [ADR-0035](adr/0035-git-contexts-built-in-or-external-git.md).

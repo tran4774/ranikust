@@ -97,7 +97,9 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
 - T0 hostile tars (`../x`, `/etc/x`, a symlink then a write through it, a
   hardlink to `/etc/passwd`, huge or endless entries): refused or confined.
 - T0 HTTPS against a loopback server with a test CA; git against a local
-  repository [open: Q-045].
+  repository, with both backends and both fragment forms (ADR-0035); the
+  external `git` with a hostile repository (hooks, `core.fsmonitor`,
+  `file://` submodules, a ref or URL starting with `-`) runs nothing.
 
 ## Metrics
 
@@ -117,14 +119,22 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
 - kaniko's `git://` clones over HTTPS (HTTP with `GIT_PULL_METHOD`), takes
   `GIT_USERNAME`/`GIT_PASSWORD`/`GIT_TOKEN` and reads `#ref#commit`
   (`git.go:56-128`, `:197-220`); Docker uses `#ref:dir`
-  ([docs](https://docs.docker.com/build/concepts/context/#url-fragments)) [open: Q-045].
+  ([docs](https://docs.docker.com/build/concepts/context/#url-fragments));
+  both forms are accepted (ADR-0035, Q-045).
 - `tar://stdin` is a gzip stream on stdin (`tar.go:41-56`);
   `--context-sub-path` applies after fetching (`root.go:625-630`), and
   kaniko ignores it for a bare path, which returns before that line
   (`root.go:599-601`) (Q-081, ADR-0032).
 - HTTPS needs the explicit trust store: reqwest's default fails in `scratch`
   ([exp-05](../../research/experiments/05-rust-ecosystem.md#q1-static-binary), ADR-0020).
-- A static binary in `scratch` has no `git` to call [open: Q-045].
+- A static binary in `scratch` has no `git` to call, so git contexts are
+  cloned by a built-in `gix` backend by default; `--git-backend=external`
+  runs a `git` binary, isolated from the host's configuration and with
+  hooks and `fsmonitor` off, configured by `--git-binary`, `--git-config`,
+  `--git-arg` and `--git-host-config` (ADR-0035, Q-045). Refs, commits
+  and URLs from the context argument are validated and passed after `--`.
+  [open: Q-250] fallback between backends; [open: Q-251] kaniko's commit
+  with a subdirectory; [open: Q-252] the built-in's `--git-config` keys.
 - `<Dockerfile>.dockerignore` wins over `<context>/.dockerignore` in kaniko
   (`fs_util.go:1195-1204`) and BuildKit; kaniko's integration set uses it.
   The file beside the Dockerfile may lie outside the context: it is opened
@@ -149,7 +159,13 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
 - Not here: resolving `COPY` sources (`rnk-builder`, task 11, Q-080); the
   content hash is Phase 4 (`rnk_context.hash`).
 - Deferred to phase 5: tar, git and HTTPS contexts (1.0 scope). `ADD <url>`
-  and `ADD <git>` belong to `rnk-builder`.
+  and `ADD <git>` belong to `rnk-builder`. Git plan (ADR-0035): a
+  `GitSource` with two backends behind one trait, `gix` (TLS roots shared
+  with `rnk-registry`, `ADR-0024`) and an external `git` run by the
+  hardened recipe of the ADR; the clone lands in the store's temporary
+  directory and is read through `RootPath`; `.git` removed unless
+  `BUILDKIT_CONTEXT_KEEP_GIT_DIR=1`; kaniko's `--git` keys and `GIT_*`
+  variables for both.
 - [open: Q-027] Async or sync trait (sync for now). [open: Q-028] Where
   the TLS configuration shared with `rnk-registry` lives; whether
   `rnk-context` may use `rnk-layer` to decompress tar contexts (same tier
