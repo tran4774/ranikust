@@ -126,8 +126,10 @@ or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
 `secret`, `RUN --security=insecure` and `--device`, `RUN --network=host`
 under the operator's `--network=none` without `--allow network.host`
 (BuildKit's entitlement, ADR-0032), a heredoc name with
-`/`. A `#!` `RUN` heredoc runs as a script, bound read-only from the build
-directory at `/dev/pipes/<name>`. A symlinked context source is followed
+`/`. A `#!` `RUN` heredoc runs as a script `/dev/pipes/<name>`: as
+BuildKit's, its directory (in the build directory, mode 0755) is bound
+read-only at `/dev/pipes`, which `rnk-sandbox` makes in the `/dev` tmpfs
+(the quick smoke case `run` covers it). A symlinked context source is followed
 only through kept entries; a copy onto a symlink to a directory goes
 inside it, as BuildKit. A cache mount's `mode`, `uid` and `gid` are set
 through a descriptor of its directory.

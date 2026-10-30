@@ -2,7 +2,12 @@
 # The T2 harness: runs test suites as real root in a disposable QEMU/KVM VM,
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
-#   tests/vm/vm.sh [suite]...     suites: unit, smoke, e2e, push; default unit smoke
+#   tests/vm/vm.sh [suite]...     suites: unit, smoke, quick, e2e, push;
+#                                 default unit smoke
+#
+# `quick` (the small Dockerfiles of tests/smoke/cases, a minute or two) is
+# for smoke tests and proofs of concept that need real root; `e2e` (the
+# nextjs-kaniko workloads, 12 GiB, tens of minutes) for large benchmarks.
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
@@ -25,6 +30,7 @@
 #   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout e2e reads, default
 #                        ../nextjs-kaniko next to the repository
 #   RANIKUST_E2E_*       options of the e2e suite (tests/vm/guest/e2e.sh)
+#   RANIKUST_QUICK_CASES the cases `quick` runs, space-separated; default all
 #   RANIKUST_VM_IMAGE_REGISTRY  where the guest pulls Docker Hub images
 #                        from: default mirror.gcr.io (Google's public Docker
 #                        Hub mirror, no pull rate limit); docker.io to pull
@@ -51,7 +57,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 SUITES=("$@")
 [ ${#SUITES[@]} -gt 0 ] || SUITES=(unit smoke)
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke | e2e | push) ;; *) die "unknown suite '$s' (unit, smoke, e2e, push)" ;; esac
+  case "$s" in unit | smoke | quick | e2e | push) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push)" ;; esac
 done
 case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 [ "$(id -u)" != 0 ] || die "run as a regular user: QEMU needs /dev/kvm, not root"
@@ -115,6 +121,11 @@ cp "$REPO/tests/smoke/lib.bash" "$STAGE/guest/smoke-lib.bash"
 cp -r "$REPO/tests/smoke/e2e" "$STAGE/guest/smoke-e2e"
 # The checks of a RUN in a network namespace a user namespace owns.
 cp "$REPO/tests/smoke/netns-check.py" "$STAGE/guest/netns-check.py"
+# The quick smoke cases and their runner.
+cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
+cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
+cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
+env | grep '^RANIKUST_QUICK_CASES=' | sed 's/^/export /' >"$STAGE/quick.env" || true
 zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}"; }
 
 if wants unit; then
@@ -131,7 +142,7 @@ if wants unit; then
     jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
-if wants smoke || wants e2e || wants push; then
+if wants smoke || wants quick || wants e2e || wants push; then
   log "building the smoke-build example and the ranikust binary"
   (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
   cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"

@@ -17,6 +17,9 @@ pub(crate) const PROC: &str = "/proc";
 pub(crate) const SYS: &str = "/sys";
 /// Where the `/dev` tmpfs is mounted.
 pub(crate) const DEV: &str = "/dev";
+/// Where BuildKit binds the script of a `#!` heredoc `RUN`. The directory is
+/// made in the `/dev` tmpfs when a mount targets it.
+pub(crate) const DEV_PIPES: &str = "/dev/pipes";
 /// The writable copy of the host's resolver configuration.
 pub(crate) const RESOLV_CONF: &str = "/etc/resolv.conf";
 /// The generated or copied hosts file.
@@ -147,13 +150,31 @@ pub(crate) fn mount_targets(spec: &RunSpec) -> Vec<(PathBuf, MountKind)> {
         (PathBuf::from(HOSTS), MountKind::File),
         (PathBuf::from(HOSTNAME), MountKind::File),
     ];
-    targets.extend(spec.mounts.iter().map(|m| (m.target.clone(), m.kind)));
+    // A target below /dev lives in the /dev tmpfs mounted above, which
+    // hides the root's own /dev: no stub there.
+    targets.extend(
+        spec.mounts
+            .iter()
+            .filter(|m| !in_dev(&m.target))
+            .map(|m| (m.target.clone(), m.kind)),
+    );
     targets.extend(
         spec.secrets
             .iter()
             .map(|s| (s.target.clone(), MountKind::File)),
     );
     targets
+}
+
+/// Below `/dev`, `/dev` itself excluded.
+fn in_dev(target: &Path) -> bool {
+    target.starts_with(DEV) && target != Path::new(DEV)
+}
+
+/// Whether a mount targets [`DEV_PIPES`], which the child then makes in the
+/// `/dev` tmpfs.
+pub(crate) fn dev_pipes(spec: &RunSpec) -> bool {
+    spec.mounts.iter().any(|m| m.target == Path::new(DEV_PIPES))
 }
 
 /// The mounts of a `RUN`, in the order of `design/sandbox.md`: `proc`,
@@ -329,6 +350,24 @@ mod tests {
         ));
         let stubs: Vec<_> = mount_targets(&spec()).into_iter().map(|(p, _)| p).collect();
         assert_eq!(stubs, targets);
+    }
+
+    #[test]
+    fn a_target_in_dev_is_made_in_the_dev_tmpfs_not_stubbed() {
+        let mut s = spec();
+        assert!(!dev_pipes(&s));
+        s.mounts.push(BindMount {
+            source: "/state/builds/1/script-dir".into(),
+            target: DEV_PIPES.into(),
+            kind: MountKind::Directory,
+            read_only: true,
+        });
+        assert!(dev_pipes(&s));
+        // The tmpfs on /dev hides anything under /dev in the root, so a stub
+        // there would be both useless and left in the upper directory.
+        let stubs: Vec<_> = mount_targets(&s).into_iter().map(|(p, _)| p).collect();
+        assert!(!stubs.iter().any(|p| p.starts_with(DEV_PIPES)), "{stubs:?}");
+        assert!(stubs.iter().any(|p| p == Path::new(DEV)));
     }
 
     #[test]

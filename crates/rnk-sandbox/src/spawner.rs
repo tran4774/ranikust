@@ -769,6 +769,7 @@ impl Runner {
             mounts,
             secrets,
             dev_remount,
+            dev_pipes: plan::dev_pipes(spec),
             root_entry,
             hostname: hostname(spec).as_bytes().to_vec(),
             loopback,

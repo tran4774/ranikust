@@ -14,15 +14,25 @@ description is in `docs/testing.md#the-vm-harness-tier-t2`.
 ```sh
 just test-vm              # unit and smoke, Ubuntu 24.04 (kernel 6.8)
 just test-vm unit         # only the #[ignore = "T2: ..."] tests
+just test-vm quick        # the quick smoke cases (tests/smoke/cases) as real root
+RANIKUST_QUICK_CASES="run copy" just test-vm quick   # some of them
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
-just test-vm e2e          # nextjs-kaniko W1-W3: kaniko, BuildKit, ranikust
+just test-vm e2e          # large benchmark only: nextjs-kaniko W1-W3
 just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
 ```
+
+- **Smoke test or proof of concept as real root: `quick`**, the small
+  Dockerfiles of `tests/smoke/cases` (a few seconds each; a new concern is
+  a new case there, see the `test` skill). Not `e2e`.
+- **`e2e` only for a large benchmark or an acceptance measurement**: a
+  12 GiB VM and 45–60 minutes for 3 rounds of all three builders. Prefer
+  `RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1` unless official
+  numbers are needed.
 
 - `push` runs only when named and needs the host's test registries
   (`just registry-up`, docs/testing.md#test-registries), which the VM
   reaches as `10.0.2.2`.
-- `e2e` runs only when named: about 15–25 minutes and 2.8 GB copied in,
+- `e2e` runs only when named: 15–25 minutes per round and 2.8 GB copied in,
   read from the `nextjs-kaniko` checkout next to the main checkout and
   from the host's podman images (docs/testing.md#end-to-end-workloads-e2e).
   Its `report.md` holds the times, `compare-*.txt` the flattened-image
@@ -56,6 +66,9 @@ failing lines in your report; a run that did not happen is "not run", not
   crate's tests. The `unit` suite finds it by the `fn` name under the
   attribute and fails unless every listed test runs exactly once, so keep
   T2 test names unique across the workspace.
+- **A Dockerfile feature to check end to end:** a case in
+  `tests/smoke/cases/<name>/` (`Dockerfile`, a tiny context, `case.sh`);
+  it runs at T1 (`just smoke-case <name>`) and T2 (`quick`) alike.
 - **A check inside the sandbox:** shared with `just smoke` in
   `tests/smoke/lib.bash`; only-as-real-root checks go in
   `tests/vm/guest/smoke.sh`.
