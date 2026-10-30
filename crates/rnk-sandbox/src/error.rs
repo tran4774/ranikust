@@ -86,10 +86,12 @@ pub enum Step {
     NetNamespace,
     /// Joining that network namespace.
     JoinNetwork,
+    /// Installing the seccomp filter of a `RUN` in such a namespace.
+    Seccomp,
 }
 
 impl Step {
-    const ALL: [Step; 36] = [
+    const ALL: [Step; 37] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -126,6 +128,7 @@ impl Step {
         Step::Secret,
         Step::NetNamespace,
         Step::JoinNetwork,
+        Step::Seccomp,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -182,6 +185,7 @@ impl Step {
             Step::Secret => "write and bind a secret file",
             Step::NetNamespace => "create the network namespace",
             Step::JoinNetwork => "join the network namespace",
+            Step::Seccomp => "install the seccomp filter",
         }
     }
 }
@@ -237,17 +241,30 @@ pub enum Error {
     )]
     InPlainChroot,
     /// `RUN --network=none` cannot bring up loopback: the process lacks
-    /// `CAP_NET_ADMIN` over a new network namespace, and cannot create one
-    /// owned by a user namespace either (ADR-0033).
+    /// `CAP_NET_ADMIN` over a new network namespace, and the user-namespace
+    /// path is not allowed (ADR-0033).
     #[error(
-        "RUN --network=none: cannot bring up the loopback interface: without \
-         CAP_NET_ADMIN ({direct}) and without a user namespace ({userns}); \
-         give ranikust CAP_NET_ADMIN or allow user namespaces"
+        "RUN --network=none: cannot bring up the loopback interface without \
+         CAP_NET_ADMIN ({source}); give ranikust CAP_NET_ADMIN, or pass \
+         --allow network.none-userns to use a user namespace under a seccomp \
+         filter (ADR-0033)"
     )]
     NoLoopback {
         /// Why the network namespace failed without a user namespace.
+        source: io::Error,
+    },
+    /// `RUN --network=none` cannot bring up loopback, with
+    /// `--allow network.none-userns` either: user namespaces, or joining one
+    /// by pidfd, are denied (ADR-0033).
+    #[error(
+        "RUN --network=none: cannot bring up the loopback interface: without \
+         CAP_NET_ADMIN ({direct}), and through a user namespace ({userns}); \
+         give ranikust CAP_NET_ADMIN, or allow user namespaces"
+    )]
+    NoLoopbackUserns {
+        /// Why the network namespace failed without a user namespace.
         direct: io::Error,
-        /// Why it failed with one.
+        /// Why the user-namespace path failed.
         userns: io::Error,
     },
     /// The spawner thread is gone.

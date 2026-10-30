@@ -133,6 +133,9 @@ pub(crate) struct ChildArgs {
     /// owned by a user namespace and with `lo` already up, the child joins
     /// instead (`--network=none` without `CAP_NET_ADMIN`, ADR-0033).
     pub(crate) netns: Option<RawFd>,
+    /// The seccomp filter installed before the capability drop: with
+    /// `netns`, [`crate::seccomp::userns_network`].
+    pub(crate) seccomp: Option<Vec<libc::sock_filter>>,
     /// Capabilities to drop from the bounding set, and how many.
     pub(crate) drops: ([u32; 64], usize),
     /// The capabilities kept (Docker's defaults), as a mask.
@@ -365,6 +368,11 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     let _ = rustix::system::sethostname(&args.hostname);
     if args.loopback {
         loopback_up(err);
+    }
+    // After the namespace is joined and every mount made, which the filter
+    // would refuse.
+    if let Some(f) = &args.seccomp {
+        install_filter(err, f);
     }
 
     drop_capabilities(err, args);
@@ -915,14 +923,18 @@ fn loopback_up(err: RawFd) {
     }
 }
 
+/// The byte a [`hold_network`] or [`try_join`] process writes when it is
+/// ready: anything else, end-of-file included, is a failure.
+pub(crate) const READY: u8 = b'R';
+
 /// The process that holds the network namespace of a `--network=none`
-/// `RUN` without `CAP_NET_ADMIN` (ADR-0033): it creates a user namespace and
-/// a network namespace owned by it, where it has `CAP_NET_ADMIN`, brings up
-/// `lo`, closes `err` to tell the parent it is ready, and waits to be
-/// killed. The `RUN` child joins the namespace through its pidfd and stays
-/// in the build's user namespace, with its uid, gid and capabilities. With
-/// `userns` false it creates the network namespace alone: the probe that
-/// tells whether the clone can do it itself.
+/// `RUN` without `CAP_NET_ADMIN`, under `--allow network.none-userns`
+/// (ADR-0033): it creates a user namespace and a network namespace owned
+/// by it, where it has `CAP_NET_ADMIN`, brings up `lo`, writes [`READY`] on
+/// `err` and waits to be killed. The `RUN` child joins the namespace
+/// through its pidfd and stays in the build's user namespace, under the
+/// filter of [`crate::seccomp`]. With `userns` false it creates the network
+/// namespace alone: the probe that tells whether the clone can do it itself.
 ///
 /// # Safety
 ///
@@ -939,8 +951,12 @@ pub(crate) unsafe fn hold_network(err: RawFd, parent: i32, userns: bool) -> ! {
     if rustix::process::getppid().map_or(0, |p| p.as_raw_nonzero().get()) != parent {
         fail(err, Step::ParentGone, Errno::SRCH);
     }
-    // A forked copy of every descriptor of the build: closed, so that this
-    // process, which never executes, holds no lock or pipe end of it.
+    // No core dump and no ptrace by its uid's other processes.
+    // SAFETY: plain `prctl`.
+    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    // A forked copy of every descriptor of the build, stdio included:
+    // closed, so that this process, which never executes, holds no lock,
+    // pipe end or terminal of it.
     close_all_but(err);
     let mut flags = libc::CLONE_NEWNET;
     if userns {
@@ -951,44 +967,132 @@ pub(crate) unsafe fn hold_network(err: RawFd, parent: i32, userns: bool) -> ! {
         fail(err, Step::NetNamespace, last_errno());
     }
     loopback_up(err);
-    // SAFETY: closing the write end of the error pipe: end-of-file tells the
-    // parent the namespace is ready.
-    unsafe { libc::close(err) };
+    ready_and_close(err);
     loop {
         // SAFETY: `pause` waits for the parent's SIGKILL or the death signal.
         unsafe { libc::pause() };
     }
 }
 
-/// Closes every descriptor except stdio and `keep`, with `close_range` or,
-/// before Linux 5.9, one number at a time up to a bound.
+/// Joins the network namespace of the [`hold_network`] process `pidfd`
+/// refers to, then exits: the probe's check that `setns` on a pidfd works
+/// here, as the `RUN` child will need.
+///
+/// # Safety
+///
+/// As [`hold_network`].
+pub(crate) unsafe fn try_join(err: RawFd, pidfd: RawFd) -> ! {
+    // SAFETY: `setns` on a pidfd the parent keeps open across the clone.
+    if unsafe { libc::setns(pidfd, libc::CLONE_NEWNET) } != 0 {
+        fail(err, Step::JoinNetwork, last_errno());
+    }
+    ready_and_close(err);
+    // SAFETY: `_exit` without handlers, as in `fail`.
+    unsafe { libc::_exit(0) }
+}
+
+/// Writes [`READY`] on `err` and closes it.
+fn ready_and_close(err: RawFd) {
+    // SAFETY: `err` is this process's write end of the parent's pipe; one
+    // byte is written atomically.
+    let fd = unsafe { BorrowedFd::borrow_raw(err) };
+    if rustix::io::write(fd, &[READY]) != Ok(1) {
+        fail(err, Step::NetNamespace, Errno::IO);
+    }
+    // SAFETY: closing that write end, which nothing uses after.
+    unsafe { libc::close(err) };
+}
+
+/// Closes every descriptor except `keep`, from 0: with `close_range`, else
+/// those `/proc/self/fd` lists, else every number up to the hard limit.
 fn close_all_but(keep: RawFd) {
-    let keep = u32::try_from(keep).unwrap_or(u32::MAX);
-    let ranges = [
-        (3, keep.saturating_sub(1)),
-        (keep.saturating_add(1), u32::MAX),
-    ];
-    for (first, last) in ranges {
-        if first > last {
-            continue;
-        }
+    let k = u32::try_from(keep).unwrap_or(u32::MAX);
+    let mut ok = true;
+    if k > 0 {
         // SAFETY: plain syscall on a descriptor range.
-        let r = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0u32) };
-        if r == 0 {
-            continue;
+        ok &= unsafe { libc::syscall(libc::SYS_close_range, 0u32, k - 1, 0u32) } == 0;
+    }
+    if k < u32::MAX {
+        // SAFETY: as above.
+        ok &= unsafe { libc::syscall(libc::SYS_close_range, k + 1, u32::MAX, 0u32) } == 0;
+    }
+    if ok || close_listed(keep) {
+        return;
+    }
+    let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
+        .maximum
+        .unwrap_or(1 << 20)
+        .min(1 << 20);
+    let limit = RawFd::try_from(limit).unwrap_or(1 << 20);
+    for fd in 0..=limit {
+        if fd != keep {
+            // SAFETY: closing a descriptor number; a closed one fails with
+            // EBADF.
+            unsafe { libc::close(fd) };
         }
-        let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
-            .current
-            .unwrap_or(1 << 16)
-            .min(1 << 16);
-        let limit = u32::try_from(limit).unwrap_or(1 << 16).min(last);
-        for fd in first..limit {
-            if let Ok(fd) = RawFd::try_from(fd) {
-                // SAFETY: closing a descriptor number; a closed one fails
-                // with EBADF.
+    }
+}
+
+/// Closes every descriptor `/proc/self/fd` lists except `keep`, passing
+/// again until one pass finds none; `false` if the list cannot be read.
+fn close_listed(keep: RawFd) -> bool {
+    loop {
+        let Ok(dir) = rustix::fs::openat(
+            CWD,
+            c"/proc/self/fd",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            return false;
+        };
+        match rustix::fs::fstatfs(&dir) {
+            Ok(st) if st.f_type == PROC_SUPER_MAGIC => {}
+            _ => return false,
+        }
+        let own = dir.as_raw_fd();
+        let mut closed = 0;
+        let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
+        let mut entries = RawDir::new(&dir, &mut buf);
+        while let Some(entry) = entries.next() {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if let Some(fd) = parse_fd(entry.file_name().to_bytes())
+                && fd != keep
+                && fd != own
+            {
+                // SAFETY: closing a listed descriptor number.
                 unsafe { libc::close(fd) };
+                closed += 1;
             }
         }
+        if closed == 0 {
+            return true;
+        }
+    }
+}
+
+/// Installs the seccomp filter of a `RUN` that joined a held network
+/// namespace ([`crate::seccomp`]). Without `no_new_privs`: the child still
+/// has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must keep
+/// working.
+fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
+    let prog = libc::sock_fprog {
+        len: u16::try_from(filter.len()).unwrap_or(u16::MAX),
+        filter: filter.as_ptr().cast_mut(),
+    };
+    // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the program, which
+    // lives across the call.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            0u32,
+            &raw const prog,
+        )
+    };
+    if r != 0 {
+        fail(err, Step::Seccomp, last_errno());
     }
 }
 
@@ -1330,6 +1434,7 @@ mod tests {
             hostname: Vec::new(),
             loopback: false,
             netns: None,
+            seccomp: None,
             drops: ([0; 64], 0),
             keep: 0,
             uid: Uid::ROOT,
