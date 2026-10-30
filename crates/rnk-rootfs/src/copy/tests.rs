@@ -96,15 +96,16 @@ fn chown_and_chmod_apply_to_every_entry_but_symlink_modes() {
     let (uid, gid) = d.ids();
     let o = CopyOpts {
         owner: Some(Owner { uid, gid }),
-        chmod: Some(0o750),
+        chmod: Some(Chmod::Octal(0o750)),
     };
     copy(&s.root, "a", &d.root, "deep/er/app", &o).unwrap();
     for p in ["deep/er/app/f", "deep/er/app/ro", "deep/er/app/fifo"] {
         assert_eq!(mode_of(&d.host(p)), 0o750, "{p}");
     }
-    // Created parents and the created destination: 0755.
+    // Created parents and the created destination take an octal mode too,
+    // as BuildKit's `MkdirAll` (Q-120).
     for p in ["deep", "deep/er", "deep/er/app"] {
-        assert_eq!(mode_of(&d.host(p)), 0o755, "{p}");
+        assert_eq!(mode_of(&d.host(p)), 0o750, "{p}");
     }
     assert!(
         fs::symlink_metadata(d.host("deep/er/app/ro/up"))
@@ -239,31 +240,67 @@ fn destination_symlinks_stay_inside_the_destination_root() {
 }
 
 #[test]
-fn sockets_are_skipped() {
+fn sockets_become_empty_files() {
+    // BuildKit's `copyDevice` clears the socket bit: an empty regular file
+    // with the socket's mode (Q-120).
     let s = Fixture::new();
     fs::create_dir(s.host("a")).unwrap();
     let _l = std::os::unix::net::UnixListener::bind(s.host("a/sock")).unwrap();
+    set_mode(&s.host("a/sock"), 0o640);
     fs::write(s.host("a/f"), b"").unwrap();
     let d = Fixture::new();
     copy(&s.root, "a", &d.root, "app", &CopyOpts::default()).unwrap();
     assert!(d.host("app/f").exists());
-    assert!(fs::symlink_metadata(d.host("app/sock")).is_err());
+    let m = fs::symlink_metadata(d.host("app/sock")).unwrap();
+    assert!(m.file_type().is_file());
+    assert_eq!((m.len(), m.mode() & 0o7777), (0, 0o640));
 }
 
 #[test]
-fn only_the_capability_xattr_is_copied() {
+fn xattrs_are_copied_but_overlays_own() {
+    // BuildKit copies every xattr (Q-120); overlay's private ones never.
     let s = Fixture::new();
-    fs::write(s.host("f"), b"").unwrap();
-    rustix::fs::setxattr(
-        s.host("f"),
-        "user.app",
-        b"v",
-        rustix::fs::XattrFlags::empty(),
-    )
-    .unwrap();
+    fs::create_dir(s.host("d")).unwrap();
+    fs::write(s.host("d/f"), b"").unwrap();
+    for (p, name) in [
+        ("d/f", "user.app"),
+        ("d", "user.dir"),
+        ("d/f", "user.overlay.origin"),
+        ("d/f", "user.overlay.overlay.kept"),
+    ] {
+        rustix::fs::setxattr(s.host(p), name, b"v", rustix::fs::XattrFlags::empty()).unwrap();
+    }
     let d = Fixture::new();
-    copy(&s.root, "f", &d.root, "f", &CopyOpts::default()).unwrap();
-    assert_eq!(xattr(&d.host("f"), "user.app"), None);
+    copy(&s.root, "", &d.root, "out", &CopyOpts::default()).unwrap();
+    assert_eq!(xattr(&d.host("out/d/f"), "user.app"), Some(b"v".to_vec()));
+    assert_eq!(xattr(&d.host("out/d"), "user.dir"), Some(b"v".to_vec()));
+    assert_eq!(xattr(&d.host("out/d/f"), "user.overlay.origin"), None);
+    assert_eq!(
+        xattr(&d.host("out/d/f"), "user.overlay.overlay.kept"),
+        Some(b"v".to_vec())
+    );
+}
+
+#[test]
+fn a_symbolic_chmod_changes_each_entrys_own_mode() {
+    let s = Fixture::new();
+    fs::create_dir(s.host("d")).unwrap();
+    fs::write(s.host("d/f"), b"").unwrap();
+    fs::write(s.host("d/run"), b"").unwrap();
+    set_mode(&s.host("d/f"), 0o640);
+    set_mode(&s.host("d/run"), 0o700);
+    set_mode(&s.host("d"), 0o700);
+    let d = Fixture::new();
+    let o = CopyOpts {
+        chmod: Some(Chmod::parse("go+rX").unwrap()),
+        ..CopyOpts::default()
+    };
+    copy(&s.root, "", &d.root, "new/out", &o).unwrap();
+    assert_eq!(mode_of(&d.host("new/out/d/f")), 0o644);
+    assert_eq!(mode_of(&d.host("new/out/d/run")), 0o755);
+    assert_eq!(mode_of(&d.host("new/out/d")), 0o755);
+    // Created parents: 0755 for a symbolic mode.
+    assert_eq!(mode_of(&d.host("new")), 0o755);
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use rnk_builder::{
-    BlobLayer, BuildTime, EntriesLayer, LayerExporter, assemble, image_format, layer_history,
+    BlobLayer, BuildTime, EntriesLayer, LayerExporter, assemble, image_format, instruction_history,
 };
 use rnk_layer::{Compression, EncodeOptions, Entry, EntryKind, EntryPath, EntrySource};
 use rnk_oci::{ContainerConfig, Descriptor, Digest, History, ImageConfig, MediaType, Reference};
@@ -106,11 +106,8 @@ pub(crate) fn base(dir: &Path, from: Reference) -> Base {
         os: "linux".to_owned(),
         config: Some(ContainerConfig {
             env: Some(vec!["PATH=/usr/bin".to_owned()]),
-            hostname: Some("builder-host".to_owned()),
             ..ContainerConfig::default()
         }),
-        container: Some("0123abcd".to_owned()),
-        docker_version: Some("20.10".to_owned()),
         ..ImageConfig::default()
     };
     config.push_layer(
@@ -136,14 +133,23 @@ pub(crate) fn image(
     time: &BuildTime,
     compression: Compression,
 ) -> rnk_builder::Image {
+    image_in(dir, base, time, compression, image_format())
+}
+
+/// [`image`], asking for `format`.
+pub(crate) fn image_in(
+    dir: &Path,
+    base: &Base,
+    time: &BuildTime,
+    compression: Compression,
+    format: rnk_oci::ImageFormat,
+) -> rnk_builder::Image {
     let exporter = LayerExporter::new(dir, options(compression, 4), time);
     let built = exporter.export(Box::new(layer(1, 20))).unwrap();
     let mut config = base.config.clone();
-    config.push_layer(built.diff_id.clone(), layer_history("RUN make", time));
-    let format = image_format(
-        base.layer.blob.media_type.format(),
-        compression == Compression::Zstd,
-        time.is_reproducible(),
+    config.push_layer(
+        built.diff_id.clone(),
+        instruction_history("RUN make # buildkit", time),
     );
     assemble(config, vec![base.layer.clone(), built], format, time).unwrap()
 }

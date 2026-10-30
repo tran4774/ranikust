@@ -154,15 +154,17 @@ fn assembly_converts_media_types_and_is_stable() {
     let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
     let time = time();
     let image = image(dir.path(), &base, &time, Compression::Gzip);
-    assert_eq!(image.format, ImageFormat::Docker, "the base is Docker v2s2");
+    // OCI whatever the base's format, as BuildKit (Q-006); the Docker base
+    // layer is converted.
+    assert_eq!(image.format, ImageFormat::Oci, "the base is Docker v2s2");
     let manifest = ImageManifest::from_json(image.manifest.bytes()).unwrap();
-    assert_eq!(manifest.media_type, Some(MediaType::DOCKER_MANIFEST));
-    assert_eq!(manifest.config.media_type, MediaType::DOCKER_CONFIG);
+    assert_eq!(manifest.media_type, Some(MediaType::OCI_MANIFEST));
+    assert_eq!(manifest.config.media_type, MediaType::OCI_CONFIG);
     assert!(
         manifest
             .layers
             .iter()
-            .all(|l| l.media_type == MediaType::DOCKER_LAYER_GZIP)
+            .all(|l| l.media_type == MediaType::OCI_LAYER_GZIP)
     );
     assert_eq!(manifest.config.digest.as_str(), sha256(&image.config));
 
@@ -175,12 +177,15 @@ fn assembly_converts_media_types_and_is_stable() {
         Some("someone"),
         "base history kept"
     );
-    assert_eq!(history[1].created_by.as_deref(), Some("RUN make"));
     assert_eq!(
-        history[1].author.as_deref(),
-        Some(rnk_builder::HISTORY_AUTHOR)
+        history[1].created_by.as_deref(),
+        Some("RUN make # buildkit")
     );
-    assert_eq!(config.container.as_deref(), Some("0123abcd"));
+    assert_eq!(history[1].author, None);
+    assert_eq!(
+        history[1].comment.as_deref(),
+        Some(rnk_builder::HISTORY_COMMENT)
+    );
 
     // Canonical JSON: keys sorted at every level, no whitespace.
     let text = std::str::from_utf8(&image.config).unwrap();
@@ -205,25 +210,21 @@ fn assembly_converts_media_types_and_is_stable() {
 }
 
 #[test]
-fn reproducible_assembly_is_scrubbed_like_mutate_canonical() {
+fn reproducible_assembly_keeps_base_history_like_buildkit() {
     let dir = tempfile::tempdir().unwrap();
     let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
     let time = BuildTime::reproducible(Some("1700000000")).unwrap();
-    assert_eq!(
-        image_format(Some(ImageFormat::Oci), false, true),
-        ImageFormat::Docker
-    );
+    assert_eq!(image_format(), ImageFormat::Oci);
     let image = image(dir.path(), &base, &time, Compression::Gzip);
     let config = ImageConfig::from_json(&image.config).unwrap();
     let stamp = Some("2023-11-14T22:13:20Z");
     assert_eq!(config.created.as_deref(), stamp);
-    for entry in config.history.unwrap() {
-        assert_eq!(entry.created.as_deref(), stamp);
-        assert_eq!(entry.author, None);
-    }
-    assert_eq!(config.container, None);
-    assert_eq!(config.docker_version, None);
-    assert_eq!(config.config.unwrap().hostname, None);
+    // The base image's entries keep their times and authors, as BuildKit
+    // keeps them; the build's own carry the fixed time.
+    let history = config.history.unwrap();
+    assert_eq!(history[0].created.as_deref(), Some("2024-01-01T00:00:00Z"));
+    assert_eq!(history[0].author.as_deref(), Some("someone"));
+    assert_eq!(history[1].created.as_deref(), stamp);
 
     // Two builds at different times give one digest.
     let again = support::image(
@@ -284,7 +285,7 @@ fn the_docker_tar_is_what_docker_save_writes() {
     let last = image.layers[1].clone();
     config.push_layer(
         last.diff_id.clone(),
-        rnk_builder::layer_history("COPY a b", &time()),
+        rnk_builder::instruction_history("COPY a b # buildkit", &time()),
     );
     doubled.layers.push(last);
     let doubled = assemble(config, doubled.layers, doubled.format, &time()).unwrap();
@@ -399,7 +400,7 @@ async fn push_mounts_base_layers_uploads_the_rest_and_tags_the_manifest() {
         let tag =
             |repo: &str, tag: &str| state.manifests[&(repo.to_owned(), tag.to_owned())].clone();
         assert_eq!(tag("out", "v1").1, image.manifest.bytes());
-        assert_eq!(tag("copy", "v2").0, MediaType::DOCKER_MANIFEST.as_str());
+        assert_eq!(tag("copy", "v2").0, MediaType::OCI_MANIFEST.as_str());
     }
 
     // Pushing again sends no blob.

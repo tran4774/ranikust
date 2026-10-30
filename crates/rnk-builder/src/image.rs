@@ -12,41 +12,33 @@ use crate::error::{Error, Result};
 use crate::layer::BlobLayer;
 use crate::time::BuildTime;
 
-/// The author kaniko writes into each history entry it adds
-/// (`kaniko@44aa7ddc0 pkg/constants/constants.go:25`), as ranikust.
-///
-/// [open: Q-131] Interim: kaniko's history, one entry per layer with the
-/// instruction's text, only the author's name changed.
-pub const HISTORY_AUTHOR: &str = "ranikust";
+/// The `comment` of every history entry a Dockerfile instruction adds, as
+/// BuildKit writes it (`buildkit@cd8ee244
+/// frontend/dockerfile/dockerfile2llb/convert.go:46`, Q-131, `ADR-0032`).
+pub const HISTORY_COMMENT: &str = "buildkit.dockerfile.v0";
 
-/// The history entry of a layer made by `created_by`, the instruction as
-/// written in the Dockerfile, at `time`.
-///
-/// [open: Q-131] Interim: kaniko's form; metadata instructions get none.
-pub fn layer_history(created_by: &str, time: &BuildTime) -> History {
+/// The history entry of one instruction, as BuildKit's `commitToHistory`
+/// (`convert.go:1819-1831`): `created_by` is the instruction's text in
+/// BuildKit's form (`RUN`, `COPY` and `ADD` end with ` # buildkit`); no
+/// author; `created` is `time`. The caller pushes it with `push_layer` or
+/// `push_history`, which set `empty_layer`.
+pub fn instruction_history(created_by: &str, time: &BuildTime) -> History {
     History {
         created: Some(time.rfc3339()),
-        author: Some(HISTORY_AUTHOR.to_owned()),
+        author: None,
         created_by: Some(created_by.to_owned()),
-        comment: None,
+        comment: Some(HISTORY_COMMENT.to_owned()),
         empty_layer: None,
     }
 }
 
-/// The format of the image a build writes.
-///
-/// [open: Q-006] Interim: kaniko's rule. The base image's format, Docker
-/// v2s2 for `FROM scratch` (go-containerregistry's empty image) and under
-/// `--reproducible` (`kaniko@44aa7ddc0 pkg/executor/build.go:2105`); OCI
-/// whenever layers are zstd, which Docker has no media type for.
-pub fn image_format(base: Option<ImageFormat>, zstd: bool, reproducible: bool) -> ImageFormat {
-    if zstd {
-        return ImageFormat::Oci;
-    }
-    if reproducible {
-        return ImageFormat::Docker;
-    }
-    base.unwrap_or(ImageFormat::Docker)
+/// The format of the image a build writes: OCI media types, whatever the
+/// base image's format and `--reproducible`, as BuildKit at compatibility
+/// version 031 (`buildkit@cd8ee244 exporter/containerimage/export.go:576-581`,
+/// `exporter/oci/export.go:302-307`; Q-006, `ADR-0032`). Layers are converted
+/// to it ([`assemble`]).
+pub fn image_format() -> ImageFormat {
+    ImageFormat::Oci
 }
 
 /// An assembled image: canonical config and manifest bytes, and the layer
@@ -77,15 +69,16 @@ impl Image {
 ///
 /// `config.rootfs.diff_ids` must list the layers' diff IDs in order; each
 /// executor keeps it so with `ImageConfig::push_layer`. `created` is set to
-/// `time`; under `--reproducible` the config is also scrubbed as kaniko's
-/// `mutate.Canonical` does: every history entry gets `time` and no author,
-/// and `container`, `docker_version` and `config.Hostname` are dropped.
+/// `time`, which under `--reproducible` is the fixed epoch, as BuildKit
+/// clamps it to `SOURCE_DATE_EPOCH` (`buildkit@cd8ee244
+/// exporter/containerimage/writer.go:830-843`). History entries are left as
+/// they are: the base image's keep their times, as BuildKit keeps them
+/// (`writer.go:809-821`), and the build's own already carry `time`.
 ///
 /// `format` is the format asked for ([`image_format`]); the image is written
-/// in OCI instead when a layer has no Docker media type, such as a zstd layer
-/// of an OCI base image under `--reproducible`: a pulled blob's bytes, and
-/// so its compression, do not change [open: Q-160]. [`Image::format`] is the
-/// format written.
+/// in OCI instead when a layer has no Docker media type, such as a zstd base
+/// layer: a pulled blob's bytes, and so its compression, do not change
+/// (Q-160). [`Image::format`] is the format written.
 ///
 /// # Errors
 ///
@@ -117,19 +110,7 @@ pub fn assemble(
             layers.len()
         )));
     }
-    let created = time.rfc3339();
-    config.created = Some(created.clone());
-    if time.is_reproducible() {
-        for entry in config.history.iter_mut().flatten() {
-            entry.created = Some(created.clone());
-            entry.author = None;
-        }
-        config.container = None;
-        config.docker_version = None;
-        if let Some(c) = config.config.as_mut() {
-            c.hostname = None;
-        }
-    }
+    config.created = Some(time.rfc3339());
     for layer in &mut layers {
         layer.blob.media_type = layer.blob.media_type.to_format(format)?;
     }

@@ -393,8 +393,9 @@ mod tests {
         ) {
             let mut config = sample_config();
             let run = config.config.get_or_insert_default();
-            run.labels = Some(labels);
-            run.env = Some(env);
+            // Empty ones are written as absent (`omitempty`, Q-132).
+            run.labels = (!labels.is_empty()).then_some(labels);
+            run.env = (!env.is_empty()).then_some(env);
             let bytes = to_canonical_json(&config)?;
             assert_sorted_keys(&bytes);
             prop_assert_eq!(ImageConfig::from_json(&bytes)?, config);

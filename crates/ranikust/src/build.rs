@@ -348,15 +348,10 @@ async fn build(config: &BuildConfig, shared: &Arc<Shared>) -> Result<Built, Stri
         .map(|(_, d)| Arc::clone(d))
         .ok_or("the target stage was not built")?;
     let done: &Stage = &target;
-    let format = image_format(
-        done.base_format,
-        config.compression == config::Compression::Zstd,
-        config.reproducible,
-    );
     let image = assemble(
         done.config.clone(),
         done.layers.clone(),
-        format,
+        image_format(),
         &shared.time,
     )
     .map_err(|e| e.to_string())?;

@@ -274,8 +274,6 @@ pub(crate) fn reopen(pinned: BorrowedFd<'_>, flags: OFlags, path: &Path) -> Resu
 /// Which extended attributes [`read_xattrs`] returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Xattrs {
-    /// Only `security.capability`, as kaniko's `CopyCapabilities`.
-    Capability,
     /// What overlay's copy-up keeps of an inode in an extracted layer: all
     /// but overlay's own (`trusted.overlay.*`, `user.overlay.*`); the
     /// escaped content xattrs `user.overlay.overlay.*` are kept.
@@ -283,12 +281,14 @@ pub(crate) enum Xattrs {
     /// Every xattr, overlay's own included: for code that reads overlay's
     /// markers (`rnk-snapshot`'s exporter).
     All,
+    /// What `COPY` carries over, as BuildKit copies every xattr (Q-120):
+    /// those of [`Xattrs::Layer`], set best effort ([`apply_lenient`]).
+    Copy,
 }
 
 /// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
 /// `XATTR_SIZE_MAX`).
 const XATTR_MAX: usize = 64 << 10;
-const CAPABILITY: &str = "security.capability";
 
 /// The extended attributes of the pinned entry `fd` of type `file_type`.
 ///
@@ -334,21 +334,18 @@ pub(crate) fn read_xattrs(
         }
     };
     let mut buf = vec![0; XATTR_MAX];
-    let names: Vec<OsString> = match which {
-        Xattrs::Capability => vec![OsString::from(CAPABILITY)],
-        Xattrs::Layer | Xattrs::All => match list(&mut buf[..]) {
-            Ok(n) => buf[..n]
-                .split(|&b| b == 0)
-                .filter(|s| !s.is_empty())
-                .map(|s| OsStr::from_bytes(s).to_owned())
-                .collect(),
-            Err(Errno::NOTSUP) => return Ok(Vec::new()),
-            Err(e) => return Err(io_err("listxattr", path, e)),
-        },
+    let names: Vec<OsString> = match list(&mut buf[..]) {
+        Ok(n) => buf[..n]
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| OsStr::from_bytes(s).to_owned())
+            .collect(),
+        Err(Errno::NOTSUP) => return Ok(Vec::new()),
+        Err(e) => return Err(io_err("listxattr", path, e)),
     };
     let mut out = Vec::new();
     for n in names {
-        if which == Xattrs::Layer && is_overlay_own(n.as_bytes()) {
+        if matches!(which, Xattrs::Layer | Xattrs::Copy) && is_overlay_own(n.as_bytes()) {
             continue;
         }
         match get(n.as_os_str(), &mut buf[..]) {
@@ -385,6 +382,34 @@ fn is_overlay_own(name: &[u8]) -> bool {
 
 /// Applies `m` to the entry behind `h`. `path` is only for error messages.
 pub(crate) fn apply(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
+    apply_with(h, m, path, true)
+}
+
+/// [`apply`], but an xattr the entry refuses (a `security.*` name the
+/// filesystem or the process may not set) is left out with a warning, as
+/// BuildKit's copy only logs it (`buildkit@cd8ee244
+/// solver/llbsolver/file/backend.go:262-265`).
+pub(crate) fn apply_lenient(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
+    apply_with(h, m, path, false)
+}
+
+/// What a refused xattr does: an error when `strict`, else a warning.
+fn xattr_result(r: rustix::io::Result<()>, name: &OsStr, strict: bool, path: &Path) -> Result<()> {
+    match r {
+        Ok(()) => Ok(()),
+        Err(e) if strict => Err(io_err("setxattr", path, e)),
+        Err(e) => {
+            tracing::warn!(
+                "{}: xattr {} not copied: {e}",
+                path.display(),
+                name.to_string_lossy()
+            );
+            Ok(())
+        }
+    }
+}
+
+fn apply_with(h: &Handle<'_>, m: &Meta, path: &Path, strict: bool) -> Result<()> {
     let owner_changes = m.uid.is_some() || m.gid.is_some();
     let uid = m.uid.map(Uid::from_raw);
     let gid = m.gid.map(Gid::from_raw);
@@ -408,8 +433,8 @@ pub(crate) fn apply(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
                 rustix::fs::fchown(fd, uid, gid).map_err(|e| io_err("chown", path, e))?;
             }
             for (name, value) in &m.xattrs {
-                rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty())
-                    .map_err(|e| io_err("setxattr", path, e))?;
+                let r = rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty());
+                xattr_result(r, name, strict, path)?;
             }
             if let Some(mode) = mode {
                 rustix::fs::fchmod(fd, mode).map_err(|e| io_err("chmod", path, e))?;
@@ -454,7 +479,7 @@ pub(crate) fn apply(h: &Handle<'_>, m: &Meta, path: &Path) -> Result<()> {
                     } else {
                         rustix::fs::setxattr(&target, name.as_os_str(), value, XattrFlags::empty())
                     };
-                    r.map_err(|e| io_err("setxattr", path, e))?;
+                    xattr_result(r, name, strict, path)?;
                 }
             }
             if let Some(mode) = mode

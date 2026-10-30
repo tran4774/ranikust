@@ -19,36 +19,35 @@ use rustix::io::Errno;
 use crate::delete;
 use crate::error::{Error, Result, io_err};
 use crate::meta::{self, FileType, Handle, Meta, Stat, Xattrs};
+use crate::mode::Chmod;
 use crate::path;
 use crate::root::{self, Mounts, RootPath};
 use crate::user::Owner;
 
 /// Mode of a directory until its own mode is set at the end.
 const DIR_PENDING_MODE: u32 = 0o700;
-/// Mode of the directories a copy creates that the source does not list:
-/// the parents of the destination, and the destination of a directory's
-/// contents (`kaniko@44aa7ddc0 pkg/util/fs_util.go:874`).
-const CREATED_DIR_MODE: u32 = 0o755;
-
 /// How [`copy`] sets ownership and modes; the builder maps `--chown`,
 /// `--chmod` and the kind of source onto it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CopyOpts {
     /// Owner of every copied entry and of the directories the copy creates.
     /// `None` keeps each source entry's owner, as `COPY --from` without
     /// `--chown` does; the parents it creates then keep the process's
     /// owner. Context sources without `--chown` pass `0:0`, Docker's rule.
     pub owner: Option<Owner>,
-    /// Permission bits (`& 0o7777`) for every copied entry but symlinks,
-    /// directories included, as `--chmod` in octal. `None` keeps the raw
-    /// bits of the source.
-    pub chmod: Option<u32>,
+    /// `--chmod` for every copied entry but symlinks, directories included,
+    /// as BuildKit applies it (Q-120): an octal mode replaces the bits and
+    /// is also the mode of the directories the copy creates; a symbolic one
+    /// changes each entry's own bits. `None` keeps the raw bits of the
+    /// source, and created directories get `0755`.
+    pub chmod: Option<Chmod>,
 }
 
 /// Copies `from` in the root `src` to `to` in the root `dst`.
 ///
 /// - `from` is resolved inside `src`, following symlinks there, the last
-///   one included [open: Q-120]; `""` or `/` names the root of `src`.
+///   one included, as BuildKit (Q-120); `""` or `/` names the root of
+///   `src`.
 /// - A directory has its contents copied into the directory `to`: `to`
 ///   and its missing parents are created (mode `0755`, owner
 ///   [`CopyOpts::owner`]; `to` gets the source directory's owner when
@@ -62,10 +61,14 @@ pub struct CopyOpts {
 ///
 /// Inside a copied directory, symlinks are copied as they are, never
 /// followed; hardlinks between copied entries are kept; FIFOs and device
-/// nodes are recreated, never opened (a device node needs `CAP_MKNOD`);
-/// sockets are skipped. Each entry gets the source's owner or
-/// [`CopyOpts::owner`], raw mode or [`CopyOpts::chmod`], modification time
-/// (also as access time) and `security.capability`. Directories over
+/// nodes are recreated, never opened (a device node needs `CAP_MKNOD`); a
+/// socket becomes an empty regular file with its mode, as BuildKit's
+/// `copyDevice` makes it (`fsutil copy_nowindows.go:33-45`). Each entry
+/// gets the source's owner or [`CopyOpts::owner`], raw mode or
+/// [`CopyOpts::chmod`], modification time (also as access time) and its
+/// xattrs, as BuildKit copies them all (Q-120) except overlay's own; an
+/// xattr the destination refuses is left out with a warning, as BuildKit
+/// only logs it. Directories over
 /// directories merge; any other entry in the way is replaced, except that a
 /// non-directory never replaces a directory. Directory modes and times are
 /// set last, deepest first.
@@ -119,7 +122,7 @@ pub fn copy_filtered(
     let _entered = span.enter();
     let mut c = Copier {
         dst,
-        o: *o,
+        o: o.clone(),
         keep,
         dst_dirs: HashSet::new(),
         links: HashMap::new(),
@@ -190,7 +193,6 @@ impl Copier<'_> {
                 self.check_not_inside(&st, from)?;
                 self.walk(sfd, dfd, pending, from, &to)
             }
-            FileType::Socket => Ok(()),
             _ => {
                 let (parent, name) = path::entry(&to)?;
                 let pfd = self.parents(&parent)?;
@@ -228,7 +230,7 @@ impl Copier<'_> {
                         file_type: FileType::Directory,
                         parent: None,
                     };
-                    meta::apply(&h, m, &frame.to)?;
+                    meta::apply_lenient(&h, m, &frame.to)?;
                 }
                 continue;
             };
@@ -253,7 +255,14 @@ impl Copier<'_> {
                 FileType::Directory => {
                     self.check_not_inside(&st, &from)?;
                     let s = meta::reopen(pin.as_fd(), OFlags::RDONLY | OFlags::DIRECTORY, &from)?;
-                    let (d, m) = self.dir_entry(top.dst.as_fd(), &name, &to, &st)?;
+                    let (d, mut m) = self.dir_entry(top.dst.as_fd(), &name, &to, &st)?;
+                    m.xattrs = meta::read_xattrs(
+                        s.as_fd(),
+                        FileType::Directory,
+                        None,
+                        Xattrs::Copy,
+                        &from,
+                    )?;
                     let names = sorted_names(s.as_fd(), &from)?;
                     stack.push(Frame {
                         src: s,
@@ -264,9 +273,6 @@ impl Copier<'_> {
                         names,
                     });
                 }
-                // A socket is bound to a running process; there is nothing
-                // to copy.
-                FileType::Socket => {}
                 _ => {
                     let sparent = Some((top.src.as_fd(), name.as_os_str()));
                     self.node(pin.as_fd(), &st, sparent, top.dst.as_fd(), &name, &to)?;
@@ -308,7 +314,7 @@ impl Copier<'_> {
         self.set_owner(fd.as_fd(), pfd.as_fd(), name, uid, gid, to)?;
         self.stats.dirs += 1;
         let pending = Meta {
-            mode: Some(CREATED_DIR_MODE),
+            mode: Some(Chmod::created_dir_mode(self.o.chmod.as_ref())),
             atime: Some(st.mtime),
             mtime: Some(st.mtime),
             ..Meta::default()
@@ -418,7 +424,7 @@ impl Copier<'_> {
             mtime: Some(st.mtime),
             xattrs: Vec::new(),
         };
-        self.stats.bytes += copy_node(pin, st, sparent, Xattrs::Capability, pfd, name, m, to)?;
+        self.stats.bytes += copy_node(pin, st, sparent, Xattrs::Copy, pfd, name, m, to)?;
         self.stats.files += 1;
         if st.nlink > 1 {
             self.links.insert(key, to.to_owned());
@@ -439,16 +445,14 @@ impl Copier<'_> {
             match self.dst.resolve_dir_in(&prefix, Mounts::Stay) {
                 Ok(fd) => cur = fd,
                 Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
-                    let created = match rustix::fs::mkdirat(
-                        &cur,
-                        name,
-                        Mode::from_raw_mode(CREATED_DIR_MODE),
-                    ) {
-                        Ok(()) => true,
-                        // A dangling symlink: resolving it fails below.
-                        Err(Errno::EXIST) => false,
-                        Err(e) => return Err(io_err("mkdir", &prefix, e)),
-                    };
+                    let dir_mode = Chmod::created_dir_mode(self.o.chmod.as_ref());
+                    let created =
+                        match rustix::fs::mkdirat(&cur, name, Mode::from_raw_mode(dir_mode)) {
+                            Ok(()) => true,
+                            // A dangling symlink: resolving it fails below.
+                            Err(Errno::EXIST) => false,
+                            Err(e) => return Err(io_err("mkdir", &prefix, e)),
+                        };
                     let fd = self
                         .dst
                         .resolve_dir_in(&prefix, Mounts::Stay)
@@ -457,7 +461,7 @@ impl Copier<'_> {
                         let m = Meta {
                             uid: self.o.owner.map(|o| o.uid),
                             gid: self.o.owner.map(|o| o.gid),
-                            mode: Some(CREATED_DIR_MODE),
+                            mode: Some(dir_mode),
                             ..Meta::default()
                         };
                         let h = Handle::Path {
@@ -514,9 +518,9 @@ impl Copier<'_> {
     }
 
     fn mode_of(&self, st: &Stat) -> u32 {
-        self.o
-            .chmod
-            .map_or(st.permissions(), |m| m & meta::PERMISSION_BITS)
+        self.o.chmod.as_ref().map_or(st.permissions(), |m| {
+            m.apply(st.permissions(), st.file_type() == FileType::Directory) & meta::PERMISSION_BITS
+        })
     }
 }
 
@@ -543,6 +547,24 @@ pub(crate) fn copy_node(
 ) -> Result<u64> {
     let file_type = st.file_type();
     m.xattrs = meta::read_xattrs(pin, file_type, sparent, which, path)?;
+    let set_meta = |h: &Handle<'_>, m: &Meta| {
+        if which == Xattrs::Copy {
+            meta::apply_lenient(h, m, path)
+        } else {
+            meta::apply(h, m, path)
+        }
+    };
+    // A symlink or a node made by name: pinned again, never followed.
+    let set_meta_at = |pfd: BorrowedFd<'_>, name: &OsStr, m: &Meta| -> Result<()> {
+        let fd = root::open_name(pfd, name, OFlags::PATH | OFlags::NOFOLLOW, 0, false, path)?;
+        let file_type = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?.file_type();
+        let h = Handle::Path {
+            fd: fd.as_fd(),
+            file_type,
+            parent: Some((pfd, name)),
+        };
+        set_meta(&h, m)
+    };
     match file_type {
         FileType::Regular => {
             let src = meta::reopen(pin, OFlags::RDONLY, path)?;
@@ -564,8 +586,22 @@ pub(crate) fn copy_node(
                     source,
                 }
             })?;
-            meta::apply(&Handle::Open(out.as_fd()), &m, path)?;
+            set_meta(&Handle::Open(out.as_fd()), &m)?;
             Ok(n)
+        }
+        // BuildKit's `copyDevice` clears the socket bit and calls `mknod`,
+        // which makes an empty regular file with the socket's mode.
+        FileType::Socket => {
+            let out = root::open_name(
+                pfd,
+                name,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
+                0o600,
+                true,
+                path,
+            )?;
+            set_meta(&Handle::Open(out.as_fd()), &m)?;
+            Ok(0)
         }
         FileType::Symlink => {
             let target = rustix::fs::readlinkat(pin, "", Vec::new())
@@ -573,7 +609,7 @@ pub(crate) fn copy_node(
             rustix::fs::symlinkat(target.as_c_str(), pfd, name)
                 .map_err(|e| io_err("symlink", path, e))?;
             m.mode = None;
-            root::set_meta_at(pfd, name, &m, None, path).map(|_| 0)
+            set_meta_at(pfd, name, &m).map(|()| 0)
         }
         FileType::Fifo | FileType::CharDevice | FileType::BlockDevice => {
             let t = match file_type {
@@ -589,11 +625,11 @@ pub(crate) fn copy_node(
                 rustix::fs::makedev(st.rdev_major, st.rdev_minor),
             )
             .map_err(|e| io_err("mknod", path, e))?;
-            root::set_meta_at(pfd, name, &m, None, path).map(|_| 0)
+            set_meta_at(pfd, name, &m).map(|()| 0)
         }
-        FileType::Directory | FileType::Socket | FileType::Unknown => Err(Error::InvalidPath {
+        FileType::Directory | FileType::Unknown => Err(Error::InvalidPath {
             path: path.to_owned(),
-            reason: "only a file, symlink, FIFO or device node is copied as one entry",
+            reason: "only a file, symlink, FIFO, socket or device node is copied as one entry",
         }),
     }
 }

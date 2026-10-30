@@ -6,8 +6,9 @@
 //! `mutate.Canonical` (`:2104`). ranikust reads the clock once per build:
 //! the caller passes it in, so this crate holds no global state and reads no
 //! environment. Under `--reproducible` the time is `SOURCE_DATE_EPOCH` when
-//! set, else the Unix epoch [open: Q-161], and it is also every layer
-//! header's mtime.
+//! set, else the Unix epoch, which equals BuildKit with `SOURCE_DATE_EPOCH=0`
+//! (Q-161, `ADR-0032`); layer header mtimes later than it are clamped to it,
+//! as BuildKit's `rewrite-timestamp` does.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,7 +67,7 @@ impl BuildTime {
         self.reproducible
     }
 
-    /// The mtime every layer header gets: the fixed time under
+    /// The latest mtime a layer header may carry: the fixed time under
     /// `--reproducible`, else `None` (each file keeps its own), as
     /// [`rnk_layer::EncodeOptions::mtime`] takes it.
     pub fn layer_mtime(&self) -> Option<i64> {

@@ -21,14 +21,15 @@ use rnk_dockerfile::{
     chomp_heredoc_content, parse_heredoc_marker,
 };
 use rnk_oci::{CommandLine, ConfigEdit, HealthConfig, ImageConfig, ImageFormat, Platform};
-use rnk_rootfs::{CopyOpts, Meta, OpenHow, Owner, RootPath};
+use rnk_rootfs::{Chmod, CopyOpts, Meta, OpenHow, Owner, RootPath};
 use rnk_sandbox::{BindMount, MountKind, Network, RunSpec, Sandbox};
 use rnk_snapshot::{Base, LayerDiff, Snapshotter, StageRootfs};
 use rnk_store::Store;
 use tracing::{debug_span, info, info_span};
 
 use crate::error::{Error, Result};
-use crate::image::layer_history;
+use crate::history;
+use crate::image::instruction_history;
 use crate::layer::{BlobLayer, LayerDemand, LayerExporter, LayerSource};
 use crate::pull::PulledImage;
 use crate::sources::{self, ContextFiles};
@@ -213,16 +214,9 @@ pub fn build_stage<S: Snapshotter>(
     }
     let (root, scope, config, layers, base_format) = match &input.base {
         StageBase::Scratch => {
-            // kaniko gives `FROM scratch` a `PATH` (`ScratchEnvVars`,
-            // `kaniko@44aa7ddc0 pkg/constants/constants.go:62`); an image
-            // without one keeps none [open: Q-185].
             let config = ImageConfig {
                 architecture: cx.platform.architecture.clone(),
                 os: cx.platform.os.clone(),
-                config: Some(rnk_oci::ContainerConfig {
-                    env: Some(vec![format!("PATH={}", rnk_dockerfile::DEFAULT_PATH)]),
-                    ..rnk_oci::ContainerConfig::default()
-                }),
                 ..ImageConfig::default()
             };
             let scope = input.graph.scope_from_image::<&str>(&[]);
@@ -278,6 +272,8 @@ pub fn build_stage<S: Snapshotter>(
             )
         }
     };
+    let mut config = config;
+    with_default_path(&mut config);
     let mut b = Builder {
         cx,
         input: &input,
@@ -287,6 +283,7 @@ pub fn build_stage<S: Snapshotter>(
         config,
         layers,
         new_layers: 0,
+        cmd_set: false,
         scripts: Vec::new(),
     };
     let result = b.run();
@@ -318,6 +315,8 @@ struct Builder<'c, 'i, S: Snapshotter> {
     config: ImageConfig,
     layers: Vec<BlobLayer>,
     new_layers: u64,
+    /// Whether this stage ran a `CMD`, which a later `ENTRYPOINT` keeps.
+    cmd_set: bool,
     /// Scripts of `#!` heredocs, removed when the stage ends.
     scripts: Vec<tempfile::NamedTempFile>,
 }
@@ -361,40 +360,109 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
     fn execute(&mut self, index: usize, instruction: &Located<Instruction>) -> Result<()> {
         let expanded = self.scope.apply(instruction)?;
         let _span = debug_span!("rnk_builder.execute").entered();
-        let code = instruction.code.as_str();
+        // Each instruction adds its history entry as BuildKit's dispatcher
+        // does (Q-131, `ADR-0032`); `ONBUILD` adds none.
         match expanded.value {
-            Instruction::Arg(_) => Ok(()),
-            Instruction::Env(kvs) => self.edit(ConfigEdit::Env(
-                kvs.into_iter().map(|kv| (kv.key, kv.value)).collect(),
-            )),
-            Instruction::Label(kvs) => self.edit(ConfigEdit::Label(
-                kvs.into_iter().map(|kv| (kv.key, kv.value)).collect(),
-            )),
-            Instruction::User(user) => self.edit(ConfigEdit::User(user)),
-            Instruction::Expose(ports) => self.edit(ConfigEdit::Expose(ports)),
-            // Config only, as Docker and BuildKit: the directories are not
-            // created [open: Q-180].
-            Instruction::Volume(volumes) => self.edit(ConfigEdit::Volume(volumes)),
-            Instruction::Entrypoint(cmd) => self.edit(ConfigEdit::Entrypoint(command_line(cmd))),
-            Instruction::Cmd(cmd) => self.edit(ConfigEdit::Cmd(command_line(cmd))),
-            Instruction::Shell(shell) => self.edit(ConfigEdit::Shell(shell)),
-            Instruction::StopSignal(signal) => self.edit(ConfigEdit::StopSignal(signal)),
-            Instruction::Healthcheck(h) => self.edit(ConfigEdit::Healthcheck(health(&h))),
-            Instruction::Onbuild(trigger) => self.edit(ConfigEdit::OnBuild(trigger)),
+            Instruction::Arg(decls) => {
+                self.history(&history::arg(&decls));
+                Ok(())
+            }
+            Instruction::Env(kvs) => {
+                let text: String = kvs
+                    .iter()
+                    .map(|kv| format!(" {}={}", kv.key, kv.value))
+                    .collect();
+                let pairs = kvs.into_iter().map(|kv| (kv.key, kv.value)).collect();
+                self.edit(ConfigEdit::Env(pairs), &format!("ENV{text}"))
+            }
+            Instruction::Label(kvs) => {
+                let text: String = kvs
+                    .iter()
+                    .map(|kv| format!(" {}={}", kv.key, kv.value))
+                    .collect();
+                let pairs = kvs.into_iter().map(|kv| (kv.key, kv.value)).collect();
+                self.edit(ConfigEdit::Label(pairs), &format!("LABEL{text}"))
+            }
+            Instruction::User(user) => {
+                let text = format!("USER {user}");
+                self.edit(ConfigEdit::User(user), &text)
+            }
+            Instruction::Expose(ports) => {
+                let text = format!("EXPOSE {}", rnk_oci::exposed_ports(&ports)?.join(" "));
+                self.edit(ConfigEdit::Expose(ports), &text)
+            }
+            // Config only, as BuildKit: the directories are not created
+            // (Q-180).
+            Instruction::Volume(volumes) => {
+                let text = format!("VOLUME {}", history::go_list(&volumes));
+                self.edit(ConfigEdit::Volume(volumes), &text)
+            }
+            Instruction::Entrypoint(cmd) => {
+                let edit = ConfigEdit::Entrypoint {
+                    command: command_line(cmd),
+                    keep_cmd: self.cmd_set,
+                };
+                edit.apply(&mut self.config)?;
+                let args = self
+                    .run_field(|c| c.entrypoint.as_ref())
+                    .unwrap_or_default();
+                self.history(&format!("ENTRYPOINT {}", history::go_quoted_list(&args)));
+                Ok(())
+            }
+            Instruction::Cmd(cmd) => {
+                ConfigEdit::Cmd(command_line(cmd)).apply(&mut self.config)?;
+                self.cmd_set = true;
+                let args = self.run_field(|c| c.cmd.as_ref()).unwrap_or_default();
+                self.history(&format!("CMD {}", history::go_quoted_list(&args)));
+                Ok(())
+            }
+            Instruction::Shell(shell) => {
+                let text = format!("SHELL {}", history::go_list(&shell));
+                self.edit(ConfigEdit::Shell(shell), &text)
+            }
+            Instruction::StopSignal(signal) => {
+                let text = format!("STOPSIGNAL {signal}");
+                self.edit(ConfigEdit::StopSignal(signal), &text)
+            }
+            Instruction::Healthcheck(h) => self.edit(
+                ConfigEdit::Healthcheck(health(&h)),
+                &history::healthcheck(&h),
+            ),
+            Instruction::Onbuild(trigger) => {
+                ConfigEdit::OnBuild(trigger).apply(&mut self.config)?;
+                Ok(())
+            }
             Instruction::Maintainer(name) => {
+                self.history(&format!("MAINTAINER {name}"));
                 self.config.author = Some(name);
                 Ok(())
             }
-            Instruction::Workdir(dir) => self.workdir(dir, code),
-            Instruction::Run(run) => self.run_command(run, code),
-            Instruction::Copy(c) => self.copy(index, c, code),
-            Instruction::Add(a) => self.add(index, a, code),
+            Instruction::Workdir(dir) => self.workdir(dir),
+            Instruction::Run(run) => self.run_command(run),
+            Instruction::Copy(c) => self.copy(index, c),
+            Instruction::Add(a) => self.add(index, a),
         }
     }
 
-    fn edit(&mut self, edit: ConfigEdit) -> Result<()> {
+    /// Applies a metadata edit and adds its history entry.
+    fn edit(&mut self, edit: ConfigEdit, text: &str) -> Result<()> {
         edit.apply(&mut self.config)?;
+        self.history(text);
         Ok(())
+    }
+
+    /// Adds the history entry of an instruction that made no layer.
+    fn history(&mut self, text: &str) {
+        self.config
+            .push_history(instruction_history(text, self.cx.time));
+    }
+
+    /// A field of the config's `config` object.
+    fn run_field<T: Clone>(
+        &self,
+        f: impl FnOnce(&rnk_oci::ContainerConfig) -> Option<&T>,
+    ) -> Option<T> {
+        self.config.config.as_ref().and_then(f).cloned()
     }
 
     fn working_dir(&self) -> PathBuf {
@@ -446,7 +514,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             let blob = self.cx.exporter.export(Box::new(DiffLayer(diff)))?;
             self.config.push_layer(
                 blob.diff_id.clone(),
-                layer_history(created_by, self.cx.time),
+                instruction_history(created_by, self.cx.time),
             );
             self.layers.push(blob);
         } else {
@@ -456,36 +524,28 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         Ok(())
     }
 
-    fn workdir(&mut self, dir: String, code: &str) -> Result<()> {
-        self.edit(ConfigEdit::Workdir(dir))?;
+    /// `WORKDIR`, as BuildKit's `dispatchWorkdir` (`buildkit@cd8ee244
+    /// frontend/dockerfile/dockerfile2llb/convert.go:1513-1570`): a directory
+    /// other than `/` is made with `mkdir -p` in a layer of its own, even
+    /// when it exists (an empty layer then), the directories it creates
+    /// owned by the active user, mode `0755`.
+    fn workdir(&mut self, dir: String) -> Result<()> {
+        ConfigEdit::Workdir(dir).apply(&mut self.config)?;
         let wd = self.working_dir();
-        let exists = match self.root.view()?.statx(&wd) {
-            Ok(_) => true,
-            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => false,
-            Err(e) => return Err(e.into()),
-        };
-        if exists {
+        let text = format!(
+            "WORKDIR {}",
+            self.run_field(|c| c.working_dir.as_ref())
+                .unwrap_or_else(|| "/".to_owned())
+        );
+        if wd == Path::new("/") {
+            self.history(&text);
             return Ok(());
         }
-        // kaniko creates it, owned by the active user, in a layer of its
-        // own (`kaniko@44aa7ddc0 pkg/commands/workdir.go`).
         let user = self.user();
-        self.layer(code, |_, root| {
-            root.create_dir_all(&wd, 0o755)?;
-            if !user.is_empty() {
-                let u = rnk_rootfs::lookup_user(root, &user)?;
-                let m = Meta {
-                    uid: Some(u.uid),
-                    gid: Some(u.gid),
-                    ..Meta::default()
-                };
-                root.set_meta(&wd, &m)?;
-            }
-            Ok(())
-        })
+        self.layer(&text, |_, root| make_workdir(root, &wd, &user))
     }
 
-    fn run_command(&mut self, run: rnk_dockerfile::Run, code: &str) -> Result<()> {
+    fn run_command(&mut self, run: rnk_dockerfile::Run) -> Result<()> {
         if run.security == Security::Insecure {
             return Err(Error::Invalid(
                 "RUN --security=insecure is not supported".to_owned(),
@@ -539,7 +599,11 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
         let user = self.user();
-        self.layer(code, move |b, _root| {
+        let text = format!(
+            "{} # buildkit",
+            history::run(&argv, self.scope.args(), self.scope.env())
+        );
+        self.layer(&text, move |b, _root| {
             let mut spec = RunSpec::new(
                 b.root.mount_point(),
                 argv.into_iter().map(OsString::from).collect(),
@@ -611,7 +675,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         Ok(out)
     }
 
-    fn add(&mut self, index: usize, a: Add, code: &str) -> Result<()> {
+    fn add(&mut self, index: usize, a: Add) -> Result<()> {
         if !a.checksum.is_empty() || a.keep_git_dir.is_some() || a.unpack == Some(true) {
             return Err(Error::Invalid(
                 "ADD --checksum, --keep-git-dir and --unpack are not supported yet (Phase 5)"
@@ -634,18 +698,18 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             parents: false,
             excludes: a.excludes,
         };
-        self.copy_like(index, c, code, a.unpack != Some(false))
+        self.copy_like(index, c, true, a.unpack != Some(false))
     }
 
-    fn copy(&mut self, index: usize, c: Copy, code: &str) -> Result<()> {
-        self.copy_like(index, c, code, false)
+    fn copy(&mut self, index: usize, c: Copy) -> Result<()> {
+        self.copy_like(index, c, false, false)
     }
 
     fn copy_like(
         &mut self,
         index: usize,
         c: Copy,
-        code: &str,
+        is_add: bool,
         refuse_archives: bool,
     ) -> Result<()> {
         if c.link || c.parents || !c.excludes.is_empty() {
@@ -654,6 +718,11 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             ));
         }
         let chmod = parse_chmod(&c.chmod)?;
+        let heredocs: Vec<String> = c.contents.iter().map(|h| h.path.clone()).collect();
+        let text = format!(
+            "{} # buildkit",
+            history::copy(is_add, &c.chown, &c.chmod, &c.sources, &heredocs, &c.dest)
+        );
         let dest = destination(&c.dest, &self.working_dir());
         let dest_is_dir = c.dest.ends_with('/') || c.dest == "." || c.dest.ends_with("/.");
         let cx = self.cx;
@@ -685,18 +754,14 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             };
             resolved.extend(found);
         }
-        if resolved.len() + c.contents.len() > 1 && !dest_is_dir {
-            return Err(Error::Invalid(
-                "when copying more than one source, the destination must be a directory \
-                 and end with a /"
-                    .to_owned(),
-            ));
-        }
+        // BuildKit has no "several sources need a destination ending in /"
+        // rule: each source is copied in turn, a later file over an earlier
+        // one when the destination is not a directory (Q-080, `ADR-0032`).
         let from_context = matches!(source, CopySource::Context);
         let chown = c.chown.clone();
         let files = cx.context_files;
         let contents = c.contents;
-        self.layer(code, |_, root| {
+        self.layer(&text, |_, root| {
             let owner = if chown.is_empty() {
                 // Docker's rule: context files belong to root; files from
                 // a stage keep their owners.
@@ -704,7 +769,10 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             } else {
                 Some(rnk_rootfs::lookup_owner(root, &chown)?)
             };
-            let opts = CopyOpts { owner, chmod };
+            let opts = CopyOpts {
+                owner,
+                chmod: chmod.clone(),
+            };
             // An existing directory, or a symlink to one inside the root, as
             // BuildKit follows it: the copy goes inside.
             let into_dir = |root: &RootPath| -> Result<bool> {
@@ -751,7 +819,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 } else {
                     dest.clone()
                 };
-                write_content(root, &to, content, opts)?;
+                write_content(root, &to, content, &opts)?;
             }
             Ok(())
         })
@@ -1000,16 +1068,56 @@ fn secret_mount(
     }))
 }
 
-/// `--chmod`, octal only [open: Q-120].
-fn parse_chmod(s: &str) -> Result<Option<u32>> {
+/// `--chmod`: octal or symbolic, as BuildKit (Q-120).
+fn parse_chmod(s: &str) -> Result<Option<Chmod>> {
     if s.is_empty() {
         return Ok(None);
     }
-    u32::from_str_radix(s, 8)
-        .ok()
-        .filter(|m| *m <= 0o7777)
-        .map(Some)
-        .ok_or_else(|| Error::Invalid(format!("--chmod={s}: only octal modes are supported")))
+    Ok(Some(Chmod::parse(s)?))
+}
+
+/// Adds BuildKit's default `PATH` to a config without one, except on
+/// Windows (`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert.go:792-802`;
+/// Q-185, `ADR-0032`). `FROM scratch` gets it this way too.
+fn with_default_path(config: &mut ImageConfig) {
+    if config.os == "windows" {
+        return;
+    }
+    let run = config.config.get_or_insert_with(Default::default);
+    let env = run.env.get_or_insert_with(Vec::new);
+    if !env.iter().any(|e| e.split('=').next() == Some("PATH")) {
+        env.push(format!("PATH={}", rnk_dockerfile::DEFAULT_PATH));
+    }
+}
+
+/// `mkdir -p` of the working directory `wd` inside `root`, symlinks
+/// followed inside the root, as BuildKit's `MkdirAll`: each directory it
+/// creates gets mode `0755` and, when `user` is set, that user's ids.
+fn make_workdir(root: &RootPath, wd: &Path, user: &str) -> Result<()> {
+    let ids = if user.is_empty() {
+        None
+    } else {
+        Some(rnk_rootfs::lookup_user(root, user)?)
+    };
+    let mut at = PathBuf::from("/");
+    for c in wd.components() {
+        at.push(c);
+        match root.open_at(&at, &OpenHow::path().directory()) {
+            Ok(_) => continue,
+            Err(e) if e.raw_os_error() == Some(ENOENT) => {}
+            Err(e) => return Err(e.into()),
+        }
+        root.create_dir_all(&at, 0o755)?;
+        if let Some(u) = &ids {
+            let m = Meta {
+                uid: Some(u.uid),
+                gid: Some(u.gid),
+                ..Meta::default()
+            };
+            root.set_meta(&at, &m)?;
+        }
+    }
+    Ok(())
 }
 
 /// A `COPY` destination inside the root: absolute, or relative to the
@@ -1055,7 +1163,7 @@ fn write_content(
     root: &RootPath,
     to: &Path,
     content: &SourceContent,
-    opts: CopyOpts,
+    opts: &CopyOpts,
 ) -> Result<()> {
     if let Some(parent) = to.parent() {
         root.create_dir_all(parent, 0o755)?;
@@ -1072,7 +1180,7 @@ fn write_content(
     let m = Meta {
         uid: opts.owner.map(|o| o.uid),
         gid: opts.owner.map(|o| o.gid),
-        mode: Some(opts.chmod.unwrap_or(0o644)),
+        mode: Some(opts.chmod.as_ref().map_or(0o644, |c| c.apply(0o644, false))),
         ..Meta::default()
     };
     root.set_meta(to, &m)?;
@@ -1170,12 +1278,16 @@ mod tests {
     }
 
     #[test]
-    fn chmod_is_octal_only() {
+    fn chmod_is_octal_or_symbolic() {
         assert_eq!(parse_chmod("").unwrap(), None);
-        assert_eq!(parse_chmod("755").unwrap(), Some(0o755));
-        assert_eq!(parse_chmod("4755").unwrap(), Some(0o4755));
-        assert!(parse_chmod("u+x").is_err());
+        assert_eq!(parse_chmod("755").unwrap(), Some(Chmod::Octal(0o755)));
+        assert_eq!(parse_chmod("4755").unwrap(), Some(Chmod::Octal(0o4755)));
+        assert!(matches!(
+            parse_chmod("u+x").unwrap(),
+            Some(Chmod::Symbolic(_))
+        ));
         assert!(parse_chmod("17777").is_err());
+        assert!(parse_chmod("u+q").is_err());
     }
 
     #[test]
