@@ -1047,6 +1047,28 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-200: How does the e2e suite's `ranikust` reach a plain-HTTP registry?
+
+- **Blocks:** Phase 1 task 13 (the `ranikust` leg of `just test-vm e2e`);
+  **Area:** `ranikust`, tests
+- **Context:** the acceptance workloads push to, and pull their base and
+  tools images from, a plain-HTTP registry (`registry:5000`, as
+  `nextjs-kaniko`'s compose file and `run-fair.sh`), which kaniko reaches
+  with `--insecure-registry` and BuildKit with `http = true` in
+  `buildkitd.toml`. `rnk-registry` already supports insecure registries
+  (`ClientOptions::insecure`), but the CLI refuses `--insecure*` until the
+  flag list is fixed ([Q-023](#q-023-which-other-kaniko-flags-and-variables-are-accepted)).
+  `tests/vm/guest/e2e.sh` passes `--insecure-registry=registry:5000`; the
+  refusal is recorded as `pending`.
+- **Options:** (a) accept `--insecure-registry` with kaniko's meaning in
+  Phase 1, as part of Q-023; (b) serve the e2e registry over TLS with a
+  self-signed CA and pass `--registry-certificate` to every builder, which
+  changes the reference setup of experiments 07 and 08.
+- **Recommendation:** (a): the references and the bench harness use it, and
+  the client already implements it.
+- **Interim:** the suite passes kaniko's flag and waits.
+- **Raised:** 2026-10-30
+
 ### Q-034: When must a lazily skipped stage still be snapshotted?
 
 - **Blocks:** Phase 2; **Area:** `rnk-snapshot`, `rnk-sched`

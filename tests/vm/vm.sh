@@ -2,7 +2,7 @@
 # The T2 harness: runs test suites as real root in a disposable QEMU/KVM VM,
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
-#   tests/vm/vm.sh [suite]...     suites: unit, smoke; default both
+#   tests/vm/vm.sh [suite]...     suites: unit, smoke, e2e; default unit smoke
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
@@ -16,7 +16,11 @@
 #                        or jammy (22.04, kernel 5.15)
 #   RANIKUST_VM_CACHE    verified image cache, default ~/.cache/ranikust/vm
 #   RANIKUST_VM_CPUS     vCPUs, default 4
-#   RANIKUST_VM_MEM      memory in MiB, default 4096
+#   RANIKUST_VM_MEM      memory in MiB, default 4096 (12288 with e2e)
+#   RANIKUST_VM_DISK     disk size, default 20G (80G with e2e)
+#   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout e2e reads, default
+#                        ../nextjs-kaniko next to the repository
+#   RANIKUST_E2E_*       options of the e2e suite (tests/vm/guest/e2e.sh)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -35,7 +39,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 SUITES=("$@")
 [ ${#SUITES[@]} -gt 0 ] || SUITES=(unit smoke)
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke) ;; *) die "unknown suite '$s' (unit, smoke)" ;; esac
+  case "$s" in unit | smoke | e2e) ;; *) die "unknown suite '$s' (unit, smoke, e2e)" ;; esac
 done
 case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 [ "$(id -u)" != 0 ] || die "run as a regular user: QEMU needs /dev/kvm, not root"
@@ -45,6 +49,19 @@ for tool in qemu-system-x86_64 qemu-img xorriso ssh ssh-keygen curl sha256sum jq
 done
 
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
+
+DISK="${RANIKUST_VM_DISK:-20G}"
+if wants e2e; then
+  # Three builders of W1 (about 3 GB of rootfs each), their images in the
+  # registry and the npm proxy's storage.
+  MEM="${RANIKUST_VM_MEM:-12288}"
+  DISK="${RANIKUST_VM_DISK:-80G}"
+  # Next to the main checkout, also when this is a git worktree.
+  MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
+  NEXTJS="${RANIKUST_NEXTJS_KANIKO:-$(dirname "$MAIN")/nextjs-kaniko}"
+  [ -f "$NEXTJS/bench/run-fair.sh" ] || die "no nextjs-kaniko checkout at $NEXTJS (set RANIKUST_NEXTJS_KANIKO)"
+  command -v podman >/dev/null || die "missing podman (e2e saves the reference images from it)"
+fi
 
 # --- Build: static binaries and the guest tree -------------------------------
 
@@ -69,10 +86,33 @@ if wants unit; then
     jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
-if wants smoke; then
+if wants smoke || wants e2e; then
   log "building the smoke-build example and the ranikust binary"
   (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
   cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
+fi
+
+if wants e2e; then
+  # The reference images, saved once from the host's podman (where
+  # nextjs-kaniko's harness built or pulled them) and kept in the cache.
+  E2E_IMAGES=(localhost/kaniko-bench:stream docker.io/library/registry:2 docker.io/verdaccio/verdaccio:6.1.6
+    docker.io/moby/buildkit@sha256:f8a833b2de9d68e27f0815e4a737abdfaf8a2e4c615650557df11025101557b4)
+  E2E_NAMES=(localhost/kaniko-bench:stream registry:2 verdaccio/verdaccio:6.1.6 rnk-e2e/buildkit:v0.33.1-rootless)
+  # One archive per image: Docker with the containerd store gives a loaded
+  # image another ID, so the guest tags what each `docker load` reports.
+  mkdir -p "$CACHE/e2e"
+  : >"$STAGE/e2e-images.txt"
+  for i in "${!E2E_IMAGES[@]}"; do
+    id="$(SUPPRESS_BOLTDB_WARNING=1 podman image inspect -f '{{.Id}}' "${E2E_IMAGES[$i]}" 2>/dev/null)" ||
+      die "podman has no ${E2E_IMAGES[$i]} (nextjs-kaniko's harness uses it)"
+    if [ ! -f "$CACHE/e2e/$id.tar" ]; then
+      log "saving ${E2E_IMAGES[$i]} to $CACHE/e2e/"
+      SUPPRESS_BOLTDB_WARNING=1 podman save -q --format docker-archive -o "$CACHE/e2e/$id.tar.part" "$id"
+      mv "$CACHE/e2e/$id.tar.part" "$CACHE/e2e/$id.tar"
+    fi
+    echo "$id ${E2E_NAMES[$i]}" >>"$STAGE/e2e-images.txt"
+  done
+  env | grep '^RANIKUST_E2E_' | sed 's/^/export /' >"$STAGE/e2e.env" || true
 fi
 
 # --- Image: fetch and verify against SHA256SUMS ------------------------------
@@ -135,7 +175,7 @@ sed "s|@SSH_KEY@|$(cat "$RUN/key.pub")|" "$HERE/cloud-init/user-data" >"$RUN/see
 printf 'instance-id: ranikust-vm-%s\nlocal-hostname: ranikust-vm\n' "$(basename "$RUN")" >"$RUN/seed/meta-data"
 xorriso -as mkisofs -quiet -output "$RUN/seed.iso" -volid cidata -joliet -rock \
   "$RUN/seed/user-data" "$RUN/seed/meta-data"
-qemu-img create -q -f qcow2 -F qcow2 -b "$IMG" "$RUN/disk.qcow2" 20G
+qemu-img create -q -f qcow2 -F qcow2 -b "$IMG" "$RUN/disk.qcow2" "$DISK"
 
 PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 log "booting $RELEASE ($CPUS vCPUs, $MEM MiB), SSH on 127.0.0.1:$PORT"
@@ -164,6 +204,11 @@ vssh 'cloud-init status --wait >/dev/null; test -e /var/lib/ranikust-vm-ready' |
 
 log "copying in $(du -sh "$STAGE" | cut -f1)"
 tar -C "$STAGE" -cf - . | vssh 'mkdir rnk && tar -C rnk -xf -'
+if wants e2e; then
+  log "copying in the e2e seed (images, registry, npm proxy storage, workloads)"
+  python3 -I "$HERE/e2e-seed.py" "$NEXTJS" "$CACHE/e2e" "$STAGE/e2e-images.txt" |
+    vssh 'mkdir -p rnk/e2e && tar -C rnk/e2e -xf -'
+fi
 
 set +e
 vssh "bash rnk/guest/run.sh ${SUITES[*]}"

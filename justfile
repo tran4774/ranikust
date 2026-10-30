@@ -192,6 +192,6 @@ smoke image="docker.io/library/alpine:3.20":
     [ "$a" = "$b" ] || { echo "error: --reproducible digests differ: $a, $b" >&2; exit 1; }
     echo "smoke: ok"
 
-# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
+# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker; `e2e`, only when named: the nextjs-kaniko workloads against kaniko and BuildKit) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
 test-vm *suites:
     tests/vm/vm.sh {{ suites }}
