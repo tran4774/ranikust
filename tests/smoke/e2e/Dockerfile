@@ -15,6 +15,16 @@ RUN echo "$GREETING from ranikust" > hello && cat app.txt >> hello
 RUN --mount=type=cache,target=/cache echo cached > /cache/stamp && ls /cache > cache-list
 RUN --network=none test "$(ls /sys/class/net)" = lo
 RUN --mount=type=secret,id=token test "$(cat /run/secrets/token)" = s3cr3t
+# BuildKit's secret file: 0400 and root's unless asked; env= alone gives a
+# variable of this RUN and no file (ADR-0032).
+RUN --mount=type=secret,id=token test "$(stat -c %a:%u:%g /run/secrets/token)" = 400:0:0
+RUN --mount=type=secret,id=token,target=/s,mode=0440,uid=1000,gid=1000 test "$(stat -c %a:%u:%g /s)" = 440:1000:1000
+RUN --mount=type=secret,id=token,env=TOKEN test "${#TOKEN}" = 6 && test ! -e /run/secrets/token
+RUN test -z "${TOKEN:-}"
+# A cache's owner and mode apply when it is made; locked and private
+# sharing (ADR-0032).
+RUN --mount=type=cache,target=/c2,sharing=locked,uid=1000,mode=0700 test "$(stat -c %a:%u /c2)" = 700:1000
+RUN --mount=type=cache,target=/c3,sharing=private touch /c3/x
 RUN <<EOF
 set -e
 mkdir -p /out
