@@ -18,7 +18,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 
 | Variant | When | Stage root | `RUN` | Stages |
 |---|---|---|---|---|
-| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | the workdir: `/` in a container, `--workdir` on a host | directly on the root, real `/proc` and `/dev` (`rnk-sandbox`'s `Isolation::Direct`) | one at a time, `--jobs` ignored |
+| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | the workdir: `/` in a container, `--workdir` on a host | directly on the root (`rnk-sandbox`'s `Isolation::Direct`): on `/`, the container's real `/proc`, `/dev` and network files; on a host `--workdir`, a `chroot` with ranikust's `hosts`, `resolv.conf`, `hostname` and `/dev` nodes placed and journaled, no `/proc` (`ADR-0043`) | one at a time, `--jobs` ignored |
 | **Per-stage, sandboxed** | root, can mount, overlay unusable | one directory per stage | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
 | **Per-stage, bare chroot** | as Sequential, plus `--parallel-stages` | one directory per stage | bare `chroot`, no `/proc` | DAG, `--jobs` |
 
@@ -188,7 +188,8 @@ Before touching a workdir outside a container:
 `ranikust` runs these checks during process set-up and holds the lock for
 the whole build; `rnk-rootfs` provides the primitives (`ADR-0038`). It also
 raises `RLIMIT_NOFILE`'s soft limit to the hard limit for the walk; `RUN`
-processes get the original limit back. Every later step reaches the
+processes get the original limit back (`NofileLimit::current()` read before
+the raise, `Sandbox::set_nofile_limit`, `ADR-0043`). Every later step reaches the
 workdir through the descriptor that was checked, never by its path.
 
 ## Exporter requirements specific to the walk
@@ -216,7 +217,10 @@ In addition:
 - **Placed files**: `hosts`, `resolv.conf`, stub mount points and `/dev`
   nodes change the mtime of their parent, so `/etc` would enter every layer.
   Record the parent's mtime before placing (m0) and after (m1); after `RUN`,
-  if it is still m1, restore m0, otherwise keep what `RUN` set.
+  if it is still m1, restore m0, otherwise keep what `RUN` set. Built for
+  the sequential `Direct` `RUN` on a host workdir (`rnk-sandbox`'s `swap`
+  journal records, `ADR-0043`): the image's entry is renamed aside in the
+  same directory and back after, never rewritten.
 
 ## The `--parallel-stages` path (bare `chroot`)
 

@@ -32,7 +32,7 @@ use crate::child::{
 };
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
-use crate::journal::{self, Journal};
+use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
 use crate::seccomp;
@@ -63,8 +63,36 @@ impl Sandbox {
     /// The directory cannot be created or is a symlink, a journal cannot be
     /// listed, or the thread cannot start.
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self> {
+        Self::start_inner(caps, dir, None)
+    }
+
+    /// [`Sandbox::start`] for kaniko mode on a shared root outside the state
+    /// directory (a host `--workdir`, already checked and locked by the
+    /// caller): journals of [`Isolation::Direct`] `RUN`s on exactly that
+    /// root are replayed too, which [`Sandbox::start`] refuses for any root
+    /// outside the state directory. The root is opened once, without
+    /// following a symlink, and refused when it is the host's `/`, `/etc` or
+    /// `/dev` by device and inode (a bind mount of `/` included): nothing is
+    /// placed there. Journals are matched to it by identity, never by path.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sandbox::start`], and [`Error::InvalidSpec`] when `shared_root`
+    /// is not absolute or is the host's `/`, `/etc` or `/dev`.
+    pub fn start_with_root(caps: Option<Caps>, dir: &Path, shared_root: &Path) -> Result<Self> {
+        if !shared_root.is_absolute() {
+            return Err(Error::InvalidSpec(format!(
+                "the shared root must be absolute: {shared_root:?}"
+            )));
+        }
+        let root = RootPath::open(shared_root)?.stay_on_mount();
+        journal::refuse_host_system_dir(&root, shared_root)?;
+        Self::start_inner(caps, dir, Some(&root))
+    }
+
+    fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
         let runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
-        let replayed = journal::replay(&runner.runs_dir, &runner.state_dir)?;
+        let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
         if replayed.journals > 0 {
             tracing::info!(
                 "rnk-sandbox: removed {} stub(s) left by {} interrupted RUN(s)",
@@ -116,6 +144,15 @@ impl Sandbox {
     /// before the first `RUN`.
     pub fn allow_userns_network(&mut self) {
         self.runner.userns_network = true;
+    }
+
+    /// Every later `RUN`, of any isolation, starts with `limit` as its
+    /// `RLIMIT_NOFILE`: the limit ranikust started with, captured with
+    /// [`NofileLimit::current`](crate::NofileLimit::current) before it
+    /// raised its own for the kaniko-mode walk. Without it a `RUN` inherits
+    /// ranikust's limit. Call before the first `RUN`.
+    pub fn set_nofile_limit(&mut self, limit: crate::NofileLimit) {
+        self.runner.nofile = Some(limit);
     }
 
     /// Cancels the build's `RUN`s: kills every one running with `SIGKILL`,
@@ -537,6 +574,8 @@ pub(crate) struct Runner {
     /// `--allow network.none-userns`: without `CAP_NET_ADMIN`, the
     /// user-namespace path of [`NetMode::UserNs`] (ADR-0033).
     userns_network: bool,
+    /// The `RLIMIT_NOFILE` every `RUN` starts with; `None` inherits.
+    nofile: Option<crate::NofileLimit>,
 }
 
 impl Runner {
@@ -555,6 +594,7 @@ impl Runner {
             next: AtomicU64::new(0),
             net_mode: OnceLock::new(),
             userns_network: false,
+            nofile: None,
         })
     }
 
@@ -587,6 +627,15 @@ impl Runner {
         spec.validate()?;
         let root_entry = match (spec.isolation, self.root_entry) {
             (Isolation::Full, None) => return Err(Error::Privilege("the RUN sandbox")),
+            // A bare `chroot` is never used where mounting is possible: the
+            // full sandbox runs that root (ADR-0014, ADR-0043).
+            (Isolation::Direct, Some(_)) if spec.root_dir != Path::new("/") => {
+                return Err(Error::InvalidSpec(
+                    "Isolation::Direct on a root other than / where the full sandbox can \
+                     run: use Isolation::Full"
+                        .into(),
+                ));
+            }
             // Unused by `Direct`.
             (_, entry) => entry.unwrap_or(RootEntry::PivotRoot),
         };
@@ -652,13 +701,36 @@ impl Runner {
             std::mem::take(&mut spec.stdout),
             std::mem::take(&mut spec.stderr),
         ];
-        if direct {
+        if direct && spec.root_dir == Path::new("/") {
+            // As kaniko: the container's own files, nothing placed.
             return Ok((
-                self.job(spec, &user, Vec::new(), None, stdio, root_entry)?,
+                self.job(spec, &user, Vec::new(), None, stdio, root_entry, None)?,
                 None,
             ));
         }
+        let chroot = if direct {
+            // By identity, not by name: a bind mount of `/` passes any
+            // string check, and placing would replace the host's files.
+            journal::refuse_host_system_dir(&root, &spec.root_dir)?;
+            let st = root.statx("/")?;
+            Some((st.dev_major, st.dev_minor, st.ino))
+        } else {
+            None
+        };
         let mut journal = Journal::create(&self.runs_dir, &self.next_id(), &spec.root_dir, root)?;
+        if direct {
+            return match place_direct(&mut journal)
+                .and_then(|()| self.job(spec, &user, Vec::new(), None, stdio, root_entry, chroot))
+            {
+                Ok(job) => Ok((job, Some(journal))),
+                Err(e) => {
+                    if let Err(c) = journal.finish() {
+                        tracing::warn!("rnk-sandbox: clean-up of placed files failed: {c}");
+                    }
+                    Err(e)
+                }
+            };
+        }
         match place(&mut journal, spec).and_then(|files| {
             let mounts = plan::mount_plan(spec, &files);
             self.job(
@@ -668,6 +740,7 @@ impl Runner {
                 Some(journal.scratch()),
                 stdio,
                 root_entry,
+                None,
             )
         }) {
             Ok(job) => Ok((job, Some(journal))),
@@ -680,6 +753,12 @@ impl Runner {
         }
     }
 
+    /// The child's arguments. `chroot`: a `Direct` root other than `/`, by
+    /// the identity the child checks after entering it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the spec and the parts the parent resolved for it"
+    )]
     fn job(
         &self,
         spec: &RunSpec,
@@ -688,11 +767,23 @@ impl Runner {
         scratch: Option<&Path>,
         stdio: [Stdio; 3],
         root_entry: RootEntry,
+        chroot: Option<(u32, u32, u64)>,
     ) -> Result<Job> {
         let env = plan::environment(&spec.env, &user.home);
         let candidates = plan::exec_candidates(&spec.argv[0], plan::path_var(&env));
         let mut keep = Vec::new();
+        // In a `chroot`, `/dev/null` is the image's entry, or missing where
+        // `mknod` is refused: the host's is opened here instead.
+        let stdio = if chroot.is_some() {
+            stdio.map(|s| match s {
+                Stdio::Null => host_null().map(Stdio::Fd),
+                s => Ok(s),
+            })
+        } else {
+            stdio.map(Ok)
+        };
         let [stdin, stdout, stderr] = stdio;
+        let (stdin, stdout, stderr) = (stdin?, stdout?, stderr?);
         let stdio = [
             child_stdio(stdin, &mut keep)?,
             child_stdio(stdout, &mut keep)?,
@@ -787,6 +878,11 @@ impl Runner {
                 .map(Gid::from_raw)
                 .collect(),
             workdir: cstring(&spec.workdir)?,
+            chroot,
+            nofile: self.nofile.map(|l| rustix::process::Rlimit {
+                current: l.soft,
+                maximum: l.hard,
+            }),
             stdio,
             argv: spec.argv.iter().map(cstring).collect::<Result<_>>()?,
             envp,
@@ -856,6 +952,47 @@ fn place(journal: &mut Journal, spec: &RunSpec) -> Result<EtcFiles> {
     write_scratch(&files.hostname, &plan::hostname_file(name))?;
     journal.commit()?;
     Ok(files)
+}
+
+/// Puts ranikust's `resolv.conf`, `hosts` and `hostname` and the `/dev`
+/// nodes into an [`Isolation::Direct`] root other than `/`, journaled: what
+/// a `RUN` under kaniko sees on `/` through the container's own mounts.
+/// With no UTS namespace the host name is the real one. A missing `/etc` or
+/// `/dev` is a stub; a node the kernel refuses (`EPERM`) is left out.
+fn place_direct(journal: &mut Journal) -> Result<()> {
+    for dir in ["/etc", "/dev"] {
+        journal.ensure(Path::new(dir), MountKind::Directory)?;
+    }
+    let uname = rustix::system::uname();
+    let name = uname.nodename().to_string_lossy();
+    let resolv_conf = read_host_file(Path::new("/etc/resolv.conf"))?;
+    let hosts = read_host_file(Path::new("/etc/hosts"))?;
+    let hosts = plan::hosts_file(Network::Host, &name, hosts.as_deref());
+    let hostname = plan::hostname_file(&name);
+    let files: [(&str, &[u8]); 3] = [
+        (
+            "/etc/resolv.conf",
+            resolv_conf.as_deref().unwrap_or_default(),
+        ),
+        ("/etc/hosts", &hosts),
+        ("/etc/hostname", &hostname),
+    ];
+    for (path, data) in files {
+        journal.swap_in(Path::new(path), Content::File(data))?;
+    }
+    for (path, major, minor) in plan::DIRECT_DEV_NODES {
+        if !journal.swap_in(Path::new(path), Content::CharDev { major, minor })? {
+            tracing::debug!("rnk-sandbox: {path} left out of the RUN: mknod refused");
+        }
+    }
+    journal.commit()
+}
+
+/// The host's `/dev/null`, read-write, close-on-exec.
+fn host_null() -> Result<OwnedFd> {
+    let p = Path::new("/dev/null");
+    rustix::fs::open(p, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())
+        .map_err(|e| io_err("open", p, e.into()))
 }
 
 /// The remount of the root's bind: `nodev`, the root mount's flags kept.
@@ -1460,6 +1597,167 @@ mod tests {
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
         drop(sandbox);
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
+
+    /// A root for `Direct` other than `/`, with an image's `/etc/hosts` and
+    /// old `/etc` times; returns the hosts inode and those times.
+    fn direct_root(dir: &Path) -> (u64, rnk_rootfs::FileTime) {
+        use std::os::unix::fs::MetadataExt as _;
+        fs::create_dir_all(dir.join("etc")).unwrap();
+        fs::write(dir.join("etc/hosts"), b"image").unwrap();
+        let root = RootPath::open(dir).unwrap();
+        let old = rnk_rootfs::FileTime::from_secs(1_000_000);
+        root.set_meta(
+            "/etc",
+            &rnk_rootfs::Meta {
+                atime: Some(old),
+                mtime: Some(old),
+                ..rnk_rootfs::Meta::default()
+            },
+        )
+        .unwrap();
+        let ino = fs::metadata(dir.join("etc/hosts")).unwrap().ino();
+        (ino, old)
+    }
+
+    /// What a `Direct` root holds again after the `RUN`: the image's
+    /// `/etc/hosts` (same inode), nothing placed, `/etc`'s times.
+    fn assert_direct_root_restored(dir: &Path, ino: u64, old: rnk_rootfs::FileTime) {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(fs::metadata(dir.join("etc/hosts")).unwrap().ino(), ino);
+        assert_eq!(fs::read(dir.join("etc/hosts")).unwrap(), b"image");
+        let mut etc: Vec<_> = fs::read_dir(dir.join("etc"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        etc.sort();
+        assert_eq!(etc, ["hosts"]);
+        assert!(!dir.join("dev").exists(), "the /dev stub is removed");
+        let root = RootPath::open(dir).unwrap();
+        assert_eq!(root.statx("/etc").unwrap().mtime, old);
+    }
+
+    /// `Direct` on a root other than `/`: as a normal user the child stops at
+    /// `chroot` (as root, at the missing program); either way the files
+    /// placed for it are gone and the image's are back.
+    #[test]
+    fn direct_on_a_workdir_places_and_restores_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = tempfile::tempdir().unwrap();
+        let wd = wd.path().canonicalize().unwrap();
+        let (ino, old) = direct_root(&wd);
+        let sandbox = Sandbox::start_with_root(None, dir.path(), &wd).unwrap();
+        let mut spec = RunSpec::new(&wd, vec!["/missing".into()]);
+        spec.isolation = Isolation::Direct;
+        match sandbox.run(spec) {
+            Err(Error::Setup {
+                step: Step::Chroot,
+                source,
+            }) => assert_eq!(source.raw_os_error(), Some(libc::EPERM)),
+            Err(Error::Exec { source, .. }) => {
+                assert_eq!(source.raw_os_error(), Some(libc::ENOENT));
+            }
+            r => panic!("{r:?}"),
+        }
+        assert_direct_root_restored(&wd, ino, old);
+        drop(sandbox);
+        assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+        assert!(Sandbox::start_with_root(None, dir.path(), Path::new("/")).is_err());
+    }
+
+    /// Where the probe found the full sandbox possible, a bare `chroot` is
+    /// refused before anything is placed; so is a root that is the host's
+    /// `/etc` or `/dev` by identity.
+    #[test]
+    fn direct_off_slash_is_refused_where_it_must_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = tempfile::tempdir().unwrap();
+        let wd = wd.path().canonicalize().unwrap();
+        let (ino, old) = direct_root(&wd);
+        let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot)).unwrap();
+        let mut spec = RunSpec::new(&wd, vec!["/missing".into()]);
+        spec.isolation = Isolation::Direct;
+        let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
+        assert!(matches!(r, Err(Error::InvalidSpec(_))), "{r:?}");
+        assert_direct_root_restored(&wd, ino, old);
+
+        let runner = Runner::new(dir.path(), None).unwrap();
+        for host in ["/etc", "/dev"] {
+            let mut spec = RunSpec::new(host, vec!["/missing".into()]);
+            spec.isolation = Isolation::Direct;
+            let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
+            assert!(matches!(r, Err(Error::InvalidSpec(_))), "{host}: {r:?}");
+        }
+        assert!(Sandbox::start_with_root(None, dir.path(), Path::new("/etc")).is_err());
+        assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
+
+    /// A real `Direct` `RUN` in a `chroot`, as root in the VM: the shell and
+    /// its libraries are copied from the VM into a fresh root, which then
+    /// sees ranikust's `hosts` and `resolv.conf`, `/dev` nodes, no `/proc`,
+    /// and the `RLIMIT_NOFILE` given back; after it, the root is as before.
+    #[test]
+    #[ignore = "T2: chroot and mknod as real root; run in the test VM only"]
+    fn direct_runs_in_a_chroot_with_placed_files_as_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = tempfile::tempdir().unwrap();
+        let wd = wd.path().canonicalize().unwrap();
+        let (ino, old) = direct_root(&wd);
+        copy_with_libraries(Path::new("/bin/sh"), &wd);
+        let mut sandbox = Sandbox::start_with_root(None, dir.path(), &wd).unwrap();
+        let hard = crate::NofileLimit::current().hard;
+        sandbox.set_nofile_limit(crate::NofileLimit {
+            soft: Some(777),
+            hard,
+        });
+        let script = "exec >/out.txt; \
+            while read -r l; do echo \"hosts:$l\"; done </etc/hosts; \
+            [ -f /etc/resolv.conf ] && echo resolv; \
+            [ -c /dev/null ] && echo null; [ -c /dev/urandom ] && echo urandom; \
+            [ -d /proc/self ] || echo noproc; \
+            echo \"nofile:$(ulimit -n)\"; echo x >/dev/null && echo devnull-ok";
+        let mut spec = RunSpec::new(&wd, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+        spec.isolation = Isolation::Direct;
+        let status = sandbox.run(spec).unwrap();
+        assert!(status.success(), "{status:?}");
+        let out = fs::read_to_string(wd.join("out.txt")).unwrap();
+        for line in [
+            "resolv",
+            "null",
+            "urandom",
+            "noproc",
+            "nofile:777",
+            "devnull-ok",
+        ] {
+            assert!(out.lines().any(|l| l == line), "{line}: {out}");
+        }
+        assert!(
+            out.contains("hosts:") && !out.contains("hosts:image"),
+            "{out}"
+        );
+        fs::remove_file(wd.join("out.txt")).unwrap();
+        fs::remove_dir_all(wd.join("bin")).unwrap();
+        for top in ["lib", "lib64", "usr"] {
+            let _ = fs::remove_dir_all(wd.join(top));
+        }
+        assert_direct_root_restored(&wd, ino, old);
+    }
+
+    /// Copies `bin` into `root` at the same path, with the libraries `ldd`
+    /// lists for it.
+    fn copy_with_libraries(bin: &Path, root: &Path) {
+        let ldd = std::process::Command::new("ldd").arg(bin).output().unwrap();
+        let text = String::from_utf8(ldd.stdout).unwrap();
+        let libs = text
+            .split_whitespace()
+            .filter(|w| w.starts_with('/'))
+            .map(PathBuf::from);
+        for p in std::iter::once(bin.to_path_buf()).chain(libs) {
+            let real = p.canonicalize().unwrap();
+            let dst = root.join(p.strip_prefix("/").unwrap());
+            fs::create_dir_all(dst.parent().unwrap()).unwrap();
+            fs::copy(&real, &dst).unwrap();
+        }
     }
 
     /// A cancel kills a registered child, and the exit is seen before the

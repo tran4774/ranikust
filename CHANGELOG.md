@@ -137,6 +137,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   globs, as in kaniko. Base layers can be extracted into a live root
   without writing an ignored path or below a mount point, and, as kaniko,
   without creating device nodes or FIFOs. Not yet used by a build.
+- The sandbox can run a kaniko-mode `RUN` on a host work directory without
+  mounting: it enters the directory with `chroot`, with ranikust's
+  `/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname` and `/dev` nodes put in
+  place for the command and the image's own entries put back afterwards,
+  also after a crash; `RUN` commands keep the open-file limit ranikust
+  started with. Not used by a build yet.
 
 ### Changed
 

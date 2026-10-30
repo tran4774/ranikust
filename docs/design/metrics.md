@@ -195,7 +195,7 @@ attempts.
 | Span | Fields | Why |
 |---|---|---|
 | `rnk_sandbox.run` | `user_ns`, `sys_ns`, `max_rss_kb`, `minflt`, `majflt`, `inblock`, `oublock`, `nvcsw`, `nivcsw`, `failed` | One `RUN` process from fork to reap; rusage from `wait4` (the child and the descendants it waited for). Becomes kaniko's `run.child`, `child_*` and `overhead_ns`; `exp-02` sandbox overhead, `exp-15` peak memory of JVM and Next.js builds. |
-| `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, journal. |
+| `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, the files a `Direct` `RUN` on a workdir gets (counted in `stubs`), journal. |
 | `rnk_sandbox.probe` | `ok` | One probe step (userns, `proc`, `pivot_root`, `sysfs`); start-up cost. |
 
 ### `rnk-snapshot`

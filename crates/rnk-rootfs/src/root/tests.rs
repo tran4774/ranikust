@@ -254,6 +254,25 @@ fn statx_does_not_follow_and_carries_mount_id() {
     assert_eq!(errno(&e), Some(Errno::NOENT));
 }
 
+/// Read-only on the host's `/`: `/proc` is another mount below it, which a
+/// root that stays on its mount does not enter.
+#[test]
+fn stay_on_mount_refuses_to_resolve_into_another_mount() {
+    let host = RootPath::open("/").unwrap();
+    assert!(host.statx("/proc/self").is_ok());
+    let staying = RootPath::open("/").unwrap().stay_on_mount();
+    let e = staying.statx("/proc/self").unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::XDEV), "{e}");
+    // The mount point itself is an entry of the root's own mount.
+    assert!(staying.statx("/proc").is_ok());
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    let staying = RootPath::open(&f.host).unwrap().stay_on_mount();
+    assert!(staying.statx("/d").is_ok());
+    let sub = staying.sub_root("/d").unwrap();
+    assert!(sub.read_names("/").unwrap().is_empty());
+}
+
 #[test]
 fn read_names_lists_entries_without_following_symlinks() {
     let f = Fixture::new();

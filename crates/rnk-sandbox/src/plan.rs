@@ -38,6 +38,18 @@ pub(crate) const DEV_NODES: [(&CStr, &CStr); 6] = [
     (c"tty", c"/dev/tty"),
 ];
 
+/// The nodes an `Isolation::Direct` root other than `/` gets by `mknod`, as
+/// `(path, major, minor)`: the character devices of [`DEV_NODES`], with
+/// Linux's fixed numbers (`Documentation/admin-guide/devices.txt`).
+pub(crate) const DIRECT_DEV_NODES: [(&str, u32, u32); 6] = [
+    ("/dev/null", 1, 3),
+    ("/dev/zero", 1, 5),
+    ("/dev/full", 1, 7),
+    ("/dev/random", 1, 8),
+    ("/dev/urandom", 1, 9),
+    ("/dev/tty", 5, 0),
+];
+
 /// Index of `/dev/null` in [`DEV_NODES`]: masked files are binds of it.
 pub(crate) const DEV_NULL: usize = 0;
 

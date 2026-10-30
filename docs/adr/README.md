@@ -113,4 +113,5 @@ when new measurements contradict its evidence.
 | [0039](0039-kaniko-mode-walk-and-hash-crates.md) | The kaniko-mode walk uses rayon over `getdents64` and hashes with xxh3-128 | Accepted | 2026-10-30 | Q-038, `tests/bench/walk-hash` |
 | [0040](0040-kaniko-mode-selection-container-check-and-flags.md) | Kaniko mode is picked when root may not mount, builds on `/` only in a container unless `--force`, and takes kaniko's snapshot flags | Accepted | 2026-10-31 | Q-260, kaniko `pkg/util/proc/proc.go` |
 | [0041](0041-live-root-extraction-skips-device-nodes.md) | Extraction into a live root creates no device node or FIFO, as kaniko | Accepted | 2026-10-31 | Q-270, kaniko source |
+| [0043](0043-direct-run-on-a-workdir-chroots-with-placed-files.md) | A `Direct` `RUN` on a workdir other than `/` enters it with `chroot`, with journaled placed files and the original `RLIMIT_NOFILE` | Proposed | 2026-10-31 | kaniko source, exp 12, `rnk-sandbox` tests |
 | [0044](0044-kaniko-mode-walks-every-kept-stage.md) | Sequential kaniko mode walks every stage whose image is kept for a later `FROM` | Accepted | 2026-10-31 | Q-300 |
