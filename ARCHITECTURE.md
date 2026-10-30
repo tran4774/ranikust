@@ -176,8 +176,9 @@ mount and `fsconfig` with `lowerdir+`. Its exporter feeds diff entries to
 `rnk-layer`'s writer. kaniko: the parallel walk and hash (`Walker`, built:
 a `rayon` pool over `openat2` and `getdents64`, xxh3-128, a stat cache, the
 diff computed while walking over a path arena, kaniko's `LayeredMap`;
-[ADR-0039](docs/adr/0039-kaniko-mode-walk-and-hash-crates.md)), path
-resolution, filesystem deletion.
+[ADR-0039](docs/adr/0039-kaniko-mode-walk-and-hash-crates.md)), its exporter
+(`WalkDiff::export`, built: the walk's diff fed to `rnk-layer`'s writer, as
+kaniko's `writeToTar`), path resolution, filesystem deletion.
 **Must not** run instructions, encode diffs as layers itself, own the store
 (`rnk-store`), or expose a stage root as anything but a `RootPath`.
 

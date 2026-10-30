@@ -130,6 +130,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   outside a 2 s window; and diffs against the previous walk while walking,
   with kaniko's `--snapshot-mode=full|redo|time` meaning. The result does
   not depend on the thread count.
+- The kaniko-mode exporter in `rnk-snapshot` (not yet used by a build):
+  the walk's diff written as a layer as kaniko writes it, with every
+  parent directory of a changed entry, one whiteout per deleted tree, a
+  hard link into an earlier layer as a regular file, and an empty layer
+  for a step that changes nothing. Content is read only from the file the
+  walk saw; one changed in between fails the step.
 
 ### Changed
 

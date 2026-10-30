@@ -137,7 +137,9 @@ pub struct Decoder<R: Read>;       // [design] new(blob) sniffs gzip/zstd/plain;
   per block.
 - Overlay whiteouts share one inode (`nlink=4`): detect hardlinks only after
   whiteouts are converted ([design](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer)); a hardlink whose target is
-  in a lower layer is written as a regular file ([inferred](../../design/kaniko-mode.md#exporter-requirements-specific-to-the-walk)).
+  in a lower layer is written as a regular file: the writer links only
+  entries of the same layer, which the kaniko exporter relies on (tested in
+  `rnk-snapshot`, [design](../../design/kaniko-mode.md#exporter-requirements-specific-to-the-walk)).
 - Without parent directory headers, podman made `/root` (700) and `/tmp`
   (1777) 755; Go-style mode handling made `/tmp` 777 ([exp-07](../../research/experiments/07-kaniko-vs-overlay.md#image-check-1)).
 - Exports after page reclaim re-read 124–466 MB from disk: export right after

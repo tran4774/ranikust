@@ -631,11 +631,11 @@ fn meta_equal(
         && a_xattrs == b_xattrs
 }
 
-fn dev(st: &Stat) -> u64 {
+pub(crate) fn dev(st: &Stat) -> u64 {
     (u64::from(st.dev_major) << 32) | u64::from(st.dev_minor)
 }
 
-fn entry_path(p: &Path) -> Result<EntryPath> {
+pub(crate) fn entry_path(p: &Path) -> Result<EntryPath> {
     Ok(EntryPath::new(p.as_os_str().as_bytes())?)
 }
 

@@ -1416,6 +1416,7 @@ name = "rnk-snapshot"
 version = "0.0.0"
 dependencies = [
  "flate2",
+ "proptest",
  "rayon",
  "rnk-layer",
  "rnk-metrics",

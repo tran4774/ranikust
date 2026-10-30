@@ -107,3 +107,36 @@ fn walks_are_recorded_once_each_with_their_counts() {
     assert_eq!(phases["rnk_snapshot.walk"]["files_hashed"], 3);
     assert_eq!(phases["rnk_snapshot.walk"]["bytes_hashed"], 13);
 }
+
+#[test]
+fn a_walk_diff_export_and_its_diff_are_recorded() {
+    let capture = Capture::new();
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("d")).unwrap();
+    fs::write(dir.path().join("d/old"), b"x").unwrap();
+    let root = rnk_rootfs::RootPath::open(fs::canonicalize(dir.path()).unwrap()).unwrap();
+    let ignore = rnk_rootfs::IgnoreList::new();
+    let mut walker = rnk_snapshot::Walker::new(rnk_snapshot::WalkOptions::default()).unwrap();
+    walker.baseline(&root, &ignore).unwrap();
+    fs::write(dir.path().join("d/new"), b"12345").unwrap();
+    fs::remove_file(dir.path().join("d/old")).unwrap();
+    let diff = walker.diff(&root, &ignore).unwrap();
+    capture.run(|| {
+        let options = EncodeOptions {
+            compression: Compression::Gzip,
+            level: 1,
+            threads: NonZeroUsize::MIN,
+            mtime: Some(0),
+        };
+        diff.export(&root, options, std::io::sink()).unwrap();
+    });
+    let report = capture.report();
+    let phases = &report["phases"];
+    assert_eq!(phases["rnk_snapshot.export"]["count"], 1);
+    // `d` (its mtime changed), `d/new` and the whiteout of `d/old`.
+    assert_eq!(phases["rnk_snapshot.export"]["entries"], 3);
+    assert_eq!(phases["rnk_snapshot.export"]["bytes_read"], 5);
+    assert_eq!(phases["rnk_snapshot.diff"]["files_added"], 2);
+    assert_eq!(phases["rnk_snapshot.diff"]["whiteouts"], 1);
+    assert_eq!(phases["rnk_snapshot.diff"]["bytes"], 5);
+}
