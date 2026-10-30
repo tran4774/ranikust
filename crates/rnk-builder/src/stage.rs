@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Write as _};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -333,7 +333,7 @@ struct Builder<'c, 'i, S: Snapshotter> {
     /// Whether this stage ran a `CMD`, which a later `ENTRYPOINT` keeps.
     cmd_set: bool,
     /// Scripts of `#!` heredocs, removed when the stage ends.
-    scripts: Vec<tempfile::NamedTempFile>,
+    scripts: Vec<tempfile::TempDir>,
 }
 
 impl<S: Snapshotter> Builder<'_, '_, S> {
@@ -588,19 +588,18 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         let argv = match run_argv(&run.cmd, &shell)? {
             Argv::Plain(argv) => argv,
             Argv::Script { name, body } => {
-                // BuildKit writes a `#!` heredoc to a file and runs it; the
-                // file is bound in read-only from the build directory, so it
-                // never reaches a layer.
-                let script = write_script(self.cx.store.build_dir(), &body)?;
-                let target = PathBuf::from("/dev/pipes").join(&name);
+                // BuildKit writes a `#!` heredoc to a file and runs it from
+                // a directory bound read-only at /dev/pipes; the directory
+                // lives in the build directory, so it never reaches a layer.
+                let script = write_script(self.cx.store.build_dir(), &name, &body)?;
                 mounts.binds.push(BindMount {
                     source: script.path().to_owned(),
-                    target: target.clone(),
-                    kind: MountKind::File,
+                    target: PathBuf::from(DEV_PIPES),
+                    kind: MountKind::Directory,
                     read_only: true,
                 });
                 self.scripts.push(script);
-                vec![target.to_string_lossy().into_owned()]
+                vec![format!("{DEV_PIPES}/{name}")]
             }
         };
         // Secrets given with `env=` come last and win over a variable of the
@@ -930,6 +929,10 @@ fn run_argv(cmd: &CmdLine, shell: &[String]) -> Result<Argv> {
 const ENOENT: i32 = rustix::io::Errno::NOENT.raw_os_error();
 const ENOTDIR: i32 = rustix::io::Errno::NOTDIR.raw_os_error();
 
+/// Where a `#!` heredoc's script directory is bound, as BuildKit's
+/// `dockerfile2llb`; `rnk-sandbox` makes it in the `/dev` tmpfs.
+const DEV_PIPES: &str = "/dev/pipes";
+
 /// A heredoc's name names a file: one path component, not `.` or `..`.
 fn check_heredoc_name(name: &str) -> Result<()> {
     if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
@@ -941,18 +944,24 @@ fn check_heredoc_name(name: &str) -> Result<()> {
 }
 
 /// Writes a `#!` heredoc's body to a build-private executable file.
-fn write_script(dir: &Path, body: &str) -> Result<tempfile::NamedTempFile> {
-    let mut f = tempfile::Builder::new()
+fn write_script(dir: &Path, name: &str, body: &str) -> Result<tempfile::TempDir> {
+    // 0755: a RUN as another USER enters the bound directory too.
+    let d = tempfile::Builder::new()
         .prefix(".heredoc-")
         .permissions(std::fs::Permissions::from_mode(0o755))
-        .tempfile_in(dir)
-        .map_err(Error::io("create a script in", dir))?;
+        .tempdir_in(dir)
+        .map_err(Error::io("create a script directory in", dir))?;
+    let path = d.path().join(name);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o755)
+        .open(&path)
+        .map_err(Error::io("create", path.clone()))?;
     f.write_all(body.as_bytes())
-        .map_err(Error::io("write", f.path().to_owned()))?;
-    f.as_file()
-        .sync_all()
-        .map_err(Error::io("sync", f.path().to_owned()))?;
-    Ok(f)
+        .map_err(Error::io("write", path.clone()))?;
+    f.sync_all().map_err(Error::io("sync", path))?;
+    Ok(d)
 }
 
 /// The network of a `RUN`. As BuildKit's `network.host` entitlement, a

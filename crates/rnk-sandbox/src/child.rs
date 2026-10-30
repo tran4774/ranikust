@@ -124,6 +124,9 @@ pub(crate) struct ChildArgs {
     pub(crate) secrets: Option<ChildSecrets>,
     /// Flags of the read-only remount of each [`DEV_NODES`] bind.
     pub(crate) dev_remount: [MountFlags; DEV_NODES.len()],
+    /// Make `/dev/pipes` in the `/dev` tmpfs: a mount targets it
+    /// ([`crate::plan::dev_pipes`]).
+    pub(crate) dev_pipes: bool,
     pub(crate) root_entry: RootEntry,
     pub(crate) hostname: Vec<u8>,
     /// Bring up `lo` in the network namespace the clone created
@@ -331,7 +334,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         ),
     );
     for m in &args.mounts {
-        mount_one(err, root.as_fd(), &args.dev_remount, m);
+        mount_one(err, root.as_fd(), &args.dev_remount, args.dev_pipes, m);
     }
     if let Some(s) = &args.secrets {
         mount_secrets(err, root.as_fd(), s);
@@ -475,6 +478,7 @@ fn mount_one(
     err: RawFd,
     root: BorrowedFd<'_>,
     dev_remount: &[MountFlags; DEV_NODES.len()],
+    dev_pipes: bool,
     m: &ChildMount,
 ) {
     match m {
@@ -528,7 +532,7 @@ fn mount_one(
             drop(t);
             // Resolved again, it is the tmpfs, not the directory under it.
             let dev = resolve(err, root, target);
-            populate_dev(err, dev.as_fd(), dev_remount);
+            populate_dev(err, dev.as_fd(), dev_remount, dev_pipes);
         }
         ChildMount::File { source, target } => {
             let s = open_source(err, Step::BindFile, source, false);
@@ -739,7 +743,12 @@ fn protect_kernel_files(err: RawFd, root: BorrowedFd<'_>, null_remount: MountFla
 /// `shm` and the symlinks. Each node bind is remounted read-only: the bind
 /// is the host's own inode, whose mode and owner uid 0 in a `RUN` could
 /// otherwise change; reads and writes of a device are not affected.
-fn populate_dev(err: RawFd, dev: BorrowedFd<'_>, remount: &[MountFlags; DEV_NODES.len()]) {
+fn populate_dev(
+    err: RawFd,
+    dev: BorrowedFd<'_>,
+    remount: &[MountFlags; DEV_NODES.len()],
+    pipes: bool,
+) {
     for ((name, source), flags) in DEV_NODES.into_iter().zip(remount) {
         let node = check(
             err,
@@ -824,6 +833,14 @@ fn populate_dev(err: RawFd, dev: BorrowedFd<'_>, remount: &[MountFlags; DEV_NODE
             err,
             Step::DevSymlink,
             rustix::fs::symlinkat(target, dev, link),
+        );
+    }
+    // The mount point of a `#!` heredoc's script directory, as BuildKit's.
+    if pipes {
+        check(
+            err,
+            Step::DevMounts,
+            rustix::fs::mkdirat(dev, c"pipes", Mode::from_raw_mode(0o755)),
         );
     }
 }
@@ -1465,6 +1482,7 @@ mod tests {
             mounts: Vec::new(),
             secrets: None,
             dev_remount: [MountFlags::BIND; DEV_NODES.len()],
+            dev_pipes: false,
             root_entry: RootEntry::PivotRoot,
             hostname: Vec::new(),
             loopback: false,
