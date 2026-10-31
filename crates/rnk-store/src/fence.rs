@@ -26,9 +26,10 @@ use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 
-/// How long a `RUN` waits for names to go: they live for the extraction of
-/// one `COPY --from` source at most; longer means one was never dropped.
-pub(crate) const WAIT_FOR_NAMES: Duration = Duration::from_secs(600);
+/// How long a `RUN` waits for names to go: a file's name lives for one
+/// `openat` and `unlinkat`, an unpacked directory for the instruction that
+/// reads it; longer means one outlived its instruction, a bug.
+pub(crate) const WAIT_FOR_NAMES: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Default)]
 struct State {

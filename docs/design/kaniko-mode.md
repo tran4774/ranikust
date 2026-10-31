@@ -204,9 +204,9 @@ settles them (Q-024):
   stage is a plain tar in an anonymous file, written by a metadata-only
   walk and the walk's exporter, and a `COPY --from=<image>` stays its
   blobs; a reader's view is unpacked into a directory of the state
-  directory named by the store, inside a fence window, and deleted before
-  the next instruction of any stage (`begin_layer`, `prepare`, `keep`,
-  `release`, the end of the build); `FROM` a kept tar extracts it into
+  directory named by the store, inside a fence window, and deleted at the
+  end of the instruction that read it (`end_layer`, also `prepare`,
+  `keep`, `release`, the end of the build); `FROM` a kept tar extracts it into
   the emptied root, device nodes and FIFOs left out (ADR-0041).
 - **Refused:** kaniko mode without root, per-stage directories (task 9)
   and `--parallel-stages` (task 10), each with its reason.

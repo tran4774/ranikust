@@ -31,8 +31,8 @@
 //!   layers' blobs (ADR-0056, Q-350). A `COPY --from` reads either from a
 //!   directory unpacked in the state directory, under a name the store
 //!   gives, inside a window of the store's fence: no `RUN` runs while it
-//!   exists, and the next instruction of any stage deletes it first
-//!   ([`StageRootfs::begin_layer`]). A stage built `FROM` a kept one gets the
+//!   exists, and the end of the instruction that read it deletes it
+//!   ([`StageRootfs::end_layer`]). A stage built `FROM` a kept one gets the
 //!   tar extracted into the emptied root, with device nodes and FIFOs left
 //!   out as for any extraction into a live root (ADR-0041).
 
@@ -116,7 +116,7 @@ struct Shared {
     /// tars in this store's anonymous files.
     tars: OnceLock<Arc<Store>>,
     /// Directories unpacked for a `COPY --from` on `/`, each holding the
-    /// store's fence open, deleted before the next instruction.
+    /// store's fence open, deleted at the end of the instruction.
     views: Mutex<Vec<View>>,
     /// Bumped each time the views are deleted: a stage's cached view of an
     /// older epoch is gone.
@@ -694,8 +694,8 @@ impl KanikoRoot {
     }
 
     /// The kept tar or image unpacked into a directory of the state
-    /// directory, made inside a window of the store's fence and deleted
-    /// before the next instruction; reused while that lasts.
+    /// directory, made inside a window of the store's fence and deleted at
+    /// the end of the instruction; reused while that lasts.
     fn unpacked(&mut self) -> Result<&RootPath> {
         let shared = Arc::clone(&self.shared);
         let epoch = shared.view_epoch.load(Ordering::Relaxed);
@@ -768,8 +768,6 @@ impl StageRootfs for KanikoRoot {
         if self.open {
             return Err(Error::State("a layer is open already"));
         }
-        // What a `COPY --from` read is gone before the instruction runs.
-        clear_views(&self.shared)?;
         let mut hold = self.shared.hold();
         self.check_held(&hold)?;
         if self.needed && !hold.walked {
@@ -784,6 +782,10 @@ impl StageRootfs for KanikoRoot {
             return Err(Error::State("no layer is open"));
         }
         self.open = false;
+        // What a `COPY --from` of this instruction read is gone before the
+        // next one, and so before any `RUN`: a reader may ask for its view
+        // before the instruction's `begin_layer`.
+        clear_views(&self.shared)?;
         let mut hold = self.shared.hold();
         self.check_held(&hold)?;
         if !self.needed {

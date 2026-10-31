@@ -44,8 +44,8 @@ Chosen: the third. In kaniko mode on `/`:
   name is on disk and is held by the builder around `Sandbox::run`, which
   returns after the sweep of the `RUN`'s process tree (ADR-0051);
   `Store::named_window` waits until no `RUN` runs. A name asked for from
-  inside a `RUN` on the same thread, or a `RUN` while a name outlives ten
-  minutes, is a bug in the order of work and fails the build, never a
+  inside a `RUN` on the same thread, or a `RUN` while a name outlives a
+  minute, is a bug in the order of work and fails the build, never a
   race to wait out or a fallback to memory. A pull for a later stage that
   needs a named file during a `RUN` waits for it to end.
 - **Crashes.** A crash between create and unlink leaves a name with the
@@ -58,9 +58,9 @@ Chosen: the third. In kaniko mode on `/`:
   list leaving out the state directory, mounts and the rest; an image read
   by `COPY --from=<image>` stays its blobs. A reader's view is unpacked
   into a directory of the state directory named by the store, inside a
-  fence window held until the next instruction of any stage deletes it
-  (`StageRootfs::begin_layer`, and `prepare`, `keep`, `release`, the end
-  of the build). A stage built `FROM` a kept tar gets it extracted into
+  fence window held until the end of the instruction that read it
+  deletes it (`StageRootfs::end_layer`, also `prepare`, `keep`,
+  `release`, the end of the build). A stage built `FROM` a kept tar gets it extracted into
   the emptied root, device nodes and FIFOs left out as for any extraction
   into a live root (ADR-0041). On a root other than `/` kept stages stay
   directories beside the root, as before.

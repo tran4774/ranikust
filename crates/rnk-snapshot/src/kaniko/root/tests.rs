@@ -487,10 +487,14 @@ fn on_slash_a_kept_stage_is_a_tar_with_no_name_unpacked_only_for_its_reader() {
         "only the paths asked for"
     );
     assert_eq!(f.state_names().len(), 2, "the unpacked directory");
-    // ... while no RUN may start, and gone before the next instruction.
+    // ... asked for before the reading instruction began, still there
+    // through it, and gone at its end, before any RUN.
     b.set_layers_needed(false);
     b.begin_layer().unwrap();
+    assert_eq!(read(a.view().unwrap(), "out/main.js"), "js");
+    drop(b.end_layer().unwrap());
     assert_eq!(f.state_names(), ["blob"]);
+    b.begin_layer().unwrap();
     let run = store.enter_run().unwrap();
     // A reader asking again during a RUN on this thread fails closed.
     assert!(a.view().is_err());

@@ -576,8 +576,8 @@ Entry format:
 - **Answer (2026-11-01):** option (a), as ADR-0051 decided for all state on
   `/`: a kept stage is a plain tar in an anonymous file, an image read by
   `COPY --from` stays its blobs, and a reader's view is unpacked in the
-  state directory only while no `RUN` runs and deleted before the next
-  instruction. Recorded in
+  state directory only while no `RUN` runs and deleted at the end of the
+  instruction that read it. Recorded in
   [ADR-0056](adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
