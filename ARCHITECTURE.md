@@ -301,7 +301,10 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
    build arguments (`rnk-dockerfile`).
 4. **Up-front I/O**: resolve and pull every stage's base image into the
    store and look up the cache, in parallel (`rnk-registry`, `rnk-store`,
-   `rnk-cache`).
+   `rnk-cache`). In kaniko mode only the manifests and configs are fetched
+   here: base layers are streamed from the registry into extraction when a
+   stage needs them, and no blob is kept unless an output needs its bytes
+   ([streaming](docs/design/streaming.md), ADR-0055).
 5. **Schedule** (`rnk-sched`): start each stage once its dependencies are
    done, at most `--jobs` `RUN`s at a time; one at a time on a shared `/`
    (Phase 2).
@@ -314,7 +317,8 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
 7. **Export lazily**: only layers that are pushed, cached or written out are
    turned into tar, compressed in parallel and digested: `rnk-snapshot`'s
    exporter feeds the entries, `rnk-layer` encodes them; cache pushes run
-   asynchronously.
+   asynchronously. When the build pushes, each exported layer is uploaded
+   as soon as it is written and its blob released (ADR-0055).
 8. **Output**: assemble config and manifest (`rnk-oci`), then push in
    parallel, or write a tar or OCI layout.
 

@@ -243,6 +243,7 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 | `rnk_builder.execute` | | The executor itself; kaniko's `command.exec`. |
 | `rnk_builder.layer` | `skipped` | One layer's lazy-export decision and encoding (`rnk_layer.encode` nested); kaniko's `command.layer`. Lazy export saved 1.3–6.6 s on W3 (`exp-08`). |
 | `rnk_builder.assemble` | `bytes_out` | Config and manifest, their sizes; kaniko's `stage.finalize`. |
+| `rnk_builder.upload` | `bytes` | One built layer pushed to every destination while the build runs (ADR-0055); `rnk_registry.push_blob` nested per destination. |
 | `rnk_builder.output` | `layers`, `bytes_out` | One per OCI layout, Docker tar and push destination; `bytes_out` is what was written to disk, or the blobs uploaded (not mounted or already there) plus the manifest; kaniko's `push.total`. |
 
 ### `rnk-cache`

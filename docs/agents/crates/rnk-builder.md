@@ -47,14 +47,20 @@ pub trait LayerSource: Send {                           // rnk-snapshot's export
     fn encode(self: Box<Self>, options: EncodeOptions, out: &mut dyn Write) -> Result<LayerDigests, rnk_layer::Error>;
 }
 pub struct EntriesLayer<S: EntrySource + Send>;         // entries plus a content source
-pub struct BlobLayer { pub diff_id: Digest, pub blob: Descriptor, pub path: PathBuf, pub mount_from: Option<Reference> }
-impl BlobLayer { pub fn base(diff_id: Digest, blob: Descriptor, path: PathBuf, from: Reference) -> Self; }
+pub struct BlobLayer { pub diff_id: Digest, pub blob: Descriptor, pub bytes: LayerBytes, pub mount_from: Option<Reference> }
+pub enum LayerBytes { File(PathBuf), Registry(Reference) }  // Registry: a base layer never kept, mounted or streamed from its source on push (ADR-0055)
+impl BlobLayer { pub fn base(diff_id, blob, path, from) -> Self; pub fn remote(diff_id, blob, from) -> Self; pub fn path(&self) -> Option<&Path>; }
 pub struct LayerExporter;                               // into the build dir, blobs named by digest; LayerExporter::anonymous(store, ..): anonymous files of the store (ADR-0051)
 impl LayerExporter {
     pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self;  // dir: Store::build_dir(); mtime from time
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
+    pub fn with_uploader(self, uploader: Uploader) -> Self;  // ADR-0055: pushed layers go to the destinations as exported
+    pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand);  // hands a pushed layer to the uploader
+    pub async fn finish_uploads(&self) -> Result<BTreeSet<Digest>>;  // the digests every destination holds
 }
+pub struct Uploader;                                    // Uploader::start(client, destinations, jobs, Release::{Keep, Free(store)}, &Handle): its own thread
+                                                        // driving the runtime; at most `jobs` layers at once; a layer released once every destination has it
 pub const HISTORY_COMMENT: &str = "buildkit.dockerfile.v0";
 pub fn instruction_history(created_by: &str, time: &BuildTime) -> History;  // BuildKit's entry, no author (Q-131)
 pub fn image_format() -> ImageFormat;                   // OCI, as BuildKit (Q-006)
@@ -69,7 +75,7 @@ impl Outputs {
 }
 pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()>;
 pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<()>;
-pub async fn push(image: &Image, destinations: &[Reference], client: &Client, jobs: NonZeroUsize)
+pub async fn push(image: &Image, destinations: &[Reference], client: &Arc<Client>, jobs: NonZeroUsize)
     -> Result<Vec<(Reference, Digest)>>;
 ```
 
@@ -109,7 +115,9 @@ pub enum KeepNeed { All, Sources(Vec<String>) }          // COPY --from sources:
 pub struct ImageSource<R, L> { pub image: Arc<PulledImage<L>>, pub root: SourceRoot<R> }  // COPY --from=<image>
 pub struct ContextFiles;                                 // ContextFiles::load(&Context, Option<&Matcher>)
 pub async fn pull_image<S>(client: &Arc<Client>, store: &Arc<Store>, snapshotter: &Arc<S>,
-    reference: &str, platform: &Platform) -> Result<PulledImage<S::Layer>>;  // blobs into the store, base layers by the snapshotter
+    reference: &str, platform: &Platform, keep_blobs: bool) -> Result<PulledImage<S::Layer>>;
+    // blobs into the store, base layers by the snapshotter; unless keep_blobs (a file output), a
+    // snapshotter that streams (kaniko) gets each layer as a stream from the registry and no blob is pulled (ADR-0055)
 pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, pub format: ImageFormat,
     pub blobs: Vec<BlobLayer>, pub layers: Vec<L> }
 ```
@@ -212,7 +220,7 @@ through a descriptor of its directory.
 
 - The instruction record `rnk_builder.instruction` (`stage`, `index`,
   `line`, `kind`, `text` as written, never expanded, `cache_hit`); `stage`,
-  `execute`, `layer` (`skipped`), `assemble`, `output` ([rows](../../design/metrics.md#rnk-builder)).
+  `execute`, `layer` (`skipped`), `upload` (`bytes`, ADR-0055), `assemble`, `output` ([rows](../../design/metrics.md#rnk-builder)).
 - Test: with `--reproducible`, digests equal with `--metrics-file`
   set and unset.
 

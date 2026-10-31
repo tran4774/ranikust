@@ -46,11 +46,13 @@ pub enum Keep { All, Paths(Vec<PathBuf>) }         // Paths: physical (no link b
                                                    // a final symlink kept as the link, the root = All
 pub trait Snapshotter {                            // ADR-0046
     type Root: StageRootfs;
-    type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (the blob)
+    type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (a blob, or streamed)
     fn base_layer(&self, diff_id: &Digest, blob: &Path, below: &[Self::Layer]) -> Result<Self::Layer>;
+    fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<Self::Layer>; // ADR-0055: kaniko Some, overlay None
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;  // Scratch | Image(&[Layer]) | Stage(&Root)
     fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root>;  // COPY --from=<image>; default prepare(Image)
 }
+pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction (rnk-builder: from the registry)
 impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
 // kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder

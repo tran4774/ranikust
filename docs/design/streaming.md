@@ -45,13 +45,12 @@ bytes. So in kaniko mode:
   image's blobs are pulled into the build directory as before: those
   outputs are files the operator asked for, of the image's size anyway.
 
-Overlay mode keeps extracted layers in the store for later builds, so the
-blob is only needed by the push. It extracts while downloading as well,
-the bytes teed into the blob file the store keeps: one pass instead of
-download-then-extract, the same disk as before, no memory proportional to
-the layer. [inferred: overlay's persistent store makes keeping the blob
-cheap and saves the next build a download; dropping it is Phase 4's
-choice with the cache, Q-162.]
+Overlay mode keeps extracted layers in the store for later builds, and
+keeps the blob beside them: on disk, through fixed buffers, never in
+memory. It still downloads and then extracts; extracting while
+downloading, teeing into the blob file, would save the second read of the
+blob and is left for later. Dropping the blob of a persistent store is
+Phase 4's choice with the cache (Q-162).
 
 ### Built layers: pushed as soon as they are exported
 
@@ -84,7 +83,7 @@ the number of layers in flight is bounded by `--jobs`.
 
 | Part | Overlay mode | Kaniko mode |
 |---|---|---|
-| Base layer extracted while downloading | yes, teed into the store's blob | yes, into the root, no blob kept |
+| Base layer extracted while downloading | no: downloaded to the store, then extracted | yes, into the root, no blob kept |
 | Base layer pushed from its source registry | no: the store has the blob | yes (mount, else streamed) |
 | Built layer pushed while the build runs | yes | yes |
 | Built layer released after its upload | yes | yes |
@@ -108,8 +107,11 @@ the number of layers in flight is bounded by `--jobs`.
   next build (ADR-0052 D1). A partial upload is an upload session the
   registry discards.
 - **A dropped connection during a streamed extraction** cannot be retried
-  in place (part of the layer is extracted): the build fails. The pull of
-  manifests and configs, and the uploads from files, keep their retries.
+  in place (part of the layer is extracted): the build fails. A request
+  refused or broken before the first byte of the body (a 503, a reset
+  connection) is retried as before, since nothing was read yet. The pull
+  of manifests and configs, and the uploads from files, keep their
+  retries.
 - **Nothing falls back** to keeping a whole layer in memory.
 
 ## Outputs and reproducibility
@@ -130,6 +132,26 @@ blob either: the cached layer is mounted or streamed from the cache
 repository, as a base layer is. Publishing built blobs in the store for
 later builds is a store-backed choice of overlay mode and host builds; on
 `/` the state never outlives the process (ADR-0051).
+
+## Measurements
+
+2026-11-01, rootless podman on the development machine (kernel 7.0), a
+default container (`alpine:3.20`), kaniko mode on `/` with the state in
+`memfd` (the container's overlayfs root refuses `O_TMPFILE`, Q-340),
+`FROM node:22-bookworm-slim` (via `mirror.gcr.io`) plus one `RUN`,
+`--no-push`; three rounds each, main at `76bd634` against this design, both
+binaries patched alike for the missing build directory of an anonymous
+store (see the branch report). Figures from `--metrics-file`:
+
+| | before | after |
+|---|---:|---:|
+| Stage peak memory (`rnk_sched.stage.max_memory_bytes`) | 157–163 MiB | 49–54 MiB |
+| Container peak (`memory.peak`: ranikust, `RUN`, page cache, `memfd`) | 480–492 MiB | 387–390 MiB |
+| ranikust's own max RSS (`rusage_self`) | 143–150 MiB | 122–126 MiB |
+
+The stage peak falls by the compressed base image (about 100 MiB): its
+blobs no longer sit in `memfd`. The `--reproducible` digest is the same
+before and after.
 
 ## Open questions
 

@@ -61,16 +61,24 @@ Chosen: the second option ([design/streaming.md](../design/streaming.md)).
   files at any time, and no base layer, instead of the whole image.
 - Good, because uploads overlap the build and download overlaps
   extraction: a build with destinations ends sooner.
-- Bad, because a streamed extraction cannot retry a dropped connection in
-  place: the build fails where it used to retry the download.
+- Bad, because a streamed extraction cannot retry a connection dropped
+  after the first byte of the body: the build fails where it used to retry
+  the download (a request refused before any byte is still retried).
+- Bad, because a streamed layer's entries are in the root before its
+  digest is checked at the end of the body: a mismatch fails the stage
+  with part of the layer extracted, and the root is emptied before it is
+  used again (ADR-0052 D1 on `/`), where a kept blob was verified before
+  any byte was used.
 - Bad, because a cross-registry push of a base layer downloads it again
   from its source, where it used to be read from the store.
 - Neutral, because digests do not change.
 
 ## Evidence
 
-- Measurements of ranikust's peak memory before and after are recorded in
-  [design/streaming.md](../design/streaming.md#measurements) once taken.
+- [design/streaming.md#measurements](../design/streaming.md#measurements):
+  in kaniko mode on `/` with a node base image, a stage's peak memory fell
+  from 157–163 MiB to 49–54 MiB and the container's from 480–492 MiB to
+  387–390 MiB; the `--reproducible` digest is unchanged.
 - `oci-client` 0.18 verifies a blob's digest at the end of a pull
   (`src/client.rs:1352-1358`) and offers a streamed push with a known
   digest (`push_blob_stream`).

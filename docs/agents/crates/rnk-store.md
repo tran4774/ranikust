@@ -42,6 +42,7 @@ impl Store {
     pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE|O_EXCL, memfd with MFD_NOEXEC_SEAL fallback) named /proc/self/fd/<n>, refused unless /proc/self/fd is procfs; layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers, kept trees as tars (COPY --from on /)
+    pub fn release_anonymous_file(&self, path: &Path) -> bool; // closes one early: a built layer every destination holds (ADR-0055); the name must not be reused
     pub fn state_dir(&self) -> &Path;                   // canonical
     pub fn build_id(&self) -> &str;
     pub fn build_dir(&self) -> &Path;                   // builds/<id>, created by open
