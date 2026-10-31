@@ -150,9 +150,12 @@ settles them (Q-024):
   from then `view` reads the copy:
   - a unit only read by `COPY --from` keeps the entries its sources name,
     with every symlink on the way to them, and the copy must resolve each
-    source to the same entries; otherwise, and for a source with a
-    variable, a `RUN --mount from=` or an `ONBUILD` trigger, the whole
-    root is kept;
+    source to the same entries; otherwise, and for a source naming the
+    root (`/`, `.`, a link to `/`), a source with a variable, a
+    `RUN --mount from=` or an `ONBUILD` trigger, the whole root is kept.
+    `Keep::Paths` takes physical paths only: a path with a symlink before
+    its last name, or `..`, is refused, since the ignore list judges the
+    path as given;
   - a unit a later `FROM` builds on (`save_image`) is kept whole, and
     `prepare(Base::Stage(kept))` copies it back into the emptied root,
     whose baseline walk then starts from it;

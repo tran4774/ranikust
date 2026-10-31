@@ -42,7 +42,8 @@ pub trait StageRootfs {                            // ADR-0046
     fn keep(&mut self, what: &Keep) -> Result<()> { Ok(()) } // kaniko: copy out what later stages read, give the root up
     fn release(self) -> Result<()>;                // unmount, delete the stage directory, diffs included
 }
-pub enum Keep { All, Paths(Vec<PathBuf>) }         // a symlink in Paths is kept as the link
+pub enum Keep { All, Paths(Vec<PathBuf>) }         // Paths: physical (no link before the last name, no ..),
+                                                   // a final symlink kept as the link, the root = All
 pub trait Snapshotter {                            // ADR-0046
     type Root: StageRootfs;
     type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (the blob)
