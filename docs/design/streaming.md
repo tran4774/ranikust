@@ -178,6 +178,27 @@ The stage peak falls by the compressed base image (about 100 MiB): its
 blobs no longer sit in `memfd`. The `--reproducible` digest is the same
 before and after.
 
+Again after ADR-0056 put the state on disk (named files unlinked at once
+on the container's overlayfs), main at `38f1dfd` against this design with
+the spool on `/`, same build, no patch:
+
+| | before | after |
+|---|---:|---:|
+| Stage peak memory | 162–170 MiB | 52 MiB |
+| Container peak (`memory.peak`, no limit) | 485 MiB | 466–472 MiB |
+| ranikust's own max RSS | 140–144 MiB | 120–125 MiB |
+| `RUN`'s max RSS | 114–122 MiB | 98–101 MiB |
+| Under `--memory 128m --memory-swap 128m` | 2 builds of 3 | 3 of 3 |
+| Under `--memory 112m` or `96m` | killed | killed |
+
+With the state on disk, most of the container's peak is page cache (the
+downloaded blobs before, the spooled tars and the extracted root after),
+which the kernel reclaims under a limit, so `memory.peak` without a limit
+says little; under a limit the build now passes where it sometimes did
+not. Below about 120 MiB the floor is ranikust's own heap and the `RUN`
+(node), neither of which grows with the image. The `--reproducible`
+digest is again the same.
+
 ## Open questions
 
 - [Q-370](../open-questions.md#q-370-should-a-built-layer-be-encoded-straight-into-its-upload)
