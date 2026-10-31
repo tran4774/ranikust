@@ -41,7 +41,7 @@ use std::io::Write;
 use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use rnk_layer::{Compression, EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
@@ -113,8 +113,10 @@ struct Shared {
     /// where only short-lived unpacked directories go.
     kept: RootPath,
     /// Set on `/` ([`Kaniko::keep_in_anonymous_files`]): kept stages are
-    /// tars in this store's anonymous files.
-    tars: OnceLock<Arc<Store>>,
+    /// tars in this store's anonymous files. Weak: the build closes the
+    /// store after the snapshotter, and only a closed store removes its
+    /// marker of a build in progress.
+    tars: OnceLock<Weak<Store>>,
     /// Directories unpacked for a `COPY --from` on `/`, each holding the
     /// store's fence open, deleted at the end of the instruction.
     views: Mutex<Vec<View>>,
@@ -227,12 +229,24 @@ impl Kaniko {
     pub fn keep_in_anonymous_files(&self, store: Arc<Store>) -> Result<()> {
         self.shared
             .tars
-            .set(store)
+            .set(Arc::downgrade(&store))
             .map_err(|_| Error::State("the keep store is set already"))
     }
 }
 
 impl Shared {
+    /// The store kept stages go to as tars, when set; an error once the
+    /// store is gone.
+    fn tar_store(&self) -> Result<Option<Arc<Store>>> {
+        self.tars
+            .get()
+            .map(|w| {
+                w.upgrade()
+                    .ok_or(Error::State("the store of kept tars is closed"))
+            })
+            .transpose()
+    }
+
     fn is_slash(&self) -> bool {
         self.path == Path::new("/")
     }
@@ -416,7 +430,7 @@ impl Snapshotter for Kaniko {
                 layers: layers.to_vec(),
             }
         } else {
-            let (name, root) = make_dir(shared, &format!("k{id}"))?;
+            let (name, root, _) = make_dir(shared, &format!("k{id}"))?;
             // A fresh directory: nothing in it is ignored or a mount;
             // device nodes and FIFOs are left out as on the root
             // (ADR-0041).
@@ -506,7 +520,11 @@ impl Kept {
 /// made (type, device, inode and mount, not following a link): a name
 /// swapped for a link to `.` would otherwise make its removal empty the
 /// whole keep area.
-fn make_dir(shared: &Shared, name: &str) -> Result<(String, RootPath)> {
+/// The directory's name, the directory opened, and its identity
+/// ([`identity`]).
+type Made = (String, RootPath, (u32, u32, u64, u64));
+
+fn make_dir(shared: &Shared, name: &str) -> Result<Made> {
     shared.kept.create_dir(name, 0o700)?;
     let opened = shared.kept.statx(name).and_then(|made| {
         let root = shared.kept.sub_root(name)?;
@@ -520,7 +538,7 @@ fn make_dir(shared: &Shared, name: &str) -> Result<(String, RootPath)> {
                     == (st.dev_major, st.dev_minor, st.ino)
                 && root.mnt_id() == shared.kept.mnt_id() =>
         {
-            Ok((name.to_owned(), root))
+            Ok((name.to_owned(), root, identity(&st)))
         }
         Ok(_) => Err(Error::State(
             "the kept directory changed between its creation and its opening",
@@ -724,12 +742,11 @@ impl KanikoRoot {
         let epoch = shared.view_epoch.load(Ordering::Relaxed);
         if !matches!(&self.view, Some((e, _)) if *e == epoch) {
             let store = shared
-                .tars
-                .get()
+                .tar_store()?
                 .ok_or(Error::State("no store for kept tars"))?;
             let window = store.named_window()?;
             let name = store.scratch_name()?;
-            let (name, root) = match make_dir(&shared, &name) {
+            let (name, root, id) = match make_dir(&shared, &name) {
                 Ok(made) => made,
                 Err(e) => {
                     // A name still there keeps the window open: no `RUN`
@@ -741,7 +758,6 @@ impl KanikoRoot {
                     return Err(e);
                 }
             };
-            let id = identity(&root.statx("/")?);
             // Registered before anything is written: an error below leaves
             // it to the next deletion, with the window still open.
             shared.views().push(View {
@@ -875,13 +891,13 @@ impl StageRootfs for KanikoRoot {
             ));
         }
         clear_views(&shared)?;
-        let kept = if let Some(store) = shared.tars.get() {
+        let kept = if let Some(store) = shared.tar_store()? {
             Kept::Tar {
-                file: tar_out(&shared, what, store)?,
+                file: tar_out(&shared, what, &store)?,
             }
         } else {
             let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
-            let (name, root) = make_dir(&shared, &format!("k{id}"))?;
+            let (name, root, _) = make_dir(&shared, &format!("k{id}"))?;
             if let Err(e) = copy_out(&shared, what, &root) {
                 Kept::Dir {
                     name,

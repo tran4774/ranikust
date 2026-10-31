@@ -412,14 +412,26 @@ Entry format:
   could open a name in the moment it exists. ranikust sees the trace: its
   marker `.ranikust-building` left in the state directory, or leftover
   `.ranikust-anon-*` names.
+  The marker holds the PID namespace and boot id: one from another
+  container or boot is stale and taken over. It covers accidental kills
+  only: a `RUN` can delete the marker and then try to get ranikust killed;
+  leftover names with no marker still count. A `RUN` that failed after
+  its command ran, or was cancelled, also leaves the marker (its sweep may
+  not have finished), so later builds in the container use memory too.
 - **Options:** (a) make no name for that build: state in `memfd`, with a
   warning saying why and how to avoid it (run ranikust as PID 1, or
-  restart the container), the marker kept for later builds; (b) refuse the
-  build; (c) kill every process that is not an ancestor of ranikust, which
-  cannot be done safely: the container's other processes (a CI shell, a
-  sidecar) are not identifiable as the dead build's.
-- **Recommendation:** (a): the build still succeeds, and only memory is
-  spent, in a container that already did something unusual.
+  restart the container), the marker kept for later builds; a `COPY
+  --from` a kept stage or an image on `/`, which needs a named directory,
+  fails the build with that advice; (b) refuse the build; (c) kill every
+  process that is not an ancestor of ranikust, which cannot be done
+  safely: the container's other processes (a CI shell, a sidecar) are not
+  identifiable as the dead build's; (d) make names only when ranikust is
+  PID 1 (no process of a dead build can outlive it there), `memfd`
+  otherwise: safe against a deleted marker too, at a memory cost under a
+  CI shell, the common case.
+- **Recommendation:** (a): the build still succeeds, but a `COPY --from`,
+  and only memory is spent, in a container that already did something
+  unusual; (d) if a `RUN` deleting the marker should be covered.
 - **Interim:** (a), on `feat/kaniko-state-on-disk` (`rnk_store::Store::open_anonymous`).
 - **Raised:** 2026-11-01
 

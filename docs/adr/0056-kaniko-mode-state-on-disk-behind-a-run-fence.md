@@ -58,20 +58,30 @@ Chosen: the third. In kaniko mode on `/`:
   cannot be unlinked, or a directory that cannot be made right, keeps its
   window open for good, so no `RUN` starts while it exists.
 - **After each `RUN`.** The builder hands the guard back with
-  `Store::leave_run`: when `Sandbox::run` returned an error (its sweep
-  may not have finished, so `RUN` processes may live), the fence is
-  poisoned and no name is made for the rest of the build (files go to
+  `Store::leave_run`: when `Sandbox::run` returned an error once the
+  command may have run (its sweep may not have finished, so `RUN`
+  processes may live; `Cancelled` included, an error before `execve`
+  not: `rnk_sandbox::Error::ran_no_command`), the fence is poisoned and no name is made for the rest of the build (files go to
   `memfd`; views fail the build). The state directory's path must still
   lead, without a link, to the directory the store holds (device, inode,
   mount); otherwise the build fails and the fence is poisoned.
 - **A build cut short.** The anonymous store keeps a marker,
-  `.ranikust-building`, in the state directory while a build runs, and
-  removes it only after a clean build. Opening on the marker, or on
-  leftover names, means an earlier ranikust in this container was killed,
-  possibly mid-`RUN` and not as PID 1, so its `RUN` processes may still
-  live outside any fence: that build makes no name (state in `memfd`,
-  warned, with the advice to run ranikust as PID 1 or restart the
-  container) and keeps the marker [open: Q-360].
+  `.ranikust-building`, in the state directory while a build runs,
+  holding the PID namespace and boot id it was made in, and removes it
+  only after a clean build. Opening on this container's marker, or on
+  leftover names with no marker, means an earlier ranikust here was
+  killed, possibly mid-`RUN` and not as PID 1, so its `RUN` processes may
+  still live outside any fence: that build makes no name (state in
+  `memfd`, warned, with the advice to run ranikust as PID 1 or restart
+  the container; a `COPY --from` a kept stage or an image, unpacked by
+  name, fails the build with the same advice) and keeps the marker
+  [open: Q-360]. A marker from another PID namespace or boot (a state
+  directory on a volume outliving its container) left no process here
+  and is taken over. The marker covers accidental kills only: a `RUN`
+  can delete it. `ranikust` accepts a state directory holding only the
+  marker and such names (the store then heeds them), not anything else.
+  The store is closed after the snapshotter lets go of it: the snapshotter
+  holds it weakly.
 - **Crashes.** A crash between create and unlink leaves a name with the
   prefix in the state directory; the next anonymous store opened there
   removes it (files and links unlinked, never followed; directories

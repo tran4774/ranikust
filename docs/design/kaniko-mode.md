@@ -49,8 +49,11 @@ overlay mode).
     unlinked at once, only while no `RUN` process exists: the store's
     fence keeps names and `RUN`s apart (`Store::enter_run` and
     `Store::leave_run` around each `RUN`, `Store::named_window` for a
-    name); a `RUN` that ended with an error poisons it, and a start on the
-    traces of a build cut short makes no name [open: Q-360]; `memfd` only
+    name); a `RUN` that ended with an error once its command may have run
+    poisons it, and a start on the traces of a build cut short in this
+    container (its marker `.ranikust-building`, holding the PID namespace
+    and boot id, or names left with none) makes no name, so a `COPY
+    --from` a kept stage or an image fails [open: Q-360]; `memfd` only
     then, or when no file can be made on disk. After each `RUN` the state
     directory's path must still lead, with no link, to the directory held. The state directory holds no name while a `RUN` runs;
     what must outlive the emptying of the root (a kept stage) is a tar in

@@ -43,4 +43,7 @@ pub use anon::PREFIX as ANON_PREFIX;
 pub use error::{Error, Result};
 pub use fence::{NamedGuard, RunGuard};
 pub use key::EntryKey;
-pub use store::{BuildPaths, CacheLease, CacheOwner, CacheSharing, STATE_MARKER, Store, TmpEntry};
+pub use store::{
+    BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, STATE_MARKER, Store,
+    TmpEntry,
+};

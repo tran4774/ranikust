@@ -332,6 +332,28 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Whether the error is certain to have come before the `RUN`'s
+    /// command ran: no process of the `RUN` can outlive it. False for
+    /// [`Error::Cancelled`] (it may have killed a running `RUN`) and any
+    /// error after the start, whose sweep may not have finished.
+    #[must_use]
+    pub fn ran_no_command(&self) -> bool {
+        matches!(
+            self,
+            Self::Setup { .. }
+                | Self::Exec { .. }
+                | Self::InvalidSpec(_)
+                | Self::Privilege(_)
+                | Self::NotSingleThreaded { .. }
+                | Self::InPlainChroot
+                | Self::NoLoopback { .. }
+                | Self::NoLoopbackUserns { .. }
+                | Self::RunReachesState { .. }
+        )
+    }
+}
+
 /// The crate's result type.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

@@ -640,6 +640,33 @@ fn a_build_cut_short_keeps_the_next_builds_state_in_memory() {
     let store = Store::open_anonymous(&state).unwrap();
     let (_f, path) = store.anonymous_file().unwrap();
     assert!(fs::read_link(&path).is_ok());
+    // Nor is anything unpacked by name (a `COPY --from` on `/`).
+    let e = store.named_window().unwrap_err();
+    assert!(matches!(e, Error::Anonymous(_)), "{e}");
+    assert!(e.to_string().contains("PID 1"), "{e}");
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+}
+
+#[test]
+fn a_marker_from_another_container_or_boot_is_taken_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A state directory on a volume, left by a build cut short in a
+    // container that is gone: its processes went with it.
+    let marker = state.join(".ranikust-building");
+    fs::write(&marker, "pid:[1] 00000000-0000-0000-0000-000000000000\n").unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    drop(store.named_window().unwrap());
+    let ours = fs::read_to_string(&marker).unwrap();
+    assert!(ours.starts_with("pid:["), "{ours}");
+    store.close().unwrap();
+    assert!(names(&state).is_empty());
+    // A name left with no marker (a RUN deleted it): cut short here.
+    fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
     store.close().unwrap();
     assert_eq!(names(&state), [".ranikust-building"]);
 }

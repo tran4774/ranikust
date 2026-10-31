@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::File;
+use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::DirBuilderExt as _;
@@ -33,7 +34,20 @@ use STATE_MARKER as MARKER;
 /// In an anonymous store's directory while a build runs; left after a
 /// build that was cut short or may have left `RUN` processes, which keeps
 /// later builds in this container from making names (Q-360).
-const BUILDING: &str = ".ranikust-building";
+pub const BUILDING_MARKER: &str = ".ranikust-building";
+use BUILDING_MARKER as BUILDING;
+/// What [`BUILDING`] holds: the PID namespace and the boot of the build
+/// that made it; `None` when either cannot be read, and any marker then
+/// counts as this container's.
+fn building_mark() -> Option<String> {
+    let ns = fs::read_link("/proc/self/ns/pid").ok()?;
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    Some(format!("{} {}\n", ns.to_str()?, boot.trim()))
+}
+
+/// Why a store opened on the traces of a build cut short makes no name
+/// [open: Q-360].
+const CUT_SHORT: &str = "an earlier build in this container did not end cleanly and may have      left RUN processes; run ranikust as the container's PID 1, or restart the container, to      keep state on disk";
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
@@ -300,13 +314,18 @@ impl Store {
     /// Opens a store that keeps nothing in the state directory `state`
     /// (kaniko mode on `/`, ADR-0051): every entry is an anonymous file
     /// ([`Store::anonymous_file`]) held by this store and gone with it; no
-    /// marker, lock, layout or build directory is written, and nothing is
-    /// cleaned up. `state` must exist (`ranikust` checks and creates it).
-    /// Its anonymous files are named `/proc/self/fd/<n>` to the caller's
-    /// code, which only this process resolves.
+    /// lock, layout or build directory is written. `state` must exist
+    /// (`ranikust` checks and creates it). Its anonymous files are named
+    /// `/proc/self/fd/<n>` to the caller's code, which only this process
+    /// resolves.
     ///
-    /// A state directory that already holds entries is used as is, with a
-    /// warning: a `RUN` can read what is there.
+    /// Only [`BUILDING_MARKER`] is written, holding this container's PID
+    /// namespace and boot, and removed by a clean [`Store::close`] (ADR-0056):
+    /// a store opened on this container's marker, or on names an earlier
+    /// store left ([`crate::ANON_PREFIX`], removed here), makes no name for
+    /// the build and keeps the marker [open: Q-360]. A marker from another
+    /// container or boot is taken over. Anything else in the state directory
+    /// is used as is, with a warning: a `RUN` can read what is there.
     ///
     /// # Errors
     ///
@@ -346,19 +365,50 @@ impl Store {
         // A build that did not end cleanly here may have left `RUN`
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
         // they would see a name, so this build makes none [open: Q-360].
-        let interrupted = match root.statx(BUILDING) {
-            Ok(_) => true,
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
-                root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?;
-                false
+        // The marker names the PID namespace and boot it was made in: one
+        // from another container (a state directory on a volume) or an
+        // earlier boot left no process here, and is taken over.
+        let mark = building_mark();
+        let marker = match root.statx(BUILDING) {
+            Ok(st) if st.file_type() == FileType::Regular => {
+                let mut held = Vec::new();
+                io::Read::take(File::from(root.open_at(BUILDING, &OpenHow::read())?), 256)
+                    .read_to_end(&mut held)
+                    .map_err(|e| Error::Io {
+                        op: "read",
+                        path: state_path.join(BUILDING),
+                        source: e,
+                    })?;
+                Some(mark.as_ref().is_none_or(|m| held == m.as_bytes()))
             }
+            Ok(_) => Some(true),
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => None,
             Err(e) => return Err(e.into()),
         };
-        let tainted = (leftovers || interrupted).then_some(
-            "an earlier build in this container did not end cleanly and may have left RUN \
-             processes; run ranikust as the container's PID 1, or restart the container, to \
-             keep state on disk",
-        );
+        let interrupted = match marker {
+            Some(here) => here,
+            // Names with no marker: it was deleted (a `RUN` can), or made
+            // by an older ranikust.
+            None => leftovers,
+        };
+        // Written unless this container's marker is kept as it is; made
+        // anew when names were left with none, so later builds heed it.
+        if !interrupted || marker.is_none() {
+            let how = if marker.is_some() {
+                OpenHow::write().truncate()
+            } else {
+                OpenHow::write().create_new(0o600)
+            };
+            let mut f = File::from(root.open_at(BUILDING, &how)?);
+            io::Write::write_all(&mut f, mark.as_deref().unwrap_or_default().as_bytes()).map_err(
+                |e| Error::Io {
+                    op: "write",
+                    path: state_path.join(BUILDING),
+                    source: e,
+                },
+            )?;
+        }
+        let tainted = interrupted.then_some(CUT_SHORT);
         if !list(&root, Path::new("."))?.iter().all(|n| n == BUILDING) {
             tracing::warn!(
                 target: "rnk_store",
@@ -513,8 +563,19 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::Anonymous`] when asked from inside a `RUN` on this thread.
+    /// [`Error::Anonymous`] when asked from inside a `RUN` on this thread,
+    /// after a `RUN` that ended with an error, or in a store opened on the
+    /// traces of a build cut short, whose `RUN` processes may live on
+    /// outside any fence [open: Q-360].
     pub fn named_window(&self) -> Result<NamedGuard> {
+        if self.anon.as_ref().is_some_and(|a| a.tainted) {
+            return Err(Error::Anonymous(
+                "COPY --from a kept stage or an image, unpacked by name, after a build cut \
+                 short (an earlier build in this container did not end cleanly and may have \
+                 left RUN processes; run ranikust as the container's PID 1, or restart the \
+                 container),",
+            ));
+        }
         self.fence.named()
     }
 
