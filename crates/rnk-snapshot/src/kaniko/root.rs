@@ -479,7 +479,8 @@ impl Snapshotter for Kaniko {
         let span = tracing::info_span!("rnk_snapshot.prepare", layers = layers.len());
         let _entered = span.enter();
         let kept = if shared.tars.get().is_some() {
-            // On `/`: the blobs, already anonymous files of the store,
+            // On `/`: the layers as they are (a streamed one is spooled and
+            // verified on first read, before any directory is made),
             // unpacked only when a `COPY --from` reads them.
             Kept::Image {
                 layers: layers.to_vec(),

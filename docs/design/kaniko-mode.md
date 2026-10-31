@@ -209,7 +209,8 @@ settles them (Q-024):
   build, with the build directory otherwise. On `/` (ADR-0056) a kept
   stage is a plain tar in an anonymous file, written by a metadata-only
   walk and the walk's exporter, and a `COPY --from=<image>` stays its
-  blobs; a reader's view is unpacked into a directory of the state
+  blobs (a streamed one spooled and verified on first read, before any
+  directory is made, ADR-0055); a reader's view is unpacked into a directory of the state
   directory named by the store, inside a fence window, and deleted at the
   end of the instruction that read it (`end_layer`, also `prepare`,
   `keep`, `release`, the end of the build); `FROM` a kept tar extracts it into

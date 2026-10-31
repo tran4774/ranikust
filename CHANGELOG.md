@@ -194,7 +194,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   its source registry (a mount, else streamed through). Built layers of
   the target's `FROM` chain are pushed to every destination as soon as
   they are exported (at most `--jobs` at once, `--jobs` more waiting) and
-  released once there; a failed build cancels them. Measured on a node
+  released once there; a failed build cancels them. On `/`, where nothing
+  empties the root, a streamed base layer is spooled to a disk-backed
+  anonymous file and verified before it is extracted. Measured on a node
   base image in kaniko mode on `/`: the peak memory of a stage falls from
   about 160 to about 50 MiB.
 

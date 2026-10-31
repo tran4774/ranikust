@@ -96,8 +96,12 @@ anonymous file of the store, its compressed digest and diff ID verified,
 and only then extracted. Memory stays bounded and the disk holds one
 layer at a time; nothing unverified ever reaches a root that nothing
 empties. Overlay mode and host roots keep extracting while downloading:
-their root is always emptied after a failure. This needs the store's
-disk-backed anonymous files and lands with them.
+their root is always emptied after a failure. Built with the store's
+disk-backed anonymous files (ADR-0056); a `COPY --from=<image>` on `/` is
+spooled and verified the same way before it is unpacked. The spool is the
+decompressed tar: one pass computes the diff ID while the source checks
+the compressed digest, and extraction reads it without decompressing
+again.
 
 ## More Information
 

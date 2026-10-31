@@ -56,7 +56,8 @@ pub async fn retry_kaniko<T, E: Display>(retries: u32, op: impl AsyncFn() -> Res
 pub struct RawManifest;  // new(media_type, bytes) hashes; media_type(), digest(), bytes(), size(), descriptor()
 pub struct ImageManifests { pub manifest: RawManifest, pub index: Option<RawManifest> }
 pub enum PushOutcome { Existed, Mounted, Uploaded }
-pub enum BlobBody { Bytes(Bytes), File(PathBuf), Remote(Box<RemoteBlob>) } // reopened per attempt; Remote pulled through a pipe
+pub enum BlobBody { Bytes(Bytes), Opened(Arc<dyn BlobFile>), File(PathBuf), Remote(Box<RemoteBlob>) } // reopened per attempt; Remote pulled through a pipe
+pub trait BlobFile: Debug + Send + Sync { fn open(&self) -> io::Result<std::fs::File>; } // a file reached by a handle, not a path (an anonymous layer)
 pub fn Client::open_blob(self: &Arc<Self>, h: &Handle, r: &Reference, d: &Descriptor) -> io::Result<BlobReader>; // blocking Read, fails unless size and digest match
 pub trait BlobSink: AsyncWrite + Unpin + Send { fn reset(&mut self) -> impl Future<Output = io::Result<()>>; fn can_restart(&self) -> bool { true } } // File, Vec<u8>
 pub fn select_platform<'a>(index: &'a ImageIndex, p: &Platform) -> Option<&'a Descriptor>;

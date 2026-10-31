@@ -34,7 +34,9 @@ bytes. So in kaniko mode:
   becomes a reference to the registry (repository, descriptor), not a file.
 - `prepare(Image)` streams each layer from the registry through the
   decoder into `extract_live`: download → decompress → extract in one
-  pass, through an in-memory pipe of 256 KiB (`rnk_registry::PIPE_BYTES`).
+  pass, through an in-memory pipe of 256 KiB (`rnk_registry::PIPE_BYTES`);
+  on `/` the decompressed tar goes to a disk-backed anonymous file first,
+  and is extracted once verified (see Credentials and failures).
   The compressed digest is checked by the registry client at the end of
   the body, the diff ID by the decoder at the end of the tar. The pull
   runs on a thread owned by the reader: a reader dropped early stops the
@@ -66,7 +68,10 @@ than the registry takes the layers waits for room instead of piling up
 files. The final push sends only the config and the manifest, after
 waiting for the layer uploads. Once every destination holds a layer and
 no output needs its bytes, its file is released: removed from the build
-directory, or, for an anonymous file, its descriptor closed. Only the
+directory, or, for an anonymous file, released through its handle
+(`rnk_builder::AnonBlob`), shared by every copy of the layer and the only
+way to open it, so a released file's descriptor number, reused by a later
+file, is never read as the layer. Only the
 target's `FROM` chain is pushed: a stage that a later stage is built
 `FROM` in kaniko mode keeps its layers for that stage, and a stage the
 target only copies from never reaches a destination. A failed build
@@ -112,17 +117,19 @@ the number of layers uploading or waiting to is bounded by twice
   blob. Registries collect such blobs (garbage collection of unreferenced
   blobs; upload sessions expire). No tag ever points at a partial image.
 - **A base layer whose digest or diff ID does not match** fails the build.
-  In kaniko mode its entries are already in the root when the check fails
-  at the end of the stream; nothing runs on that root again in this build
-  (the stage fails before its first instruction). On a host root the root
-  is emptied at the end of the build, and a later stage's root holds none
-  of those entries. On `/` nothing empties the container's root (ADR-0052
-  D1 leaves it as it is), so unverified entries would stay there: on `/`
-  each base layer is to be spooled to a disk-backed anonymous file,
-  verified, and only then extracted (decided 2026-11-01, see ADR-0055;
-  it needs the disk-backed anonymous files of the store and is not built
-  yet: until then `/` extracts while downloading, as a host root does). A
-  partial upload is an upload session the registry discards.
+  On `/`, which nothing empties (ADR-0052 D1), none of its entries ever
+  reaches the root: each streamed layer is first spooled, decompressed,
+  into a disk-backed anonymous file of the store (ADR-0056), its diff ID
+  computed on the way and its compressed digest checked at the end of the
+  body, and only then extracted; the spool goes with its file, so the disk
+  holds one layer at a time. A `COPY --from=<image>` on `/` is spooled and
+  verified the same way before any directory is unpacked for it, and its
+  verified tars kept for the stage's later readers. On a host root, and in
+  a fresh keep directory, a layer is extracted as it arrives: a mismatch
+  fails the stage with part of the layer there, nothing runs on it again,
+  and the root is emptied at the end of the build (a later stage's root
+  holds none of those entries). A partial upload is an upload session the
+  registry discards.
 - **A dropped connection during a streamed extraction** cannot be retried
   in place (part of the layer is extracted): the build fails at once,
   with the connection's error, without waiting for a retry. A request

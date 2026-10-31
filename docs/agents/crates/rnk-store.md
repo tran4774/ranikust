@@ -42,8 +42,9 @@ impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
     pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE|O_EXCL, memfd with MFD_NOEXEC_SEAL fallback) named /proc/self/fd/<n>, refused unless /proc/self/fd is procfs; layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
-    pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers
-    pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (a kept stage's tar), gone with it
+    pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store
+    pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (an encoded layer, a spooled base layer,
+                                                        // a kept stage's tar), gone with it; never kept by the store, persistent or not
     pub fn enter_run(&self) -> Result<RunGuard>;        // ADR-0056: held around each RUN; waits until no name is on disk (no-op when persistent)
     pub fn leave_run(&self, g: RunGuard, swept: bool) -> Result<()>; // ADR-0056: !swept poisons the fence (no name for the build); checks the state dir's identity
     pub fn named_window(&self) -> Result<NamedGuard>;   // ADR-0056: a name may exist while held; waits for RUNs; fails inside one, after a failed RUN, and in a store opened on a build cut short (Q-360)

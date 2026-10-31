@@ -49,8 +49,11 @@ pub trait LayerSource: Send {                           // rnk-snapshot's export
 }
 pub struct EntriesLayer<S: EntrySource + Send>;         // entries plus a content source
 pub struct BlobLayer { pub diff_id: Digest, pub blob: Descriptor, pub bytes: LayerBytes, pub mount_from: Option<Reference> }
-pub enum LayerBytes { File(PathBuf), Registry(Reference) }  // Registry: a base layer never kept, mounted or streamed from its source on push (ADR-0055)
-impl BlobLayer { pub fn base(diff_id, blob, path, from) -> Self; pub fn remote(diff_id, blob, from) -> Self; pub fn path(&self) -> Option<&Path>; }
+pub enum LayerBytes { File(PathBuf), Anon(AnonBlob), Registry(Reference) }  // Registry: a base layer never kept, mounted or streamed from its source on push (ADR-0055)
+impl BlobLayer { pub fn base(diff_id, blob, path, from) -> Self; pub fn remote(diff_id, blob, from) -> Self; pub fn path(&self) -> Option<&Path>;
+                 pub fn open(&self) -> Option<io::Result<File>>; }  // a new descriptor of the kept bytes, by path or handle
+pub struct AnonBlob;  // kaniko mode on `/`: an encoded layer in a scratch_file, shared by every copy; open() reopens it under a lock,
+                      // release() frees it for every copy, after which open() fails: no /proc/self/fd/<n> name outlives it
 pub struct LayerExporter;                               // into the build dir, blobs named by digest; LayerExporter::anonymous(store, ..): anonymous files of the store (ADR-0051)
 impl LayerExporter {
     pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self;  // dir: Store::build_dir(); mtime from time

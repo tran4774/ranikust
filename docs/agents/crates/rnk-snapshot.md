@@ -66,12 +66,14 @@ impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk
 // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
 // prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /
 //   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641); a root off `/` 0755;
-//   extracts each blob with extract_live, diff ID checked. prepare(Stage(p)): takes the root over
+//   extracts each blob with extract_live, diff ID checked; on `/` a streamed layer is first spooled
+//   (decompressed, scratch_file) and verified, then extracted (ADR-0055). prepare(Stage(p)): takes the root over
 //   from p if p still holds it (a squashed chain); from a kept p, copies p's copy into the emptied
 //   root; else Error::State.
 // keep(All | Paths): copies the root (ignore list left out) into a new directory of the keep area,
 //   then view() reads it and the root is given up; again while no new base started (epoch).
-// prepare_source: unpacks a COPY --from image into the keep area, never into the shared root.
+// prepare_source: unpacks a COPY --from image into the keep area, never into the shared root; on `/`
+//   kept as blobs, streamed ones spooled and verified before the first unpacked view.
 // end_layer: walk + diff when layers are needed, else an empty diff and no walk.
 // release: gives the root up; the next base or finish() empties it (delete_contents + ignore list),
 //   a root off `/` getting its own owner and mode back.
