@@ -38,8 +38,8 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 
 | Flag | Meaning |
 |---|---|
-| `-c`, `--context=DIR` | The build context, a local directory given as a plain path. kaniko's `dir://` form is dropped ([ADR-0053](../adr/0053-local-context-is-a-plain-path-no-dir-scheme.md)); the build accepts it until that change lands. Default `/workspace/`. git, tar and HTTPS contexts come later; S3, GCS and Azure are not planned. |
-| `--context-sub-path=DIR` | Build from this sub-directory of a fetched context (git, tar or HTTPS, which come later; inside it: no `..`). Ignored, with a warning, for a local directory. Until the change of ADR-0053 lands, a `dir://` context also takes it. |
+| `-c`, `--context=DIR` | The build context, a local directory given as a plain path. kaniko's `dir://` form is dropped and refused, naming the plain path ([ADR-0053](../adr/0053-local-context-is-a-plain-path-no-dir-scheme.md), [ADR-0054](../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)); the build accepts it until that change lands. Default `/workspace/`. git, tar and HTTPS contexts come later; S3, GCS and Azure are not planned. |
+| `--context-sub-path=DIR` | Build from this sub-directory of a fetched context (git, tar or HTTPS, which come later; inside it: no `..`). Refused (exit code 2) with a local directory: pass the sub-directory itself as `--context` ([ADR-0054](../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)). Until that change lands (Phase 2), the build ignores it with a warning for a plain path, and a `dir://` context takes it. |
 | `-f`, `--dockerfile=PATH` | The Dockerfile. Default `Dockerfile`. |
 | `--build-arg=KEY=VALUE` | A build argument; `KEY` alone takes its value from the environment. Repeatable. |
 | `--target=STAGE` | The stage to build and produce. One only: kaniko's list (comma-separated or repeated) is refused, since the stages after the first would be built for nothing. Default: the last stage. |

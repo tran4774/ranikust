@@ -101,6 +101,17 @@ with the default security profile or in most Kubernetes pods.
   kernels, so they are kept in memory there, counted against the
   container's memory limit; mount a volume at `/var/lib/ranikust` to keep
   them on disk.
+- ranikust refuses to build on the container's `/` where root may mount
+  (a `--privileged` container, `CAP_SYS_ADMIN`) and where `/proc/sys` is
+  not a read-only mount (Docker's `systempaths=unconfined`, Kubernetes'
+  `procMount: Unmasked`): a `RUN` there would see the host's devices and
+  could write `kernel/core_pattern`, which runs a program as the host's
+  root. Use overlay mode there (`--mode=overlay`, or `--mode=auto`, with a
+  volume at `/var/lib/ranikust`)
+  ([ADR-0054](https://github.com/tran4774/ranikust/blob/main/docs/adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)).
+  Devices you give the container with `--device` stay reachable by a `RUN`
+  in kaniko mode: ranikust cannot tell them from the container's own, so
+  pass only what the build needs.
 - Stages build one after another. The `--parallel-stages` option builds
   independent stages in parallel, each in its own directory, at a cost:
   `RUN` commands then have no `/proc`, and some tools fail or quietly
