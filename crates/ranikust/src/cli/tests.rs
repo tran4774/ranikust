@@ -101,7 +101,6 @@ fn kaniko_spellings_are_accepted() {
 fn ranikust_flags_are_accepted() {
     let args = build(&[
         "--mode=overlay",
-        "--workdir=/w",
         "--state-dir",
         "/s",
         "--jobs=4",
@@ -109,7 +108,6 @@ fn ranikust_flags_are_accepted() {
         "--platform=linux/amd64",
     ]);
     assert_eq!(args.mode, Mode::Overlay);
-    assert_eq!(args.workdir.as_deref(), Some(Path::new("/w")));
     assert_eq!(args.state_dir.as_deref(), Some(Path::new("/s")));
     assert_eq!(args.jobs.map(NonZeroUsize::get), Some(4));
     assert_eq!(args.network, Network::None);
@@ -224,16 +222,6 @@ fn every_refused_flag_is_reported_at_once() {
     assert_eq!(lines.len(), 2, "{lines:?}");
 }
 
-/// Parses `args` and returns the warnings.
-fn warnings(args: &[&str]) -> (BuildArgs, Vec<String>) {
-    let argv = std::iter::once("ranikust").chain(args.iter().copied());
-    let parsed = parse(argv).expect("parses");
-    let Command::Build(build) = parsed.cli.into_command() else {
-        panic!("expected build");
-    };
-    (*build, parsed.warnings)
-}
-
 /// ADR-0049: a kaniko flag that changes nothing in ranikust is refused with
 /// its reason, never ignored; `--cache=false` asks for what ranikust does.
 #[test]
@@ -254,21 +242,18 @@ fn flags_that_change_nothing_are_refused() {
         assert_eq!(lines.len(), 1, "{args:?}: {lines:?}");
         assert!(lines[0].contains(reason), "{args:?}: {}", lines[0]);
     }
-    let (_, w) = warnings(&["--cache=false", "--no-push"]);
-    assert!(w.is_empty(), "{w:?}");
+    build(&["--cache=false", "--no-push"]);
 }
 
-/// The kaniko-mode flags of Phase 2 (ADR-0040), with kaniko's defaults and
-/// `--whitelist-var-run` as the deprecated name of `--ignore-var-run`.
+/// The kaniko-mode flags of Phase 2 (ADR-0040), with kaniko's defaults.
 #[test]
 fn kaniko_mode_flags_parse_with_kanikos_defaults() {
-    let (args, w) = warnings(&["--no-push"]);
-    assert!(w.is_empty(), "{w:?}");
+    let args = build(&["--no-push"]);
     assert!(args.ignore_paths.is_empty());
     assert_eq!(args.ignore_var_run, None);
-    assert!(!args.single_snapshot && !args.materialize && !args.force);
+    assert!(!args.single_snapshot && !args.materialize);
     assert_eq!(args.snapshot_workers, None);
-    let (args, w) = warnings(&[
+    let args = build(&[
         "--ignore-path=/a",
         "--ignore-path",
         "/b/../c",
@@ -276,60 +261,41 @@ fn kaniko_mode_flags_parse_with_kanikos_defaults() {
         "--single-snapshot",
         "--materialize=true",
         "--snapshot-workers=3",
-        "--force",
         "--no-push",
     ]);
-    assert!(w.is_empty(), "{w:?}");
     assert_eq!(
         args.ignore_paths,
         [PathBuf::from("/a"), PathBuf::from("/b/../c")]
     );
     assert_eq!(args.ignore_var_run, Some(false));
-    assert!(args.single_snapshot && args.materialize && args.force);
+    assert!(args.single_snapshot && args.materialize);
     assert_eq!(args.snapshot_workers.map(NonZeroUsize::get), Some(3));
-    let (args, w) = warnings(&["--whitelist-var-run=false", "--no-push"]);
-    assert_eq!(args.ignore_var_run, Some(false));
-    assert!(w[0].contains("use --ignore-var-run"), "{w:?}");
-    let lines = refused(&["--whitelist-var-run", "--ignore-var-run", "--no-push"]);
-    assert!(lines[0].contains("name the same setting"), "{lines:?}");
     assert_eq!(
         clap_error(&["--snapshot-workers=0", "--no-push"]).exit_code(),
         2
     );
 }
 
+/// kaniko's old spellings are refused, each naming the flag to use, and
+/// `--force` with its reason: one name per option, and ranikust never
+/// builds on this machine's `/` (ADR-0050, ADR-0052).
 #[test]
-fn two_spellings_of_one_flag_are_refused_naming_both() {
-    let lines = refused(&[
-        "--platform=linux/amd64",
-        "--custom-platform=linux/amd64",
-        "--no-push",
-    ]);
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert!(
-        lines[0].contains("--custom-platform and --platform"),
-        "{lines:?}"
-    );
-}
-
-/// kaniko's deprecated spellings and `--custom-platform` (Q-020).
-#[test]
-fn old_spellings_and_custom_platform_are_aliases() {
-    let (args, w) = warnings(&[
-        "--tarPath=/t.tar",
-        "--snapshotMode",
-        "redo",
-        "--customPlatform=linux/amd64",
-        "--no-push",
-    ]);
-    assert_eq!(args.tar_path.as_deref(), Some(Path::new("/t.tar")));
-    assert_eq!(args.snapshot_mode, Some(SnapshotMode::Redo));
-    assert_eq!(args.platform.as_deref(), Some("linux/amd64"));
-    assert_eq!(w.len(), 3, "{w:?}");
-    assert!(w[0].contains("use --tar-path"), "{w:?}");
-    let (args, w) = warnings(&["--custom-platform", "linux/amd64", "--no-push"]);
-    assert_eq!(args.platform.as_deref(), Some("linux/amd64"));
-    assert!(w.is_empty(), "{w:?}");
+fn old_spellings_and_force_are_refused() {
+    let cases: &[(&str, &str)] = &[
+        ("--tarPath=/t.tar", "use --tar-path"),
+        ("--snapshotMode=redo", "use --snapshot-mode"),
+        ("--customPlatform=linux/amd64", "use --platform"),
+        ("--custom-platform=linux/amd64", "use --platform"),
+        ("--whitelist-var-run=false", "use --ignore-var-run"),
+        ("--force", "never builds on this machine's /"),
+    ];
+    for (arg, reason) in cases {
+        let lines = refused(&[arg, "--no-push"]);
+        assert_eq!(lines.len(), 1, "{arg}: {lines:?}");
+        assert!(lines[0].contains(reason), "{arg}: {}", lines[0]);
+    }
+    // `--workdir` is gone: ranikust picks the root (ADR-0050).
+    assert_eq!(clap_error(&["--workdir=/w", "--no-push"]).exit_code(), 2);
 }
 
 #[test]

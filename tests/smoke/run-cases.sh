@@ -15,40 +15,49 @@ source tests/smoke/cases.bash
 BASE=docker.io/library/alpine:3.20
 ENGINE=podman
 CASES_OUT="$TARGET/smoke/cases"
-# One workdir for every case: its store keeps the pulled base layers, and
-# the `run` case's cache mount outlives a build. Kept for the next run.
-WORK="$CASES_OUT/.work"
+# One state directory for every case: its store keeps the pulled base
+# layers, and the `run` case's cache mount outlives a build. Kept for the
+# next run.
+WORK="$CASES_OUT/.state"
 SECRET="$CASES_OUT/.secret"
 # ranikust refuses a state directory others can write to.
 mkdir -p "$WORK" && chmod 700 "$WORK"
 printf %s "$SMOKE_CASE_SECRET" >"$SECRET"
 
-# The workdir is a volume: overlay refuses an upper directory on the
-# container's own overlay root. RANIKUST_CASE_MODE=kaniko builds in kaniko
-# mode instead, in a default (unprivileged) container where root may not
-# mount, so RUN runs `Direct` in a chroot (ADR-0043), on a workdir and a
-# state directory of its own.
+# The state directory is a volume at the default path: overlay refuses an
+# upper directory on the container's own overlay root (ADR-0050).
+# RANIKUST_CASE_MODE=kaniko builds in kaniko mode instead, in a default
+# (unprivileged) container where root may not mount: on the container's
+# `/`, as kaniko, with `RUN` run `Direct`, its state directory a volume of
+# its own. There the root is the container's `/`, so the binary, the
+# context, the outputs and the secret sit under `/ranikust`, which kaniko
+# mode never snapshots or empties, as kaniko's `/kaniko`; elsewhere a case
+# copying to `/ctx` would meet the context's mount.
 PODMAN_ARGS=(--privileged)
 MODE_ARGS=()
-WORKDIR_IN=/w
+IN=
 if [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; then
   PODMAN_ARGS=()
-  WORK="$CASES_OUT/.kaniko-work"
-  STATE="$CASES_OUT/.kaniko-state"
-  mkdir -p "$WORK" "$STATE" && chmod 700 "$WORK" "$STATE"
-  # The workdir sits in a 0700 directory, which ADR-0047 requires.
-  PODMAN_ARGS=(--tmpfs /k:mode=0700 -v "$STATE:/s")
-  MODE_ARGS=(--mode=kaniko --state-dir /s)
-  WORKDIR_IN=/k/w
+  WORK="$CASES_OUT/.kaniko-state"
+  mkdir -p "$WORK" && chmod 700 "$WORK"
+  MODE_ARGS=(--mode=kaniko)
+  IN=/ranikust
+fi
+
+# A store of an earlier ranikust (marked `.ranikust-root`) is refused
+# (ADR-0050): it is only a cache here, so start it again.
+if [ -e "$WORK/.ranikust-root" ] && [ ! -e "$WORK/.ranikust-state" ]; then
+  rm -rf "$WORK" && mkdir -p "$WORK" && chmod 700 "$WORK"
 fi
 
 rnk_run() {
   local ctx="$1" o="$2"
   shift 2
-  podman run --rm "${PODMAN_ARGS[@]}" -v "$RNK:/ranikust:ro" -v "$ctx:/ctx:ro" \
-    -v "$WORK:$WORKDIR_IN" -v "$o:/out" -v "$SECRET:/secret:ro" "$BASE" \
-    /ranikust --context /ctx --workdir "$WORKDIR_IN" "${MODE_ARGS[@]}" --no-push \
-    --oci-layout-path /out/oci --tar-path /out/image.tar --secret id=tok,src=/secret "$@"
+  podman run --rm "${PODMAN_ARGS[@]}" -v "$RNK:$IN/bin/ranikust:ro" -v "$ctx:$IN/ctx:ro" \
+    -v "$WORK:/var/lib/ranikust" -v "$o:$IN/out" -v "$SECRET:$IN/secret:ro" "$BASE" \
+    "$IN/bin/ranikust" --context "$IN/ctx" "${MODE_ARGS[@]}" --no-push \
+    --oci-layout-path "$IN/out/oci" --tar-path "$IN/out/image.tar" \
+    --secret "id=tok,src=$IN/secret" "$@"
 }
 
 # Not `smoke_cases || rc=$?`: that would turn errexit off inside every case.

@@ -18,7 +18,7 @@ where mounting is possible; no `RUN` process outlives the build.
 - Per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop, the
   `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`; and
   `Isolation::Direct`: sequential kaniko-mode `RUN` on `/`, or in a
-  `chroot` of a host workdir with journaled placed files (`ADR-0043`).
+  `chroot` of a root other than `/` (a root in the state directory, ADR-0050) with journaled placed files (`ADR-0043`).
 - The no-mount `--parallel-stages` path: bare `chroot`, `mknod` `/dev`
   nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`.
 
@@ -44,7 +44,7 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
-    pub fn start_with_root(caps, dir, shared_root: &Path, checked: &RootPath) -> Result<Self>; // the path must be `checked`'s directory; replays journals of that workdir, by identity; refuses the host's /, /etc, /dev; a later RUN on another path, or whose reopened root differs (dev, ino, mnt_id), is refused
+    pub fn start_with_root(caps, dir, shared_root: &Path, checked: &RootPath) -> Result<Self>; // the path must be `checked`'s directory; replays journals of that root, by identity; refuses the host's /, /etc, /dev; a later RUN on another path, or whose reopened root differs (dev, ino, mnt_id), is refused
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
@@ -150,7 +150,7 @@ from `rnk-store`, secret file) and passes `--network`.
   directory others may have written: journals and run directories are
   opened with `O_NOFOLLOW` and the scratch files removed with `unlinkat`
   through descriptors, a journal's root must resolve strictly below the
-  state directory (the parent of `dir`) or be the workdir given to
+  state directory (the parent of `dir`) or be the shared root given to
   `Sandbox::start_with_root`, opened once and matched by device, inode and
   mount, never by path (on it only swaps and the `/etc`, `/dev` stubs are
   undone), a `swap` record must name one of
@@ -207,7 +207,7 @@ from `rnk-store`, secret file) and passes `--network`.
   fallbacks; `SIGKILL` during `RUN sleep 1000` leaves nothing.
 - **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`);
   `direct_runs_in_a_chroot_with_placed_files_as_root` (`#[ignore]`: a
-  shell copied into a temp workdir sees the placed files and nodes, no
+  shell copied into a temp root sees the placed files and nodes, no
   `/proc`, `ulimit -n` 777; the root is as before after) [measured: passed
   in the VM, Ubuntu 24.04, kernel 6.8, 2026-10-31]; real root;
   escapes (`chroot` + `chdir("..")` under `pivot_root` and `MS_MOVE`,
@@ -272,7 +272,7 @@ from `rnk-store`, secret file) and passes `--network`.
   a replay then saw a dead journal as live (a flaky T0 test). Unlock
   explicitly.
 - A `Direct` `RUN` in a `chroot` has no `/proc`; on a host that can mount,
-  the caller should run that workdir with `Isolation::Full` instead.
+  the caller should run that root with `Isolation::Full` instead.
 
 ## Phase 1
 

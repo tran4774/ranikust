@@ -25,7 +25,7 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | `JAVA_TOOL_OPTIONS` | Injected on the `--parallel-stages` path under cgroup limits so the JVM sizes heap and CPUs correctly | `ADR-0019` |
 | `--jobs` | Maximum concurrent `RUN`s across stages; defaults to `available_parallelism()` | `ADR-0013` |
 | kaniko | The Go image builder ranikust replaces, cited at `44aa7ddc0` | [kaniko-map.md](kaniko-map.md) |
-| kaniko mode | Snapshot by walking and hashing the root; the workdir is the root (`/` in a container); sequential by default | `ADR-0002`, `ADR-0014` |
+| kaniko mode | Snapshot by walking and hashing the root: `/` in a container, else a directory made in the state directory; sequential by default | `ADR-0002`, `ADR-0014`, `ADR-0050` |
 | `LayeredMap` | kaniko's per-layer path → hash map used to diff; ported for kaniko mode | `kaniko@44aa7ddc0 pkg/snapshot/layered_map.go:45` |
 | lazy export | A layer is turned into tar, compressed and digested only if pushed, cached, written out or in the target | `design/scheduler.md#lazy-export`, `exp-08` |
 | lazy snapshot | kaniko mode does not walk a stage whose layers nobody uses | `design/kaniko-mode.md#lazy-snapshots` |
@@ -33,7 +33,7 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | `lowerdir+` | `fsconfig` key adding one lower layer (new mount API); probed by a real create, else `mount(2)` with short `l/` names | `design/overlay-snapshot.md#mounting` |
 | MADR | Markdown Any Decision Records 4.0, short variant plus an Evidence section: the ADR format | `docs/adr/template.md` |
 | manifest list | OCI image index or Docker manifest list: one manifest per platform; the base is picked by platform, never by host | `ADR-0009` |
-| marker file | `.ranikust-root`; a non-empty workdir without it is refused | `design/kaniko-mode.md#host-safety-checks` |
+| marker file | `.ranikust-state`; the store's mark on its state directory: a non-empty directory without it is refused | `design/cache-and-store.md` |
 | metacopy | Overlay option to copy up only metadata; ranikust mounts with `metacopy=off` | `ADR-0016` |
 | metric span | `tracing` span named `<crate>.<operation>` at `debug` level, one per layer, blob, instruction or stage (never per file), with unit-named numeric fields; what `rnk-metrics` aggregates | `design/metrics.md#emitting-spans` |
 | metrics report | Opt-in JSON file (`--metrics-file`, schema `ranikust.metrics/v1`) written at exit: phases, records, network, resources; shaped like kaniko's `metrics.json` | `ADR-0025`, `design/metrics.md#the-report` |
@@ -60,7 +60,7 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | stage squashing | kaniko folds a base stage into its only child; ranikust does it only in sequential kaniko mode | [kaniko-map.md](kaniko-map.md#behaviour-to-match) |
 | `StageRootfs` | `rnk-snapshot` trait for a stage's root: a shared `/` runs alone, a private directory may run in parallel | `design/kaniko-mode.md#variants` |
 | stat cache | kaniko-mode hash cache keyed on `{dev, ino, size, mtime, ctime, mode, uid, gid}`, with a 2 s racy window | `design/kaniko-mode.md#walk-hash-and-diff` |
-| state dir | `--state-dir`, ranikust's `/kaniko`, one for every mode: the store, `builds/<id>`, stub journal, `deps/`, stage images. Default `<workdir>/.ranikust` (overlay), `/ranikust/state` (kaniko, on the ignore list) | `ADR-0022`, [overview.md](overview.md#where-state-lives) |
+| state dir | `--state-dir`, ranikust's `/kaniko`, one for every mode: the store, `builds/<id>`, stub journal, `deps/`, stage images. Default `/var/lib/ranikust`, every mode; on the ignore list in kaniko mode on `/` | `ADR-0022`, [overview.md](overview.md#where-state-lives) |
 | store | Persistent, content-addressed `blobs/`, `layers/`, `caches/` in the state directory, shared by builds, owned by `rnk-store`; per-digest `flock`, atomic rename | `ADR-0006`, `ADR-0007`, `ADR-0021` |
 | stub mountpoint | Empty file or directory created in a root as a bind target (`/etc/resolv.conf`); journaled first, removed before the diff | `design/sandbox.md#stub-mount-points` |
 | T0–T3 | Test tiers: no privileges, user namespaces, root in a VM, CI | [workflow.md](workflow.md#test-tiers) |
@@ -69,5 +69,4 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | `volatile` | Overlay option that skips fsync on copy-up; required for speed; leaves a dirty marker, so an upper/work pair is never remounted | `design/overlay-snapshot.md#the-volatile-lifecycle`, `exp-06` |
 | W1, W2, W3 | `nextjs-kaniko` workloads: W1 Next.js app (`app/`), W2 cache paths (`app-cache/`), W3 three independent `pnpm install` stages (`app-par/`) | `docs/research/README.md#workloads` |
 | whiteout | Deletion marker: overlay character device 0/0 ↔ OCI `.wh.<name>` | [refs.md](refs.md#specs) |
-| work dir (overlay) | Overlay's own scratch directory (`workdir=`, `work-k`), not `--workdir` | `design/overlay-snapshot.md#state-directory-layout` |
-| workdir | `--workdir`, the build area: holds the default state directory in overlay mode; is the root itself in kaniko mode, locked exclusively | [overview.md](overview.md#where-state-lives) |
+| work dir (overlay) | Overlay's own scratch directory (`workdir=`, `work-k`) | `design/overlay-snapshot.md#state-directory-layout` |

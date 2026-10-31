@@ -20,8 +20,8 @@ the code.
 | | Item | Owner |
 |---|---|---|
 | [x] | Benchmark of the snapshot hash (`xxhash-rust` xxh3, `highway`) and the parallel walk (`jwalk`, `rayon` + `getdents64`) on a node rootfs; the picks recorded in an ADR (`tests/bench/walk-hash`, `ADR-0039`: `rayon` + `getdents64`, xxh3-128, 8 workers by default, `--snapshot-workers`) | `rnk-snapshot`; bench |
-| [x] | Workdir checks before anything is written: canonicalized, `/` and the 30 system directories and their ancestors refused by `(dev, ino)`, opened with `RESOLVE_NO_SYMLINKS`, `flock(LOCK_EX \| LOCK_NB)` held for the build, the `.ranikust-root` marker (a workdir of only mount points is refused); `RLIMIT_NOFILE` raised to its hard limit (`ADR-0038`, Q-011) | `ranikust`, with `rnk-rootfs` primitives |
-| [x] | The kaniko-mode state directory: `/ranikust/state` when the root is `/`, otherwise `<cwd>/.ranikust`, the directory ranikust was started in; on the ignore list whenever it lies inside the root (`ADR-0038`, Q-036) | `ranikust`, `rnk-store` |
+| [x] | (Superseded by `ADR-0050`: no `--workdir`, state directory `/var/lib/ranikust`.) Workdir checks before anything is written: canonicalized, `/` and the 30 system directories and their ancestors refused by `(dev, ino)`, opened with `RESOLVE_NO_SYMLINKS`, `flock(LOCK_EX \| LOCK_NB)` held for the build, the `.ranikust-root` marker (a workdir of only mount points is refused); `RLIMIT_NOFILE` raised to its hard limit (`ADR-0038`, Q-011) | `ranikust`, with `rnk-rootfs` primitives |
+| [x] | (Superseded by `ADR-0050`: no `--workdir`, state directory `/var/lib/ranikust`.) The kaniko-mode state directory: `/ranikust/state` when the root is `/`, otherwise `<cwd>/.ranikust`, the directory ranikust was started in; on the ignore list whenever it lies inside the root (`ADR-0038`, Q-036) | `ranikust`, `rnk-store` |
 | [x] | `--mode=auto` picks kaniko mode when root may not mount, and says why; the probe's per-stage outcome (can mount, overlay unusable) | `ranikust` |
 | [x] | Ignore list: mount points under the root from `/proc/self/mountinfo`, `--ignore-path`, `/proc`, `/sys`, `/dev`, all of `/ranikust`, the state directory, `/etc/mtab`, `/tmp/apt-key-gpghome`, and `/var/run` while `--ignore-var-run` is true (`ADR-0038`, Q-035) | `rnk-snapshot`, on `rnk-rootfs::IgnoreList` |
 | [x] | Base-layer extraction into a live root: whiteouts applied (`Whiteouts::Apply`), ignored paths never written, mount points kept | `rnk-rootfs` |
@@ -29,10 +29,12 @@ the code.
 | [x] | Walk diff → OCI layer: one whiteout at the topmost deleted path, parent headers, a hardlink into a lower layer written as a regular file, an empty layer for a `RUN` that changes nothing | `rnk-snapshot` → `rnk-layer` |
 | [x] | `StageRootfs`/`Snapshotter` for kaniko mode (a layer exported to a temporary blob, discarded when `WalkDiff::export` fails part-way; with one policy, as kaniko, for an entry that vanishes or is swapped during the walk: today a directory fails the walk with `Error::Changed` while a file is skipped; run the T2 device-swap test of the walk first), on the shared `/` and on a per-stage directory; revisit the interim signature ([open: Q-024]) | `rnk-snapshot` |
 | [x] | Safe deletion between stages and on release, with the ignore list (mechanism done in `rnk_rootfs::delete_contents`), from `Workdir::root()`, never a reopened path; `Workdir::mark` before the first write; a state directory inside the workdir (`<cwd>/.ranikust` with the cwd in the workdir) neither counts against the marker check nor is deleted; kaniko mode requires root | `rnk-snapshot` |
-| [~] | Sequential flow: kaniko's stage squashing (`squash_for_shared_root`); what later stages need (`COPY --from` files, a stage image built `FROM`) kept in the state directory before the root is emptied | `rnk-dockerfile`, `rnk-builder` |
+| [~] | ranikust picks the build root (`ADR-0050`): no `--workdir`, no `--force`; state directory `/var/lib/ranikust` (`--state-dir`), checked as the private directory of every root, its parents root's; kaniko mode on `/` in a container, else in `<state>/builds/<id>/rootfs`; overlay mode refuses a state directory on overlayfs; kaniko's old spellings refused (`ADR-0052` C4) | `ranikust`, `rnk-snapshot` |
+| [ ] | Kaniko mode on `/` keeps state and credentials out of `RUN`'s reach (`ADR-0051`): anonymous `O_TMPFILE` state (`memfd_create` fallback after a kernel 5.15 measurement), `PR_SET_DUMPABLE 0`, the bounding set cut to Docker's in the `RUN` child (stop if `CAP_SYS_PTRACE`/`CAP_DAC_READ_SEARCH` stays), a subreaper that kills only the `RUN`'s process tree after each `RUN`, the cmdline and parent-environment warnings; VM test with rootful Docker, vectors V1–V9, also with `--cap-add SYS_PTRACE` | `ranikust`, `rnk-sandbox`, `rnk-store` |
+| [~] | Sequential flow: kaniko's stage squashing (`squash_for_shared_root`); what later stages need (`COPY --from` files, a stage image built `FROM`) kept before the root is emptied, as tars in anonymous files on `/` (`ADR-0051`); `COPY` with an empty source or a bare unknown `--from` name refused (`ADR-0052` D2) | `rnk-dockerfile`, `rnk-builder` |
 | [~] | Scheduler: a stage on the shared `/` runs alone, `--jobs` ignored there with one warning; per-stage directories scheduled as overlay stages | `rnk-sched` |
 | [~] | Lazy snapshots: a stage is walked only when its layers are needed, decided from the graph before the build (`ADR-0038`, Q-034) | `rnk-sched`, `rnk-builder` |
-| [~] | `RUN` on the shared root with `Isolation::Direct` (sandbox half done: `ADR-0043`; before wiring it on a workdir, run its T2 tests and give a clear error where `CAP_SETPCAP` is missing for the bounding-set drop), with the `RLIMIT_NOFILE` ranikust started with (task 1 raises its own); placed files (`hosts`, `resolv.conf`, stubs, `/dev` nodes) journaled, removed and their parent's mtime restored before the walk | `rnk-sandbox`, `rnk-snapshot` |
+| [~] | `RUN` on the shared root with `Isolation::Direct` (sandbox half done: `ADR-0043`; before wiring it on a workdir, run its T2 tests and give a clear error where `CAP_SETPCAP` is missing for the bounding-set drop), with the `RLIMIT_NOFILE` ranikust started with (task 1 raises its own); placed files (`hosts`, `resolv.conf`, stubs, `/dev` nodes) journaled, removed and their parent's mtime restored before the walk; `/` emptied before the first base when a previous ranikust build left its marker under `/ranikust` (`ADR-0052` D1); `/var/run` ignored only when it is a mount point (D4); `COPY --chmod` on directories documented (D3) | `rnk-sandbox`, `rnk-snapshot` |
 | [ ] | Per-stage directories `builds/<id>/stages/<n>/rootfs` in the state directory, by extraction or reflink copy, never hardlinks (`ADR-0017`); the full sandbox where mounting is possible | `rnk-snapshot`, `rnk-store`, `rnk-sandbox` |
 | [ ] | `--parallel-stages` (the final name, `ADR-0038`, Q-019): `Isolation::BareChroot`, `/dev` by `mknod`, child subreaper, the start-up log line; fake `/proc` with the fourteen files per cgroup version (`ADR-0038`, Q-037); `JAVA_TOOL_OPTIONS` under cgroup limits (`ADR-0019`); the Java warnings and the hints after a failed `RUN` | `rnk-sandbox`, `ranikust` |
 | [~] | kaniko flags refused until Phase 2 (`ADR-0036`): `--ignore-path`, `--ignore-var-run`, `--whitelist-var-run`, `--single-snapshot`, `--materialize`, `--snapshot-mode` taking effect; the ignored class revisited for kaniko mode | `ranikust` |
@@ -69,6 +71,15 @@ rule from the stage graph, the shared-`/` exclusivity in `rnk-sched`).
 Task 5 waits for task 4's diff type (`rnk_snapshot::WalkDiff`); task 6 joins 3, 4 and 5, and wires
 the halves of 7 and 8 in.
 
+From 2026-10-31 (the maintainer's order): first `ADR-0050` (the build
+root and the state directory) on its own branch; then, in parallel,
+`ADR-0051` (state out of `RUN`'s reach, with the subreaper of task 7) and
+the integration half of task 8 (`COPY --from`, `ADR-0052` D2); then the
+integration half of task 7 (`Direct`: heredoc `#!`, `RUN --mount`,
+`--network=none`) with D1, D4, task 6's follow-ups and the tests from the
+issue mining; then tasks 9–11. After Phase 2: the `refactor` pass, then
+the security scan and hardening.
+
 Every task instruments its crate as its card's `## Metrics` and
 [design/metrics.md](../design/metrics.md#spans-per-crate) list, tested
 with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
@@ -79,7 +90,7 @@ with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
 
 - [ ] Builds W1, W2 cold and W3 in sequential kaniko mode inside a default
       `docker run` (root, no `CAP_SYS_ADMIN`) in the VM, and as root on a
-      host `--workdir`.
+      host, in a root of the state directory (ADR-0050).
 - [ ] Flattened content and config compared with kaniko's on W1–W3: only
       `ADR-0012` differences and the known non-deterministic files.
 - [ ] Time per build and per snapshot phase compared with kaniko's metrics

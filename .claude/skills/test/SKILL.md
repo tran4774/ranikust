@@ -40,7 +40,7 @@ Patterns from cargo, ripgrep, fd, uv and ruff; follow them without new
 dependencies:
 
 - **Sandbox per test.** Every test owns a `tempfile::TempDir`, deleted on
-  drop, and puts everything there: `--workdir`, `--state-dir`, context,
+  drop, and puts everything there: `--state-dir`, context,
   outputs, a fake `HOME`/`DOCKER_CONFIG`. Never write to the repo, `/tmp`
   directly or `$HOME`.
 - **Black-box the binary** through `env!("CARGO_BIN_EXE_ranikust")`, with

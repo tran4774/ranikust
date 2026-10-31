@@ -1,7 +1,8 @@
 //! Kaniko-mode stage roots on the one shared root
 //! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`, ADR-0046).
 //!
-//! The root (`/` in a container, the claimed workdir on a host) is opened
+//! The root (`/` in a container, else a directory `ranikust` made in its
+//! state directory, ADR-0050) is opened
 //! once by the caller and held by at most one [`KanikoRoot`] at a time.
 //! Base layers stay blobs in the store; a stage on an image extracts them
 //! into the root, which is emptied first unless nothing has changed it yet
@@ -12,8 +13,9 @@
 //! pkg/executor/build.go`): the first base is extracted over what is there
 //! (`:632-641`, no deletion without `--pre-cleanup`, `:1944-1947`), the root
 //! is emptied between stages (`:2179`), and the end of the build leaves it
-//! (only `--cleanup` empties it, `:1955-1957`). A host workdir, which the
-//! operator gave ranikust to empty, is emptied before the first base too,
+//! (only `--cleanup` empties it, `:1955-1957`). A root in the state
+//! directory, which ranikust made for the build, is emptied before the
+//! first base too,
 //! and at the end of a build that changed it ([`Kaniko::finish`]).
 
 use std::fs::File;
@@ -74,7 +76,7 @@ struct Shared {
     root: RootPath,
     path: PathBuf,
     /// The root's owner and mode when the build began, given back each
-    /// time a workdir root is emptied: a base's `./` may change them.
+    /// time a root other than `/` is emptied: a base's `./` may change them.
     original: Option<rnk_rootfs::Meta>,
     ignore: IgnoreList,
     walk: WalkOptions,
@@ -96,7 +98,8 @@ pub struct Kaniko {
 
 impl Kaniko {
     /// The snapshotter on `root`, opened by the caller at `path` (`/` or the
-    /// claimed workdir; `path` is only handed to the sandbox), with the
+    /// directory made in the state directory; `path` is only handed to the
+    /// sandbox), with the
     /// build's ignore list (`kaniko::ignore_list`) and walk options.
     #[must_use]
     pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions) -> Self {
@@ -124,7 +127,7 @@ impl Kaniko {
         }
     }
 
-    /// The end of the build: a host workdir that a stage changed is
+    /// The end of the build: a root other than `/` that a stage changed is
     /// emptied, keeping what the ignore list holds; `/` is left as it is,
     /// as kaniko leaves it without `--cleanup`; a root no stage changed
     /// (the build failed before its first base) is never touched. Returns
@@ -157,7 +160,8 @@ fn empty_root(shared: &Shared, hold: &mut Hold) -> Result<()> {
     let span = tracing::info_span!("rnk_snapshot.empty");
     let _entered = span.enter();
     delete_contents(&shared.root, &shared.ignore)?;
-    // A workdir gets its owner and mode back; `/` is never emptied whole.
+    // A root other than `/` gets its owner and mode back; `/` is never
+    // emptied whole.
     if !shared.is_slash()
         && let Some(meta) = &shared.original
     {
@@ -216,14 +220,14 @@ impl Snapshotter for Kaniko {
                 let _entered = span.enter();
                 // On `/` the first base goes over what is there, as kaniko
                 // (see the module doc); later ones, and every base on a
-                // workdir, start from an empty root.
+                // root other than `/`, start from an empty root.
                 if hold.touched || !shared.is_slash() {
                     empty_root(shared, &mut hold)?;
                 } else {
                     hold.walked = false;
                 }
                 hold.touched = true;
-                // A workdir root starts as overlay mode's stage roots do:
+                // Another root starts as overlay mode's stage roots do:
                 // `0755` and the epoch, unless a layer sets `./`. On `/`
                 // the container's root stays as it is, as under kaniko.
                 if !shared.is_slash() {
@@ -356,7 +360,8 @@ impl StageRootfs for KanikoRoot {
     }
 
     /// Gives the root up; the next stage on a base empties it, and the end
-    /// of the build ([`Kaniko::finish`]) empties a workdir. Nothing when the
+    /// of the build ([`Kaniko::finish`]) empties a root other than `/`.
+    /// Nothing when the
     /// root was handed over to a child stage built on this one.
     fn release(self) -> Result<()> {
         let mut hold = self.shared.hold();

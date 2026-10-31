@@ -24,7 +24,7 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 
 ```
 <state-dir>/
-├── .ranikust-root
+├── .ranikust-state
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
 ├── layers/v2/sha256/<hex>/     extracted layers by chain ID, immutable [open: Q-015]
 ├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
@@ -33,21 +33,27 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── builds/<build-id>.lock      held (flock) while the build runs
-└── builds/<build-id>/          one per running build, deleted afterwards
+└── builds/<build-id>/          one per running build, deleted afterwards;
+                                kaniko mode off `/` builds in its rootfs/
 ```
 
-The store lives in the state directory, `--state-dir`, in every mode
-([ADR-0022](../adr/0022-common-state-dir.md)); the flag replaces the
-default in either mode.
+The store lives in the state directory, `/var/lib/ranikust` in every mode
+unless `--state-dir` names another
+([ADR-0050](../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md),
+replacing [ADR-0022](../adr/0022-common-state-dir.md)'s defaults). It is
+the private directory of every build root: owned by the user running
+ranikust, `0700`, below directories only root may write
+([kaniko-mode](kaniko-mode.md#host-safety-checks)).
 
-- **Overlay mode**: default `<workdir>/.ranikust`. Stage roots are overlay
+- **Overlay mode**: stage roots are overlay
   mounts in `builds/<id>/stages/<n>/rootfs` ([overlay-snapshot](overlay-snapshot.md)),
   so the state directory must be on a filesystem that can hold an upper
-  directory [inferred].
-- **kaniko mode**: default `/ranikust/state`, the counterpart of kaniko's
-  `/kaniko`. The workdir is the root filesystem being walked (`/` in a
-  container), so the state directory is on the kaniko-mode ignore list and is
-  never walked, snapshotted or deleted ([kaniko-mode](kaniko-mode.md#ignore-list)).
+  directory [inferred]; a state directory on overlayfs is refused.
+- **kaniko mode**: on `/` in a container the state directory lies inside
+  the root, the counterpart of kaniko's `/kaniko`, so it is on the
+  kaniko-mode ignore list and is never walked, snapshotted or deleted
+  ([kaniko-mode](kaniko-mode.md#ignore-list)); elsewhere the root is
+  `builds/<build-id>/rootfs`.
   kaniko mode also keeps per-build `deps/` (files for `COPY --from`) and
   stage images there.
 
@@ -68,10 +74,10 @@ form of a flattened base in the store is not designed yet].
   `builds/<build-id>.lock` while it runs, taken before either directory
   exists; a build whose lock is free is dead, and the next start removes
   its directories.
-- **kaniko-mode workdir**: `flock(LOCK_EX | LOCK_NB)` on the workdir; a
-  second build on the same workdir is refused. Only kaniko mode takes this
-  lock, because there the workdir is the root being built. Overlay-mode
-  builds that share a workdir share its store through the per-digest locks.
+- **kaniko mode on `/`**: `flock(LOCK_EX | LOCK_NB)` on a descriptor of
+  `/` itself, held by `ranikust`; a second build on the container's `/` is
+  refused, whatever its state directory. Other builds share the
+  store through the per-digest locks, each in its own `builds/<build-id>`.
 - Locks are `flock` on lock files in the store, released by the kernel when
   the process dies (T0 test with `SIGKILL`). Per-digest lock files are never
   removed, so no build ever locks a file another has just unlinked.
@@ -86,7 +92,7 @@ form of a flattened base in the store is not designed yet].
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build
 is no longer running. A state directory that is not empty and has no
-regular `.ranikust-root` file is refused, so this clean-up never runs in a
+regular `.ranikust-state` file is refused, so this clean-up never runs in a
 directory the user pointed at by mistake. In overlay mode an upper directory written under
 `volatile` is never trusted after a crash.
 
@@ -174,7 +180,7 @@ other and carry that mode's accepted differences
 - [Survey 05](../research/survey/05-decisions.md) Q3–Q5;
   [survey 06](../research/survey/06-overlay-and-parallelism.md) §2, §6;
   [survey 02](../research/survey/02-kaniko-mode-requirements.md) §2 (state
-  directory), §4 (workdir lock).
+  directory), §4 (workdir lock, replaced by ADR-0050).
 - [Experiment 07](../research/experiments/07-kaniko-vs-overlay.md) §5:
   per-layer parallel extraction of the `node` base in 0.37 s against 0.88 s
   in kaniko.

@@ -1,12 +1,11 @@
 # Command line
 
-> **ranikust is pre-alpha.** It builds a Dockerfile in overlay mode as
-> root only (on a host with `sudo`, or in a `--privileged` container, its
-> `--workdir` on a volume), and needs `--workdir` or `--state-dir`;
-> elsewhere it stops with exit code 1, the step that failed and what to do
-> instead. Where root may not mount (Docker's default, most pods) it picks
-> kaniko mode, checks the work directory or the container, and stops with
-> exit code 2: kaniko-mode builds come later in Phase 2. It prints the image digest on stdout. Instructions of later
+> **ranikust is pre-alpha.** It builds a Dockerfile as root: in overlay
+> mode on a host with `sudo`, or in a `--privileged` container with a
+> volume at its state directory `/var/lib/ranikust`; where root may not
+> mount (Docker's default, most pods) it picks kaniko mode, which builds on
+> the container's `/`. Elsewhere it stops with exit code 1, the step that
+> failed and what to do instead. It prints the image digest on stdout. Instructions of later
 > phases (`ADD` of a URL or an archive, `COPY --link`, `RUN
 > --mount=type=bind`, `ONBUILD`…) stop the build with a message naming
 > the phase.
@@ -52,12 +51,11 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--reproducible` | Fixed timestamps, for byte-identical images: the image's time is `SOURCE_DATE_EPOCH`, else 1970-01-01, and file times later than it are set to it, as BuildKit does. |
 | `--registry-certificate=REGISTRY=PATH` | An extra CA certificate for one registry. Repeatable. |
 | `--insecure-registry=REGISTRY` | Reach this registry (`host[:port]`) over plain HTTP when HTTPS fails, as kaniko. Repeatable. A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP without it, as BuildKit. |
-| `--snapshot-mode=full\|redo\|time` | What kaniko mode compares between snapshots, as in kaniko; ignored, with a warning, in overlay mode. `--snapshotMode` works too, with kaniko's deprecation warning. |
+| `--snapshot-mode=full\|redo\|time` | What kaniko mode compares between snapshots, as in kaniko; ignored, with a warning, in overlay mode. kaniko's `--snapshotMode` is refused, naming this flag. |
 | `--ignore-path=PATH` | An absolute path kaniko mode keeps out of every layer, as in kaniko. Repeatable. Refused in overlay mode for now. |
-| `--ignore-var-run[=BOOL]` | Keep `/var/run` out of kaniko mode's layers, as in kaniko; default `true`. `--whitelist-var-run` works too, with kaniko's deprecation warning. `false` is refused in overlay mode for now. |
+| `--ignore-var-run[=BOOL]` | Keep `/var/run` out of kaniko mode's layers, as in kaniko; default `true`. kaniko's `--whitelist-var-run` is refused, naming this flag. `false` is refused in overlay mode for now. |
 | `--single-snapshot` | Kaniko mode takes one snapshot at the end of the build, as in kaniko. Refused in overlay mode for now. |
 | `--materialize` | As in kaniko; it matters only with a layer cache, which ranikust does not have yet. |
-| `--force` | Lets kaniko mode build on `/` outside a container, as kaniko's `--force`: it then empties this machine's `/`. Without `--workdir`, kaniko mode otherwise runs only in a container. |
 | `--compression-level=N` | gzip `-1` (6) to `9`, zstd `1` to `19`. gzip `-2` and zstd `20` to `22`, which kaniko takes, are refused. Default: ranikust's (gzip 6, zstd 3). |
 | `--image-format=docker\|oci` | The image's media types. Default `oci`, as BuildKit; `docker` cannot go with `--compression=zstd`. Unlike kaniko, `oci` can go with `--tar-path`. |
 | `--label=KEY=VALUE` | A label on the image built (the pushed stage only), set before its first instruction, so a `LABEL` of the same key in that stage wins. Repeatable. |
@@ -84,12 +82,11 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | Flag | Meaning |
 |---|---|
 | `--mode=auto\|overlay\|kaniko` | How to snapshot: `auto` (default) probes the environment and picks the fastest mode that works, kaniko mode where root may not mount ([How ranikust builds](how-it-builds.md)). |
-| `--workdir=DIR` | The work directory. In kaniko mode, the root it builds in and empties; without it, kaniko mode builds on `/`, only inside a container unless `--force`. |
-| `--state-dir=DIR` | Where ranikust keeps its store; kaniko's `--kaniko-dir`. Default `<workdir>/.ranikust` in overlay mode; in kaniko mode `/ranikust/state` on `/`, and `.ranikust` in the directory ranikust was started in with `--workdir`. |
+| `--state-dir=DIR` | Where ranikust keeps its store and every build root it makes; kaniko's `--kaniko-dir`. Default `/var/lib/ranikust`. It must be new, empty, or a state directory ranikust made (it holds `.ranikust-state`; `/` never), owned by the user running ranikust and writable by no one else, below directories only root may write (root's sticky `/tmp` is fine); ranikust makes it mode `0700`. In a container, overlay mode needs it on a volume. There is no work-directory flag: ranikust builds on `/` in a container in kaniko mode, and everywhere else in directories it makes here ([ADR-0050](https://github.com/tran4774/ranikust/blob/main/docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)). |
 | `--jobs=N` | Stages built at once. Default: the number of CPUs available. |
 | `--snapshot-workers=N` | Threads of kaniko mode's filesystem walk. Default 8, the fastest measured; ignored, with a warning, in overlay mode. |
 | `--network=host\|none` | The network `RUN` gets. Default `host`. |
-| `--platform=linux/amd64` | The image platform; `--custom-platform` is the same flag. Only `linux/amd64` for now. |
+| `--platform=linux/amd64` | The image platform. Only `linux/amd64` for now. kaniko's `--custom-platform` and `--customPlatform` are refused, naming this flag. |
 | `--metrics-file=PATH` | Write the metrics report there when ranikust exits, also after an error; works with `version` too. The only way to ask for it: `RANIKUST_METRICS_FILE` is not read (a warning says so). |
 | `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. Kept out of every layer, the config and the logs; at most 500 KiB. kaniko's and buildctl's syntax. Repeat for several. |
 | `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
@@ -106,7 +103,12 @@ ranikust: error: kaniko's --cache is not supported: the layer cache comes in Pha
 ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: use --state-dir
 ```
 
-- **Renamed:** `--kaniko-dir` is `--state-dir`.
+- **Renamed:** `--kaniko-dir` is `--state-dir`; kaniko's old spellings
+  `--tarPath`, `--snapshotMode`, `--customPlatform`, `--custom-platform`
+  and `--whitelist-var-run` are `--tar-path`, `--snapshot-mode`,
+  `--platform` and `--ignore-var-run`.
+- **Never on this machine's `/`:** `--force`. Outside a container kaniko
+  mode builds in a directory of the state directory instead.
 - **Change nothing in ranikust:** `--cache-dir` (the warmer is not planned;
   base images are pulled into the store), `--use-new-run`, `--cleanup`,
   `--pre-cleanup` (ranikust decides what to empty itself),

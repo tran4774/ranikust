@@ -38,11 +38,11 @@ smoke_check_no_stub_leak() {
 }
 
 # The end-to-end build of tests/smoke/e2e with the `ranikust` binary.
-# Sets `e2e_args` for a context $1, workdir $2, output directory $3 (an OCI
+# Sets `e2e_args` for a context $1, state directory $2, output directory $3 (an OCI
 # layout `oci` and a Docker tar `image.tar` go there) and secret file $4,
 # paths as the binary sees them.
 smoke_e2e_args() {
-  e2e_args=(--context "$1" --no-push --workdir "$2" --oci-layout-path "$3/oci"
+  e2e_args=(--context "$1" --no-push --state-dir "$2" --oci-layout-path "$3/oci"
     --tar-path "$3/image.tar" --destination localhost/rnk-e2e:latest
     --secret "id=token,src=$4")
 }

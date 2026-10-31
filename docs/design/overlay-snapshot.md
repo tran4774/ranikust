@@ -13,7 +13,8 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 ## Invariants
 
 - Every byte ranikust writes is under the state directory (store and build
-  areas; by default `<workdir>/.ranikust`) or in the requested output.
+  areas; by default `/var/lib/ranikust`, ADR-0050) or in the requested
+  output.
   Nothing is written to the host's `/`.
 - Extracted layers in `layers/` are immutable once published and are only
   ever used as lower directories.
@@ -25,8 +26,8 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 ## State directory layout
 
 ```
-<state-dir>/                    default <workdir>/.ranikust
-├── .ranikust-root              marker file
+<state-dir>/                    default /var/lib/ranikust
+├── .ranikust-state             marker file
 ├── blobs/sha256/<digest>       downloaded compressed blobs
 ├── layers/<id>/                extracted layers, immutable, overlay whiteout form
 ├── caches/<sha256(id)>/        RUN --mount=type=cache
@@ -50,8 +51,8 @@ the same diff on another stack is extracted again.
 `blobs/`, `layers/` and `caches/` form the persistent store, shared between
 stages and builds and owned by `rnk-store`
 ([cache-and-store](cache-and-store.md)). `builds/<id>` is private to one
-build and deleted afterwards. Builds that share a workdir share its state
-directory; overlay mode takes no workdir lock.
+build and deleted afterwards. Builds share the state directory and its
+store; each has its own `builds/<id>`.
 
 ## One layer per instruction
 

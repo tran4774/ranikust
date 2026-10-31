@@ -143,8 +143,8 @@ impl BlobLayer {
 /// Holds no global state: the directory (`rnk_store::Store::build_dir`, or
 /// a directory under it), the options and the build's time come from the
 /// caller. Encoded blobs are named by digest, so identical layers share one
-/// file. [open: Q-162] Interim: the blobs stay in the build directory and
-/// are deleted with it, instead of being published in the store.
+/// file. They stay in the build directory and are deleted with it; Phase 4
+/// publishes them in the store (Q-162, ADR-0052).
 #[derive(Debug)]
 pub struct LayerExporter {
     dir: PathBuf,

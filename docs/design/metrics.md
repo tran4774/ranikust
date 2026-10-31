@@ -130,8 +130,7 @@ code. All names are `[design]`.
 |---|---|---|
 | `ranikust.run` | | The whole process, already emitted. Parent of everything; `meta.wall_ns` adds metrics set-up. |
 | `ranikust.build` | | The `build` subcommand, emitted from flag validation on: kaniko's `build.total` plus `push.total`. |
-| `ranikust.workdir` | | Kaniko mode's workdir checks and lock (`ADR-0038`): canonicalize, the system-directory comparison, `flock`, the marker. |
-| `ranikust.setup` | | Mount namespace, state-directory check, store open, probes, spawner start: what a build pays before its first stage. |
+| `ranikust.setup` | | Mount namespace, the state directory's checks (ADR-0050), the kaniko-mode root, store open, probes, spawner start: what a build pays before its first stage. |
 | `ranikust.probe` | `steps` | The probe sequence at every start, inside `ranikust.setup`; `steps` counts the crates' probes that really ran (2: the sandbox's, in forked children, and the overlay probe, in the build's namespace); `exp-03`, `exp-13`. |
 
 ### `rnk-dockerfile`

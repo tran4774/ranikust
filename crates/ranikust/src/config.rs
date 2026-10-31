@@ -132,6 +132,11 @@ pub(crate) const PLATFORM: &str = "linux/amd64";
 /// were slower than 8 on every hash (ADR-0039).
 pub(crate) const SNAPSHOT_WORKERS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
+/// The state directory without `--state-dir`, in every mode, as BuildKit's
+/// `/var/lib/buildkit` (ADR-0050). It holds the store and every build root
+/// ranikust makes; rootless mode's default comes in Phase 3.
+pub(crate) const DEFAULT_STATE_DIR: &str = "/var/lib/ranikust";
+
 /// The validated settings of `build`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BuildConfig {
@@ -175,15 +180,11 @@ pub(crate) struct BuildConfig {
     pub(crate) materialize: bool,
     /// Workers of the kaniko-mode walk (ADR-0039).
     pub(crate) snapshot_workers: NonZeroUsize,
-    /// `--force`: kaniko mode may build on `/` outside a container
-    /// (ADR-0040).
-    pub(crate) force: bool,
     /// The requested mode.
     pub(crate) mode: Mode,
-    /// The work directory, absolute, if given.
-    pub(crate) workdir: Option<PathBuf>,
-    /// The state directory, absolute, if given.
-    pub(crate) state_dir: Option<PathBuf>,
+    /// The state directory, absolute: `--state-dir`, else
+    /// [`DEFAULT_STATE_DIR`] (ADR-0050).
+    pub(crate) state_dir: PathBuf,
     /// Stages at once; `None` is the number of CPUs available (ADR-0013).
     pub(crate) jobs: Option<NonZeroUsize>,
     /// The network of `RUN`.
@@ -411,10 +412,11 @@ impl BuildConfig {
             single_snapshot: args.single_snapshot,
             materialize: args.materialize,
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
-            force: args.force,
             mode: args.mode,
-            workdir: args.workdir.as_deref().map(absolute),
-            state_dir: args.state_dir.as_deref().map(absolute),
+            state_dir: args
+                .state_dir
+                .as_deref()
+                .map_or_else(|| PathBuf::from(DEFAULT_STATE_DIR), absolute),
             jobs: args.jobs,
             network: args.network,
             secrets: args.secrets.iter().map(secret).collect(),
@@ -448,25 +450,6 @@ impl BuildConfig {
             skip_tls_verify_pull: args.skip_tls_verify_pull,
             skip_tls_verify_registries: args.skip_tls_verify_registries.clone(),
         })
-    }
-
-    /// The state directory for `mode` (ADR-0022, ADR-0038): `--state-dir`,
-    /// or `<workdir>/.ranikust` in overlay mode; in kaniko mode
-    /// `/ranikust/state` when the root is `/` (no `--workdir`), and
-    /// `<cwd>/.ranikust`, in the directory ranikust was started in, when the
-    /// root is a `--workdir`. `None` in overlay mode without a workdir, and
-    /// for [`Mode::Auto`] without `--state-dir`: the default is known only
-    /// once the probe has picked a mode.
-    pub(crate) fn state_dir_for(&self, mode: Mode) -> Option<PathBuf> {
-        if let Some(dir) = &self.state_dir {
-            return Some(dir.clone());
-        }
-        match mode {
-            Mode::Kaniko if self.workdir.is_some() => Some(absolute(Path::new(".ranikust"))),
-            Mode::Kaniko => Some(PathBuf::from("/ranikust/state")),
-            Mode::Overlay => self.workdir.as_ref().map(|w| w.join(".ranikust")),
-            Mode::Auto => None,
-        }
     }
 
     /// The options that change what a build costs, for the metrics report's

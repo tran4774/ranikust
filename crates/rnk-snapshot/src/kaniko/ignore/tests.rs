@@ -128,8 +128,9 @@ fn on_a_host_only_mounts_below_the_workdir_count() {
     // is not an entry.
     assert!(!list.covers("/x"));
     assert!(!list.covers("/etc"));
-    // The workdir marker of a host root, never walked or deleted.
-    assert!(list.covers("/.ranikust-root"));
+    // No marker: ranikust makes the root itself (ADR-0050), so an image's
+    // own `/.ranikust-root` is walked like any file.
+    assert!(!list.covers("/.ranikust-root"));
 
     let outside = ignore_list(&spec("/home/u/w", Some("/home/u/.ranikust"), &[]), &mounts).unwrap();
     assert!(!outside.covers("/.ranikust"));

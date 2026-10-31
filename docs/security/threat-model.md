@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Design stage. No mitigation below is implemented yet; each is a requirement on the code. Evidence comes from the pre-code experiments. |
-| **Scope** | The `ranikust` binary, its workdir, state directory and store, and the processes it starts for `RUN`. |
+| **Scope** | The `ranikust` binary, its state directory and store, the build roots it makes there (or `/` in a container), and the processes it starts for `RUN`. |
 | **Used by** | [`SECURITY.md`](../../SECURITY.md) (what is a vulnerability), reviewers and the `reviewer`, `host-safety` and `security-audit` agents (how severe a finding is). |
 | **Keep in sync** | Update this file in the same pull request as any change to isolation, privileges, paths written, credential handling or store sharing. |
 
@@ -27,7 +27,7 @@ Evidence labels follow [`docs/research/TEMPLATE.md`](../research/TEMPLATE.md):
 
 | ID | Asset | Harm if lost |
 |---|---|---|
-| A1 | Host files outside the workdir, state directory, store and requested outputs | Data loss or host compromise |
+| A1 | Host files outside the state directory, store, requested outputs and, in kaniko mode in a container, `/` | Data loss or host compromise |
 | A2 | The host's privileges: root, capabilities, the host's namespaces | Host compromise |
 | A3 | Registry credentials (docker `config.json`, credential helpers, tokens) | Registry takeover, supply-chain attack |
 | A4 | Build secrets (`RUN --mount=type=secret`, `--secret`) | Secret disclosure |
@@ -39,7 +39,7 @@ Evidence labels follow [`docs/research/TEMPLATE.md`](../research/TEMPLATE.md):
 
 | Input | Trust |
 |---|---|
-| The operator: flags, workdir, store location, output paths | Trusted. ranikust protects the operator from typing mistakes (wrong `--workdir`), not from intent. |
+| The operator: flags, store location, output paths | Trusted. ranikust protects the operator from typing mistakes (a wrong `--state-dir`: the store's marker refuses a foreign non-empty directory), not from intent. |
 | Dockerfile and build context | The operator decides whether to build them ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)). `RUN` commands get the mode's isolation (§4). ranikust's own code that reads them (parser, `COPY`, `.dockerignore`) treats them as hostile. |
 | Base images and layers from a registry | Hostile to ranikust's own code: layer entries may name `..`, absolute paths, symlinks, hardlinks, device nodes, setuid files and whiteouts aimed outside the root. |
 | Registry responses | Hostile: verified by digest. |
@@ -77,10 +77,10 @@ therefore used only where nothing better is possible: kaniko mode with
 | T1 | A layer entry, `COPY` source or `WORKDIR` path escapes the root through `..`, an absolute symlink, a symlink chain or a whiteout aimed outside | A1, A6 | all | Resolve every path in a root with `openat2(RESOLVE_IN_ROOT \| RESOLVE_NO_MAGICLINKS)` through `rnk_rootfs::RootPath`; never join strings onto a host path | [survey 02](../research/survey/02-kaniko-mode-requirements.md) §4; `RootPath` escape suite, T0 (`crates/rnk-rootfs/tests/escape.rs`); `copy` with symlinks out of both roots, T0 (`crates/rnk-rootfs/src/copy/tests.rs`) [measured] |
 | T2 | A hardlink entry links to a host file, so later writes change it | A1 | all | Resolve hardlink targets inside the root; refuse targets outside it | [survey 04](../research/survey/04-risks-and-roadmap.md) §4; `extract` refuses targets climbing out and links inside the root only; `extract_overlay` copies a target from the lower layers, walked by name without following symlinks, T0 (`crates/rnk-rootfs/src/extract/tests.rs`) [measured] |
 | T3 | A race between check and use: a `RUN` process or another stage swaps a directory for a symlink | A1 | all, mostly parallel stages | Operate relative to open directory descriptors with `O_NOFOLLOW` and `RESOLVE_*` flags; never re-resolve a checked path | `RootPath`, `extract`, `delete_contents` and `copy`: a thread swapping a directory for a symlink out, T0 (`crates/rnk-rootfs/tests/escape.rs`, `src/*/tests.rs`) [measured]; `RUN` and stage races not yet tested |
-| T4 | A wrong `--workdir` makes the stage cleanup delete user data | A1 | kaniko | Refuse `/` and ancestors of system directories, compared by device and inode; require a marker file in a non-empty workdir; `flock` the workdir; delete through descriptors without following symlinks or crossing mounts, comparing the mount ID, since `st_dev` misses bind mounts of the same filesystem; keep the state directory (`/ranikust/state` in a container) on the ignore list, never walked or deleted ([ADR-0022](../adr/0022-common-state-dir.md)) | [survey 02](../research/survey/02-kaniko-mode-requirements.md) §4; [experiment 09](../research/experiments/09-kaniko-mode-prototype.md) [measured] |
-| T5 | `RUN` escapes a bare `chroot` | A1, A2 | overlay, kaniko with mounts | `pivot_root`, or `MS_MOVE` + `chroot` only where seccomp refuses `pivot_root` with `EPERM` and `/` is a mount root, so `..` stops at the moved root ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)). Not mitigated, by design, for a sequential kaniko-mode `RUN` on a host workdir without mounts (`Isolation::Direct` in a `chroot`, [ADR-0043](../adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)): the host is the boundary, as the container is on `/` | [experiment 02](../research/experiments/02-run-sandbox.md) [measured]; the `MS_MOVE` case [inferred] |
+| T4 | Stage cleanup deletes user data | A1 | kaniko | No operator-named build root: ranikust builds on `/` only in a container (ADR-0048), else in `<state>/builds/<id>/rootfs`, a directory it made (ADR-0050); the state directory is owned by the user, `0700`, below directories only root may write, checked by descriptor; the state directory accepted only new, empty or marked `.ranikust-state`, never `/`, before its mode is set; `flock` on a descriptor of `/` in a container, whatever the state directory; delete through descriptors without following symlinks or crossing mounts, comparing the mount ID, since `st_dev` misses bind mounts of the same filesystem; keep the state directory (`/var/lib/ranikust` in a container) on the ignore list, never walked or deleted ([ADR-0022](../adr/0022-common-state-dir.md)) | [survey 02](../research/survey/02-kaniko-mode-requirements.md) §4; [experiment 09](../research/experiments/09-kaniko-mode-prototype.md) [measured] |
+| T5 | `RUN` escapes a bare `chroot` | A1, A2 | overlay, kaniko with mounts | `pivot_root`, or `MS_MOVE` + `chroot` only where seccomp refuses `pivot_root` with `EPERM` and `/` is a mount root, so `..` stops at the moved root ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)). Kaniko mode outside a container where root may not mount, where `RUN` would run in a bare `chroot` on the host, is refused ([ADR-0050](../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md), Q-330); on `/` in a container `RUN` runs directly, the container being the boundary | [experiment 02](../research/experiments/02-run-sandbox.md) [measured]; the `MS_MOVE` case [inferred] |
 | T6 | `RUN` keeps `CAP_SYS_ADMIN`, unmounts a bind and writes the real file; a setuid binary regains capabilities from a full bounding set | A1, A2 | overlay, kaniko with mounts | Drop the bounding and inheritable sets to Docker's 14 defaults for every `USER`, root included | [experiment 02](../research/experiments/02-run-sandbox.md) [measured] |
-| T7 | A descriptor ranikust holds (workdir, store, lock, socket) is inherited by `RUN` and opens a path outside the root | A1, A3 | all | `O_CLOEXEC` on everything; close every descriptor above stdio before `execve`; a test that lists `/proc/self/fd` inside `RUN` | [inferred] |
+| T7 | A descriptor ranikust holds (root, store, lock, socket) is inherited by `RUN` and opens a path outside the root | A1, A3 | all | `O_CLOEXEC` on everything; close every descriptor above stdio before `execve`; a test that lists `/proc/self/fd` inside `RUN` | [inferred] |
 | T8 | A `RUN` process outlives a killed build and keeps writing to the root | A1, A6 | all | `PR_SET_PDEATHSIG(SIGKILL)` set from a thread that lives for the whole build, then a re-check that the parent is alive (the parent pid in the child's outer `/proc/self/stat`, since `getppid` is 0 in a new PID namespace); armed again after `setresuid`/`setresgid`, which clear it; `RUN` is PID 1 of its own PID namespace | [experiment 02](../research/experiments/02-run-sandbox.md) [measured]; the re-arm [inferred] |
 | T9 | Mounts made for a build propagate to the host or outlive the build | A1, A7 | overlay, kaniko with mounts | Enter a private mount namespace while still single-threaded and make `/` a slave; all build mounts live there and vanish with the process | [experiment 02](../research/experiments/02-run-sandbox.md) [measured] |
 | T10 | Stub mountpoints or files ranikust adds (`resolv.conf`, `hosts`, fake `/proc`) leak into a layer or survive a crash; copying them changes the parent's mtime so `/etc` lands in every layer | A6 | all | Journal stubs in the state directory before creating them; remove them before the diff; restore the parent's metadata; clean up from the journal at startup | [experiment 02](../research/experiments/02-run-sandbox.md), [experiment 12](../research/experiments/12-kaniko-mode-parallel.md) §4 [measured] |
@@ -136,8 +136,8 @@ before 1.0:
 
 - the host-safety attack suite: path traversal and symlink or hardlink
   escapes in layers, `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a
-  cgroup limit, writes to `/etc/resolv.conf`, `--workdir` at `/`, `/home` or
-  an unmarked directory, each followed by a check that the host is unchanged
+  cgroup limit, writes to `/etc/resolv.conf`, a `--state-dir` at `/`,
+  below `/home/<user>` or in a directory others may write, each followed by a check that the host is unchanged
   and no mount or process is left;
 - races during extraction and deletion, and concurrent builds on one store,
   including a crash halfway;

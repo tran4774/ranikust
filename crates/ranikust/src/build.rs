@@ -49,7 +49,8 @@ pub(crate) enum Snapshots {
     /// Overlay mode, with what the probe found.
     Overlay(rnk_snapshot::OverlayCaps),
     /// Kaniko mode on its shared root; `RUN` with `isolation`: the full
-    /// sandbox on a host workdir where mounting works, else `Direct`.
+    /// sandbox on a root in the state directory where mounting works, else
+    /// `Direct`.
     Kaniko {
         snapshotter: Kaniko,
         isolation: Isolation,
@@ -114,30 +115,39 @@ pub(crate) fn run(
                     return Err(e.to_string());
                 }
             };
-            run_with(config, store, sandbox, overlay, Isolation::Full, false)
+            run_with(
+                config,
+                store,
+                sandbox,
+                overlay,
+                Isolation::Full,
+                false,
+                &|| {},
+            )
         }
         Snapshots::Kaniko {
             snapshotter,
             isolation,
         } => {
             let snapshotter = Arc::new(snapshotter);
-            let r = run_with(
+            // Before the store closes and removes the build directory: a
+            // root in it that a stage changed is emptied; `/` is left as
+            // kaniko leaves it; a build that failed before its first base
+            // touches nothing (`Kaniko::finish`).
+            let finish = || match snapshotter.finish() {
+                Ok(true) => tracing::debug!("the build root is emptied"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("emptying the build root at the end of the build: {e}"),
+            };
+            run_with(
                 config,
                 store,
                 sandbox,
                 Arc::clone(&snapshotter),
                 isolation,
                 true,
-            );
-            // A host workdir that a stage changed is emptied; `/` is left as
-            // kaniko leaves it; a build that failed before its first base
-            // touches nothing (`Kaniko::finish`).
-            match snapshotter.finish() {
-                Ok(true) => tracing::debug!("the workdir is emptied"),
-                Ok(false) => {}
-                Err(e) => tracing::warn!("emptying the workdir at the end of the build: {e}"),
-            }
-            r
+                &finish,
+            )
         }
     }
 }
@@ -149,6 +159,7 @@ fn run_with<S: Snapshotter + Send + Sync + 'static>(
     snapshotter: Arc<S>,
     isolation: Isolation,
     shared_root: bool,
+    before_close: &dyn Fn(),
 ) -> Result<Built, String>
 where
     S::Root: Send + Sync,
@@ -167,6 +178,7 @@ where
     let shared = match prepared {
         Ok(s) => Arc::new(s),
         Err(e) => {
+            before_close();
             close_store(store);
             return Err(e);
         }
@@ -182,6 +194,7 @@ where
         }
         None => tracing::warn!("a stage thread still holds the build; the store stays open"),
     }
+    before_close();
     close_store(store);
     result
 }

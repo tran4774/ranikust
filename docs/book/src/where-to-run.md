@@ -17,7 +17,7 @@ not been tried.
 | Environment | Expected mode | Notes | Basis |
 |---|---|---|---|
 | Host or VM, as root or with `sudo` | overlay | Every step of the sandbox works without fallbacks. | measured |
-| Docker or Podman container with `--privileged` | overlay | Put the work directory on a volume or tmpfs: overlay cannot use the container's own overlay root filesystem. | measured |
+| Docker or Podman container with `--privileged` | overlay | Put the state directory (`/var/lib/ranikust`) on a volume or tmpfs: overlay cannot use the container's own overlay root filesystem. | measured |
 | Podman container with `--cap-add SYS_ADMIN` | overlay | | measured |
 | Docker container with `--cap-add SYS_ADMIN` only | kaniko | Docker's default AppArmor profile still blocks mounts. | measured |
 | Podman rootless container (default options) | overlay, rootless | `RUN` sees the container's processes, because a fresh `/proc` cannot be mounted. | measured |

@@ -22,8 +22,11 @@ use crate::error::{Error, Result};
 use crate::key::EntryKey;
 use crate::lock;
 
-/// The marker file of a state directory.
-const MARKER: &str = ".ranikust-root";
+/// The marker file of a state directory: a regular file at its top. Its
+/// own name, never the old `.ranikust-root` of a kaniko-mode workdir, so a
+/// directory marked for that is never taken for a store (ADR-0050).
+pub const STATE_MARKER: &str = ".ranikust-state";
+use STATE_MARKER as MARKER;
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
@@ -33,7 +36,8 @@ const DIR_MODE: u32 = 0o700;
 /// The paths handed down to every crate of a build.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildPaths {
-    /// The workdir (`--workdir`): in kaniko mode the root being built.
+    /// The build root: `/` in kaniko mode in a container, else the state
+    /// directory, below which `ranikust` makes every root (ADR-0050).
     pub root: PathBuf,
     /// The state directory (`--state-dir`), which holds the store
     /// (ADR-0022).
@@ -41,7 +45,7 @@ pub struct BuildPaths {
 }
 
 impl BuildPaths {
-    /// Paths from the workdir and the state directory, both absolute.
+    /// Paths from the build root and the state directory, both absolute.
     pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
@@ -211,7 +215,7 @@ impl Store {
     /// `builds/`.
     ///
     /// The state directory is created (mode 0700) if missing and
-    /// canonicalized; a new or empty directory gets the `.ranikust-root`
+    /// canonicalized; a new or empty directory gets the [`STATE_MARKER`]
     /// marker, and a non-empty one without it is refused. A state directory
     /// owned by another user or writable by others is used with a warning.
     ///

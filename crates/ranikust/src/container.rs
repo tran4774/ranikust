@@ -8,7 +8,7 @@
 //! Whether ranikust runs inside a container, decided as kaniko decides it
 //! before building (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:240-245`,
 //! `pkg/util/proc/proc.go:78-149`, ADR-0040). Kaniko mode builds on the
-//! root `/` only there, unless `--force`.
+//! root `/` only there; elsewhere in its state directory (ADR-0050).
 
 use std::fmt;
 use std::path::Path;
@@ -118,11 +118,11 @@ impl Host for Real {
 /// The runtime ranikust runs in, `None` outside a container: kaniko's
 /// `GetContainerRuntime(0, 0)` checks, in its order.
 ///
-/// Now that kaniko mode builds, this heuristic is what keeps a build on the
-/// host's `/` (which it extracts over, and empties between stages) from
-/// running outside a container without `--force`, as in kaniko
-/// (ADR-0048: no extra flag in a container, accepting that a host matching
-/// the heuristic by accident is not protected).
+/// This heuristic is what keeps a build off the host's `/` (which kaniko
+/// mode extracts over, and empties between stages): outside a container
+/// the build runs in the state directory instead (ADR-0050); in one no
+/// flag is needed (ADR-0048), accepting that a host matching the heuristic
+/// by accident is not protected.
 pub(crate) fn detect(host: &impl Host) -> Option<Runtime> {
     // Container-specific files.
     for (runtime, file) in [

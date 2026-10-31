@@ -395,32 +395,13 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_name = "N", help_heading = "Snapshots")]
     pub(crate) snapshot_workers: Option<NonZeroUsize>,
 
-    /// Build on the root `/` even outside a container, as kaniko's
-    /// `--force`: kaniko mode then empties this machine's `/` (ADR-0040).
-    /// Changes nothing with `--workdir`, whose checks apply instead.
-    #[arg(
-        long,
-        value_name = "BOOL",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        default_value = "false",
-        value_parser = parse_bool,
-        help_heading = "ranikust"
-    )]
-    pub(crate) force: bool,
-
     /// Snapshot mode: probe and choose, or force one.
     #[arg(long, value_enum, default_value_t = Mode::Auto, help_heading = "ranikust")]
     pub(crate) mode: Mode,
 
-    /// Work directory (the build root in kaniko mode).
-    #[arg(long, value_name = "DIR", help_heading = "ranikust")]
-    pub(crate) workdir: Option<PathBuf>,
-
-    /// State directory holding the store; kaniko's `--kaniko-dir`. Default:
-    /// `<workdir>/.ranikust` in overlay mode, `/ranikust/state` in kaniko
-    /// mode.
+    /// State directory holding the store and every build root ranikust
+    /// makes; kaniko's `--kaniko-dir` (ADR-0050) [default:
+    /// /var/lib/ranikust].
     #[arg(long, value_name = "DIR", help_heading = "ranikust")]
     pub(crate) state_dir: Option<PathBuf>,
 
@@ -480,6 +461,22 @@ const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential 
 /// `--cache` and `--cache=true`; `--cache=false` is accepted.
 const REFUSED: &[(&str, Refusal)] = &[
     ("kaniko-dir", Refusal::Renamed("use --state-dir")),
+    // kaniko's old spellings: one name per option (ADR-0052).
+    ("tarPath", Refusal::Renamed("use --tar-path")),
+    ("snapshotMode", Refusal::Renamed("use --snapshot-mode")),
+    ("customPlatform", Refusal::Renamed("use --platform")),
+    ("custom-platform", Refusal::Renamed("use --platform")),
+    (
+        "whitelist-var-run",
+        Refusal::Renamed("use --ignore-var-run"),
+    ),
+    (
+        "force",
+        Refusal::Unneeded(
+            "ranikust never builds on this machine's /: outside a container kaniko mode builds \
+             in a directory of the state directory (ADR-0050); drop the flag",
+        ),
+    ),
     ("cache", Refusal::NotYet(PHASE_4)),
     ("cache-repo", Refusal::NotYet(PHASE_4)),
     ("cache-ttl", Refusal::NotYet(PHASE_4)),
@@ -555,19 +552,6 @@ const REFUSED_COMMANDS: &[(&str, &str)] = &[(
     "kaniko's bake is out of scope (ADR-0008); run one build per image",
 )];
 
-/// kaniko's deprecated spellings, accepted with kaniko's warning
-/// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:456-466`), and aliases:
-/// `(old, new, warn)`.
-const RENAMED: &[(&str, &str, bool)] = &[
-    ("tarPath", "tar-path", true),
-    ("snapshotMode", "snapshot-mode", true),
-    ("customPlatform", "platform", true),
-    // `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:67-68`.
-    ("whitelist-var-run", "ignore-var-run", true),
-    // Q-020: kaniko's name for --platform.
-    ("custom-platform", "platform", false),
-];
-
 /// A parse failure: kaniko flags refused with a reason, or clap's own error.
 #[derive(Debug)]
 pub(crate) enum ParseError {
@@ -577,17 +561,14 @@ pub(crate) enum ParseError {
     Clap(clap::Error),
 }
 
-/// The parsed command line, and the warnings parsing it gave: deprecated
-/// kaniko spellings, to log once logging is set up.
+/// The parsed command line.
 #[derive(Debug)]
 pub(crate) struct Parsed {
     pub(crate) cli: Cli,
-    pub(crate) warnings: Vec<String>,
 }
 
 /// Parses the command line. Refused kaniko flags are reported, all of them,
-/// before clap sees the arguments; deprecated spellings are renamed, each
-/// with a warning.
+/// before clap sees the arguments.
 pub(crate) fn parse<I, T>(args: I) -> Result<Parsed, ParseError>
 where
     I: IntoIterator<Item = T>,
@@ -599,19 +580,15 @@ where
         return Err(ParseError::Refused(pass.refused));
     }
     Cli::try_parse_from(pass.args)
-        .map(|cli| Parsed {
-            cli,
-            warnings: pass.warnings,
-        })
+        .map(|cli| Parsed { cli })
         .map_err(ParseError::Clap)
 }
 
 /// What [`prepass`] made of the arguments.
 struct Prepass {
-    /// The arguments for clap: old spellings renamed.
+    /// The arguments for clap, refused flags left out.
     args: Vec<OsString>,
     refused: Vec<String>,
-    warnings: Vec<String>,
 }
 
 /// Sorts kaniko's flags before clap sees them (the program name kept, the
@@ -620,16 +597,12 @@ fn prepass(all: &[OsString]) -> Prepass {
     let mut out = Prepass {
         args: Vec::with_capacity(all.len()),
         refused: Vec::new(),
-        warnings: Vec::new(),
     };
     let mut iter = all.iter();
     if let Some(program) = iter.next() {
         out.args.push(program.clone());
     }
     let mut first = true;
-    // Each long flag as written and the name clap gets, to catch two
-    // spellings of one flag.
-    let mut names: Vec<(&str, &str)> = Vec::new();
     while let Some(arg) = iter.next() {
         let Some(text) = arg.to_str() else {
             out.args.push(arg.clone());
@@ -682,40 +655,7 @@ fn prepass(all: &[OsString]) -> Prepass {
                 .push(format!("kaniko's --{name} is not supported: {reason}"));
             continue;
         }
-        if let Some((old, new, warn)) = RENAMED.iter().find(|(o, _, _)| *o == name) {
-            if *warn {
-                out.warnings
-                    .push(format!("--{old} is deprecated in kaniko, use --{new}"));
-            }
-            names.push((*old, *new));
-            out.args.push(match value {
-                Some(v) => OsString::from(format!("--{new}={v}")),
-                None => OsString::from(format!("--{new}")),
-            });
-            continue;
-        }
-        names.push((name, name));
         out.args.push(arg.clone());
-    }
-    // Two spellings of one flag: clap would only say it was given twice.
-    let mut targets: Vec<&str> = RENAMED.iter().map(|(_, n, _)| *n).collect();
-    targets.sort_unstable();
-    targets.dedup();
-    for new in targets {
-        let mut given: Vec<&str> = names
-            .iter()
-            .filter(|(_, n)| *n == new)
-            .map(|(o, _)| *o)
-            .collect();
-        given.sort_unstable();
-        given.dedup();
-        if given.len() > 1 {
-            let spellings: Vec<String> = given.iter().map(|g| format!("--{g}")).collect();
-            out.refused.push(format!(
-                "{} name the same setting: give it once",
-                spellings.join(" and ")
-            ));
-        }
     }
     out
 }

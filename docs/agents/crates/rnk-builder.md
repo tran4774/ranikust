@@ -284,5 +284,5 @@ through a descriptor of its directory.
   build's history entries carry it, the base's keep theirs, and layer
   mtimes later than it are clamped, as BuildKit.
 - (Q-160, ADR-0032) Under `--reproducible`, base layers are kept as pulled.
-- [open: Q-162] Built layer blobs live in the build directory, not in the
-  store's `blobs/`.
+- Built layer blobs live in the build directory, not in the store's
+  `blobs/`, until Phase 4 publishes them (Q-162, ADR-0052).

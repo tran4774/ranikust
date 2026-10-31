@@ -18,10 +18,10 @@ The probe ends in exactly one of these outcomes:
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
 | **overlay, rootless** | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind if a new `proc` is refused | parallel |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
-| **kaniko, cannot mount** | walk + hash | the workdir itself (`/` in a container) | directly, like kaniko (`Isolation::Direct`) | sequential; `--parallel-stages` → one directory per stage, bare `chroot` |
+| **kaniko, cannot mount** | walk + hash | `/` in a container, else a root in the state directory | directly, like kaniko (`Isolation::Direct`) | sequential; `--parallel-stages` → one directory per stage, bare `chroot` |
 | **refuse** | — | — | — | exit with guidance |
 
-"kaniko, can mount" covers root where overlay is unusable: workdir on NFS or
+"kaniko, can mount" covers root where overlay is unusable: state directory on NFS or
 FUSE, upper directory on the container's overlay root without a volume, or a
 kernel without overlay.
 
@@ -34,7 +34,7 @@ table per CI system is in experiment 03 §6.
 | Environment | Outcome |
 |---|---|
 | Host as root or via `sudo` (GitHub Actions with `sudo`, GitLab.com SaaS) | overlay, root |
-| Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (workdir must be a volume or tmpfs) |
+| Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
 | Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless |
 | Unprivileged user on Debian, Fedora, RHEL 8+, Ubuntu ≤ 22.04 | overlay, rootless (full uid range only with `newuidmap` and `/etc/subuid`) |
@@ -104,7 +104,8 @@ Q-111).
 5. **No overlay path passed.**
    - If ranikust is root: **kaniko mode**. A bind-mount test decides between
      "can mount" (per-stage directories, full sandbox) and "cannot mount"
-     (sequential on the workdir). `mknod` of a character device is tested
+     (sequential on `/` in a container, else on a root in the state
+     directory). `mknod` of a character device is tested
      for the `--parallel-stages` path: it works on rootful Docker and fails
      under rootless podman.
    - Otherwise: **refuse** with guidance (below).
@@ -126,28 +127,32 @@ that cannot work fails with the probe's diagnosis
 keeps kaniko's meaning, what the kaniko-mode walk compares; in overlay mode
 it is accepted and ignored with a warning.
 
-## Workdir rules
+## Build root and state directory
 
-- Without `--workdir`, kaniko mode builds on `/`, like kaniko, and only
-  where kaniko's container check finds a container (`ranikust`'s
-  `container.rs`, ported from `kaniko@44aa7ddc0 pkg/util/proc/proc.go`), or
-  with `--force`, kaniko's meaning
-  ([ADR-0040](../adr/0040-kaniko-mode-selection-container-check-and-flags.md)).
-  A `--workdir` must not be `/` or a system directory
-  ([kaniko-mode](kaniko-mode.md#host-safety-checks)); it needs no
-  container.
-- The state directory defaults to `<workdir>/.ranikust` in overlay mode; in
-  kaniko mode to `/ranikust/state` on `/` and `<cwd>/.ranikust` with a
-  `--workdir` (`ADR-0038`); `--state-dir` replaces either
-  ([cache-and-store](cache-and-store.md#store-layout)).
-- Only kaniko mode locks the workdir (`flock`), because there it is the root
-  being built. Overlay-mode builds may share a workdir and its store.
+- There is no work-directory flag (ADR-0050). Kaniko mode builds on `/`,
+  like kaniko, where kaniko's container check finds a container
+  (`ranikust`'s `container.rs`, ported from `kaniko@44aa7ddc0
+  pkg/util/proc/proc.go`, ADR-0048), and everywhere else in a root it makes
+  in its state directory, `<state>/builds/<id>/rootfs`; it never builds on
+  a machine's own `/`, and kaniko's `--force` is refused. Outside a
+  container it needs mount privileges, for the full sandbox; a host where
+  root may not mount is refused (Q-330).
+- The state directory is `/var/lib/ranikust` in every mode; `--state-dir`
+  replaces it ([cache-and-store](cache-and-store.md#store-layout)). It must
+  be owned by the user running ranikust, not writable by others, below
+  directories only root may write; ranikust makes it `0700`
+  ([kaniko-mode](kaniko-mode.md#host-safety-checks)).
+- Kaniko mode on `/` locks it (`flock` on `/` itself), one build
+  per container. Overlay-mode builds and kaniko-mode builds on a host share
+  the state directory and its store; each has its own `builds/<id>`.
 - Overlay mode needs the state directory, where the upper directories live,
   on a filesystem that can hold an upper directory: ext4, xfs, btrfs or
   tmpfs. Not overlayfs (`EINVAL`: "not
   supported as upperdir"), not NFS. A container's own overlay root can be a
   lower layer but not the upper one. Overlay nests at most two deep. The
   probe in step 1 or 2 catches all of these, and the result is kaniko mode.
+  A state directory on overlayfs is refused before the probe, telling to
+  mount a volume there.
 
 ## Refusal and guidance
 
