@@ -56,7 +56,10 @@ V1)
   n=$(find /var/lib/ranikust -mindepth 1 ! -path "$b" 2>/dev/null | wc -l)
   if [ "$n" -gt 0 ]; then
     out V1 LEAK "$n entries"
-  elif [ -e "$b" ] && ! grep -qxE 'pid:\[[0-9]+\] [0-9a-f-]+' "$b"; then
+  # The whole file must equal what this RUN reads itself (or be empty when
+  # ranikust could not read it): `grep -x` would accept extra lines.
+  elif [ -e "$b" ] && [ -s "$b" ] &&
+    [ "$(cat "$b")" != "$(readlink /proc/self/ns/pid) $(cat /proc/sys/kernel/random/boot_id)" ]; then
     out V1 LEAK "the marker holds $(head -c 80 "$b" | tr -c '[:print:]' '?')"
   else
     out V1 blocked
