@@ -225,7 +225,6 @@ fn paths_become_absolute_without_touching_the_filesystem() {
     let ok = config(&[
         "--no-push",
         "--context=ctx",
-        "--workdir=work",
         "--state-dir=state",
         "--tar-path=out/i.tar",
         "--registry-certificate=r.example=certs/r.pem",
@@ -233,8 +232,7 @@ fn paths_become_absolute_without_touching_the_filesystem() {
     .expect("relative paths");
     let cwd = std::env::current_dir().expect("cwd");
     assert_eq!(ok.context, cwd.join("ctx"));
-    assert_eq!(ok.workdir, Some(cwd.join("work")));
-    assert_eq!(ok.state_dir, Some(cwd.join("state")));
+    assert_eq!(ok.state_dir, cwd.join("state"));
     assert_eq!(ok.tar_path, Some(cwd.join("out/i.tar")));
     assert_eq!(ok.registry_certificates[0].1, cwd.join("certs/r.pem"));
     // The Dockerfile is resolved against the context later.
@@ -242,31 +240,12 @@ fn paths_become_absolute_without_touching_the_filesystem() {
 }
 
 #[test]
-fn state_dir_defaults_per_mode() {
-    let with_workdir = config(&["--no-push", "--workdir=/w"]).expect("workdir");
-    assert_eq!(
-        with_workdir.state_dir_for(Mode::Overlay),
-        Some(PathBuf::from("/w/.ranikust"))
-    );
-    // Kaniko mode on a host workdir: next to where ranikust was started
-    // (ADR-0038, Q-036).
-    let cwd = std::env::current_dir().expect("cwd");
-    assert_eq!(
-        with_workdir.state_dir_for(Mode::Kaniko),
-        Some(cwd.join(".ranikust"))
-    );
-    assert_eq!(with_workdir.state_dir_for(Mode::Auto), None);
-    let bare = config(&["--no-push"]).expect("no workdir");
-    assert_eq!(bare.state_dir_for(Mode::Overlay), None);
-    // Kaniko mode on the root `/`: inside it, as kaniko's `/kaniko`.
-    assert_eq!(
-        bare.state_dir_for(Mode::Kaniko),
-        Some(PathBuf::from("/ranikust/state"))
-    );
-    let explicit = config(&["--no-push", "--workdir=/w", "--state-dir=/s"]).expect("state dir");
-    for mode in [Mode::Auto, Mode::Overlay, Mode::Kaniko] {
-        assert_eq!(explicit.state_dir_for(mode), Some(PathBuf::from("/s")));
-    }
+fn the_state_directory_defaults_to_var_lib_ranikust() {
+    // In every mode, as BuildKit's `/var/lib/buildkit` (ADR-0050).
+    let bare = config(&["--no-push"]).expect("defaults");
+    assert_eq!(bare.state_dir, PathBuf::from("/var/lib/ranikust"));
+    let explicit = config(&["--no-push", "--state-dir=/s"]).expect("state dir");
+    assert_eq!(explicit.state_dir, PathBuf::from("/s"));
 }
 
 #[test]
@@ -349,7 +328,7 @@ fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
     let plain = config(&["--no-push"]).expect("plain");
     assert!(plain.ignore_paths.is_empty());
     assert!(plain.ignore_var_run);
-    assert!(!plain.single_snapshot && !plain.materialize && !plain.force);
+    assert!(!plain.single_snapshot && !plain.materialize);
     assert_eq!(plain.snapshot_workers.get(), 8);
     let set = config(&[
         "--no-push",

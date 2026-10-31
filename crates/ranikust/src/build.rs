@@ -49,7 +49,8 @@ pub(crate) enum Snapshots {
     /// Overlay mode, with what the probe found.
     Overlay(rnk_snapshot::OverlayCaps),
     /// Kaniko mode on its shared root; `RUN` with `isolation`: the full
-    /// sandbox on a host workdir where mounting works, else `Direct`.
+    /// sandbox on a root in the state directory where mounting works, else
+    /// `Direct`.
     Kaniko {
         snapshotter: Kaniko,
         isolation: Isolation,
@@ -129,13 +130,14 @@ pub(crate) fn run(
                 isolation,
                 true,
             );
-            // A host workdir that a stage changed is emptied; `/` is left as
+            // A root in the state directory that a stage changed is
+            // emptied (and removed with the build directory); `/` is left as
             // kaniko leaves it; a build that failed before its first base
             // touches nothing (`Kaniko::finish`).
             match snapshotter.finish() {
-                Ok(true) => tracing::debug!("the workdir is emptied"),
+                Ok(true) => tracing::debug!("the build root is emptied"),
                 Ok(false) => {}
-                Err(e) => tracing::warn!("emptying the workdir at the end of the build: {e}"),
+                Err(e) => tracing::warn!("emptying the build root at the end of the build: {e}"),
             }
             r
         }

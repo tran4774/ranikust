@@ -32,8 +32,9 @@ pub enum Isolation {
     /// as a plain child process, like kaniko. On the root `/` (in a
     /// container) nothing is placed: the command sees the container's own
     /// `/proc`, `/dev`, `/etc/hosts` and `resolv.conf`. On any other root
-    /// (a host `--workdir`) the child `chroot`s into it, with ranikust's
-    /// `resolv.conf`, `hosts` and `hostname` and the `/dev` nodes put in
+    /// (a root in the state directory on a host, ADR-0050) the child
+    /// `chroot`s into it, with ranikust's `resolv.conf`, `hosts` and
+    /// `hostname` and the `/dev` nodes put in
     /// place and journaled for the `RUN`, and no `/proc`. No namespaces and
     /// no capability changes: the container or host ranikust runs in is
     /// the only isolation.

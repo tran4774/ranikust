@@ -33,7 +33,8 @@ const DIR_MODE: u32 = 0o700;
 /// The paths handed down to every crate of a build.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildPaths {
-    /// The workdir (`--workdir`): in kaniko mode the root being built.
+    /// The build root: `/` in kaniko mode in a container, else the state
+    /// directory, below which `ranikust` makes every root (ADR-0050).
     pub root: PathBuf,
     /// The state directory (`--state-dir`), which holds the store
     /// (ADR-0022).
@@ -41,7 +42,7 @@ pub struct BuildPaths {
 }
 
 impl BuildPaths {
-    /// Paths from the workdir and the state directory, both absolute.
+    /// Paths from the build root and the state directory, both absolute.
     pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),

@@ -4,9 +4,9 @@
 //! pkg/commands/run.go:288-411`: `exec.Command` with `Setpgid`, the `USER`
 //! credentials, `WORKDIR` and the environment, nothing else): its own
 //! process group (here a session), the `USER` ids, `WORKDIR`, then `execve`.
-//! On a root other than `/` (a host `--workdir`, only where the full sandbox
-//! cannot run) it first `chroot`s into it, which kaniko, always on `/`,
-//! never does, checks that the new `/` is the directory the parent checked,
+//! On a root other than `/` (a directory of the state directory on a host,
+//! ADR-0050, only where the full sandbox cannot run) it first `chroot`s
+//! into it, which kaniko, always on `/`, never does, checks that the new `/` is the directory the parent checked,
 //! and cuts its capabilities to Docker's defaults. No namespace or mount;
 //! the container or host ranikust runs in is the only isolation.
 //!

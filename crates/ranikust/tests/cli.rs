@@ -88,60 +88,44 @@ fn running_as_root() -> bool {
         .expect("Uid: line")
 }
 
-#[test]
-fn overlay_mode_needs_a_workdir_or_state_dir() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    // `--mode=auto` first asks whether root may mount (ADR-0040), so the
-    // usage error is checked with the mode forced.
-    let out = ranikust(
-        tmp.path(),
-        &["--no-push", "--context", ".", "--mode=overlay"],
-        &[],
-    );
-    assert_eq!(out.status.code(), Some(2));
-    assert!(stderr(&out).contains("--workdir"), "{}", stderr(&out));
+/// The run stops here as a user: the private mount namespace needs root.
+/// As root the set-up would really run, so the tests that use this stop
+/// are skipped as root (`just test-vm smoke` covers that).
+const STOPS_AS_A_USER: &str = "a private mount namespace";
+
+/// Skips the calling test as root, where the run would go past the stop.
+fn skip_as_root() -> bool {
+    if running_as_root() {
+        eprintln!("skipped: the tests run as root, where the set-up is not refused");
+    }
+    running_as_root()
 }
 
 #[test]
-fn kaniko_mode_needs_root_and_on_slash_a_container() {
-    if running_as_root() {
-        // As root this would build on the host's `/`: never in a test.
-        eprintln!("skipped: kaniko mode on / as root runs only in the VM");
+fn kaniko_mode_needs_root() {
+    if skip_as_root() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
-    // With `--force`, the root `/` passes inside or outside a container,
-    // and the build stops for want of root.
-    let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko", "--force"], &[]);
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko", &arg], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("needs root"), "{}", stderr(&out));
-    // Without it, only inside a container (ADR-0040); the tests run on a
-    // host or in one, so either answer is checked for its message.
-    let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko"], &[]);
-    let err = stderr(&out);
-    assert_eq!(out.status.code(), Some(1), "{err}");
-    assert!(
-        err.contains("only inside a container") || err.contains("needs root"),
-        "{err}"
-    );
+    assert!(!state.exists(), "nothing is created before the root check");
 }
 
 #[test]
 fn kaniko_mode_flags_are_checked_against_the_mode() {
     if running_as_root() {
-        // `--mode=kaniko --force` as root would build on the host's `/`.
-        eprintln!("skipped: kaniko mode on / as root runs only in the VM");
+        // As root kaniko mode would really build.
+        eprintln!("skipped: kaniko mode as root runs only in the VM");
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
     let out = ranikust(
         tmp.path(),
-        &[
-            "--no-push",
-            "--mode=kaniko",
-            "--force",
-            "--ignore-path=var/cache",
-        ],
+        &["--no-push", "--mode=kaniko", "--ignore-path=var/cache"],
         &[],
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
@@ -151,7 +135,6 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
         &[
             "--no-push",
             "--mode=kaniko",
-            "--force",
             "--ignore-path=/var/cache",
             "--single-snapshot",
             "--ignore-var-run=false",
@@ -177,69 +160,29 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
 }
 
 #[test]
-fn kaniko_mode_checks_its_workdir_before_stopping() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let workdir = tmp.path().join("work");
-    fs::create_dir(&workdir).expect("workdir");
-    fs::write(workdir.join("precious"), b"x").expect("file");
-    let args = ["--no-push", "--mode=kaniko", "--workdir=work"];
-    let out = ranikust(tmp.path(), &args, &[]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(stderr(&out).contains("not empty"), "{}", stderr(&out));
-    assert!(!workdir.join(".ranikust-root").exists());
-
-    fs::remove_file(workdir.join("precious")).expect("remove");
-    if !running_as_root() {
-        let out = ranikust(tmp.path(), &args, &[]);
-        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-        assert!(stderr(&out).contains("needs root"), "{}", stderr(&out));
-        // The marker comes right before the first write, which this
-        // refusal precedes.
-        assert!(!workdir.join(".ranikust-root").exists());
-    }
-
-    let out = ranikust(
-        tmp.path(),
-        &["--no-push", "--mode=kaniko", "--workdir=/usr"],
-        &[],
-    );
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("system directory"),
-        "{}",
-        stderr(&out)
-    );
-}
-
-#[test]
-fn without_root_the_set_up_refuses_before_touching_the_workdir() {
-    if running_as_root() {
-        // As root the set-up really runs: T2, in the VM smoke suite.
-        eprintln!(
-            "skipped: the tests run as root, where the set-up is not refused; \
-             `just test-vm smoke` covers it"
-        );
+fn without_root_the_set_up_refuses_before_touching_the_state_dir() {
+    if skip_as_root() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
-    let workdir = tmp.path().join("work");
-    fs::create_dir(&workdir).expect("workdir");
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).expect("state dir");
     let out = ranikust(
         tmp.path(),
         &[
             "--no-push",
             "--context",
             ".",
-            "--workdir=work",
+            "--state-dir=state",
             "--metrics-file=m.json",
         ],
         &[],
     );
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let err = stderr(&out);
-    assert!(err.contains("a private mount namespace"), "{err}");
+    assert!(err.contains(STOPS_AS_A_USER), "{err}");
     assert!(err.contains("sudo"), "{err}");
-    assert_eq!(fs::read_dir(&workdir).expect("workdir").count(), 0);
+    assert_eq!(fs::read_dir(&state).expect("state dir").count(), 0);
     let report: Value =
         serde_json::from_slice(&fs::read(tmp.path().join("m.json")).expect("report"))
             .expect("json");
@@ -325,6 +268,9 @@ fn version_works_on_any_kernel() {
 
 #[test]
 fn the_report_path_comes_from_the_flag_only() {
+    if skip_as_root() {
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
     let from_flag = tmp.path().join("flag.json");
     let from_env = tmp.path().join("env.json");
@@ -343,11 +289,11 @@ fn the_report_path_comes_from_the_flag_only() {
             from_env.to_str().expect("utf-8 path"),
         )],
     );
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(!from_env.exists());
     let report: Value =
         serde_json::from_slice(&fs::read(&from_flag).expect("report")).expect("json");
-    assert_eq!(report["exit"]["code"], 2);
+    assert_eq!(report["exit"]["code"], 1);
     assert_eq!(report["meta"]["mode"], "overlay");
     assert_eq!(report["meta"]["options"]["jobs"], 2);
     assert_eq!(report["meta"]["options"]["outputs"]["destinations"], 1);
@@ -361,21 +307,27 @@ fn the_report_path_comes_from_the_flag_only() {
 
 #[test]
 fn a_relative_metrics_file_is_relative_to_the_working_directory() {
+    if skip_as_root() {
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
     let out = ranikust(
         tmp.path(),
         &["--no-push", "--mode=overlay", "--metrics-file=out/m.json"],
         &[],
     );
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(tmp.path().join("out/m.json").is_file());
 }
 
-/// kaniko's logging flags (ADR-0036), on a run that stops after validation
-/// (overlay mode without `--workdir`): `--verbosity` shows or hides lines,
+/// kaniko's logging flags (ADR-0036), on a run that stops at the set-up (a
+/// user cannot enter the mount namespace): `--verbosity` shows or hides lines,
 /// `--log-format=json` writes JSON, and no timestamp by default.
 #[test]
 fn logging_flags_change_what_is_written() {
+    if skip_as_root() {
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
     let base = ["--no-push", "--mode=overlay", "--snapshot-mode=full"];
     let run = |extra: &[&str]| {
@@ -384,12 +336,9 @@ fn logging_flags_change_what_is_written() {
             args.push("--log-format=text");
         }
         let out = ranikust(tmp.path(), &args, &[]);
-        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         let err = stderr(&out);
-        assert!(
-            err.contains("--workdir"),
-            "stopped for want of --workdir: {err}"
-        );
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
         err
     };
     // `text` is logrus's plain formatter: time, level, msg, never colored.
@@ -431,18 +380,18 @@ fn logging_flags_change_what_is_written() {
 /// nothing: the run stops where it would without it.
 #[test]
 fn kaniko_variables_are_not_read() {
+    if skip_as_root() {
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
     for env in [
         &[("KANIKO_REGISTRY_MIRROR", "mirror.example")][..],
         &[("KANIKO_NO_PUSH", "maybe")],
     ] {
         let out = ranikust(tmp.path(), &["--no-push", "--mode=overlay"], env);
-        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         let err = stderr(&out);
-        assert!(
-            err.contains("--workdir"),
-            "stopped for want of --workdir: {err}"
-        );
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
         assert!(!err.contains("KANIKO"), "{err}");
     }
 }

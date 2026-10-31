@@ -9,9 +9,13 @@
 //! environment is refused with the probe's diagnosis.
 
 use std::fmt;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use rnk_rootfs::{OpenHow, RootPath};
+use rustix::fs::FlockOperation;
 
 use rnk_sandbox::{Caps, Error as SandboxError, Sandbox};
 use rnk_snapshot::{Error as SnapshotError, MountApi, OverlayCaps};
@@ -102,11 +106,6 @@ pub(crate) struct Setup {
     pub(crate) sandbox: Sandbox,
 }
 
-/// Guidance where the state directory is not safe to use as root.
-const UNSAFE_STATE_DIR: &str = "the state directory and the workdir above it must be real \
-     directories (no symlink), owned by the user running ranikust and not writable by group or \
-     others; pass another --workdir or --state-dir";
-
 /// Enters the build's private mount namespace (`rnk_sandbox`), the first
 /// step of every set-up and the one that tells whether root may mount. Call
 /// while single-threaded.
@@ -120,9 +119,10 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
     rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))
 }
 
-/// Sets the process up for a build whose state directory is `state_dir`, in
-/// `workdir` if given, once [`enter_namespace`] succeeded: the state
-/// directory's check, the store (marker check, start-up clean-up), the probes of
+/// Sets overlay mode up for a build whose state directory is `state_dir`,
+/// once [`enter_namespace`] succeeded: the state directory's check
+/// ([`crate::statedir::prepare`]; refused on overlayfs, a container's own
+/// root, ADR-0050), the store (marker check, start-up clean-up), the probes of
 /// `rnk-sandbox` and `rnk-snapshot`, the outcome, then the spawner thread.
 /// Before the spawner, the only other thread is the overlay probe's
 /// `mount(2)` attempt, which it joins: the process is single-threaded
@@ -132,22 +132,22 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 /// # Errors
 ///
 /// A [`Refusal`] naming what failed and what to do instead.
-pub(crate) fn set_up(
-    state_dir: &Path,
-    workdir: Option<&Path>,
-    userns_network: bool,
-) -> Result<Setup, Refusal> {
+pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
-    prepare_state_dir(state_dir, workdir, euid)?;
+    prepare_state_dir(state_dir)?;
+    if crate::statedir::on_overlayfs(state_dir) {
+        return Err(Refusal {
+            reason: format!(
+                "the state directory {} is on overlayfs, a container's own root, where overlay \
+                 mode cannot keep its upper directories",
+                state_dir.display()
+            ),
+            guidance: ON_OVERLAYFS,
+        });
+    }
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).
-    let store =
-        Store::open(&BuildPaths::new(workdir.unwrap_or(state_dir), state_dir)).map_err(|e| {
-            Refusal {
-                reason: format!("cannot open the store in {}: {e}", state_dir.display()),
-                guidance: "",
-            }
-        })?;
+    let store = open_store(state_dir, state_dir)?;
     let sandbox_dir = state_dir.join("sandbox");
     let outcome = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
@@ -176,76 +176,131 @@ pub(crate) fn set_up(
     })
 }
 
+/// Guidance where overlay mode's state directory is on overlayfs.
+const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
+     `-v ranikust-state:/var/lib/ranikust`, or pass --state-dir on one; or use --mode=kaniko";
+
+/// Opens the store in `state_dir` for a build whose root is `root`.
+fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
+    Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| Refusal {
+        reason: format!("cannot open the store in {}: {e}", state_dir.display()),
+        guidance: "",
+    })
+}
+
 /// What kaniko mode's set-up hands to the build.
 pub(crate) struct KanikoSetup {
     /// The store in the state directory, open for this build.
     pub(crate) store: Arc<Store>,
     /// The spawner thread every `RUN` is cloned from.
     pub(crate) sandbox: Sandbox,
-    /// How `RUN` is isolated: the full sandbox on a host workdir where
-    /// mounting works, else `Direct` (ADR-0043).
+    /// How `RUN` is isolated: the full sandbox on a root in the state
+    /// directory where mounting works, else `Direct` (ADR-0043).
     pub(crate) isolation: rnk_sandbox::Isolation,
+    /// The build's root, opened once: `/`, or the directory made for it.
+    pub(crate) root: RootPath,
+    /// Its path, for the ignore list, messages and the sandbox.
+    pub(crate) root_path: PathBuf,
+    /// The canonical state directory.
+    pub(crate) state_dir: PathBuf,
+    /// On `/`: the lock that keeps a second build off it, held to the end.
+    pub(crate) root_lock: Option<OwnedFd>,
 }
 
 /// Guidance where kaniko mode runs without root.
 const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switching users), as \
      kaniko does: run ranikust as root in the container or VM that builds";
 
-/// Sets kaniko mode up, once the root is claimed (a host workdir, locked
-/// and marked, or `/` in a container): the state directory's check, the
-/// store, and the spawner. `can_mount` is whether the build's mount
-/// namespace could be entered: then, on a host workdir, `RUN` gets the
-/// full sandbox, probed here; anywhere else it runs `Direct`, which on a
-/// workdir enters it with `chroot` (ADR-0043). `nofile` is the
-/// `RLIMIT_NOFILE` ranikust started with, given back to every `RUN`.
+/// Sets kaniko mode up (ADR-0050): the state directory's check, the store,
+/// the build's root, and the spawner. With `on_slash` (ranikust runs in a
+/// container) the root is `/`, locked for this build in the state
+/// directory, and `RUN` runs `Direct`, as kaniko. Otherwise the root is
+/// `<state>/builds/<id>/rootfs`, made here and removed with the build;
+/// `can_mount` is whether the build's mount namespace could be entered:
+/// then `RUN` gets the full sandbox, probed here, else `Direct` enters the
+/// root with `chroot` (ADR-0043). `nofile` is the `RLIMIT_NOFILE` ranikust
+/// started with, given back to every `RUN`.
 ///
 /// # Errors
 ///
-/// A [`Refusal`]: not root, an unsafe state directory, the store, a probe.
+/// A [`Refusal`]: not root, an unsafe state directory, the store, the
+/// lock, the root, a probe.
 pub(crate) fn set_up_kaniko(
     state_dir: &Path,
-    claimed: Option<&crate::workdir::Workdir>,
+    on_slash: bool,
     can_mount: bool,
     nofile: rnk_sandbox::NofileLimit,
 ) -> Result<KanikoSetup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
-    let workdir = claimed.map(crate::workdir::Workdir::path);
     if euid != 0 {
         return Err(Refusal {
             reason: format!("kaniko mode cannot run as uid {euid}"),
             guidance: KANIKO_NEEDS_ROOT,
         });
     }
-    prepare_state_dir(state_dir, workdir, euid)?;
-    let store =
-        Store::open(&BuildPaths::new(workdir.unwrap_or(state_dir), state_dir)).map_err(|e| {
-            Refusal {
-                reason: format!("cannot open the store in {}: {e}", state_dir.display()),
-                guidance: "",
+    prepare_state_dir(state_dir)?;
+    let slash = Path::new("/");
+    let store = open_store(if on_slash { slash } else { state_dir }, state_dir)?;
+    let state = RootPath::open(store.state_dir())
+        .map_err(|e| failed(&format!("opening {}", store.state_dir().display()), &e))?;
+    let (root, root_path, root_lock) = if on_slash {
+        let lock = state
+            .open_at(
+                "locks/kaniko-root",
+                &OpenHow::read_write().no_follow().create(0o600),
+            )
+            .map_err(|e| failed("opening the lock of the root /", &e))?;
+        match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::WOULDBLOCK) => {
+                return Err(Refusal {
+                    reason: "another ranikust build is using / in this container".to_owned(),
+                    guidance: "run one kaniko-mode build at a time per container",
+                });
             }
-        })?;
-    let sandbox_dir = state_dir.join("sandbox");
-    let caps = match workdir {
-        Some(_) if can_mount => {
-            let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
-            let _entered = span.enter();
-            let caps = rnk_sandbox::probe(&sandbox_dir).map_err(|e| Refusal {
-                reason: format!("the RUN sandbox cannot run here: {e}"),
-                guidance: "",
-            })?;
-            span.record("steps", 1_u64);
-            Some(caps)
+            Err(e) => return Err(failed("cannot lock the root /", &e)),
         }
-        Some(_) | None => None,
+        let root = RootPath::open(slash).map_err(|e| failed("opening /", &e))?;
+        (root, slash.to_path_buf(), Some(lock))
+    } else {
+        let path = store.build_dir().join("rootfs");
+        let rel = path
+            .strip_prefix(store.state_dir())
+            .map_err(|_| Refusal {
+                reason: format!("the build root {} is outside the store", path.display()),
+                guidance: "",
+            })?
+            .to_path_buf();
+        state
+            .create_dir(&rel, 0o755)
+            .map_err(|e| failed(&format!("creating {}", path.display()), &e))?;
+        let root = state
+            .sub_root(&rel)
+            .map_err(|e| failed(&format!("opening {}", path.display()), &e))?;
+        (root, path, None)
+    };
+    let sandbox_dir = store.state_dir().join("sandbox");
+    let caps = if !on_slash && can_mount {
+        let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
+        let _entered = span.enter();
+        let caps = rnk_sandbox::probe(&sandbox_dir).map_err(|e| Refusal {
+            reason: format!("the RUN sandbox cannot run here: {e}"),
+            guidance: "",
+        })?;
+        span.record("steps", 1_u64);
+        Some(caps)
+    } else {
+        None
     };
     let isolation = if caps.is_some() {
         rnk_sandbox::Isolation::Full
     } else {
         rnk_sandbox::Isolation::Direct
     };
-    let started = match claimed {
-        Some(w) => Sandbox::start_with_root(caps, &sandbox_dir, w.path(), w.root()),
-        None => Sandbox::start(caps, &sandbox_dir),
+    let started = if on_slash {
+        Sandbox::start(caps, &sandbox_dir)
+    } else {
+        Sandbox::start_with_root(caps, &sandbox_dir, &root_path, &root)
     };
     let mut sandbox = started.map_err(|e| Refusal {
         reason: e.to_string(),
@@ -254,7 +309,7 @@ pub(crate) fn set_up_kaniko(
     sandbox.set_nofile_limit(nofile);
     tracing::info!(
         "ranikust: kaniko mode on {}, RUN {}",
-        workdir.map_or_else(|| "/".to_owned(), |w| w.display().to_string()),
+        root_path.display(),
         if caps.is_some() {
             "in the full sandbox"
         } else {
@@ -262,10 +317,22 @@ pub(crate) fn set_up_kaniko(
         }
     );
     Ok(KanikoSetup {
+        state_dir: store.state_dir().to_path_buf(),
         store: Arc::new(store),
         sandbox,
         isolation,
+        root,
+        root_path,
+        root_lock,
     })
+}
+
+/// A set-up step that failed with `e`.
+fn failed(what: &str, e: &dyn fmt::Display) -> Refusal {
+    Refusal {
+        reason: format!("{what}: {e}"),
+        guidance: "",
+    }
 }
 
 /// `rnk-snapshot`'s overlay probe (steps 1 and 4), in a directory of this
@@ -303,65 +370,12 @@ fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
     }
 }
 
-/// Creates the state directory if missing (mode 0700) and checks it, and
-/// every directory above it up to and including `workdir`: each must be a
-/// real directory, not a symlink, owned by `euid` and not writable by group
-/// or others. The probes run as root in it, and the sandbox replays what its
-/// journals there name. Checked before anything is created, and again
-/// after. A stand-in for the workdir checks (Q-011); the store's marker
-/// check follows it (`Store::open`, Q-111).
-fn prepare_state_dir(state_dir: &Path, workdir: Option<&Path>, euid: u32) -> Result<(), Refusal> {
-    check_state_dir(state_dir, workdir, euid, true)?;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(state_dir)
-        .map_err(|e| Refusal {
-            reason: format!(
-                "cannot create the state directory {}: {e}",
-                state_dir.display()
-            ),
-            guidance: "",
-        })?;
-    check_state_dir(state_dir, workdir, euid, false)
-}
-
-/// The check of [`prepare_state_dir`]; with `missing_ok`, entries that do
-/// not exist yet pass.
-fn check_state_dir(
-    state_dir: &Path,
-    workdir: Option<&Path>,
-    euid: u32,
-    missing_ok: bool,
-) -> Result<(), Refusal> {
-    use std::os::unix::fs::MetadataExt as _;
-    let chain = state_dir
-        .ancestors()
-        .take_while(|p| *p == state_dir || workdir.is_some_and(|w| p.starts_with(w)));
-    for dir in chain {
-        let refuse = |why: &str| Refusal {
-            reason: format!("unsafe state directory: {} {why}", dir.display()),
-            guidance: UNSAFE_STATE_DIR,
-        };
-        let st = match std::fs::symlink_metadata(dir) {
-            Ok(st) => st,
-            Err(e) if missing_ok && e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(refuse(&format!("cannot be read: {e}"))),
-        };
-        if st.file_type().is_symlink() {
-            return Err(refuse("is a symlink"));
-        }
-        if !st.is_dir() {
-            return Err(refuse("is not a directory"));
-        }
-        if st.uid() != euid {
-            return Err(refuse(&format!("is owned by uid {}, not {euid}", st.uid())));
-        }
-        if st.mode() & 0o022 != 0 {
-            return Err(refuse("is writable by group or others"));
-        }
-    }
-    Ok(())
+/// [`crate::statedir::prepare`] as a [`Refusal`].
+fn prepare_state_dir(state_dir: &Path) -> Result<(), Refusal> {
+    crate::statedir::prepare(state_dir).map_err(|refused| Refusal {
+        reason: refused.0,
+        guidance: "",
+    })
 }
 
 /// The guidance for missing privileges: root that still lacks them (Docker's

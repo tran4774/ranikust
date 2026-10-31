@@ -141,13 +141,14 @@ pub fn read_mountinfo() -> Result<Vec<MountInfo>> {
 /// physical paths `rnk_rootfs::extract_live` reaches, byte for byte: they
 /// must be the kernel's own names for the directories actually used: the
 /// caller passes canonical paths it has opened without following a
-/// symlink (`RESOLVE_NO_SYMLINKS`), as `ranikust` does with the claimed
-/// workdir and the state directory, never the flags as typed; a path that
-/// is not normalized is refused.
+/// symlink (`RESOLVE_NO_SYMLINKS`), as `ranikust` does with the build
+/// root and the state directory, never the flags as typed; a path that is
+/// not normalized is refused.
 #[derive(Clone, Copy, Debug)]
 pub struct IgnoreSpec<'a> {
-    /// The build root on the host, physical: `/` in a container, the
-    /// workdir on a host. Mount points below it are ignored.
+    /// The build root on the host, physical: `/` in a container, else a
+    /// directory `ranikust` made in its state directory (ADR-0050). Mount
+    /// points below it are ignored.
     pub root: &'a Path,
     /// The state directory on the host, physical; ignored when it lies
     /// inside the root.
@@ -163,10 +164,6 @@ const FIXED: [&str; 5] = ["/proc", "/sys", "/dev", "/ranikust", "/etc/mtab"];
 
 /// kaniko's `PrefixMatchOnly` entry: only what is below it.
 const BELOW_ONLY: &str = "/tmp/apt-key-gpghome";
-
-/// The workdir marker (`ranikust`'s workdir checks), ignored in a root that
-/// is not `/`: the walk never reports it and deletion never removes it.
-const WORKDIR_MARKER: &str = "/.ranikust-root";
 
 /// Builds the kaniko-mode ignore list for `spec` and the mounts of
 /// `mounts` (from [`read_mountinfo`]): physical paths inside the root.
@@ -200,9 +197,6 @@ pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<Ignore
         list.insert(p)?;
     }
     list.insert_below(BELOW_ONLY)?;
-    if spec.root != Path::new("/") {
-        list.insert(WORKDIR_MARKER)?;
-    }
     if spec.ignore_var_run {
         list.insert("/var/run")?;
     }
