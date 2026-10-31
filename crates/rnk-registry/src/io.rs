@@ -34,13 +34,45 @@ impl BlobSink for tokio::fs::File {
 }
 
 /// The writing end of a bounded in-memory pipe, read as the blob arrives
-/// (ADR-0055). What was already read cannot be taken back, so a transfer
-/// into a pipe is never retried: `reset` fails.
-impl BlobSink for tokio::io::DuplexStream {
+/// (ADR-0055). What was already read cannot be taken back: a transfer is
+/// retried only while no byte has gone into the pipe (a refused or broken
+/// request), and `reset` fails after that.
+#[derive(Debug)]
+struct PipeSink {
+    pipe: tokio::io::DuplexStream,
+    written: u64,
+}
+
+impl AsyncWrite for PipeSink {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let polled = Pin::new(&mut self.pipe).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = polled {
+            self.written += n as u64;
+        }
+        polled
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.pipe).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.pipe).poll_shutdown(cx)
+    }
+}
+
+impl BlobSink for PipeSink {
     async fn reset(&mut self) -> io::Result<()> {
+        if self.written == 0 {
+            return Ok(());
+        }
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "a streamed blob cannot be restarted",
+            "a streamed blob cannot be restarted once bytes were read",
         ))
     }
 }
@@ -163,14 +195,16 @@ type PullDone = tokio::sync::oneshot::Receiver<Result<(), crate::Error>>;
 ///
 /// The pull's future is not `Send` (its retry closures), so it can be
 /// neither a task nor part of a `Send` stream; a thread blocking on it is.
-/// The pull is never retried: what was read cannot be taken back.
+/// The pull is retried only until the first byte enters the pipe: what
+/// was read cannot be taken back.
 fn pull_into_pipe(
     handle: &tokio::runtime::Handle,
     client: &Arc<crate::Client>,
     from: &rnk_oci::Reference,
     blob: &rnk_oci::Descriptor,
 ) -> io::Result<(tokio::io::DuplexStream, PullDone)> {
-    let (mut writer, reader) = tokio::io::duplex(PIPE_BYTES);
+    let (pipe, reader) = tokio::io::duplex(PIPE_BYTES);
+    let mut writer = PipeSink { pipe, written: 0 };
     let (done, finished) = tokio::sync::oneshot::channel();
     let (client, from, blob) = (Arc::clone(client), from.clone(), blob.clone());
     let handle = handle.clone();

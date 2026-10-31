@@ -502,7 +502,7 @@ impl Client {
     /// Opens the blob `blob` of `reference`'s repository for blocking reads
     /// while it is pulled, through a pipe of [`crate::PIPE_BYTES`]: a base
     /// layer extracted as it arrives, never kept (ADR-0055). The pull is
-    /// not retried; the reader fails if the blob's size or digest does not
+    /// retried only until the first byte of the body arrives; the reader fails if the blob's size or digest does not
     /// match, after the bytes that arrived. `handle`'s runtime drives the
     /// pull; read it on a thread outside that runtime's workers.
     ///

@@ -816,8 +816,28 @@ async fn a_streamed_blob_with_a_wrong_digest_never_reads_to_a_clean_end() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("digest"), "{err}");
-    // A streamed pull is never retried: what was read cannot be taken back.
+    // A streamed pull is not retried once bytes went out: what was read cannot be taken back.
     assert_eq!(registry.count("GET /v2/app/blobs/"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_is_retried_while_nothing_was_read() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let content = b"retry me".repeat(100);
+    let image = add_image(&registry, "app", "v1", content.clone());
+    registry.state().faults.push(Fault {
+        method: Method::GET,
+        path_contains: "/blobs/".to_owned(),
+        status: 503,
+        remaining: 2,
+    });
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let got = read_streamed(&client, &reference(&registry, "app"), &blob)
+        .await
+        .unwrap();
+    assert_eq!(got, content);
+    assert_eq!(registry.count("GET /v2/app/blobs/"), 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
