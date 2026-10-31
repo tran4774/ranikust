@@ -397,19 +397,34 @@ impl Kept {
 
 /// Copies `what` of the root into `to`, leaving out what the ignore list
 /// holds (mounts, `/proc`, the state directory and the rest).
+///
+/// The paths of [`Keep::Paths`] must be physical: no symlink before their
+/// last name, which the ignore list then judges as it judges the walk's
+/// paths; a path through a link is refused. The root itself (an empty
+/// path) is the whole root.
 fn copy_out(shared: &Shared, what: &Keep, to: &RootPath) -> Result<()> {
     let span = tracing::info_span!("rnk_snapshot.keep", paths = tracing::field::Empty);
     let _entered = span.enter();
     let opts = CopyOpts::default();
     let filter = |p: &Path, _: bool| !shared.ignore.covers(p);
-    match what {
-        Keep::All => {
+    let paths = match what {
+        Keep::All => None,
+        Keep::Paths(paths) => {
+            let clean = paths
+                .iter()
+                .map(|p| physical(&shared.root, p))
+                .collect::<Result<Vec<_>>>()?;
+            (!clean.iter().any(|p| p.as_os_str().is_empty())).then_some(clean)
+        }
+    };
+    match paths {
+        None => {
             span.record("paths", 0_u64);
             copy_filtered(&shared.root, "", to, "", &opts, &filter)?;
         }
-        Keep::Paths(paths) => {
+        Some(paths) => {
             span.record("paths", paths.len() as u64);
-            for p in paths {
+            for p in &paths {
                 if shared.ignore.covers(p) {
                     continue;
                 }
@@ -436,6 +451,28 @@ fn copy_out(shared: &Shared, what: &Keep, to: &RootPath) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `p` relative to the root, with no symlink before its last name and no
+/// `..`; refused otherwise.
+fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::Normal(name) => {
+                if !out.as_os_str().is_empty() && root.statx(&out)?.file_type() == FileType::Symlink
+                {
+                    return Err(Error::State("a path to keep goes through a symlink"));
+                }
+                out.push(name);
+            }
+            std::path::Component::RootDir | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir | std::path::Component::Prefix(_) => {
+                return Err(Error::State("a path to keep climbs with .."));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Extracts one base layer into `root`, checking its diff ID.

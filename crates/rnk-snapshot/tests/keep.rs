@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use rnk_oci::Digest;
 use rnk_rootfs::{IgnoreList, RootPath};
-use rnk_snapshot::{Base, Kaniko, KanikoLayer, Keep, Snapshotter, StageRootfs, WalkOptions};
+use rnk_snapshot::{Base, Error, Kaniko, KanikoLayer, Keep, Snapshotter, StageRootfs, WalkOptions};
 use sha2::{Digest as _, Sha256};
 use tar::{EntryType, Header};
 
@@ -433,22 +433,40 @@ fn hostile_paths_given_to_keep_never_copy_a_secret() {
     assert_eq!(f.kept_entries(), Vec::<String>::new());
 }
 
-/// Finding: `Keep::Paths` checks the ignore list on the path as given, then
-/// resolves it following links: a path through a link (`to-root ->` `/`,
-/// `app/dist/state ->` `../../state`) copies the ignored state into the kept
-/// copy. The builder only hands over physical paths (`link_closure`), so a
-/// Dockerfile cannot reach this (`tests/keep.rs` of `rnk-builder`); the
-/// snapshotter does not enforce it.
+/// Was a finding: `Keep::Paths` checked the ignore list on the path as
+/// given, then resolved it following links, so a path through a link
+/// (`to-root ->` `/`, `app/dist/state ->` `../../state`) copied the
+/// ignored state. Paths through a link are now refused, and `..` too.
 #[test]
-#[ignore = "red-team finding: Keep::Paths through a link copies an ignored path"]
 fn keep_paths_through_a_link_never_copy_the_ignored_state() {
     let f = Fx::new();
     let mut stage = f.kaniko.prepare(Base::Scratch).unwrap();
     plant_hostile(&f);
-    for p in ["to-root/state/blob", "app/dist/state/blob", "to-root/state"] {
-        if let Err(e) = stage.keep(&Keep::Paths(vec![PathBuf::from(p)])) {
-            eprintln!("{p}: refused: {e}");
-        }
+    for p in [
+        "to-root/state/blob",
+        "app/dist/state/blob",
+        "to-root/state",
+        "app/../state/blob",
+    ] {
+        let e = stage
+            .keep(&Keep::Paths(vec![PathBuf::from(p)]))
+            .unwrap_err();
+        assert!(matches!(e, Error::State(_)), "{p}: {e}");
+        f.check(p);
+    }
+    stage.release().unwrap();
+}
+
+#[test]
+fn keep_paths_naming_the_root_keep_it_whole_without_the_ignored_state() {
+    let f = Fx::new();
+    let mut stage = f.kaniko.prepare(Base::Scratch).unwrap();
+    fs::write(f.root.join("built"), b"b").unwrap();
+    for p in ["", "/", "."] {
+        stage.keep(&Keep::Paths(vec![PathBuf::from(p)])).unwrap();
+        let view = stage.view().unwrap();
+        assert!(view.statx("built").is_ok(), "{p:?}");
+        assert!(view.statx("state").is_err(), "{p:?}: the state was kept");
         f.check(p);
     }
     stage.release().unwrap();

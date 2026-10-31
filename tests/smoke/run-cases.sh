@@ -12,7 +12,10 @@ TARGET="${CARGO_TARGET_DIR:-$PWD/target}"
 source tests/smoke/lib.bash
 source tests/smoke/cases.bash
 
-BASE=docker.io/library/alpine:3.20
+# RANIKUST_SMOKE_REGISTRY=mirror.gcr.io pulls the base through Google's
+# Docker Hub mirror, as the VM's quick suite does, when Docker Hub's
+# anonymous pull limit is reached.
+BASE="${RANIKUST_SMOKE_REGISTRY:-docker.io}/library/alpine:3.20"
 ENGINE=podman
 CASES_OUT="$TARGET/smoke/cases"
 # One state directory for every case: its store keeps the pulled base

@@ -127,7 +127,17 @@ impl<R: StageRootfs> SourceRoot<R> {
         let Some((paths, expected)) = keep_paths(root.view()?, list) else {
             return Ok(root.keep(&Keep::All)?);
         };
-        root.keep(&Keep::Paths(paths))?;
+        // A source naming the root (`/`, `.`, a link to `/`) is the whole
+        // root; a path the snapshotter refuses (another mount, a link on
+        // the way) is left to the whole-root copy, which leaves out what
+        // the ignore list holds.
+        if paths.iter().any(|p| p.as_os_str().is_empty()) {
+            return Ok(root.keep(&Keep::All)?);
+        }
+        if let Err(e) = root.keep(&Keep::Paths(paths)) {
+            tracing::debug!("keeping the sources by path: {e}; keeping the whole stage");
+            return Ok(root.keep(&Keep::All)?);
+        }
         let kept = root.view()?;
         let same = list
             .iter()
