@@ -402,50 +402,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-340: Where do kaniko mode's anonymous files live when the container's root has no O_TMPFILE?
-
-- **Blocks:** nothing yet; **Area:** `rnk-store`, `ranikust`
-- **Context:** ADR-0051 keeps kaniko mode's state on `/` in anonymous
-  files: `O_TMPFILE` in the state directory, `memfd` where the filesystem
-  refuses it. Measured on 2026-10-31 (VM `secrets` suite): the overlayfs
-  root of a Docker container refuses `O_TMPFILE` (`EOPNOTSUPP`) on Ubuntu
-  24.04's kernel 6.8 (and on 22.04's 5.15, see the suite's results), so
-  every pulled blob and encoded layer sits in memory, counted against the
-  container's memory limit; a large image can then be killed by the OOM
-  killer. A volume mounted at the state directory (ext4, xfs, tmpfs) takes
-  `O_TMPFILE`, its files as anonymous as on any filesystem.
-- **Options:** (a) keep `memfd` and document the volume (and a warning at
-  start when `memfd` is in use under a cgroup memory limit); (b) refuse
-  kaniko mode on `/` without `O_TMPFILE` unless a flag accepts memory;
-  (c) a named file unlinked at once, which leaves a window a `RUN` running
-  at that moment could use (ruled out by ADR-0051).
-- **Recommendation:** (a): it keeps the default setup flag-free and the
-  state unreachable; the cost is memory only where no volume is mounted.
-- **Interim:** (a) without the warning: `memfd`, with an `info` log line
-  when the fallback starts (`rnk_store`).
-- **Raised:** 2026-10-31
-
-### Q-350: How does kaniko mode on `/` keep a stage's files out of `RUN`'s reach?
-
-- **Blocks:** ADR-0051's work item; **Area:** `rnk-snapshot`, `rnk-store`
-- **Context:** sequential kaniko mode keeps what later stages read (`COPY
-  --from` sources, a stage built `FROM`, a `COPY --from=<image>`) in
-  `<state>/builds/<id>/kept`, as directories. On `/` that is in the state
-  directory, which a `RUN` can read and write. ADR-0051 decided that
-  state on `/` lives in anonymous files held by descriptor (`O_TMPFILE`,
-  `memfd_create` after a kernel 5.15 measurement); those primitives are
-  not built yet.
-- **Options:** (a) keep each kept tree as a tar in an anonymous file and
-  unpack it for the reader (`COPY --from` reads the tar, `FROM` extracts
-  it into the root); (b) keep the directories, as now, and accept that a
-  `RUN` reaches them like the rest of the state directory.
-- **Recommendation:** (a), as ADR-0051 says for all state on `/`; the
-  keep area is behind `StageRootfs::keep` and `Snapshotter::prepare_source`,
-  so only `rnk-snapshot`'s kaniko root changes.
-- **Interim:** (b), on `feat/kaniko-copy-from`: directories in
-  `<state>/builds/<id>/kept`, deleted with their stage or the build.
-- **Raised:** 2026-10-31
-
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?
@@ -604,6 +560,25 @@ Entry format:
   would otherwise run in a bare `chroot` on the host (the options were (a)
   refuse, (b) an opt-in flag, (c) a warning). Recorded in
   [ADR-0050](adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md).
+
+### Q-340: Where do kaniko mode's anonymous files live when the container's root has no O_TMPFILE?
+
+- **Answer (2026-11-01):** the maintainer asked for ranikust's memory to be
+  as small as possible, safely ("Làm 1 và 2 đi. Làm sao tối ưu bộ nhớ nhất
+  và an toàn là được"): on disk. Where `O_TMPFILE` is refused, a file made
+  by a random name and unlinked at once, only while no `RUN` process
+  exists (a fence in the store); `memfd` is the last fallback, with a
+  warning. Streaming layers (option 1) is ADR-0055. Recorded in
+  [ADR-0056](adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md).
+
+### Q-350: How does kaniko mode on `/` keep a stage's files out of `RUN`'s reach?
+
+- **Answer (2026-11-01):** option (a), as ADR-0051 decided for all state on
+  `/`: a kept stage is a plain tar in an anonymous file, an image read by
+  `COPY --from` stays its blobs, and a reader's view is unpacked in the
+  state directory only while no `RUN` runs and deleted before the next
+  instruction. Recorded in
+  [ADR-0056](adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

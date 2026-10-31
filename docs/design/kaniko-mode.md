@@ -41,14 +41,17 @@ overlay mode).
   `<state>/builds/<id>/rootfs` (ADR-0050).
 - On `/`, a `RUN` reaches nothing of ranikust's ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)):
   - the store keeps nothing with a path: `Store::open_anonymous`; pulled
-    blobs and encoded layers are anonymous files (`O_TMPFILE` in the state
-    directory, `memfd` where the filesystem refuses it: a container's
-    overlayfs root on kernel 6.8, measured, so in memory unless a volume
-    is mounted there [open: Q-340]), held by
-    descriptor and named `/proc/self/fd/<n>` to ranikust's own code; the
-    state directory stays empty; what must outlive the emptying of the
-    root (a kept tree) goes the same way, as a tar in
-    `Store::anonymous_file`, re-extracted when needed;
+    blobs and encoded layers are anonymous files on disk, held by
+    descriptor and named `/proc/self/fd/<n>` to ranikust's own code
+    ([ADR-0056](../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md)):
+    `O_TMPFILE` in the state directory, else (a container's overlayfs
+    root, kernels 6.8 and 5.15, measured) a file made by a random name and
+    unlinked at once, only while no `RUN` process exists: the store's
+    fence keeps names and `RUN`s apart (`Store::enter_run` around each
+    `RUN`, `Store::named_window` for a name); `memfd` only when no file can
+    be made on disk. The state directory holds no name while a `RUN` runs;
+    what must outlive the emptying of the root (a kept stage) is a tar in
+    an anonymous file (`Store::scratch_file`);
   - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
     need `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers);
   - the `RUN` child drops every capability outside Docker's defaults from
@@ -197,9 +200,14 @@ settles them (Q-024):
     (`Snapshotter::prepare_source`), never into the shared root.
 
   A kept copy is deleted when its stage is released at the end of the
-  build, with the build directory otherwise. On `/` the keep area is a
-  directory a `RUN` can reach, as the state directory is, until ADR-0051
-  moves state out of its reach [open: Q-350].
+  build, with the build directory otherwise. On `/` (ADR-0056) a kept
+  stage is a plain tar in an anonymous file, written by a metadata-only
+  walk and the walk's exporter, and a `COPY --from=<image>` stays its
+  blobs; a reader's view is unpacked into a directory of the state
+  directory named by the store, inside a fence window, and deleted before
+  the next instruction of any stage (`begin_layer`, `prepare`, `keep`,
+  `release`, the end of the build); `FROM` a kept tar extracts it into
+  the emptied root, device nodes and FIFOs left out (ADR-0041).
 - **Refused:** kaniko mode without root, per-stage directories (task 9)
   and `--parallel-stages` (task 10), each with its reason.
 

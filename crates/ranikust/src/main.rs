@@ -439,7 +439,7 @@ fn kaniko(
 /// stages read of earlier ones is kept in `<build_dir>/kept`, made here,
 /// private to the build; on `/` (an anonymous store) as tars in the
 /// store's anonymous files, unpacked only for a reader in the state
-/// directory (ADR-0055).
+/// directory (ADR-0056).
 fn kaniko_snapshotter(
     config: &BuildConfig,
     root: rnk_rootfs::RootPath,
@@ -476,7 +476,7 @@ fn kaniko_snapshotter(
     if store.is_anonymous() {
         // Nothing is kept by name: the keep area is the state directory,
         // on the ignore list, for the directories a `COPY --from` reads
-        // from while no RUN runs (ADR-0055).
+        // from while no RUN runs (ADR-0056).
         let state = store.state_dir();
         let kept = rnk_rootfs::RootPath::open(state)
             .map_err(|e| fail(&format!("opening {}", state.display()), &e))?;

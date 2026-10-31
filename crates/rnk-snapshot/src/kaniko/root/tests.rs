@@ -49,7 +49,7 @@ impl Fixture {
 
     /// As [`Fixture::at`] with `/`, keeping stages as tars in an anonymous
     /// store on the state directory, which is also the keep area, as on
-    /// `/` (ADR-0055).
+    /// `/` (ADR-0056).
     fn tars() -> (Self, Arc<Store>) {
         let f = Self::at(Some("/"));
         let state = f.host.join("state");

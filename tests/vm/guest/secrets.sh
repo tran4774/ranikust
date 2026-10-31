@@ -22,7 +22,12 @@
 # Scenarios: `pid1` (ranikust is the container's PID 1), `ptrace` (the same
 # with --cap-add SYS_PTRACE: the RUN must not get it), `shell` (started by
 # `sh -c`, as a CI script would). Also measures whether the container's
-# overlayfs takes O_TMPFILE, and whether ranikust fell back to memfd.
+# overlayfs takes O_TMPFILE, and how ranikust made its state files
+# (O_TMPFILE, a name unlinked at once, or memfd).
+#
+# Then `memlimit` (ADR-0056): a build whose state (a 512 MiB layer) exceeds
+# the container's memory limit (--memory 256m, no swap) must succeed: the
+# state files are on disk, never in memfd.
 set -euo pipefail
 cd "$HOME/rnk"
 # shellcheck disable=SC1091
@@ -129,12 +134,40 @@ for s in pid1 ptrace shell; do
   fi
   grep -q -- '--build-arg NPM_TOKEN=' "$OUT/$s.log" ||
     { echo "error: scenario $s: no warning for the secret-looking --build-arg" >&2; status=1; }
-  if grep -q 'state is kept in memory (memfd)' "$OUT/$s.log"; then
-    echo "$s: state in memfd (no O_TMPFILE)"
+  if grep -q 'state in memory (memfd)' "$OUT/$s.log"; then
+    echo "$s: state in memfd"
+  elif grep -q 'made by a name unlinked at once' "$OUT/$s.log"; then
+    echo "$s: state on disk, files named then unlinked at once (no O_TMPFILE)"
   else
     echo "$s: state in O_TMPFILE files"
   fi
 done
+# memlimit: state larger than the container's memory, on disk.
+sudo mkdir -m 755 "$W/big"
+sudo tee "$W/big/Dockerfile" >/dev/null <<EOF
+FROM $IMAGE
+RUN head -c 512M /dev/urandom > /big.bin
+RUN true
+EOF
+mo="$W/out-memlimit" && sudo rm -rf "$mo" && sudo mkdir -m 755 "$mo"
+rc=0
+sudo docker run --rm --memory 256m --memory-swap 256m \
+  -v "$RNK:/ranikust/bin/ranikust:ro" -v "$W/big:/ranikust/ctx:ro" -v "$mo:/ranikust/out" \
+  -v /etc/ssl/certs:/etc/ssl/certs:ro "$IMAGE" \
+  /ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx --no-push \
+  --oci-layout-path /ranikust/out/oci >"$OUT/memlimit.log" 2>&1 || rc=$?
+echo "$rc" >"$OUT/memlimit.rc"
+if [ "$rc" != 0 ] || ! grep -qE '^sha256:[0-9a-f]{64}$' "$OUT/memlimit.log"; then
+  echo "error: memlimit: the build failed (exit $rc; 137 is the OOM killer), see $OUT/memlimit.log" >&2
+  tail -20 "$OUT/memlimit.log" >&2
+  status=1
+elif grep -q 'state in memory (memfd)' "$OUT/memlimit.log"; then
+  echo "error: memlimit: state fell back to memfd" >&2
+  status=1
+else
+  echo "memlimit: a 512 MiB layer built under --memory 256m"
+fi
+
 grep -q 'holds DOCKER_AUTH_CONFIG' "$OUT/shell.log" ||
   { echo "error: scenario shell: no warning about the shell holding DOCKER_AUTH_CONFIG" >&2; status=1; }
 ! grep -q 'holds DOCKER_AUTH_CONFIG' "$OUT/pid1.log" ||

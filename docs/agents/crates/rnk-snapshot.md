@@ -56,6 +56,10 @@ impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>;
 // kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
 impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions,
         kept: RootPath) -> Self;                   // kept: <state>/builds/<id>/kept, the keep area
+// Kaniko::keep_in_anonymous_files(&self, store: Arc<Store>) -> Result<()>: on `/` (ADR-0056)
+//   kept stages are tars in the store's anonymous files and `kept` is the state directory,
+//   where a reader's view is unpacked inside a fence window and deleted before the next
+//   instruction.
     pub fn finish(&self) -> Result<bool>; }        // end of build: empties a root off `/` a stage changed; never /
 // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
 // prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /

@@ -162,9 +162,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   root.
 
 - Kaniko mode on a container's `/` keeps ranikust's state and credentials
-  out of `RUN`'s reach: pulled and encoded layers are files without a name
-  (`O_TMPFILE`, or `memfd` where the filesystem lacks it) and the state
-  directory stays empty; ranikust is not dumpable, so `/proc/<pid>/` of
+  out of `RUN`'s reach: pulled and encoded layers, and stages kept for a
+  later `COPY --from` or `FROM` (as tars), are files without a name, on
+  disk rather than in the container's memory (`O_TMPFILE`, or a name
+  unlinked at once while no `RUN` runs where the filesystem lacks it, as a
+  container's overlay root does; `memfd` only as a last resort), and the
+  state directory holds nothing a `RUN` could read; ranikust is not dumpable, so `/proc/<pid>/` of
   ranikust (descriptors, environment, memory) is closed to a `RUN`; `RUN`
   loses every capability outside Docker's defaults, and a container that
   grants `CAP_SYS_PTRACE` without `CAP_SETPCAP` is refused; processes a

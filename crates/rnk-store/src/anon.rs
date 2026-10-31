@@ -1,6 +1,6 @@
 //! Files without a name, for a store that keeps nothing a `RUN` can reach
 //! (kaniko mode on `/`, ADR-0051), kept on disk rather than in memory
-//! (Q-340, ADR-0055).
+//! (Q-340, ADR-0056).
 //!
 //! There a `RUN` runs as root on ranikust's own `/`, in its PID namespace:
 //! it can read any file that has a path. An anonymous file has none. Three

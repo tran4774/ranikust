@@ -723,7 +723,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 return Err(Error::Cancelled);
             };
             // In kaniko mode on `/`, no named state exists on disk while
-            // the RUN's processes do, nor is any made (Q-340, ADR-0055).
+            // the RUN's processes do, nor is any made (Q-340, ADR-0056).
             let fence = match b.cx.store.enter_run() {
                 Ok(fence) => fence,
                 Err(e) => {

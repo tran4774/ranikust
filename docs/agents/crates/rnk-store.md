@@ -41,7 +41,11 @@ impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
     pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE|O_EXCL, memfd with MFD_NOEXEC_SEAL fallback) named /proc/self/fd/<n>, refused unless /proc/self/fd is procfs; layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
-    pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers, kept trees as tars (COPY --from on /)
+    pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers
+    pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (a kept stage's tar), gone with it
+    pub fn enter_run(&self) -> Result<RunGuard>;        // ADR-0056: held around each RUN; waits until no name is on disk (no-op when persistent)
+    pub fn named_window(&self) -> Result<NamedGuard>;   // ADR-0056: a name may exist while held; waits for RUNs; fails inside one
+    pub fn scratch_name(&self) -> Result<String>;       // ANON_PREFIX + 128 random bits; removed by the next open_anonymous if left
     pub fn state_dir(&self) -> &Path;                   // canonical
     pub fn build_id(&self) -> &str;
     pub fn build_dir(&self) -> &Path;                   // builds/<id>, created by open

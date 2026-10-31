@@ -28,7 +28,7 @@
 //!   ([`Snapshotter::prepare_source`]).
 //! - On `/`, where a `RUN` reads every file with a name (ADR-0051), as a
 //!   plain tar in an anonymous file of the store, and an image as its
-//!   layers' blobs (ADR-0055, Q-350). A `COPY --from` reads either from a
+//!   layers' blobs (ADR-0056, Q-350). A `COPY --from` reads either from a
 //!   directory unpacked in the state directory, under a name the store
 //!   gives, inside a window of the store's fence: no `RUN` runs while it
 //!   exists, and the next instruction of any stage deletes it first
@@ -214,7 +214,7 @@ impl Kaniko {
 
 impl Kaniko {
     /// Keeps stages as tars in `store`'s anonymous files instead of
-    /// directories (kaniko mode on `/`, ADR-0055); the keep area given to
+    /// directories (kaniko mode on `/`, ADR-0056); the keep area given to
     /// [`Kaniko::new`] then holds only short-lived unpacked directories and
     /// must be the state directory, on the ignore list.
     ///
@@ -457,7 +457,7 @@ enum Kept {
         /// is built on the kept copy on a root other than `/`.
         root_meta: Option<rnk_rootfs::Meta>,
     },
-    /// A plain tar of the stage in an anonymous file (`/`, ADR-0055).
+    /// A plain tar of the stage in an anonymous file (`/`, ADR-0056).
     Tar { file: File },
     /// The layers of a `COPY --from` image, unpacked when read (`/`).
     Image { layers: Vec<KanikoLayer> },
