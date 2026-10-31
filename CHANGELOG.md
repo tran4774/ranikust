@@ -79,7 +79,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   container overlay mode needs the state directory on a volume: overlay
   cannot use the container's own overlay root, and ranikust says so.
 - The state directory: `ranikust` marks it with `.ranikust-state` and
-  refuses a non-empty directory without that mark, `/` included, before
+  refuses a non-empty directory without that mark, `/` and empty system
+  directories such as `/mnt` or `/srv` included, before
   changing anything in it, so a mistyped `--state-dir` is never written
   to, cleaned up or made private. A directory marked `.ranikust-root` by
   an earlier ranikust is refused too: delete it first.

@@ -59,7 +59,10 @@ or emptied.
   directory must be a real directory owned by root and not writable by
   group or others, and either new, empty, or marked by the store's own
   `.ranikust-state` file (a directory marked only with the old
-  `.ranikust-root` is refused, named); `/` never. Only then does ranikust
+  `.ranikust-root` is refused, named); `/` never, and an unmarked one
+  never one of thirty system directories (`/mnt`, `/srv`, `/opt`, `/usr`,
+  `/var/lib`…, by device and inode), which `0700` would lock other users
+  out of; an empty volume mounted at any other path is taken. Only then does ranikust
   set its mode, and that of `builds/`, to `0700` and check it reads back
   so: it is the
   private directory every root and upper directory of a build lies below.

@@ -162,6 +162,58 @@ fn a_directory_that_is_not_a_state_directory_keeps_its_mode() {
 }
 
 #[test]
+fn a_system_directory_is_never_taken_unmarked() {
+    // Whichever of them exist here, empty or not, as any user: refused
+    // without a change of mode.
+    for sys in SYSTEM_DIRS {
+        let dir = Path::new(sys);
+        let Ok(before) = fs::metadata(dir) else {
+            continue;
+        };
+        assert!(prepare(dir).is_err(), "{sys}");
+        let after = fs::metadata(dir).unwrap();
+        assert_eq!(
+            before.permissions().mode(),
+            after.permissions().mode(),
+            "{sys}"
+        );
+    }
+}
+
+#[test]
+fn the_system_directory_check_itself_refuses_them() {
+    // The check `prepare` runs past the owner rule, reading only: every
+    // system directory present is refused, an empty one by its identity.
+    for sys in SYSTEM_DIRS {
+        let Ok(fd) = open_dir(Path::new(sys), OFlags::RDONLY) else {
+            continue;
+        };
+        let Err(why) = accept_existing(&fd, Path::new(sys)) else {
+            panic!("{sys} accepted");
+        };
+        assert!(
+            why.0.contains("system directory") || why.0.contains("not a state directory"),
+            "{sys}: {}",
+            why.0
+        );
+    }
+}
+
+#[test]
+fn an_empty_directory_elsewhere_is_taken() {
+    // A fresh volume mounted at any other path: accepted, made private.
+    let tmp = private_tempdir();
+    let vol = tmp.path().join("vol");
+    fs::create_dir(&vol).unwrap();
+    fs::set_permissions(&vol, fs::Permissions::from_mode(0o755)).unwrap();
+    prepare(&vol).unwrap();
+    assert_eq!(
+        fs::metadata(&vol).unwrap().permissions().mode() & 0o7777,
+        0o700
+    );
+}
+
+#[test]
 fn the_root_directory_is_never_a_state_directory() {
     for root in ["/", "//", "/usr/.."] {
         let why = prepare(Path::new(root)).unwrap_err().0;

@@ -205,6 +205,10 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `src/cli/tests.rs`: the flags; kaniko's old spellings and `--force`
   refused with their reasons, `--workdir` unknown. `tests/cli.rs`: the
   kaniko flags in kaniko and overlay mode.
+- T0 built, `src/statedir/tests.rs` also: `/`, every system directory
+  present (unmarked, by identity) and a non-empty unmarked directory
+  refused with its mode kept; an old `.ranikust-root` named; a marked or
+  empty directory elsewhere taken and made `0700`, `builds/` too.
 - T0 built, `src/statedir/tests.rs`: the default chain and root's sticky
   `/tmp` pass; a state directory of another user or writable by others, a
   parent another user owns (a home directory), may write, or a foreign

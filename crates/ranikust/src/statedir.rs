@@ -36,8 +36,9 @@ const PRIVATE_STATE: &str = "use the default /var/lib/ranikust, or a --state-dir
 ///    by descriptor (`..`), never by path;
 /// 3. the state directory, opened without following a symlink, must be
 ///    empty (just created, or empty already) or hold the store's regular
-///    marker file [`rnk_store::STATE_MARKER`]: any other directory is not
-///    taken, so a mistyped `--state-dir=/usr` is left as it is;
+///    marker file [`rnk_store::STATE_MARKER`], and if unmarked must not be
+///    one of [`SYSTEM_DIRS`]: any other directory is not taken, so a
+///    mistyped `--state-dir=/usr` or `/mnt` is left as it is;
 /// 4. the whole chain again from its descriptor: owned by the effective
 ///    user, not writable by group or others;
 /// 5. then its mode is set to `0700` when group or others may search it,
@@ -62,7 +63,7 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
     }
     check_chain(&walk(&fd, existing)?, euid, is_state)?;
     if is_state {
-        check_contents(&open_dir(state_dir, OFlags::RDONLY)?, state_dir)?;
+        accept_existing(&open_dir(state_dir, OFlags::RDONLY)?, state_dir)?;
     }
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -77,7 +78,7 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
     // Readable, so it can be listed and its mode set through it.
     let fd = open_dir(state_dir, OFlags::RDONLY)?;
     refuse_slash(&fd, state_dir)?;
-    check_contents(&fd, state_dir)?;
+    accept_existing(&fd, state_dir)?;
     check_chain(&walk(&fd, state_dir)?, euid, true)?;
     make_private(&fd, state_dir, euid)?;
     match rustix::fs::openat(
@@ -109,9 +110,66 @@ fn refuse_slash(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
     Ok(())
 }
 
+/// Directories an unmarked state directory must not be: emptied of nothing,
+/// but made `0700`, they would lock other users out (`--state-dir=/mnt` on
+/// a minimal host). Compared by `(dev, ino)`, so a symlink or another name
+/// of one is caught too; a fresh volume mounted elsewhere passes.
+pub(crate) const SYSTEM_DIRS: [&str; 30] = [
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/home",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/media",
+    "/mnt",
+    "/nix",
+    "/opt",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/snap",
+    "/srv",
+    "/sys",
+    "/tmp",
+    "/usr",
+    "/usr/bin",
+    "/usr/lib",
+    "/usr/local",
+    "/var",
+    "/var/cache",
+    "/var/lib",
+    "/var/log",
+    "/var/tmp",
+];
+
+/// [`check_contents`], and for a directory without the store's marker,
+/// not one of [`SYSTEM_DIRS`].
+fn accept_existing(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
+    if check_contents(fd, state_dir)? {
+        return Ok(());
+    }
+    let me = rustix::fs::fstat(fd).map_err(|e| stat_err(state_dir, e))?;
+    let system = SYSTEM_DIRS.iter().find(|sys| {
+        rustix::fs::stat(**sys).is_ok_and(|st| (st.st_dev, st.st_ino) == (me.st_dev, me.st_ino))
+    });
+    match system {
+        Some(sys) => Err(Refused(format!(
+            "the state directory {} is the system directory {sys}: ranikust would make it \
+             mode 0700; {PRIVATE_STATE}",
+            state_dir.display()
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Accepts an empty directory or one holding the store's regular marker
-/// file; refuses anything else unchanged.
-fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
+/// file, telling which (`true`: marked); refuses anything else unchanged.
+fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
     let err = |e: Errno| Refused(format!("cannot list {}: {e}", state_dir.display()));
     let mut names = Vec::new();
     for entry in rustix::fs::Dir::read_from(fd).map_err(err)? {
@@ -121,14 +179,14 @@ fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
         }
     }
     if names.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let marker = rnk_store::STATE_MARKER;
     if names.iter().any(|n| n == marker.as_bytes()) {
         let st = rustix::fs::statat(fd, marker, AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|e| stat_err(state_dir, e))?;
         if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
-            return Ok(());
+            return Ok(true);
         }
     }
     let earlier = if names.iter().any(|n| n == b".ranikust-root") {

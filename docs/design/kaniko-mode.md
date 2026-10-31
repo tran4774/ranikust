@@ -270,8 +270,9 @@ written, `ranikust::statedir::prepare` checks the state directory:
    it; then the whole chain is checked again from its descriptor.
 3. Before its mode is touched: never `/`, and only a directory just
    created, empty, or holding the store's regular `.ranikust-state`
-   marker (Q-111); one marked only with the old `.ranikust-root` is
-   refused, named. After `chmod 0700`, the mode must read back so;
+   marker (Q-111), and, unmarked, none of the thirty system directories of
+   `statedir::SYSTEM_DIRS` (`/mnt`, `/srv`, `/opt`…, by device and inode);
+   one marked only with the old `.ranikust-root` is refused, named. After `chmod 0700`, the mode must read back so;
    `builds/` likewise.
 
 `ranikust` holds kaniko mode on `/` with `flock` on a descriptor of `/`
