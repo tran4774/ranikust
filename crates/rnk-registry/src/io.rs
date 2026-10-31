@@ -22,6 +22,12 @@ use tokio::io::{AsyncSeekExt as _, AsyncWrite, AsyncWriteExt as _};
 pub trait BlobSink: AsyncWrite + Unpin + Send {
     /// Discards everything written so far, before a retry.
     fn reset(&mut self) -> impl Future<Output = io::Result<()>> + Send;
+
+    /// Whether [`BlobSink::reset`] can still succeed: a transfer into a
+    /// sink that cannot restart is not retried, and its first error stands.
+    fn can_restart(&self) -> bool {
+        true
+    }
 }
 
 impl BlobSink for tokio::fs::File {
@@ -66,8 +72,12 @@ impl AsyncWrite for PipeSink {
 }
 
 impl BlobSink for PipeSink {
+    fn can_restart(&self) -> bool {
+        self.written == 0
+    }
+
     async fn reset(&mut self) -> io::Result<()> {
-        if self.written == 0 {
+        if self.can_restart() {
             return Ok(());
         }
         Err(io::Error::new(
@@ -157,13 +167,17 @@ impl BlobBody {
             Self::Remote(remote) => {
                 let RemoteBlob { client, from, blob } = &**remote;
                 let handle = tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
-                let (reader, finished) = pull_into_pipe(&handle, client, from, blob)?;
+                let (reader, finished, pull) = pull_into_pipe(&handle, client, from, blob)?;
                 // A failed pull (digest, size, connection) ends the body with
-                // that error after its bytes, never with a clean end.
-                let pulled = stream::once(finished).filter_map(|r| async move {
-                    outcome(r)
-                        .err()
-                        .map(|e| Err(OciDistributionError::IoError(e)))
+                // that error after its bytes, never with a clean end. The
+                // body owns the pull: dropped, it stops it.
+                let pulled = stream::once(finished).filter_map(move |r| {
+                    let _owned = &pull;
+                    async move {
+                        outcome(r)
+                            .err()
+                            .map(|e| Err(OciDistributionError::IoError(e)))
+                    }
                 });
                 let bytes =
                     tokio_util::io::ReaderStream::with_capacity(reader, FILE_CHUNK).map(move |r| {
@@ -196,27 +210,66 @@ type PullDone = tokio::sync::oneshot::Receiver<Result<(), crate::Error>>;
 /// The pull's future is not `Send` (its retry closures), so it can be
 /// neither a task nor part of a `Send` stream; a thread blocking on it is.
 /// The pull is retried only until the first byte enters the pipe: what
-/// was read cannot be taken back.
+/// was read cannot be taken back. The returned [`PipePull`] owns the
+/// thread: dropped, it stops the pull and waits for the thread, so no pull
+/// outlives its reader, nor the runtime the reader lives under.
 fn pull_into_pipe(
     handle: &tokio::runtime::Handle,
     client: &Arc<crate::Client>,
     from: &rnk_oci::Reference,
     blob: &rnk_oci::Descriptor,
-) -> io::Result<(tokio::io::DuplexStream, PullDone)> {
+) -> io::Result<(tokio::io::DuplexStream, PullDone, PipePull)> {
     let (pipe, reader) = tokio::io::duplex(PIPE_BYTES);
     let mut writer = PipeSink { pipe, written: 0 };
     let (done, finished) = tokio::sync::oneshot::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let (client, from, blob) = (Arc::clone(client), from.clone(), blob.clone());
     let handle = handle.clone();
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("rnk-pull-pipe".to_owned())
         .spawn(move || {
-            let r = handle.block_on(client.pull_blob(&from, &blob, &mut writer));
+            let r = handle.block_on(async {
+                tokio::select! {
+                    biased;
+                    // Sent or dropped: the reader is gone.
+                    _ = stopped => None,
+                    r = client.pull_blob(&from, &blob, &mut writer) => Some(r),
+                }
+            });
             drop(writer);
-            // The reader may have given up and gone: nobody waits then.
-            let _unread = done.send(r);
+            if let Some(r) = r {
+                // The reader may have given up and gone: nobody waits then.
+                let _unread = done.send(r);
+            }
         })?;
-    Ok((reader, finished))
+    Ok((
+        reader,
+        finished,
+        PipePull {
+            stop: Some(stop),
+            thread: Some(thread),
+        },
+    ))
+}
+
+/// The thread of a pull into a pipe: stopped and joined when dropped.
+#[derive(Debug)]
+struct PipePull {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for PipePull {
+    fn drop(&mut self) {
+        // Closing the channel wakes the thread, which drops the pull at its
+        // next poll; a finished pull has nothing left to stop.
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::warn!("the thread of a streamed pull panicked");
+        }
+    }
 }
 
 /// What a finished pull into a pipe means to its reader.
@@ -239,6 +292,12 @@ pub struct BlobReader {
     handle: tokio::runtime::Handle,
     reader: tokio::io::DuplexStream,
     done: Option<PullDone>,
+    /// The pull's failure, reported again by every later read: a reader
+    /// that failed never reads to a clean end.
+    failed: Option<(io::ErrorKind, String)>,
+    /// Declared last: dropped after the pipe's reading end, which unblocks
+    /// a pull waiting to write.
+    _pull: PipePull,
 }
 
 impl BlobReader {
@@ -248,18 +307,24 @@ impl BlobReader {
         from: &rnk_oci::Reference,
         blob: &rnk_oci::Descriptor,
     ) -> io::Result<Self> {
-        let (reader, done) = pull_into_pipe(handle, client, from, blob)?;
+        let (reader, done, pull) = pull_into_pipe(handle, client, from, blob)?;
         Ok(Self {
             handle: handle.clone(),
             reader,
             done: Some(done),
+            failed: None,
+            _pull: pull,
         })
     }
-}
 
-impl std::io::Read for BlobReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    fn read_once(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         use tokio::io::AsyncReadExt as _;
+        // Blocking inside a runtime would panic: refuse instead.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(io::Error::other(
+                "a streamed blob is read from a thread inside the async runtime",
+            ));
+        }
         let n = self.handle.block_on(self.reader.read(buf))?;
         if n == 0
             && let Some(done) = self.done.take()
@@ -267,6 +332,17 @@ impl std::io::Read for BlobReader {
             outcome(done.blocking_recv())?;
         }
         Ok(n)
+    }
+}
+
+impl std::io::Read for BlobReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some((kind, message)) = &self.failed {
+            return Err(io::Error::new(*kind, message.clone()));
+        }
+        self.read_once(buf).inspect_err(|e| {
+            self.failed = Some((e.kind(), e.to_string()));
+        })
     }
 }
 

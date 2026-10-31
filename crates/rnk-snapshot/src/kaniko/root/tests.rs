@@ -284,6 +284,12 @@ fn a_streamed_base_layer_whose_source_fails_at_its_end_fails_the_stage() {
         .unwrap();
     let e = f.kaniko.prepare(Base::Image(&[layer])).unwrap_err();
     assert!(format!("{e:?}").contains("digest mismatch"), "{e:?}");
+    // The failed layer's entries reached the root before its digest was
+    // checked; the next stage's root holds none of them.
+    let good = f.layer("l2", &[("b", b"b")]);
+    let root = f.kaniko.prepare(Base::Image(&[good])).unwrap();
+    assert_eq!(f.names(), ["b", "state"]);
+    root.release().unwrap();
 }
 
 #[test]
