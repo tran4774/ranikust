@@ -40,6 +40,11 @@ pub enum Whiteouts {
     /// `user.overlay.opaque=y` on its directory, and content xattrs named
     /// `user.overlay.*` are escaped as `user.overlay.overlay.*` (Linux 6.7).
     Overlay,
+    /// No whiteouts: every name is taken literally, a file named
+    /// `.wh.<x>` included, for a tar that is a snapshot of a tree rather
+    /// than an OCI layer (a kaniko-mode stage kept for a later one,
+    /// ADR-0056). Otherwise as [`Whiteouts::Apply`].
+    Literal,
 }
 
 const WHITEOUT_PREFIX: &[u8] = b".wh.";
@@ -111,6 +116,17 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// cannot be told (`/proc/self/fd` gives a path outside the root).
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
     extract_with(dst, tar, Whiteouts::Apply, &[], Some(keep)).map(drop)
+}
+
+/// [`extract_live`] with [`Whiteouts::Literal`]: a snapshot of a tree, not
+/// a layer, written back into a live root (a kaniko-mode stage built on a
+/// kept one, ADR-0056); a name `.wh.<x>` is a file.
+///
+/// # Errors
+///
+/// As [`extract_live`].
+pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
+    extract_with(dst, tar, Whiteouts::Literal, &[], Some(keep)).map(drop)
 }
 
 /// Extracts the plain tar stream `tar` into `dst` in the overlay form
@@ -308,6 +324,7 @@ impl Extractor<'_> {
         let path = path::clean(&raw).ok_or_else(|| refuse("the name leaves the root"))?;
 
         if let Some(name) = path.file_name()
+            && self.wh != Whiteouts::Literal
             && name.as_bytes().starts_with(WHITEOUT_PREFIX)
         {
             return self.whiteout(&path, name.as_bytes(), &raw);
@@ -671,7 +688,9 @@ impl Extractor<'_> {
                 escaped.extend_from_slice(&name[OVERLAY_XATTR.len()..]);
                 OsStr::from_bytes(&escaped).to_owned()
             }
-            Whiteouts::Overlay | Whiteouts::Apply => OsStr::from_bytes(name).to_owned(),
+            Whiteouts::Overlay | Whiteouts::Apply | Whiteouts::Literal => {
+                OsStr::from_bytes(name).to_owned()
+            }
         }
     }
 
@@ -805,6 +824,7 @@ impl Extractor<'_> {
                     meta::apply(&h, &m, &dir)
                 }
                 Whiteouts::Apply => self.apply_opaque(&dir, raw),
+                Whiteouts::Literal => Err(literal_whiteout(raw)),
             };
         }
         if name.starts_with(AUFS_META_PREFIX) {
@@ -835,6 +855,7 @@ impl Extractor<'_> {
                 )
                 .map_err(|e| io_err("mknod whiteout", &target, e))
             }
+            Whiteouts::Literal => Err(literal_whiteout(raw)),
             Whiteouts::Apply => {
                 if let Some(live) = &mut self.live {
                     live.last = None;
@@ -1173,6 +1194,16 @@ fn mode_name(wh: Whiteouts) -> &'static str {
     match wh {
         Whiteouts::Apply => "Apply",
         Whiteouts::Overlay => "Overlay",
+        Whiteouts::Literal => "Literal",
+    }
+}
+
+/// [`Whiteouts::Literal`] never reaches the whiteout code: its names are
+/// files. Kept as an error rather than a panic.
+fn literal_whiteout(raw: &Path) -> Error {
+    Error::Entry {
+        path: raw.to_owned(),
+        reason: "a whiteout in a literal extraction".to_owned(),
     }
 }
 

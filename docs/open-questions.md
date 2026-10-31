@@ -402,49 +402,43 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-340: Where do kaniko mode's anonymous files live when the container's root has no O_TMPFILE?
+### Q-360: What does kaniko mode on `/` do after an earlier build in the container was cut short?
 
 - **Blocks:** nothing yet; **Area:** `rnk-store`, `ranikust`
-- **Context:** ADR-0051 keeps kaniko mode's state on `/` in anonymous
-  files: `O_TMPFILE` in the state directory, `memfd` where the filesystem
-  refuses it. Measured on 2026-10-31 (VM `secrets` suite): the overlayfs
-  root of a Docker container refuses `O_TMPFILE` (`EOPNOTSUPP`) on Ubuntu
-  24.04's kernel 6.8 (and on 22.04's 5.15, see the suite's results), so
-  every pulled blob and encoded layer sits in memory, counted against the
-  container's memory limit; a large image can then be killed by the OOM
-  killer. A volume mounted at the state directory (ext4, xfs, tmpfs) takes
-  `O_TMPFILE`, its files as anonymous as on any filesystem.
-- **Options:** (a) keep `memfd` and document the volume (and a warning at
-  start when `memfd` is in use under a cgroup memory limit); (b) refuse
-  kaniko mode on `/` without `O_TMPFILE` unless a flag accepts memory;
-  (c) a named file unlinked at once, which leaves a window a `RUN` running
-  at that moment could use (ruled out by ADR-0051).
-- **Recommendation:** (a): it keeps the default setup flag-free and the
-  state unreachable; the cost is memory only where no volume is mounted.
-- **Interim:** (a) without the warning: `memfd`, with an `info` log line
-  when the fallback starts (`rnk_store`).
-- **Raised:** 2026-10-31
-
-### Q-350: How does kaniko mode on `/` keep a stage's files out of `RUN`'s reach?
-
-- **Blocks:** ADR-0051's work item; **Area:** `rnk-snapshot`, `rnk-store`
-- **Context:** sequential kaniko mode keeps what later stages read (`COPY
-  --from` sources, a stage built `FROM`, a `COPY --from=<image>`) in
-  `<state>/builds/<id>/kept`, as directories. On `/` that is in the state
-  directory, which a `RUN` can read and write. ADR-0051 decided that
-  state on `/` lives in anonymous files held by descriptor (`O_TMPFILE`,
-  `memfd_create` after a kernel 5.15 measurement); those primitives are
-  not built yet.
-- **Options:** (a) keep each kept tree as a tar in an anonymous file and
-  unpack it for the reader (`COPY --from` reads the tar, `FROM` extracts
-  it into the root); (b) keep the directories, as now, and accept that a
-  `RUN` reaches them like the rest of the state directory.
-- **Recommendation:** (a), as ADR-0051 says for all state on `/`; the
-  keep area is behind `StageRootfs::keep` and `Snapshotter::prepare_source`,
-  so only `rnk-snapshot`'s kaniko root changes.
-- **Interim:** (b), on `feat/kaniko-copy-from`: directories in
-  `<state>/builds/<id>/kept`, deleted with their stage or the build.
-- **Raised:** 2026-10-31
+- **Context:** found by the host-safety review of ADR-0056: the fence
+  keeps names away from this build's `RUN` processes only. When an earlier
+  ranikust in the same container was killed mid-`RUN` and was not PID 1,
+  its `RUN`'s processes live on, outside any fence and any sweep, and
+  could open a name in the moment it exists. ranikust sees the trace: its
+  marker `.ranikust-building` left in the state directory, or leftover
+  `.ranikust-anon-*` names.
+  The marker holds the PID namespace and boot id: one from another
+  container or boot is stale and taken over. It covers accidental kills
+  only: a `RUN` can delete the marker and then try to get ranikust killed;
+  leftover names with no marker still count. A `RUN` that failed after
+  its command ran, or was cancelled, also leaves the marker (its sweep may
+  not have finished), so later builds in the container use memory too.
+- **Options:** (a) make no name for that build: state in `memfd`, with a
+  warning saying why and how to avoid it (run ranikust as PID 1, or
+  restart the container), the marker kept for later builds; a `COPY
+  --from` a kept stage or an image on `/`, which needs a named directory,
+  fails the build with that advice; (b) refuse the build; (c) kill every
+  process that is not an ancestor of ranikust, which cannot be done
+  safely: the container's other processes (a CI shell, a sidecar) are not
+  identifiable as the dead build's; (d) make names only when ranikust is
+  PID 1 (no process of a dead build can outlive it there), `memfd`
+  otherwise: safe against a deleted marker too, at a memory cost under a
+  CI shell, the common case.
+- **Recommendation:** (a). The build still succeeds unless it needs a
+  `COPY --from`, and it costs only memory, in a container where something
+  unusual already happened. Choose (d) instead if a `RUN` deleting the
+  marker must be covered too.
+- **Note:** an anonymous store holds an exclusive `flock` on its state
+  directory, so two containers sharing a volume never build on it at the
+  same time (the second is refused): a marker is taken over only from a
+  dead build.
+- **Interim:** (a), on `feat/kaniko-state-on-disk` (`rnk_store::Store::open_anonymous`).
+- **Raised:** 2026-11-01
 
 ### Q-370: Should a built layer be encoded straight into its upload?
 
@@ -621,6 +615,25 @@ Entry format:
   would otherwise run in a bare `chroot` on the host (the options were (a)
   refuse, (b) an opt-in flag, (c) a warning). Recorded in
   [ADR-0050](adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md).
+
+### Q-340: Where do kaniko mode's anonymous files live when the container's root has no O_TMPFILE?
+
+- **Answer (2026-11-01):** the maintainer asked for ranikust's memory to be
+  as small as possible, safely ("Làm 1 và 2 đi. Làm sao tối ưu bộ nhớ nhất
+  và an toàn là được"): on disk. Where `O_TMPFILE` is refused, a file made
+  by a random name and unlinked at once, only while no `RUN` process
+  exists (a fence in the store); `memfd` is the last fallback, with a
+  warning. Streaming layers (option 1) is ADR-0055. Recorded in
+  [ADR-0056](adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md).
+
+### Q-350: How does kaniko mode on `/` keep a stage's files out of `RUN`'s reach?
+
+- **Answer (2026-11-01):** option (a), as ADR-0051 decided for all state on
+  `/`: a kept stage is a plain tar in an anonymous file, an image read by
+  `COPY --from` stays its blobs, and a reader's view is unpacked in the
+  state directory only while no `RUN` runs and deleted at the end of the
+  instruction that read it. Recorded in
+  [ADR-0056](adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

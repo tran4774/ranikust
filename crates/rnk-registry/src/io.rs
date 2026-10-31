@@ -99,12 +99,27 @@ impl BlobSink for Vec<u8> {
 pub enum BlobBody {
     /// Content in memory: a config, a small layer.
     Bytes(Bytes),
+    /// A file reopened through a handle for each attempt, never by a path:
+    /// an anonymous file whose descriptor number could name another file
+    /// once it is released (ADR-0055).
+    Opened(Arc<dyn BlobFile>),
     /// A file, streamed: a layer in the store.
     File(PathBuf),
     /// The same blob in another repository, possibly on another registry,
     /// pulled while it is pushed through a pipe of [`PIPE_BYTES`]: a base
     /// layer that was never kept (ADR-0055).
     Remote(Box<RemoteBlob>),
+}
+
+/// A file that [`BlobBody::Opened`] reopens: a new descriptor read from the
+/// start, or an error once the file is gone.
+pub trait BlobFile: std::fmt::Debug + Send + Sync {
+    /// A new descriptor of the file, at its start.
+    ///
+    /// # Errors
+    ///
+    /// When the file is gone or cannot be reopened.
+    fn open(&self) -> io::Result<std::fs::File>;
 }
 
 /// A blob pushed from another repository: [`BlobBody::Remote`].
@@ -152,8 +167,14 @@ impl BlobBody {
                     .boxed();
                 Ok((body, len))
             }
-            Self::File(path) => {
-                let file = tokio::fs::File::open(path).await?;
+            Self::File(_) | Self::Opened(_) => {
+                let file = if let Self::File(path) = self {
+                    tokio::fs::File::open(path).await?
+                } else if let Self::Opened(handle) = self {
+                    tokio::fs::File::from_std(handle.open()?)
+                } else {
+                    return Err(io::Error::other("not a file body"));
+                };
                 let len = file.metadata().await?.len();
                 let body = tokio_util::io::ReaderStream::with_capacity(file, FILE_CHUNK)
                     .map(move |r| {
@@ -195,6 +216,7 @@ impl BlobBody {
         match self {
             Self::Bytes(_) => "in-memory blob".to_owned(),
             Self::File(path) => path.display().to_string(),
+            Self::Opened(_) => "anonymous file".to_owned(),
             Self::Remote(r) => format!("{} from {}", r.blob.digest, r.from),
         }
     }

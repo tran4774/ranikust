@@ -11,7 +11,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_util::StreamExt as _;
@@ -29,15 +28,15 @@ use crate::layer::{BlobLayer, LayerBytes};
 pub enum Release {
     /// Kept: an output written to a file needs the bytes at the end.
     Keep,
-    /// Released: removed from the build directory, or, for an anonymous
-    /// file, its descriptor closed by `store`.
+    /// Released: removed from `store`'s build directory, or, for an
+    /// anonymous file, released through its handle.
     Free(Arc<Store>),
 }
 
-/// One layer to push.
+/// One layer to push: its bytes are a file, by path or by handle.
 struct Job {
     blob: Descriptor,
-    path: PathBuf,
+    bytes: LayerBytes,
 }
 
 /// Pushes built layers to the destinations while the build runs.
@@ -112,9 +111,9 @@ impl Uploader {
     /// digest) is not sent twice. A layer without a file (streamed from its
     /// registry) is not a built layer and is ignored.
     pub fn submit(&self, layer: &BlobLayer) {
-        let LayerBytes::File(path) = &layer.bytes else {
+        if let LayerBytes::Registry(_) = &layer.bytes {
             return;
-        };
+        }
         let first = self
             .seen
             .lock()
@@ -132,7 +131,7 @@ impl Uploader {
             .clone();
         let job = Job {
             blob: layer.blob.clone(),
-            path: path.clone(),
+            bytes: layer.bytes.clone(),
         };
         // A closed channel means the uploader stopped on an error, which
         // `finish` reports, or was cancelled: the layer will not go.
@@ -141,7 +140,7 @@ impl Uploader {
             None => Some(job),
         };
         if let (Some(job), Release::Free(store)) = (refused, &self.release) {
-            free(store, &job.path);
+            free(store, &job.bytes);
         }
     }
 
@@ -204,7 +203,7 @@ impl Uploads<'_> {
     ) -> Result<BTreeSet<Digest>> {
         let mut running = FuturesUnordered::new();
         // The files of the uploads running, by digest.
-        let mut pending: BTreeMap<Digest, PathBuf> = BTreeMap::new();
+        let mut pending: BTreeMap<Digest, LayerBytes> = BTreeMap::new();
         let mut uploaded = BTreeSet::new();
         let mut open = true;
         let end = loop {
@@ -228,7 +227,7 @@ impl Uploads<'_> {
                 },
                 job = receive.recv(), if open && running.len() < jobs.get() => match job {
                     Some(job) => {
-                        pending.insert(job.blob.digest.clone(), job.path.clone());
+                        pending.insert(job.blob.digest.clone(), job.bytes.clone());
                         running.push(self.upload(job));
                     }
                     None => open = false,
@@ -241,11 +240,11 @@ impl Uploads<'_> {
             drop(running);
             receive.close();
             while let Ok(job) = receive.try_recv() {
-                pending.insert(job.blob.digest, job.path);
+                pending.insert(job.blob.digest, job.bytes);
             }
             if let Release::Free(store) = self.release {
-                for path in pending.values() {
-                    free(store, path);
+                for bytes in pending.values() {
+                    free(store, bytes);
                 }
             }
         }
@@ -256,7 +255,15 @@ impl Uploads<'_> {
     /// mounting it from the first; then its file released.
     async fn upload(&self, job: Job) -> Result<Digest> {
         let span = debug_span!("rnk_builder.upload", bytes = job.blob.size);
-        let body = BlobBody::File(job.path.clone());
+        let body = match &job.bytes {
+            LayerBytes::File(path) => BlobBody::File(path.clone()),
+            LayerBytes::Anon(blob) => BlobBody::Opened(Arc::new(blob.clone())),
+            LayerBytes::Registry(_) => {
+                return Err(Error::Invalid(
+                    "a streamed layer handed to the uploader".to_owned(),
+                ));
+            }
+        };
         let first = self.destinations.first();
         async {
             for destination in self.destinations {
@@ -274,22 +281,28 @@ impl Uploads<'_> {
         .instrument(span)
         .await?;
         if let Release::Free(store) = self.release {
-            free(store, &job.path);
+            free(store, &job.bytes);
         }
         Ok(job.blob.digest)
     }
 }
 
-/// Releases a layer's file: closes an anonymous one, removes one in the
-/// build directory. A file that cannot be removed stays until the build
-/// directory goes: logged, not fatal.
-fn free(store: &Store, path: &Path) {
-    if store.release_anonymous_file(path) {
-        return;
-    }
-    if path.starts_with(store.build_dir())
-        && let Err(e) = std::fs::remove_file(path)
-    {
-        tracing::debug!("keeping the pushed layer {}: {e}", path.display());
+/// Releases a layer's file: an anonymous one through its handle, one in
+/// the build directory removed. A file that cannot be removed stays until
+/// the build directory goes: logged, not fatal. Any other file (a blob of
+/// the store) is left alone.
+fn free(store: &Store, bytes: &LayerBytes) {
+    match bytes {
+        LayerBytes::Anon(blob) => {
+            blob.release();
+        }
+        LayerBytes::File(path) => {
+            if path.starts_with(store.build_dir())
+                && let Err(e) = std::fs::remove_file(path)
+            {
+                tracing::debug!("keeping the pushed layer {}: {e}", path.display());
+            }
+        }
+        LayerBytes::Registry(_) => {}
     }
 }

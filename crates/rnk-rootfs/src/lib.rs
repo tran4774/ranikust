@@ -42,7 +42,9 @@ mod user;
 pub use copy::{CopyOpts, copy, copy_filtered};
 pub use delete::delete_contents;
 pub use error::{Error, Result};
-pub use extract::{Extracted, Whiteouts, extract, extract_live, extract_overlay};
+pub use extract::{
+    Extracted, Whiteouts, extract, extract_live, extract_live_literal, extract_overlay,
+};
 pub use ignore::IgnoreList;
 pub use meta::{FileTime, FileType, Meta, Stat};
 pub use mode::{Chmod, ModeSet};

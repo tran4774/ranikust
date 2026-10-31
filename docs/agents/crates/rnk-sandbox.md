@@ -60,6 +60,7 @@ pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; BareChroot { fake_proc } [design], Phase 2
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
 pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, .. }
+impl Error { pub fn ran_no_command(&self) -> bool; } // before execve: no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
 `run` blocks: `rnk-builder` calls it from a blocking thread, holding a

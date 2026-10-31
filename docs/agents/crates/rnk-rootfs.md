@@ -54,6 +54,7 @@ impl RootPath {
 pub struct Pinned;                                      // built: stat(), read_link() (readlinkat(fd, "")), xattrs() (none for a symlink), open_regular() (reopen of the pinned inode)
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // built: kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
+pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // built: as extract_live with Whiteouts::Literal (a kept kaniko-mode stage, ADR-0056): `.wh.*` names are files
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; copy_file_range
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore; kaniko's ignore list, a refused mount point skipped, not an error)

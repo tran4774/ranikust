@@ -48,6 +48,43 @@ impl Fixture {
         Self { tmp, host, kaniko }
     }
 
+    /// As [`Fixture::at`] with `/`, keeping stages as tars in an anonymous
+    /// store on the state directory, which is also the keep area, as on
+    /// `/` (ADR-0056).
+    fn tars() -> (Self, Arc<Store>) {
+        let f = Self::at(Some("/"));
+        let state = f.host.join("state");
+        let store = Arc::new(Store::open_anonymous(&state).unwrap());
+        let kept = RootPath::open(&state).unwrap();
+        let mut ignore = IgnoreList::new();
+        ignore.insert("/state").unwrap();
+        let walk = WalkOptions {
+            workers: NonZeroUsize::new(2).unwrap(),
+            mode: SnapshotMode::Full,
+        };
+        let kaniko = Kaniko::new(
+            RootPath::open(&f.host).unwrap(),
+            PathBuf::from("/"),
+            ignore,
+            walk,
+            kept,
+        );
+        kaniko.keep_in_anonymous_files(Arc::clone(&store)).unwrap();
+        (Self { kaniko, ..f }, store)
+    }
+
+    /// The names in the state directory, as a `RUN` would list them, but
+    /// the marker of a build in progress, which holds nothing.
+    fn state_names(&self) -> Vec<String> {
+        let mut v: Vec<_> = fs::read_dir(self.host.join("state"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n != ".ranikust-building")
+            .collect();
+        v.sort();
+        v
+    }
+
     fn kept_entries(&self) -> usize {
         fs::read_dir(self.host.with_file_name("kept"))
             .unwrap()
@@ -483,7 +520,7 @@ fn a_kept_name_taken_by_a_link_is_never_followed() {
     // The next keep area name is taken by a link to the area itself.
     let id = f.kaniko.shared.next_id.load(Ordering::Relaxed);
     std::os::unix::fs::symlink(".", kept.join(format!("k{id}"))).unwrap();
-    let e = Kept::make(&f.kaniko.shared, id).unwrap_err();
+    let e = make_dir(&f.kaniko.shared, &format!("k{id}")).unwrap_err();
     assert!(matches!(e, Error::Rootfs(_)), "{e}");
 }
 
@@ -497,5 +534,218 @@ fn a_copy_from_image_is_unpacked_beside_the_root_while_a_stage_holds_it() {
     assert_eq!(read(source.view().unwrap(), "bin-tool"), "tool");
     source.release().unwrap();
     assert_eq!(f.kept_entries(), 0);
+    holder.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_kept_stage_is_a_tar_with_no_name_unpacked_only_for_its_reader() {
+    let (f, store) = Fixture::tars();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::create_dir_all(f.host.join("app/dist")).unwrap();
+    fs::write(f.host.join("app/dist/main.js"), b"js").unwrap();
+    fs::write(f.host.join("app/src.ts"), b"ts").unwrap();
+    std::os::unix::fs::symlink("app/dist", f.host.join("out")).unwrap();
+    drop(a.end_layer().unwrap());
+    a.keep(&Keep::Paths(vec![
+        PathBuf::from("out"),
+        PathBuf::from("app/dist"),
+    ]))
+    .unwrap();
+    // Nothing with a name: the tar is an anonymous file.
+    assert_eq!(f.state_names(), ["blob"]);
+    let mut b = f.kaniko.prepare(Base::Scratch).unwrap();
+    assert_eq!(f.names(), ["state"]);
+    // The reader's view is unpacked in the state directory...
+    let view = a.view().unwrap();
+    assert_eq!(view.read_link("out").unwrap(), PathBuf::from("app/dist"));
+    assert_eq!(read(view, "out/main.js"), "js");
+    assert!(
+        view.statx("app/src.ts").is_err(),
+        "only the paths asked for"
+    );
+    assert_eq!(f.state_names().len(), 2, "the unpacked directory");
+    // ... asked for before the reading instruction began, still there
+    // through it, and gone at its end, before any RUN.
+    b.set_layers_needed(false);
+    b.begin_layer().unwrap();
+    assert_eq!(read(a.view().unwrap(), "out/main.js"), "js");
+    drop(b.end_layer().unwrap());
+    assert_eq!(f.state_names(), ["blob"]);
+    b.begin_layer().unwrap();
+    let run = store.enter_run().unwrap();
+    // A reader asking again during a RUN on this thread fails closed.
+    assert!(a.view().is_err());
+    drop(run);
+    assert_eq!(read(a.view().unwrap(), "out/main.js"), "js");
+    drop(b.end_layer().unwrap());
+    b.release().unwrap();
+    assert_eq!(f.state_names(), ["blob"], "release deletes the view too");
+    a.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_stage_built_from_a_kept_tar_starts_from_it() {
+    let (f, _store) = Fixture::tars();
+    let base = f.layer("l1", &[("etc-release", b"v1\n")]);
+    let mut a = f.kaniko.prepare(Base::Image(&[base])).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::write(f.host.join("built"), b"b").unwrap();
+    drop(a.end_layer().unwrap());
+    a.keep(&Keep::All).unwrap();
+    assert_eq!(f.state_names(), ["blob"]);
+    let other = f.kaniko.prepare(Base::Scratch).unwrap();
+    other.release().unwrap();
+    let mut child = f.kaniko.prepare(Base::Stage(&a)).unwrap();
+    assert_eq!(f.names(), ["built", "etc-release", "state"]);
+    assert_eq!(fs::read(f.host.join("built")).unwrap(), b"b");
+    assert_eq!(fs::read(f.host.join("state/blob")).unwrap(), b"kept");
+    child.set_layers_needed(true);
+    child.begin_layer().unwrap();
+    fs::write(f.host.join("child"), b"c").unwrap();
+    assert_eq!(names_in(child.end_layer().unwrap()), ["child"]);
+    child.release().unwrap();
+    a.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_copy_from_image_stays_blobs_until_read() {
+    let (f, _store) = Fixture::tars();
+    let holder = f.kaniko.prepare(Base::Scratch).unwrap();
+    let image = f.layer("img", &[("bin-tool", b"tool")]);
+    let mut source = f.kaniko.prepare_source(&[image]).unwrap();
+    assert_eq!(f.state_names(), ["blob"], "nothing unpacked yet");
+    assert_eq!(read(source.view().unwrap(), "bin-tool"), "tool");
+    assert_eq!(f.state_names().len(), 2);
+    source.release().unwrap();
+    assert_eq!(f.state_names(), ["blob"]);
+    holder.release().unwrap();
+}
+
+#[test]
+fn on_slash_keep_all_leaves_the_ignored_state_out_of_the_tar() {
+    let (f, _store) = Fixture::tars();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::write(f.host.join("built"), b"b").unwrap();
+    drop(a.end_layer().unwrap());
+    a.keep(&Keep::All).unwrap();
+    let b = f.kaniko.prepare(Base::Scratch).unwrap();
+    b.release().unwrap();
+    let view = a.view().unwrap();
+    assert_eq!(read(view, "built"), "b");
+    assert!(
+        view.statx("state").is_err(),
+        "the state directory is not kept"
+    );
+    a.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_kept_name_like_a_whiteout_fails_the_keep_never_vanishes() {
+    let (f, _store) = Fixture::tars();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::create_dir(f.host.join("d")).unwrap();
+    fs::write(f.host.join("d/x"), b"x").unwrap();
+    fs::write(f.host.join("d/.wh.x"), b"not a whiteout").unwrap();
+    drop(a.end_layer().unwrap());
+    // The tar is written as a layer is: a `.wh.` name cannot be written
+    // (Q-053), so the keep fails rather than lose `d/x` on the way back.
+    let e = a.keep(&Keep::All).unwrap_err();
+    assert!(e.to_string().contains(".wh."), "{e}");
+    a.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_view_swapped_for_a_link_is_never_emptied_through_it() {
+    let (f, _store) = Fixture::tars();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::write(f.host.join("built"), b"b").unwrap();
+    drop(a.end_layer().unwrap());
+    a.keep(&Keep::All).unwrap();
+    let mut b = f.kaniko.prepare(Base::Scratch).unwrap();
+    fs::write(f.host.join("precious"), b"p").unwrap();
+    assert_eq!(read(a.view().unwrap(), "built"), "b");
+    // Something swaps the view for a link to the root.
+    let state = f.host.join("state");
+    let name = f
+        .state_names()
+        .into_iter()
+        .find(|n| n.starts_with(rnk_store::ANON_PREFIX))
+        .unwrap();
+    fs::rename(state.join(&name), state.join("moved")).unwrap();
+    std::os::unix::fs::symlink(&f.host, state.join(&name)).unwrap();
+    b.set_layers_needed(false);
+    b.begin_layer().unwrap();
+    assert!(matches!(b.end_layer(), Err(Error::State(_))));
+    assert_eq!(fs::read(f.host.join("precious")).unwrap(), b"p");
+}
+
+/// A streamed layer of `files` in `f`'s snapshotter, failing at the end of
+/// its body when `fail_at_end`.
+fn streamed(f: &Fixture, name: &str, files: &[(&str, &[u8])], fail_at_end: bool) -> KanikoLayer {
+    let kept = f.layer(name, files);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    f.kaniko
+        .streamed_layer(kept.diff_id(), source as Arc<dyn LayerOpen>)
+        .unwrap()
+}
+
+#[test]
+fn on_slash_a_streamed_layer_is_verified_before_any_entry_reaches_the_root() {
+    let (f, _store) = Fixture::tars();
+    let good = streamed(&f, "l1", &[("a", b"a")], false);
+    let root = f.kaniko.prepare(Base::Image(&[good])).unwrap();
+    assert_eq!(f.names(), ["a", "state"]);
+    assert_eq!(f.state_names(), ["blob"], "the spool has no name");
+    root.release().unwrap();
+    // A layer whose digest turns out wrong at the end of its body: none of
+    // its entries is in `/`, which nothing empties.
+    let bad = streamed(&f, "l2", &[("unverified", b"x")], true);
+    let e = f.kaniko.prepare(Base::Image(&[bad])).unwrap_err();
+    assert!(format!("{e:?}").contains("digest mismatch"), "{e:?}");
+    assert!(!f.host.join("unverified").exists());
+    assert_eq!(f.state_names(), ["blob"]);
+}
+
+#[test]
+fn on_slash_a_streamed_layer_with_a_wrong_diff_id_never_reaches_the_root() {
+    let (f, _store) = Fixture::tars();
+    let good = streamed(&f, "l1", &[("unverified", b"x")], false);
+    let bad = KanikoLayer {
+        diff_id: Digest::from_sha256_bytes(&[0; 32]),
+        source: good.source.clone(),
+    };
+    let e = f.kaniko.prepare(Base::Image(&[bad])).unwrap_err();
+    assert!(matches!(e, Error::DiffIdMismatch { .. }), "{e}");
+    assert!(!f.host.join("unverified").exists());
+}
+
+#[test]
+fn on_slash_a_streamed_copy_from_image_is_verified_before_it_is_unpacked() {
+    let (f, _store) = Fixture::tars();
+    let holder = f.kaniko.prepare(Base::Scratch).unwrap();
+    let bad = streamed(&f, "img", &[("bin-tool", b"tool")], true);
+    let mut source = f.kaniko.prepare_source(&[bad]).unwrap();
+    assert!(source.view().is_err());
+    // No directory was made for it: the check came first.
+    assert_eq!(f.state_names(), ["blob"]);
+    source.release().unwrap();
+    let good = streamed(&f, "img", &[("bin-tool", b"tool")], false);
+    let mut source = f.kaniko.prepare_source(&[good]).unwrap();
+    assert_eq!(read(source.view().unwrap(), "bin-tool"), "tool");
+    source.release().unwrap();
+    assert_eq!(f.state_names(), ["blob"]);
     holder.release().unwrap();
 }

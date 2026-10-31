@@ -48,9 +48,22 @@ spawn)
   (setsid sh -c 'sleep 3003 &' &)
   ;;
 V1)
-  # Anything under the state directory: a name, or the marker.
-  n=$(find /var/lib/ranikust -mindepth 1 2>/dev/null | wc -l)
-  if [ "$n" -gt 0 ]; then out V1 LEAK "$n entries"; else out V1 blocked; fi
+  # Anything under the state directory: a name, or the marker. The
+  # store's marker of a build in progress (ADR-0056) holds only the PID
+  # namespace and the boot id, both readable by a RUN anyway: it must not
+  # hold anything else.
+  b=/var/lib/ranikust/.ranikust-building
+  n=$(find /var/lib/ranikust -mindepth 1 ! -path "$b" 2>/dev/null | wc -l)
+  if [ "$n" -gt 0 ]; then
+    out V1 LEAK "$n entries"
+  # The whole file must equal what this RUN reads itself (or be empty when
+  # ranikust could not read it): `grep -x` would accept extra lines.
+  elif [ -e "$b" ] && [ -s "$b" ] &&
+    [ "$(cat "$b")" != "$(readlink /proc/self/ns/pid) $(cat /proc/sys/kernel/random/boot_id)" ]; then
+    out V1 LEAK "the marker holds $(head -c 80 "$b" | tr -c '[:print:]' '?')"
+  else
+    out V1 blocked
+  fi
   ;;
 V2)
   pids=$(rnk_pids)

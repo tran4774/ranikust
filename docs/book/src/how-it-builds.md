@@ -97,10 +97,15 @@ with the default security profile or in most Kubernetes pods.
   first process, `exec` it, rather than from a shell that keeps them), and
   any file mounted into the container (pass registry credentials in
   `DOCKER_AUTH_CONFIG` rather than a mounted `config.json`).
-  A container's own root filesystem cannot hold such files on most
-  kernels, so they are kept in memory there, counted against the
-  container's memory limit; mount a volume at `/var/lib/ranikust` to keep
-  them on disk.
+  On a container's own root filesystem, which takes no unnamed file on
+  most kernels, each is made by a random name removed at once, while no
+  `RUN` runs, so it stays on disk rather than in the container's memory
+  ([ADR-0056](https://github.com/tran4774/ranikust/blob/main/docs/adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md)).
+  After a build in the container was killed (ranikust not its first
+  process), later builds there keep this state in memory and cannot
+  `COPY --from` an earlier stage or an image: restart the container. A
+  volume at `/var/lib/ranikust` works too, one per container: a second
+  build on a state directory in use is refused.
 - ranikust refuses to build on the container's `/` where root may mount
   (a `--privileged` container, `CAP_SYS_ADMIN`) and where `/proc/sys` is
   not a read-only mount (Docker's `systempaths=unconfined`, Kubernetes'

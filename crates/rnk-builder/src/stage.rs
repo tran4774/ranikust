@@ -723,10 +723,29 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 mounts.finish();
                 return Err(Error::Cancelled);
             };
+            // In kaniko mode on `/`, no named state exists on disk while
+            // the RUN's processes do, nor is any made (Q-340, ADR-0056).
+            let fence = match b.cx.store.enter_run() {
+                Ok(fence) => fence,
+                Err(e) => {
+                    drop(permit);
+                    mounts.finish();
+                    return Err(e.into());
+                }
+            };
             let status = b.cx.sandbox.run(spec);
+            // An error once the command ran may leave the RUN's processes
+            // alive (a failed sweep): no name is made for the rest of the
+            // build. The state directory must still be the one the store
+            // holds.
+            let swept = status
+                .as_ref()
+                .map_or_else(rnk_sandbox::Error::ran_no_command, |_| true);
+            let left = b.cx.store.leave_run(fence, swept);
             drop(permit);
             // The RUN is gone: its cache leases end.
             mounts.finish();
+            left?;
             let status = match status {
                 Err(rnk_sandbox::Error::Cancelled) => return Err(Error::Cancelled),
                 s => s?,

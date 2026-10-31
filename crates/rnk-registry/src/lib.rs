@@ -35,7 +35,7 @@ mod token;
 pub use client::{Client, ClientOptions, ImageManifests, PushOutcome, RawManifest};
 pub use credentials::{Credential, Credentials};
 pub use error::Error;
-pub use io::{BlobBody, BlobReader, BlobSink, PIPE_BYTES, RemoteBlob};
+pub use io::{BlobBody, BlobFile, BlobReader, BlobSink, PIPE_BYTES, RemoteBlob};
 pub use platform::select_platform;
 pub use retry::{RetryPolicy, retry_kaniko};
 pub use tls::TrustStore;

@@ -10,8 +10,9 @@
 
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
+use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rnk_layer::{
     Compression, EncodeOptions, Entry, EntryPath, EntrySource, LayerDigests, LayerWriter,
@@ -151,6 +152,9 @@ pub struct BlobLayer {
 pub enum LayerBytes {
     /// A file: a build-private file, or a pulled blob in the store.
     File(PathBuf),
+    /// An anonymous file of the store (kaniko mode on `/`, ADR-0051),
+    /// reached only through its handle.
+    Anon(AnonBlob),
     /// Nowhere local: a base layer streamed into its extraction and never
     /// kept, still in the repository it came from, which a push mounts it
     /// from or streams it out of (ADR-0055).
@@ -178,12 +182,77 @@ impl BlobLayer {
         }
     }
 
-    /// The blob's file, if it was kept.
+    /// The blob's file, if it was kept and has a path.
     pub fn path(&self) -> Option<&Path> {
         match &self.bytes {
             LayerBytes::File(path) => Some(path),
+            LayerBytes::Anon(_) | LayerBytes::Registry(_) => None,
+        }
+    }
+
+    /// A new descriptor of the blob's file, read from its start, if the
+    /// blob was kept; an error once an anonymous file was released.
+    pub fn open(&self) -> Option<io::Result<File>> {
+        match &self.bytes {
+            LayerBytes::File(path) => Some(File::open(path)),
+            LayerBytes::Anon(blob) => Some(blob.open()),
             LayerBytes::Registry(_) => None,
         }
+    }
+}
+
+/// An encoded layer in an anonymous file of the store, shared by every copy
+/// of its [`BlobLayer`]. It has no path: it is reopened through this handle
+/// alone, and released for every copy at once, after which it cannot be
+/// opened. Its `/proc/self/fd/<n>` name is used only under the handle's
+/// lock, so a descriptor number reused by a later file is never mistaken
+/// for it.
+#[derive(Clone, Debug)]
+pub struct AnonBlob(Arc<Mutex<Option<File>>>);
+
+impl AnonBlob {
+    fn new(file: File) -> Self {
+        Self(Arc::new(Mutex::new(Some(file))))
+    }
+
+    /// A new descriptor of the file, read from its start.
+    ///
+    /// # Errors
+    ///
+    /// When the file was released, or cannot be reopened.
+    pub fn open(&self) -> io::Result<File> {
+        let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match held.as_ref() {
+            Some(file) => File::open(format!("/proc/self/fd/{}", file.as_raw_fd())),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the layer's anonymous file was released",
+            )),
+        }
+    }
+
+    /// Releases the file for every copy of the layer: its bytes go once no
+    /// reader holds a descriptor of it. Returns whether it was still held.
+    pub fn release(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .is_some()
+    }
+}
+
+impl PartialEq for AnonBlob {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for AnonBlob {}
+
+impl rnk_registry::BlobFile for AnonBlob {
+    fn open(&self) -> io::Result<File> {
+        AnonBlob::open(self)
     }
 }
 
@@ -310,14 +379,14 @@ impl LayerExporter {
         let _entered = span.enter();
         if let Some(store) = &self.anon {
             // No name at all: nothing to rename, nothing a RUN can open. A
-            // failed encoding drops the file with its descriptor's last
-            // user, the store's own copy staying empty and unreferenced.
-            let (file, path) = store.anonymous_file()?;
+            // failed encoding drops the file, and its bytes with it.
+            let file = store.scratch_file()?;
             let mut out = BufWriter::new(file);
             let digests = source.encode(self.options, &mut out)?;
-            out.into_inner()
-                .map_err(|e| Error::io("write", &path)(e.into_error()))?;
-            return blob_layer(&digests, path);
+            let file = out.into_inner().map_err(|e| {
+                Error::io("write", Path::new("an anonymous layer file"))(e.into_error())
+            })?;
+            return blob_layer(&digests, LayerBytes::Anon(AnonBlob::new(file)));
         }
         let tmp = tempfile::Builder::new()
             .prefix(".layer-")
@@ -335,18 +404,18 @@ impl LayerExporter {
         // removed when it is dropped.
         tmp.persist(&path)
             .map_err(|e| Error::io("rename", &tmp_path)(e.error))?;
-        blob_layer(&digests, path)
+        blob_layer(&digests, LayerBytes::File(path))
     }
 }
 
-/// The [`BlobLayer`] of an encoded layer whose bytes are at `path`.
-fn blob_layer(digests: &LayerDigests, path: PathBuf) -> Result<BlobLayer> {
+/// The [`BlobLayer`] of an encoded layer whose bytes are `bytes`.
+fn blob_layer(digests: &LayerDigests, bytes: LayerBytes) -> Result<BlobLayer> {
     let digest = Digest::from_sha256_bytes(digests.digest.as_bytes());
     let media_type = ImageFormat::Oci.layer_media_type(oci_compression(digests.compression))?;
     Ok(BlobLayer {
         diff_id: Digest::from_sha256_bytes(digests.diff_id.as_bytes()),
         blob: Descriptor::new(media_type, digest, digests.size),
-        bytes: LayerBytes::File(path),
+        bytes,
         mount_from: None,
     })
 }
@@ -370,6 +439,7 @@ pub(crate) struct Contents {
 pub(crate) enum Content {
     Bytes(bytes::Bytes),
     File(PathBuf),
+    Anon(AnonBlob),
 }
 
 impl EntrySource for Contents {
@@ -388,6 +458,7 @@ impl EntrySource for Contents {
         Ok(match content {
             Content::Bytes(bytes) => Box::new(&bytes[..]),
             Content::File(path) => Box::new(File::open(path)?),
+            Content::Anon(blob) => Box::new(blob.open()?),
         })
     }
 

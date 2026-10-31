@@ -14,6 +14,7 @@ builds fetch or extract the same digest at once.
 - The store layout in the state directory (ADR-0022): `blobs/sha256/`,
   `layers/<id>/`, `caches/<sha256(id)>/`, `tmp/`, lock files, the
   per-build `builds/<id>/` areas and the `.ranikust-state` marker (`STATE_MARKER`; ADR-0050 renamed it from `.ranikust-root`).
+  An anonymous store writes only `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build (ADR-0056, Q-360), and holds an exclusive `flock` on the state directory (`Error::Busy` for a second build).
 - Per-digest `flock` locks; publication of a filled temporary entry by
   atomic `rename`.
 - Start-up clean-up of `tmp/` leftovers and of `builds/<id>` whose build is
@@ -41,8 +42,12 @@ impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
     pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE|O_EXCL, memfd with MFD_NOEXEC_SEAL fallback) named /proc/self/fd/<n>, refused unless /proc/self/fd is procfs; layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
-    pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers, kept trees as tars (COPY --from on /)
-    pub fn release_anonymous_file(&self, path: &Path) -> bool; // closes one early: a built layer every destination holds (ADR-0055); the name must not be reused
+    pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers
+    pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (a kept stage's tar), gone with it
+    pub fn enter_run(&self) -> Result<RunGuard>;        // ADR-0056: held around each RUN; waits until no name is on disk (no-op when persistent)
+    pub fn leave_run(&self, g: RunGuard, swept: bool) -> Result<()>; // ADR-0056: !swept poisons the fence (no name for the build); checks the state dir's identity
+    pub fn named_window(&self) -> Result<NamedGuard>;   // ADR-0056: a name may exist while held; waits for RUNs; fails inside one, after a failed RUN, and in a store opened on a build cut short (Q-360)
+    pub fn scratch_name(&self) -> Result<String>;       // ANON_PREFIX + 128 random bits; removed by the next open_anonymous if left
     pub fn state_dir(&self) -> &Path;                   // canonical
     pub fn build_id(&self) -> &str;
     pub fn build_dir(&self) -> &Path;                   // builds/<id>, created by open

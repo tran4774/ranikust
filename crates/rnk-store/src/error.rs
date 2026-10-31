@@ -39,6 +39,19 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// Another build holds the state directory of an anonymous store (two
+    /// containers sharing one volume): it would see and remove this one's
+    /// names (ADR-0056).
+    #[error(
+        "another build is using the state directory {}: one build at a time per state \
+         directory; give each container its own volume or --state-dir",
+        path.display()
+    )]
+    Busy {
+        /// The state directory.
+        path: PathBuf,
+    },
+
     /// A host path operation on the state directory itself failed.
     #[error("{op} {}: {source}", path.display())]
     Io {

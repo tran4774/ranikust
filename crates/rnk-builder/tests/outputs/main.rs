@@ -75,7 +75,6 @@ async fn exported_layers_are_pushed_during_the_build_then_released() {
     )
     .unwrap();
     let time = BuildTime::reproducible(None).unwrap();
-    let kept = std::sync::Arc::clone(&store);
     let exporter = LayerExporter::anonymous(store, options(Compression::Gzip, 2), &time)
         .with_uploader(uploader);
     let push = rnk_builder::LayerDemand {
@@ -105,9 +104,8 @@ async fn exported_layers_are_pushed_during_the_build_then_released() {
             assert!(uploaded.contains(&blob.blob.digest));
             let repos = &state.blob_repos[blob.blob.digest.as_str()];
             assert!(repos.iter().any(|r| r == "out") && repos.iter().any(|r| r == "copy"));
-            // Released once pushed: the store no longer holds it. Never read
-            // the old name: its descriptor number may name another file now.
-            assert!(!kept.release_anonymous_file(blob.path().unwrap()));
+            // Released once pushed, for every copy of the layer.
+            assert!(released(blob));
         }
     }
     assert_eq!(registry.count("PUT /v2/out/blobs/uploads/"), 3);
@@ -166,7 +164,7 @@ async fn a_failed_upload_releases_every_layer_handed_over() {
         status: 503,
         remaining: 1000,
     });
-    let (exporter, store, _state) = uploading(&registry, "out:v1");
+    let (exporter, _store, _state) = uploading(&registry, "out:v1");
     let exporter = std::sync::Arc::new(exporter);
     let feeding = std::sync::Arc::clone(&exporter);
     let blobs = tokio::task::spawn_blocking(move || {
@@ -182,9 +180,8 @@ async fn a_failed_upload_releases_every_layer_handed_over() {
     .unwrap();
     assert!(exporter.finish_uploads().await.is_err());
     for blob in &blobs {
-        // Released, whether it was running, waiting or refused. Never read
-        // the old name: its descriptor number may name another file now.
-        assert!(!store.release_anonymous_file(blob.path().unwrap()));
+        // Released, whether it was running, waiting or refused.
+        assert!(released(blob));
     }
 }
 
@@ -193,7 +190,7 @@ async fn uploads_wait_for_room_and_a_cancel_stops_them_and_releases_their_layers
     let registry = FakeRegistry::start(Auth::Open).await;
     // The registry never answers an upload: the first layer's runs forever.
     registry.state().stalled.push("/blobs/uploads/".to_owned());
-    let (exporter, store, _state) = uploading(&registry, "out:v1");
+    let (exporter, _store, _state) = uploading(&registry, "out:v1");
     let exporter = std::sync::Arc::new(exporter);
     let feeding = std::sync::Arc::clone(&exporter);
     let (sent, mut fed) = tokio::sync::mpsc::unbounded_channel();
@@ -220,7 +217,7 @@ async fn uploads_wait_for_room_and_a_cancel_stops_them_and_releases_their_layers
     blobs.push(fed.recv().await.unwrap());
     feeder.join().unwrap();
     for blob in &blobs {
-        assert!(!store.release_anonymous_file(blob.path().unwrap()));
+        assert!(released(blob));
     }
 }
 
@@ -237,17 +234,23 @@ fn an_anonymous_exporter_writes_the_same_bytes_and_names_nothing() {
     let anon = LayerExporter::anonymous(store.clone(), options(Compression::Gzip, 2), &time)
         .export(Box::new(layer(4, 30)))
         .unwrap();
-    assert!(
-        anon.path().unwrap().starts_with("/proc/self/fd"),
-        "{:?}",
-        anon.path()
-    );
-    assert_eq!(
-        std::fs::read(anon.path().unwrap()).unwrap(),
-        std::fs::read(named.path().unwrap()).unwrap()
-    );
+    // No path: reached through its handle alone.
+    assert_eq!(anon.path(), None);
+    let mut bytes = Vec::new();
+    anon.open()
+        .unwrap()
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, std::fs::read(named.path().unwrap()).unwrap());
     assert_eq!((anon.diff_id, anon.blob), (named.diff_id, named.blob));
-    assert!(files(state.path()).is_empty(), "{:?}", files(state.path()));
+    // Nothing but the store's marker of a build in progress, which holds
+    // nothing (ADR-0056).
+    let named: Vec<_> = files(state.path())
+        .into_iter()
+        .filter(|f| !f.ends_with(".ranikust-building"))
+        .collect();
+    assert!(named.is_empty(), "{named:?}");
 }
 
 #[test]
@@ -711,4 +714,36 @@ fn skopeo_inspect(target: &str) -> Option<String> {
         "{config}\n{manifest}\n{}",
         sha256(manifest.as_bytes())
     ))
+}
+
+/// Whether `blob`'s anonymous file was released: it cannot be opened, and
+/// releasing it again finds nothing.
+fn released(blob: &rnk_builder::BlobLayer) -> bool {
+    let rnk_builder::LayerBytes::Anon(anon) = &blob.bytes else {
+        panic!("not an anonymous layer: {:?}", blob.bytes);
+    };
+    anon.open().is_err() && !anon.release()
+}
+
+#[test]
+fn a_released_anonymous_layer_is_gone_for_every_copy_and_never_reopened() {
+    let time = BuildTime::reproducible(None).unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(rnk_store::Store::open_anonymous(state.path()).unwrap());
+    let exporter = LayerExporter::anonymous(
+        std::sync::Arc::clone(&store),
+        options(Compression::Gzip, 2),
+        &time,
+    );
+    let blob = exporter.export(Box::new(layer(7, 30))).unwrap();
+    let copy = blob.clone();
+    let rnk_builder::LayerBytes::Anon(anon) = &blob.bytes else {
+        panic!("not anonymous");
+    };
+    assert!(anon.release());
+    // A later file may take the old descriptor number: the copy never
+    // reaches it.
+    let other = exporter.export(Box::new(layer(8, 30))).unwrap();
+    assert!(released(&copy));
+    assert!(other.open().unwrap().is_ok());
 }

@@ -182,6 +182,11 @@ For a branch written by a fork (an agent in its own worktree):
    commits.
 5. No blocker left: merge.
 
+A test result counts only from the harness's exit status, never from an
+agent reading a printed table: a suite that prints a verdict table must
+fail on any unexpected cell (the `secrets` suite once printed `LEAK` and
+exited 0).
+
 High findings are fixed; cheap medium and low ones in the same round;
 costly low ones, or ones that belong to a later task, become follow-ups in
 the phase file and do not block. A finding that needs a design choice goes

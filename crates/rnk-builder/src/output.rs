@@ -152,7 +152,7 @@ pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()> {
         BlobFrom::Bytes(image.manifest.bytes()),
     )?;
     for layer in &image.layers {
-        bytes_out += put_blob(dir, &layer.blob.digest, BlobFrom::File(kept(layer)?))?;
+        bytes_out += put_blob(dir, &layer.blob.digest, BlobFrom::Layer(kept(layer)?))?;
     }
     let index = ImageIndex::new(ImageFormat::Oci, vec![image.manifest.descriptor()]);
     bytes_out += write_new(dir, OciLayout::INDEX_FILE, &to_canonical_json(&index)?)?;
@@ -217,7 +217,13 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
             add(
                 name.clone(),
                 layer.blob.size,
-                Content::File(kept(layer)?.to_owned()),
+                match &kept(layer)?.bytes {
+                    LayerBytes::Anon(blob) => Content::Anon(blob.clone()),
+                    LayerBytes::File(path) => Content::File(path.clone()),
+                    LayerBytes::Registry(_) => {
+                        return Err(Error::Invalid("a streamed layer in a tar".to_owned()));
+                    }
+                },
             )?;
         }
         layer_paths.push(name);
@@ -314,6 +320,7 @@ async fn push_one(
             let from = layer.mount_from.as_ref().or(earlier);
             let body = match &layer.bytes {
                 LayerBytes::File(path) => BlobBody::File(path.clone()),
+                LayerBytes::Anon(blob) => BlobBody::Opened(Arc::new(blob.clone())),
                 // Never kept: pulled from where it came from while it is
                 // pushed, through a bounded pipe (ADR-0055); a mount from
                 // the same registry, tried first, sends nothing.
@@ -346,15 +353,16 @@ async fn push_one(
     Ok(uploaded.iter().sum::<u64>() + image.manifest.size())
 }
 
-/// The kept file of `layer`: outputs written to files need the bytes, so a
-/// build with such outputs keeps its base layers (ADR-0055).
-fn kept(layer: &BlobLayer) -> Result<&Path> {
-    layer.path().ok_or_else(|| {
-        Error::Invalid(format!(
+/// `layer`, if its bytes were kept: outputs written to files need them, so
+/// a build with such outputs keeps its base layers (ADR-0055).
+fn kept(layer: &BlobLayer) -> Result<&BlobLayer> {
+    match layer.bytes {
+        LayerBytes::File(_) | LayerBytes::Anon(_) => Ok(layer),
+        LayerBytes::Registry(_) => Err(Error::Invalid(format!(
             "layer {} was streamed and not kept, but an output needs its bytes",
             layer.blob.digest
-        ))
-    })
+        ))),
+    }
 }
 
 /// A regular file entry of an output tar.
@@ -373,7 +381,7 @@ fn file_entry(path: EntryPath, size: u64) -> Entry {
 
 enum BlobFrom<'a> {
     Bytes(&'a [u8]),
-    File(&'a Path),
+    Layer(&'a BlobLayer),
 }
 
 /// Puts a blob into a layout's `blobs/` unless a regular file with exactly
@@ -392,8 +400,12 @@ fn put_blob(dir: &Path, digest: &Digest, from: BlobFrom<'_>) -> Result<u64> {
             .write_all(bytes)
             .map_err(Error::io("write", &path))
             .map(|()| u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
-        BlobFrom::File(src) => {
-            let mut file = File::open(src).map_err(Error::io("open", src))?;
+        BlobFrom::Layer(layer) => {
+            let src = Path::new(layer.blob.digest.as_str());
+            let mut file = layer
+                .open()
+                .ok_or_else(|| Error::Invalid("a streamed layer in a layout".to_owned()))?
+                .map_err(Error::io("open", src))?;
             std::io::copy(&mut file, out).map_err(Error::io("copy", src))
         }
     })
