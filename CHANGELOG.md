@@ -168,7 +168,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   unlinked at once while no `RUN` runs where the filesystem lacks it, as a
   container's overlay root does; `memfd` only as a last resort, after a
   `RUN` that failed, or when an earlier build in the container was cut
-  short, with a warning), and the
+  short, with a warning; one build at a time per state directory), and the
   state directory holds nothing a `RUN` could read; ranikust is not dumpable, so `/proc/<pid>/` of
   ranikust (descriptors, environment, memory) is closed to a `RUN`; `RUN`
   loses every capability outside Docker's defaults, and a container that

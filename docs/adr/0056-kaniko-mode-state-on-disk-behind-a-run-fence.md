@@ -77,7 +77,12 @@ Chosen: the third. In kaniko mode on `/`:
   name, fails the build with the same advice) and keeps the marker
   [open: Q-360]. A marker from another PID namespace or boot (a state
   directory on a volume outliving its container) left no process here
-  and is taken over. The marker covers accidental kills only: a `RUN`
+  and is taken over: the store holds an exclusive `flock` on the state
+  directory for its life, so a second build on it (another container on
+  the same volume) is refused and a taken-over marker is a dead build's.
+  The marker is opened without following a link or blocking, its type
+  checked on the descriptor; a stale one is replaced, never written
+  through. The marker covers accidental kills only: a `RUN`
   can delete it. `ranikust` accepts a state directory holding only the
   marker and such names (the store then heeds them), not anything else.
   The store is closed after the snapshotter lets go of it: the snapshotter

@@ -47,7 +47,9 @@ fn building_mark() -> Option<String> {
 
 /// Why a store opened on the traces of a build cut short makes no name
 /// [open: Q-360].
-const CUT_SHORT: &str = "an earlier build in this container did not end cleanly and may have      left RUN processes; run ranikust as the container's PID 1, or restart the container, to      keep state on disk";
+const CUT_SHORT: &str = "an earlier build in this container did not end cleanly and may have \
+     left RUN processes; run ranikust as the container's PID 1, or restart the container, to \
+     keep state on disk";
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
@@ -218,6 +220,8 @@ struct Anon {
     /// Opened on traces of a build cut short: the [`BUILDING`] marker stays
     /// at the end, so later builds keep their state in memory too.
     tainted: bool,
+    /// The exclusive `flock` on the state directory, held to the end.
+    _lock: OwnedFd,
 }
 
 impl Anon {
@@ -361,6 +365,32 @@ impl Store {
         if fs.f_type != rustix::fs::PROC_SUPER_MAGIC {
             return Err(proc_err(io::Error::other("not procfs")));
         }
+        // One build at a time per state directory, held for the store's
+        // life: a second one (another container on the same volume) would
+        // see this one's names and take its marker for a dead build's.
+        let lock = rustix::fs::openat(
+            &dir,
+            ".",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| host_err("open", e.into()))?;
+        match lock::try_lock(&lock) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Error::Busy {
+                    path: state_path.clone(),
+                });
+            }
+            Err(source) => {
+                return Err(Error::NoFlock {
+                    path: state_path.clone(),
+                    source,
+                });
+            }
+        }
         let leftovers = anon::remove_leftovers(&root, &state_path)?;
         // A build that did not end cleanly here may have left `RUN`
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
@@ -368,22 +398,42 @@ impl Store {
         // The marker names the PID namespace and boot it was made in: one
         // from another container (a state directory on a volume) or an
         // earlier boot left no process here, and is taken over.
+        // Opened before its type is checked, on the descriptor, without
+        // following a link or blocking on a FIFO a leftover process put
+        // there; anything but a regular file counts as this container's.
         let mark = building_mark();
-        let marker = match root.statx(BUILDING) {
-            Ok(st) if st.file_type() == FileType::Regular => {
-                let mut held = Vec::new();
-                io::Read::take(File::from(root.open_at(BUILDING, &OpenHow::read())?), 256)
-                    .read_to_end(&mut held)
-                    .map_err(|e| Error::Io {
-                        op: "read",
-                        path: state_path.join(BUILDING),
-                        source: e,
-                    })?;
-                Some(mark.as_ref().is_none_or(|m| held == m.as_bytes()))
+        let marker_err = |op, e: io::Error| Error::Io {
+            op,
+            path: state_path.join(BUILDING),
+            source: e,
+        };
+        let marker = match rustix::fs::openat(
+            &dir,
+            BUILDING,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::NOCTTY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ) {
+            Ok(fd) => {
+                let st = rustix::fs::fstat(&fd).map_err(|e| marker_err("stat", e.into()))?;
+                if rustix::fs::FileType::from_raw_mode(st.st_mode)
+                    == rustix::fs::FileType::RegularFile
+                {
+                    let mut held = Vec::new();
+                    io::Read::take(File::from(fd), 256)
+                        .read_to_end(&mut held)
+                        .map_err(|e| marker_err("read", e))?;
+                    Some(mark.as_ref().is_none_or(|m| held == m.as_bytes()))
+                } else {
+                    Some(true)
+                }
             }
-            Ok(_) => Some(true),
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => None,
-            Err(e) => return Err(e.into()),
+            Err(Errno::NOENT) => None,
+            Err(Errno::LOOP) => Some(true),
+            Err(e) => return Err(marker_err("open", e.into())),
         };
         let interrupted = match marker {
             Some(here) => here,
@@ -393,13 +443,13 @@ impl Store {
         };
         // Written unless this container's marker is kept as it is; made
         // anew when names were left with none, so later builds heed it.
+        // A stale marker (a dead build's, the directory being locked) is
+        // replaced by a new file, never written through.
         if !interrupted || marker.is_none() {
-            let how = if marker.is_some() {
-                OpenHow::write().truncate()
-            } else {
-                OpenHow::write().create_new(0o600)
-            };
-            let mut f = File::from(root.open_at(BUILDING, &how)?);
+            if marker.is_some() {
+                root.remove_file(BUILDING)?;
+            }
+            let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
             io::Write::write_all(&mut f, mark.as_deref().unwrap_or_default().as_bytes()).map_err(
                 |e| Error::Io {
                     op: "write",
@@ -432,6 +482,7 @@ impl Store {
                 files,
                 entries: Mutex::default(),
                 tainted: tainted.is_some(),
+                _lock: lock,
             }),
             state: root,
             state_path,

@@ -649,6 +649,63 @@ fn a_build_cut_short_keeps_the_next_builds_state_in_memory() {
 }
 
 #[test]
+fn one_anonymous_store_at_a_time_per_state_directory() {
+    // Two containers sharing a volume: the second never touches the first's
+    // names or marker.
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let first = Store::open_anonymous(&state).unwrap();
+    let window = first.named_window().unwrap();
+    let name = first.scratch_name().unwrap();
+    fs::create_dir(state.join(&name)).unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::Busy { .. }), "{e}");
+    assert!(e.to_string().contains("its own volume"), "{e}");
+    assert!(state.join(&name).is_dir());
+    fs::remove_dir(state.join(&name)).unwrap();
+    drop(window);
+    first.close().unwrap();
+    // Once it is closed, the next one opens, on a clean directory.
+    let second = Store::open_anonymous(&state).unwrap();
+    drop(second.named_window().unwrap());
+    second.close().unwrap();
+    assert!(names(&state).is_empty());
+}
+
+#[test]
+fn a_marker_that_is_not_a_regular_file_never_blocks_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let marker = state.join(".ranikust-building");
+    // A FIFO: opened without blocking, counted as this container's.
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &marker,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    fs::remove_file(&marker).unwrap();
+    // A link: never followed, counted likewise.
+    std::os::unix::fs::symlink("/etc/hostname", &marker).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    assert!(
+        fs::symlink_metadata(&marker)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
 fn a_marker_from_another_container_or_boot_is_taken_over() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");

@@ -429,9 +429,14 @@ Entry format:
   PID 1 (no process of a dead build can outlive it there), `memfd`
   otherwise: safe against a deleted marker too, at a memory cost under a
   CI shell, the common case.
-- **Recommendation:** (a): the build still succeeds, but a `COPY --from`,
-  and only memory is spent, in a container that already did something
-  unusual; (d) if a `RUN` deleting the marker should be covered.
+- **Recommendation:** (a). The build still succeeds unless it needs a
+  `COPY --from`, and it costs only memory, in a container where something
+  unusual already happened. Choose (d) instead if a `RUN` deleting the
+  marker must be covered too.
+- **Note:** an anonymous store holds an exclusive `flock` on its state
+  directory, so two containers sharing a volume never build on it at the
+  same time (the second is refused): a marker is taken over only from a
+  dead build.
 - **Interim:** (a), on `feat/kaniko-state-on-disk` (`rnk_store::Store::open_anonymous`).
 - **Raised:** 2026-11-01
 

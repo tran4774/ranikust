@@ -14,7 +14,7 @@ builds fetch or extract the same digest at once.
 - The store layout in the state directory (ADR-0022): `blobs/sha256/`,
   `layers/<id>/`, `caches/<sha256(id)>/`, `tmp/`, lock files, the
   per-build `builds/<id>/` areas and the `.ranikust-state` marker (`STATE_MARKER`; ADR-0050 renamed it from `.ranikust-root`).
-  An anonymous store writes only `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build (ADR-0056, Q-360).
+  An anonymous store writes only `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build (ADR-0056, Q-360), and holds an exclusive `flock` on the state directory (`Error::Busy` for a second build).
 - Per-digest `flock` locks; publication of a filled temporary entry by
   atomic `rename`.
 - Start-up clean-up of `tmp/` leftovers and of `builds/<id>` whose build is
