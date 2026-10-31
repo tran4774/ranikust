@@ -32,6 +32,7 @@
 //! - Writes only inside the state directory, and deletes only through
 //!   `rnk-rootfs`: entries hold untrusted image content.
 
+mod anon;
 mod error;
 mod key;
 mod lock;

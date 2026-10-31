@@ -11,11 +11,13 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use rnk_layer::{
     Compression, EncodeOptions, Entry, EntryPath, EntrySource, LayerDigests, LayerWriter,
 };
 use rnk_oci::{Descriptor, Digest, ImageFormat, Reference};
+use rnk_store::Store;
 use tracing::debug_span;
 
 use crate::error::{Error, Result};
@@ -149,6 +151,9 @@ impl BlobLayer {
 pub struct LayerExporter {
     dir: PathBuf,
     options: EncodeOptions,
+    /// [`LayerExporter::anonymous`]: blobs are anonymous files of this
+    /// store, never named in a directory (ADR-0051).
+    anon: Option<Arc<Store>>,
 }
 
 impl LayerExporter {
@@ -163,7 +168,18 @@ impl LayerExporter {
                 mtime: time.layer_mtime(),
                 ..options
             },
+            anon: None,
         }
+    }
+
+    /// An exporter whose blobs are anonymous files of `store`
+    /// ([`Store::anonymous_file`]): kaniko mode on `/`, where a `RUN` can
+    /// read any file with a path (ADR-0051). The blobs live as long as the
+    /// store.
+    pub fn anonymous(store: Arc<Store>, options: EncodeOptions, time: &BuildTime) -> Self {
+        let mut exporter = Self::new(store.state_dir().to_path_buf(), options, time);
+        exporter.anon = Some(store);
+        exporter
     }
 
     /// The options layers are encoded with.
@@ -203,6 +219,17 @@ impl LayerExporter {
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer> {
         let span = debug_span!("rnk_builder.layer", skipped = false);
         let _entered = span.enter();
+        if let Some(store) = &self.anon {
+            // No name at all: nothing to rename, nothing a RUN can open. A
+            // failed encoding drops the file with its descriptor's last
+            // user, the store's own copy staying empty and unreferenced.
+            let (file, path) = store.anonymous_file()?;
+            let mut out = BufWriter::new(file);
+            let digests = source.encode(self.options, &mut out)?;
+            out.into_inner()
+                .map_err(|e| Error::io("write", &path)(e.into_error()))?;
+            return blob_layer(&digests, path);
+        }
         let tmp = tempfile::Builder::new()
             .prefix(".layer-")
             .tempfile_in(&self.dir)
@@ -219,14 +246,20 @@ impl LayerExporter {
         // removed when it is dropped.
         tmp.persist(&path)
             .map_err(|e| Error::io("rename", &tmp_path)(e.error))?;
-        let media_type = ImageFormat::Oci.layer_media_type(oci_compression(digests.compression))?;
-        Ok(BlobLayer {
-            diff_id: Digest::from_sha256_bytes(digests.diff_id.as_bytes()),
-            blob: Descriptor::new(media_type, digest, digests.size),
-            path,
-            mount_from: None,
-        })
+        blob_layer(&digests, path)
     }
+}
+
+/// The [`BlobLayer`] of an encoded layer whose bytes are at `path`.
+fn blob_layer(digests: &LayerDigests, path: PathBuf) -> Result<BlobLayer> {
+    let digest = Digest::from_sha256_bytes(digests.digest.as_bytes());
+    let media_type = ImageFormat::Oci.layer_media_type(oci_compression(digests.compression))?;
+    Ok(BlobLayer {
+        diff_id: Digest::from_sha256_bytes(digests.diff_id.as_bytes()),
+        blob: Descriptor::new(media_type, digest, digests.size),
+        path,
+        mount_from: None,
+    })
 }
 
 /// `rnk-layer`'s compression as `rnk-oci` names it.

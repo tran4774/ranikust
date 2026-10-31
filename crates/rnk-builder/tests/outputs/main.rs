@@ -57,6 +57,28 @@ fn layer_bytes_do_not_depend_on_the_thread_count() {
 }
 
 #[test]
+fn an_anonymous_exporter_writes_the_same_bytes_and_names_nothing() {
+    let time = BuildTime::reproducible(None).unwrap();
+    let named_dir = tempfile::tempdir().unwrap();
+    let named = LayerExporter::new(named_dir.path(), options(Compression::Gzip, 2), &time)
+        .export(Box::new(layer(4, 30)))
+        .unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(rnk_store::Store::open_anonymous(state.path()).unwrap());
+    // The blob lives as long as the store.
+    let anon = LayerExporter::anonymous(store.clone(), options(Compression::Gzip, 2), &time)
+        .export(Box::new(layer(4, 30)))
+        .unwrap();
+    assert!(anon.path.starts_with("/proc/self/fd"), "{:?}", anon.path);
+    assert_eq!(
+        std::fs::read(&anon.path).unwrap(),
+        std::fs::read(&named.path).unwrap()
+    );
+    assert_eq!((anon.diff_id, anon.blob), (named.diff_id, named.blob));
+    assert!(files(state.path()).is_empty(), "{:?}", files(state.path()));
+}
+
+#[test]
 fn a_layer_nothing_needs_is_not_encoded() {
     let dir = tempfile::tempdir().unwrap();
     let exporter = LayerExporter::new(dir.path(), options(Compression::Gzip, 2), &time());

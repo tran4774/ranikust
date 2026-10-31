@@ -8,7 +8,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
@@ -18,6 +18,7 @@ use rustix::io::Errno;
 use sha2::{Digest as _, Sha256};
 use tracing::field::Empty;
 
+use crate::anon::AnonFiles;
 use crate::error::{Error, Result};
 use crate::key::EntryKey;
 use crate::lock;
@@ -188,6 +189,24 @@ impl TmpEntry {
     }
 }
 
+/// What an anonymous store holds: its files, and the entries among them by
+/// key with their size.
+#[derive(Debug)]
+struct Anon {
+    files: AnonFiles,
+    entries: Mutex<HashMap<EntryKey, (PathBuf, u64)>>,
+}
+
+impl Anon {
+    fn entry(&self, key: &EntryKey) -> Option<(PathBuf, u64)> {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+}
+
 /// The store of one build, open in the state directory.
 ///
 /// `Sync`: stages fill entries from several threads at once; the per-digest
@@ -200,8 +219,14 @@ pub struct Store {
     build_dir: PathBuf,
     /// Holds the `flock` on `builds/<id>.lock` that marks the build alive.
     /// Dropping the store only closes it: a build that did not
-    /// [`Store::close`] leaves its directories to the next start.
-    _build_lock: OwnedFd,
+    /// [`Store::close`] leaves its directories to the next start. `None`
+    /// for an anonymous store, which registers nothing.
+    _build_lock: Option<OwnedFd>,
+    /// [`Store::open_anonymous`]: entries are anonymous files, and the
+    /// state directory stays empty (ADR-0051).
+    anon: Option<Anon>,
+    /// [`Store::anonymous_file`] in a persistent store, made on first use.
+    build_files: OnceLock<AnonFiles>,
     /// The per-digest locks held by this store's threads.
     held: lock::InProcess,
     /// The cache directories held by this store's threads.
@@ -249,13 +274,139 @@ impl Store {
             state,
             state_path,
             id,
-            _build_lock: build_lock,
+            _build_lock: Some(build_lock),
+            anon: None,
+            build_files: OnceLock::new(),
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
         };
         store.cleanup()?;
         Ok(store)
+    }
+
+    /// Opens a store that keeps nothing in the state directory `state`
+    /// (kaniko mode on `/`, ADR-0051): every entry is an anonymous file
+    /// ([`Store::anonymous_file`]) held by this store and gone with it; no
+    /// marker, lock, layout or build directory is written, and nothing is
+    /// cleaned up. `state` must exist (`ranikust` checks and creates it).
+    /// Its anonymous files are named `/proc/self/fd/<n>` to the caller's
+    /// code, which only this process resolves.
+    ///
+    /// A state directory that already holds entries is used as is, with a
+    /// warning: a `RUN` can read what is there.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when `state` cannot be resolved or opened, or
+    /// `/proc/self/fd` is missing; [`Error::Rootfs`] as [`Store::open`].
+    pub fn open_anonymous(state: &Path) -> Result<Self> {
+        let host_err = |op, source| Error::Io {
+            op,
+            path: state.to_owned(),
+            source,
+        };
+        let state_path = fs::canonicalize(state).map_err(|e| host_err("resolve", e))?;
+        let root = RootPath::open(&state_path)?;
+        let dir = rustix::fs::open(
+            &state_path,
+            rustix::fs::OFlags::PATH
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| host_err("open", e.into()))?;
+        fs::metadata("/proc/self/fd").map_err(|e| Error::Io {
+            op: "find",
+            path: PathBuf::from("/proc/self/fd"),
+            source: e,
+        })?;
+        if !list(&root, Path::new("."))?.is_empty() {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {} is not empty: a RUN can read what it holds; kaniko mode on / \
+                 keeps nothing there itself",
+                state_path.display()
+            );
+        }
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let id = format!("{:x}-{nanos:x}", std::process::id());
+        Ok(Self {
+            build_dir: state_path.join("builds").join(&id),
+            anon: Some(Anon {
+                files: AnonFiles::new(dir, &state_path),
+                entries: Mutex::default(),
+            }),
+            state: root,
+            state_path,
+            id,
+            _build_lock: None,
+            build_files: OnceLock::new(),
+            held: lock::InProcess::default(),
+            cache_holds: Arc::default(),
+            next_tmp: AtomicU64::new(0),
+        })
+    }
+
+    /// Whether this store keeps its entries as anonymous files
+    /// ([`Store::open_anonymous`]).
+    #[must_use]
+    pub fn is_anonymous(&self) -> bool {
+        self.anon.is_some()
+    }
+
+    /// A new, empty file open for reading and writing that no other process
+    /// can reach by a path, kept open as long as the store, and its name
+    /// for this process's own code (`/proc/self/fd/<n>`): for what a build
+    /// writes and reads back, such as an encoded layer or a kept tree's tar.
+    /// In an anonymous store it lives in the state directory (`O_TMPFILE`)
+    /// or in memory (`memfd`); in a persistent one, in the build directory.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AnonymousFile`] when neither kind of file can be made.
+    pub fn anonymous_file(&self) -> Result<(File, PathBuf)> {
+        let files = match &self.anon {
+            Some(anon) => &anon.files,
+            None => {
+                let dir = rustix::fs::open(
+                    &self.build_dir,
+                    rustix::fs::OFlags::PATH
+                        | rustix::fs::OFlags::DIRECTORY
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                )
+                .map_err(|e| Error::AnonymousFile {
+                    path: self.build_dir.clone(),
+                    source: e.into(),
+                })?;
+                return self.persistent_anonymous_file(dir);
+            }
+        };
+        let file = files.create()?;
+        let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
+            path: self.state_path.clone(),
+            source: e,
+        })?;
+        Ok((file, files.keep(kept)))
+    }
+
+    /// [`Store::anonymous_file`] in a persistent store: kept by a store-wide
+    /// set made on first use.
+    fn persistent_anonymous_file(&self, dir: OwnedFd) -> Result<(File, PathBuf)> {
+        let files = self
+            .build_files
+            .get_or_init(|| AnonFiles::new(dir, &self.build_dir));
+        let file = files.create()?;
+        let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
+            path: self.build_dir.clone(),
+            source: e,
+        })?;
+        Ok((file, files.keep(kept)))
     }
 
     /// The canonical state directory.
@@ -286,6 +437,9 @@ impl Store {
     /// its name (a symlink, the wrong type, a mount); [`Error::Rootfs`]
     /// when it cannot be looked up.
     pub fn get(&self, key: &EntryKey) -> Result<Option<PathBuf>> {
+        if let Some(anon) = &self.anon {
+            return Ok(anon.entry(key).map(|(path, _)| path));
+        }
         Ok(self.published(key)?.map(|_| self.host(&key.path())))
     }
 
@@ -318,6 +472,9 @@ impl Store {
             bytes_reused = Empty,
         );
         let _entered = span.enter();
+        if let Some(anon) = &self.anon {
+            return self.fill_anonymous(anon, key, f, &span);
+        }
         let _lock = self.lock(key)?;
         let rel = key.path();
         if let Some(size) = self.published(key)? {
@@ -356,14 +513,65 @@ impl Store {
         }
     }
 
+    /// [`Store::fill`] in an anonymous store: blobs only, each an anonymous
+    /// file; one fill per key at a time among this store's threads.
+    fn fill_anonymous<F, E>(
+        &self,
+        anon: &Anon,
+        key: &EntryKey,
+        f: F,
+        span: &tracing::Span,
+    ) -> Result<PathBuf>
+    where
+        F: FnOnce(&TmpEntry) -> std::result::Result<u64, E>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        if matches!(key, EntryKey::Layer(_)) {
+            return Err(Error::Anonymous("an extracted layer in the store"));
+        }
+        let (_held, _) = self.held.acquire(&key.lock_path());
+        if let Some((path, size)) = anon.entry(key) {
+            span.record("reused", true);
+            span.record("bytes_written", 0);
+            span.record("bytes_reused", size);
+            return Ok(path);
+        }
+        let file = anon.files.create()?;
+        let entry = TmpEntry {
+            path: PathBuf::from("anonymous file"),
+            file: Some(file),
+            root: None,
+        };
+        let bytes = f(&entry).map_err(|e| Error::Fill {
+            key: key.to_string(),
+            source: e.into(),
+        })?;
+        let Some(file) = entry.file else {
+            return Err(Error::Anonymous("a blob without its file"));
+        };
+        let path = anon.files.keep(file);
+        anon.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone(), (path.clone(), bytes));
+        span.record("reused", false);
+        span.record("bytes_written", bytes);
+        span.record("bytes_reused", 0);
+        Ok(path)
+    }
+
     /// `caches/<sha256(id)>`, the directory of a `RUN --mount=type=cache`
     /// with this id, created if missing and kept between builds. Hashing
     /// keeps any id, `../..` included, a single plain name.
     ///
     /// # Errors
     ///
-    /// [`Error::Rootfs`] when it cannot be created.
+    /// [`Error::Rootfs`] when it cannot be created;
+    /// [`Error::Anonymous`] in an anonymous store.
     pub fn cache_dir(&self, id: &str) -> Result<PathBuf> {
+        if self.anon.is_some() {
+            return Err(Error::Anonymous("RUN --mount=type=cache"));
+        }
         let hash: [u8; 32] = Sha256::digest(id.as_bytes()).into();
         let rel = Path::new("caches").join(Digest::from_sha256_bytes(&hash).encoded());
         self.state.create_dir_all(&rel, 0o755)?;
@@ -405,6 +613,9 @@ impl Store {
         owner: Option<CacheOwner>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<CacheLease> {
+        if self.anon.is_some() {
+            return Err(Error::Anonymous("RUN --mount=type=cache"));
+        }
         let hash: [u8; 32] = Sha256::digest(key.as_bytes()).into();
         let base = Digest::from_sha256_bytes(&hash).encoded().to_owned();
         let locks = Path::new("locks").join("caches");
@@ -567,6 +778,10 @@ impl Store {
     /// removed, for example because a mount is still inside it or on it;
     /// the next start retries.
     pub fn close(self) -> Result<()> {
+        if self.anon.is_some() {
+            // Nothing on disk: the files go with their descriptors.
+            return Ok(());
+        }
         remove_build(&self.state, &self.id)?;
         Ok(())
     }
