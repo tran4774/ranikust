@@ -219,6 +219,22 @@ impl WalkDiff {
   (left out of `Keep::All`; not ignored, the copy is refused as a
   destination inside its source, never a recursion); a keep-area name
   taken by a link never followed.
+- **T0** red team of the keep area (`tests/keep.rs`), a host file beside
+  the root and an ignored `state/` in it, neither touched nor copied:
+  `COPY --from` image layers with `..` and absolute names, files,
+  hardlinks, whiteouts and opaque markers through links out, link chains
+  and loops, a directory replaced by a link, a device node and a FIFO
+  (left out), a setuid file, unpacked while a stage holds the root (each
+  refused or kept inside its copy, the copy deleted); `keep` given paths
+  through links out, `..`, loops, a FIFO and a socket (never blocking);
+  a hostile root kept whole and copied back for a stage `FROM` it, on a
+  workdir root and as on `/`, with modes (setuid, setgid, sticky,
+  `0700`), owners, mtimes, link targets, contents, a user xattr and
+  hardlinks as they were; a tree longer than `PATH_MAX` (520 levels) kept
+  and deleted.
+  Ignored finding: `Keep::Paths` through a link (`to-root/state/blob`)
+  copies the ignored state, the ignore check being on the path as given
+  (the builder passes physical paths only).
 - **T0:** exporter rules on a modelled upper and lower stack. kaniko walk
   built (`src/kaniko/walk/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type
