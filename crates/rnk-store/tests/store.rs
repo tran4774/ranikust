@@ -42,7 +42,7 @@ fn open_creates_the_layout_and_the_marker() {
     let store = Store::open(&paths(dir.path())).unwrap();
     let state = dir.path().join(".ranikust");
     assert_eq!(store.state_dir(), fs::canonicalize(&state).unwrap());
-    assert!(state.join(".ranikust-root").is_file());
+    assert!(state.join(".ranikust-state").is_file());
     for d in ["blobs", "layers", "caches", "tmp", "builds", "locks"] {
         assert!(state.join(d).is_dir(), "{d}");
     }
@@ -60,9 +60,23 @@ fn open_refuses_a_non_empty_directory_without_the_marker() {
 }
 
 #[test]
+fn open_refuses_a_directory_with_the_old_workdir_marker_only() {
+    // An old kaniko-mode workdir (or an image's `/`) marked `.ranikust-root`
+    // is not a store: its `tmp/` and `builds/` are never cleaned up.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".ranikust-root"), "").unwrap();
+    fs::create_dir(dir.path().join("builds")).unwrap();
+    fs::write(dir.path().join("builds/keep"), "x").unwrap();
+    let err = Store::open(&BuildPaths::new(dir.path(), dir.path())).unwrap_err();
+    assert!(matches!(err, Error::NotAStateDir { .. }), "{err}");
+    assert!(err.to_string().contains(".ranikust-root"), "{err}");
+    assert!(dir.path().join("builds/keep").is_file());
+}
+
+#[test]
 fn open_refuses_a_marker_that_is_not_a_regular_file() {
     let dir = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink("/etc/hostname", dir.path().join(".ranikust-root")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", dir.path().join(".ranikust-state")).unwrap();
     let err = Store::open(&BuildPaths::new(dir.path(), dir.path())).unwrap_err();
     assert!(matches!(err, Error::NotAStateDir { .. }), "{err}");
 }
@@ -501,7 +515,7 @@ fn a_symlink_left_as_a_build_directory_is_unlinked_not_followed() {
                 .join(digest(12).encoded())
         )
     );
-    assert!(state.join(".ranikust-root").is_file());
+    assert!(state.join(".ranikust-state").is_file());
 }
 
 #[test]

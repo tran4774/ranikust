@@ -89,8 +89,9 @@ and goes to kaniko mode, else continues as overlay mode. Kaniko mode
 `container::detect` (`/` in a container, else a root in the state
 directory), `RLIMIT_NOFILE` raised, `--jobs` ignored with a warning, then
 `setup::set_up_kaniko`: the state directory checked (`statedir::prepare`),
-the store, on `/` the lock `locks/kaniko-root` (one build per
-container), else `builds/<id>/rootfs` made through the state directory's
+the store, on `/` a `flock` on `/` itself (one build per container,
+taken first), else, where root may mount (refused otherwise, Q-330),
+`builds/<id>/rootfs` made through the state directory's
 `RootPath`; on that root where the namespace could be entered, the
 sandbox probe and `RUN` in the full sandbox, else `Isolation::Direct`
 (`Sandbox::start_with_root` with the root's descriptor); then the ignore

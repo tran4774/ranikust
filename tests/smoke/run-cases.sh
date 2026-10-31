@@ -44,6 +44,12 @@ if [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; then
   IN=/ranikust
 fi
 
+# A store of an earlier ranikust (marked `.ranikust-root`) is refused
+# (ADR-0050): it is only a cache here, so start it again.
+if [ -e "$WORK/.ranikust-root" ] && [ ! -e "$WORK/.ranikust-state" ]; then
+  rm -rf "$WORK" && mkdir -p "$WORK" && chmod 700 "$WORK"
+fi
+
 rnk_run() {
   local ctx="$1" o="$2"
   shift 2

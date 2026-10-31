@@ -291,8 +291,9 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
    `rnk-sandbox` and `rnk-snapshot` in order): choose overlay root, overlay
    rootless, kaniko, or refuse; `--mode=overlay|kaniko` skips the choice but
    not the checks ([modes-and-detection](docs/design/modes-and-detection.md)).
-   In kaniko mode, pick the root: `/` in a container (`flock`ed in the
-   state directory), else `<state>/builds/<id>/rootfs`.
+   In kaniko mode, pick the root: `/` in a container (`flock` on `/`
+   itself), else `<state>/builds/<id>/rootfs`, where root must be able to
+   mount (Q-330).
 3. **Front end**: read the context and `.dockerignore` (`rnk-context`,
    `rnk-ignore`); parse the Dockerfile into a stage graph and expand
    build arguments (`rnk-dockerfile`).

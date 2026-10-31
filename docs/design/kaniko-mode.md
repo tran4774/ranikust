@@ -19,7 +19,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 
 | Variant | When | Stage root | `RUN` | Stages |
 |---|---|---|---|---|
-| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | `/` in a container, else `<state>/builds/<id>/rootfs` | directly on the root (`rnk-sandbox`'s `Isolation::Direct`): on `/`, the container's real `/proc`, `/dev` and network files; on a root in the state directory, the full sandbox where root may mount, else a `chroot` with ranikust's `hosts`, `resolv.conf`, `hostname` and `/dev` nodes placed and journaled, no `/proc` (`ADR-0043`) | one at a time, `--jobs` ignored |
+| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | `/` in a container, else `<state>/builds/<id>/rootfs` | on `/`, directly (`rnk-sandbox`'s `Isolation::Direct`), with the container's real `/proc`, `/dev` and network files; on a root in the state directory, the full sandbox ([sandbox](sandbox.md)); a host where root may not mount is refused (Q-330, `ADR-0050`), so the `chroot` path of `ADR-0043` is not used | one at a time, `--jobs` ignored |
 | **Per-stage, sandboxed** | root, can mount, overlay unusable | one directory per stage | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
 | **Per-stage, bare chroot** | as Sequential, plus `--parallel-stages` | one directory per stage | bare `chroot`, no `/proc` | DAG, `--jobs` |
 
@@ -111,8 +111,8 @@ settles them (Q-024):
   directories excepted), walked by descriptor before anything is created.
   Each emptying gives the root its own owner and mode back. The sandbox is
   started with the root's descriptor and refuses a `RUN` on any other path
-  or directory. Kaniko mode on `/` takes `locks/kaniko-root` in the state
-  directory: one build per container.
+  or directory. Kaniko mode on `/` takes `flock` on a descriptor of `/`
+  itself: one build per container, whatever the state directories.
 - **Layers.** A stage whose layers are needed (`set_layers_needed`, from the
   lazy-snapshot rule) takes a baseline walk after its base, then
   `end_layer` walks and diffs, and the diff, held with the root, is the
@@ -130,9 +130,9 @@ settles them (Q-024):
   hash error (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1688-1691`,
   `pkg/snapshot/layered_map.go:160-163`): nothing may change the root while
   it is walked.
-- **`RUN`** gets the full sandbox on a root in the state directory where
-  the build's mount namespace could be entered, else `Isolation::Direct`
-  on the root's path (`/` or that root, ADR-0043); `RLIMIT_NOFILE` as ranikust
+- **`RUN`** gets the full sandbox on a root in the state directory (a host
+  where root may not mount is refused, Q-330), and `Isolation::Direct` on
+  `/` in a container (ADR-0043); `RLIMIT_NOFILE` as ranikust
   started (`NofileLimit::current()` before the raise,
   `Sandbox::set_nofile_limit`). The sandbox reopens the root by path for
   each `RUN` and refuses it when it is no longer the directory
@@ -268,11 +268,15 @@ written, `ranikust::statedir::prepare` checks the state directory:
 2. It is created `0700`, opened with `RESOLVE_NO_SYMLINKS`, owned by the
    user, not writable by others, and set to `0700` if others may search
    it; then the whole chain is checked again from its descriptor.
-3. The store's own `.ranikust-root` marker (Q-111) refuses a non-empty
-   directory that is not a state directory.
+3. Before its mode is touched: never `/`, and only a directory just
+   created, empty, or holding the store's regular `.ranikust-state`
+   marker (Q-111); one marked only with the old `.ranikust-root` is
+   refused, named. After `chmod 0700`, the mode must read back so;
+   `builds/` likewise.
 
-`ranikust` holds kaniko mode on `/` with `flock` on `locks/kaniko-root`
-for the whole build; `rnk-rootfs` provides the primitives. It also raises
+`ranikust` holds kaniko mode on `/` with `flock` on a descriptor of `/`
+for the whole build, and refuses kaniko mode outside a container where
+root may not mount (Q-330); `rnk-rootfs` provides the primitives. It also raises
 `RLIMIT_NOFILE`'s soft limit to the hard limit for the walk; `RUN`
 processes get the original limit back.
 

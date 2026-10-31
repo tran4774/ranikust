@@ -9,12 +9,14 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// Why a store operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The state directory is not empty and carries no `.ranikust-root`
+    /// The state directory is not empty and carries no `.ranikust-state`
     /// marker file (or the marker is not a regular file): it may be a
     /// directory the user cares about, which clean-up would delete from.
     #[error(
-        "{} is not empty and has no regular file .ranikust-root; \
-         refusing to use it as the state directory (pass an empty or new --state-dir)",
+        "{} is not empty and has no regular file .ranikust-state; \
+         refusing to use it as the state directory (pass an empty or new --state-dir; \
+         a state directory of an earlier ranikust, marked .ranikust-root, is not reused: \
+         delete it first)",
         path.display()
     )]
     NotAStateDir {

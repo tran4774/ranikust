@@ -195,3 +195,14 @@ fn a_state_dir_others_may_write_is_refused() {
     let refusal = prepare_state_dir(&state).unwrap_err();
     assert!(refusal.reason.contains("writable"), "{refusal}");
 }
+
+#[test]
+fn kaniko_mode_on_a_host_without_mounts_is_refused() {
+    // Q-330: never a bare chroot on the host; in a container, or with mount
+    // privileges, it goes on.
+    let refusal = host_without_mounts(false, false).expect("refused");
+    assert!(refusal.reason.contains("bare chroot"), "{refusal}");
+    assert_eq!(refusal.guidance, HOST_WITHOUT_MOUNTS);
+    assert!(host_without_mounts(true, false).is_none());
+    assert!(host_without_mounts(false, true).is_none());
+}

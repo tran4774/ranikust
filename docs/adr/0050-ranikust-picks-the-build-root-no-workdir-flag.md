@@ -41,25 +41,36 @@ or emptied.
 - **Kaniko mode's root (A1).** In a container (the heuristic of
   ADR-0048): `/`, with the state directory on the ignore list, as
   kaniko's `/kaniko`. Outside one: `<state>/builds/<id>/rootfs`, created by
-  ranikust for the build and removed with it. Concurrent builds on a host
-  never share a root. Kaniko mode on `/` takes a lock in the state
-  directory, one build per container.
+  ranikust for the build and removed with it, with `RUN` in the full
+  sandbox. Concurrent builds on a host never share a root. Kaniko mode on
+  `/` takes `flock` on a descriptor of `/` itself, one build per
+  container whatever the state directories.
+- **A host where root may not mount (Q-330).** Kaniko mode outside a
+  container needs mount privileges: `RUN` there would otherwise run in a
+  bare `chroot` on the host, which root can leave (`CAP_SYS_CHROOT`) and
+  where it may make device nodes (`CAP_MKNOD`). Refused before anything is
+  written, with the advice to run in a container or give ranikust mount
+  privileges; neither an opt-in flag nor a warning.
 - **No `--workdir`, no `--force` (A1, A2; supersedes ADR-0011's
   `--workdir`, ADR-0040's and ADR-0048's `--force`).** kaniko's `--force`
   is refused with its reason: ranikust never builds on a host's `/`.
 - **The private chain moves to the state directory (A5, supersedes
   ADR-0047 in part, ADR-0038's workdir checks).** As root, the state
   directory must be a real directory owned by root and not writable by
-  group or others, and ranikust sets its own mode to `0700`: it is the
+  group or others, and either new, empty, or marked by the store's own
+  `.ranikust-state` file (a directory marked only with the old
+  `.ranikust-root` is refused, named); `/` never. Only then does ranikust
+  set its mode, and that of `builds/`, to `0700` and check it reads back
+  so: it is the
   private directory every root and upper directory of a build lies below.
   Every directory above it must be owned by root and not writable by group
   or others, or be root's sticky directory (`/tmp`): the store reaches its
   files by path, so no other user may rename a directory on the way.
   Checked before anything is created, walking the real parents by
   descriptor. The system-directory list, the workdir marker, and the
-  workdir lock go away with the flag; the store keeps its own marker
-  (Q-111), which refuses a non-empty directory that is not a state
-  directory.
+  workdir lock go away with the flag; the store's marker, renamed
+  `.ranikust-state` so an old workdir is never taken for a store, keeps
+  refusing a non-empty directory that is not a state directory (Q-111).
 - **Overlay mode in a container (A4).** The container's own root is
   overlayfs, which cannot hold an upper directory: a state directory on
   overlayfs is refused before any probe, with the advice to mount a
@@ -96,4 +107,4 @@ Supersedes in part [ADR-0011](0011-accept-common-kaniko-flags.md)
 Q-036), [ADR-0040](0040-kaniko-mode-selection-container-check-and-flags.md)
 and [ADR-0048](0048-container-heuristic-guards-the-root.md) (`--force`),
 [ADR-0047](0047-kaniko-workdir-chain-is-private.md) (the chain moves to
-the state directory). Answers Q-110.
+the state directory). Answers Q-110 and Q-330.

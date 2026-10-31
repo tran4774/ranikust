@@ -78,9 +78,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--privileged`), also when it runs inside a plain `chroot`. In a
   container overlay mode needs the state directory on a volume: overlay
   cannot use the container's own overlay root, and ranikust says so.
-- The state directory: `ranikust` marks it with `.ranikust-root` and
-  refuses a non-empty directory without that mark, so a mistyped
-  `--state-dir` never gets written to or cleaned up.
+- The state directory: `ranikust` marks it with `.ranikust-state` and
+  refuses a non-empty directory without that mark, `/` included, before
+  changing anything in it, so a mistyped `--state-dir` is never written
+  to, cleaned up or made private. A directory marked `.ranikust-root` by
+  an earlier ranikust is refused too: delete it first.
 - A start-up check: on a kernel older than Linux 5.8, or where seccomp
   blocks `openat2` or `statx`, ranikust stops at once with a message naming
   the kernel.
@@ -161,7 +163,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   a machine's own `/`. The state directory must be owned by the user
   running ranikust and not writable by others, below directories only
   root may write (root's sticky `/tmp` is fine); ranikust makes it `0700`.
-  A `--state-dir` under someone's home directory is refused.
+  A `--state-dir` under someone's home directory is refused. Kaniko mode
+  outside a container needs mount privileges (it is refused otherwise,
+  rather than run `RUN` in a bare `chroot` on the host), and on `/` one
+  build per container holds a lock on `/` itself.
 - Compatibility with kaniko pipelines is no longer a goal (ADR-0049):
   `--target` takes one stage (a repeated flag or a comma-separated list is
   refused); kaniko flags that change nothing (`--cache-dir`,

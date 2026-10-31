@@ -553,6 +553,14 @@ Entry format:
   between runs (ADR-0051). Recorded in
   [ADR-0052](adr/0052-push-input-aliases-and-issue-mining-fixes.md).
 
+### Q-330: What does kaniko mode do on a host where root may not mount?
+
+- **Answer (2026-10-31):** option (a), by the maintainer: refused, with the
+  advice to run ranikust in a container or give it mount privileges; `RUN`
+  would otherwise run in a bare `chroot` on the host (the options were (a)
+  refuse, (b) an opt-in flag, (c) a warning). Recorded in
+  [ADR-0050](adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md).
+
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 
 - **Answer (2026-10-30):** the maintainer chose a fourth option: link with

@@ -130,6 +130,66 @@ fn prepare_refuses_without_creating_anything() {
 }
 
 #[test]
+fn a_directory_that_is_not_a_state_directory_keeps_its_mode() {
+    let tmp = private_tempdir();
+    // A mistyped `--state-dir`: not empty, no marker, mode 0755.
+    let precious = tmp.path().join("precious");
+    fs::create_dir(&precious).unwrap();
+    fs::write(precious.join("data"), b"x").unwrap();
+    fs::set_permissions(&precious, fs::Permissions::from_mode(0o755)).unwrap();
+    let why = prepare(&precious).unwrap_err().0;
+    assert!(why.contains("not a state directory"), "{why}");
+    assert_eq!(
+        fs::metadata(&precious).unwrap().permissions().mode() & 0o7777,
+        0o755
+    );
+    // An earlier ranikust's workdir or store: refused, named.
+    fs::write(precious.join(".ranikust-root"), b"").unwrap();
+    let why = prepare(&precious).unwrap_err().0;
+    assert!(why.contains(".ranikust-root"), "{why}");
+    // With the store's marker it is a state directory: made private.
+    fs::write(precious.join(rnk_store::STATE_MARKER), b"").unwrap();
+    prepare(&precious).unwrap();
+    assert_eq!(
+        fs::metadata(&precious).unwrap().permissions().mode() & 0o7777,
+        0o700
+    );
+    // A marker that is not a regular file does not count.
+    let linked = tmp.path().join("linked");
+    fs::create_dir(&linked).unwrap();
+    symlink("/etc/hostname", linked.join(rnk_store::STATE_MARKER)).unwrap();
+    assert!(prepare(&linked).is_err());
+}
+
+#[test]
+fn the_root_directory_is_never_a_state_directory() {
+    for root in ["/", "//", "/usr/.."] {
+        let why = prepare(Path::new(root)).unwrap_err().0;
+        assert!(why.contains("is /"), "{root}: {why}");
+    }
+}
+
+#[test]
+fn builds_is_made_private_too() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(state.join(rnk_store::STATE_MARKER), b"").unwrap();
+    fs::create_dir(state.join("builds")).unwrap();
+    fs::set_permissions(state.join("builds"), fs::Permissions::from_mode(0o755)).unwrap();
+    prepare(&state).unwrap();
+    assert_eq!(
+        fs::metadata(state.join("builds"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o700
+    );
+}
+
+#[test]
 fn a_plain_directory_is_not_overlayfs() {
     let tmp = tempfile::tempdir().unwrap();
     // The test tree may itself sit on overlayfs in a container; only check

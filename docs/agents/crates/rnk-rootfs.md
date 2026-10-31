@@ -83,7 +83,7 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   form, content xattrs `user.overlay.*` become `user.overlay.overlay.*`
   (kernel ≥ 6.7).
 - Identity is compared by `(dev, ino)` (and mount id), never by string;
-  the store's `.ranikust-root` marker is a regular file.
+  the store's `.ranikust-state` marker is a regular file.
 
 ## Refs
 

@@ -96,7 +96,7 @@ ADR-0027 puts the matcher inside the walk).
 
 | Place | Set by | Holds |
 |---|---|---|
-| Build root | ranikust: `/` in kaniko mode in a container (`flock`ed in the state directory), else in `<state>/builds/<id>/` (`ADR-0050`) | the root being built |
+| Build root | ranikust: `/` in kaniko mode in a container (`flock` on `/` itself), else in `<state>/builds/<id>/` (`ADR-0050`) | the root being built |
 | State directory | `--state-dir` (kaniko's `--kaniko-dir`); default `/var/lib/ranikust` (`ADR-0050`); owned by the user, `0700`, below directories only root may write | the store, `builds/<id>/` (`design/overlay-snapshot.md#state-directory-layout`), stub journal, `deps/` for `COPY --from`, stage images, secrets. In kaniko mode on `/` on the ignore list: never walked, snapshotted or deleted |
 | Store | in the state directory, owned by `rnk-store` (`ADR-0021`) | `blobs/sha256/`, `layers/<id>/`, `caches/`, `tmp/`: content-addressed, immutable, per-digest `flock`, atomic rename, shared by concurrent builds (`ADR-0006`, `ADR-0007`) |
 | Outputs | `--destination`, `--tar-path`, `--oci-layout-path` | the image; the only other place written, besides the metrics report |

@@ -33,7 +33,7 @@ the term is defined or measured; short forms as in [README.md](README.md#convent
 | `lowerdir+` | `fsconfig` key adding one lower layer (new mount API); probed by a real create, else `mount(2)` with short `l/` names | `design/overlay-snapshot.md#mounting` |
 | MADR | Markdown Any Decision Records 4.0, short variant plus an Evidence section: the ADR format | `docs/adr/template.md` |
 | manifest list | OCI image index or Docker manifest list: one manifest per platform; the base is picked by platform, never by host | `ADR-0009` |
-| marker file | `.ranikust-root`; the store's mark on its state directory: a non-empty directory without it is refused | `design/cache-and-store.md` |
+| marker file | `.ranikust-state`; the store's mark on its state directory: a non-empty directory without it is refused | `design/cache-and-store.md` |
 | metacopy | Overlay option to copy up only metadata; ranikust mounts with `metacopy=off` | `ADR-0016` |
 | metric span | `tracing` span named `<crate>.<operation>` at `debug` level, one per layer, blob, instruction or stage (never per file), with unit-named numeric fields; what `rnk-metrics` aggregates | `design/metrics.md#emitting-spans` |
 | metrics report | Opt-in JSON file (`--metrics-file`, schema `ranikust.metrics/v1`) written at exit: phases, records, network, resources; shaped like kaniko's `metrics.json` | `ADR-0025`, `design/metrics.md#the-report` |

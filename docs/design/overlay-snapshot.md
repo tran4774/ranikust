@@ -27,7 +27,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 
 ```
 <state-dir>/                    default /var/lib/ranikust
-├── .ranikust-root              marker file
+├── .ranikust-state             marker file
 ├── blobs/sha256/<digest>       downloaded compressed blobs
 ├── layers/<id>/                extracted layers, immutable, overlay whiteout form
 ├── caches/<sha256(id)>/        RUN --mount=type=cache

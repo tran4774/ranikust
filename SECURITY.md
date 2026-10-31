@@ -69,11 +69,10 @@ These are documented properties, not vulnerabilities:
   Kubernetes pods), `RUN` commands run in the same container as ranikust,
   as they do in kaniko. The container is the only boundary. With
   `--parallel-stages`, stages can also read each other's files and secrets
-  ([ADR-0014](docs/adr/0014-kaniko-mode-sequential-by-default.md)). In
-  kaniko mode outside a container without mounts, `RUN` enters the root
-  ranikust made in its state directory with a bare `chroot`, which root can
-  leave: the host is then the only boundary
-  ([ADR-0043](docs/adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)).
+  ([ADR-0014](docs/adr/0014-kaniko-mode-sequential-by-default.md)). Kaniko
+  mode outside a container where root may not mount is refused: `RUN`
+  would run in a bare `chroot` on the host
+  ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 - **`RUN` shares the host network** unless `--network=none` is given
   ([ADR-0010](docs/adr/0010-run-network-host-or-none.md)).
 - **Refusing to run** where no mode works, such as a regular user on Ubuntu

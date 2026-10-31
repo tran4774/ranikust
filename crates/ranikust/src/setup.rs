@@ -14,7 +14,7 @@ use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rnk_rootfs::{OpenHow, RootPath};
+use rnk_rootfs::RootPath;
 use rustix::fs::FlockOperation;
 
 use rnk_sandbox::{Caps, Error as SandboxError, Sandbox};
@@ -195,7 +195,7 @@ pub(crate) struct KanikoSetup {
     /// The spawner thread every `RUN` is cloned from.
     pub(crate) sandbox: Sandbox,
     /// How `RUN` is isolated: the full sandbox on a root in the state
-    /// directory where mounting works, else `Direct` (ADR-0043).
+    /// directory, `Direct` on `/` in a container (ADR-0043, ADR-0050).
     pub(crate) isolation: rnk_sandbox::Isolation,
     /// The build's root, opened once: `/`, or the directory made for it.
     pub(crate) root: RootPath,
@@ -203,7 +203,8 @@ pub(crate) struct KanikoSetup {
     pub(crate) root_path: PathBuf,
     /// The canonical state directory.
     pub(crate) state_dir: PathBuf,
-    /// On `/`: the lock that keeps a second build off it, held to the end.
+    /// On `/`: the `flock` on `/` that keeps a second build off it, held
+    /// to the end.
     pub(crate) root_lock: Option<OwnedFd>,
 }
 
@@ -213,12 +214,12 @@ const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switchin
 
 /// Sets kaniko mode up (ADR-0050): the state directory's check, the store,
 /// the build's root, and the spawner. With `on_slash` (ranikust runs in a
-/// container) the root is `/`, locked for this build in the state
-/// directory, and `RUN` runs `Direct`, as kaniko. Otherwise the root is
-/// `<state>/builds/<id>/rootfs`, made here and removed with the build;
-/// `can_mount` is whether the build's mount namespace could be entered:
-/// then `RUN` gets the full sandbox, probed here, else `Direct` enters the
-/// root with `chroot` (ADR-0043). `nofile` is the `RLIMIT_NOFILE` ranikust
+/// container) the root is `/`, locked for this build by `flock` on `/`
+/// itself, and `RUN` runs `Direct`, as kaniko. Otherwise the root is
+/// `<state>/builds/<id>/rootfs`, made here and removed with the build, and
+/// `RUN` gets the full sandbox, probed here; without mount privileges
+/// (`can_mount` false) that case is refused (Q-330, ADR-0050), never a bare
+/// `chroot` on the host. `nofile` is the `RLIMIT_NOFILE` ranikust
 /// started with, given back to every `RUN`.
 ///
 /// # Errors
@@ -238,30 +239,20 @@ pub(crate) fn set_up_kaniko(
             guidance: KANIKO_NEEDS_ROOT,
         });
     }
+    if let Some(refusal) = host_without_mounts(on_slash, can_mount) {
+        return Err(refusal);
+    }
+    // On `/`, the lock first, on `/` itself: two builds in one container
+    // never share it, whatever their state directories.
+    let root_lock = if on_slash { Some(lock_slash()?) } else { None };
     prepare_state_dir(state_dir)?;
     let slash = Path::new("/");
     let store = open_store(if on_slash { slash } else { state_dir }, state_dir)?;
     let state = RootPath::open(store.state_dir())
         .map_err(|e| failed(&format!("opening {}", store.state_dir().display()), &e))?;
-    let (root, root_path, root_lock) = if on_slash {
-        let lock = state
-            .open_at(
-                "locks/kaniko-root",
-                &OpenHow::read_write().no_follow().create(0o600),
-            )
-            .map_err(|e| failed("opening the lock of the root /", &e))?;
-        match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::WOULDBLOCK) => {
-                return Err(Refusal {
-                    reason: "another ranikust build is using / in this container".to_owned(),
-                    guidance: "run one kaniko-mode build at a time per container",
-                });
-            }
-            Err(e) => return Err(failed("cannot lock the root /", &e)),
-        }
+    let (root, root_path) = if on_slash {
         let root = RootPath::open(slash).map_err(|e| failed("opening /", &e))?;
-        (root, slash.to_path_buf(), Some(lock))
+        (root, slash.to_path_buf())
     } else {
         let path = store.build_dir().join("rootfs");
         let rel = path
@@ -277,10 +268,13 @@ pub(crate) fn set_up_kaniko(
         let root = state
             .sub_root(&rel)
             .map_err(|e| failed(&format!("opening {}", path.display()), &e))?;
-        (root, path, None)
+        (root, path)
     };
     let sandbox_dir = store.state_dir().join("sandbox");
-    let caps = if !on_slash && can_mount {
+    // Off `/` root may mount here (`host_without_mounts`): the full sandbox.
+    let caps = if on_slash {
+        None
+    } else {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
         let caps = rnk_sandbox::probe(&sandbox_dir).map_err(|e| Refusal {
@@ -289,8 +283,6 @@ pub(crate) fn set_up_kaniko(
         })?;
         span.record("steps", 1_u64);
         Some(caps)
-    } else {
-        None
     };
     let isolation = if caps.is_some() {
         rnk_sandbox::Isolation::Full
@@ -325,6 +317,43 @@ pub(crate) fn set_up_kaniko(
         root_path,
         root_lock,
     })
+}
+
+/// Guidance where kaniko mode would run on a host whose root may not mount.
+const HOST_WITHOUT_MOUNTS: &str = "run ranikust in a container (kaniko mode then builds on its \
+     /), or give it the privilege to mount (root on the host, a --privileged container) so \
+     RUN gets the full sandbox";
+
+/// Kaniko mode outside a container where root may not mount: `RUN` would
+/// run in a bare `chroot` on the host, which root can leave
+/// (`CAP_SYS_CHROOT`) and where it may make device nodes (`CAP_MKNOD`).
+/// Refused (Q-330, ADR-0050).
+pub(crate) fn host_without_mounts(on_slash: bool, can_mount: bool) -> Option<Refusal> {
+    (!on_slash && !can_mount).then(|| Refusal {
+        reason: "kaniko mode outside a container, where root may not mount: RUN would run in \
+                 a bare chroot on this machine, which root can leave"
+            .to_owned(),
+        guidance: HOST_WITHOUT_MOUNTS,
+    })
+}
+
+/// Locks `/` itself (`flock` on a descriptor of it) for a kaniko-mode
+/// build on it: one per container, whatever the state directory.
+fn lock_slash() -> Result<OwnedFd, Refusal> {
+    let fd = rustix::fs::open(
+        "/",
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|e| failed("opening / to lock it", &e))?;
+    match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(fd),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(Refusal {
+            reason: "another ranikust build is using / in this container".to_owned(),
+            guidance: "run one kaniko-mode build at a time per container",
+        }),
+        Err(e) => Err(failed("cannot lock the root /", &e)),
+    }
 }
 
 /// A set-up step that failed with `e`.

@@ -10,7 +10,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{CWD, Mode, OFlags, ResolveFlags};
+use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags};
 use rustix::io::Errno;
 
 /// Why a state directory cannot be used.
@@ -27,15 +27,22 @@ impl fmt::Display for Refused {
 const PRIVATE_STATE: &str = "use the default /var/lib/ranikust, or a --state-dir below \
      directories that only root may write (ADR-0050)";
 
-/// Creates the state directory if missing (mode `0700`) and checks it:
+/// Creates the state directory if missing (mode `0700`) and checks it,
+/// changing nothing in a directory that fails:
 ///
-/// 1. before anything is created, the nearest existing directory on its
-///    path and every directory above it pass [`check_chain`]'s rule for
-///    parents, walked by descriptor (`..`), never by path;
-/// 2. after, the state directory itself: a real directory owned by the
-///    effective user, not writable by group or others; its mode is set to
-///    `0700` when group or others may search it, so it is the private
-///    directory of everything below it; then the whole chain again.
+/// 1. `/` is refused outright, by identity;
+/// 2. before anything is created, the nearest existing directory on its
+///    path and every directory above it pass [`check_chain`]'s rule, walked
+///    by descriptor (`..`), never by path;
+/// 3. the state directory, opened without following a symlink, must be
+///    empty (just created, or empty already) or hold the store's regular
+///    marker file [`rnk_store::STATE_MARKER`]: any other directory is not
+///    taken, so a mistyped `--state-dir=/usr` is left as it is;
+/// 4. the whole chain again from its descriptor: owned by the effective
+///    user, not writable by group or others;
+/// 5. then its mode is set to `0700` when group or others may search it,
+///    and must read back `0700`-tight (a filesystem that ignores `chmod`
+///    is refused); `builds/`, where the roots live, likewise.
 ///
 /// `state_dir` must be absolute.
 ///
@@ -48,9 +55,15 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
         .ancestors()
         .find(|p| std::fs::symlink_metadata(p).is_ok())
         .unwrap_or(Path::new("/"));
+    let is_state = existing == state_dir;
     let fd = open_dir(existing, OFlags::PATH)?;
-    let chain = walk(&fd, existing)?;
-    check_chain(&chain, euid, existing == state_dir)?;
+    if is_state {
+        refuse_slash(&fd, state_dir)?;
+    }
+    check_chain(&walk(&fd, existing)?, euid, is_state)?;
+    if is_state {
+        check_contents(&open_dir(state_dir, OFlags::RDONLY)?, state_dir)?;
+    }
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -61,22 +74,108 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
                 state_dir.display()
             ))
         })?;
-    // Readable, so its mode can be set through the descriptor.
+    // Readable, so it can be listed and its mode set through it.
     let fd = open_dir(state_dir, OFlags::RDONLY)?;
-    let st = rustix::fs::fstat(&fd).map_err(|e| stat_err(state_dir, e))?;
-    if st.st_uid == euid && st.st_mode & 0o022 == 0 && st.st_mode & 0o077 != 0 {
-        rustix::fs::fchmod(&fd, Mode::from_raw_mode(0o700)).map_err(|e| {
-            Refused(format!(
-                "cannot make the state directory {} private: {e}",
-                state_dir.display()
-            ))
-        })?;
-        tracing::info!(
-            "the state directory {} is now mode 0700: it holds the build roots",
-            state_dir.display()
-        );
+    refuse_slash(&fd, state_dir)?;
+    check_contents(&fd, state_dir)?;
+    check_chain(&walk(&fd, state_dir)?, euid, true)?;
+    make_private(&fd, state_dir, euid)?;
+    match rustix::fs::openat(
+        &fd,
+        "builds",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(builds) => make_private(&builds, &state_dir.join("builds"), euid),
+        Err(Errno::NOENT) => Ok(()),
+        Err(e) => Err(Refused(format!(
+            "cannot open {}: {e}",
+            state_dir.join("builds").display()
+        ))),
     }
-    check_chain(&walk(&fd, state_dir)?, euid, true)
+}
+
+/// Refuses `fd` when it is the root directory `/`: never a state directory,
+/// whose mode would be changed.
+fn refuse_slash(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
+    let me = rustix::fs::fstat(fd).map_err(|e| stat_err(state_dir, e))?;
+    let slash = rustix::fs::stat("/").map_err(|e| stat_err(Path::new("/"), e))?;
+    if (me.st_dev, me.st_ino) == (slash.st_dev, slash.st_ino) {
+        return Err(Refused(format!(
+            "the state directory {} is /: {PRIVATE_STATE}",
+            state_dir.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Accepts an empty directory or one holding the store's regular marker
+/// file; refuses anything else unchanged.
+fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
+    let err = |e: Errno| Refused(format!("cannot list {}: {e}", state_dir.display()));
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(fd).map_err(err)? {
+        let name = entry.map_err(err)?.file_name().to_bytes().to_vec();
+        if name != b"." && name != b".." {
+            names.push(name);
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    let marker = rnk_store::STATE_MARKER;
+    if names.iter().any(|n| n == marker.as_bytes()) {
+        let st = rustix::fs::statat(fd, marker, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| stat_err(state_dir, e))?;
+        if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
+            return Ok(());
+        }
+    }
+    let earlier = if names.iter().any(|n| n == b".ranikust-root") {
+        " (an earlier ranikust's state directory or workdir, marked .ranikust-root, is not \
+         reused: delete it first)"
+    } else {
+        ""
+    };
+    Err(Refused(format!(
+        "{} is not empty and has no regular file {marker}: it is not a state directory, \
+         and ranikust leaves it as it is{earlier}; pass an empty or new --state-dir",
+        state_dir.display()
+    )))
+}
+
+/// Sets `fd`'s mode to `0700` when group or others may reach into it, and
+/// checks it reads back so: a filesystem that ignores `chmod` would leave
+/// the build roots open to other users.
+fn make_private(fd: &OwnedFd, dir: &Path, euid: u32) -> Result<(), Refused> {
+    let st = rustix::fs::fstat(fd).map_err(|e| stat_err(dir, e))?;
+    if st.st_uid != euid || st.st_mode & 0o022 != 0 {
+        return Err(Refused(format!(
+            "unsafe state directory: {} is owned by uid {} with mode {:o}; {PRIVATE_STATE}",
+            dir.display(),
+            st.st_uid,
+            st.st_mode & 0o7777
+        )));
+    }
+    if st.st_mode & 0o077 == 0 {
+        return Ok(());
+    }
+    rustix::fs::fchmod(fd, Mode::from_raw_mode(0o700))
+        .map_err(|e| Refused(format!("cannot make {} private: {e}", dir.display())))?;
+    let st = rustix::fs::fstat(fd).map_err(|e| stat_err(dir, e))?;
+    if st.st_mode & 0o077 != 0 {
+        return Err(Refused(format!(
+            "{} stays mode {:o} after chmod 0700 (a filesystem that ignores modes?): the build \
+             roots would be open to other users; {PRIVATE_STATE}",
+            dir.display(),
+            st.st_mode & 0o7777
+        )));
+    }
+    tracing::info!(
+        "{} is now mode 0700: it holds the build roots",
+        dir.display()
+    );
+    Ok(())
 }
 
 /// Opens `dir` without following a symlink anywhere on its path.

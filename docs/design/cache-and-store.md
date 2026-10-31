@@ -24,13 +24,12 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 
 ```
 <state-dir>/
-├── .ranikust-root
+├── .ranikust-state
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
 ├── layers/v2/sha256/<hex>/     extracted layers by chain ID, immutable [open: Q-015]
 ├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
 ├── locks/{blobs,layers/v2}/sha256/<hex>   per-digest lock files [open: Q-015]
-├── locks/kaniko-root           held (flock) by the kaniko-mode build on `/`
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── builds/<build-id>.lock      held (flock) while the build runs
@@ -75,8 +74,9 @@ form of a flattened base in the store is not designed yet].
   `builds/<build-id>.lock` while it runs, taken before either directory
   exists; a build whose lock is free is dead, and the next start removes
   its directories.
-- **kaniko mode on `/`**: `flock(LOCK_EX | LOCK_NB)` on `locks/kaniko-root`;
-  a second build on the container's `/` is refused. Other builds share the
+- **kaniko mode on `/`**: `flock(LOCK_EX | LOCK_NB)` on a descriptor of
+  `/` itself, held by `ranikust`; a second build on the container's `/` is
+  refused, whatever its state directory. Other builds share the
   store through the per-digest locks, each in its own `builds/<build-id>`.
 - Locks are `flock` on lock files in the store, released by the kernel when
   the process dies (T0 test with `SIGKILL`). Per-digest lock files are never
@@ -92,7 +92,7 @@ form of a flattened base in the store is not designed yet].
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build
 is no longer running. A state directory that is not empty and has no
-regular `.ranikust-root` file is refused, so this clean-up never runs in a
+regular `.ranikust-state` file is refused, so this clean-up never runs in a
 directory the user pointed at by mistake. In overlay mode an upper directory written under
 `volatile` is never trusted after a crash.
 

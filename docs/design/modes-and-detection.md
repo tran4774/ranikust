@@ -134,13 +134,15 @@ it is accepted and ignored with a warning.
   (`ranikust`'s `container.rs`, ported from `kaniko@44aa7ddc0
   pkg/util/proc/proc.go`, ADR-0048), and everywhere else in a root it makes
   in its state directory, `<state>/builds/<id>/rootfs`; it never builds on
-  a machine's own `/`, and kaniko's `--force` is refused.
+  a machine's own `/`, and kaniko's `--force` is refused. Outside a
+  container it needs mount privileges, for the full sandbox; a host where
+  root may not mount is refused (Q-330).
 - The state directory is `/var/lib/ranikust` in every mode; `--state-dir`
   replaces it ([cache-and-store](cache-and-store.md#store-layout)). It must
   be owned by the user running ranikust, not writable by others, below
   directories only root may write; ranikust makes it `0700`
   ([kaniko-mode](kaniko-mode.md#host-safety-checks)).
-- Kaniko mode on `/` locks it (`flock` in the state directory), one build
+- Kaniko mode on `/` locks it (`flock` on `/` itself), one build
   per container. Overlay-mode builds and kaniko-mode builds on a host share
   the state directory and its store; each has its own `builds/<id>`.
 - Overlay mode needs the state directory, where the upper directories live,

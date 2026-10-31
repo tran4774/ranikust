@@ -13,7 +13,7 @@ builds fetch or extract the same digest at once.
 
 - The store layout in the state directory (ADR-0022): `blobs/sha256/`,
   `layers/<id>/`, `caches/<sha256(id)>/`, `tmp/`, lock files, the
-  per-build `builds/<id>/` areas and the `.ranikust-root` marker.
+  per-build `builds/<id>/` areas and the `.ranikust-state` marker (`STATE_MARKER`; ADR-0050 renamed it from `.ranikust-root`).
 - Per-digest `flock` locks; publication of a filled temporary entry by
   atomic `rename`.
 - Start-up clean-up of `tmp/` leftovers and of `builds/<id>` whose build is
@@ -86,7 +86,7 @@ on a blocking thread, because the lock may wait.
 - A crash leaves only `tmp/<id>` entries and `builds/<id>`; both go at the
   next start (T0 test with `SIGKILL`). An upper written under `volatile` is
   never reused.
-- A non-empty state directory without a regular `.ranikust-root` file is
+- A non-empty state directory without a regular `.ranikust-state` file is
   refused, so clean-up never runs in a directory the user pointed at by
   mistake. A new state directory is `0700`; one owned by another user or
   writable by others is used with a warning.
@@ -188,5 +188,5 @@ on a blocking thread, because the lock may wait.
   (`rnk-snapshot` uses the chain ID, Q-150), lock files under
   `locks/`. (Q-100, ADR-0032) Durability: a blob is `fsync`ed before its
   rename, a layer is not. The state directory's checks and kaniko mode's
-  lock of `/` (`locks/kaniko-root`) belong to `ranikust` (ADR-0050); not
+  lock of `/` (`flock` on `/` itself) belong to `ranikust` (ADR-0050); not
   here.

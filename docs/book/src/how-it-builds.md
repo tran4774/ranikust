@@ -98,7 +98,8 @@ with the default security profile or in most Kubernetes pods.
 - Outside a container, kaniko mode never builds on the machine's `/`: it
   makes a root for the build in its state directory,
   `<state>/builds/<id>/rootfs`, and removes it with the build; `RUN`
-  there gets the full sandbox where root may mount. The context, the
+  there gets the full sandbox, so ranikust needs mount privileges there
+  and refuses to build without them (run it in a container instead). The context, the
   outputs and secret files must not be inside the root.
 
 ## When no mode works

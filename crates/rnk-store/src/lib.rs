@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! <state-dir>/
-//! ├── .ranikust-root                 marker: a non-empty directory without it is refused
+//! ├── .ranikust-state                marker: a non-empty directory without it is refused
 //! ├── blobs/<algorithm>/<hex>        compressed blobs, by digest
 //! ├── layers/v2/<algorithm>/<hex>/   extracted layers, by chain ID [open: Q-015]
 //! ├── caches/<sha256(id)>/           RUN --mount=type=cache
@@ -39,4 +39,4 @@ mod store;
 
 pub use error::{Error, Result};
 pub use key::EntryKey;
-pub use store::{BuildPaths, CacheLease, CacheOwner, CacheSharing, Store, TmpEntry};
+pub use store::{BuildPaths, CacheLease, CacheOwner, CacheSharing, STATE_MARKER, Store, TmpEntry};
