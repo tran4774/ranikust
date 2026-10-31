@@ -132,7 +132,7 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 |---|---|
 | Changing code in `crates/` | `dev-loop` skill |
 | Must match kaniko | `kaniko-parity` skill; `kaniko-oracle` subagent with the resolved `${KANIKO_SRC:-../kaniko}` (`--add-dir`) |
-| Changing `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store` | plan mode first; `host-safety` subagent on the diff |
+| Changing `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store` | plan mode first; `host-safety` subagent on the diff, then the fix loop below |
 | Final review | `reviewer` subagent: only the scope and the requirement, not your suspicions |
 | Decision; before a PR | `/adr`; `/sync-docs [base]` (user-invoked) |
 | Any diff; `rnk-rootfs`, `rnk-sandbox`, `rnk-layer`, `rnk-registry` | `/code-review`; `/security-review` |
@@ -143,3 +143,23 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 `.claude/settings.json` denies `sudo`, `mount`, `unshare` and the like, and
 asks before `cargo add`/`install`/`run`, `docker`, `podman`, `git commit`,
 `git push`.
+
+### Host-safety fix loop
+
+For a branch written by a fork (an agent in its own worktree):
+
+1. The `host-safety` subagent reports to the main session.
+2. The main session sends the findings back to the same fork (it keeps the
+   task's context); it never starts a new agent for the fix.
+3. The fork fixes on its branch, runs `just check` (and the VM suites when
+   set-up or the sandbox changed) and reports.
+4. The main session asks the same reviewer to re-check only the fix
+   commits.
+5. No blocker left: merge.
+
+High findings are fixed; cheap medium and low ones in the same round;
+costly low ones, or ones that belong to a later task, become follow-ups in
+the phase file and do not block. A finding that needs a design choice goes
+to the maintainer as an open question while the fork builds the
+fail-closed option as the interim. After three rounds still blocked, stop
+and report to the maintainer.
