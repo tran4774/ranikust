@@ -167,6 +167,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   it ends. Warnings for a secret-looking `--build-arg NAME=value` and for
   another process holding `DOCKER_AUTH_CONFIG` (ADR-0051).
 
+- `--mode=kaniko` in a container where root may mount (`--privileged`,
+  `CAP_SYS_ADMIN`) refuses to build on `/`: its `RUN` would see the host's
+  devices and a writable `/proc/sys`; overlay mode builds there (Q-341).
+
 ### Changed
 
 - ranikust picks the build root itself and keeps everything in one state

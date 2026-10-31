@@ -425,6 +425,26 @@ Entry format:
   when the fallback starts (`rnk_store`).
 - **Raised:** 2026-10-31
 
+### Q-341: May kaniko mode build on `/` in a container where root may mount?
+
+- **Blocks:** nothing yet; **Area:** `ranikust`, `rnk-sandbox`
+- **Context:** found by the host-safety review of ADR-0051's branch: in a
+  `--privileged` container (or one with `CAP_SYS_ADMIN`), `--mode=kaniko`
+  built on `/` with `Isolation::Direct`, which mounts nothing, so a `RUN`
+  as uid 0 saw the host's devices (`/dev/sda`) and a writable `/proc/sys`
+  (`kernel/core_pattern` runs a binary as host root). Overlay mode, which
+  that container can run, gives `RUN` the full sandbox.
+- **Options:** (a) refuse kaniko mode on `/` where root may mount, and
+  point to overlay mode; (b) in that case, enter a private mount namespace
+  and apply Docker's read-only and masked paths (`/proc/sys`,
+  `sysrq-trigger`, `kcore`…) and a `nodev` remount before the first `RUN`.
+- **Recommendation:** (a): overlay mode is the better build there anyway;
+  (b) adds a second sandbox to maintain for a case nobody needs.
+- **Interim:** (a): `--mode=kaniko` on `/` with the namespace entered
+  refuses with that guidance (`crates/ranikust/src/main.rs`); `--mode=auto`
+  picks overlay mode there already.
+- **Raised:** 2026-10-31
+
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?

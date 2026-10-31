@@ -341,6 +341,17 @@ fn kaniko(
             false
         }
     };
+    if on_slash && can_mount {
+        // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
+        // also gives a `Direct` `RUN` on `/` the host's devices and a
+        // writable /proc/sys: refused until it gets Docker's read-only and
+        // masked paths [open: Q-341]. Overlay mode runs there instead.
+        return Err(Failure::error(format!(
+            "{how}: kaniko mode on / in a container where root may mount would run RUN with \
+             the host's devices and a writable /proc/sys; use overlay mode there \
+             (--mode=overlay or --mode=auto), with a volume at the state directory"
+        )));
+    }
     if on_slash {
         // What ranikust cannot close itself (ADR-0051, B4 and B5).
         exposure::warn_build_args(&config.build_args);
