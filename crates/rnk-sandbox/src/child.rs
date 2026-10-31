@@ -151,6 +151,11 @@ pub(crate) struct ChildArgs {
     /// `root_dir` first, and check that the new `/` is this directory,
     /// `(dev major, dev minor, ino)`, the one the parent checked.
     pub(crate) chroot: Option<(u32, u32, u64)>,
+    /// `Isolation::Direct` on `/` with capabilities outside Docker's
+    /// defaults in the bounding set and `CAP_SETPCAP` to drop them: the
+    /// child drops them before `execve` (ADR-0051), so a `RUN` never holds
+    /// `CAP_SYS_PTRACE` against ranikust.
+    pub(crate) direct_drop: bool,
     /// The `RLIMIT_NOFILE` the command starts with; `None` keeps ranikust's.
     pub(crate) nofile: Option<rustix::process::Rlimit>,
     pub(crate) stdio: [ChildStdio; 3],
@@ -1510,6 +1515,7 @@ mod tests {
             groups: Vec::new(),
             workdir: c"/".into(),
             chroot: None,
+            direct_drop: false,
             nofile: None,
             stdio: [ChildStdio::Inherit; 3],
             argv: vec![c"sh".into(), c"-c".into()],

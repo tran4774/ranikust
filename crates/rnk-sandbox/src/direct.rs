@@ -7,8 +7,12 @@
 //! On a root other than `/` (a directory of the state directory on a host,
 //! ADR-0050, only where the full sandbox cannot run) it first `chroot`s
 //! into it, which kaniko, always on `/`, never does, checks that the new `/` is the directory the parent checked,
-//! and cuts its capabilities to Docker's defaults. No namespace or mount;
-//! the container or host ranikust runs in is the only isolation.
+//! and cuts its capabilities to Docker's defaults. On `/` it keeps the
+//! container's capabilities except those outside Docker's defaults, which
+//! it drops from its bounding set when ranikust may (ADR-0051). No
+//! namespace or mount; the container ranikust runs in is the only
+//! isolation. Once the command exits, the parent kills what is left of its
+//! process tree, `setsid` ones included ([`crate::spawner`]'s sweep).
 //!
 //! The same rules as in [`crate::child`] hold: no allocation, no lock, only
 //! system calls between `clone` and `execve`.
@@ -58,6 +62,11 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         // Root in a bare `chroot` must not keep what would let it leave or
         // mount: the bounding set, effective and permitted sets go to
         // Docker's defaults, as in the full sandbox.
+        drop_capabilities(fds.err_w, args);
+    } else if args.direct_drop {
+        // On `/` the container's capabilities stay, as kaniko, except
+        // those outside Docker's defaults: a `RUN` with `CAP_SYS_PTRACE`
+        // would read ranikust's descriptors and memory (ADR-0051).
         drop_capabilities(fds.err_w, args);
     }
     // `setsid` there also makes the process group the parent kills once the

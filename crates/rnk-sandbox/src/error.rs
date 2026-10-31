@@ -275,6 +275,26 @@ pub enum Error {
         /// Why the user-namespace path failed.
         userns: io::Error,
     },
+    /// A `Direct` `RUN` on `/` would keep a capability that reads ranikust's
+    /// state through `/proc` or by file handle, and ranikust lacks
+    /// `CAP_SETPCAP` to drop it (ADR-0051).
+    #[error(
+        "RUN directly on /: the container grants {caps}, which would let a RUN read \
+         ranikust's state and credentials through /proc, and ranikust lacks CAP_SETPCAP \
+         to take it away from the RUN; start the container without {caps}, or with \
+         CAP_SETPCAP"
+    )]
+    RunReachesState {
+        /// The capabilities, comma-separated.
+        caps: String,
+    },
+    /// The `RUN` left processes that kept appearing after every kill: a
+    /// fork loop faster than the sweep (ADR-0051).
+    #[error("RUN left processes that could not all be killed ({left} still alive)")]
+    Survivors {
+        /// How many were alive after the last round.
+        left: usize,
+    },
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,

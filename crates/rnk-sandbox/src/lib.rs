@@ -46,6 +46,7 @@ mod seccomp;
 mod setup;
 mod spawner;
 mod spec;
+mod sweep;
 
 pub use child::RootEntry;
 pub use error::{Error, Result, Step};
