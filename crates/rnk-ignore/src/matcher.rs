@@ -35,7 +35,7 @@ const REGEX_SIZE_LIMIT: usize = 128 << 20;
 /// pattern that Go would accept in `New` but fail to compile later, which
 /// `patternmatcher` validates only partially. A matcher holds no state
 /// between calls and can be shared between threads.
-// [open: Q-010] paths and patterns are bytes (`AsRef<[u8]>`), not `&str`.
+// Paths and patterns are bytes (`AsRef<[u8]>`), not `&str` (ADR-0049).
 #[derive(Debug, Clone)]
 pub struct Matcher {
     patterns: Vec<Pattern>,

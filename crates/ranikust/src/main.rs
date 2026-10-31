@@ -2,8 +2,8 @@
 //!
 //! Parses the `build` and `version` subcommands; `build` is the default and
 //! accepts kaniko's common executor flags, plus `--mode=auto|overlay|kaniko`
-//! to choose the snapshot mode (ADR-0011, ADR-0023). `push`, `prune` and
-//! `login` come later (Q-048).
+//! to choose the snapshot mode (ADR-0011, ADR-0023, ADR-0049). `push` and
+//! `prune` come later (Q-048); there is no `login` (ADR-0049).
 //!
 //! Set-up order, each step before the next: parse the flags (no I/O;
 //! refused kaniko flags are reported first) → the Linux 5.8 check of
@@ -85,7 +85,7 @@ impl Failure {
 }
 
 fn main() -> ExitCode {
-    let (mut command, metrics_file, mut warnings) = match cli::parse(std::env::args_os()) {
+    let (command, metrics_file, mut warnings) = match cli::parse(std::env::args_os()) {
         Ok(parsed) => {
             let file = parsed.cli.metrics_file().map(Path::to_path_buf);
             (parsed.cli.into_command(), file, parsed.warnings)
@@ -103,17 +103,6 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
     };
-    // kaniko's environment variables (ADR-0036), before anything reads the
-    // flags they stand for.
-    if let Command::Build(args) = &mut command {
-        match config::apply_env(args, std::env::vars_os()) {
-            Ok(more) => warnings.extend(more),
-            Err(invalid) => {
-                report(&invalid.0);
-                return ExitCode::from(EXIT_USAGE);
-            }
-        }
-    }
     let fault = std::env::var(DEBUG_FAULT_ENV).ok();
 
     // ADR-0028: before any other work. `version` needs no filesystem access

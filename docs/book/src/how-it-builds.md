@@ -40,6 +40,14 @@ privileged container, or as a regular user who may create user namespaces.
   `--allow network.none-userns` lets ranikust use a user namespace for it,
   under a seccomp filter
   ([ADR-0033](https://github.com/tran4774/ranikust/blob/main/docs/adr/0033-network-none-loopback-through-a-user-namespace.md)).
+  Otherwise `RUN` uses the network ranikust itself has, as kaniko's does
+  ([ADR-0010](https://github.com/tran4774/ranikust/blob/main/docs/adr/0010-run-network-host-or-none.md)):
+  it reaches services on the host and the cloud metadata service
+  (`169.254.169.254`), which gives out the machine's or pod's cloud
+  credentials. ranikust does not block it. Where builds run untrusted
+  Dockerfiles, deny those addresses to the build with a network policy,
+  require IMDSv2 with a hop limit of 1, or pass `--network=none` when the
+  build needs no network.
 - Stages that do not depend on each other build in parallel, up to `--jobs`
   at a time, which defaults to the number of CPUs available to ranikust
   ([ADR-0013](https://github.com/tran4774/ranikust/blob/main/docs/adr/0013-jobs-default-available-parallelism.md)).

@@ -29,7 +29,7 @@ Not gitignore, and not kaniko's deprecated `Matches`. Go's own behaviour
 ## API
 
 Strings are bytes as in Go; `&str`, `String` and `&[u8]` are accepted
-(`AsRef<[u8]>`) [open: Q-010].
+(`AsRef<[u8]>`), as decided (ADR-0049).
 
 ```rust
 pub fn read_patterns(contents: &[u8]) -> Result<Vec<Vec<u8>>, Error>;   // ignorefile.ReadAll (ADR-0015)

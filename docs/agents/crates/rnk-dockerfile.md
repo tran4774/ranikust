@@ -45,7 +45,7 @@ pub trait Env { fn get(&self, name: &str) -> Option<&str>; }            // [done
 impl Located<Instruction> { pub fn expand(&mut self, lex: &Lexer, env: &dyn Env) -> Result<(), Error>; } // [done] Expand() + dispatch
 pub fn stage_graph(df: &Dockerfile, opts: &GraphOptions) -> Result<StageGraph, Error>; // [done] dockerfile2llb resolution
 pub struct GraphOptions { pub build_args, pub build_platform: Platform, pub target_platform: Platform,
-                          pub targets: Vec<String> }                       // [done] [open: Q-008] list of targets
+                          pub targets: Vec<String> }                       // [done] list of targets; ranikust passes one (ADR-0049)
 pub struct StageGraph { pub global_args: EnvList, pub stages: Vec<StageNode>, pub targets: Vec<usize>, pub needed: Vec<usize>, .. } // [done]
 pub struct StageNode { pub base: Base, pub platform, pub triggers, pub references: Vec<Reference>, .. } // [done]
 pub struct StageScope { .. } // [done] apply(&Located<Instruction>) -> expanded; env(), config_env(), args()

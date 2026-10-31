@@ -149,50 +149,6 @@ fn log_options_map_kanikos_levels() {
     assert!(o.timestamp);
 }
 
-fn env(vars: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    vars.iter()
-        .map(|(k, v)| ((*k).into(), (*v).into()))
-        .collect()
-}
-
-/// kaniko's variables (ADR-0036): `KANIKO_NO_PUSH` overrides the flag as in
-/// kaniko, mirrors and maps are refused, the rest get one warning.
-#[test]
-fn kaniko_variables_are_honoured_refused_or_named() {
-    let mut a = args(&["-d", "r/a:1"]);
-    let w = apply_env(
-        &mut a,
-        env(&[
-            ("KANIKO_NO_PUSH", "true"),
-            ("FF_KANIKO_COPY_LINK", "1"),
-            ("KANIKO_METRICS_FILE", "/m.json"),
-            ("KANIKO_DIR", "/kaniko"),
-            ("PATH", "/bin"),
-        ]),
-    )
-    .expect("applies");
-    assert!(a.no_push);
-    assert_eq!(w.len(), 2, "{w:?}");
-    assert!(w[0].contains("--state-dir"), "{w:?}");
-    assert!(
-        w[1].contains("FF_KANIKO_COPY_LINK, KANIKO_METRICS_FILE"),
-        "{w:?}"
-    );
-    let mut a = args(&["--no-push"]);
-    assert!(apply_env(&mut a, env(&[("KANIKO_NO_PUSH", "false")])).is_ok());
-    assert!(!a.no_push, "the variable overrides the flag");
-    let err = apply_env(&mut a, env(&[("KANIKO_NO_PUSH", "maybe")])).expect_err("bad bool");
-    assert!(err.0.contains("KANIKO_NO_PUSH"), "{}", err.0);
-    let err =
-        apply_env(&mut a, env(&[("KANIKO_REGISTRY_MIRROR", "m.example")])).expect_err("mirror");
-    assert!(err.0.contains("Phase 5"), "{}", err.0);
-    assert!(
-        apply_env(&mut a, env(&[("KANIKO_PRESERVE_CONTEXT", "true")]))
-            .expect("honoured")
-            .is_empty()
-    );
-}
-
 #[test]
 fn only_linux_amd64() {
     let ok = config(&["--no-push"]).expect("default platform");
@@ -250,10 +206,18 @@ fn build_args_with_and_without_values() {
 }
 
 #[test]
-fn empty_targets_are_refused() {
-    assert!(config(&["--no-push", "--target=a,,b"]).is_err());
-    let ok = config(&["--no-push", "--target=a,b"]).expect("targets");
-    assert_eq!(ok.targets, ["a", "b"]);
+fn one_non_empty_target_only() {
+    assert!(config(&["--no-push", "--target="]).is_err());
+    let ok = config(&["--no-push", "--target=b"]).expect("one target");
+    assert_eq!(ok.targets, ["b"]);
+    // ADR-0049: a list, comma-separated or repeated, is refused.
+    for args in [
+        &["--no-push", "--target=a,b"][..],
+        &["--no-push", "--target", "a", "--target", "b"],
+    ] {
+        let err = config(args).expect_err("two targets");
+        assert!(err.0.contains("give one"), "{}", err.0);
+    }
 }
 
 #[test]
@@ -406,7 +370,7 @@ fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
 }
 
 /// In overlay mode, the kaniko-mode flags that would change the image are
-/// refused [open: Q-260]; the others are warned about.
+/// refused (ADR-0049); the others are warned about.
 #[test]
 fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
     for flag in [

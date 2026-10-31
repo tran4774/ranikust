@@ -37,7 +37,7 @@ Built items say `built`; the rest is planned.
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;          // [decided] ADR-0020; task 5a
 fn main() -> std::process::ExitCode;   // built; no #[tokio::main]: runtime built by hand after set-up [design]
 enum Command { Build(Box<BuildArgs>), Version }                  // built (clap, Q-012); no subcommand = Build
-    // Push(PushArgs), Prune(PruneArgs), Login(LoginArgs): later [open: Q-048]
+    // Push(PushArgs), Prune(PruneArgs): later [open: Q-048]; no Login (ADR-0049)
 struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, destination, no_push,
     tar_path, oci_layout_path, compression, compression_level, image_format, label, annotation,
     digest files, insecure*, skip_tls_verify*, push_retry, image_download_retry, verbosity,
@@ -46,11 +46,10 @@ struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, d
     single_snapshot, materialize, force;
     ours: mode, workdir, state_dir, jobs, network, secret, allow, metrics_file, snapshot_workers.
     Planned: cache, cache_repo (4), parallel_stages (2), seccomp, userns (3) */ }
-fn cli::parse(args) -> Result<Parsed, ParseError>;  // refused kaniko flags first; ignored ones
-    // taken out and old spellings renamed, each with a warning (Parsed::warnings); then clap
-fn config::apply_env(&mut BuildArgs, vars) -> Result<Vec<String>, Invalid>;  // KANIKO_* (ADR-0036)
+fn cli::parse(args) -> Result<Parsed, ParseError>;  // refused kaniko flags first, none ignored
+    // (ADR-0049); old spellings renamed with a warning (Parsed::warnings); then clap
 struct BuildConfig { /* built: the flags validated, paths absolute, enums resolved */ }
-fn config::overlay_mode_flags(&BuildArgs) -> Result<Vec<String>, Invalid>; // kaniko flags in overlay mode: refused if they change the image [open: Q-260], else warnings
+fn config::overlay_mode_flags(&BuildArgs) -> Result<Vec<String>, Invalid>; // kaniko flags in overlay mode: refused if they change the image (ADR-0049), else warnings
 fn setup::enter_namespace() -> Result<(), Refusal>;   // first set-up step; Refusal::needs_kaniko_mode() → auto picks kaniko mode
 fn container::detect(&impl Host) -> Option<Runtime>;  // kaniko's GetContainerRuntime, ported (ADR-0040)
 impl BuildConfig {
@@ -206,7 +205,8 @@ error, a refused kaniko flag, an invalid combination, and for now every
   OpenVZ host vs container, the overlay `/` only on the first mount line).
   `src/config/tests.rs`: the kaniko-mode state directory per root, the
   kaniko flags' defaults and cleaned paths, a relative `--ignore-path`
-  refused, the overlay-mode refusals and warnings (Q-260).
+  refused, the overlay-mode refusals and warnings (ADR-0049); one
+  `--target` only.
   `src/cli/tests.rs`: the flags, `--whitelist-var-run` as an alias.
   `tests/cli.rs`: `--mode=kaniko` with `--force` stops at Phase 2, without
   it refused outside a container (either answer checked), the kaniko flags
@@ -258,13 +258,12 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `--no-push false` does not (the `false` is an argument). clap matches it
   with `require_equals` and `num_args = 0..=1`.
 - clap would report a known kaniko flag as "unexpected argument"; the
-  pre-pass in `cli::parse` refuses it by name first (`REFUSED`), takes out
-  the ignored ones (`IGNORED`, with whether they take a value, so the next
-  argument goes with them) and renames old spellings (`RENAMED`). A new
-  kaniko flag needs a row there and in the kaniko map (ADR-0036).
-- kaniko's variables are applied by `config::apply_env` before validation:
-  `KANIKO_NO_PUSH` overrides the flag, `KANIKO_REGISTRY_MIRROR`/`_MAP` exit
-  2, the rest get one warning (`root.go:75-104`, ADR-0036); defaults `--context=/workspace/`,
+  pre-pass in `cli::parse` refuses it by name first (`REFUSED`; flags that
+  change nothing are refused too, `Refusal::Unneeded`, ADR-0049) and
+  renames old spellings (`RENAMED`). A new kaniko flag needs a row there and
+  in the kaniko map (ADR-0036).
+- kaniko's variables are not read (ADR-0049); only `DOCKER_AUTH_CONFIG`
+  (`build.rs`, registry credentials). Defaults `--context=/workspace/`,
   `--dockerfile=Dockerfile` (`:337-338`); `--kaniko-dir` is `--state-dir`
   (default `<workdir>/.ranikust` or `/ranikust/state`, ADR-0022).
 
@@ -309,5 +308,5 @@ error, a refused kaniko flag, an invalid combination, and for now every
   Phase 2 task 1.
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
-  `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push` and
-  `login` [open: Q-048].
+  `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push`
+  [open: Q-048]; no `login` (ADR-0049).

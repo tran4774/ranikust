@@ -28,7 +28,8 @@ blocked Phase 1 ([phase-1](../agents/phase-1.md)); they were accepted on
 ADR-0026 to ADR-0029 record decisions made while implementing Phase 1;
 ADR-0030 and ADR-0031 answer open questions Q-012, Q-075 and Q-076.
 ADR-0032 settles the remaining questions about observable behaviour by
-following BuildKit. ADR-0038 answers the questions that blocked Phase 2
+following BuildKit. ADR-0049 puts security and performance before compatibility
+with kaniko and BuildKit. ADR-0038 answers the questions that blocked Phase 2
 (kaniko mode).
 
 ## Status lifecycle
@@ -119,3 +120,4 @@ when new measurements contradict its evidence.
 | [0046](0046-snapshotter-signature.md) | `Snapshotter` names its base-layer and diff types, so overlay and kaniko mode share one builder | Accepted | 2026-10-31 | Q-024 |
 | [0047](0047-kaniko-workdir-chain-is-private.md) | A kaniko-mode host workdir must be out of other users' reach | Accepted | 2026-10-31 | Q-320 |
 | [0048](0048-container-heuristic-guards-the-root.md) | Kaniko mode builds on `/` when the container heuristic says so, or with `--force` | Accepted | 2026-10-31 | Q-321 |
+| [0049](0049-security-and-performance-over-kaniko-compatibility.md) | Security and performance come before kaniko compatibility; flags that change nothing are refused, kaniko's variables are not read | Accepted | 2026-10-31 | maintainer, partly supersedes ADR-0011, ADR-0032, ADR-0036; Q-008, Q-010, Q-047, Q-048, Q-260 |

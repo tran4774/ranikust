@@ -23,7 +23,8 @@ ranikust --context=/workspace --dockerfile=Dockerfile \
 
 `ranikust build …` is the same thing spelt out. `ranikust version` (or
 `--version`) prints the version, and `ranikust --help` lists every flag.
-`push`, `login` and `prune` do not exist yet.
+`push` and `prune` do not exist yet; there is no `login`: ranikust reads
+existing credentials and never writes them.
 
 Before anything else, ranikust checks that the kernel is Linux 5.8 or later
 and that `openat2` and `statx` are allowed, and stops with a message naming
@@ -42,7 +43,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--context-sub-path=DIR` | Build from this sub-directory of a `dir://` context (inside it: no `..`). Ignored, with a warning, for a plain path, as kaniko does. |
 | `-f`, `--dockerfile=PATH` | The Dockerfile. Default `Dockerfile`. |
 | `--build-arg=KEY=VALUE` | A build argument; `KEY` alone takes its value from the environment. Repeatable. |
-| `--target=STAGE` | Stages to build, comma-separated or repeated; the first is the image produced. Default: the last stage. |
+| `--target=STAGE` | The stage to build and produce. One only: kaniko's list (comma-separated or repeated) is refused, since the stages after the first would be built for nothing. Default: the last stage. |
 | `-d`, `--destination=IMAGE` | An image to push to. Repeatable. Required unless `--no-push`. |
 | `--no-push` | Do not push. |
 | `--tar-path=PATH` | Also write a Docker `save` tarball. |
@@ -94,22 +95,11 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
 | `--allow=network.none-userns` | Where ranikust lacks `CAP_NET_ADMIN` (a container with only `SYS_ADMIN` added), lets `RUN --network=none` get loopback through a user namespace; without it such a `RUN` is refused. A root `RUN` there holds `CAP_NET_ADMIN` over its own network namespace, and a seccomp filter closes: joining or creating user namespaces, `io_uring`, PF_KEY, netlink other than route, sock_diag, audit and uevent (nf_tables, xfrm, generic netlink), the iptables, ip6tables, arptables, ebtables, IPVS, IPsec-policy and multicast-routing socket options, and `TCP_REPAIR`. Everything else `CAP_NET_ADMIN` allows in that namespace stays open, rtnetlink included: `ip link add type <kind>` can load a kernel module on the host ([ADR-0033](https://github.com/tran4774/ranikust/blob/main/docs/adr/0033-network-none-loopback-through-a-user-namespace.md)). ranikust's own. |
 
-## kaniko flags it ignores
-
-These change nothing in the image ranikust builds, so it accepts them and
-says once, as a warning, that it ignores them:
-
-| Flag | Why |
-|---|---|
-| `--cache-dir` | The warmer is not planned; base images are pulled into the store. |
-| `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry` | They tune kaniko's own filesystem handling, which overlay mode does not do. |
-| `--force-build-metadata`, `--skip-unused-stages` | Deprecated in kaniko, which ignores them too. |
-
 ## kaniko flags it refuses
 
-ranikust never ignores a kaniko flag that would change the image. One it
-does not take stops the run with exit code 2 and a line saying why, for
-every such flag on the command line:
+ranikust ignores no kaniko flag: one it does not take, including those that
+would change nothing, stops the run with exit code 2 and a line saying why,
+for every such flag on the command line ([ADR-0049](https://github.com/tran4774/ranikust/blob/main/docs/adr/0049-security-and-performance-over-kaniko-compatibility.md)):
 
 ```text
 ranikust: error: kaniko's --cache is not supported: the layer cache comes in Phase 4 (Q-021)
@@ -117,9 +107,15 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
 ```
 
 - **Renamed:** `--kaniko-dir` is `--state-dir`.
+- **Change nothing in ranikust:** `--cache-dir` (the warmer is not planned;
+  base images are pulled into the store), `--use-new-run`, `--cleanup`,
+  `--pre-cleanup` (ranikust decides what to empty itself),
+  `--image-fs-extract-retry` (use `--image-download-retry`),
+  `--force-build-metadata`, `--skip-unused-stages` (deprecated in kaniko).
+  Drop them. `--cache=false` is accepted: it asks for what ranikust does.
 - **With the layer cache:** `--cache`, `--cache-repo`, `--cache-ttl`,
-  `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching`,
-  `--no-push-cache`.
+  `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching`
+  (also `=false`), `--no-push-cache`.
 - **With registry mirrors and credential helpers:** `--git` (git
   contexts), `--registry-mirror`, `--registry-map`, `--credential-helpers`,
   `--skip-default-registry-fallback`, `--registry-client-cert`,
@@ -128,22 +124,18 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
 - **Not planned:** `--bucket` (`-b`), `--azure-container-registry-config`
   and kaniko's `bake`.
 
-## kaniko's environment variables
+## Environment variables
 
-- `KANIKO_NO_PUSH=true|false` sets `--no-push`, and wins over the flag, as
-  in kaniko.
-- `KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP` stop the run with exit
-  code 2: mirrors come later, and pulling from another registry than the
-  one they name would be wrong.
 - `DOCKER_AUTH_CONFIG` holds a `config.json`'s `auths` inline (nothing else:
   no `credsStore` or `credHelpers`); it is asked before the
   file (`$DOCKER_CONFIG/config.json` or `~/.docker/config.json`), as in
   kaniko.
-- `KANIKO_PRESERVE_CONTEXT` is accepted, as its flag; `KANIKO_DIR` is
-  ignored with a warning naming `--state-dir`.
-- Any other `KANIKO_*` or `FF_KANIKO_*` variable that is set is named in one
-  warning at start-up. `KANIKO_METRICS_FILE` is one of them: use
-  `--metrics-file`.
+- kaniko's variables are not read, and not warned about
+  ([ADR-0049](https://github.com/tran4774/ranikust/blob/main/docs/adr/0049-security-and-performance-over-kaniko-compatibility.md)):
+  `KANIKO_NO_PUSH` does not set `--no-push` (pass the flag),
+  `KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP` change nothing (images
+  come from the registry they name), `KANIKO_DIR` is `--state-dir`, and
+  `KANIKO_METRICS_FILE` is `--metrics-file`.
 
 kaniko's feature flags (`FF_KANIKO_*`) are not read: ranikust has one
 behaviour, which for most of them is what the flag turns on.

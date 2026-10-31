@@ -99,8 +99,8 @@ pub(crate) struct BuildArgs {
     #[arg(long = "build-arg", value_name = "KEY[=VALUE]", help_heading = "Input")]
     pub(crate) build_args: Vec<String>,
 
-    /// Stages to build, comma-separated or repeated; the first is the image
-    /// pushed. Default: the last stage.
+    /// The stage to build and push. One only (ADR-0049): a repeated flag or a
+    /// comma-separated list is refused. Default: the last stage.
     #[arg(
         long = "target",
         value_name = "STAGE",
@@ -345,12 +345,12 @@ pub(crate) struct BuildArgs {
     pub(crate) snapshot_mode: Option<SnapshotMode>,
 
     /// A path kept out of every kaniko-mode snapshot, as in kaniko; absolute.
-    /// Repeat for several. Refused in overlay mode (Q-260).
+    /// Repeat for several. Refused in overlay mode (ADR-0049).
     #[arg(long = "ignore-path", value_name = "PATH", help_heading = "Snapshots")]
     pub(crate) ignore_paths: Vec<PathBuf>,
 
     /// Keep `/var/run` out of kaniko-mode snapshots, as in kaniko
-    /// [default: true]; `false` is refused in overlay mode (Q-260).
+    /// [default: true]; `false` is refused in overlay mode (ADR-0049).
     #[arg(
         long,
         value_name = "BOOL",
@@ -363,7 +363,7 @@ pub(crate) struct BuildArgs {
     pub(crate) ignore_var_run: Option<bool>,
 
     /// Take one snapshot at the end of the build, as in kaniko; refused in
-    /// overlay mode (Q-260).
+    /// overlay mode (ADR-0049).
     #[arg(
         long,
         value_name = "BOOL",
@@ -466,14 +466,18 @@ enum Refusal {
     NotYet(&'static str),
     /// The feature is out of scope (ADR-0008).
     OutOfScope(&'static str),
+    /// The flag changes nothing in ranikust; it is refused rather than
+    /// ignored (ADR-0049).
+    Unneeded(&'static str),
 }
 
 const PHASE_4: &str = "the layer cache comes in Phase 4 (Q-021)";
 const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential helpers (Q-047)";
 
 /// kaniko executor flags that ranikust recognises but does not accept
-/// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go`, ADR-0036). `--cache` is
-/// here for `--cache` and `--cache=true`; `--cache=false` is accepted.
+/// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go`, ADR-0036, ADR-0049): none
+/// is ignored, each is refused with its reason. `--cache` is here for
+/// `--cache` and `--cache=true`; `--cache=false` is accepted.
 const REFUSED: &[(&str, Refusal)] = &[
     ("kaniko-dir", Refusal::Renamed("use --state-dir")),
     ("cache", Refusal::NotYet(PHASE_4)),
@@ -482,6 +486,7 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("cache-copy-layers", Refusal::NotYet(PHASE_4)),
     ("cache-run-layers", Refusal::NotYet(PHASE_4)),
     ("compressed-caching", Refusal::NotYet(PHASE_4)),
+    ("no-push-cache", Refusal::NotYet(PHASE_4)),
     (
         "git",
         Refusal::NotYet("git contexts come in Phase 5 (ADR-0035)"),
@@ -504,6 +509,41 @@ const REFUSED: &[(&str, Refusal)] = &[
         "azure-container-registry-config",
         Refusal::OutOfScope("cloud-specific registry configuration is out of scope (ADR-0008)"),
     ),
+    (
+        "cache-dir",
+        Refusal::OutOfScope(
+            "the warmer is out of scope (ADR-0008); base images are pulled into the store",
+        ),
+    ),
+    (
+        "use-new-run",
+        Refusal::Unneeded("ranikust has one way to run RUN; drop the flag"),
+    ),
+    (
+        "cleanup",
+        Refusal::Unneeded(
+            "ranikust decides what to empty itself (ADR-0046) and keeps the store in \
+             --state-dir on purpose; drop the flag",
+        ),
+    ),
+    (
+        "pre-cleanup",
+        Refusal::Unneeded("ranikust decides what to empty itself (ADR-0046); drop the flag"),
+    ),
+    (
+        "image-fs-extract-retry",
+        Refusal::Unneeded(
+            "layers are extracted from the store; pulls are retried by --image-download-retry",
+        ),
+    ),
+    (
+        "force-build-metadata",
+        Refusal::Unneeded("deprecated in kaniko, which ignores it; drop the flag"),
+    ),
+    (
+        "skip-unused-stages",
+        Refusal::Unneeded("deprecated in kaniko; unused stages are always skipped"),
+    ),
 ];
 
 /// kaniko's short flags among [`REFUSED`].
@@ -514,50 +554,6 @@ const REFUSED_COMMANDS: &[(&str, &str)] = &[(
     "bake",
     "kaniko's bake is out of scope (ADR-0008); run one build per image",
 )];
-
-/// kaniko flags accepted and ignored with a warning, because ignoring them
-/// leaves the image's bytes unchanged in overlay mode (ADR-0036, which
-/// extends ADR-0023's rule for `--snapshot-mode`): `(name, takes a value,
-/// why)`. A flag taking a value consumes the next argument when it has no
-/// `=`; a boolean never does, as in pflag.
-const IGNORED: &[(&str, bool, &str)] = &[
-    (
-        "cache-dir",
-        true,
-        "the warmer is out of scope (ADR-0008); base images are pulled into the store",
-    ),
-    (
-        "use-new-run",
-        false,
-        "overlay mode captures each RUN without a walk",
-    ),
-    (
-        "cleanup",
-        false,
-        "overlay mode leaves no build filesystem on /, kaniko mode leaves / as kaniko does \
-         without it and empties a --workdir itself; the store in --state-dir is kept on purpose",
-    ),
-    (
-        "pre-cleanup",
-        false,
-        "overlay mode leaves no build filesystem on /",
-    ),
-    (
-        "image-fs-extract-retry",
-        true,
-        "layers are extracted from the store; pulls are retried by --image-download-retry",
-    ),
-    (
-        "force-build-metadata",
-        false,
-        "deprecated in kaniko, which ignores it too",
-    ),
-    (
-        "skip-unused-stages",
-        false,
-        "deprecated in kaniko; unused stages are always skipped",
-    ),
-];
 
 /// kaniko's deprecated spellings, accepted with kaniko's warning
 /// (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:456-466`), and aliases:
@@ -581,8 +577,8 @@ pub(crate) enum ParseError {
     Clap(clap::Error),
 }
 
-/// The parsed command line, and the warnings parsing it gave: ignored and
-/// deprecated kaniko flags, to log once logging is set up.
+/// The parsed command line, and the warnings parsing it gave: deprecated
+/// kaniko spellings, to log once logging is set up.
 #[derive(Debug)]
 pub(crate) struct Parsed {
     pub(crate) cli: Cli,
@@ -590,8 +586,8 @@ pub(crate) struct Parsed {
 }
 
 /// Parses the command line. Refused kaniko flags are reported, all of them,
-/// before clap sees the arguments; ignored ones and deprecated spellings are
-/// taken out or renamed, each with a warning.
+/// before clap sees the arguments; deprecated spellings are renamed, each
+/// with a warning.
 pub(crate) fn parse<I, T>(args: I) -> Result<Parsed, ParseError>
 where
     I: IntoIterator<Item = T>,
@@ -612,8 +608,7 @@ where
 
 /// What [`prepass`] made of the arguments.
 struct Prepass {
-    /// The arguments for clap: ignored flags taken out, old spellings
-    /// renamed.
+    /// The arguments for clap: old spellings renamed.
     args: Vec<OsString>,
     refused: Vec<String>,
     warnings: Vec<String>,
@@ -676,32 +671,15 @@ fn prepass(all: &[OsString]) -> Prepass {
         if name == "cache" && value.is_some_and(|v| parse_bool(v) == Ok(false)) {
             continue;
         }
-        // Without a layer cache, not compressing or not pushing it changes
-        // nothing; `--compressed-caching` (true, kaniko's default) without a
-        // value or `=true` still names the cache and is refused below.
-        if (name == "compressed-caching" && value.is_some_and(|v| parse_bool(v) == Ok(false)))
-            || name == "no-push-cache"
-        {
-            out.warnings.push(format!(
-                "--{name} is ignored: the layer cache comes in Phase 4"
-            ));
-            continue;
-        }
         if let Some((name, refusal)) = REFUSED.iter().find(|(n, _)| *n == name) {
             let reason = match refusal {
                 Refusal::Renamed(why) => format!("renamed in ranikust: {why}"),
-                Refusal::NotYet(why) | Refusal::OutOfScope(why) => (*why).to_owned(),
+                Refusal::NotYet(why) | Refusal::OutOfScope(why) | Refusal::Unneeded(why) => {
+                    (*why).to_owned()
+                }
             };
             out.refused
                 .push(format!("kaniko's --{name} is not supported: {reason}"));
-            continue;
-        }
-        if let Some((name, takes_value, why)) = IGNORED.iter().find(|(n, _, _)| *n == name) {
-            if *takes_value && value.is_none() {
-                // The value is the next argument.
-                iter.next();
-            }
-            out.warnings.push(format!("--{name} is ignored: {why}"));
             continue;
         }
         if let Some((old, new, warn)) = RENAMED.iter().find(|(o, _, _)| *o == name) {

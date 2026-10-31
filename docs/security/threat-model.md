@@ -107,8 +107,15 @@ These follow from decisions and are documented to users rather than fixed:
   uid 0's user and persistent keyrings, which Docker's seccomp profile
   denies (T11).
 - `RUN` shares the host network by default
-  ([ADR-0010](../adr/0010-run-network-host-or-none.md)); it can reach services
-  that listen on the host or on a cloud metadata address.
+  ([ADR-0010](../adr/0010-run-network-host-or-none.md)), as kaniko's does; it
+  can reach services that listen on the host and the cloud metadata
+  service (`169.254.169.254`, `fd00:ec2::254`), which hands out the node's or
+  pod's cloud credentials. The maintainer accepted this on 2026-10-31
+  rather than block the metadata addresses by default: ranikust does not
+  filter `RUN`'s traffic. Mitigate outside ranikust: a network policy that
+  denies the metadata addresses to the build pod, IMDSv2 with a hop limit
+  of 1 so a container cannot reach it, workload identity instead of node
+  credentials, or `--network=none` for builds that need no network.
 - A registry listed with `--insecure-registry`, or a destination under
   `--insecure`, gets its credentials over plain HTTP, which a `RUN` sharing
   the host network could observe on the path; kaniko (go-containerregistry)
