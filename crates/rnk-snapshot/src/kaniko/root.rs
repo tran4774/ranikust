@@ -47,7 +47,7 @@ use rnk_layer::{Compression, EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
 use rnk_rootfs::{
     CopyOpts, FileType, IgnoreList, RootPath, Whiteouts, copy_filtered, delete_contents, extract,
-    extract_live,
+    extract_live, extract_live_literal,
 };
 use rnk_store::{NamedGuard, Store};
 
@@ -127,6 +127,9 @@ struct Shared {
 #[derive(Debug)]
 struct View {
     name: String,
+    /// Device, inode and mount of the directory made: only that directory
+    /// is ever emptied under the name.
+    id: (u32, u32, u64, u64),
     /// No `RUN` starts while it is held: dropped only once the directory
     /// is gone.
     _window: NamedGuard,
@@ -249,16 +252,35 @@ fn clear_views(shared: &Shared) -> Result<()> {
     }
     shared.view_epoch.fetch_add(1, Ordering::Relaxed);
     while let Some(view) = views.pop() {
-        let gone = shared
-            .kept
-            .sub_root(&view.name)
-            .and_then(|r| delete_contents(&r, &IgnoreList::new()))
-            .and_then(|()| shared.kept.remove_dir(&view.name));
-        if let Err(e) = gone {
+        if let Err(e) = remove_view(shared, &view) {
             views.push(view);
-            return Err(e.into());
+            return Err(e);
         }
     }
+    Ok(())
+}
+
+/// Device, inode and mount of `st`.
+fn identity(st: &rnk_rootfs::Stat) -> (u32, u32, u64, u64) {
+    (st.dev_major, st.dev_minor, st.ino, st.mnt_id)
+}
+
+/// Deletes `view`'s directory, only if the name still leads, without
+/// following a link, to the directory made, and that directory is the one
+/// opened.
+fn remove_view(shared: &Shared, view: &View) -> Result<()> {
+    let changed = Error::State("an unpacked view changed before its deletion");
+    let st = shared.kept.statx(&view.name)?;
+    if st.file_type() != FileType::Directory || st.mount_root || identity(&st) != view.id {
+        return Err(changed);
+    }
+    let dir = shared.kept.sub_root(&view.name)?;
+    if identity(&dir.statx("/")?) != view.id {
+        return Err(changed);
+    }
+    delete_contents(&dir, &IgnoreList::new())?;
+    drop(dir);
+    shared.kept.remove_dir(&view.name)?;
     Ok(())
 }
 
@@ -333,7 +355,8 @@ impl Snapshotter for Kaniko {
                         }
                     }
                     Some(Kept::Tar { file }) => {
-                        extract_live(&shared.root, reopen(file)?, &shared.ignore)?;
+                        // Our own snapshot of a tree: `.wh.` names are files.
+                        extract_live_literal(&shared.root, reopen(file)?, &shared.ignore)?;
                     }
                     Some(Kept::Image { .. }) | None => {
                         return Err(Error::State("a stage built on an unpacked image"));
@@ -706,15 +729,31 @@ impl KanikoRoot {
                 .ok_or(Error::State("no store for kept tars"))?;
             let window = store.named_window()?;
             let name = store.scratch_name()?;
-            let (name, root) = make_dir(&shared, &name)?;
+            let (name, root) = match make_dir(&shared, &name) {
+                Ok(made) => made,
+                Err(e) => {
+                    // A name still there keeps the window open: no `RUN`
+                    // starts while it exists (`enter_run` fails the build),
+                    // and the next start removes it.
+                    if shared.kept.statx(&name).is_ok() {
+                        std::mem::forget(window);
+                    }
+                    return Err(e);
+                }
+            };
+            let id = identity(&root.statx("/")?);
             // Registered before anything is written: an error below leaves
             // it to the next deletion, with the window still open.
             shared.views().push(View {
                 name,
+                id,
                 _window: window,
             });
             match &self.kept {
-                Some(Kept::Tar { file }) => extract(&root, reopen(file)?, Whiteouts::Apply)?,
+                // Our own snapshot of a tree: `.wh.` names are files. Device
+                // nodes and FIFOs are made here too: no `RUN` runs while the
+                // directory exists.
+                Some(Kept::Tar { file }) => extract(&root, reopen(file)?, Whiteouts::Literal)?,
                 Some(Kept::Image { layers }) => {
                     let none = IgnoreList::new();
                     for layer in layers {

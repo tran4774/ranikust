@@ -13,8 +13,13 @@
 //!    unlinked at once, inside a [`Fence::named`] window, so the name never
 //!    exists while a `RUN` process does. Its blocks stay on disk, in the
 //!    page cache the kernel reclaims, never in ranikust's memory.
-//! 3. A `memfd`, only when the state directory takes no file at all (a
-//!    read-only or full filesystem): memory, with a warning.
+//! 3. A `memfd`, with a warning, only when the state directory takes no
+//!    file at all (read-only, or permission refused), when the fence was
+//!    poisoned by a `RUN` that ended with an error, or when the store opened
+//!    on traces of an earlier build cut short ([`AnonFiles::tainted`]): a
+//!    `RUN` of that build may have left processes no sweep reached, which
+//!    could see a name [open: Q-360]. A full disk or quota is an error in
+//!    every way, never memory.
 //!
 //! A crash between the create and the unlink leaves a name with the
 //! [`PREFIX`]; the next store opened on the directory removes it
@@ -31,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use rnk_rootfs::{FileType, IgnoreList, RootPath, delete_contents};
+use rnk_rootfs::{FileType, RootPath};
 use rustix::fs::{AtFlags, MemfdFlags, Mode, OFlags};
 use rustix::io::Errno;
 
@@ -56,6 +61,8 @@ pub(crate) struct AnonFiles {
     dir_path: PathBuf,
     /// [`TMPFILE`], [`NAMED`] or [`MEMFD`].
     way: AtomicU8,
+    /// No name for this build: why, for the warning.
+    no_names: Mutex<Option<&'static str>>,
     /// Every file kept, open until the store goes: their numbers are the
     /// paths handed out.
     kept: Mutex<Vec<OwnedFd>>,
@@ -71,9 +78,16 @@ impl AnonFiles {
             dir,
             dir_path: dir_path.to_owned(),
             way: AtomicU8::new(TMPFILE),
+            no_names: Mutex::new(None),
             kept: Mutex::new(Vec::new()),
             fence,
         }
+    }
+
+    /// Never makes a file by name for this build: `why` is logged when the
+    /// first file falls back to memory.
+    pub(crate) fn tainted(&self, why: &'static str) {
+        *self.no_names.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
     }
 
     /// Whether files are `memfd`s (memory) rather than files on disk.
@@ -103,6 +117,7 @@ impl AnonFiles {
                         .way
                         .compare_exchange(TMPFILE, NAMED, Ordering::Relaxed, Ordering::Relaxed)
                         .is_ok()
+                        && self.why_no_names().is_none()
                     {
                         tracing::info!(
                             target: "rnk_store",
@@ -112,38 +127,60 @@ impl AnonFiles {
                         );
                     }
                 }
+                // No file at all on this filesystem.
+                Err(e @ (Errno::ROFS | Errno::ACCESS | Errno::PERM)) => {
+                    self.to_memory(&e.to_string());
+                }
+                // A full disk or quota, or anything else: an error.
                 Err(e) => return Err(self.err(e)),
             }
         }
         if self.way.load(Ordering::Relaxed) == NAMED {
-            match self.create_named() {
-                Ok(file) => return Ok(file),
-                // The fence refused: a bug in the order of work, never
-                // papered over with memory.
-                Err(e @ Error::Anonymous(_)) => return Err(e),
-                Err(e) => {
-                    if self
-                        .way
-                        .compare_exchange(NAMED, MEMFD, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
+            if let Some(why) = self.why_no_names() {
+                self.to_memory(why);
+            } else if self.fence.is_poisoned() {
+                self.to_memory("a RUN ended with an error and may have left processes");
+            } else {
+                match self.create_named() {
+                    Ok(file) => return Ok(file),
+                    Err(Error::AnonymousFile { source, .. })
+                        if matches!(
+                            source.raw_os_error().map(Errno::from_raw_os_error),
+                            Some(Errno::ROFS | Errno::ACCESS | Errno::PERM)
+                        ) =>
                     {
-                        tracing::warn!(
-                            target: "rnk_store",
-                            "{}: cannot make state files on disk ({e}); keeping state in \
-                             memory (memfd), counted against the container's memory limit",
-                            self.dir_path.display()
-                        );
+                        self.to_memory(&source.to_string());
                     }
+                    // The fence refused (a bug in the order of work), a
+                    // full disk or quota, anything else: an error, never
+                    // papered over with memory.
+                    Err(e) => return Err(e),
                 }
             }
         }
         self.create_memfd()
     }
 
+    fn why_no_names(&self) -> Option<&'static str> {
+        *self.no_names.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// From now on, files are `memfd`s; warns once, saying why.
+    fn to_memory(&self, why: &str) {
+        if self.way.swap(MEMFD, Ordering::Relaxed) != MEMFD {
+            tracing::warn!(
+                target: "rnk_store",
+                "{}: keeping state in memory (memfd), counted against the container's memory \
+                 limit: {why}",
+                self.dir_path.display()
+            );
+        }
+    }
+
     /// A file made by a random name and unlinked before the window closes.
     fn create_named(&self) -> Result<File> {
         let name = random_name()?;
-        let _window = self.fence.named()?;
+        let window = self.fence.named()?;
         let fd = rustix::fs::openat(
             &self.dir,
             name.as_str(),
@@ -156,10 +193,14 @@ impl AnonFiles {
             Mode::from_raw_mode(0o600),
         )
         .map_err(|e| self.err(e))?;
-        // A failed unlink keeps the file and its name: refuse it, and leave
-        // the name to [`remove_leftovers`] of the next start.
-        rustix::fs::unlinkat(&self.dir, name.as_str(), AtFlags::empty())
-            .map_err(|e| self.err(e))?;
+        if let Err(e) = rustix::fs::unlinkat(&self.dir, name.as_str(), AtFlags::empty()) {
+            // The name stays: the window must too, so no RUN starts while
+            // it exists (`enter_run` then fails the build). The next start
+            // removes the name ([`remove_leftovers`]).
+            std::mem::forget(window);
+            return Err(self.err(e));
+        }
+        drop(window);
         Ok(File::from(fd))
     }
 
@@ -239,22 +280,19 @@ pub(crate) fn is_leftover(name: &OsStr) -> bool {
 /// as `shown`): files made by name and not unlinked, and directories
 /// unpacked for a `COPY --from`, all named with [`PREFIX`]. A file or link
 /// is unlinked, never followed; a directory is emptied through
-/// descriptors, staying on its mount.
-pub(crate) fn remove_leftovers(root: &RootPath, shown: &Path) -> Result<()> {
+/// descriptors, staying on its mount, and only if the directory opened is
+/// the one listed. Returns whether there was anything.
+pub(crate) fn remove_leftovers(root: &RootPath, shown: &Path) -> Result<bool> {
+    let mut found = false;
     for name in root.read_names("/")? {
         if !is_leftover(&name) {
             continue;
         }
+        found = true;
         let rel = Path::new(&name);
         let st = root.statx(rel)?;
-        if st.file_type() == FileType::Directory && !st.mount_root && st.mnt_id == root.mnt_id() {
-            delete_contents(&root.sub_root(rel)?, &IgnoreList::new())?;
-            root.remove_dir(rel)?;
-        } else if st.file_type() == FileType::Directory {
-            return Err(Error::BadEntry {
-                path: shown.join(rel),
-                reason: "a leftover directory on another mount",
-            });
+        if st.file_type() == FileType::Directory {
+            crate::store::remove_dir_tree(root, rel, &st)?;
         } else {
             root.remove_file(rel)?;
         }
@@ -264,7 +302,7 @@ pub(crate) fn remove_leftovers(root: &RootPath, shown: &Path) -> Result<()> {
             shown.join(rel).display()
         );
     }
-    Ok(())
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -328,6 +366,22 @@ mod tests {
     }
 
     #[test]
+    fn a_poisoned_fence_or_a_tainted_start_keeps_state_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let anon = files(dir.path());
+        anon.force(NAMED);
+        anon.fence.poison();
+        drop(anon.create().unwrap());
+        assert!(anon.in_memory());
+        let anon = files(dir.path());
+        anon.force(NAMED);
+        anon.tainted("an earlier build was cut short");
+        drop(anon.create().unwrap());
+        assert!(anon.in_memory());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
     fn memfd_is_the_last_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let anon = files(dir.path());
@@ -349,7 +403,11 @@ mod tests {
         std::os::unix::fs::symlink("/etc", p.join(format!("{PREFIX}link"))).unwrap();
         std::fs::write(p.join("keep"), b"x").unwrap();
         let root = RootPath::open(p).unwrap();
-        remove_leftovers(&root, p).unwrap();
+        assert!(remove_leftovers(&root, p).unwrap());
+        assert!(
+            !remove_leftovers(&root, p).unwrap(),
+            "nothing left the second time"
+        );
         let left: Vec<_> = std::fs::read_dir(p)
             .unwrap()
             .map(|e| e.unwrap().file_name())

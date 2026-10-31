@@ -75,7 +75,13 @@ fn an_anonymous_exporter_writes_the_same_bytes_and_names_nothing() {
         std::fs::read(&named.path).unwrap()
     );
     assert_eq!((anon.diff_id, anon.blob), (named.diff_id, named.blob));
-    assert!(files(state.path()).is_empty(), "{:?}", files(state.path()));
+    // Nothing but the store's marker of a build in progress, which holds
+    // nothing (ADR-0056).
+    let named: Vec<_> = files(state.path())
+        .into_iter()
+        .filter(|f| !f.ends_with(".ranikust-building"))
+        .collect();
+    assert!(named.is_empty(), "{named:?}");
 }
 
 #[test]

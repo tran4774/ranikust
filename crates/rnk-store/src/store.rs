@@ -29,6 +29,11 @@ use crate::lock;
 /// directory marked for that is never taken for a store (ADR-0050).
 pub const STATE_MARKER: &str = ".ranikust-state";
 use STATE_MARKER as MARKER;
+
+/// In an anonymous store's directory while a build runs; left after a
+/// build that was cut short or may have left `RUN` processes, which keeps
+/// later builds in this container from making names (Q-360).
+const BUILDING: &str = ".ranikust-building";
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
@@ -196,6 +201,9 @@ impl TmpEntry {
 struct Anon {
     files: AnonFiles,
     entries: Mutex<HashMap<EntryKey, (PathBuf, u64)>>,
+    /// Opened on traces of a build cut short: the [`BUILDING`] marker stays
+    /// at the end, so later builds keep their state in memory too.
+    tainted: bool,
 }
 
 impl Anon {
@@ -334,8 +342,24 @@ impl Store {
         if fs.f_type != rustix::fs::PROC_SUPER_MAGIC {
             return Err(proc_err(io::Error::other("not procfs")));
         }
-        anon::remove_leftovers(&root, &state_path)?;
-        if !list(&root, Path::new("."))?.is_empty() {
+        let leftovers = anon::remove_leftovers(&root, &state_path)?;
+        // A build that did not end cleanly here may have left `RUN`
+        // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
+        // they would see a name, so this build makes none [open: Q-360].
+        let interrupted = match root.statx(BUILDING) {
+            Ok(_) => true,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?;
+                false
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let tainted = (leftovers || interrupted).then_some(
+            "an earlier build in this container did not end cleanly and may have left RUN \
+             processes; run ranikust as the container's PID 1, or restart the container, to \
+             keep state on disk",
+        );
+        if !list(&root, Path::new("."))?.iter().all(|n| n == BUILDING) {
             tracing::warn!(
                 target: "rnk_store",
                 "state directory {} is not empty: a RUN can read what it holds; kaniko mode on / \
@@ -348,11 +372,16 @@ impl Store {
             .map_or(0, |d| d.as_nanos());
         let id = format!("{:x}-{nanos:x}", std::process::id());
         let fence = Fence::closed();
+        let files = AnonFiles::new(dir, &state_path, fence.clone());
+        if let Some(why) = tainted {
+            files.tainted(why);
+        }
         Ok(Self {
             build_dir: state_path.join("builds").join(&id),
             anon: Some(Anon {
-                files: AnonFiles::new(dir, &state_path, fence.clone()),
+                files,
                 entries: Mutex::default(),
+                tainted: tainted.is_some(),
             }),
             state: root,
             state_path,
@@ -431,6 +460,48 @@ impl Store {
     /// order of work, not a race.
     pub fn enter_run(&self) -> Result<RunGuard> {
         self.fence.enter_run()
+    }
+
+    /// Counts the `RUN` of `guard` out. `swept` says whether `Sandbox::run`
+    /// returned without an error, its process tree gone; otherwise no
+    /// name is made for the rest of the build (its processes may live). In
+    /// an anonymous store the state directory must still be the one opened
+    /// (a `RUN` may have moved it, or made `/var/lib` a link): checked by
+    /// device, inode and mount, without following a link.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadEntry`] when the state directory changed; the fence is
+    /// then closed to names too.
+    pub fn leave_run(&self, guard: RunGuard, swept: bool) -> Result<()> {
+        if !swept {
+            self.fence.poison();
+        }
+        let checked = if self.anon.is_some() {
+            self.same_state_dir()
+        } else {
+            Ok(())
+        };
+        if checked.is_err() {
+            self.fence.poison();
+        }
+        drop(guard);
+        checked
+    }
+
+    /// Whether the state directory's path still leads, with no link, to the
+    /// directory this store holds.
+    fn same_state_dir(&self) -> Result<()> {
+        let changed = || Error::BadEntry {
+            path: self.state_path.clone(),
+            reason: "the state directory changed during a RUN",
+        };
+        let now = RootPath::open(&self.state_path).map_err(|_| changed())?;
+        let (a, b) = (now.statx("/")?, self.state.statx("/")?);
+        let same = a.ino == b.ino
+            && (a.dev_major, a.dev_minor) == (b.dev_major, b.dev_minor)
+            && now.mnt_id() == self.state.mnt_id();
+        if same { Ok(()) } else { Err(changed()) }
     }
 
     /// A window in which named state may exist on disk, for a directory the
@@ -841,8 +912,13 @@ impl Store {
     /// removed, for example because a mount is still inside it or on it;
     /// the next start retries.
     pub fn close(self) -> Result<()> {
-        if self.anon.is_some() {
-            // Nothing on disk: the files go with their descriptors.
+        if let Some(anon) = &self.anon {
+            // The files go with their descriptors. The marker of a build in
+            // progress goes only after a clean build: a poisoned fence or a
+            // tainted start may have left `RUN` processes in the container.
+            if !anon.tainted && !self.fence.is_poisoned() {
+                self.state.remove_file(BUILDING)?;
+            }
             return Ok(());
         }
         remove_build(&self.state, &self.id)?;
@@ -1153,7 +1229,7 @@ fn remove_tree(state: &RootPath, rel: &Path) -> Result<bool> {
 /// swap of `rel` for a symlink (to `/`, the state directory itself) or for
 /// a mount between the two steps is refused instead of emptying what it
 /// points to.
-fn remove_dir_tree(state: &RootPath, rel: &Path, st: &Stat) -> Result<()> {
+pub(crate) fn remove_dir_tree(state: &RootPath, rel: &Path, st: &Stat) -> Result<()> {
     let refuse = |reason| Error::BadEntry {
         path: rel.to_owned(),
         reason,

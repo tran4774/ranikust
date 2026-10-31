@@ -18,6 +18,9 @@
 //! A name asked for on a thread that is inside a `RUN`, or a `RUN` started
 //! while a name has outlived [`WAIT_FOR_NAMES`], is a bug in ranikust's
 //! order of work, not a race to wait out: both fail closed with an error.
+//! A `RUN` that ended with an error ([`Fence::poison`]: the sweep of its
+//! process tree may not have finished) closes the fence to names for the
+//! rest of the build: its processes may live on.
 //! In every other store the fence is open and its guards do nothing.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -37,6 +40,8 @@ struct State {
     runs: Vec<ThreadId>,
     /// Names alive.
     names: usize,
+    /// A `RUN` ended with an error: no name from now on.
+    poisoned: bool,
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +98,11 @@ impl Fence {
         };
         let me = std::thread::current().id();
         let mut state = lock(inner);
+        if state.poisoned {
+            return Err(Error::Anonymous(
+                "named state after a RUN whose processes may still live",
+            ));
+        }
         while !state.runs.is_empty() {
             if state.runs.contains(&me) {
                 return Err(Error::Anonymous("named state made during a RUN"));
@@ -102,10 +112,31 @@ impl Fence {
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
+        if state.poisoned {
+            return Err(Error::Anonymous(
+                "named state after a RUN whose processes may still live",
+            ));
+        }
         state.names += 1;
         Ok(NamedGuard {
             inner: Some(Arc::clone(inner)),
         })
+    }
+}
+
+impl Fence {
+    /// Closes the fence to names for good: a `RUN` ended with an error,
+    /// and its processes may live.
+    pub(crate) fn poison(&self) {
+        if let Some(inner) = &self.inner {
+            lock(inner).poisoned = true;
+            inner.changed.notify_all();
+        }
+    }
+
+    /// Whether [`Fence::poison`] was called.
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.inner.as_ref().is_some_and(|i| lock(i).poisoned)
     }
 }
 
@@ -200,6 +231,16 @@ mod tests {
         drop(name);
         rx.recv_timeout(Duration::from_secs(10)).unwrap();
         t.join().unwrap();
+    }
+
+    #[test]
+    fn a_poisoned_fence_refuses_every_name() {
+        let f = Fence::closed();
+        f.poison();
+        assert!(f.is_poisoned());
+        assert!(matches!(f.named(), Err(Error::Anonymous(_))));
+        // RUNs still run: their state is anonymous.
+        let _run = f.enter_run().unwrap();
     }
 
     #[test]

@@ -44,6 +44,7 @@ impl Store {
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers
     pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (a kept stage's tar), gone with it
     pub fn enter_run(&self) -> Result<RunGuard>;        // ADR-0056: held around each RUN; waits until no name is on disk (no-op when persistent)
+    pub fn leave_run(&self, g: RunGuard, swept: bool) -> Result<()>; // ADR-0056: !swept poisons the fence (no name for the build); checks the state dir's identity
     pub fn named_window(&self) -> Result<NamedGuard>;   // ADR-0056: a name may exist while held; waits for RUNs; fails inside one
     pub fn scratch_name(&self) -> Result<String>;       // ANON_PREFIX + 128 random bits; removed by the next open_anonymous if left
     pub fn state_dir(&self) -> &Path;                   // canonical

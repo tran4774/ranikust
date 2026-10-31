@@ -72,11 +72,13 @@ impl Fixture {
         (Self { kaniko, ..f }, store)
     }
 
-    /// The names in the state directory, as a `RUN` would list them.
+    /// The names in the state directory, as a `RUN` would list them, but
+    /// the marker of a build in progress, which holds nothing.
     fn state_names(&self) -> Vec<String> {
         let mut v: Vec<_> = fs::read_dir(self.host.join("state"))
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n != ".ranikust-building")
             .collect();
         v.sort();
         v
@@ -563,4 +565,48 @@ fn on_slash_keep_all_leaves_the_ignored_state_out_of_the_tar() {
         "the state directory is not kept"
     );
     a.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_kept_name_like_a_whiteout_fails_the_keep_never_vanishes() {
+    let (f, _store) = Fixture::tars();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::create_dir(f.host.join("d")).unwrap();
+    fs::write(f.host.join("d/x"), b"x").unwrap();
+    fs::write(f.host.join("d/.wh.x"), b"not a whiteout").unwrap();
+    drop(a.end_layer().unwrap());
+    // The tar is written as a layer is: a `.wh.` name cannot be written
+    // (Q-053), so the keep fails rather than lose `d/x` on the way back.
+    let e = a.keep(&Keep::All).unwrap_err();
+    assert!(e.to_string().contains(".wh."), "{e}");
+    a.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_view_swapped_for_a_link_is_never_emptied_through_it() {
+    let (f, _store) = Fixture::tars();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::write(f.host.join("built"), b"b").unwrap();
+    drop(a.end_layer().unwrap());
+    a.keep(&Keep::All).unwrap();
+    let mut b = f.kaniko.prepare(Base::Scratch).unwrap();
+    fs::write(f.host.join("precious"), b"p").unwrap();
+    assert_eq!(read(a.view().unwrap(), "built"), "b");
+    // Something swaps the view for a link to the root.
+    let state = f.host.join("state");
+    let name = f
+        .state_names()
+        .into_iter()
+        .find(|n| n.starts_with(rnk_store::ANON_PREFIX))
+        .unwrap();
+    fs::rename(state.join(&name), state.join("moved")).unwrap();
+    std::os::unix::fs::symlink(&f.host, state.join(&name)).unwrap();
+    b.set_layers_needed(false);
+    b.begin_layer().unwrap();
+    assert!(matches!(b.end_layer(), Err(Error::State(_))));
+    assert_eq!(fs::read(f.host.join("precious")).unwrap(), b"p");
 }

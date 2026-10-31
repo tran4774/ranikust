@@ -18,6 +18,7 @@ use std::io::Read as _;
 use std::num::NonZeroUsize;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -52,6 +53,13 @@ struct Outcome {
 /// emptied root. Checks that nothing outside the root, nor the ignored
 /// state, was touched or copied.
 fn run(dockerfile: &str, need: Option<KeepNeed>) -> Outcome {
+    run_in(dockerfile, need, false)
+}
+
+/// [`run`]; with `tars`, as on `/` (ADR-0056): an anonymous store in the
+/// state directory inside the root, stages kept as tars in its anonymous
+/// files, a reader's view unpacked in the state directory.
+fn run_in(dockerfile: &str, need: Option<KeepNeed>, tars: bool) -> Outcome {
     let tmp = tempfile::tempdir().unwrap();
     let top = fs::canonicalize(tmp.path()).unwrap();
     let root = top.join("root");
@@ -66,29 +74,42 @@ fn run(dockerfile: &str, need: Option<KeepNeed>) -> Outcome {
 
     let mut ignore = IgnoreList::new();
     ignore.insert("/state").unwrap();
+    let kept = if tars {
+        root.join("state")
+    } else {
+        top.join("kept")
+    };
     let kaniko = Kaniko::new(
         RootPath::open(&root).unwrap(),
         root.clone(),
         ignore,
         WalkOptions::default(),
-        RootPath::open(top.join("kept")).unwrap(),
+        RootPath::open(kept).unwrap(),
     );
     let context = rnk_context::open(&ContextSpec::Dir(ctx)).unwrap();
     let context_files = ContextFiles::load(&context, None).unwrap();
     let state = top.join("store");
-    let store = Store::open(&BuildPaths::new(&top, &state)).unwrap();
-    let sandbox = Sandbox::start(None, &state.join("sandbox")).unwrap();
+    let store = Arc::new(if tars {
+        Store::open_anonymous(&root.join("state")).unwrap()
+    } else {
+        Store::open(&BuildPaths::new(&top, &state)).unwrap()
+    });
+    if tars {
+        kaniko.keep_in_anonymous_files(Arc::clone(&store)).unwrap();
+    }
+    let sandbox = Sandbox::start(None, &top.join("sandbox")).unwrap();
     let time = BuildTime::reproducible(None).unwrap();
-    let exporter = LayerExporter::new(
-        store.build_dir(),
-        EncodeOptions {
-            compression: Compression::Gzip,
-            level: 1,
-            threads: NonZeroUsize::MIN,
-            mtime: None,
-        },
-        &time,
-    );
+    let options = EncodeOptions {
+        compression: Compression::Gzip,
+        level: 1,
+        threads: NonZeroUsize::MIN,
+        mtime: None,
+    };
+    let exporter = if tars {
+        LayerExporter::anonymous(Arc::clone(&store), options, &time)
+    } else {
+        LayerExporter::new(store.build_dir(), options, &time)
+    };
     let platform = Platform::new("linux", "amd64");
     let secrets = BTreeMap::new();
     let never = || false;
@@ -167,7 +188,7 @@ fn run(dockerfile: &str, need: Option<KeepNeed>) -> Outcome {
     assert_eq!(fs::read(outside.join("secret")).unwrap(), HOST);
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
     assert_eq!(fs::read(root.join("state/blob")).unwrap(), STATE);
-    assert_eq!(fs::read_dir(root.join("state")).unwrap().count(), 1);
+    assert_eq!(state_names(&root), ["blob"], "{dockerfile}");
     for dir in [top.join("kept"), root.clone()] {
         for f in files_below(&dir, &root.join("state")) {
             let data = fs::read(&f).unwrap();
@@ -187,11 +208,28 @@ fn run(dockerfile: &str, need: Option<KeepNeed>) -> Outcome {
         d.root.release().unwrap();
     }
     assert_eq!(
+        state_names(&root),
+        ["blob"],
+        "an unpacked view outlived its stage"
+    );
+    assert_eq!(
         fs::read_dir(top.join("kept")).unwrap().count(),
         0,
         "a kept copy outlived its stage"
     );
     Outcome { result, out, app }
+}
+
+/// The names in the state directory but the anonymous store's marker of a
+/// build in progress.
+fn state_names(root: &Path) -> Vec<String> {
+    let mut v: Vec<_> = fs::read_dir(root.join("state"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n != ".ranikust-building")
+        .collect();
+    v.sort();
+    v
 }
 
 /// Runs `f` on another thread, failing after 30 s: a FIFO opened for
@@ -499,4 +537,45 @@ fn an_empty_copy_from_source_is_refused() {
     );
     let e = o.result.unwrap_err();
     assert!(e.contains("empty"), "{e}");
+}
+
+#[test]
+fn as_tars_on_slash_copy_from_reads_what_the_stage_had_and_never_the_state() {
+    // ADR-0056: the same reads through a stage kept as a tar and a view
+    // unpacked in the state directory, asked for before the reading
+    // instruction began.
+    // A tar carries whole seconds and only `security.capability`, as every
+    // layer does (Q-025): the final image is the same; the reading stage
+    // sees mtimes without nanoseconds and no other xattr.
+    for need in [sources(&["/app"]), Some(KeepNeed::All)] {
+        let mut o = run_in(&copy_from("/app"), need.clone(), true);
+        for (_, e) in o.app.iter_mut().chain(o.out.iter_mut().flatten()) {
+            e.mtime.1 = 0;
+            e.xattr = None;
+        }
+        same_as_app(&o, "/app");
+    }
+    for source in ["/", "/.", "/to-root/"] {
+        for need in [sources(&[source]), Some(KeepNeed::All)] {
+            let o = run_in(&copy_from(source), need.clone(), true);
+            o.result.as_ref().unwrap();
+            let out = o.out.unwrap();
+            assert!(
+                out.iter().all(|(n, _)| !n.starts_with("state")),
+                "{source}: the state was copied"
+            );
+            assert!(out.iter().any(|(n, _)| n.starts_with("app")), "{source}");
+        }
+    }
+    for source in [
+        "/to-state/blob",
+        "/to-root/state/blob",
+        "/state",
+        "/host/secret",
+    ] {
+        for need in [sources(&[source]), Some(KeepNeed::All)] {
+            let o = run_in(&copy_from(source), need.clone(), true);
+            assert!(o.result.is_err(), "{source} ({need:?})");
+        }
+    }
 }

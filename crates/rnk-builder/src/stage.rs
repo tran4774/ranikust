@@ -733,10 +733,14 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 }
             };
             let status = b.cx.sandbox.run(spec);
-            drop(fence);
+            // An error may leave the RUN's processes alive (a failed sweep):
+            // no name is made for the rest of the build. The state
+            // directory must still be the one the store holds.
+            let left = b.cx.store.leave_run(fence, status.is_ok());
             drop(permit);
             // The RUN is gone: its cache leases end.
             mounts.finish();
+            left?;
             let status = match status {
                 Err(rnk_sandbox::Error::Cancelled) => return Err(Error::Cancelled),
                 s => s?,

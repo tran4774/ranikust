@@ -402,6 +402,27 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-360: What does kaniko mode on `/` do after an earlier build in the container was cut short?
+
+- **Blocks:** nothing yet; **Area:** `rnk-store`, `ranikust`
+- **Context:** found by the host-safety review of ADR-0056: the fence
+  keeps names away from this build's `RUN` processes only. When an earlier
+  ranikust in the same container was killed mid-`RUN` and was not PID 1,
+  its `RUN`'s processes live on, outside any fence and any sweep, and
+  could open a name in the moment it exists. ranikust sees the trace: its
+  marker `.ranikust-building` left in the state directory, or leftover
+  `.ranikust-anon-*` names.
+- **Options:** (a) make no name for that build: state in `memfd`, with a
+  warning saying why and how to avoid it (run ranikust as PID 1, or
+  restart the container), the marker kept for later builds; (b) refuse the
+  build; (c) kill every process that is not an ancestor of ranikust, which
+  cannot be done safely: the container's other processes (a CI shell, a
+  sidecar) are not identifiable as the dead build's.
+- **Recommendation:** (a): the build still succeeds, and only memory is
+  spent, in a container that already did something unusual.
+- **Interim:** (a), on `feat/kaniko-state-on-disk` (`rnk_store::Store::open_anonymous`).
+- **Raised:** 2026-11-01
+
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?

@@ -35,10 +35,17 @@ kept, is ADR-0055; this ADR is option 2.
 Chosen: the third. In kaniko mode on `/`:
 
 - **Order of ways.** An anonymous file is an `O_TMPFILE` inode where the
-  state directory's filesystem takes it; else a file created by a random
+  state directory's filesystem takes it (refused with `EOPNOTSUPP`,
+  `EISDIR` or `EINVAL`: the next way); else a file created by a random
   name (`.ranikust-anon-` and 128 random bits, `O_CREAT | O_EXCL |
-  O_NOFOLLOW | O_CLOEXEC`, `0600`), opened and unlinked at once; `memfd`
-  only when no file can be made on disk at all, with a warning.
+  O_NOFOLLOW | O_CLOEXEC`, `0600`), opened and unlinked at once; `memfd`,
+  with a warning, only when the state directory takes no file at all
+  (`EROFS`, `EACCES`, `EPERM`, from then on for the build), after a `RUN`
+  ended with an error, or after a build cut short (below). A full disk or
+  quota (`ENOSPC`, `EDQUOT`) and any other error fail the build in every
+  way: memory would only move the failure to the OOM killer. A `RUN` can
+  push a build to memory (making the directory unwritable): a denial of
+  service, out of scope.
 - **The fence.** A name exists only while no `RUN` process does. The store
   holds a fence (`rnk_store`): `Store::enter_run` counts a `RUN` in once no
   name is on disk and is held by the builder around `Sandbox::run`, which
@@ -47,7 +54,24 @@ Chosen: the third. In kaniko mode on `/`:
   inside a `RUN` on the same thread, or a `RUN` while a name outlives a
   minute, is a bug in the order of work and fails the build, never a
   race to wait out or a fallback to memory. A pull for a later stage that
-  needs a named file during a `RUN` waits for it to end.
+  needs a named file during a `RUN` waits for it to end. A name that
+  cannot be unlinked, or a directory that cannot be made right, keeps its
+  window open for good, so no `RUN` starts while it exists.
+- **After each `RUN`.** The builder hands the guard back with
+  `Store::leave_run`: when `Sandbox::run` returned an error (its sweep
+  may not have finished, so `RUN` processes may live), the fence is
+  poisoned and no name is made for the rest of the build (files go to
+  `memfd`; views fail the build). The state directory's path must still
+  lead, without a link, to the directory the store holds (device, inode,
+  mount); otherwise the build fails and the fence is poisoned.
+- **A build cut short.** The anonymous store keeps a marker,
+  `.ranikust-building`, in the state directory while a build runs, and
+  removes it only after a clean build. Opening on the marker, or on
+  leftover names, means an earlier ranikust in this container was killed,
+  possibly mid-`RUN` and not as PID 1, so its `RUN` processes may still
+  live outside any fence: that build makes no name (state in `memfd`,
+  warned, with the advice to run ranikust as PID 1 or restart the
+  container) and keeps the marker [open: Q-360].
 - **Crashes.** A crash between create and unlink leaves a name with the
   prefix in the state directory; the next anonymous store opened there
   removes it (files and links unlinked, never followed; directories
@@ -60,10 +84,19 @@ Chosen: the third. In kaniko mode on `/`:
   into a directory of the state directory named by the store, inside a
   fence window held until the end of the instruction that read it
   deletes it (`StageRootfs::end_layer`, also `prepare`, `keep`,
-  `release`, the end of the build). A stage built `FROM` a kept tar gets it extracted into
-  the emptied root, device nodes and FIFOs left out as for any extraction
-  into a live root (ADR-0041). On a root other than `/` kept stages stay
-  directories beside the root, as before.
+  `release`, the end of the build). A stage built `FROM` a kept tar gets
+  it extracted into the emptied root, device nodes and FIFOs left out as
+  for any extraction into a live root (ADR-0041). Kept tars are our own
+  snapshots, not layers: extracted with names taken literally
+  (`Whiteouts::Literal`); since they are written as layers are, a stage
+  holding a file named `.wh.*` cannot be kept and fails the build (Q-053)
+  rather than lose entries. They carry what layers carry: whole-second
+  mtimes and only `security.capability` (Q-025), so the reading stage sees
+  no other xattr; the image is unchanged. A view is deleted only if its
+  name still leads, without a link, to the directory made (device, inode,
+  mount). Device nodes and FIFOs are made in a view: acceptable only
+  because no `RUN` runs while it exists. On a root other than `/` kept
+  stages stay directories beside the root, as before.
 
 ### Consequences
 

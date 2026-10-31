@@ -47,9 +47,12 @@ overlay mode).
     `O_TMPFILE` in the state directory, else (a container's overlayfs
     root, kernels 6.8 and 5.15, measured) a file made by a random name and
     unlinked at once, only while no `RUN` process exists: the store's
-    fence keeps names and `RUN`s apart (`Store::enter_run` around each
-    `RUN`, `Store::named_window` for a name); `memfd` only when no file can
-    be made on disk. The state directory holds no name while a `RUN` runs;
+    fence keeps names and `RUN`s apart (`Store::enter_run` and
+    `Store::leave_run` around each `RUN`, `Store::named_window` for a
+    name); a `RUN` that ended with an error poisons it, and a start on the
+    traces of a build cut short makes no name [open: Q-360]; `memfd` only
+    then, or when no file can be made on disk. After each `RUN` the state
+    directory's path must still lead, with no link, to the directory held. The state directory holds no name while a `RUN` runs;
     what must outlive the emptying of the root (a kept stage) is a tar in
     an anonymous file (`Store::scratch_file`);
   - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
@@ -207,7 +210,13 @@ settles them (Q-024):
   directory named by the store, inside a fence window, and deleted at the
   end of the instruction that read it (`end_layer`, also `prepare`,
   `keep`, `release`, the end of the build); `FROM` a kept tar extracts it into
-  the emptied root, device nodes and FIFOs left out (ADR-0041).
+  the emptied root, device nodes and FIFOs left out (ADR-0041). Kept tars
+  are extracted with names taken literally (`Whiteouts::Literal`); a
+  stage holding a `.wh.*` file cannot be kept (Q-053); device nodes and
+  FIFOs made in a view are acceptable only because no `RUN` runs while it
+  exists. With `--parallel-stages` (task 10), a view would keep the fence
+  closed to other stages' `RUN`s, which wait at most a minute: to design
+  there.
 - **Refused:** kaniko mode without root, per-stage directories (task 9)
   and `--parallel-stages` (task 10), each with its reason.
 

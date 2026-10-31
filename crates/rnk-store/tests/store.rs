@@ -598,7 +598,8 @@ fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
     let (mut f, other) = store.anonymous_file().unwrap();
     f.write_all(b"layer").unwrap();
     assert_eq!(fs::read(&other).unwrap(), b"layer");
-    assert!(names(&state).is_empty(), "{:?}", names(&state));
+    // Only the marker of a build in progress, which holds nothing.
+    assert_eq!(names(&state), [".ranikust-building"]);
     let layer = store.fill(&EntryKey::Layer(digest(2)), |_| -> io::Result<u64> {
         Ok(0)
     });
@@ -608,6 +609,58 @@ fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
     assert!(matches!(cache, Err(Error::Anonymous(_))));
     store.close().unwrap();
     assert!(names(&state).is_empty());
+}
+
+#[test]
+fn a_build_cut_short_keeps_the_next_builds_state_in_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A clean build removes its marker; files are on disk (O_TMPFILE here).
+    let store = Store::open_anonymous(&state).unwrap();
+    let (_f, path) = store.anonymous_file().unwrap();
+    let target = fs::read_link(&path).unwrap();
+    assert!(
+        !target.to_string_lossy().contains("memfd:"),
+        "{}",
+        target.display()
+    );
+    store.close().unwrap();
+    assert!(names(&state).is_empty());
+    // A RUN that ended with an error leaves the marker behind ...
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    store.leave_run(run, false).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+    // ... so the next build makes no name (here O_TMPFILE needs none, so
+    // its files stay on disk; the named way falls back to memory, see the
+    // anon module's tests), and keeps the marker.
+    let store = Store::open_anonymous(&state).unwrap();
+    let (_f, path) = store.anonymous_file().unwrap();
+    assert!(fs::read_link(&path).is_ok());
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+}
+
+#[test]
+fn a_state_directory_moved_during_a_run_fails_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    store.leave_run(run, true).unwrap();
+    let run = store.enter_run().unwrap();
+    // A RUN moves the directory and puts a link in its place.
+    fs::rename(&state, dir.path().join("moved")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("moved"), &state).unwrap();
+    assert!(matches!(
+        store.leave_run(run, true),
+        Err(Error::BadEntry { .. })
+    ));
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
 }
 
 #[test]

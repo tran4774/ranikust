@@ -1113,3 +1113,32 @@ fn live_extraction_creates_no_device_node_or_fifo() {
     }
     assert_eq!(fs::read(f.host("kept")).unwrap(), b"ok");
 }
+
+#[test]
+fn a_literal_extraction_keeps_whiteout_names_as_files() {
+    let f = Fixture::new();
+    fs::write(f.host("x"), b"kept").unwrap();
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/y"), b"kept").unwrap();
+    let mut t = Tar::new(&f);
+    t.file(".wh.x", 0o644, b"a file named like a whiteout")
+        .dir("d", 0o755)
+        .file("d/.wh..wh..opq", 0o644, b"and an opaque marker");
+    extract(&f.root, t.bytes().as_slice(), Whiteouts::Literal).unwrap();
+    assert_eq!(fs::read(f.host("x")).unwrap(), b"kept");
+    assert_eq!(fs::read(f.host("d/y")).unwrap(), b"kept");
+    assert_eq!(
+        fs::read(f.host(".wh.x")).unwrap(),
+        b"a file named like a whiteout"
+    );
+    assert_eq!(
+        fs::read(f.host("d/.wh..wh..opq")).unwrap(),
+        b"and an opaque marker"
+    );
+    // The same tar into a live root.
+    let g = Fixture::new();
+    fs::write(g.host("x"), b"kept").unwrap();
+    extract_live_literal(&g.root, t.bytes().as_slice(), &IgnoreList::new()).unwrap();
+    assert_eq!(fs::read(g.host("x")).unwrap(), b"kept");
+    assert!(g.host(".wh.x").is_file());
+}
