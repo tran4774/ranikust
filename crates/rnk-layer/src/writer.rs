@@ -88,7 +88,7 @@ pub trait EntrySource {
     /// was not fed itself; `None` if it is unknown. It must be a
     /// [`EntryKind::Dir`] entry at `path`.
     ///
-    /// [open: Q-013] Interim: the exporter answers lookups, so it may feed
+    /// The exporter answers lookups (ADR-0032), so it may feed
     /// only changed entries (BuildKit's `sameDirent`) and still have every
     /// ancestor written with its real metadata.
     ///

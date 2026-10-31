@@ -44,7 +44,8 @@ pub use manifest::{ImageIndex, ImageManifest};
 pub use media_type::{Compression, ImageFormat, MediaType};
 pub use reference::Reference;
 
-// [open: Q-007] The image-assembly types live here as pure data:
+// The image-assembly types live here as pure data (Q-007, answered in
+// `docs/open-questions.md`):
 // `ConfigEdit` (what ENV, LABEL, USER… do to the config), history and
 // `diff_ids` appends, the docker-save `manifest.json` (`DockerTarImage`) and
 // the OCI layout's `oci-layout` (`OciLayout`); a layout's `index.json` is an

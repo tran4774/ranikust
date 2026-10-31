@@ -164,7 +164,7 @@ pub(crate) struct BuildConfig {
     /// Fixed timestamps.
     pub(crate) reproducible: bool,
     /// Registries reached over plain HTTP when HTTPS fails
-    /// (`--insecure-registry`) [open: Q-200].
+    /// (`--insecure-registry`, ADR-0011).
     pub(crate) insecure_registries: Vec<String>,
     /// Extra CA certificates per registry, paths absolute.
     pub(crate) registry_certificates: Vec<(String, PathBuf)>,

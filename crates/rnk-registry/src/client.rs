@@ -530,7 +530,7 @@ impl Client {
     /// Like [`Client::push_blob`], but first asks the registry to mount the
     /// blob from `from`, another repository of the same registry; when the
     /// registry refuses (`202`) or fails, uploads, as kaniko does
-    /// (`kaniko@44aa7ddc0 pkg/executor/push.go:318-366`) [open: Q-014].
+    /// (`kaniko@44aa7ddc0 pkg/executor/push.go:318-366`; ADR-0032).
     pub async fn mount_or_push(
         &self,
         reference: &Reference,
