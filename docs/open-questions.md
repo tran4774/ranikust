@@ -278,7 +278,9 @@ Entry format:
   export on memory-starved runners, where one layer took 1.8–6.6 s
   ([overlay-snapshot](design/overlay-snapshot.md#open-questions)); cold page
   cache, slow disks and deletion of very large roots in kaniko mode
-  ([kaniko-mode](design/kaniko-mode.md#open-questions)).
+  ([kaniko-mode](design/kaniko-mode.md#open-questions)); `--snapshot-mode=redo`
+  and `time` against `full`, which decides whether they stay (ADR-0023,
+  [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md)).
 - **Options:** none listed.
 - **Recommendation:** none
 - **Interim:** none

@@ -224,7 +224,10 @@ impl WalkDiff {
   against 8 walk workers the same digest, and the property `apply(base
   layer, diff layer) == tree` on random trees (proptest, 48 cases; 3,000
   passed once); `tests/spans.rs` its spans. To do: an unchanged `RUN`
-  giving an empty layer in a build (task 6).
+  giving an empty layer in a build (task 6); a benchmark of
+  `--snapshot-mode=redo|time` against `full` on W1–W3: they skip content
+  reads and can miss a change, so they stay only if significantly faster
+  (ADR-0023 kept, ADR-0049).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
 - **T2** (VM only): overlay as real root; kernel 5.15 fallback; kaniko mode
