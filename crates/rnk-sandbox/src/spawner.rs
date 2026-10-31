@@ -1916,15 +1916,13 @@ mod tests {
             soft: Some(777),
             hard,
         });
-        // An unlimited core size (root's usual hard limit in the VM) that
-        // `forbid_core_dumps` cuts to 0 here and the `RUN` gets back.
-        let core = rustix::process::getrlimit(rustix::process::Resource::Core);
-        let unlimited = core.maximum.is_none();
+        // An unlimited core size (raised as root: the VM's hard limit may be
+        // 0) that `forbid_core_dumps` cuts to 0 here and the `RUN` gets back.
         rustix::process::setrlimit(
             rustix::process::Resource::Core,
             rustix::process::Rlimit {
-                current: core.maximum,
-                maximum: core.maximum,
+                current: None,
+                maximum: None,
             },
         )
         .unwrap();
@@ -1955,10 +1953,7 @@ mod tests {
         ] {
             assert!(out.lines().any(|l| l == line), "{line}: {out}");
         }
-        if unlimited {
-            assert!(out.lines().any(|l| l == "core:unlimited"), "{out}");
-        }
-        assert!(!out.lines().any(|l| l == "core:0"), "{out}");
+        assert!(out.lines().any(|l| l == "core:unlimited"), "{out}");
         assert!(
             out.contains("hosts:") && !out.contains("hosts:image"),
             "{out}"
