@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::File;
+use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::DirBuilderExt as _;
@@ -18,8 +19,9 @@ use rustix::io::Errno;
 use sha2::{Digest as _, Sha256};
 use tracing::field::Empty;
 
-use crate::anon::AnonFiles;
+use crate::anon::{self, AnonFiles};
 use crate::error::{Error, Result};
+use crate::fence::{Fence, NamedGuard, RunGuard};
 use crate::key::EntryKey;
 use crate::lock;
 
@@ -28,6 +30,26 @@ use crate::lock;
 /// directory marked for that is never taken for a store (ADR-0050).
 pub const STATE_MARKER: &str = ".ranikust-state";
 use STATE_MARKER as MARKER;
+
+/// In an anonymous store's directory while a build runs; left after a
+/// build that was cut short or may have left `RUN` processes, which keeps
+/// later builds in this container from making names (Q-360).
+pub const BUILDING_MARKER: &str = ".ranikust-building";
+use BUILDING_MARKER as BUILDING;
+/// What [`BUILDING`] holds: the PID namespace and the boot of the build
+/// that made it; `None` when either cannot be read, and any marker then
+/// counts as this container's.
+fn building_mark() -> Option<String> {
+    let ns = fs::read_link("/proc/self/ns/pid").ok()?;
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    Some(format!("{} {}\n", ns.to_str()?, boot.trim()))
+}
+
+/// Why a store opened on the traces of a build cut short makes no name
+/// [open: Q-360].
+const CUT_SHORT: &str = "an earlier build in this container did not end cleanly and may have \
+     left RUN processes; run ranikust as the container's PID 1, or restart the container, to \
+     keep state on disk";
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
@@ -195,6 +217,11 @@ impl TmpEntry {
 struct Anon {
     files: AnonFiles,
     entries: Mutex<HashMap<EntryKey, (PathBuf, u64)>>,
+    /// Opened on traces of a build cut short: the [`BUILDING`] marker stays
+    /// at the end, so later builds keep their state in memory too.
+    tainted: bool,
+    /// The exclusive `flock` on the state directory, held to the end.
+    _lock: OwnedFd,
 }
 
 impl Anon {
@@ -227,6 +254,8 @@ pub struct Store {
     anon: Option<Anon>,
     /// [`Store::anonymous_file`] in a persistent store, made on first use.
     build_files: OnceLock<AnonFiles>,
+    /// Keeps names and `RUN`s apart in an anonymous store; open otherwise.
+    fence: Fence,
     /// The per-digest locks held by this store's threads.
     held: lock::InProcess,
     /// The cache directories held by this store's threads.
@@ -277,6 +306,7 @@ impl Store {
             _build_lock: Some(build_lock),
             anon: None,
             build_files: OnceLock::new(),
+            fence: Fence::default(),
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
@@ -288,13 +318,18 @@ impl Store {
     /// Opens a store that keeps nothing in the state directory `state`
     /// (kaniko mode on `/`, ADR-0051): every entry is an anonymous file
     /// ([`Store::anonymous_file`]) held by this store and gone with it; no
-    /// marker, lock, layout or build directory is written, and nothing is
-    /// cleaned up. `state` must exist (`ranikust` checks and creates it).
-    /// Its anonymous files are named `/proc/self/fd/<n>` to the caller's
-    /// code, which only this process resolves.
+    /// lock, layout or build directory is written. `state` must exist
+    /// (`ranikust` checks and creates it). Its anonymous files are named
+    /// `/proc/self/fd/<n>` to the caller's code, which only this process
+    /// resolves.
     ///
-    /// A state directory that already holds entries is used as is, with a
-    /// warning: a `RUN` can read what is there.
+    /// Only [`BUILDING_MARKER`] is written, holding this container's PID
+    /// namespace and boot, and removed by a clean [`Store::close`] (ADR-0056):
+    /// a store opened on this container's marker, or on names an earlier
+    /// store left ([`crate::ANON_PREFIX`], removed here), makes no name for
+    /// the build and keeps the marker [open: Q-360]. A marker from another
+    /// container or boot is taken over. Anything else in the state directory
+    /// is used as is, with a warning: a `RUN` can read what is there.
     ///
     /// # Errors
     ///
@@ -330,7 +365,101 @@ impl Store {
         if fs.f_type != rustix::fs::PROC_SUPER_MAGIC {
             return Err(proc_err(io::Error::other("not procfs")));
         }
-        if !list(&root, Path::new("."))?.is_empty() {
+        // One build at a time per state directory, held for the store's
+        // life: a second one (another container on the same volume) would
+        // see this one's names and take its marker for a dead build's.
+        let lock = rustix::fs::openat(
+            &dir,
+            ".",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| host_err("open", e.into()))?;
+        match lock::try_lock(&lock) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Error::Busy {
+                    path: state_path.clone(),
+                });
+            }
+            Err(source) => {
+                return Err(Error::NoFlock {
+                    path: state_path.clone(),
+                    source,
+                });
+            }
+        }
+        let leftovers = anon::remove_leftovers(&root, &state_path)?;
+        // A build that did not end cleanly here may have left `RUN`
+        // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
+        // they would see a name, so this build makes none [open: Q-360].
+        // The marker names the PID namespace and boot it was made in: one
+        // from another container (a state directory on a volume) or an
+        // earlier boot left no process here, and is taken over.
+        // Opened before its type is checked, on the descriptor, without
+        // following a link or blocking on a FIFO a leftover process put
+        // there; anything but a regular file counts as this container's.
+        let mark = building_mark();
+        let marker_err = |op, e: io::Error| Error::Io {
+            op,
+            path: state_path.join(BUILDING),
+            source: e,
+        };
+        let marker = match rustix::fs::openat(
+            &dir,
+            BUILDING,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::NOCTTY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ) {
+            Ok(fd) => {
+                let st = rustix::fs::fstat(&fd).map_err(|e| marker_err("stat", e.into()))?;
+                if rustix::fs::FileType::from_raw_mode(st.st_mode)
+                    == rustix::fs::FileType::RegularFile
+                {
+                    let mut held = Vec::new();
+                    io::Read::take(File::from(fd), 256)
+                        .read_to_end(&mut held)
+                        .map_err(|e| marker_err("read", e))?;
+                    Some(mark.as_ref().is_none_or(|m| held == m.as_bytes()))
+                } else {
+                    Some(true)
+                }
+            }
+            Err(Errno::NOENT) => None,
+            Err(Errno::LOOP) => Some(true),
+            Err(e) => return Err(marker_err("open", e.into())),
+        };
+        let interrupted = match marker {
+            Some(here) => here,
+            // Names with no marker: it was deleted (a `RUN` can), or made
+            // by an older ranikust.
+            None => leftovers,
+        };
+        // Written unless this container's marker is kept as it is; made
+        // anew when names were left with none, so later builds heed it.
+        // A stale marker (a dead build's, the directory being locked) is
+        // replaced by a new file, never written through.
+        if !interrupted || marker.is_none() {
+            if marker.is_some() {
+                root.remove_file(BUILDING)?;
+            }
+            let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
+            io::Write::write_all(&mut f, mark.as_deref().unwrap_or_default().as_bytes()).map_err(
+                |e| Error::Io {
+                    op: "write",
+                    path: state_path.join(BUILDING),
+                    source: e,
+                },
+            )?;
+        }
+        let tainted = interrupted.then_some(CUT_SHORT);
+        if !list(&root, Path::new("."))?.iter().all(|n| n == BUILDING) {
             tracing::warn!(
                 target: "rnk_store",
                 "state directory {} is not empty: a RUN can read what it holds; kaniko mode on / \
@@ -342,17 +471,25 @@ impl Store {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let id = format!("{:x}-{nanos:x}", std::process::id());
+        let fence = Fence::closed();
+        let files = AnonFiles::new(dir, &state_path, fence.clone());
+        if let Some(why) = tainted {
+            files.tainted(why);
+        }
         Ok(Self {
             build_dir: state_path.join("builds").join(&id),
             anon: Some(Anon {
-                files: AnonFiles::new(dir, &state_path),
+                files,
                 entries: Mutex::default(),
+                tainted: tainted.is_some(),
+                _lock: lock,
             }),
             state: root,
             state_path,
             id,
             _build_lock: None,
             build_files: OnceLock::new(),
+            fence,
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
@@ -397,12 +534,119 @@ impl Store {
         Ok((file, files.keep(kept)))
     }
 
+    /// A new anonymous file like [`Store::anonymous_file`], but owned by the
+    /// caller: its disk space or memory goes with the file's last
+    /// descriptor, not with the store. Name it to this process with
+    /// `/proc/self/fd/<n>` of the file's descriptor. For what a build keeps
+    /// for a while and then drops, such as a kept stage's tar.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::anonymous_file`].
+    pub fn scratch_file(&self) -> Result<File> {
+        match &self.anon {
+            Some(anon) => anon.files.create(),
+            None => self.anonymous_file().map(|(file, _)| file),
+        }
+    }
+
+    /// Counts a `RUN` in: in an anonymous store, waits until no named file
+    /// or unpacked directory of the build is on disk, and keeps any from
+    /// being made until the guard drops. Drop it once the `RUN`'s process
+    /// tree is gone. In a persistent store it does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Anonymous`] when named state outlives the wait: a bug in the
+    /// order of work, not a race.
+    pub fn enter_run(&self) -> Result<RunGuard> {
+        self.fence.enter_run()
+    }
+
+    /// Counts the `RUN` of `guard` out. `swept` says whether `Sandbox::run`
+    /// returned without an error, its process tree gone; otherwise no
+    /// name is made for the rest of the build (its processes may live). In
+    /// an anonymous store the state directory must still be the one opened
+    /// (a `RUN` may have moved it, or made `/var/lib` a link): checked by
+    /// device, inode and mount, without following a link.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadEntry`] when the state directory changed; the fence is
+    /// then closed to names too.
+    pub fn leave_run(&self, guard: RunGuard, swept: bool) -> Result<()> {
+        if !swept {
+            self.fence.poison();
+        }
+        let checked = if self.anon.is_some() {
+            self.same_state_dir()
+        } else {
+            Ok(())
+        };
+        if checked.is_err() {
+            self.fence.poison();
+        }
+        drop(guard);
+        checked
+    }
+
+    /// Whether the state directory's path still leads, with no link, to the
+    /// directory this store holds.
+    fn same_state_dir(&self) -> Result<()> {
+        let changed = || Error::BadEntry {
+            path: self.state_path.clone(),
+            reason: "the state directory changed during a RUN",
+        };
+        let now = RootPath::open(&self.state_path).map_err(|_| changed())?;
+        let (a, b) = (now.statx("/")?, self.state.statx("/")?);
+        let same = a.ino == b.ino
+            && (a.dev_major, a.dev_minor) == (b.dev_major, b.dev_minor)
+            && now.mnt_id() == self.state.mnt_id();
+        if same { Ok(()) } else { Err(changed()) }
+    }
+
+    /// A window in which named state may exist on disk, for a directory the
+    /// caller unpacks in the state directory and deletes before it drops
+    /// the guard (an image or a kept stage read by `COPY --from`): in an
+    /// anonymous store, waits until no `RUN` runs and keeps any from
+    /// starting until the guard drops. The directory's name comes from
+    /// [`Store::scratch_name`]. In a persistent store it does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Anonymous`] when asked from inside a `RUN` on this thread,
+    /// after a `RUN` that ended with an error, or in a store opened on the
+    /// traces of a build cut short, whose `RUN` processes may live on
+    /// outside any fence [open: Q-360].
+    pub fn named_window(&self) -> Result<NamedGuard> {
+        if self.anon.as_ref().is_some_and(|a| a.tainted) {
+            return Err(Error::Anonymous(
+                "COPY --from a kept stage or an image, unpacked by name, after a build cut \
+                 short (an earlier build in this container did not end cleanly and may have \
+                 left RUN processes; run ranikust as the container's PID 1, or restart the \
+                 container),",
+            ));
+        }
+        self.fence.named()
+    }
+
+    /// A fresh name in the state directory for named state an anonymous
+    /// store's next start removes if this build leaves it (a crash):
+    /// [`crate::ANON_PREFIX`] and 128 random bits.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AnonymousFile`] when the kernel has no randomness to give.
+    pub fn scratch_name(&self) -> Result<String> {
+        anon::random_name()
+    }
+
     /// [`Store::anonymous_file`] in a persistent store: kept by a store-wide
     /// set made on first use.
     fn persistent_anonymous_file(&self, dir: OwnedFd) -> Result<(File, PathBuf)> {
         let files = self
             .build_files
-            .get_or_init(|| AnonFiles::new(dir, &self.build_dir));
+            .get_or_init(|| AnonFiles::new(dir, &self.build_dir, Fence::default()));
         let file = files.create()?;
         let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
             path: self.build_dir.clone(),
@@ -780,8 +1024,13 @@ impl Store {
     /// removed, for example because a mount is still inside it or on it;
     /// the next start retries.
     pub fn close(self) -> Result<()> {
-        if self.anon.is_some() {
-            // Nothing on disk: the files go with their descriptors.
+        if let Some(anon) = &self.anon {
+            // The files go with their descriptors. The marker of a build in
+            // progress goes only after a clean build: a poisoned fence or a
+            // tainted start may have left `RUN` processes in the container.
+            if !anon.tainted && !self.fence.is_poisoned() {
+                self.state.remove_file(BUILDING)?;
+            }
             return Ok(());
         }
         remove_build(&self.state, &self.id)?;
@@ -1092,7 +1341,7 @@ fn remove_tree(state: &RootPath, rel: &Path) -> Result<bool> {
 /// swap of `rel` for a symlink (to `/`, the state directory itself) or for
 /// a mount between the two steps is refused instead of emptying what it
 /// points to.
-fn remove_dir_tree(state: &RootPath, rel: &Path, st: &Stat) -> Result<()> {
+pub(crate) fn remove_dir_tree(state: &RootPath, rel: &Path, st: &Stat) -> Result<()> {
     let refuse = |reason| Error::BadEntry {
         path: rel.to_owned(),
         reason,

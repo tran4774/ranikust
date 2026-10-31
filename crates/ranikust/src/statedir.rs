@@ -178,7 +178,14 @@ fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
             names.push(name);
         }
     }
-    if names.is_empty() {
+    // Only what an anonymous store (kaniko mode on `/`) leaves when a
+    // build is cut short: its marker and its unpacked names, which it
+    // removes or heeds at its next start (ADR-0056, Q-360).
+    let own = |n: &Vec<u8>| {
+        n == rnk_store::BUILDING_MARKER.as_bytes()
+            || n.starts_with(rnk_store::ANON_PREFIX.as_bytes())
+    };
+    if names.iter().all(own) {
         return Ok(false);
     }
     let marker = rnk_store::STATE_MARKER;

@@ -332,6 +332,35 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Whether the error is certain to have come before the `RUN`'s
+    /// command ran: no process of the `RUN` can outlive it. False for
+    /// [`Error::Cancelled`] (it may have killed a running `RUN`) and any
+    /// error after the start, whose sweep may not have finished.
+    ///
+    /// This rests on the spawner's order (`spawner.rs`, `execute`): the
+    /// spec and privileges are checked before the fork; the child reports
+    /// [`Error::Setup`] or [`Error::Exec`] only from before `execve`, and
+    /// the parent returns them only after the process tree is swept
+    /// (`Survivors` otherwise). A variant returned after the command
+    /// starts must not be added here.
+    #[must_use]
+    pub fn ran_no_command(&self) -> bool {
+        matches!(
+            self,
+            Self::Setup { .. }
+                | Self::Exec { .. }
+                | Self::InvalidSpec(_)
+                | Self::Privilege(_)
+                | Self::NotSingleThreaded { .. }
+                | Self::InPlainChroot
+                | Self::NoLoopback { .. }
+                | Self::NoLoopbackUserns { .. }
+                | Self::RunReachesState { .. }
+        )
+    }
+}
+
 /// The crate's result type.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

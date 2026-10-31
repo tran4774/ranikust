@@ -257,3 +257,19 @@ fn the_nofile_limit_ends_at_the_hard_limit() {
     let now = rustix::process::getrlimit(rustix::process::Resource::Nofile);
     assert_eq!(now.current, hard);
 }
+
+#[test]
+fn the_traces_of_a_kaniko_build_cut_short_on_slash_are_taken() {
+    // Its marker and an unpacked name: the store heeds and removes them
+    // (ADR-0056, Q-360); anything else beside them is still refused.
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(state.join(rnk_store::BUILDING_MARKER), b"").unwrap();
+    fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    prepare(&state).unwrap();
+    fs::write(state.join("data"), b"x").unwrap();
+    let why = prepare(&state).unwrap_err().0;
+    assert!(why.contains("not a state directory"), "{why}");
+}

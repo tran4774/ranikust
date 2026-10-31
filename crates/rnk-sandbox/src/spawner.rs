@@ -1393,6 +1393,9 @@ fn execute(
     if cancelled {
         return Err(Error::Cancelled);
     }
+    // `Setup` and `Exec` come from the child before `execve` and are
+    // returned only here, after the tree is reaped and swept (`killed?`):
+    // `Error::ran_no_command` relies on it (ADR-0056). Keep it so.
     match failure? {
         None => Ok((status, usage)),
         Some((Step::Exec, errno)) => Err(Error::Exec {

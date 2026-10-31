@@ -598,7 +598,8 @@ fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
     let (mut f, other) = store.anonymous_file().unwrap();
     f.write_all(b"layer").unwrap();
     assert_eq!(fs::read(&other).unwrap(), b"layer");
-    assert!(names(&state).is_empty(), "{:?}", names(&state));
+    // Only the marker of a build in progress, which holds nothing.
+    assert_eq!(names(&state), [".ranikust-building"]);
     let layer = store.fill(&EntryKey::Layer(digest(2)), |_| -> io::Result<u64> {
         Ok(0)
     });
@@ -608,6 +609,142 @@ fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
     assert!(matches!(cache, Err(Error::Anonymous(_))));
     store.close().unwrap();
     assert!(names(&state).is_empty());
+}
+
+#[test]
+fn a_build_cut_short_keeps_the_next_builds_state_in_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A clean build removes its marker; files are on disk (O_TMPFILE here).
+    let store = Store::open_anonymous(&state).unwrap();
+    let (_f, path) = store.anonymous_file().unwrap();
+    let target = fs::read_link(&path).unwrap();
+    assert!(
+        !target.to_string_lossy().contains("memfd:"),
+        "{}",
+        target.display()
+    );
+    store.close().unwrap();
+    assert!(names(&state).is_empty());
+    // A RUN that ended with an error leaves the marker behind ...
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    store.leave_run(run, false).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+    // ... so the next build makes no name (here O_TMPFILE needs none, so
+    // its files stay on disk; the named way falls back to memory, see the
+    // anon module's tests), and keeps the marker.
+    let store = Store::open_anonymous(&state).unwrap();
+    let (_f, path) = store.anonymous_file().unwrap();
+    assert!(fs::read_link(&path).is_ok());
+    // Nor is anything unpacked by name (a `COPY --from` on `/`).
+    let e = store.named_window().unwrap_err();
+    assert!(matches!(e, Error::Anonymous(_)), "{e}");
+    assert!(e.to_string().contains("PID 1"), "{e}");
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+}
+
+#[test]
+fn one_anonymous_store_at_a_time_per_state_directory() {
+    // Two containers sharing a volume: the second never touches the first's
+    // names or marker.
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let first = Store::open_anonymous(&state).unwrap();
+    let window = first.named_window().unwrap();
+    let name = first.scratch_name().unwrap();
+    fs::create_dir(state.join(&name)).unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::Busy { .. }), "{e}");
+    assert!(e.to_string().contains("its own volume"), "{e}");
+    assert!(state.join(&name).is_dir());
+    fs::remove_dir(state.join(&name)).unwrap();
+    drop(window);
+    first.close().unwrap();
+    // Once it is closed, the next one opens, on a clean directory.
+    let second = Store::open_anonymous(&state).unwrap();
+    drop(second.named_window().unwrap());
+    second.close().unwrap();
+    assert!(names(&state).is_empty());
+}
+
+#[test]
+fn a_marker_that_is_not_a_regular_file_never_blocks_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let marker = state.join(".ranikust-building");
+    // A FIFO: opened without blocking, counted as this container's.
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &marker,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    fs::remove_file(&marker).unwrap();
+    // A link: never followed, counted likewise.
+    std::os::unix::fs::symlink("/etc/hostname", &marker).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    assert!(
+        fs::symlink_metadata(&marker)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn a_marker_from_another_container_or_boot_is_taken_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A state directory on a volume, left by a build cut short in a
+    // container that is gone: its processes went with it.
+    let marker = state.join(".ranikust-building");
+    fs::write(&marker, "pid:[1] 00000000-0000-0000-0000-000000000000\n").unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    drop(store.named_window().unwrap());
+    let ours = fs::read_to_string(&marker).unwrap();
+    assert!(ours.starts_with("pid:["), "{ours}");
+    store.close().unwrap();
+    assert!(names(&state).is_empty());
+    // A name left with no marker (a RUN deleted it): cut short here.
+    fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+}
+
+#[test]
+fn a_state_directory_moved_during_a_run_fails_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    store.leave_run(run, true).unwrap();
+    let run = store.enter_run().unwrap();
+    // A RUN moves the directory and puts a link in its place.
+    fs::rename(&state, dir.path().join("moved")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("moved"), &state).unwrap();
+    assert!(matches!(
+        store.leave_run(run, true),
+        Err(Error::BadEntry { .. })
+    ));
+    assert!(matches!(store.named_window(), Err(Error::Anonymous(_))));
 }
 
 #[test]
