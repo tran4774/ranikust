@@ -89,7 +89,10 @@ and goes to kaniko mode, else continues as overlay mode. Kaniko mode
 `container::detect` (`/` in a container, else a root in the state
 directory), `RLIMIT_NOFILE` raised, `--jobs` ignored with a warning, then
 `setup::set_up_kaniko`: the state directory checked (`statedir::prepare`),
-the store, on `/` a `flock` on `/` itself (one build per container,
+the store (on `/`, `Store::open_anonymous` and `Sandbox::start_direct`,
+ADR-0051, after `exposure`'s warnings for a secret-looking `--build-arg`
+value and another process holding `DOCKER_AUTH_CONFIG`; `main` makes the
+process non-dumpable first of all), on `/` a `flock` on `/` itself (one build per container,
 taken first), else, where root may mount (refused otherwise, Q-330),
 `builds/<id>/rootfs` made through the state directory's
 `RootPath`; on that root where the namespace could be entered, the

@@ -44,6 +44,7 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
+    pub fn start_direct() -> Result<Self>;                         // kaniko mode on / (ADR-0051): Direct on / only, no directory or journal, process made a child subreaper; after each RUN its process tree is killed and reaped by pid; the child drops caps outside Docker's defaults from its bounding set, or the RUN is refused (Error::RunReachesState) if CAP_SYS_PTRACE/DAC_READ_SEARCH would stay
     pub fn start_with_root(caps, dir, shared_root: &Path, checked: &RootPath) -> Result<Self>; // the path must be `checked`'s directory; replays journals of that root, by identity; refuses the host's /, /etc, /dev; a later RUN on another path, or whose reopened root differs (dev, ino, mnt_id), is refused
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread

@@ -39,6 +39,27 @@ overlay mode).
   `/var/lib/ranikust` (or `--state-dir`), inside the root and on the ignore
   list, as kaniko's `/kaniko`; with any other root the root lies inside it,
   `<state>/builds/<id>/rootfs` (ADR-0050).
+- On `/`, a `RUN` reaches nothing of ranikust's ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)):
+  - the store keeps nothing with a path: `Store::open_anonymous`; pulled
+    blobs and encoded layers are anonymous files (`O_TMPFILE` in the state
+    directory, `memfd` where the filesystem refuses it: a container's
+    overlayfs root on kernel 6.8, measured, so in memory unless a volume
+    is mounted there [open: Q-340]), held by
+    descriptor and named `/proc/self/fd/<n>` to ranikust's own code; the
+    state directory stays empty; what must outlive the emptying of the
+    root (a kept tree) goes the same way, as a tar in
+    `Store::anonymous_file`, re-extracted when needed;
+  - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
+    need `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers);
+  - the `RUN` child drops every capability outside Docker's defaults from
+    its bounding set (`CAP_SETPCAP`); without it, a remaining
+    `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` stops the `RUN`;
+  - ranikust is a child subreaper (`Sandbox::start_direct`); after each
+    `RUN` it kills and reaps by pid everything that became its child
+    during the `RUN`, and their descendants, never `waitpid(-1)`;
+  - warnings for what it cannot close: a `--build-arg NAME=value` whose
+    name looks like a secret (`/proc/<pid>/cmdline`), another process
+    holding `DOCKER_AUTH_CONFIG` in its environment.
 - Anything ranikust places in a root (stubs, `hosts`, `resolv.conf`, `/dev`
   nodes, fake `/proc`) is removed, and its parent directory's metadata
   restored, before the diff.

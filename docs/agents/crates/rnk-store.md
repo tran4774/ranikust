@@ -39,6 +39,9 @@ impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
+    pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE, memfd fallback) named /proc/self/fd/<n>; layers and cache mounts refused (Error::Anonymous)
+    pub fn is_anonymous(&self) -> bool;
+    pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store: encoded layers, kept trees as tars (COPY --from on /)
     pub fn state_dir(&self) -> &Path;                   // canonical
     pub fn build_id(&self) -> &str;
     pub fn build_dir(&self) -> &Path;                   // builds/<id>, created by open

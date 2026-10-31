@@ -2,12 +2,15 @@
 # The T2 harness: runs test suites as real root in a disposable QEMU/KVM VM,
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
-#   tests/vm/vm.sh [suite]...     suites: unit, smoke, quick, e2e, push;
-#                                 default unit smoke
+#   tests/vm/vm.sh [suite]...     suites: unit, smoke, quick, e2e, push,
+#                                 secrets; default unit smoke
 #
 # `quick` (the small Dockerfiles of tests/smoke/cases, a minute or two) is
 # for smoke tests and proofs of concept that need real root; `e2e` (the
 # nextjs-kaniko workloads, 12 GiB, tens of minutes) for large benchmarks.
+# `secrets` runs kaniko mode on `/` in default Docker containers with
+# attacker `RUN`s that try to read ranikust's state and credentials
+# (ADR-0051).
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
@@ -59,7 +62,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 SUITES=("$@")
 [ ${#SUITES[@]} -gt 0 ] || SUITES=(unit smoke)
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke | quick | e2e | push) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push)" ;; esac
+  case "$s" in unit | smoke | quick | e2e | push | secrets) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets)" ;; esac
 done
 case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 [ "$(id -u)" != 0 ] || die "run as a regular user: QEMU needs /dev/kvm, not root"
@@ -144,7 +147,7 @@ if wants unit; then
     jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
-if wants smoke || wants quick || wants e2e || wants push; then
+if wants smoke || wants quick || wants e2e || wants push || wants secrets; then
   log "building the smoke-build example and the ranikust binary"
   (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
   cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"

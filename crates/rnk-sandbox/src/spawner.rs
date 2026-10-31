@@ -739,7 +739,7 @@ impl Runner {
         } else {
             Span::none()
         };
-        let result = span.in_scope(|| execute(job, spawn, &program, running));
+        let result = span.in_scope(|| execute(job, spawn, &program, running, self.direct_only));
         match &result {
             Ok((status, usage)) => {
                 record_usage(&span, usage);
@@ -1324,11 +1324,14 @@ fn kill_run(pid: Pid, isolation: Isolation) {
 
 /// Clones the child, learns whether it reached `execve`, and reaps it. With
 /// `running`, the child can be killed by [`Sandbox::cancel`] until it exits.
+/// With `sweep` (a [`Sandbox::start_direct`] sandbox: a subreaper running
+/// one `RUN` at a time), what the `RUN` left is killed and reaped too.
 fn execute(
     job: Job,
     spawn: impl FnOnce(Job) -> Result<Spawned>,
     program: &str,
     running: Option<&Running>,
+    sweep: bool,
 ) -> Result<(ExitStatus, libc::rusage)> {
     let isolation = job.isolation;
     if running.is_some_and(Running::is_cancelled) {
@@ -1337,7 +1340,8 @@ fn execute(
     // ranikust's own children before the `RUN`: whatever else becomes its
     // child while the `RUN` runs is the `RUN`'s, reparented to the
     // subreaper (ADR-0051).
-    let helpers = if isolation == Isolation::Direct {
+    let sweep = sweep && isolation == Isolation::Direct;
+    let helpers = if sweep {
         sweep::children_of_self()?
     } else {
         Vec::new()
@@ -1371,9 +1375,10 @@ fn execute(
     });
     let cancelled = running.is_some_and(|r| r.remove(pid));
     let killed = match (exited, isolation) {
-        (Ok(()), Isolation::Direct) => {
+        (Ok(()), Isolation::Direct) if sweep => {
             kill_leftovers(pid).and_then(|()| sweep::kill_run_tree(pid, &helpers))
         }
+        (Ok(()), Isolation::Direct) => kill_leftovers(pid),
         // The child is PID 1 of its namespace: when it exits, the kernel
         // kills the rest.
         (r, _) => r,
@@ -1442,6 +1447,12 @@ fn wait_exited(pid: Pid) -> Result<()> {
 /// ranikust holds `CAP_SETPCAP`. Without it, a bounding set that still
 /// holds `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` stops the `RUN`.
 fn direct_slash_drop() -> Result<bool> {
+    // Only a root parent gives its `RUN` the bounding set as permitted
+    // capabilities; kaniko mode always runs as root. A non-root process
+    // (a test) keeps a full bounding set it never passes on.
+    if !rustix::process::geteuid().is_root() {
+        return Ok(false);
+    }
     let bounding = caps::bounding_set(caps::last_cap());
     let setpcap = rustix::thread::capabilities(None)
         .map_err(|e| sys_err("read the capability sets", e))?

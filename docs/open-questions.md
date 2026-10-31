@@ -402,6 +402,29 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-340: Where do kaniko mode's anonymous files live when the container's root has no O_TMPFILE?
+
+- **Blocks:** nothing yet; **Area:** `rnk-store`, `ranikust`
+- **Context:** ADR-0051 keeps kaniko mode's state on `/` in anonymous
+  files: `O_TMPFILE` in the state directory, `memfd` where the filesystem
+  refuses it. Measured on 2026-10-31 (VM `secrets` suite): the overlayfs
+  root of a Docker container refuses `O_TMPFILE` (`EOPNOTSUPP`) on Ubuntu
+  24.04's kernel 6.8 (and on 22.04's 5.15, see the suite's results), so
+  every pulled blob and encoded layer sits in memory, counted against the
+  container's memory limit; a large image can then be killed by the OOM
+  killer. A volume mounted at the state directory (ext4, xfs, tmpfs) takes
+  `O_TMPFILE`, its files as anonymous as on any filesystem.
+- **Options:** (a) keep `memfd` and document the volume (and a warning at
+  start when `memfd` is in use under a cgroup memory limit); (b) refuse
+  kaniko mode on `/` without `O_TMPFILE` unless a flag accepts memory;
+  (c) a named file unlinked at once, which leaves a window a `RUN` running
+  at that moment could use (ruled out by ADR-0051).
+- **Recommendation:** (a): it keeps the default setup flag-free and the
+  state unreachable; the cost is memory only where no volume is mounted.
+- **Interim:** (a) without the warning: `memfd`, with an `info` log line
+  when the fallback starts (`rnk_store`).
+- **Raised:** 2026-10-31
+
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?

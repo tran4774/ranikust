@@ -156,6 +156,17 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   also after a crash; `RUN` commands keep the open-file limit ranikust
   started with. Not used by a build yet.
 
+- Kaniko mode on a container's `/` keeps ranikust's state and credentials
+  out of `RUN`'s reach: pulled and encoded layers are files without a name
+  (`O_TMPFILE`, or `memfd` where the filesystem lacks it) and the state
+  directory stays empty; ranikust is not dumpable, so `/proc/<pid>/` of
+  ranikust (descriptors, environment, memory) is closed to a `RUN`; `RUN`
+  loses every capability outside Docker's defaults, and a container that
+  grants `CAP_SYS_PTRACE` without `CAP_SETPCAP` is refused; processes a
+  `RUN` leaves in the background, `setsid` ones included, are killed when
+  it ends. Warnings for a secret-looking `--build-arg NAME=value` and for
+  another process holding `DOCKER_AUTH_CONFIG` (ADR-0051).
+
 ### Changed
 
 - ranikust picks the build root itself and keeps everything in one state

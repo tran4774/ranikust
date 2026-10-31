@@ -67,7 +67,15 @@ These are documented properties, not vulnerabilities:
 - **kaniko mode inside an unprivileged container has no isolation.** Where
   ranikust cannot mount or create namespaces (Docker's default profile, most
   Kubernetes pods), `RUN` commands run in the same container as ranikust,
-  as they do in kaniko. The container is the only boundary. With
+  as they do in kaniko. The container is the only boundary. ranikust keeps
+  its own state and credentials out of their reach (anonymous files, a
+  non-dumpable process, no `CAP_SYS_PTRACE` for `RUN`, no `RUN` process
+  left running; [ADR-0051](docs/adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
+  but not what it cannot control: a value on its command line, credentials
+  another process of the container holds in its environment, and files
+  mounted into the container. Pass registry credentials in
+  `DOCKER_AUTH_CONFIG`, secrets with `--secret`, and run ranikust as the
+  container's PID 1. With
   `--parallel-stages`, stages can also read each other's files and secrets
   ([ADR-0014](docs/adr/0014-kaniko-mode-sequential-by-default.md)). Kaniko
   mode outside a container where root may not mount is refused: `RUN`

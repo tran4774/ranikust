@@ -58,7 +58,7 @@ The mode is chosen at startup by actually trying each step
 | Overlay, root | Host as root or via sudo; `--privileged` container; Podman with `CAP_SYS_ADMIN` | New mount, PID, UTS and IPC namespaces; `pivot_root` (or `MS_MOVE` + `chroot`); capabilities cut to Docker's 14 defaults for every `USER`; `PR_SET_PDEATHSIG`; optional seccomp and user namespace | About `docker build` with a root daemon: a kernel bug or a retained capability crosses it |
 | Overlay, rootless | Podman rootless; regular user on Debian, Fedora, RHEL, Ubuntu up to 22.04 | As above, inside a user namespace: root in `RUN` maps to the invoking user | About rootless Podman: the invoking user's privileges at most |
 | kaniko, mounts available | Root where overlay cannot be used (NFS, FUSE, no overlay module) | Same sandbox as overlay root, one directory per stage | As overlay root |
-| kaniko, no mounts | Docker's default profile, ordinary Kubernetes pods | None. `RUN` runs in ranikust's own container on rootfs `/`, as in kaniko | The outer container only |
+| kaniko, no mounts | Docker's default profile, ordinary Kubernetes pods | No boundary to the container: `RUN` runs in ranikust's own container on rootfs `/`, as in kaniko. ranikust's own state and credentials are kept out of reach (T21, [ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)) | The outer container only, for everything but ranikust's state |
 | kaniko, no mounts, `--parallel-stages` | Same, opted in ([ADR-0014](../adr/0014-kaniko-mode-sequential-by-default.md)) | A bare `chroot` per stage, no `/proc` | None: a `RUN` escapes the `chroot` and reads or writes other stages' roots and secrets **[measured]** |
 | None | Regular user on Ubuntu 24.04+ without an AppArmor profile; Kubernetes PSS restricted | ranikust refuses to start a build | — |
 
@@ -94,6 +94,7 @@ therefore used only where nothing better is possible: kaniko mode with
 | T18 | A device node opens a host device: one `RUN` creates with `mknod` (`CAP_MKNOD` is a Docker default) or one from a layer, with no device cgroup to stop it; or `RUN` changes the mode of a host node bound into `/dev` | A1, A2 | overlay, kaniko with mounts | `nodev` on the root's bind, every `RUN --mount` bind and the `/dev` tmpfs; the `/dev` nodes are read-only binds of the outer ones, so I/O works and `chmod` or `chown` fails | host-safety review of `rnk-sandbox` [inferred] |
 | T19 | `RUN` uses the operator's terminal: reads keystrokes, or pushes input into the operator's shell with `TIOCSTI` | A1, A3 | all | `setsid` before `execve` (no controlling terminal); stdin `/dev/null` by default, as Docker | host-safety review of `rnk-sandbox` [inferred] |
 | T20 | A `RUN` reaches network-configuration code of the kernel with capabilities over its network namespace: without `CAP_NET_ADMIN`, `--allow network.none-userns` puts a `--network=none` `RUN` in a network namespace owned by a user namespace of uid 0, where its root holds every capability, so it could reach nf_tables, x_tables, xfrm, IPVS or traffic control, or join that user namespace through `ioctl(NS_GET_USERNS)` and `setns` | A1, A7 | overlay, with the flag | Refused by default. With the flag, a seccomp filter installed after every mount refuses `setns`, `unshare`/`clone` with `CLONE_NEWUSER`, `clone3` (`ENOSYS`), `io_uring`, `socket(AF_KEY)`, netlink other than route, sock_diag, audit and uevent (`EPROTONOSUPPORT`), the x_tables, arp_tables, ebtables, IPVS, IPsec policy and multicast-routing socket options of `SOL_IP` and `SOL_IPV6` (not `IPV6_RECVTCLASS`/`IPV6_TCLASS`, which share ip6_tables' numbers), `TCP_REPAIR`, and syscalls of another architecture. Residual: every other `CAP_NET_ADMIN`-gated interface in that namespace stays open, rtnetlink first, including `ip link add type <kind>` loading `rtnl-link-<kind>` modules into the host kernel (ADR-0033) | `rnk-sandbox` T0 `the_filter_refuses_what_it_should_and_nothing_else`; VM smoke `tests/smoke/netns-check.py` |
+| T21 | In kaniko mode on `/` (no mounts, one PID namespace, `RUN` as uid 0) a `RUN` reads or tampers with ranikust's state (pulled and encoded blobs), its descriptors, environment or memory through `/proc/<pid>/`, or leaves a process that does so during the walk, the export or the push | A3, A5, A6 | kaniko without mounts, on `/` | ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)) No path for state: blobs and encoded layers are anonymous files (`O_TMPFILE` in the state directory, `memfd` where unsupported), held by descriptor, the state directory left empty; ranikust is not dumpable (`PR_SET_DUMPABLE 0`, first in `main`), so `/proc/<ranikust>/{fd,environ,mem,maps,root}` need `CAP_SYS_PTRACE`; the `RUN` child drops every capability outside Docker's defaults from its bounding set, and stops the `RUN` when it cannot while `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` remains; ranikust is a child subreaper and kills and reaps the `RUN`'s process tree after each `RUN`; the `RUN` environment is the Dockerfile's only. Not closed, warned: `/proc/<pid>/cmdline` (a `--build-arg` value), another process holding the credential variables (a CI shell), files mounted into the container | VM `secrets` suite (default Docker, `--cap-add SYS_PTRACE`, started from `sh -c`), T2 `a_direct_run_leaves_no_process_behind`, `a_direct_run_on_slash_keeps_only_dockers_capabilities` [measured] |
 
 ## 6. Accepted risks
 
@@ -102,7 +103,18 @@ These follow from decisions and are documented to users rather than fixed:
 - `RUN` runs as root inside its sandbox, and the sandbox is about as strong
   as `docker build` ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)).
 - kaniko mode inside a container that forbids mounts has no isolation
-  between `RUN` and ranikust ([ADR-0002](../adr/0002-two-snapshot-modes.md)).
+  between `RUN` and the container ([ADR-0002](../adr/0002-two-snapshot-modes.md)).
+  ranikust keeps its own state and credentials out of `RUN`'s reach (T21,
+  ADR-0051), except what it can only warn about: a value on its command
+  line (`/proc/<pid>/cmdline` is readable whatever `PR_SET_DUMPABLE` says),
+  credentials another process of the container holds in its environment
+  (a CI shell that started ranikust: run ranikust as the container's PID 1),
+  and any file mounted into the container (a `config.json`, a
+  service-account token: pass registry credentials in `DOCKER_AUTH_CONFIG`).
+  A root `RUN` can still list the descriptor numbers of
+  `/proc/<ranikust>/fd`, whose entries a non-dumpable process gives to root,
+  but neither read their targets nor open them. Nothing of ranikust's
+  state outlives a kaniko-mode build on `/`.
 - Until `--seccomp` (Phase 3), a root `RUN` in the full sandbox can use
   uid 0's user and persistent keyrings, which Docker's seccomp profile
   denies (T11).

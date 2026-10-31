@@ -4,7 +4,10 @@
 //! There a `RUN` runs as root on ranikust's own `/`, in its PID namespace:
 //! it can read any file that has a path. An anonymous file has none: an
 //! `O_TMPFILE` inode in the state directory, or a `memfd` where the
-//! filesystem has no `O_TMPFILE` (overlayfs before Linux 6.6 [external]).
+//! filesystem has no `O_TMPFILE`: the overlayfs root of a Docker container
+//! on kernel 6.8 refuses it [measured, VM `secrets` suite], so blobs sit in
+//! memory there unless a volume is mounted at the state directory
+//! [open: Q-340].
 //! Never a named file unlinked later, which leaves a window. ranikust keeps
 //! each one open for the life of the store and names it to its own code as
 //! `/proc/self/fd/<n>`, which only ranikust's process resolves to that
