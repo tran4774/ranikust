@@ -34,6 +34,7 @@ mod pull;
 mod sources;
 mod stage;
 mod time;
+mod upload;
 
 pub use error::{Error, Result};
 pub use image::{
@@ -49,3 +50,4 @@ pub use stage::{
     build_stage,
 };
 pub use time::BuildTime;
+pub use upload::{Release, Uploader};

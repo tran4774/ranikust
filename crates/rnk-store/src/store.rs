@@ -411,6 +411,21 @@ impl Store {
         Ok((file, files.keep(kept)))
     }
 
+    /// Releases the anonymous file `path` that [`Store::anonymous_file`]
+    /// handed out, freeing its bytes before the store goes: a built layer
+    /// every destination already holds (ADR-0055). Returns whether `path`
+    /// was one of this store's anonymous files. The path must not be used
+    /// afterwards: its descriptor number can name a later file.
+    pub fn release_anonymous_file(&self, path: &Path) -> bool {
+        self.anon
+            .as_ref()
+            .is_some_and(|anon| anon.files.release(path))
+            || self
+                .build_files
+                .get()
+                .is_some_and(|files| files.release(path))
+    }
+
     /// The canonical state directory.
     #[must_use]
     pub fn state_dir(&self) -> &Path {

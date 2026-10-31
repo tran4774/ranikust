@@ -622,6 +622,22 @@ fn a_persistent_store_gives_anonymous_files_too() {
 }
 
 #[test]
+fn an_anonymous_file_released_is_closed_once() {
+    let dir = tempfile::tempdir().unwrap();
+    for store in [
+        Store::open_anonymous(dir.path()).unwrap(),
+        Store::open(&paths(&dir.path().join("p"))).unwrap(),
+    ] {
+        let (f, path) = store.anonymous_file().unwrap();
+        drop(f);
+        assert!(store.release_anonymous_file(&path));
+        assert!(!store.release_anonymous_file(&path), "only once");
+        assert!(!store.release_anonymous_file(Path::new("/proc/self/fd/0")));
+        assert!(!store.release_anonymous_file(Path::new("/etc/passwd")));
+    }
+}
+
+#[test]
 fn a_failed_anonymous_fill_publishes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_anonymous(dir.path()).unwrap();

@@ -56,6 +56,68 @@ fn layer_bytes_do_not_depend_on_the_thread_count() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exported_layers_are_pushed_during_the_build_then_released() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let client = client(&registry);
+    let state = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(rnk_store::Store::open_anonymous(state.path()).unwrap());
+    let destinations = vec![
+        reference(&registry, "out:v1"),
+        reference(&registry, "copy:v1"),
+    ];
+    let uploader = rnk_builder::Uploader::start(
+        client,
+        destinations,
+        NonZeroUsize::new(2).unwrap(),
+        rnk_builder::Release::Free(std::sync::Arc::clone(&store)),
+        &tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    let time = BuildTime::reproducible(None).unwrap();
+    let kept = std::sync::Arc::clone(&store);
+    let exporter = LayerExporter::anonymous(store, options(Compression::Gzip, 2), &time)
+        .with_uploader(uploader);
+    let push = rnk_builder::LayerDemand {
+        push: true,
+        target: true,
+        ..rnk_builder::LayerDemand::default()
+    };
+    let (blobs, uploaded) = tokio::task::spawn_blocking(move || {
+        let mut blobs = Vec::new();
+        for seed in 0..3 {
+            let blob = exporter.export(Box::new(layer(seed, 40))).unwrap();
+            exporter.exported(&blob, push);
+            blobs.push(blob);
+        }
+        // The same layer again is not sent twice.
+        exporter.exported(&blobs[0], push);
+        let handle = tokio::runtime::Handle::current();
+        let uploaded = handle.block_on(exporter.finish_uploads()).unwrap();
+        (blobs, uploaded)
+    })
+    .await
+    .unwrap();
+
+    {
+        let state = registry.state();
+        for blob in &blobs {
+            assert!(uploaded.contains(&blob.blob.digest));
+            let repos = &state.blob_repos[blob.blob.digest.as_str()];
+            assert!(repos.iter().any(|r| r == "out") && repos.iter().any(|r| r == "copy"));
+            // Released once pushed: the store no longer holds it. Never read
+            // the old name: its descriptor number may name another file now.
+            assert!(!kept.release_anonymous_file(blob.path().unwrap()));
+        }
+    }
+    assert_eq!(registry.count("PUT /v2/out/blobs/uploads/"), 3);
+    assert_eq!(
+        registry.count("PUT /v2/copy/blobs/uploads/"),
+        0,
+        "mounted from out"
+    );
+}
+
 #[test]
 fn an_anonymous_exporter_writes_the_same_bytes_and_names_nothing() {
     let time = BuildTime::reproducible(None).unwrap();

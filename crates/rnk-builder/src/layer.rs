@@ -23,6 +23,7 @@ use tracing::debug_span;
 use crate::error::{Error, Result};
 use crate::output::Outputs;
 use crate::time::BuildTime;
+use crate::upload::Uploader;
 
 /// Why a stage's layers are encoded: any reason is enough.
 ///
@@ -182,6 +183,9 @@ pub struct LayerExporter {
     /// [`LayerExporter::anonymous`]: blobs are anonymous files of this
     /// store, never named in a directory (ADR-0051).
     anon: Option<Arc<Store>>,
+    /// [`LayerExporter::with_uploader`]: pushed layers go to it as they are
+    /// exported (ADR-0055).
+    uploader: Option<Uploader>,
 }
 
 impl LayerExporter {
@@ -197,6 +201,38 @@ impl LayerExporter {
                 ..options
             },
             anon: None,
+            uploader: None,
+        }
+    }
+
+    /// Hands every layer exported for a push to `uploader`, which sends it
+    /// to the destinations while the build goes on (ADR-0055).
+    #[must_use]
+    pub fn with_uploader(mut self, uploader: Uploader) -> Self {
+        self.uploader = Some(uploader);
+        self
+    }
+
+    /// After [`LayerExporter::export`]: hands `layer` to the uploader when
+    /// `demand` pushes it. Without an uploader, nothing happens.
+    pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand) {
+        if demand.push
+            && let Some(uploader) = &self.uploader
+        {
+            uploader.submit(layer);
+        }
+    }
+
+    /// Waits for the uploads handed over and returns the digests every
+    /// destination holds; empty without an uploader.
+    ///
+    /// # Errors
+    ///
+    /// The first upload that failed.
+    pub async fn finish_uploads(&self) -> Result<std::collections::BTreeSet<Digest>> {
+        match &self.uploader {
+            Some(uploader) => uploader.finish().await,
+            None => Ok(std::collections::BTreeSet::new()),
         }
     }
 

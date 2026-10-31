@@ -23,8 +23,8 @@ use std::time::SystemTime;
 
 use rnk_builder::{
     BuildCx, BuildTime, ContextFiles, Error, ImageSource, KeepNeed, LayerDemand, LayerExporter,
-    Outputs, PulledImage, RunGate, StageBase, StageDone, StageInput, assemble_annotated,
-    build_stage, image_format, pull_image,
+    Outputs, PulledImage, Release, RunGate, StageBase, StageDone, StageInput, Uploader,
+    assemble_annotated, build_stage, image_format, pull_image,
 };
 use rnk_context::{Context, ContextSpec};
 use rnk_dockerfile::{Dockerfile, GraphOptions, StageGraph};
@@ -177,6 +177,7 @@ where
         sandbox,
         snapshotter,
         (isolation, shared_root),
+        runtime.handle(),
     );
     let shared = match prepared {
         Ok(s) => Arc::new(s),
@@ -188,6 +189,12 @@ where
     };
     let result = runtime.block_on(build(config, &shared));
     release_all(&shared);
+    // The uploads run on the runtime: they end before it does. A failure
+    // there was already reported by the build, or does not matter after
+    // one.
+    if result.is_err() {
+        let _ignored = runtime.block_on(shared.exporter.finish_uploads());
+    }
     drop(runtime);
     match Arc::into_inner(shared) {
         Some(s) => {
@@ -220,6 +227,7 @@ fn prepare<S: Snapshotter>(
     sandbox: Sandbox,
     snapshotter: Arc<S>,
     (isolation, shared_root): (Isolation, bool),
+    runtime: &tokio::runtime::Handle,
 ) -> Result<Shared<S>, String> {
     let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
         .map_err(|e| format!("opening the build context: {e}"))?;
@@ -293,8 +301,30 @@ fn prepare<S: Snapshotter>(
     // verified certificate carries credentials (ADR-0051).
     options.verified_credentials_only = store.is_anonymous();
     let credentials = credentials()?;
-    let client = Client::new(options, TrustStore::load(), credentials)
-        .map_err(|e| format!("setting up the registry client: {e}"))?;
+    let client = Arc::new(
+        Client::new(options, TrustStore::load(), credentials)
+            .map_err(|e| format!("setting up the registry client: {e}"))?,
+    );
+    // Built layers go to the destinations as they are exported, and are
+    // released once there unless a file output needs them (ADR-0055).
+    let exporter = if outputs.push && !outputs.destinations.is_empty() {
+        let release = if outputs.needs_blob_files() {
+            Release::Keep
+        } else {
+            Release::Free(Arc::clone(&store))
+        };
+        let uploader = Uploader::start(
+            Arc::clone(&client),
+            outputs.destinations.clone(),
+            push_jobs(config),
+            release,
+            runtime,
+        )
+        .map_err(|e| e.to_string())?;
+        exporter.with_uploader(uploader)
+    } else {
+        exporter
+    };
     let (units, layers_needed, keep) = if shared_root {
         let (units, needed, keep) = kaniko_units(&graph, &dockerfile);
         (units, Some(needed), keep)
@@ -331,7 +361,7 @@ fn prepare<S: Snapshotter>(
         secrets,
         allow_network_host: config.allow_network_host,
         platform: Platform::new(os, arch),
-        client: Arc::new(client),
+        client,
         dockerfile,
         graph,
         outputs,
@@ -711,7 +741,7 @@ where
         .ok_or("the target stage was not built")?;
     let done: &Stage<S> = &target;
     let format = requested_format(config);
-    let image = assemble_annotated(
+    let mut image = assemble_annotated(
         done.config.clone(),
         done.layers.clone(),
         format,
@@ -729,10 +759,22 @@ where
             .map_err(|e| e.to_string())?;
     }
     if outputs.push {
-        let jobs = config
-            .jobs
-            .or_else(|| std::thread::available_parallelism().ok())
-            .unwrap_or(NonZeroUsize::MIN);
+        let jobs = push_jobs(config);
+        // Layers pushed during the build are in every destination: the push
+        // finds them there and, should one have gone, takes them from the
+        // first destination rather than from a released file.
+        let uploaded = shared
+            .exporter
+            .finish_uploads()
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(first) = outputs.destinations.first() {
+            for layer in &mut image.layers {
+                if uploaded.contains(&layer.blob.digest) {
+                    layer.bytes = rnk_builder::LayerBytes::Registry(first.clone());
+                }
+            }
+        }
         // kaniko's `--push-retry`: the whole push again, around the client's
         // own per-request retries (`push.go:364`, ADR-0036).
         rnk_registry::retry_kaniko(config.push_retry.unwrap_or(0), async || {
@@ -744,6 +786,14 @@ where
     Ok(Built {
         digest: image.digest().to_string(),
     })
+}
+
+/// How many blobs a push sends at once: `--jobs`, else the CPUs.
+fn push_jobs(config: &BuildConfig) -> NonZeroUsize {
+    config
+        .jobs
+        .or_else(|| std::thread::available_parallelism().ok())
+        .unwrap_or(NonZeroUsize::MIN)
 }
 
 /// Cancels the build on the first SIGINT or SIGTERM: running `RUN`s are

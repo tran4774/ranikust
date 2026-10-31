@@ -109,6 +109,29 @@ impl AnonFiles {
         path
     }
 
+    /// Closes the kept file named `path` (`/proc/self/fd/<n>`, as
+    /// [`AnonFiles::keep`] named it), freeing its bytes; whether it was one
+    /// of these files. The name must not be used again: the number can be
+    /// reused by a later file.
+    pub(crate) fn release(&self, path: &Path) -> bool {
+        let Some(raw) = path
+            .strip_prefix("/proc/self/fd")
+            .ok()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.parse::<i32>().ok())
+        else {
+            return false;
+        };
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        match kept.iter().position(|fd| fd.as_fd().as_raw_fd() == raw) {
+            Some(i) => {
+                drop(kept.swap_remove(i));
+                true
+            }
+            None => false,
+        }
+    }
+
     fn err(&self, e: Errno) -> Error {
         Error::AnonymousFile {
             path: self.dir_path.clone(),
