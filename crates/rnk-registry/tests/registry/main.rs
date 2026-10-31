@@ -763,3 +763,108 @@ async fn real_registry_round_trip() {
         .map(|r| r.status());
     eprintln!("manifest delete: {status:?}");
 }
+
+/// Reads a blob through [`Client::open_blob`] on a blocking thread, as a
+/// stage's thread does.
+async fn read_streamed(
+    client: &std::sync::Arc<Client>,
+    reference: &Reference,
+    blob: &rnk_oci::Descriptor,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let handle = tokio::runtime::Handle::current();
+    let (client, reference, blob) = (
+        std::sync::Arc::clone(client),
+        reference.clone(),
+        blob.clone(),
+    );
+    tokio::task::spawn_blocking(move || {
+        let mut reader = client.open_blob(&handle, &reference, &blob)?;
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).map(|_| out)
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_reads_whole_and_verified() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    // Larger than the pipe, so the reader drains it while the pull fills it.
+    let content = b"streamed layer ".repeat(60_000);
+    let image = add_image(&registry, "app", "v1", content.clone());
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let got = read_streamed(&client, &reference(&registry, "app"), &blob)
+        .await
+        .unwrap();
+    assert_eq!(got, content);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_with_a_wrong_digest_never_reads_to_a_clean_end() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let image = add_image(&registry, "app", "v1", b"genuine".to_vec());
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    // Same length, other bytes: only the digest tells.
+    registry
+        .state()
+        .tampered
+        .insert(blob.digest.to_string(), Bytes::from_static(b"forgery"));
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let err = read_streamed(&client, &reference(&registry, "app"), &blob)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("digest"), "{err}");
+    // A streamed pull is never retried: what was read cannot be taken back.
+    assert_eq!(registry.count("GET /v2/app/blobs/"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_body_is_pulled_from_its_source_while_it_is_pushed() {
+    let source = FakeRegistry::start(Auth::Open).await;
+    let target = FakeRegistry::start(Auth::Open).await;
+    let content = vec![5u8; 700 * 1024];
+    let image = add_image(&source, "base", "v1", content.clone());
+    let mut opts = options(&source);
+    opts.insecure.insert(target.host());
+    let client =
+        std::sync::Arc::new(Client::new(opts, TrustStore::load(), Credentials::none()).unwrap());
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let body = BlobBody::Remote(Box::new(rnk_registry::RemoteBlob {
+        client: std::sync::Arc::clone(&client),
+        from: reference(&source, "base:v1"),
+        blob: blob.clone(),
+    }));
+    let outcome = client
+        .push_blob(&reference(&target, "out:latest"), &blob, &body)
+        .await
+        .unwrap();
+    assert_eq!(outcome, PushOutcome::Uploaded);
+    assert_eq!(
+        target.state().blobs[blob.digest.as_str()].as_ref(),
+        content.as_slice()
+    );
+
+    // A source that serves other bytes fails the push: the destination's
+    // upload is never committed.
+    let other = add_image(&source, "base", "v2", vec![6u8; 4096]);
+    let bad = descriptor(MediaType::OCI_LAYER_GZIP, &other.layer);
+    source
+        .state()
+        .tampered
+        .insert(bad.digest.to_string(), Bytes::from(vec![7u8; 4096]));
+    let body = BlobBody::Remote(Box::new(rnk_registry::RemoteBlob {
+        client: std::sync::Arc::clone(&client),
+        from: reference(&source, "base:v2"),
+        blob: bad.clone(),
+    }));
+    let err = client
+        .push_blob(&reference(&target, "out:latest"), &bad, &body)
+        .await
+        .unwrap_err();
+    assert!(
+        !target.state().blobs.contains_key(bad.digest.as_str()),
+        "{err}"
+    );
+}

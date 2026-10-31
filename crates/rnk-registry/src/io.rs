@@ -33,6 +33,18 @@ impl BlobSink for tokio::fs::File {
     }
 }
 
+/// The writing end of a bounded in-memory pipe, read as the blob arrives
+/// (ADR-0055). What was already read cannot be taken back, so a transfer
+/// into a pipe is never retried: `reset` fails.
+impl BlobSink for tokio::io::DuplexStream {
+    async fn reset(&mut self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a streamed blob cannot be restarted",
+        ))
+    }
+}
+
 impl BlobSink for Vec<u8> {
     async fn reset(&mut self) -> io::Result<()> {
         self.clear();
@@ -47,7 +59,26 @@ pub enum BlobBody {
     Bytes(Bytes),
     /// A file, streamed: a layer in the store.
     File(PathBuf),
+    /// The same blob in another repository, possibly on another registry,
+    /// pulled while it is pushed through a pipe of [`PIPE_BYTES`]: a base
+    /// layer that was never kept (ADR-0055).
+    Remote(Box<RemoteBlob>),
 }
+
+/// A blob pushed from another repository: [`BlobBody::Remote`].
+#[derive(Clone, Debug)]
+pub struct RemoteBlob {
+    /// The client that pulls it.
+    pub client: Arc<crate::Client>,
+    /// Where it is pulled from.
+    pub from: rnk_oci::Reference,
+    /// The blob, verified while it streams.
+    pub blob: rnk_oci::Descriptor,
+}
+
+/// Bytes held in the pipe of a streamed blob: what one pulled blob may keep
+/// in memory at a time.
+pub const PIPE_BYTES: usize = 256 * 1024;
 
 /// Bytes read per chunk from a file body.
 const FILE_CHUNK: usize = 256 * 1024;
@@ -91,6 +122,25 @@ impl BlobBody {
                     .boxed();
                 Ok((body, len))
             }
+            Self::Remote(remote) => {
+                let RemoteBlob { client, from, blob } = &**remote;
+                let handle = tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
+                let (reader, finished) = pull_into_pipe(&handle, client, from, blob)?;
+                // A failed pull (digest, size, connection) ends the body with
+                // that error after its bytes, never with a clean end.
+                let pulled = stream::once(finished).filter_map(|r| async move {
+                    outcome(r)
+                        .err()
+                        .map(|e| Err(OciDistributionError::IoError(e)))
+                });
+                let bytes =
+                    tokio_util::io::ReaderStream::with_capacity(reader, FILE_CHUNK).map(move |r| {
+                        let chunk = r.map_err(OciDistributionError::IoError)?;
+                        count(&chunk);
+                        Ok(chunk)
+                    });
+                Ok((bytes.chain(pulled).boxed(), blob.size))
+            }
         }
     }
 
@@ -99,7 +149,90 @@ impl BlobBody {
         match self {
             Self::Bytes(_) => "in-memory blob".to_owned(),
             Self::File(path) => path.display().to_string(),
+            Self::Remote(r) => format!("{} from {}", r.blob.digest, r.from),
         }
+    }
+}
+
+/// The outcome of a pull into a pipe, as the reading end reports it.
+type PullDone = tokio::sync::oneshot::Receiver<Result<(), crate::Error>>;
+
+/// Starts pulling `blob` of `from` into a pipe of [`PIPE_BYTES`] on a
+/// thread of its own, driven by `handle`'s runtime; returns the pipe's
+/// reading end and the pull's outcome.
+///
+/// The pull's future is not `Send` (its retry closures), so it can be
+/// neither a task nor part of a `Send` stream; a thread blocking on it is.
+/// The pull is never retried: what was read cannot be taken back.
+fn pull_into_pipe(
+    handle: &tokio::runtime::Handle,
+    client: &Arc<crate::Client>,
+    from: &rnk_oci::Reference,
+    blob: &rnk_oci::Descriptor,
+) -> io::Result<(tokio::io::DuplexStream, PullDone)> {
+    let (mut writer, reader) = tokio::io::duplex(PIPE_BYTES);
+    let (done, finished) = tokio::sync::oneshot::channel();
+    let (client, from, blob) = (Arc::clone(client), from.clone(), blob.clone());
+    let handle = handle.clone();
+    std::thread::Builder::new()
+        .name("rnk-pull-pipe".to_owned())
+        .spawn(move || {
+            let r = handle.block_on(client.pull_blob(&from, &blob, &mut writer));
+            drop(writer);
+            // The reader may have given up and gone: nobody waits then.
+            let _unread = done.send(r);
+        })?;
+    Ok((reader, finished))
+}
+
+/// What a finished pull into a pipe means to its reader.
+fn outcome(
+    r: Result<Result<(), crate::Error>, tokio::sync::oneshot::error::RecvError>,
+) -> io::Result<()> {
+    match r {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(io::Error::other(e.to_string())),
+        Err(_) => Err(io::Error::other("the pull of the blob stopped")),
+    }
+}
+
+/// A blob read as it is pulled, for blocking code: the reading end of
+/// [`crate::Client::open_blob`]. It ends cleanly only once the pull has
+/// verified the blob's size and digest; any failure is a read error, after
+/// the bytes that arrived.
+#[derive(Debug)]
+pub struct BlobReader {
+    handle: tokio::runtime::Handle,
+    reader: tokio::io::DuplexStream,
+    done: Option<PullDone>,
+}
+
+impl BlobReader {
+    pub(crate) fn open(
+        handle: &tokio::runtime::Handle,
+        client: &Arc<crate::Client>,
+        from: &rnk_oci::Reference,
+        blob: &rnk_oci::Descriptor,
+    ) -> io::Result<Self> {
+        let (reader, done) = pull_into_pipe(handle, client, from, blob)?;
+        Ok(Self {
+            handle: handle.clone(),
+            reader,
+            done: Some(done),
+        })
+    }
+}
+
+impl std::io::Read for BlobReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use tokio::io::AsyncReadExt as _;
+        let n = self.handle.block_on(self.reader.read(buf))?;
+        if n == 0
+            && let Some(done) = self.done.take()
+        {
+            outcome(done.blocking_recv())?;
+        }
+        Ok(n)
     }
 }
 

@@ -4,8 +4,9 @@
 //! The root (`/` in a container, else a directory `ranikust` made in its
 //! state directory, ADR-0050) is opened
 //! once by the caller and held by at most one [`KanikoRoot`] at a time.
-//! Base layers stay blobs in the store; a stage on an image extracts them
-//! into the root, which is emptied first unless nothing has changed it yet
+//! Base layers stay blobs in the store, or are streamed from their
+//! registry each time (ADR-0055); a stage on an image extracts them into
+//! the root, which is emptied first unless nothing has changed it yet
 //! and it is `/`. Layers come from the walk, only for a stage whose layers
 //! are needed.
 //!
@@ -42,15 +43,39 @@ use rnk_rootfs::{
 use super::walk::{WalkDiff, WalkOptions, Walker};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
-use crate::stage::{Base, ExportLayer, Keep, Snapshotter, StageRootfs};
+use crate::stage::{Base, ExportLayer, Keep, LayerOpen, Snapshotter, StageRootfs};
 
-/// A base layer in kaniko mode: its blob in the store, extracted into the
-/// root only when a stage is prepared on it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A base layer in kaniko mode, extracted into the root only when a stage
+/// is prepared on it: its blob in the store, or streamed from its source
+/// each time, never kept (ADR-0055).
+#[derive(Clone, Debug)]
 pub struct KanikoLayer {
     diff_id: Digest,
-    blob: PathBuf,
+    source: LayerSource,
 }
+
+/// Where a [`KanikoLayer`]'s compressed bytes come from.
+#[derive(Clone, Debug)]
+enum LayerSource {
+    /// A blob file in the store.
+    Blob(PathBuf),
+    /// Opened anew for each extraction.
+    Stream(Arc<dyn LayerOpen>),
+}
+
+impl PartialEq for KanikoLayer {
+    fn eq(&self, other: &Self) -> bool {
+        self.diff_id == other.diff_id
+            && match (&self.source, &other.source) {
+                (LayerSource::Blob(a), LayerSource::Blob(b)) => a == b,
+                (LayerSource::Stream(a), LayerSource::Stream(b)) => Arc::ptr_eq(a, b),
+                (LayerSource::Blob(_), LayerSource::Stream(_))
+                | (LayerSource::Stream(_), LayerSource::Blob(_)) => false,
+            }
+    }
+}
+
+impl Eq for KanikoLayer {}
 
 impl KanikoLayer {
     /// The diff ID of the layer.
@@ -59,10 +84,33 @@ impl KanikoLayer {
         &self.diff_id
     }
 
-    /// The blob, compressed as pulled, in the store.
+    /// The blob, compressed as pulled, in the store; `None` for a layer
+    /// streamed from its source.
     #[must_use]
-    pub fn blob(&self) -> &Path {
-        &self.blob
+    pub fn blob(&self) -> Option<&Path> {
+        match &self.source {
+            LayerSource::Blob(path) => Some(path),
+            LayerSource::Stream(_) => None,
+        }
+    }
+
+    /// The layer's compressed bytes from the first one.
+    fn open(&self) -> Result<Box<dyn std::io::Read + Send>> {
+        match &self.source {
+            LayerSource::Blob(path) => {
+                let file = File::open(path).map_err(|source| Error::Io {
+                    op: "open",
+                    path: path.clone(),
+                    source,
+                })?;
+                Ok(Box::new(file))
+            }
+            LayerSource::Stream(open) => open.open().map_err(|source| Error::Io {
+                op: "open the stream of layer",
+                path: PathBuf::from(self.diff_id.as_str()),
+                source,
+            }),
+        }
     }
 }
 
@@ -213,7 +261,14 @@ impl Snapshotter for Kaniko {
     ) -> Result<KanikoLayer> {
         Ok(KanikoLayer {
             diff_id: diff_id.clone(),
-            blob: blob.to_owned(),
+            source: LayerSource::Blob(blob.to_owned()),
+        })
+    }
+
+    fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
+        Some(KanikoLayer {
+            diff_id: diff_id.clone(),
+            source: LayerSource::Stream(open),
         })
     }
 
@@ -475,14 +530,14 @@ fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Extracts one base layer into `root`, checking its diff ID.
+/// Extracts one base layer into `root`, checking its diff ID. A streamed
+/// layer is decompressed and extracted as it arrives; its compressed digest
+/// is checked by its source at the end of the body, which then fails the
+/// read, and its diff ID here at the end of the tar. Either mismatch fails
+/// the stage after part of the layer is in `root`: nothing runs on that
+/// root again before it is emptied (design/streaming.md).
 fn extract_blob(root: &RootPath, ignore: &IgnoreList, layer: &KanikoLayer) -> Result<()> {
-    let file = File::open(&layer.blob).map_err(|source| Error::Io {
-        op: "open",
-        path: layer.blob.clone(),
-        source,
-    })?;
-    let mut decoder = rnk_layer::Decoder::new(file)?;
+    let mut decoder = rnk_layer::Decoder::new(layer.open()?)?;
     extract_live(root, &mut decoder, ignore)?;
     let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
     if actual != layer.diff_id {

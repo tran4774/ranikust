@@ -835,6 +835,7 @@ async fn prepare_stage<S: Snapshotter + Send + Sync + 'static>(
             &shared.snapshotter,
             &r,
             &shared.platform,
+            shared.outputs.needs_blob_files(),
         )
         .await?;
         prepared.base = Some(Arc::new(image));
@@ -846,6 +847,7 @@ async fn prepare_stage<S: Snapshotter + Send + Sync + 'static>(
             &shared.snapshotter,
             &r,
             &shared.platform,
+            shared.outputs.needs_blob_files(),
         )
         .await?;
         prepared.images.insert(r, Arc::new(image));

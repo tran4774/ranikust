@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read as _;
 use std::num::NonZeroUsize;
 
 use rnk_layer::Compression;
@@ -215,13 +216,83 @@ fn other_view_after_release(f: &Fixture) -> Result<()> {
     a.view().map(drop)
 }
 
+/// A streamed source of the bytes of `blob`, failing at their end when
+/// `fail_at_end` (a digest the source found wrong); counts its opens.
+#[derive(Debug)]
+struct Streamed {
+    blob: PathBuf,
+    fail_at_end: bool,
+    opens: std::sync::atomic::AtomicUsize,
+}
+
+impl LayerOpen for Streamed {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
+        let bytes = std::io::Cursor::new(fs::read(&self.blob)?);
+        if !self.fail_at_end {
+            return Ok(Box::new(bytes));
+        }
+        Ok(Box::new(bytes.chain(FailingReader)))
+    }
+}
+
+/// Fails every read: the source's verdict at the end of the body.
+struct FailingReader;
+
+impl std::io::Read for FailingReader {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("digest mismatch"))
+    }
+}
+
+#[test]
+fn a_streamed_base_layer_is_read_anew_for_each_stage_and_never_kept() {
+    let f = Fixture::new();
+    let kept = f.layer("l1", &[("a", b"from the registry")]);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(kept.diff_id(), Arc::clone(&source) as Arc<dyn LayerOpen>)
+        .unwrap();
+    assert_eq!(layer.blob(), None, "a streamed layer has no file");
+    let root = f
+        .kaniko
+        .prepare(Base::Image(std::slice::from_ref(&layer)))
+        .unwrap();
+    assert_eq!(fs::read(f.host.join("a")).unwrap(), b"from the registry");
+    root.release().unwrap();
+    f.kaniko.prepare(Base::Image(&[layer])).unwrap();
+    assert_eq!(source.opens.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn a_streamed_base_layer_whose_source_fails_at_its_end_fails_the_stage() {
+    let f = Fixture::new();
+    let kept = f.layer("l1", &[("a", b"tampered")]);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: true,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(kept.diff_id(), source as Arc<dyn LayerOpen>)
+        .unwrap();
+    let e = f.kaniko.prepare(Base::Image(&[layer])).unwrap_err();
+    assert!(format!("{e:?}").contains("digest mismatch"), "{e:?}");
+}
+
 #[test]
 fn a_wrong_diff_id_is_refused() {
     let f = Fixture::new();
     let good = f.layer("l1", &[("a", b"a")]);
     let bad = KanikoLayer {
         diff_id: Digest::from_sha256_bytes(&[0; 32]),
-        blob: good.blob.clone(),
+        source: good.source.clone(),
     };
     let e = f.kaniko.prepare(Base::Image(&[bad])).unwrap_err();
     assert!(matches!(e, Error::DiffIdMismatch { .. }), "{e}");

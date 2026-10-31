@@ -45,7 +45,7 @@ fn an_output_never_follows_a_planted_name_and_leaves_nothing_on_error() {
     // A layer blob that is gone: the write fails, and neither the output nor
     // a temporary file is left.
     let mut broken = image.clone();
-    broken.layers[1].path = blobs.path().join("missing");
+    broken.layers[1].bytes = rnk_builder::LayerBytes::File(blobs.path().join("missing"));
     std::fs::remove_file(&out).unwrap();
     let err = rnk_builder::write_docker_tar(&broken, &[], &out).unwrap_err();
     assert!(matches!(err, Error::Layer(_)), "{err}");
@@ -82,7 +82,7 @@ fn exporters_sharing_a_directory_do_not_collide() {
         .flat_map(|w| w.join().unwrap())
         .collect();
     for blob in &blobs {
-        let bytes = std::fs::read(&blob.path).unwrap();
+        let bytes = std::fs::read(blob.path().unwrap()).unwrap();
         assert_eq!(sha256(&bytes), blob.blob.digest.as_str());
     }
     assert_eq!(names(dir.path()).len(), 20, "20 blobs, no temporary file");
@@ -103,7 +103,7 @@ fn a_reproducible_exporter_clamps_mtimes_to_the_fixed_time() {
         let exporter = LayerExporter::new(dir.path(), options(Compression::None, 2), &time);
         assert_eq!(exporter.options().mtime, time.layer_mtime());
         let blob = exporter.export(Box::new(layer(1, 4))).unwrap();
-        let tar = std::fs::read(&blob.path).unwrap();
+        let tar = std::fs::read(blob.path().unwrap()).unwrap();
         let mut archive = tar::Archive::new(&tar[..]);
         for entry in archive.entries().unwrap() {
             let mtime = entry.unwrap().header().mtime().unwrap();

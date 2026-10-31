@@ -12,6 +12,7 @@ use std::io::{BufWriter, Read as _, Write};
 use std::num::NonZeroUsize;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use rnk_layer::{Compression, EncodeOptions, Entry, EntryKind, EntryPath, LayerWriter};
@@ -19,14 +20,14 @@ use rnk_oci::{
     Descriptor, Digest, DockerTarImage, ImageFormat, ImageIndex, OciLayout, Reference,
     to_canonical_json,
 };
-use rnk_registry::{BlobBody, Client, PushOutcome};
+use rnk_registry::{BlobBody, Client, PushOutcome, RemoteBlob};
 use sha2::Digest as _;
 use tempfile::NamedTempFile;
 use tracing::{Instrument as _, debug_span};
 
 use crate::error::{Error, Result};
 use crate::image::Image;
-use crate::layer::{Content, Contents};
+use crate::layer::{BlobLayer, Content, Contents, LayerBytes};
 
 /// The tag kaniko gives a `--tar-path` image built without `--destination`
 /// (`kaniko@44aa7ddc0 pkg/executor/push.go:67`).
@@ -102,6 +103,13 @@ impl Outputs {
         })
     }
 
+    /// Whether an output is a file that needs every layer's bytes
+    /// (`--tar-path`, `--oci-layout-path`): then base layers are kept rather
+    /// than streamed (ADR-0055).
+    pub fn needs_blob_files(&self) -> bool {
+        self.docker_tar.is_some() || self.oci_layout.is_some()
+    }
+
     /// The tags a Docker tar loads as: the destinations as typed, `:latest`
     /// added when they name no tag, or kaniko's placeholder when there are
     /// none.
@@ -144,7 +152,7 @@ pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()> {
         BlobFrom::Bytes(image.manifest.bytes()),
     )?;
     for layer in &image.layers {
-        bytes_out += put_blob(dir, &layer.blob.digest, BlobFrom::File(&layer.path))?;
+        bytes_out += put_blob(dir, &layer.blob.digest, BlobFrom::File(kept(layer)?))?;
     }
     let index = ImageIndex::new(ImageFormat::Oci, vec![image.manifest.descriptor()]);
     bytes_out += write_new(dir, OciLayout::INDEX_FILE, &to_canonical_json(&index)?)?;
@@ -209,7 +217,7 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
             add(
                 name.clone(),
                 layer.blob.size,
-                Content::File(layer.path.clone()),
+                Content::File(kept(layer)?.to_owned()),
             )?;
         }
         layer_paths.push(name);
@@ -253,7 +261,7 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
 pub async fn push(
     image: &Image,
     destinations: &[Reference],
-    client: &Client,
+    client: &Arc<Client>,
     jobs: NonZeroUsize,
 ) -> Result<Vec<(Reference, Digest)>> {
     let mut pushed = Vec::with_capacity(destinations.len());
@@ -294,7 +302,7 @@ async fn push_one(
     image: &Image,
     destination: &Reference,
     earlier: Option<&Reference>,
-    client: &Client,
+    client: &Arc<Client>,
     jobs: NonZeroUsize,
 ) -> Result<u64> {
     let config = BlobBody::Bytes(image.config.clone());
@@ -304,7 +312,18 @@ async fn push_one(
     for layer in &image.layers {
         if seen.insert(&layer.blob.digest) {
             let from = layer.mount_from.as_ref().or(earlier);
-            blobs.push((&layer.blob, BlobBody::File(layer.path.clone()), from));
+            let body = match &layer.bytes {
+                LayerBytes::File(path) => BlobBody::File(path.clone()),
+                // Never kept: pulled from where it came from while it is
+                // pushed, through a bounded pipe (ADR-0055); a mount from
+                // the same registry, tried first, sends nothing.
+                LayerBytes::Registry(source) => BlobBody::Remote(Box::new(RemoteBlob {
+                    client: Arc::clone(client),
+                    from: source.clone(),
+                    blob: layer.blob.clone(),
+                })),
+            };
+            blobs.push((&layer.blob, body, from));
         }
     }
     // `try_collect` stops at the first error and drops the transfers still
@@ -325,6 +344,17 @@ async fn push_one(
         .await?;
     client.push_manifest(destination, &image.manifest).await?;
     Ok(uploaded.iter().sum::<u64>() + image.manifest.size())
+}
+
+/// The kept file of `layer`: outputs written to files need the bytes, so a
+/// build with such outputs keeps its base layers (ADR-0055).
+fn kept(layer: &BlobLayer) -> Result<&Path> {
+    layer.path().ok_or_else(|| {
+        Error::Invalid(format!(
+            "layer {} was streamed and not kept, but an output needs its bytes",
+            layer.blob.digest
+        ))
+    })
 }
 
 /// A regular file entry of an output tar.

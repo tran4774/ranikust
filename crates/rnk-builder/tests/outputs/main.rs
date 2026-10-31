@@ -22,7 +22,7 @@ use rnk_oci::{
 };
 
 use crate::fake::{Auth, FakeRegistry, sha256};
-use crate::support::{base, client, image, layer, options, reference, time};
+use crate::support::{base, client, client_for, image, layer, options, reference, time};
 
 fn files(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
@@ -42,7 +42,7 @@ fn layer_bytes_do_not_depend_on_the_thread_count() {
             let dir = tempfile::tempdir().unwrap();
             let exporter = LayerExporter::new(dir.path(), options(compression, threads), &time);
             let blob = exporter.export(Box::new(layer(3, 60))).unwrap();
-            let bytes = std::fs::read(&blob.path).unwrap();
+            let bytes = std::fs::read(blob.path().unwrap()).unwrap();
             assert_eq!(sha256(&bytes), blob.blob.digest.as_str());
             assert_eq!(u64::try_from(bytes.len()).unwrap(), blob.blob.size);
             assert_eq!(
@@ -69,10 +69,14 @@ fn an_anonymous_exporter_writes_the_same_bytes_and_names_nothing() {
     let anon = LayerExporter::anonymous(store.clone(), options(Compression::Gzip, 2), &time)
         .export(Box::new(layer(4, 30)))
         .unwrap();
-    assert!(anon.path.starts_with("/proc/self/fd"), "{:?}", anon.path);
+    assert!(
+        anon.path().unwrap().starts_with("/proc/self/fd"),
+        "{:?}",
+        anon.path()
+    );
     assert_eq!(
-        std::fs::read(&anon.path).unwrap(),
-        std::fs::read(&named.path).unwrap()
+        std::fs::read(anon.path().unwrap()).unwrap(),
+        std::fs::read(named.path().unwrap()).unwrap()
     );
     assert_eq!((anon.diff_id, anon.blob), (named.diff_id, named.blob));
     assert!(files(state.path()).is_empty(), "{:?}", files(state.path()));
@@ -392,7 +396,7 @@ fn the_docker_tar_is_what_docker_save_writes() {
     assert_eq!(entries[&layer_names[0]], base.bytes);
     assert_eq!(
         entries[&layer_names[1]],
-        std::fs::read(&doubled.layers[1].path).unwrap()
+        std::fs::read(doubled.layers[1].path().unwrap()).unwrap()
     );
 
     let manifest: serde_json::Value = serde_json::from_slice(&entries["manifest.json"]).unwrap();
@@ -408,6 +412,42 @@ fn the_docker_tar_is_what_docker_save_writes() {
     if let Some(json) = skopeo_inspect(&format!("docker-archive:{}", path.display())) {
         assert!(json.contains("\"architecture\": \"amd64\""), "{json}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_base_layer_never_kept_is_pushed_from_its_source_registry() {
+    // The base layer exists only in another registry: no file, no mount
+    // possible (ADR-0055).
+    let source = FakeRegistry::start(Auth::Open).await;
+    let target = FakeRegistry::start(Auth::Open).await;
+    let dir = tempfile::tempdir().unwrap();
+    let from = reference(&source, "base:1");
+    let base = base(dir.path(), from.clone());
+    source.add_blob("base", &base.bytes);
+    let mut image = image(dir.path(), &base, &time(), Compression::Gzip);
+    let streamed = &mut image.layers[0];
+    assert_eq!(streamed.mount_from.as_ref(), Some(&from));
+    streamed.bytes = rnk_builder::LayerBytes::Registry(from);
+    std::fs::remove_file(dir.path().join("base-blob")).unwrap();
+
+    let client = client_for(&[&source, &target]);
+    let out = reference(&target, "out:v1");
+    rnk_builder::push(&image, &[out], &client, NonZeroUsize::new(2).unwrap())
+        .await
+        .unwrap();
+    let state = target.state();
+    assert_eq!(
+        state.blobs[image.layers[0].blob.digest.as_str()].as_ref(),
+        base.bytes.as_slice()
+    );
+    assert_eq!(
+        state.manifests[&("out".to_owned(), "v1".to_owned())].1,
+        image.manifest.bytes()
+    );
+
+    // An output written to a file needs the bytes: refused, not guessed.
+    let err = rnk_builder::write_oci_layout(&image, &dir.path().join("layout")).unwrap_err();
+    assert!(err.to_string().contains("not kept"), "{err}");
 }
 
 #[tokio::test]

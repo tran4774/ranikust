@@ -10,7 +10,7 @@
 
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rnk_layer::{
@@ -120,12 +120,22 @@ pub struct BlobLayer {
     /// The blob. Its media type is converted to the image's format when the
     /// image is assembled.
     pub blob: Descriptor,
-    /// The blob's bytes: a build-private file, or a pulled blob in the
-    /// store.
-    pub path: PathBuf,
+    /// Where the blob's bytes are.
+    pub bytes: LayerBytes,
     /// For a base-image layer, the repository it came from: a push to the
     /// same registry first asks to mount it from there.
     pub mount_from: Option<Reference>,
+}
+
+/// Where a layer blob's bytes are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayerBytes {
+    /// A file: a build-private file, or a pulled blob in the store.
+    File(PathBuf),
+    /// Nowhere local: a base layer streamed into its extraction and never
+    /// kept, still in the repository it came from, which a push mounts it
+    /// from or streams it out of (ADR-0055).
+    Registry(Reference),
 }
 
 impl BlobLayer {
@@ -134,8 +144,26 @@ impl BlobLayer {
         Self {
             diff_id,
             blob,
-            path,
+            bytes: LayerBytes::File(path),
             mount_from: Some(from),
+        }
+    }
+
+    /// A base-image layer that was not kept: only in `from`'s repository.
+    pub fn remote(diff_id: Digest, blob: Descriptor, from: Reference) -> Self {
+        Self {
+            diff_id,
+            blob,
+            bytes: LayerBytes::Registry(from.clone()),
+            mount_from: Some(from),
+        }
+    }
+
+    /// The blob's file, if it was kept.
+    pub fn path(&self) -> Option<&Path> {
+        match &self.bytes {
+            LayerBytes::File(path) => Some(path),
+            LayerBytes::Registry(_) => None,
         }
     }
 }
@@ -257,7 +285,7 @@ fn blob_layer(digests: &LayerDigests, path: PathBuf) -> Result<BlobLayer> {
     Ok(BlobLayer {
         diff_id: Digest::from_sha256_bytes(digests.diff_id.as_bytes()),
         blob: Descriptor::new(media_type, digest, digests.size),
-        path,
+        bytes: LayerBytes::File(path),
         mount_from: None,
     })
 }

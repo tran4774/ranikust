@@ -2,6 +2,7 @@
 //! authentication, retries, size checks and spans `oci-client` lacks.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -186,6 +187,13 @@ pub struct Client {
     /// Trust stores for registries with their own certificates.
     trust_per_registry: BTreeMap<String, TrustStore>,
     hosts: Mutex<HashMap<String, Arc<Host>>>,
+}
+
+/// Shows nothing of the client: its credentials must never reach a log.
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client").finish_non_exhaustive()
+    }
 }
 
 /// One registry's connection state.
@@ -489,6 +497,25 @@ impl Client {
         span.record("retries", retries);
         span.record("bytes_in", bytes_in);
         result
+    }
+
+    /// Opens the blob `blob` of `reference`'s repository for blocking reads
+    /// while it is pulled, through a pipe of [`crate::PIPE_BYTES`]: a base
+    /// layer extracted as it arrives, never kept (ADR-0055). The pull is
+    /// not retried; the reader fails if the blob's size or digest does not
+    /// match, after the bytes that arrived. `handle`'s runtime drives the
+    /// pull; read it on a thread outside that runtime's workers.
+    ///
+    /// # Errors
+    ///
+    /// When the pull's thread cannot start.
+    pub fn open_blob(
+        self: &Arc<Self>,
+        handle: &tokio::runtime::Handle,
+        reference: &Reference,
+        blob: &Descriptor,
+    ) -> io::Result<crate::BlobReader> {
+        crate::BlobReader::open(handle, self, reference, blob)
     }
 
     /// Whether `reference`'s repository holds the blob `digest`.
