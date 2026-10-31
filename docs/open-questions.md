@@ -425,32 +425,6 @@ Entry format:
   when the fallback starts (`rnk_store`).
 - **Raised:** 2026-10-31
 
-### Q-341: May kaniko mode build on `/` in a container where root may mount?
-
-- **Blocks:** nothing yet; **Area:** `ranikust`, `rnk-sandbox`
-- **Context:** found by the host-safety review of ADR-0051's branch: in a
-  `--privileged` container (or one with `CAP_SYS_ADMIN`), `--mode=kaniko`
-  built on `/` with `Isolation::Direct`, which mounts nothing, so a `RUN`
-  as uid 0 saw the host's devices (`/dev/sda`) and a writable `/proc/sys`
-  (`kernel/core_pattern` runs a binary as host root). Overlay mode, which
-  that container can run, gives `RUN` the full sandbox.
-- **Options:** (a) refuse kaniko mode on `/` where root may mount, and
-  point to overlay mode; (b) in that case, enter a private mount namespace
-  and apply Docker's read-only and masked paths (`/proc/sys`,
-  `sysrq-trigger`, `kcore`…) and a `nodev` remount before the first `RUN`.
-- **Recommendation:** (a): overlay mode is the better build there anyway;
-  (b) adds a second sandbox to maintain for a case nobody needs.
-- **Meanwhile:** (a) is in place, and kaniko mode on `/` also refuses a
-  `/proc/sys` that `statvfs` does not report read-only (Docker's
-  `systempaths=unconfined`, Kubernetes' `procMount: Unmasked`), which hands
-  a uid 0 `RUN` `kernel/core_pattern` without any capability. Host devices
-  given with `--device` stay readable and writable by such a `RUN`:
-  ranikust cannot tell them from the container's own, so the docs leave
-  them to the operator.
-- **Interim:** (a): `--mode=kaniko` on `/` with the namespace entered
-  refuses with that guidance (`crates/ranikust/src/main.rs`); `--mode=auto`
-  picks overlay mode there already.
-
 ### Q-350: How does kaniko mode on `/` keep a stage's files out of `RUN`'s reach?
 
 - **Blocks:** ADR-0051's work item; **Area:** `rnk-snapshot`, `rnk-store`
@@ -933,6 +907,13 @@ Entry format:
   sub-path onto a `dir://` context; that changes with the Phase 2 task 7
   integration branch. Recorded in
   [ADR-0053](adr/0053-local-context-is-a-plain-path-no-dir-scheme.md).
+- **Answer (2026-10-31):** "Q81 A": the two points ADR-0053 left open.
+  (1) `--context=dir://...` is refused with a message to use a plain path;
+  (2) `--context-sub-path` with a local context is refused (exit 2) with a
+  message to pass the sub-directory itself as `--context`, since a flag
+  with no effect is refused, not ignored (ADR-0049). The code change lands
+  with the Phase 2 task 7 integration branch. Recorded in
+  [ADR-0054](adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md), which completes ADR-0053.
 
 ### Q-100: How durable is a published store entry after a power loss?
 
@@ -1106,3 +1087,12 @@ Entry format:
   root holds every capability in that user namespace. Phase 3 moves the opt-in to running the `RUN`
   inside the user namespace. Recorded in
   [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md).
+
+### Q-341: May kaniko mode build on `/` in a container where root may mount?
+
+- **Answer (2026-10-31):** "Q341 chọn A": option (a). Kaniko mode on `/` is
+  refused where root may mount, and also where `/proc/sys` is not
+  read-only (`statvfs`), pointing to overlay mode; host devices given with
+  `--device` stay the operator's responsibility (documented). Option (b),
+  a private mount namespace with Docker's read-only and masked paths, is
+  not built. Recorded in [ADR-0054](adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md).

@@ -351,8 +351,8 @@ fn kaniko(
     if on_slash && can_mount {
         // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
         // also gives a `Direct` `RUN` on `/` the host's devices and a
-        // writable /proc/sys: refused until it gets Docker's read-only and
-        // masked paths [open: Q-341]. Overlay mode runs there instead.
+        // writable /proc/sys: refused (ADR-0054). Overlay mode runs there
+        // instead.
         return Err(Failure::error(format!(
             "{how}: kaniko mode on / in a container where root may mount would run RUN with \
              the host's devices and a writable /proc/sys; use overlay mode there \
@@ -361,7 +361,7 @@ fn kaniko(
     }
     if on_slash {
         // A writable /proc/sys hands a uid 0 `RUN` the host's root through
-        // kernel/core_pattern without any capability (ADR-0051, Q-341).
+        // kernel/core_pattern without any capability (ADR-0051, ADR-0054).
         match exposure::proc_sys_read_only(Path::new("/proc/sys")) {
             Ok(true) => {}
             Ok(false) => {

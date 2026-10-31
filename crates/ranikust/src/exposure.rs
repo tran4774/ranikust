@@ -139,7 +139,7 @@ pub(crate) fn warn_credential_holders(variables: &[String]) {
 /// host's root, with no capability at all; Docker and Kubernetes mount it
 /// read-only unless told otherwise (`--privileged`,
 /// `systempaths=unconfined`, `procMount: Unmasked`). Kaniko mode on `/`
-/// refuses to build there (ADR-0051, [open: Q-341]).
+/// refuses to build there (ADR-0051, ADR-0054).
 ///
 /// # Errors
 ///

@@ -59,7 +59,7 @@ overlay mode).
   - registry credentials only over verified TLS: a `RUN` may edit
     `/etc/hosts` and `/etc/resolv.conf`;
   - kaniko mode on `/` where root may mount, or where `/proc/sys` is not
-    a read-only mount, is refused [open: Q-341]; devices passed with
+    a read-only mount, is refused ([ADR-0054](../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)); devices passed with
     `--device` stay the operator's choice;
   - the `RUN` gets ranikust's original soft `RLIMIT_CORE` back, as it gets
     `RLIMIT_NOFILE`;

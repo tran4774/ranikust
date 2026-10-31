@@ -179,7 +179,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - `--mode=kaniko` in a container where root may mount (`--privileged`,
   `CAP_SYS_ADMIN`) refuses to build on `/`: its `RUN` would see the host's
   devices and a writable `/proc/sys`; overlay mode builds there. So does a
-  container whose `/proc/sys` is writable (Q-341).
+  container whose `/proc/sys` is writable (ADR-0054). Host devices given
+  with `--device` stay reachable by `RUN`: they are the operator's
+  responsibility.
 
 ### Changed
 
@@ -240,7 +242,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - Decided, not yet in the code (ADR-0053; it lands with the Phase 2 task 7
   integration branch): a local build context is a plain path and kaniko's
   `dir://` form is dropped; `--context-sub-path` applies only to fetched
-  contexts (git, tar, HTTPS). Until then `dir://` is still accepted.
+  contexts (git, tar, HTTPS). `--context=dir://...` is refused with a message
+  to use a plain path, and `--context-sub-path` with a local context is
+  refused (exit 2) with a message to pass the sub-directory as `--context`
+  (ADR-0054). Until then `dir://` is still accepted and the sub-path is
+  ignored with a warning for a plain path.
 
 ### Removed
 
