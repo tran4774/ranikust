@@ -247,7 +247,16 @@ pub(crate) fn set_up_kaniko(
     let root_lock = if on_slash { Some(lock_slash()?) } else { None };
     prepare_state_dir(state_dir)?;
     let slash = Path::new("/");
-    let store = open_store(if on_slash { slash } else { state_dir }, state_dir)?;
+    // On `/` a `RUN` reads any file with a path: the store keeps none, its
+    // blobs are anonymous files (ADR-0051).
+    let store = if on_slash {
+        Store::open_anonymous(state_dir).map_err(|e| Refusal {
+            reason: format!("cannot open the store in {}: {e}", state_dir.display()),
+            guidance: "",
+        })?
+    } else {
+        open_store(state_dir, state_dir)?
+    };
     let state = RootPath::open(store.state_dir())
         .map_err(|e| failed(&format!("opening {}", store.state_dir().display()), &e))?;
     let (root, root_path) = if on_slash {
@@ -290,7 +299,9 @@ pub(crate) fn set_up_kaniko(
         rnk_sandbox::Isolation::Direct
     };
     let started = if on_slash {
-        Sandbox::start(caps, &sandbox_dir)
+        // `Direct` on `/` places nothing: no journal, no directory; the
+        // process becomes the subreaper of what a `RUN` leaves (ADR-0051).
+        Sandbox::start_direct()
     } else {
         Sandbox::start_with_root(caps, &sandbox_dir, &root_path, &root)
     };

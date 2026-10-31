@@ -276,7 +276,12 @@ fn prepare<S: Snapshotter>(
         BuildTime::at(SystemTime::now())
     };
     let threads = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-    let exporter = LayerExporter::new(store.build_dir(), encode_options(config, threads), &time);
+    let exporter = if store.is_anonymous() {
+        // Kaniko mode on `/`: encoded layers never get a name (ADR-0051).
+        LayerExporter::anonymous(Arc::clone(&store), encode_options(config, threads), &time)
+    } else {
+        LayerExporter::new(store.build_dir(), encode_options(config, threads), &time)
+    };
 
     let options = client_options(config, &graph)?;
     let credentials = credentials()?;

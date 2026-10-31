@@ -34,6 +34,7 @@ mod build;
 mod cli;
 mod config;
 mod container;
+mod exposure;
 mod setup;
 mod startup;
 mod statedir;
@@ -86,6 +87,17 @@ impl Failure {
 }
 
 fn main() -> ExitCode {
+    // ADR-0051: first of all, before any credential is read. A process that
+    // is not dumpable keeps `/proc/<pid>/{fd,environ,mem,maps,root}` from
+    // any process without `CAP_SYS_PTRACE`: a `RUN` sharing ranikust's PID
+    // namespace (kaniko mode on `/`) reads none of them. Nothing here
+    // changes ranikust's credentials later; a change would reset the flag.
+    if let Err(e) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        report(&format!("prctl(PR_SET_DUMPABLE, 0): {e}"));
+        return ExitCode::from(1);
+    }
     let (command, metrics_file) = match cli::parse(std::env::args_os()) {
         Ok(parsed) => {
             let file = parsed.cli.metrics_file().map(Path::to_path_buf);
@@ -329,6 +341,11 @@ fn kaniko(
             false
         }
     };
+    if on_slash {
+        // What ranikust cannot close itself (ADR-0051, B4 and B5).
+        exposure::warn_build_args(&config.build_args);
+        exposure::warn_credential_holders();
+    }
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
         // The walk still runs, with fewer descriptors to hold directories.
