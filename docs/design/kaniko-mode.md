@@ -143,7 +143,10 @@ settles them (Q-024):
   a unit that later units read, `ranikust` asks for it
   (`rnk_builder::SourceRoot::keep`), and `KanikoRoot::keep` copies it out
   (`rnk_rootfs::copy_filtered`, owners, modes, times, xattrs and
-  hardlinks kept, the ignore list's paths left out) and gives the root up;
+  hardlinks kept, the ignore list's paths left out, and a path to keep on
+  another mount refused) and gives the root up; each copy is a new
+  directory of the keep area, opened and checked to be the one just made
+  (device, inode, mount) before anything is written or deleted in it;
   from then `view` reads the copy:
   - a unit only read by `COPY --from` keeps the entries its sources name,
     with every symlink on the way to them, and the copy must resolve each

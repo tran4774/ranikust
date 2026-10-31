@@ -346,16 +346,35 @@ struct Kept {
 }
 
 impl Kept {
-    /// A new, empty directory of the keep area.
+    /// A new, empty directory of the keep area. It is opened by name, which
+    /// follows a symlink, so the directory opened must be the one just made
+    /// (type, device, inode and mount, not following a link): a name
+    /// swapped for a link to `.` would otherwise make [`Kept::remove`]
+    /// empty the whole keep area.
     fn make(shared: &Shared, id: u64) -> Result<Self> {
         let name = format!("k{id}");
         shared.kept.create_dir(&name, 0o700)?;
-        match shared.kept.sub_root(&name) {
-            Ok(root) => Ok(Self {
-                name,
-                root,
-                root_meta: None,
-            }),
+        let opened = shared.kept.statx(&name).and_then(|made| {
+            let root = shared.kept.sub_root(&name)?;
+            let st = root.statx("/")?;
+            Ok((made, st, root))
+        });
+        match opened {
+            Ok((made, st, root))
+                if made.file_type() == FileType::Directory
+                    && (made.dev_major, made.dev_minor, made.ino)
+                        == (st.dev_major, st.dev_minor, st.ino)
+                    && root.mnt_id() == shared.kept.mnt_id() =>
+            {
+                Ok(Self {
+                    name,
+                    root,
+                    root_meta: None,
+                })
+            }
+            Ok(_) => Err(Error::State(
+                "the kept directory changed between its creation and its opening",
+            )),
             Err(e) => {
                 if let Err(r) = shared.kept.remove_dir(&name) {
                     tracing::warn!("removing the kept directory {name}: {r}");
@@ -400,6 +419,11 @@ fn copy_out(shared: &Shared, what: &Keep, to: &RootPath) -> Result<()> {
                     to.create_dir_all(parent, 0o755)?;
                 }
                 let st = shared.root.statx(p)?;
+                // A mount the ignore list misses is never kept: the copy
+                // stays on the root's own mount.
+                if st.mnt_id != shared.root.mnt_id() || st.mount_root {
+                    return Err(Error::State("a path to keep lies on another mount"));
+                }
                 if st.file_type() == FileType::Symlink {
                     // Kept as the link; its target is one of `paths` too.
                     if to.statx(p).is_err() {

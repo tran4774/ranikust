@@ -104,6 +104,11 @@ pub fn copy(
 /// builder passes the `.dockerignore` result of the context walk, so an
 /// ignored file is never read.
 ///
+/// An entry that cannot be opened without leaving its mount (a mount point
+/// below `from`) is offered to `keep` as a directory, before its type is
+/// known: refused, it is skipped (kaniko mode copying its root out, mounts
+/// on its ignore list); kept, the copy fails as [`copy`] does.
+///
 /// # Errors
 ///
 /// As [`copy`].

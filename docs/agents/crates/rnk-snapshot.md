@@ -214,7 +214,11 @@ impl WalkDiff {
   read after the root is reused, only the paths asked for, deleted on
   release, a second keep refused once the root was reused; a stage `FROM`
   a kept one starting from its copy (baseline walk from it); a
-  `COPY --from` image unpacked beside the root while a stage holds it.
+  `COPY --from` image unpacked beside the root while a stage holds it;
+  the `/` layout, keep area inside the root under an ignored `state/`
+  (left out of `Keep::All`; not ignored, the copy is refused as a
+  destination inside its source, never a recursion); a keep-area name
+  taken by a link never followed.
 - **T0:** exporter rules on a modelled upper and lower stack. kaniko walk
   built (`src/kaniko/walk/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type

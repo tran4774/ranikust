@@ -329,8 +329,8 @@ pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<Resol
 ///
 /// # Errors
 ///
-/// [`Error::Invalid`] after 40 symlinks; [`Error::Rootfs`] when an entry on
-/// the way is missing.
+/// [`Error::Invalid`] after 40 symlinks or when an entry on the way lies on
+/// another mount; [`Error::Rootfs`] when an entry on the way is missing.
 pub(crate) fn link_closure(root: &RootPath, path: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut todo = clean_source(&path.to_string_lossy());
@@ -340,7 +340,15 @@ pub(crate) fn link_closure(root: &RootPath, path: &Path) -> Result<Vec<PathBuf>>
         let mut at = PathBuf::new();
         for (i, name) in names.iter().enumerate() {
             let next = at.join(name);
-            if root.statx(&next)?.file_type() == rnk_rootfs::FileType::Symlink {
+            let st = root.statx(&next)?;
+            // Another mount below the root is never part of what is kept.
+            if st.mnt_id != root.mnt_id() || st.mount_root {
+                return Err(Error::Invalid(format!(
+                    "{} lies on another mount",
+                    next.display()
+                )));
+            }
+            if st.file_type() == rnk_rootfs::FileType::Symlink {
                 hops += 1;
                 if hops > 40 {
                     return Err(Error::Invalid(format!(

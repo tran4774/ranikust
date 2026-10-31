@@ -336,6 +336,80 @@ fn a_stage_built_from_a_kept_one_starts_from_its_copy() {
     a.release().unwrap();
 }
 
+/// The `/` layout: the keep area inside the root, below `state/`, which
+/// the ignore list holds when `ignored`.
+fn kept_inside(ignored: bool) -> (tempfile::TempDir, PathBuf, Kaniko) {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = fs::canonicalize(tmp.path()).unwrap().join("root");
+    fs::create_dir_all(host.join("state/kept")).unwrap();
+    fs::write(host.join("state/blob"), b"store").unwrap();
+    let mut ignore = IgnoreList::new();
+    if ignored {
+        ignore.insert("/state").unwrap();
+    }
+    let kaniko = Kaniko::new(
+        RootPath::open(&host).unwrap(),
+        PathBuf::from("/"),
+        ignore,
+        WalkOptions::default(),
+        RootPath::open(host.join("state/kept")).unwrap(),
+    );
+    (tmp, host, kaniko)
+}
+
+#[test]
+fn a_keep_area_inside_the_root_is_left_out_of_the_copy() {
+    let (_tmp, host, k) = kept_inside(true);
+    let mut a = k.prepare(Base::Scratch).unwrap();
+    fs::write(host.join("built"), b"b").unwrap();
+    a.keep(&Keep::All).unwrap();
+    let mut copies: Vec<_> = fs::read_dir(host.join("state/kept")).unwrap().collect();
+    assert_eq!(copies.len(), 1);
+    let copy = copies.pop().unwrap().unwrap().path();
+    let mut names: Vec<_> = fs::read_dir(&copy)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["built"],
+        "the ignored state directory is not copied"
+    );
+    a.release().unwrap();
+}
+
+#[test]
+fn a_keep_area_inside_the_root_never_copies_itself() {
+    let (_tmp, host, k) = kept_inside(false);
+    let mut a = k.prepare(Base::Scratch).unwrap();
+    fs::write(host.join("built"), b"b").unwrap();
+    // Without the ignore entry the copy meets its own destination: refused,
+    // never a recursion, and the partial copy is removed.
+    let e = a.keep(&Keep::All).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::Rootfs(rnk_rootfs::Error::InvalidPath { reason, .. })
+                if reason.contains("destination lies inside the source")
+        ),
+        "{e}"
+    );
+    assert_eq!(fs::read_dir(host.join("state/kept")).unwrap().count(), 0);
+    a.release().unwrap();
+}
+
+#[test]
+fn a_kept_name_taken_by_a_link_is_never_followed() {
+    let f = Fixture::new();
+    let kept = f.host.with_file_name("kept");
+    // The next keep area name is taken by a link to the area itself.
+    let id = f.kaniko.shared.next_id.load(Ordering::Relaxed);
+    std::os::unix::fs::symlink(".", kept.join(format!("k{id}"))).unwrap();
+    let e = Kept::make(&f.kaniko.shared, id).unwrap_err();
+    assert!(matches!(e, Error::Rootfs(_)), "{e}");
+}
+
 #[test]
 fn a_copy_from_image_is_unpacked_beside_the_root_while_a_stage_holds_it() {
     let f = Fixture::new();

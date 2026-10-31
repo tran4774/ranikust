@@ -1179,6 +1179,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_stage_a_later_unit_builds_from_is_kept_whole() {
+        // The base of each unit's first stage is a unit of its own, kept
+        // whole, whatever made it unfoldable: two children, a reader, a
+        // target, a chain below it.
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "FROM alpine AS a\nFROM a AS b\nFROM a\nCOPY --from=b /b /b\n",
+                &[],
+            ),
+            ("FROM alpine AS a\nFROM a\nCOPY --from=a /x /x\n", &[]),
+            (
+                "FROM alpine AS a\nFROM a AS b\nFROM b AS c\nFROM b\nCOPY --from=c / /\n",
+                &[],
+            ),
+            (
+                "FROM alpine AS a\nRUN true\nFROM a AS b\nFROM a AS c\n",
+                &["b", "c"],
+            ),
+            ("FROM alpine AS a\nFROM a AS b\n", &["a", "b"]),
+        ];
+        for (text, targets) in cases {
+            let df = rnk_dockerfile::parse(text).unwrap();
+            let options = GraphOptions {
+                targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+                ..GraphOptions::default()
+            };
+            let graph = rnk_dockerfile::stage_graph(&df, &options).unwrap();
+            let plan = rnk_dockerfile::squash_for_shared_root(&graph);
+            let (_, _, keep) = kaniko_units(&graph, &df);
+            for unit in &plan {
+                if let rnk_dockerfile::Base::Stage(b) = unit.base {
+                    assert_eq!(keep[b], Some(KeepNeed::All), "{text}: stage {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn kaniko_units_keep_what_later_units_read() {
         let units = |text: &str| {
             let df = rnk_dockerfile::parse(text).unwrap();
