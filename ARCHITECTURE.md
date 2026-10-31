@@ -20,18 +20,20 @@ privileges ranikust finds at start-up:
 - **overlay mode**: each stage root is an overlay mount; each instruction
   writes into a fresh upper directory, which *is* the layer's diff. Stages run
   in parallel along the stage graph.
-- **kaniko mode**: the workdir is the root filesystem (`/` in a container);
-  each diff is found by walking and hashing it. Stages run one at a time by
+- **kaniko mode**: the root filesystem is the build root (`/` in a
+  container, else a directory ranikust makes in its state directory); each
+  diff is found by walking and hashing it. Stages run one at a time by
   default, as in kaniko.
 
 If neither mode can work (an unprivileged user without usable user
 namespaces), ranikust refuses and explains how to fix it.
 
-The build area is `--workdir`. ranikust keeps its own files, including the
-persistent store, in one state directory (`--state-dir`): by default
-`<workdir>/.ranikust` in overlay mode and `/ranikust/state` in kaniko mode
-([ADR-0022](docs/adr/0022-common-state-dir.md)). ranikust never writes
-outside the workdir, the state directory and the requested outputs.
+ranikust keeps its own files, including the persistent store and every
+build root it makes, in one state directory (`--state-dir`, default
+`/var/lib/ranikust`); there is no work-directory flag
+([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
+ranikust never writes outside the state directory, the requested outputs
+and, in kaniko mode in a container, `/`.
 
 ## Code map
 
@@ -44,9 +46,11 @@ and this map follows it.
 The binary. Parses the `build`, `push`, `prune`, `version` and `login`
 subcommands, the common kaniko flags and `--mode=auto|overlay|kaniko`
 ([ADR-0023](docs/adr/0023-mode-flag.md)). While the process is still
-single-threaded, it checks the workdir, enters a private mount namespace
-when permitted, runs the privilege probes of `rnk-sandbox` and `rnk-snapshot`
-in order and picks the mode, and in kaniko mode locks the workdir; then it
+single-threaded, it enters a private mount namespace when permitted,
+checks the state directory, runs the privilege probes of `rnk-sandbox` and
+`rnk-snapshot` in order and picks the mode, and in kaniko mode picks the
+root (`/` in a container, locked; else one it makes in the state
+directory); then it
 hands off to the libraries: it starts the async runtime, runs `rnk-sched`
 with its own `StageRunner`, which drives `rnk-builder` one thread per
 stage, and writes the outputs. `prune` only calls `rnk-store`. Before all
@@ -280,14 +284,15 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
 
 ## Data flow of a build
 
-1. **Set-up** (`ranikust`): parse flags; check the workdir and the state
-   directory; enter a private mount namespace while single-threaded;
+1. **Set-up** (`ranikust`): parse flags; enter a private mount namespace
+   while single-threaded; check the state directory;
    start-up clean-up of the store (`rnk-store`).
 2. **Probe** (`ranikust`, still single-threaded, running the probes of
    `rnk-sandbox` and `rnk-snapshot` in order): choose overlay root, overlay
    rootless, kaniko, or refuse; `--mode=overlay|kaniko` skips the choice but
    not the checks ([modes-and-detection](docs/design/modes-and-detection.md)).
-   In kaniko mode, `flock` the workdir.
+   In kaniko mode, pick the root: `/` in a container (`flock`ed in the
+   state directory), else `<state>/builds/<id>/rootfs`.
 3. **Front end**: read the context and `.dockerignore` (`rnk-context`,
    `rnk-ignore`); parse the Dockerfile into a stage graph and expand
    build arguments (`rnk-dockerfile`).
@@ -318,9 +323,9 @@ in I/O.
 | | overlay mode | kaniko mode |
 |---|---|---|
 | Needs | mount privileges (root, or a usable user namespace) | root |
-| State directory | `<workdir>/.ranikust` by default | `/ranikust/state` by default, on the ignore list |
-| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | the workdir (`/` in a container); per-stage directories when it can mount, or with `--parallel-stages` |
-| Workdir lock | none: builds may share the workdir | exclusive `flock` |
+| State directory | `/var/lib/ranikust` by default; a volume in a container | `/var/lib/ranikust` by default, on the ignore list when inside the root |
+| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container, else `<state>/builds/<id>/rootfs`; per-stage directories when it can mount, or with `--parallel-stages` |
+| Root lock | none: builds share the state directory | `/` is `flock`ed, one build per container |
 | Diff | the upper directory, plus a walk of the diff only | parallel walk and hash with a stat cache |
 | Stages | parallel (DAG) | sequential by default |
 | `RUN` | full sandbox | directly on `/` like kaniko (`Isolation::Direct`); full sandbox or bare `chroot` with a fake `/proc` in per-stage directories |
@@ -338,19 +343,20 @@ Images from the two modes may differ in documented ways
 
 ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 
-- Nothing is written outside the workdir, the state directory or store, and
-  the requested outputs.
+- Nothing is written outside the state directory or store, the requested
+  outputs and, in kaniko mode in a container, `/`.
 - Every path that comes from an image, a context or a Dockerfile is reached
   through `rnk_rootfs::RootPath`, never through `std::fs` on a joined host
   path.
 - Deletion works through file descriptors, never follows symlinks, and never
   crosses a mount point (compared by mount id, never by `st_dev` alone).
-- A workdir outside a container must not be `/` or contain a system
-  directory (compared by `(dev, ino)`), and must carry the `.ranikust-root`
-  marker if not empty. In kaniko mode, where the workdir is the root being
-  built, it is locked exclusively.
-- In kaniko mode the state directory (`/ranikust/state` in a container) is
-  on the ignore list: never walked, snapshotted or deleted.
+- ranikust never fills or empties a directory the operator names: the root
+  is `/` in a container (kaniko mode) or a directory it makes in its state
+  directory. The state directory is owned by the user running ranikust,
+  not writable by others, made `0700`, below directories only root may
+  write, checked by descriptor before anything is created (ADR-0050).
+- In kaniko mode on `/` the state directory is on the ignore list: never
+  walked, snapshotted or deleted.
 - `RUN` enters its root with `pivot_root` (or `MS_MOVE`), never a bare
   `chroot` where mounting is possible; the capability bounding set is cut to
   Docker's defaults for every user.
@@ -418,7 +424,7 @@ Tiers by privilege; details and commands in [`docs/testing.md`](docs/testing.md)
 - **T2, root**: only in a disposable VM, never on the host: overlay as real
   root, rootful Docker under cgroup v1 and v2, and the host-safety attack
   suite (path traversal in layers, escaping symlinks and hardlinks, fork
-  bombs, `--workdir=/`).
+  bombs, a `--state-dir` below another user's directory).
 - **Compatibility**: kaniko's 200 integration Dockerfiles in every mode;
   flattened content compared with kaniko, and between modes against the
   accepted-differences list.

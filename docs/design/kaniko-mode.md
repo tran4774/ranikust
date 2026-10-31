@@ -1,7 +1,8 @@
 # kaniko mode
 
-How ranikust builds when overlay is not available: the workdir is the root
-filesystem, each layer is found by walking and hashing it, and the root is
+How ranikust builds when overlay is not available: one root filesystem
+(`/` in a container, else a directory ranikust makes in its state
+directory, ADR-0050), each layer is found by walking and hashing it, and the root is
 emptied safely between stages. Also covers the per-stage directory variants,
 including the opt-in `--parallel-stages` path with its fake `/proc`.
 
@@ -18,7 +19,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 
 | Variant | When | Stage root | `RUN` | Stages |
 |---|---|---|---|---|
-| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | the workdir: `/` in a container, `--workdir` on a host | directly on the root (`rnk-sandbox`'s `Isolation::Direct`): on `/`, the container's real `/proc`, `/dev` and network files; on a host `--workdir`, a `chroot` with ranikust's `hosts`, `resolv.conf`, `hostname` and `/dev` nodes placed and journaled, no `/proc` (`ADR-0043`) | one at a time, `--jobs` ignored |
+| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | `/` in a container, else `<state>/builds/<id>/rootfs` | directly on the root (`rnk-sandbox`'s `Isolation::Direct`): on `/`, the container's real `/proc`, `/dev` and network files; on a root in the state directory, the full sandbox where root may mount, else a `chroot` with ranikust's `hosts`, `resolv.conf`, `hostname` and `/dev` nodes placed and journaled, no `/proc` (`ADR-0043`) | one at a time, `--jobs` ignored |
 | **Per-stage, sandboxed** | root, can mount, overlay unusable | one directory per stage | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
 | **Per-stage, bare chroot** | as Sequential, plus `--parallel-stages` | one directory per stage | bare `chroot`, no `/proc` | DAG, `--jobs` |
 
@@ -35,11 +36,9 @@ overlay mode).
   point.
 - The state directory is never walked, snapshotted or deleted; otherwise its
   files leak into layers. With the root `/` (in a container) it is
-  `/ranikust/state`, inside the root and on the ignore list, as kaniko's
-  `/kaniko` ([ADR-0022](../adr/0022-common-state-dir.md)); with any other
-  root it is `<cwd>/.ranikust`, the directory ranikust was started in, and
-  on the ignore list whenever it lies inside the root (`ADR-0038`).
-  `--state-dir` replaces either default.
+  `/var/lib/ranikust` (or `--state-dir`), inside the root and on the ignore
+  list, as kaniko's `/kaniko`; with any other root the root lies inside it,
+  `<state>/builds/<id>/rootfs` (ADR-0050).
 - Anything ranikust places in a root (stubs, `hosts`, `resolv.conf`, `/dev`
   nodes, fake `/proc`) is removed, and its parent directory's metadata
   restored, before the diff.
@@ -69,8 +68,8 @@ at a time, in plan order (`Placement::Shared`).
 settles them (Q-024):
 
 - **One root, one holder.** `Kaniko` holds the root as a `RootPath` opened
-  once: the claimed workdir's (`ranikust::workdir::Workdir::root`), or `/`
-  in a container; never a path opened again. At most one `KanikoRoot` holds
+  once by `ranikust`'s set-up: `/` in a container, else the directory it
+  made in the state directory; never a path opened again. At most one `KanikoRoot` holds
   it at a time; `prepare(Base::Stage(parent))` takes it over from `parent`
   when nothing emptied the root since (a squashed chain), and fails
   otherwise.
@@ -84,16 +83,17 @@ settles them (Q-024):
   `:1944-1947`), every later base starts from an emptied root (kaniko's
   `DeleteFilesystem` between stages, `:2179`), and the end of the build
   leaves `/` as it is (kaniko empties it only with `--cleanup`,
-  `:1955-1957`; ranikust ignores `--cleanup`). A host workdir, which the
-  operator handed over with its marker, is emptied before the first base
-  too, and at the end of a build in which a stage changed it
-  (`Kaniko::finish`); a build that fails before its first base touches
-  neither.
+  `:1955-1957`; ranikust refuses `--cleanup`). A root in the state
+  directory, made for the build, is emptied before the first base too, and
+  at the end of a build in which a stage changed it (`Kaniko::finish`),
+  then removed with the build directory; a build that fails before its
+  first base touches neither.
 - **The ignore list** is built once per build from `/proc/self/mountinfo`,
   `--ignore-path`, `--ignore-var-run` and the state directory
-  (`rnk_snapshot::kaniko::ignore_list`), with physical paths: the
-  workdir's canonical path, which `claim` opened without following a
-  symlink, and the state directory's canonical path, opened the same way.
+  (`rnk_snapshot::kaniko::ignore_list`), with physical paths: `/` or the
+  root the set-up made, and the state directory's canonical path, opened
+  without following a symlink; the state directory is on it only when it
+  lies inside the root (`/`).
   It is used by extraction, the walk and deletion alike. A state directory
   outside the root by path that is a directory of the root reached through
   another mount (a bind mount of a directory inside it, found by the
@@ -104,14 +104,15 @@ settles them (Q-024):
   and file secrets
   are refused before the root changes when they lie in it, unless the
   ignore list keeps them (a volume, `/ranikust`, `--ignore-path`).
-- **A host workdir is private** ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md)):
-  an image's setuid files land in it, so some real parent, walked from
-  the workdir's descriptor, must keep group and others out, and it and
-  everything below it down to the workdir must be root's and not writable
-  by others; a filesystem without `nosuid,nodev` gets a warning. Each
-  emptying gives the workdir its own owner and mode back. The sandbox is
-  started with the claimed root's descriptor and refuses a `RUN` on any
-  other path or directory.
+- **A root off `/` is private** (ADR-0047's rule, moved to the state
+  directory by ADR-0050): an image's setuid files land in it, so it lies
+  below the state directory, owned by the user running ranikust, mode
+  `0700`, every parent root's and not writable by others (root's sticky
+  directories excepted), walked by descriptor before anything is created.
+  Each emptying gives the root its own owner and mode back. The sandbox is
+  started with the root's descriptor and refuses a `RUN` on any other path
+  or directory. Kaniko mode on `/` takes `locks/kaniko-root` in the state
+  directory: one build per container.
 - **Layers.** A stage whose layers are needed (`set_layers_needed`, from the
   lazy-snapshot rule) takes a baseline walk after its base, then
   `end_layer` walks and diffs, and the diff, held with the root, is the
@@ -121,17 +122,17 @@ settles them (Q-024):
   is never walked: `end_layer` returns an empty diff that is never encoded.
   `begin_layer` and `view` do nothing but hand out the root.
 - **Release** gives the root up; emptying (`rnk_rootfs::delete_contents`
-  with the ignore list, so the state directory, mounts and the workdir
-  marker stay, then `Walker::forget`) happens at the next base or at the
+  with the ignore list, so the state directory and mounts stay, then
+  `Walker::forget`) happens at the next base or at the
   end, as above.
 - **A vanished or swapped entry fails the walk** (`Error::Changed`),
   directories and files alike, as kaniko's walk fails on a callback or
   hash error (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1688-1691`,
   `pkg/snapshot/layered_map.go:160-163`): nothing may change the root while
   it is walked.
-- **`RUN`** gets the full sandbox on a host workdir where the build's
-  mount namespace could be entered, else `Isolation::Direct` on the
-  root's path (`/` or the workdir, ADR-0043); `RLIMIT_NOFILE` as ranikust
+- **`RUN`** gets the full sandbox on a root in the state directory where
+  the build's mount namespace could be entered, else `Isolation::Direct`
+  on the root's path (`/` or that root, ADR-0043); `RLIMIT_NOFILE` as ranikust
   started (`NofileLimit::current()` before the raise,
   `Sandbox::set_nofile_limit`). The sandbox reopens the root by path for
   each `RUN` and refuses it when it is no longer the directory
@@ -232,7 +233,7 @@ image keeps them through its unchanged base layers.
 The root and state directory handed to the list must be the kernel's
 names for the directories in use (`readlink` of their fds), absolute and
 normalized; a state directory that is the root or an ancestor of it is
-refused. A host workdir's `.ranikust-root` marker is on the list.
+refused.
 On a host the mount part is usually empty. Inside a container it covers
 `/proc`, `/dev`, `/sys` and their submounts, `/etc/hosts`, `/etc/hostname`,
 `/etc/resolv.conf` and volumes.
@@ -254,26 +255,26 @@ file descriptors:
 
 ## Host safety checks
 
-Before touching a workdir outside a container:
+ranikust never fills or empties a directory the operator names (ADR-0050,
+which replaces the `--workdir` checks of ADR-0038 and ADR-0047): the root
+is `/` in a container, chosen by kaniko's heuristic (ADR-0048), or
+`<state>/builds/<id>/rootfs`, made for the build. Before anything is
+written, `ranikust::statedir::prepare` checks the state directory:
 
-1. Canonicalize, then refuse `/` and any directory that is, or is an
-   ancestor of, a system directory (`/usr`, `/etc`, `/home`, `/var/lib`, …,
-   30 in total, `SYSTEM_DIRS` in `crates/ranikust/src/workdir.rs`). Compare **`(dev, ino)`** of the directory and each of its
-   ancestors, not strings: `//` passes a string comparison.
-2. Open the workdir with `openat2(RESOLVE_NO_SYMLINKS)` and take
-   `flock(LOCK_EX | LOCK_NB)`: one build per kaniko-mode workdir.
-3. A non-empty workdir without a regular file `.ranikust-root` is refused; a
-   marker that is a symlink is refused; an empty workdir gets a marker,
-   right before the build first writes to it, and loses it again if
-   anything else appeared meanwhile. A workdir holding only mount points
-   is not empty: it needs the marker.
+1. Before it is created, its nearest existing directory and every real
+   parent, walked from a descriptor (`..`), never by path, are owned by
+   root (or the user) and not writable by group or others, except root's
+   sticky directories.
+2. It is created `0700`, opened with `RESOLVE_NO_SYMLINKS`, owned by the
+   user, not writable by others, and set to `0700` if others may search
+   it; then the whole chain is checked again from its descriptor.
+3. The store's own `.ranikust-root` marker (Q-111) refuses a non-empty
+   directory that is not a state directory.
 
-`ranikust` runs these checks during process set-up and holds the lock for
-the whole build; `rnk-rootfs` provides the primitives (`ADR-0038`). It also
-raises `RLIMIT_NOFILE`'s soft limit to the hard limit for the walk; `RUN`
-processes get the original limit back (`NofileLimit::current()` read before
-the raise, `Sandbox::set_nofile_limit`, `ADR-0043`). Every later step reaches the
-workdir through the descriptor that was checked, never by its path.
+`ranikust` holds kaniko mode on `/` with `flock` on `locks/kaniko-root`
+for the whole build; `rnk-rootfs` provides the primitives. It also raises
+`RLIMIT_NOFILE`'s soft limit to the hard limit for the walk; `RUN`
+processes get the original limit back.
 
 ## Exporter requirements specific to the walk
 
@@ -339,7 +340,7 @@ kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
   nodes change the mtime of their parent, so `/etc` would enter every layer.
   Record the parent's mtime before placing (m0) and after (m1); after `RUN`,
   if it is still m1, restore m0, otherwise keep what `RUN` set. Built for
-  the sequential `Direct` `RUN` on a host workdir (`rnk-sandbox`'s `swap`
+  the sequential `Direct` `RUN` on a root in the state directory (`rnk-sandbox`'s `swap`
   journal records, `ADR-0043`): the image's entry is renamed aside in the
   same directory and back after, never rewritten.
 

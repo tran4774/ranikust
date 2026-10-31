@@ -23,9 +23,11 @@ than a regular user never run on a developer's machine.
   `#[ignore = "T2: <reason>"]`. Its harness runs it with
   `cargo test -- --ignored` inside the right environment. Never remove the
   `ignore` to run it by hand, and never run a T2 test on the host.
-- Running the `ranikust` binary in kaniko mode with rootfs `/` deletes that
-  filesystem. Outside the VM, run it only with a `--workdir` under a fresh
-  temporary directory.
+- Running the `ranikust` binary in kaniko mode in a container builds on and
+  empties that container's `/`; outside a container it builds in its state
+  directory (ADR-0050). Outside the VM, run kaniko mode as root only in a
+  throwaway container, with `--state-dir` under a fresh temporary
+  directory.
 - A bug fix comes with a test that fails without it.
 - `just test <filter>` passes a name filter to `cargo test`; for one crate,
   use `cargo test -p <crate> <filter>`.
@@ -44,7 +46,7 @@ From the verification plan of
 | Image content vs kaniko | Each image flattened to `(path, type, mode, uid, gid, size, sha256, link target, xattrs)` plus its config, compared with kaniko's | T1/T2 |
 | Mode equivalence | Overlay and kaniko mode give the same flattened content, apart from the accepted differences of [ADR-0012](adr/0012-accept-divergence-between-modes.md); `--jobs 1` and the default give identical digests | T1/T2 |
 | Privilege matrix | In each environment of the table below, ranikust picks the expected mode or refuses with guidance | T1/T2 |
-| Host safety | Layers with `../etc/passwd`, symlinks and hardlinks pointing out; `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a cgroup limit, writes to `/etc/resolv.conf`; `--workdir` at `/`, `/home` and an unmarked directory. After each case: the host is unchanged, and no mount or process is left | T2 |
+| Host safety | Layers with `../etc/passwd`, symlinks and hardlinks pointing out; `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a cgroup limit, writes to `/etc/resolv.conf`; a `--state-dir` at `/`, below `/home/<user>` and in a directory others may write. After each case: the host is unchanged, and no mount or process is left | T2 |
 
 ### Environments for the privilege matrix
 
@@ -166,7 +168,7 @@ host's `nextjs-kaniko` containers:
   `FF_KANIKO_STREAM_TAR_COMPRESS` (experiment 07's `k-stream`), BuildKit
   as `run-fair.sh`'s `bk` (zstd), each in `docker run --cpus=4
   --memory=8g`; `ranikust build` as root in a systemd scope with the same
-  CPU quota and memory limit, a fresh `--workdir` each time. W2 is built
+  CPU quota and memory limit, a fresh `--state-dir` each time. W2 is built
   cold, without a cache. On W3 `ranikust` runs once per `--jobs` value
   (`1 2 default`) with `--reproducible`. Every build starts from an empty
   `e2e/` namespace in a restarted registry. Time is taken as
@@ -279,7 +281,7 @@ emulation (the native CI job runs them all):
   other mount-id comparisons pass only because both sides are 0. The
   mount-ID checks that guard deletion (T4 of the threat model) are
   therefore not exercised under emulation; the native CI job covers them.
-- `without_root_the_set_up_refuses_before_touching_the_workdir` is
+- `without_root_the_set_up_refuses_before_touching_the_state_dir` is
   skipped: qemu-user runs a thread of its own, so the set-up stops at its
   single-thread check before the privilege refusal the test expects.
 - `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` is
@@ -351,11 +353,14 @@ its helpers (`build`, `run`, `expect`, `expect_config`, `config`, `out`).
 
 - `just smoke-case [name...]` (T1): the binary in rootless `podman run
   --privileged`, podman loading and running the images. All seven take
-  under a minute once the binary is built. The shared workdir under
-  `target/smoke/cases/.work` keeps the store between runs.
+  under a minute once the binary is built. The shared state directory
+  under `target/smoke/cases/.state`, mounted at `/var/lib/ranikust`, keeps
+  the store between runs.
 - `just test-vm quick` (T2): the same as real root on the VM, Docker
   loading and running the images; `RANIKUST_QUICK_MODE=kaniko` builds them
-  in kaniko mode on the workdir (`RANIKUST_CASE_MODE=kaniko` does the same
-  for `just smoke-case`, in a default rootless podman container where root
-  may not mount, so `RUN` runs `Direct`); `RANIKUST_QUICK_CASES="run copy"`
+  in kaniko mode in a root of the state directory, the VM not being a
+  container (`RANIKUST_CASE_MODE=kaniko` builds them in kaniko mode on the
+  container's `/` for `just smoke-case`, in a default rootless podman
+  container where root may not mount, so `RUN` runs `Direct`; the binary,
+  context and outputs sit under `/ranikust`); `RANIKUST_QUICK_CASES="run copy"`
   picks cases.

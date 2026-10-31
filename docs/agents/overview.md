@@ -14,8 +14,9 @@ hash otherwise. Pre-alpha: Phase 1 is done; Phase 2 (kaniko mode) is in progress
 - Common kaniko flags accepted (`ADR-0011`, [kaniko-map.md](kaniko-map.md));
   kaniko's cache is not (`ADR-0005`). Out of scope: bake, the warmer, cloud
   contexts, multi-platform builds (`ADR-0008`).
-- Writes nothing outside the workdir, the state directory or store, and the
-  requested outputs ([rules.md](rules.md#security-invariants)).
+- Writes nothing outside the state directory or store, the requested
+  outputs and, in kaniko mode in a container, `/`; there is no
+  work-directory flag (`ADR-0050`).
 
 ## Build pipeline
 
@@ -24,8 +25,8 @@ in I/O. Full text: [`ARCHITECTURE.md`](../../ARCHITECTURE.md#data-flow-of-a-buil
 
 | # | Step | Owner | Notes |
 |---|---|---|---|
-| 0 | Set-up: parse flags, check the workdir, enter a private mount namespace, clean up the store, start the `RUN` spawner thread, all while single-threaded | `ranikust`, `rnk-sandbox`, `rnk-store` | `design/sandbox.md#process-set-up-once-per-build` |
-| 1 | Probe: each crate tries its own privileged steps for real; the binary runs them in order and picks the mode (`--mode`) or refuses; kaniko mode `flock`s the workdir | `ranikust`, `rnk-sandbox`, `rnk-snapshot` | `design/modes-and-detection.md#probe-order---modeauto` |
+| 0 | Set-up: parse flags, enter a private mount namespace, check the state directory, clean up the store, start the `RUN` spawner thread, all while single-threaded | `ranikust`, `rnk-sandbox`, `rnk-store` | `design/sandbox.md#process-set-up-once-per-build` |
+| 1 | Probe: each crate tries its own privileged steps for real; the binary runs them in order and picks the mode (`--mode`) or refuses; kaniko mode picks its root (`/` in a container, `flock`ed; else one in the state directory) | `ranikust`, `rnk-sandbox`, `rnk-snapshot` | `design/modes-and-detection.md#probe-order---modeauto` |
 | 2 | Parse: Dockerfile → typed instructions, stage DAG, `ARG` expansion; squashing only in sequential kaniko mode | `rnk-dockerfile` | BuildKit semantics, hand-written (`ADR-0015`) |
 | 3 | Context: local directory (Phase 1), tar/git/HTTPS later; `.dockerignore` | `rnk-context`, `rnk-ignore` | exact moby `patternmatcher` semantics |
 | 4 | Pull bases of all stages up front, in parallel; verify digests into the store; extract layers | `rnk-registry`, `rnk-oci`, `rnk-store`; `rnk-snapshot` chains `rnk-layer` (decode) into `rnk-rootfs` (extract) | cache lookup (`rnk-cache`) joins here in Phase 4 |
@@ -45,7 +46,7 @@ Every step emits `tracing` spans; with `--metrics-file=<path>`,
 | | overlay mode | kaniko mode |
 |---|---|---|
 | Needs | mount privileges: root, or a usable user namespace (rootless) | root |
-| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | the workdir (`/` in a container), or one directory per stage |
+| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container, else `<state>/builds/<id>/rootfs`, or one directory per stage |
 | Diff | the instruction's upper directory | parallel walk and hash with a stat cache |
 | Stages | parallel along the DAG | sequential by default; `--parallel-stages` opts in (`ADR-0014`) |
 | Phase | 1 (root), 3 (rootless) | 2 |
@@ -95,15 +96,14 @@ ADR-0027 puts the matcher inside the walk).
 
 | Place | Set by | Holds |
 |---|---|---|
-| Workdir | `--workdir`; `/` by default in a container, required on a host | overlay mode: holds the default state directory; kaniko mode: the root being walked, `flock`ed (kaniko mode only). Marker `.ranikust-root` |
-| State directory | `--state-dir` (kaniko's `--kaniko-dir`); default `<workdir>/.ranikust` in overlay mode, `/ranikust/state` in kaniko mode (`ADR-0022`) | the store, `builds/<id>/` (`design/overlay-snapshot.md#state-directory-layout`), stub journal, `deps/` for `COPY --from`, stage images, secrets. In kaniko mode on the ignore list: never walked, snapshotted or deleted |
+| Build root | ranikust: `/` in kaniko mode in a container (`flock`ed in the state directory), else in `<state>/builds/<id>/` (`ADR-0050`) | the root being built |
+| State directory | `--state-dir` (kaniko's `--kaniko-dir`); default `/var/lib/ranikust` (`ADR-0050`); owned by the user, `0700`, below directories only root may write | the store, `builds/<id>/` (`design/overlay-snapshot.md#state-directory-layout`), stub journal, `deps/` for `COPY --from`, stage images, secrets. In kaniko mode on `/` on the ignore list: never walked, snapshotted or deleted |
 | Store | in the state directory, owned by `rnk-store` (`ADR-0021`) | `blobs/sha256/`, `layers/<id>/`, `caches/`, `tmp/`: content-addressed, immutable, per-digest `flock`, atomic rename, shared by concurrent builds (`ADR-0006`, `ADR-0007`) |
 | Outputs | `--destination`, `--tar-path`, `--oci-layout-path` | the image; the only other place written, besides the metrics report |
 | Metrics report | `--metrics-file` (opt-in, `ADR-0037`) | one JSON file written at exit, never during the build (`ADR-0025`) |
 
-One state directory serves every mode (`ADR-0022`); the default for kaniko
-mode outside a container is `<cwd>/.ranikust`, `/ranikust/state` when
-the root is `/` (`ADR-0038`).
+One state directory serves every mode, `/var/lib/ranikust` unless
+`--state-dir` names another (`ADR-0050`).
 
 ## Phase status
 

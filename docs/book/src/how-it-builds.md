@@ -14,16 +14,21 @@ works and stops with the reason if it does not
 ([ADR-0023](https://github.com/tran4774/ranikust/blob/main/docs/adr/0023-mode-flag.md)).
 
 ranikust keeps downloaded and unpacked layers between builds in a state
-directory, which builds running at the same time share. `--state-dir` sets
-it; the default depends on the mode
-([ADR-0022](https://github.com/tran4774/ranikust/blob/main/docs/adr/0022-common-state-dir.md)).
+directory, `/var/lib/ranikust` unless `--state-dir` names another, which
+builds running at the same time share. Every root a build fills lies in
+it, except the container's own `/` in kaniko mode: you never point
+ranikust at a directory to fill and empty
+([ADR-0050](https://github.com/tran4774/ranikust/blob/main/docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
+The state directory is private: owned by the user running ranikust, mode
+`0700`, below directories only root may write, since the image's setuid
+programs land there.
 
 ## Overlay mode
 
 Used when ranikust may mount filesystems: as root on a host or VM, in a
 privileged container, or as a regular user who may create user namespaces.
 
-- Each stage gets its own overlay filesystem inside the work directory. Each
+- Each stage gets its own overlay filesystem inside the state directory. Each
   instruction writes into a fresh layer of it, so the changes are known
   without scanning the whole filesystem.
 - `RUN` commands run in a sandbox: their own mount, process, hostname and IPC
@@ -54,7 +59,9 @@ privileged container, or as a regular user who may create user namespaces.
 - As a regular user, the same happens inside a user namespace: root inside
   the build is your own user outside it. This is called *rootless* overlay
   mode.
-- The state directory defaults to `.ranikust` inside the work directory.
+- In a container, the state directory must be a volume: overlay cannot
+  use the container's own overlay root as an upper directory, and
+  ranikust says so (`-v ranikust-state:/var/lib/ranikust`).
 - kaniko's `--snapshot-mode` is accepted and ignored with a warning: there
   is no filesystem walk to tune.
 
@@ -63,7 +70,7 @@ privileged container, or as a regular user who may create user namespaces.
 Used when ranikust runs as root but may not mount, as in a Docker container
 with the default security profile or in most Kubernetes pods.
 
-> Built so far: sequential builds on `/` or a `--workdir`. Not yet: a
+> Built so far: sequential builds. Not yet: a
 > stage that reads an earlier stage with `COPY --from`, `RUN --mount`,
 > `--parallel-stages` and per-stage directories.
 
@@ -79,25 +86,20 @@ with the default security profile or in most Kubernetes pods.
   `RUN` commands then have no `/proc`, and some tools fail or quietly
   misbehave without it
   ([ADR-0014](https://github.com/tran4774/ranikust/blob/main/docs/adr/0014-kaniko-mode-sequential-by-default.md)).
-- If ranikust can mount but overlayfs is unusable (for example, a work
+- If ranikust can mount but overlayfs is unusable (for example, a state
   directory on NFS), kaniko mode keeps one directory per stage and the full
   `RUN` sandbox of overlay mode.
-- ranikust keeps its own files in `/ranikust/state`, as kaniko does in
-  `/kaniko`. That directory is never snapshotted or emptied. `--state-dir`
-  moves it.
+- In a container the state directory `/var/lib/ranikust` lies inside the
+  root, as kaniko's `/kaniko`; it and `/ranikust` (put the binary,
+  context and outputs there) are never snapshotted or emptied. Only one
+  build at a time uses the container's `/`.
 - `--snapshot-mode=full|redo|time` means what it means in kaniko: what the
   walk compares to find changed files. The default is `full`.
-- Outside a container, kaniko mode builds in `--workdir`, which it empties,
-  so it refuses a directory the host needs: `/`, a system directory such as
-  `/usr` or `/home`, or an ancestor of one. A non-empty work directory must
-  hold a `.ranikust-root` file, which says its contents may be deleted; an
-  empty one gets it when the build starts writing. The work directory must be
-  out of other users' reach, since the image's setuid programs land in
-  it: inside a directory that root owns with mode `0700`, everything from
-  there down owned and writable by root only. For example, `sudo install
-  -d -m 0700 /home/<you>/rnk`, then `--workdir=/home/<you>/rnk/w`
-  ([ADR-0047](https://github.com/tran4774/ranikust/blob/main/docs/adr/0047-kaniko-workdir-chain-is-private.md)).
-  The context, the outputs and secret files must not be inside it. Only one build at a time may use a work directory.
+- Outside a container, kaniko mode never builds on the machine's `/`: it
+  makes a root for the build in its state directory,
+  `<state>/builds/<id>/rootfs`, and removes it with the build; `RUN`
+  there gets the full sandbox where root may mount. The context, the
+  outputs and secret files must not be inside the root.
 
 ## When no mode works
 

@@ -43,7 +43,7 @@ impl RootPath {
     pub fn open_regular(&self, p) -> Result<OwnedFd>;    // built: reads a file; FIFOs, devices refused unopened
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
-    pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (ranikust's workdir marker check)
+    pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (a directory listing)
     pub fn pin(&self, p) -> Result<Pinned>;              // built: O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (a physical path: the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // built: every later resolution with RESOLVE_NO_XDEV, sub_root included (rnk-sandbox's journal, ADR-0043)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
@@ -82,8 +82,8 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 - Modes are raw `st_mode` bits (sticky, setuid, setgid survive). In overlay
   form, content xattrs `user.overlay.*` become `user.overlay.overlay.*`
   (kernel ≥ 6.7).
-- A dangerous workdir is found by `(dev, ino)` of the directory and of each
-  ancestor, never by string; the `.ranikust-root` marker is a regular file.
+- Identity is compared by `(dev, ino)` (and mount id), never by string;
+  the store's `.ranikust-root` marker is a regular file.
 
 ## Refs
 
@@ -116,8 +116,7 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
   and setuid in `extract`.
 - **T2** (VM only): device nodes in `extract`, device nodes and foreign
-  owners in `copy` (written, `#[ignore]`, `just test-vm unit`); `--workdir`
-  at `/`, `//`, `/home`, an unmarked directory.
+  owners in `copy` (written, `#[ignore]`, `just test-vm unit`).
 
 ## Metrics
 
@@ -173,14 +172,13 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 
 - Build first. Order: `RootPath` with the T0 escape suite → overlay-form
   `extract` → `copy` (`--chown`, `--chmod`, `--from`) and `lookup_user` →
-  fd-based deletion of `builds/<id>` and `tmp/` leftovers → the workdir
-  checks.
+  fd-based deletion of `builds/<id>` and `tmp/` leftovers.
 - Deferred to Phase 2: `delete_contents` on `/`, `FICLONE` stage copies.
   Built in Phase 2 task 3: `extract_live` and `IgnoreList`'s kaniko
   matching; the mountinfo list itself is `rnk-snapshot`'s.
-- The workdir checks belong to `ranikust` (`ADR-0038`, Q-011); this crate
-  provides their primitives, `RootPath::open`, `statx` (`dev`, `ino`,
-  `mnt_id`), `open_at` and `read_names`.
+- The state directory's checks belong to `ranikust` (ADR-0050); this
+  crate provides primitives such as `RootPath::open`, `statx` (`dev`,
+  `ino`, `mnt_id`), `open_at` and `read_names`.
 - Needs Linux 5.8; `Error::Unsupported`, no fallback. The binary checks
   it at start-up (ADR-0028).
 - Done: `RootPath`, `extract` and `extract_overlay` (Q-055),

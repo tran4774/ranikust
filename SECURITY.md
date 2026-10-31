@@ -36,8 +36,9 @@ with the fix. The default embargo is 90 days.
 
 These are vulnerabilities in ranikust, whatever the Dockerfile or image:
 
-- **Escaping the workdir or store.** ranikust itself reads, writes or deletes
-  anything outside its workdir, state directory, store and requested outputs
+- **Escaping the state directory or store.** ranikust itself reads, writes
+  or deletes anything outside its state directory, store, requested outputs
+  and, in kaniko mode in a container, `/`
   because of a crafted layer, build context or Dockerfile: `..` components,
   symlinks, hardlinks, whiteouts, device nodes, setuid files, or races
   between a check and a use.
@@ -69,9 +70,9 @@ These are documented properties, not vulnerabilities:
   as they do in kaniko. The container is the only boundary. With
   `--parallel-stages`, stages can also read each other's files and secrets
   ([ADR-0014](docs/adr/0014-kaniko-mode-sequential-by-default.md)). In
-  kaniko mode on a host `--workdir` without mounts, `RUN` enters the
-  workdir with a bare `chroot`, which root can leave: the host is then the
-  only boundary
+  kaniko mode outside a container without mounts, `RUN` enters the root
+  ranikust made in its state directory with a bare `chroot`, which root can
+  leave: the host is then the only boundary
   ([ADR-0043](docs/adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)).
 - **`RUN` shares the host network** unless `--network=none` is given
   ([ADR-0010](docs/adr/0010-run-network-host-or-none.md)).

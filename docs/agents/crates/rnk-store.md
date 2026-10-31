@@ -34,7 +34,7 @@ builds fetch or extract the same digest at once.
 Built (`feat/rnk-store`) unless marked:
 
 ```rust
-pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = workdir; state = --state-dir
+pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = `/` (kaniko mode in a container) or the state dir; state = --state-dir (ADR-0050)
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
@@ -104,7 +104,7 @@ on a blocking thread, because the lock may wait.
   filesystems emulate `flock` per process.
 - `prune` takes the same locks as a build and never removes an entry a
   running build uses [inferred: in-use tracking is not designed].
-- In kaniko mode the state directory (`/ranikust/state` in a container) is
+- In kaniko mode on `/` the state directory (`/var/lib/ranikust` in a container) is
   on the ignore list: nothing walks, snapshots or deletes it as part of a
   root.
 - Every descriptor is `O_CLOEXEC`; none reaches `RUN` (threat T7).
@@ -187,5 +187,6 @@ on a blocking thread, because the lock may wait.
 - [open: Q-015] Interim: layers named by the digest the caller gives
   (`rnk-snapshot` uses the chain ID, Q-150), lock files under
   `locks/`. (Q-100, ADR-0032) Durability: a blob is `fsync`ed before its
-  rename, a layer is not. The workdir checks and the kaniko-mode workdir
-  lock belong to `ranikust` (`ADR-0038`); not here.
+  rename, a layer is not. The state directory's checks and kaniko mode's
+  lock of `/` (`locks/kaniko-root`) belong to `ranikust` (ADR-0050); not
+  here.

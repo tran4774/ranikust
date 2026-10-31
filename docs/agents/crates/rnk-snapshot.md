@@ -51,15 +51,15 @@ impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
 // kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
 impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions) -> Self;
-    pub fn finish(&self) -> Result<bool>; }        // end of build: empties a workdir a stage changed; never /
+    pub fn finish(&self) -> Result<bool>; }        // end of build: empties a root off `/` a stage changed; never /
 // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
 // prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /
-//   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641); a workdir root 0755;
+//   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641); a root off `/` 0755;
 //   extracts each blob with extract_live, diff ID checked. prepare(Stage(p)): takes the root over
 //   from p if p still holds it (a squashed chain), else Error::State.
 // end_layer: walk + diff when layers are needed, else an empty diff and no walk.
 // release: gives the root up; the next base or finish() empties it (delete_contents + ignore list),
-//   a workdir root getting its own owner and mode back.
+//   a root off `/` getting its own owner and mode back.
 // Overlay: Snapshotter<Root = OverlayStage>
 pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
 pub struct LayerDiff;                              // upper + lowers; lazily exported

@@ -34,7 +34,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--context`, `--dockerfile`, `--build-arg`, `--target`, `--destination`,
   `--no-push`, `--tar-path`, `--oci-layout-path`, `--compression`,
   `--reproducible`, `--registry-certificate`, `--snapshot-mode`. New flags:
-  `--mode=auto|overlay|kaniko`, `--workdir`, `--state-dir` (kaniko's
+  `--mode=auto|overlay|kaniko`, `--state-dir` (kaniko's
   `--kaniko-dir`), `--jobs`, `--network=host|none`, `--platform`,
   `--secret`, `--allow` and `--metrics-file`. Other kaniko flags are refused with the reason, never
   ignored.
@@ -73,12 +73,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - The start-up probe: `ranikust` checks that it can isolate `RUN` (a
   private mount namespace, `pivot_root`, or `MS_MOVE` under Docker's
   seccomp profile) and mount an overlay where its stage roots will live,
-  and names the outcome. For now it builds only as root in overlay mode,
-  which needs `--workdir` or `--state-dir`; elsewhere it stops with what
+  and names the outcome. It builds as root; elsewhere it stops with what
   failed and what to do instead (`sudo`, or a container started with
   `--privileged`), also when it runs inside a plain `chroot`. In a
-  container the state directory must be on a volume: overlay cannot use
-  the container's own overlay root. `--mode=kaniko` comes later.
+  container overlay mode needs the state directory on a volume: overlay
+  cannot use the container's own overlay root, and ranikust says so.
 - The state directory: `ranikust` marks it with `.ranikust-root` and
   refuses a non-empty directory without that mark, so a mistyped
   `--state-dir` never gets written to or cleaned up.
@@ -90,8 +89,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--annotation`, `--image-format`, `--compression-level`, the three digest
   files, `--insecure`, `--insecure-pull`, the `--skip-tls-verify` flags,
   `--push-retry`, `--image-download-retry`, `--context-sub-path` (for
-  `dir://` contexts), `--custom-platform`, `--cache=false`, and kaniko's
-  deprecated `--tarPath`, `--snapshotMode` and `--customPlatform`.
+  `dir://` contexts) and `--cache=false`. kaniko's old spellings
+  (`--tarPath`, `--snapshotMode`, `--customPlatform`, `--custom-platform`,
+  `--whitelist-var-run`) are refused, each naming the flag to use.
   Credentials go over plain HTTP only to registries named with
   `--insecure-registry` or destinations under `--insecure`, never to one a
   Dockerfile names under `--insecure-pull`. Every other kaniko flag is
@@ -99,23 +99,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `--cache-dir` and `--cleanup`) too.
 - `DOCKER_AUTH_CONFIG`, read before `config.json`. kaniko's own variables
   (`KANIKO_*`, `FF_KANIKO_*`) are not read.
-- Kaniko mode's workdir checks: `--mode=kaniko --workdir DIR` refuses `/`,
-  a system directory such as `/usr` or `/home` or an ancestor of one
-  (compared by device and inode, so `//` and symlinks are caught), a
-  directory another build has locked, and a non-empty directory without a
-  `.ranikust-root` marker. Kaniko-mode builds themselves still stop after
-  these checks, before anything is written.
 - The plan of a sequential kaniko-mode build, not yet wired to the CLI:
   kaniko's stage squashing on the shared root, which stages are walked for
   layers, what later stages read from each, and a scheduler mode that runs
   stages on the shared root one at a time in a fixed order.
 - Kaniko mode is reachable: `--mode=auto` picks it where root may not mount
-  (Docker's default, most Kubernetes pods) and says why. Without
-  `--workdir` it builds on `/`, only inside a container as kaniko detects
-  one, or with kaniko's `--force`. Its state directory defaults to
-  `/ranikust/state` on `/` and `.ranikust` in the current directory with a
-  `--workdir`. kaniko's `--ignore-path`, `--ignore-var-run` (and the old
-  `--whitelist-var-run`), `--single-snapshot` and `--materialize` are
+  (Docker's default, most Kubernetes pods) and says why. kaniko's
+  `--ignore-path`, `--ignore-var-run`, `--single-snapshot` and
+  `--materialize` are
   accepted with kaniko's meaning; in overlay mode those that would change
   the image are refused. New flag `--snapshot-workers` (default 8) sizes
   kaniko mode's walk. Kaniko-mode builds still stop after the set-up.
@@ -141,22 +132,21 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   without writing an ignored path or below a mount point, and, as kaniko,
   without creating device nodes or FIFOs. Not yet used by a build.
 - Kaniko mode builds: `--mode=kaniko` (or `--mode=auto` where root may not
-  mount) runs the stages one after another on the root, `/` in a container
-  or a `--workdir`, as kaniko does: base layers unpacked into it, each
+  mount) runs the stages one after another on one root, as kaniko does:
+  `/` in a container, elsewhere a directory ranikust makes in its state
+  directory (`<state>/builds/<id>/rootfs`, removed with the build); base
+  layers unpacked into it, each
   instruction's layer found by walking it, the root emptied between stages
   and at the end, kaniko's stage squashing and lazy snapshots. `RUN` runs
-  directly, as kaniko; on a workdir where root may mount, in the full
-  sandbox. It needs root. Not yet: a Dockerfile whose later stage reads an
+  directly, as kaniko; on a root in the state directory where root may
+  mount, in the full sandbox. It needs root. Not yet: a Dockerfile whose later stage reads an
   earlier one (`COPY --from`, a `FROM` after the root was emptied),
   `RUN --mount`, `#!` heredocs and `--network=none` without the sandbox,
   and `--single-snapshot`. On `/`, the base goes over what is there and
   the end of the build leaves `/` as it is, as kaniko without `--cleanup`;
-  a `--workdir` is emptied at the end. A `--workdir` must be out of other
-  users' reach: inside a root-owned `0700` directory, root's all the way
-  down (`sudo install -d -m 0700 /home/<you>/rnk`, then
-  `--workdir=/home/<you>/rnk/w`). The context, outputs, secret files and
-  the metrics report must not lie in the root.
-- The sandbox can run a kaniko-mode `RUN` on a host work directory without
+  one build at a time uses `/` in a container. The context, outputs,
+  secret files and the metrics report must not lie in the root.
+- The sandbox can run a kaniko-mode `RUN` on a root other than `/` without
   mounting: it enters the directory with `chroot`, with ranikust's
   `/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname` and `/dev` nodes put in
   place for the command and the image's own entries put back afterwards,
@@ -165,6 +155,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
+- ranikust picks the build root itself and keeps everything in one state
+  directory, `/var/lib/ranikust` by default (ADR-0050): `--workdir` is
+  gone, and kaniko's `--force` is refused, since ranikust never builds on
+  a machine's own `/`. The state directory must be owned by the user
+  running ranikust and not writable by others, below directories only
+  root may write (root's sticky `/tmp` is fine); ranikust makes it `0700`.
+  A `--state-dir` under someone's home directory is refused.
 - Compatibility with kaniko pipelines is no longer a goal (ADR-0049):
   `--target` takes one stage (a repeated flag or a comma-separated list is
   refused); kaniko flags that change nothing (`--cache-dir`,

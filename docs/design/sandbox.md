@@ -199,7 +199,7 @@ image's entry is renamed to in the same directory; after the `RUN` the
 entry is renamed back, or the placed one removed, and the parent's times
 restored as for stubs. Placing and undoing never resolve through another
 mount below the root. A replay accepts only those paths and aside names,
-and a root below the state directory or the shared workdir given to
+and a root below the state directory or the shared root given to
 `Sandbox::start_with_root`, opened once and matched by device, inode and
 mount. A root that is the host's `/`, `/etc` or `/dev` by device and inode
 is refused before anything is placed, and a `Direct` `RUN` off `/` is
@@ -235,8 +235,8 @@ own for the kaniko-mode walk; the child sets it right before `execve`.
 - `--seccomp=default|unconfined|<file>`: a seccomp filter for `RUN`; profiles
   are generated per architecture.
 - `--userns`: the build runs in a user namespace, so uid 0 inside maps to an
-  unprivileged uid on the host. Every parent directory of the workdir must be
-  traversable by the mapped uid.
+  unprivileged uid on the host. Every parent directory of the state
+  directory must be traversable by the mapped uid.
 
 ## Failure handling
 

@@ -102,12 +102,12 @@ Entry format:
   ([modes-and-detection](design/modes-and-detection.md#probe-order---modeauto),
   [cache-and-store](design/cache-and-store.md#open-questions),
   [ADR-0022](adr/0022-common-state-dir.md#more-information)).
-- **Options:** (a) under the overlay-mode default `<workdir>/.ranikust`;
-  (b) in a probe-only temporary directory in the workdir.
+- **Options:** (a) under the state directory (`/var/lib/ranikust` by
+  default since ADR-0050); (b) in a probe-only temporary directory.
 - **Recommendation:** none
 - **Interim:** (a), because Phase 1 has no outcome but overlay mode:
-  `feat/ranikust-setup` probes in the overlay-mode state directory
-  (`--state-dir` or `<workdir>/.ranikust`); the sandbox probe uses its
+  `feat/ranikust-setup` probes in the state directory (`--state-dir`,
+  default `/var/lib/ranikust`, ADR-0050); the sandbox probe uses its
   `sandbox/` subdirectory, and the overlay probe (`feat/rnk-snapshot`)
   this build's `builds/<id>/overlay-probe`, deleted with the build.
   Revisit with kaniko mode (Phase 2).
