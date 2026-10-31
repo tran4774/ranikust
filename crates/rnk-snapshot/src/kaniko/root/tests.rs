@@ -39,8 +39,18 @@ impl Fixture {
             mode: SnapshotMode::Full,
         };
         let shown = path.map_or_else(|| host.clone(), PathBuf::from);
-        let kaniko = Kaniko::new(root, shown, ignore, walk);
+        // The keep area sits beside the root, as `builds/<id>/kept` does.
+        let kept_dir = host.with_file_name("kept");
+        fs::create_dir(&kept_dir).unwrap();
+        let kept = RootPath::open(&kept_dir).unwrap();
+        let kaniko = Kaniko::new(root, shown, ignore, walk, kept);
         Self { tmp, host, kaniko }
+    }
+
+    fn kept_entries(&self) -> usize {
+        fs::read_dir(self.host.with_file_name("kept"))
+            .unwrap()
+            .count()
     }
 
     /// A base layer of `files` (path, content), as a blob file.
@@ -250,4 +260,165 @@ fn on_slash_the_first_base_goes_over_the_root_and_the_end_leaves_it() {
         "no --cleanup: / is left as it is"
     );
     assert_eq!(f.names(), ["a", "state"]);
+}
+
+fn read(view: &RootPath, p: &str) -> String {
+    let mut s = String::new();
+    std::io::Read::read_to_string(&mut File::from(view.open_regular(p).unwrap()), &mut s).unwrap();
+    s
+}
+
+#[test]
+fn a_kept_stage_is_read_after_the_root_is_reused_and_deleted_on_release() {
+    let f = Fixture::new();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::create_dir_all(f.host.join("app/dist")).unwrap();
+    fs::write(f.host.join("app/dist/main.js"), b"js").unwrap();
+    fs::write(f.host.join("app/src.ts"), b"ts").unwrap();
+    std::os::unix::fs::symlink("app/dist", f.host.join("out")).unwrap();
+    drop(a.end_layer().unwrap());
+    a.keep(&Keep::Paths(vec![
+        PathBuf::from("out"),
+        PathBuf::from("app/dist"),
+    ]))
+    .unwrap();
+    // The root is given up: the next stage empties it.
+    let b = f.kaniko.prepare(Base::Scratch).unwrap();
+    assert_eq!(f.names(), ["state"]);
+    let view = a.view().unwrap();
+    assert_eq!(view.read_link("out").unwrap(), PathBuf::from("app/dist"));
+    assert_eq!(read(view, "out/main.js"), "js");
+    assert!(
+        view.statx("app/src.ts").is_err(),
+        "only the paths asked for"
+    );
+    // Keeping again after the root was reused is refused.
+    assert!(matches!(a.keep(&Keep::All), Err(Error::State(_))));
+    b.release().unwrap();
+    assert_eq!(f.kept_entries(), 1);
+    a.release().unwrap();
+    assert_eq!(f.kept_entries(), 0, "the copy is deleted with its stage");
+}
+
+#[test]
+fn a_stage_built_from_a_kept_one_starts_from_its_copy() {
+    let f = Fixture::new();
+    let base = f.layer("l1", &[("etc-release", b"v1\n")]);
+    let mut a = f.kaniko.prepare(Base::Image(&[base])).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::write(f.host.join("built"), b"b").unwrap();
+    drop(a.end_layer().unwrap());
+    a.keep(&Keep::All).unwrap();
+    // Kept whole, without the ignored state directory.
+    let mut kept: Vec<_> = fs::read_dir(f.host.with_file_name("kept"))
+        .unwrap()
+        .flat_map(|d| fs::read_dir(d.unwrap().path()).unwrap())
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    kept.sort();
+    assert_eq!(kept, ["built", "etc-release"]);
+    // Another stage takes the root, then gives it up.
+    let other = f.kaniko.prepare(Base::Scratch).unwrap();
+    fs::write(f.host.join("other"), b"o").unwrap();
+    other.release().unwrap();
+
+    let mut child = f.kaniko.prepare(Base::Stage(&a)).unwrap();
+    assert_eq!(f.names(), ["built", "etc-release", "state"]);
+    child.set_layers_needed(true);
+    child.begin_layer().unwrap();
+    fs::write(f.host.join("child"), b"c").unwrap();
+    let diff = child.end_layer().unwrap();
+    assert_eq!(names_in(diff), ["child"], "the copy is the baseline");
+    child.release().unwrap();
+    a.release().unwrap();
+}
+
+/// The `/` layout: the keep area inside the root, below `state/`, which
+/// the ignore list holds when `ignored`.
+fn kept_inside(ignored: bool) -> (tempfile::TempDir, PathBuf, Kaniko) {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = fs::canonicalize(tmp.path()).unwrap().join("root");
+    fs::create_dir_all(host.join("state/kept")).unwrap();
+    fs::write(host.join("state/blob"), b"store").unwrap();
+    let mut ignore = IgnoreList::new();
+    if ignored {
+        ignore.insert("/state").unwrap();
+    }
+    let kaniko = Kaniko::new(
+        RootPath::open(&host).unwrap(),
+        PathBuf::from("/"),
+        ignore,
+        WalkOptions::default(),
+        RootPath::open(host.join("state/kept")).unwrap(),
+    );
+    (tmp, host, kaniko)
+}
+
+#[test]
+fn a_keep_area_inside_the_root_is_left_out_of_the_copy() {
+    let (_tmp, host, k) = kept_inside(true);
+    let mut a = k.prepare(Base::Scratch).unwrap();
+    fs::write(host.join("built"), b"b").unwrap();
+    a.keep(&Keep::All).unwrap();
+    let mut copies: Vec<_> = fs::read_dir(host.join("state/kept")).unwrap().collect();
+    assert_eq!(copies.len(), 1);
+    let copy = copies.pop().unwrap().unwrap().path();
+    let mut names: Vec<_> = fs::read_dir(&copy)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["built"],
+        "the ignored state directory is not copied"
+    );
+    a.release().unwrap();
+}
+
+#[test]
+fn a_keep_area_inside_the_root_never_copies_itself() {
+    let (_tmp, host, k) = kept_inside(false);
+    let mut a = k.prepare(Base::Scratch).unwrap();
+    fs::write(host.join("built"), b"b").unwrap();
+    // Without the ignore entry the copy meets its own destination: refused,
+    // never a recursion, and the partial copy is removed.
+    let e = a.keep(&Keep::All).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::Rootfs(rnk_rootfs::Error::InvalidPath { reason, .. })
+                if reason.contains("destination lies inside the source")
+        ),
+        "{e}"
+    );
+    assert_eq!(fs::read_dir(host.join("state/kept")).unwrap().count(), 0);
+    a.release().unwrap();
+}
+
+#[test]
+fn a_kept_name_taken_by_a_link_is_never_followed() {
+    let f = Fixture::new();
+    let kept = f.host.with_file_name("kept");
+    // The next keep area name is taken by a link to the area itself.
+    let id = f.kaniko.shared.next_id.load(Ordering::Relaxed);
+    std::os::unix::fs::symlink(".", kept.join(format!("k{id}"))).unwrap();
+    let e = Kept::make(&f.kaniko.shared, id).unwrap_err();
+    assert!(matches!(e, Error::Rootfs(_)), "{e}");
+}
+
+#[test]
+fn a_copy_from_image_is_unpacked_beside_the_root_while_a_stage_holds_it() {
+    let f = Fixture::new();
+    let holder = f.kaniko.prepare(Base::Scratch).unwrap();
+    let image = f.layer("img", &[("bin-tool", b"tool")]);
+    let mut source = f.kaniko.prepare_source(&[image]).unwrap();
+    assert_eq!(f.names(), ["state"], "the shared root is not touched");
+    assert_eq!(read(source.view().unwrap(), "bin-tool"), "tool");
+    source.release().unwrap();
+    assert_eq!(f.kept_entries(), 0);
+    holder.release().unwrap();
 }

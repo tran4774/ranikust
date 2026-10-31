@@ -1,0 +1,8 @@
+# Must fail: a link to /ranikust (binary, context, outputs, the secret in
+# kaniko mode on `/`), which is never kept.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS a
+RUN ln -s /ranikust /to-rnk
+
+FROM ${BASE}
+COPY --from=a /to-rnk/secret /x

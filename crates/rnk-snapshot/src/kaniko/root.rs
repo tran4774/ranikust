@@ -17,6 +17,15 @@
 //! directory, which ranikust made for the build, is emptied before the
 //! first base too,
 //! and at the end of a build that changed it ([`Kaniko::finish`]).
+//!
+//! What a later stage reads of an earlier one (`COPY --from`, `RUN --mount
+//! from=`, `FROM <stage>`) is copied out before the root is reused
+//! ([`StageRootfs::keep`]) into the build's keep area, beside the root and
+//! never inside it: `<state>/builds/<id>/kept`, on the ignore list when the
+//! root is `/`. An image read by `COPY --from=<image>` is unpacked there
+//! too ([`Snapshotter::prepare_source`]). Kept copies are directories,
+//! which a `RUN` on `/` can still reach until the state is moved out of
+//! its reach (ADR-0051) [open: Q-350].
 
 use std::fs::File;
 use std::io::Write;
@@ -26,12 +35,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rnk_layer::{EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
-use rnk_rootfs::{IgnoreList, RootPath, delete_contents, extract_live};
+use rnk_rootfs::{
+    CopyOpts, FileType, IgnoreList, RootPath, copy_filtered, delete_contents, extract_live,
+};
 
 use super::walk::{WalkDiff, WalkOptions, Walker};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
-use crate::stage::{Base, ExportLayer, Snapshotter, StageRootfs};
+use crate::stage::{Base, ExportLayer, Keep, Snapshotter, StageRootfs};
 
 /// A base layer in kaniko mode: its blob in the store, extracted into the
 /// root only when a stage is prepared on it.
@@ -69,6 +80,9 @@ struct Hold {
     /// Whether a stage of this build changed the root (a base extracted
     /// into it): only then is there anything of the build's to empty.
     touched: bool,
+    /// Counts the times a stage started on a new base: a stage can keep
+    /// its root only while the epoch it ran in lasts.
+    epoch: u64,
 }
 
 #[derive(Debug)]
@@ -82,6 +96,9 @@ struct Shared {
     walk: WalkOptions,
     hold: Mutex<Hold>,
     next_id: AtomicU64,
+    /// The keep area: kept stage roots and unpacked `COPY --from` images,
+    /// one directory each, outside the root.
+    kept: RootPath,
 }
 
 impl Shared {
@@ -100,9 +117,17 @@ impl Kaniko {
     /// The snapshotter on `root`, opened by the caller at `path` (`/` or the
     /// directory made in the state directory; `path` is only handed to the
     /// sandbox), with the
-    /// build's ignore list (`kaniko::ignore_list`) and walk options.
+    /// build's ignore list (`kaniko::ignore_list`), walk options, and the
+    /// keep area `kept`: an empty private directory of the build outside
+    /// the root, or on the ignore list when the root is `/`.
     #[must_use]
-    pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions) -> Self {
+    pub fn new(
+        root: RootPath,
+        path: PathBuf,
+        ignore: IgnoreList,
+        walk: WalkOptions,
+        kept: RootPath,
+    ) -> Self {
         let original = root.statx("/").ok().map(|st| rnk_rootfs::Meta {
             uid: Some(st.uid),
             gid: Some(st.gid),
@@ -121,8 +146,10 @@ impl Kaniko {
                     walked: false,
                     walker: None,
                     touched: false,
+                    epoch: 0,
                 }),
                 next_id: AtomicU64::new(0),
+                kept,
             }),
         }
     }
@@ -195,6 +222,34 @@ impl Snapshotter for Kaniko {
         let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
         let mut hold = shared.hold();
         match base {
+            Base::Stage(parent) if parent.kept.is_some() => {
+                // A stage built `FROM` a kept one: the kept root is copied
+                // back into the emptied root.
+                if !Arc::ptr_eq(&parent.shared, shared) {
+                    return Err(Error::State("the parent stage is of another build"));
+                }
+                if hold.holder.is_some() {
+                    return Err(Error::State("another stage holds the shared root"));
+                }
+                let span = tracing::info_span!("rnk_snapshot.prepare", layers = 0_u64);
+                let _entered = span.enter();
+                new_base(shared, &mut hold)?;
+                if let Some(k) = &parent.kept {
+                    copy_filtered(
+                        &k.root,
+                        "",
+                        &shared.root,
+                        "",
+                        &CopyOpts::default(),
+                        &|p, _| !shared.ignore.covers(p),
+                    )?;
+                    if !shared.is_slash()
+                        && let Some(meta) = &k.root_meta
+                    {
+                        shared.root.set_meta("", meta)?;
+                    }
+                }
+            }
             Base::Stage(parent) => {
                 // A squashed chain: the child goes on from the parent's root
                 // as it is. Anything else needs the parent's image, which
@@ -218,23 +273,9 @@ impl Snapshotter for Kaniko {
                 };
                 let span = tracing::info_span!("rnk_snapshot.prepare", layers = layers.len());
                 let _entered = span.enter();
-                // On `/` the first base goes over what is there, as kaniko
-                // (see the module doc); later ones, and every base on a
-                // root other than `/`, start from an empty root.
-                if hold.touched || !shared.is_slash() {
-                    empty_root(shared, &mut hold)?;
-                } else {
-                    hold.walked = false;
-                }
-                hold.touched = true;
-                // Another root starts as overlay mode's stage roots do:
-                // `0755` and the epoch, unless a layer sets `./`. On `/`
-                // the container's root stays as it is, as under kaniko.
-                if !shared.is_slash() {
-                    shared.root.set_meta("", &crate::layer::default_root())?;
-                }
+                new_base(shared, &mut hold)?;
                 for layer in layers {
-                    extract_blob(shared, layer)?;
+                    extract_blob(&shared.root, &shared.ignore, layer)?;
                 }
             }
         }
@@ -244,19 +285,205 @@ impl Snapshotter for Kaniko {
             id,
             needed: false,
             open: false,
+            epoch: hold.epoch,
+            kept: None,
+        })
+    }
+
+    fn prepare_source(&self, layers: &[KanikoLayer]) -> Result<KanikoRoot> {
+        let shared = &self.shared;
+        let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let span = tracing::info_span!("rnk_snapshot.prepare", layers = layers.len());
+        let _entered = span.enter();
+        let kept = Kept::make(shared, id)?;
+        // A fresh directory: nothing in it is ignored or a mount; device
+        // nodes and FIFOs are left out as on the root (ADR-0041).
+        let none = IgnoreList::new();
+        for layer in layers {
+            if let Err(e) = extract_blob(&kept.root, &none, layer) {
+                kept.remove(shared);
+                return Err(e);
+            }
+        }
+        Ok(KanikoRoot {
+            shared: Arc::clone(shared),
+            id,
+            needed: false,
+            open: false,
+            epoch: u64::MAX,
+            kept: Some(kept),
         })
     }
 }
 
-/// Extracts one base layer into the root, checking its diff ID.
-fn extract_blob(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
+/// Starts a new base on the root. On `/` the first base goes over what is
+/// there, as kaniko (see the module doc); later ones, and every base on a
+/// root other than `/`, start from an empty root. Another root starts as
+/// overlay mode's stage roots do: `0755` and the epoch, unless a layer sets
+/// `./`; on `/` the container's root stays as it is, as under kaniko.
+fn new_base(shared: &Shared, hold: &mut Hold) -> Result<()> {
+    if hold.touched || !shared.is_slash() {
+        empty_root(shared, hold)?;
+    } else {
+        hold.walked = false;
+    }
+    hold.touched = true;
+    hold.epoch += 1;
+    if !shared.is_slash() {
+        shared.root.set_meta("", &crate::layer::default_root())?;
+    }
+    Ok(())
+}
+
+/// A stage root kept in the keep area, or an image unpacked there.
+#[derive(Debug)]
+struct Kept {
+    name: String,
+    root: RootPath,
+    /// The owner and mode of the stage's root, given back when a stage is
+    /// built on the kept copy on a root other than `/`.
+    root_meta: Option<rnk_rootfs::Meta>,
+}
+
+impl Kept {
+    /// A new, empty directory of the keep area. It is opened by name, which
+    /// follows a symlink, so the directory opened must be the one just made
+    /// (type, device, inode and mount, not following a link): a name
+    /// swapped for a link to `.` would otherwise make [`Kept::remove`]
+    /// empty the whole keep area.
+    fn make(shared: &Shared, id: u64) -> Result<Self> {
+        let name = format!("k{id}");
+        shared.kept.create_dir(&name, 0o700)?;
+        let opened = shared.kept.statx(&name).and_then(|made| {
+            let root = shared.kept.sub_root(&name)?;
+            let st = root.statx("/")?;
+            Ok((made, st, root))
+        });
+        match opened {
+            Ok((made, st, root))
+                if made.file_type() == FileType::Directory
+                    && (made.dev_major, made.dev_minor, made.ino)
+                        == (st.dev_major, st.dev_minor, st.ino)
+                    && root.mnt_id() == shared.kept.mnt_id() =>
+            {
+                Ok(Self {
+                    name,
+                    root,
+                    root_meta: None,
+                })
+            }
+            Ok(_) => Err(Error::State(
+                "the kept directory changed between its creation and its opening",
+            )),
+            Err(e) => {
+                if let Err(r) = shared.kept.remove_dir(&name) {
+                    tracing::warn!("removing the kept directory {name}: {r}");
+                }
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Deletes the copy. A failure is logged: the build directory's
+    /// removal at the end of the build deletes what is left.
+    fn remove(self, shared: &Shared) {
+        let r = delete_contents(&self.root, &IgnoreList::new())
+            .and_then(|()| shared.kept.remove_dir(&self.name));
+        if let Err(e) = r {
+            tracing::warn!("removing the kept directory {}: {e}", self.name);
+        }
+    }
+}
+
+/// Copies `what` of the root into `to`, leaving out what the ignore list
+/// holds (mounts, `/proc`, the state directory and the rest).
+///
+/// The paths of [`Keep::Paths`] must be physical: no symlink before their
+/// last name, which the ignore list then judges as it judges the walk's
+/// paths; a path through a link is refused. The root itself (an empty
+/// path) is the whole root.
+fn copy_out(shared: &Shared, what: &Keep, to: &RootPath) -> Result<()> {
+    let span = tracing::info_span!("rnk_snapshot.keep", paths = tracing::field::Empty);
+    let _entered = span.enter();
+    let opts = CopyOpts::default();
+    let filter = |p: &Path, _: bool| !shared.ignore.covers(p);
+    let paths = match what {
+        Keep::All => None,
+        Keep::Paths(paths) => {
+            let clean = paths
+                .iter()
+                .map(|p| physical(&shared.root, p))
+                .collect::<Result<Vec<_>>>()?;
+            (!clean.iter().any(|p| p.as_os_str().is_empty())).then_some(clean)
+        }
+    };
+    match paths {
+        None => {
+            span.record("paths", 0_u64);
+            copy_filtered(&shared.root, "", to, "", &opts, &filter)?;
+        }
+        Some(paths) => {
+            span.record("paths", paths.len() as u64);
+            for p in &paths {
+                if shared.ignore.covers(p) {
+                    continue;
+                }
+                if let Some(parent) = p.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    to.create_dir_all(parent, 0o755)?;
+                }
+                let st = shared.root.statx(p)?;
+                // A mount the ignore list misses is never kept: the copy
+                // stays on the root's own mount.
+                if st.mnt_id != shared.root.mnt_id() || st.mount_root {
+                    return Err(Error::State("a path to keep lies on another mount"));
+                }
+                if st.file_type() == FileType::Symlink {
+                    // Kept as the link; its target is one of `paths` too.
+                    if to.statx(p).is_err() {
+                        to.symlink(shared.root.read_link(p)?, p)?;
+                    }
+                } else {
+                    copy_filtered(&shared.root, p, to, p, &opts, &filter)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `p` relative to the root, with no symlink before its last name and no
+/// `..`; refused otherwise.
+fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::Normal(name) => {
+                if !out.as_os_str().is_empty() && root.statx(&out)?.file_type() == FileType::Symlink
+                {
+                    return Err(Error::State("a path to keep goes through a symlink"));
+                }
+                out.push(name);
+            }
+            std::path::Component::RootDir | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir | std::path::Component::Prefix(_) => {
+                return Err(Error::State("a path to keep climbs with .."));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Extracts one base layer into `root`, checking its diff ID.
+fn extract_blob(root: &RootPath, ignore: &IgnoreList, layer: &KanikoLayer) -> Result<()> {
     let file = File::open(&layer.blob).map_err(|source| Error::Io {
         op: "open",
         path: layer.blob.clone(),
         source,
     })?;
     let mut decoder = rnk_layer::Decoder::new(file)?;
-    extract_live(&shared.root, &mut decoder, &shared.ignore)?;
+    extract_live(root, &mut decoder, ignore)?;
     let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
     if actual != layer.diff_id {
         return Err(Error::DiffIdMismatch {
@@ -274,6 +501,11 @@ pub struct KanikoRoot {
     id: u64,
     needed: bool,
     open: bool,
+    /// The epoch the stage ran in ([`Hold::epoch`]).
+    epoch: u64,
+    /// The kept copy, once [`StageRootfs::keep`] made one, or the unpacked
+    /// image of [`Snapshotter::prepare_source`].
+    kept: Option<Kept>,
 }
 
 impl KanikoRoot {
@@ -355,18 +587,65 @@ impl StageRootfs for KanikoRoot {
     }
 
     fn view(&mut self) -> Result<&RootPath> {
+        if let Some(k) = &self.kept {
+            return Ok(&k.root);
+        }
         self.check_held(&self.shared.hold())?;
         Ok(&self.shared.root)
+    }
+
+    /// Copies `what` of the root as this stage left it into a new directory
+    /// of the keep area, which [`StageRootfs::view`] then reads, and gives
+    /// the root up. Again, with more, while no stage has started on a new
+    /// base since; the copy before is then replaced.
+    fn keep(&mut self, what: &Keep) -> Result<()> {
+        if self.open {
+            return Err(Error::State("a layer is open"));
+        }
+        let shared = Arc::clone(&self.shared);
+        let mut hold = shared.hold();
+        let holds = hold.holder == Some(self.id);
+        if !(holds || hold.holder.is_none()) || hold.epoch != self.epoch {
+            return Err(Error::State(
+                "the shared root was reused since the stage ran",
+            ));
+        }
+        let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut kept = Kept::make(&shared, id)?;
+        if let Err(e) = copy_out(&shared, what, &kept.root) {
+            kept.remove(&shared);
+            return Err(e);
+        }
+        kept.root_meta = shared.root.statx("/").ok().map(|st| rnk_rootfs::Meta {
+            uid: Some(st.uid),
+            gid: Some(st.gid),
+            mode: Some(st.mode & 0o7777),
+            ..rnk_rootfs::Meta::default()
+        });
+        if holds {
+            hold.holder = None;
+        }
+        drop(hold);
+        if let Some(old) = self.kept.replace(kept) {
+            old.remove(&shared);
+        }
+        Ok(())
     }
 
     /// Gives the root up; the next stage on a base empties it, and the end
     /// of the build ([`Kaniko::finish`]) empties a root other than `/`.
     /// Nothing when the
-    /// root was handed over to a child stage built on this one.
+    /// root was handed over to a child stage built on this one. A kept copy
+    /// is deleted.
     fn release(self) -> Result<()> {
-        let mut hold = self.shared.hold();
-        if hold.holder == Some(self.id) {
-            hold.holder = None;
+        {
+            let mut hold = self.shared.hold();
+            if hold.holder == Some(self.id) {
+                hold.holder = None;
+            }
+        }
+        if let Some(k) = self.kept {
+            k.remove(&self.shared);
         }
         Ok(())
     }

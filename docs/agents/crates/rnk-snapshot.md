@@ -39,24 +39,33 @@ pub trait StageRootfs {                            // ADR-0046
     fn begin_layer(&mut self) -> Result<()>;       // overlay: diff-k, work-k, root metadata, mount
     fn end_layer(&mut self) -> Result<Self::Diff>; // overlay: unmount, diff-k the top lower; kaniko: walk + diff
     fn view(&mut self) -> Result<&RootPath>;       // read-only between layers (USER lookup, COPY --from)
+    fn keep(&mut self, what: &Keep) -> Result<()> { Ok(()) } // kaniko: copy out what later stages read, give the root up
     fn release(self) -> Result<()>;                // unmount, delete the stage directory, diffs included
 }
+pub enum Keep { All, Paths(Vec<PathBuf>) }         // Paths: physical (no link before the last name, no ..),
+                                                   // a final symlink kept as the link, the root = All
 pub trait Snapshotter {                            // ADR-0046
     type Root: StageRootfs;
     type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (the blob)
     fn base_layer(&self, diff_id: &Digest, blob: &Path, below: &[Self::Layer]) -> Result<Self::Layer>;
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;  // Scratch | Image(&[Layer]) | Stage(&Root)
+    fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root>;  // COPY --from=<image>; default prepare(Image)
 }
 impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
 // kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
-impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions) -> Self;
+impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions,
+        kept: RootPath) -> Self;                   // kept: <state>/builds/<id>/kept, the keep area
     pub fn finish(&self) -> Result<bool>; }        // end of build: empties a root off `/` a stage changed; never /
 // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
 // prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /
 //   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641); a root off `/` 0755;
 //   extracts each blob with extract_live, diff ID checked. prepare(Stage(p)): takes the root over
-//   from p if p still holds it (a squashed chain), else Error::State.
+//   from p if p still holds it (a squashed chain); from a kept p, copies p's copy into the emptied
+//   root; else Error::State.
+// keep(All | Paths): copies the root (ignore list left out) into a new directory of the keep area,
+//   then view() reads it and the root is given up; again while no new base started (epoch).
+// prepare_source: unpacks a COPY --from image into the keep area, never into the shared root.
 // end_layer: walk + diff when layers are needed, else an empty diff and no walk.
 // release: gives the root up; the next base or finish() empties it (delete_contents + ignore list),
 //   a root off `/` getting its own owner and mode back.
@@ -202,6 +211,31 @@ impl WalkDiff {
 
 ## Tests
 
+- **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
+  read after the root is reused, only the paths asked for, deleted on
+  release, a second keep refused once the root was reused; a stage `FROM`
+  a kept one starting from its copy (baseline walk from it); a
+  `COPY --from` image unpacked beside the root while a stage holds it;
+  the `/` layout, keep area inside the root under an ignored `state/`
+  (left out of `Keep::All`; not ignored, the copy is refused as a
+  destination inside its source, never a recursion); a keep-area name
+  taken by a link never followed.
+- **T0** red team of the keep area (`tests/keep.rs`), a host file beside
+  the root and an ignored `state/` in it, neither touched nor copied:
+  `COPY --from` image layers with `..` and absolute names, files,
+  hardlinks, whiteouts and opaque markers through links out, link chains
+  and loops, a directory replaced by a link, a device node and a FIFO
+  (left out), a setuid file, unpacked while a stage holds the root (each
+  refused or kept inside its copy, the copy deleted); `keep` given paths
+  through links out, `..`, loops, a FIFO and a socket (never blocking);
+  a hostile root kept whole and copied back for a stage `FROM` it, on a
+  workdir root and as on `/`, with modes (setuid, setgid, sticky,
+  `0700`), owners, mtimes, link targets, contents, a user xattr and
+  hardlinks as they were; a tree longer than `PATH_MAX` (520 levels) kept
+  and deleted.
+  Ignored finding: `Keep::Paths` through a link (`to-root/state/blob`)
+  copies the ignored state, the ignore check being on the path as given
+  (the builder passes physical paths only).
 - **T0:** exporter rules on a modelled upper and lower stack. kaniko walk
   built (`src/kaniko/walk/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type
@@ -236,7 +270,8 @@ impl WalkDiff {
 ## Metrics
 
 - Record `rnk_snapshot.diff`; `mount`, `export` (`blocks_read`) and more;
-  Phase 2 walk spans ([rows](../../design/metrics.md#rnk-snapshot)).
+  Phase 2 walk spans ([rows](../../design/metrics.md#rnk-snapshot));
+  `rnk_snapshot.keep` (`paths`, 0 for the whole root) per kept stage.
 - Overlay records `rnk_snapshot.diff` inside `export`, which is the walk
   that classifies the entries, so a diff never exported is not recorded.
   The kaniko exporter (`WalkDiff::export`) records the same pair:

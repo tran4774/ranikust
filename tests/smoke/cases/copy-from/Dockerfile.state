@@ -1,0 +1,7 @@
+# Must fail: a link to the state directory, which is never kept.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS a
+RUN ln -s /var/lib/ranikust /to-state
+
+FROM ${BASE}
+COPY --from=a /to-state/ /x/

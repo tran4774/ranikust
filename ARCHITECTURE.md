@@ -175,7 +175,9 @@ Per-stage roots and per-instruction diffs: the `StageRootfs` and
 around each instruction that changes files, giving the mode's diff, an
 `ExportLayer`; the mode's base-layer type; `set_layers_needed` for lazy
 snapshots; a read-only `view` between layers; the stage's host mount point
-only for the sandbox). Overlay
+only for the sandbox; `keep`, what later stages read copied aside before
+kaniko mode reuses its shared root, and `prepare_source` for a
+`COPY --from=<image>`). Overlay
 (`Overlay`, `OverlayStage`, Phase 1): mounts with the
 [ADR-0016](docs/adr/0016-overlay-mount-options.md) options, one upper
 directory per instruction, overlay/OCI whiteout conversion, extraction of

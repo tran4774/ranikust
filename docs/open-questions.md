@@ -450,6 +450,26 @@ Entry format:
 - **Interim:** (a): `--mode=kaniko` on `/` with the namespace entered
   refuses with that guidance (`crates/ranikust/src/main.rs`); `--mode=auto`
   picks overlay mode there already.
+
+### Q-350: How does kaniko mode on `/` keep a stage's files out of `RUN`'s reach?
+
+- **Blocks:** ADR-0051's work item; **Area:** `rnk-snapshot`, `rnk-store`
+- **Context:** sequential kaniko mode keeps what later stages read (`COPY
+  --from` sources, a stage built `FROM`, a `COPY --from=<image>`) in
+  `<state>/builds/<id>/kept`, as directories. On `/` that is in the state
+  directory, which a `RUN` can read and write. ADR-0051 decided that
+  state on `/` lives in anonymous files held by descriptor (`O_TMPFILE`,
+  `memfd_create` after a kernel 5.15 measurement); those primitives are
+  not built yet.
+- **Options:** (a) keep each kept tree as a tar in an anonymous file and
+  unpack it for the reader (`COPY --from` reads the tar, `FROM` extracts
+  it into the root); (b) keep the directories, as now, and accept that a
+  `RUN` reaches them like the rest of the state directory.
+- **Recommendation:** (a), as ADR-0051 says for all state on `/`; the
+  keep area is behind `StageRootfs::keep` and `Snapshotter::prepare_source`,
+  so only `rnk-snapshot`'s kaniko root changes.
+- **Interim:** (b), on `feat/kaniko-copy-from`: directories in
+  `<state>/builds/<id>/kept`, deleted with their stage or the build.
 - **Raised:** 2026-10-31
 
 ## Answered

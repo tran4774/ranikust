@@ -23,7 +23,7 @@ use rnk_dockerfile::{
 use rnk_oci::{CommandLine, ConfigEdit, HealthConfig, ImageConfig, ImageFormat, Platform};
 use rnk_rootfs::{Chmod, CopyOpts, Meta, OpenHow, Owner, RootPath};
 use rnk_sandbox::{BindMount, Isolation, MountKind, Network, RunSpec, Sandbox};
-use rnk_snapshot::{Base, ExportLayer, Snapshotter, StageRootfs};
+use rnk_snapshot::{Base, ExportLayer, Keep, Snapshotter, StageRootfs};
 use rnk_store::Store;
 use tracing::{debug_span, info, info_span};
 
@@ -103,6 +103,53 @@ impl<R: StageRootfs> SourceRoot<R> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Keeps what later stages read of this finished stage before its root
+    /// is reused (kaniko mode's shared root; overlay mode keeps every root
+    /// anyway): the paths that `need` names, or all of it.
+    ///
+    /// For `COPY --from` sources, the entries each source names are kept
+    /// with the symlinks on their way, and the kept copy must name the same
+    /// entries again: when it does not (a source that expands at build
+    /// time, a link out of the copy), the whole root is kept instead.
+    ///
+    /// # Errors
+    ///
+    /// As `StageRootfs::keep`, and [`Error::Invalid`] when the root was
+    /// released.
+    pub fn keep(&self, need: &KeepNeed) -> Result<()> {
+        let mut guard = self.lock();
+        let root = guard
+            .as_mut()
+            .ok_or_else(|| Error::Invalid("the stage to keep was released".to_owned()))?;
+        let KeepNeed::Sources(list) = need else {
+            return Ok(root.keep(&Keep::All)?);
+        };
+        let Some((paths, expected)) = keep_paths(root.view()?, list) else {
+            return Ok(root.keep(&Keep::All)?);
+        };
+        // A source naming the root (`/`, `.`, a link to `/`) is the whole
+        // root; a path the snapshotter refuses (another mount, a link on
+        // the way) is left to the whole-root copy, which leaves out what
+        // the ignore list holds.
+        if paths.iter().any(|p| p.as_os_str().is_empty()) {
+            return Ok(root.keep(&Keep::All)?);
+        }
+        if let Err(e) = root.keep(&Keep::Paths(paths)) {
+            tracing::debug!("keeping the sources by path: {e}; keeping the whole stage");
+            return Ok(root.keep(&Keep::All)?);
+        }
+        let kept = root.view()?;
+        let same = list
+            .iter()
+            .map(|s| sources::resolve_in_root(kept, s).ok())
+            .eq(expected.into_iter().map(Some));
+        if !same {
+            tracing::debug!("the kept sources resolve differently: keeping the whole stage");
+            root.keep(&Keep::All)?;
+        }
+        Ok(())
+    }
+
     /// Unmounts and deletes the root; a second call does nothing. Every
     /// stage built on it must be released first.
     ///
@@ -116,6 +163,42 @@ impl<R: StageRootfs> SourceRoot<R> {
         }
         Ok(())
     }
+}
+
+/// What later stages read of a stage, kept before its root is reused
+/// ([`SourceRoot::keep`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeepNeed {
+    /// All of it: a stage built `FROM` it, `RUN --mount from=` it, or a
+    /// source not known before the build (a variable in it).
+    All,
+    /// The sources of the `COPY --from` instructions that read it, as
+    /// written.
+    Sources(Vec<String>),
+}
+
+/// The paths to keep for `list` in `root`: each source's entries with the
+/// symlinks on their way, and what each source resolves to now. `None`
+/// when a source cannot be resolved here.
+#[allow(clippy::type_complexity, reason = "a pair returned once")]
+fn keep_paths(
+    root: &RootPath,
+    list: &[String],
+) -> Option<(Vec<PathBuf>, Vec<Vec<sources::Resolved>>)> {
+    let mut paths = Vec::new();
+    let mut expected = Vec::with_capacity(list.len());
+    for s in list {
+        let found = sources::resolve_in_root(root, s).ok()?;
+        for entry in &found {
+            for p in sources::link_closure(root, &entry.path).ok()? {
+                if !paths.contains(&p) {
+                    paths.push(p);
+                }
+            }
+        }
+        expected.push(found);
+    }
+    Some((paths, expected))
 }
 
 /// An image read by `COPY --from=<image>`: pulled, with a root on it, made
@@ -138,7 +221,7 @@ impl<R: StageRootfs, L> ImageSource<R, L> {
         snapshotter: &S,
         image: std::sync::Arc<PulledImage<L>>,
     ) -> Result<Self> {
-        let root = snapshotter.prepare(Base::Image(&image.layers))?;
+        let root = snapshotter.prepare_source(&image.layers)?;
         Ok(Self {
             image,
             root: SourceRoot::new(root),
@@ -701,6 +784,19 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 "COPY --link, --parents and --exclude are not supported yet (Phase 5)".to_owned(),
             ));
         }
+        // A source that expanded to nothing would name the whole context or
+        // stage root (ADR-0052); `.` names it on purpose.
+        if c.sources.iter().any(String::is_empty) {
+            return Err(Error::Invalid(format!(
+                "a {} source expands to an empty string; write `.` to copy the whole {}",
+                if is_add { "ADD" } else { "COPY" },
+                if c.from.is_empty() {
+                    "context"
+                } else {
+                    "stage"
+                }
+            )));
+        }
         let chmod = parse_chmod(&c.chmod)?;
         let heredocs: Vec<String> = c.contents.iter().map(|h| h.path.clone()).collect();
         let text = format!(
@@ -1123,6 +1219,92 @@ mod tests {
     use rnk_dockerfile::InlineFile;
 
     use super::*;
+
+    /// A kaniko-mode snapshotter on a temp root, its keep area beside it.
+    fn kaniko() -> (tempfile::TempDir, PathBuf, rnk_snapshot::Kaniko) {
+        let tmp = tempfile::tempdir().unwrap();
+        let host = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir(host.join("root")).unwrap();
+        std::fs::create_dir(host.join("kept")).unwrap();
+        let k = rnk_snapshot::Kaniko::new(
+            RootPath::open(host.join("root")).unwrap(),
+            host.join("root"),
+            rnk_rootfs::IgnoreList::new(),
+            rnk_snapshot::WalkOptions::default(),
+            RootPath::open(host.join("kept")).unwrap(),
+        );
+        (tmp, host.join("root"), k)
+    }
+
+    fn names(r: Vec<sources::Resolved>) -> Vec<(PathBuf, bool)> {
+        r.into_iter().map(|r| (r.path, r.dir)).collect()
+    }
+
+    #[test]
+    fn copy_from_sources_are_kept_with_the_links_on_their_way() {
+        use std::os::unix::fs::symlink;
+        let (_tmp, host, k) = kaniko();
+        let root = SourceRoot::new(k.prepare(Base::Scratch).unwrap());
+        std::fs::create_dir_all(host.join("opt/app/dist")).unwrap();
+        std::fs::write(host.join("opt/app/dist/a.js"), b"a").unwrap();
+        std::fs::write(host.join("opt/app/dist/b.css"), b"b").unwrap();
+        std::fs::write(host.join("opt/app/secret"), b"s").unwrap();
+        symlink("/opt/app", host.join("app")).unwrap();
+        let sources = vec!["/app/dist/*.js".to_owned()];
+        root.keep(&KeepNeed::Sources(sources.clone())).unwrap();
+        // The root is reused: only the kept copy answers now.
+        let other = k.prepare(Base::Scratch).unwrap();
+        let mut guard = root.lock();
+        let view = guard.as_mut().unwrap().view().unwrap();
+        assert_eq!(
+            names(sources::resolve_in_root(view, &sources[0]).unwrap()),
+            [(PathBuf::from("app/dist/a.js"), false)]
+        );
+        assert!(view.statx("opt/app/secret").is_err(), "only what is read");
+        assert!(view.statx("opt/app/dist/b.css").is_err());
+        drop(guard);
+        other.release().unwrap();
+        root.release().unwrap();
+    }
+
+    #[test]
+    fn a_source_that_resolves_differently_keeps_the_whole_stage() {
+        let (_tmp, host, k) = kaniko();
+        let root = SourceRoot::new(k.prepare(Base::Scratch).unwrap());
+        std::fs::write(host.join("a"), b"a").unwrap();
+        std::fs::write(host.join("b"), b"b").unwrap();
+        // A source missing now cannot be kept by its paths.
+        root.keep(&KeepNeed::Sources(vec!["/missing".to_owned()]))
+            .unwrap();
+        let mut guard = root.lock();
+        let view = guard.as_mut().unwrap().view().unwrap();
+        assert!(view.statx("a").is_ok() && view.statx("b").is_ok());
+        drop(guard);
+        root.release().unwrap();
+    }
+
+    #[test]
+    fn a_link_closure_follows_links_inside_the_root() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let host = tmp.path();
+        std::fs::create_dir_all(host.join("real/dir")).unwrap();
+        symlink("real", host.join("rel")).unwrap();
+        symlink("/rel/dir", host.join("abs")).unwrap();
+        symlink("../../real", host.join("real/dir/up")).unwrap();
+        let root = RootPath::open(host).unwrap();
+        assert_eq!(
+            sources::link_closure(&root, Path::new("abs/up")).unwrap(),
+            [
+                PathBuf::from("abs"),
+                PathBuf::from("rel"),
+                PathBuf::from("real/dir/up"),
+                PathBuf::from("real"),
+            ]
+        );
+        symlink("loop", host.join("loop")).unwrap();
+        assert!(sources::link_closure(&root, Path::new("loop")).is_err());
+    }
 
     fn shell() -> Vec<String> {
         vec!["/bin/sh".to_owned(), "-c".to_owned()]

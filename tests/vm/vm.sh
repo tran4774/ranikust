@@ -130,7 +130,11 @@ cp "$REPO/tests/smoke/netns-check.py" "$STAGE/guest/netns-check.py"
 cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
 cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
 cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
-env | grep -E '^RANIKUST_QUICK_(CASES|MODE)=' | sed 's/^/export /' >"$STAGE/quick.env" || true
+# Quoted: `RANIKUST_QUICK_CASES="run copy"` names two cases.
+: >"$STAGE/quick.env"
+for v in RANIKUST_QUICK_CASES RANIKUST_QUICK_MODE; do
+  [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/quick.env"
+done
 zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}"; }
 
 if wants unit; then
