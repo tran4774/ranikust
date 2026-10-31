@@ -178,6 +178,14 @@ through a descriptor of its directory.
   that cannot be kept by its paths keeping the whole stage,
   `link_closure` through relative, absolute and `..` links and a loop;
   `tests/stage.rs`: a source expanding to an empty string refused.
+  Red team (`tests/keep.rs`, stages on the real kaniko-mode snapshotter
+  over one shared root, a hostile first stage kept by its sources and
+  whole): `COPY --from` through links to the ignored state, `/`, the host
+  or a loop, and `..` out, not found and nothing copied; `/`, `/.`,
+  wildcards and a link to `/` copied without the state; a directory read
+  as the stage had it (modes, owners, mtimes, hardlinks, xattr, FIFO);
+  overlapping sources in either order as when kept whole; a FIFO source
+  copied without blocking.
 - **T0:** each executor's config change (`ENV`, `LABEL`, `USER`, `WORKDIR`,
   `ENTRYPOINT`, `CMD`, `SHELL`, `EXPOSE`, `VOLUME`, `STOPSIGNAL`,
   `HEALTHCHECK`): the rules are `rnk_oci::ConfigEdit`'s, tested in
