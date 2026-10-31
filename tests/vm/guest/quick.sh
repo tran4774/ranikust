@@ -21,22 +21,22 @@ CASES_OUT="$HOME/rnk/out/quick"
 W=/var/tmp/rnk-quick
 SECRET="$W/secret"
 
-# $W itself 0700: kaniko mode's workdir must be out of other users' reach
-# (ADR-0047).
-sudo rm -rf "$W" && sudo mkdir -m 700 "$W" && sudo mkdir -m 700 "$W/w"
+# $W itself 0700: the state directories and every build root below them
+# stay out of other users' reach (ADR-0050).
+sudo rm -rf "$W" && sudo mkdir -m 700 "$W"
 printf %s "$SMOKE_CASE_SECRET" | sudo tee "$SECRET" >/dev/null
 mkdir -p "$CASES_OUT"
 
-# RANIKUST_QUICK_MODE=kaniko: kaniko mode on the workdir, its state
-# directory beside it; the VM's root may mount, so RUN gets the full
-# sandbox (ADR-0043).
-MODE_ARGS=()
+# RANIKUST_QUICK_MODE=kaniko: kaniko mode outside a container, so it builds
+# in a root it makes in its state directory (ADR-0050); the VM's root may
+# mount, so RUN gets the full sandbox (ADR-0043).
+MODE_ARGS=(--state-dir "$W/state")
 [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] && MODE_ARGS=(--mode=kaniko --state-dir "$W/kstate")
 
 rnk_run() {
   local ctx="$1" o="$2" rc=0
   shift 2
-  sudo "$RNK" --context "$ctx" --workdir "$W/w" "${MODE_ARGS[@]}" --no-push \
+  sudo "$RNK" --context "$ctx" "${MODE_ARGS[@]}" --no-push \
     --oci-layout-path "$o/oci" --tar-path "$o/image.tar" --secret "id=tok,src=$SECRET" \
     "$@" || rc=$?
   sudo chown -R "$(id -u):$(id -g)" "$o"

@@ -147,7 +147,7 @@ build() {
       set +e
       sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \
         "$BIN" build --context="$ctx" --dockerfile="$ctx/Dockerfile" --destination="registry:5000/$repo:latest" \
-        --insecure-registry=registry:5000 --build-arg="BASE_IMAGE=$BASE" --workdir="$W/rnk-work" \
+        --insecure-registry=registry:5000 --build-arg="BASE_IMAGE=$BASE" --state-dir="$W/rnk-work" \
         --metrics-file="$d/metrics.json" "${extra[@]}" >"$d/build.log" 2>&1
       rc=$?
       set -e

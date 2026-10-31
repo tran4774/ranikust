@@ -89,8 +89,8 @@ CTX="$HOME/rnk/guest/smoke-e2e"
 
 # Builds tests/smoke/e2e with the ranikust binary in variant $1, whose RUN
 # enters its root with $2, extra flags after; prints the digest. The
-# workdir of a container is a volume: overlay refuses an upper directory on
-# the container's own overlay root (that environment needs kaniko mode).
+# state directory of a container is a volume: overlay refuses an upper
+# directory on the container's own overlay root (ADR-0050).
 e2e() {
   local name="$1" syscall="$2" d="$W/$1/e2e" rc=0 log
   shift 2
@@ -131,7 +131,7 @@ netns_checks() {
   # shellcheck disable=SC2046
   log="$(sudo docker run --rm $(docker_args sysadmin) -v "$RNK:/ranikust:ro" \
     -v "$d/ctx:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" \
-    "$IMAGE" /ranikust --context /ctx --no-push --workdir /tmp/w 2>&1)" || rc=$?
+    "$IMAGE" /ranikust --context /ctx --no-push --state-dir /tmp/w 2>&1)" || rc=$?
   echo "$log" | sudo tee "$d/refused.log" >/dev/null
   if [ "$rc" = 0 ] || ! grep -q -- '--allow network.none-userns' <<<"$log"; then
     echo "error: sysadmin: RUN --network=none without the opt-in: expected a refusal naming it, got $rc:" >&2
@@ -146,7 +146,7 @@ netns_checks() {
   # shellcheck disable=SC2046
   log="$(sudo docker run --rm $(docker_args sysadmin) -v "$RNK:/ranikust:ro" \
     -v "$d/ctx:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" \
-    "$IMAGE" /ranikust --context /ctx --no-push --workdir /tmp/w \
+    "$IMAGE" /ranikust --context /ctx --no-push --state-dir /tmp/w \
     --allow network.none-userns 2>&1)" || rc=$?
   echo "$log" | sudo tee "$d/allowed.log" >/dev/null
   if [ "$rc" != 0 ] || ! grep -q '^netns checks: ok' <<<"$log"; then
@@ -230,7 +230,7 @@ for v in "${VARIANTS[@]}"; do
       sudo tee "$p/read/Dockerfile" >/dev/null
     plog="$(mktemp)"
     persist() {
-      sudo "$RNK" --context "$p/$1" --no-push --workdir "$p/$2" --build-arg "NONCE=$nonce" \
+      sudo "$RNK" --context "$p/$1" --no-push --state-dir "$p/$2" --build-arg "NONCE=$nonce" \
         >>"$plog" 2>&1
     }
     persist write w || { echo "error: the cache-writing build failed" >&2; cat "$plog" >&2; exit 1; }
@@ -253,7 +253,7 @@ for v in "${VARIANTS[@]}"; do
     for sig in INT KILL; do
       sudo rm -rf "$c/w" && sudo mkdir -m 700 "$c/w"
       clog="$(mktemp)"
-      sudo "$RNK" --context "$c/ctx" --no-push --workdir "$c/w" \
+      sudo "$RNK" --context "$c/ctx" --no-push --state-dir "$c/w" \
         --secret "id=token,src=$W/token" >"$clog" 2>&1 &
       for _ in $(seq 120); do pgrep -f '^sleep 300$' >/dev/null && break; sleep 1; done
       pgrep -f '^sleep 300$' >/dev/null ||
@@ -292,7 +292,7 @@ for name in privileged sysadmin; do
     echo "=== $name, $prog inside a plain chroot (expect a refusal)"
     case "$prog" in
       smoke-build) args="--image $IMAGE --work /tmp/work --out /tmp/out --run true" ;;
-      ranikust) args="--no-push --workdir /tmp/w" ;;
+      ranikust) args="--no-push --state-dir /tmp/w" ;;
     esac
     # shellcheck disable=SC2046
     set +e

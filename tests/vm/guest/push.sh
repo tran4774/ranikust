@@ -42,7 +42,7 @@ trap 'sudo docker rm -f rnk-push-registry >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 30); do curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ && break; sleep 1; done
 
 echo "=== ranikust build: three destinations, a tarball and an OCI layout"
-digest="$(sudo env DOCKER_CONFIG="$W/docker" "$RNK" --context "$W/ctx" --workdir "$W/work" \
+digest="$(sudo env DOCKER_CONFIG="$W/docker" "$RNK" --context "$W/ctx" --state-dir "$W/work" \
   --destination "127.0.0.1:5000/$REPO:$TAG" \
   --destination "10.0.2.2:5000/$REPO:$TAG" --insecure-registry 10.0.2.2:5000 \
   --destination "10.0.2.2:5443/$REPO:$TAG" --registry-certificate "10.0.2.2:5443=$CA" \
