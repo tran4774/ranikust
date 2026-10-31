@@ -98,6 +98,20 @@ fn main() -> ExitCode {
         report(&format!("prctl(PR_SET_DUMPABLE, 0): {e}"));
         return ExitCode::from(1);
     }
+    // No core file of ranikust either, whatever `core_pattern` and
+    // `suid_dumpable` say: its memory holds the credentials. The hard limit
+    // stays, so a `RUN` may raise its own.
+    let core = rustix::process::getrlimit(rustix::process::Resource::Core);
+    if let Err(e) = rustix::process::setrlimit(
+        rustix::process::Resource::Core,
+        rustix::process::Rlimit {
+            current: Some(0),
+            maximum: core.maximum,
+        },
+    ) {
+        report(&format!("setrlimit(RLIMIT_CORE, 0): {e}"));
+        return ExitCode::from(1);
+    }
     let (command, metrics_file) = match cli::parse(std::env::args_os()) {
         Ok(parsed) => {
             let file = parsed.cli.metrics_file().map(Path::to_path_buf);
@@ -355,7 +369,7 @@ fn kaniko(
     if on_slash {
         // What ranikust cannot close itself (ADR-0051, B4 and B5).
         exposure::warn_build_args(&config.build_args);
-        exposure::warn_credential_holders();
+        exposure::warn_credential_holders(&exposure::secret_variables(config));
     }
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),

@@ -11,6 +11,12 @@
 //! pid, round after round until none is left. ranikust never calls
 //! `waitpid(-1)`, which would take children other code waits for.
 //!
+//! A pid read from `/proc` may be reused before the kill: each process is
+//! opened as a pidfd first, its `/proc/<pid>/stat` read again and compared
+//! (parent, start time), and the signal sent through the pidfd, which names
+//! that process and no later one. Reaps never block: a child some `RUN`
+//! process holds traced stays for the next round.
+//!
 //! Relies on `/proc` (the container's, which a `RUN` without
 //! `CAP_SYS_ADMIN` cannot replace) and on nothing else of ranikust's
 //! starting processes while a `Direct` `RUN` runs: kaniko mode on `/` runs
@@ -18,17 +24,29 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::time::Duration;
 
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, WaitOptions};
+use rustix::process::{Pid, PidfdFlags, Signal, WaitOptions};
 
 use crate::error::{Error, Result, sys_err};
 
 /// Rounds of kill and reap before giving up on a fork loop.
 const ROUNDS: usize = 1000;
+/// The pause between two rounds that still had processes to reap.
+const PAUSE: Duration = Duration::from_millis(5);
 
-/// `pid -> ppid` of every process in `/proc`.
-fn process_table() -> Result<BTreeMap<i32, i32>> {
+/// What a `/proc/<pid>/stat` line tells about a process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stat {
+    ppid: i32,
+    /// Field 22: clock ticks after boot; with the pid, identifies the
+    /// process even after its pid is reused.
+    start: u64,
+}
+
+/// `pid -> Stat` of every process in `/proc`.
+fn process_table() -> Result<BTreeMap<i32, Stat>> {
     let mut table = BTreeMap::new();
     let dir = fs::read_dir("/proc").map_err(|e| sys_err("list /proc", e))?;
     for entry in dir {
@@ -40,25 +58,30 @@ fn process_table() -> Result<BTreeMap<i32, i32>> {
         else {
             continue;
         };
-        // Gone since the listing: nothing to kill.
-        let Ok(stat) = fs::read(format!("/proc/{pid}/stat")) else {
-            continue;
-        };
-        if let Some(ppid) = parent_of(&stat) {
-            table.insert(pid, ppid);
+        if let Some(stat) = read_stat(pid) {
+            table.insert(pid, stat);
         }
     }
     Ok(table)
 }
 
-/// The parent pid in a `/proc/<pid>/stat` line: the fourth field, after the
-/// command name in parentheses, which may itself hold spaces and `)`.
-fn parent_of(stat: &[u8]) -> Option<i32> {
+/// `/proc/<pid>/stat`, or `None` when the process is gone.
+fn read_stat(pid: i32) -> Option<Stat> {
+    parse_stat(&fs::read(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// The parent pid (field 4) and start time (field 22) of a
+/// `/proc/<pid>/stat` line, read after the command name in parentheses,
+/// which may itself hold spaces and `)`.
+fn parse_stat(stat: &[u8]) -> Option<Stat> {
     let close = stat.iter().rposition(|&b| b == b')')?;
     let rest = std::str::from_utf8(stat.get(close + 1..)?).ok()?;
-    let mut fields = rest.split_ascii_whitespace();
-    let _state = fields.next()?;
-    fields.next()?.parse().ok()
+    // Field 3 (state) is the first after the name.
+    let fields: Vec<&str> = rest.split_ascii_whitespace().collect();
+    Some(Stat {
+        ppid: fields.get(1)?.parse().ok()?,
+        start: fields.get(19)?.parse().ok()?,
+    })
 }
 
 /// ranikust's children now: the helpers a sweep leaves alone.
@@ -66,7 +89,7 @@ pub(crate) fn children_of_self() -> Result<Vec<i32>> {
     let me = rustix::process::getpid().as_raw_nonzero().get();
     Ok(process_table()?
         .into_iter()
-        .filter(|&(_, ppid)| ppid == me)
+        .filter(|(_, s)| s.ppid == me)
         .map(|(pid, _)| pid)
         .collect())
 }
@@ -75,7 +98,7 @@ pub(crate) fn children_of_self() -> Result<Vec<i32>> {
 /// parents reaches `me` through a child of `me` that is not in `helpers`,
 /// that child included. `leader` (the `RUN`'s own process, waited for but
 /// not reaped yet) is left out: its caller reaps it.
-fn run_tree(table: &BTreeMap<i32, i32>, me: i32, leader: i32, helpers: &[i32]) -> BTreeSet<i32> {
+fn run_tree(table: &BTreeMap<i32, Stat>, me: i32, leader: i32, helpers: &[i32]) -> BTreeSet<i32> {
     let helpers: BTreeSet<i32> = helpers.iter().copied().collect();
     let mut tree = BTreeSet::new();
     for &pid in table.keys() {
@@ -83,14 +106,14 @@ fn run_tree(table: &BTreeMap<i32, i32>, me: i32, leader: i32, helpers: &[i32]) -
         // A chain longer than the table loops: the table changed under the
         // read. Such a process is caught on the next round.
         for _ in 0..=table.len() {
-            let Some(&ppid) = table.get(&p) else { break };
-            if ppid == me {
+            let Some(stat) = table.get(&p) else { break };
+            if stat.ppid == me {
                 if !helpers.contains(&p) {
                     tree.insert(pid);
                 }
                 break;
             }
-            p = ppid;
+            p = stat.ppid;
         }
     }
     tree.remove(&leader);
@@ -103,9 +126,8 @@ fn run_tree(table: &BTreeMap<i32, i32>, me: i32, leader: i32, helpers: &[i32]) -
 ///
 /// # Errors
 ///
-/// [`Error::Survivors`] when processes keep appearing after
-/// [`ROUNDS`] rounds; a system call failing otherwise than with `ESRCH` or
-/// `ECHILD`.
+/// [`Error::Survivors`] when processes are still there after [`ROUNDS`]
+/// rounds; a system call failing otherwise than with `ESRCH` or `ECHILD`.
 pub(crate) fn kill_run_tree(leader: Pid, helpers: &[i32]) -> Result<()> {
     let me = rustix::process::getpid().as_raw_nonzero().get();
     let leader = leader.as_raw_nonzero().get();
@@ -118,37 +140,71 @@ pub(crate) fn kill_run_tree(leader: Pid, helpers: &[i32]) -> Result<()> {
         }
         left = tree.len();
         for &pid in &tree {
-            kill(pid)?;
+            if let Some(&stat) = table.get(&pid) {
+                kill(pid, stat)?;
+            }
         }
         // Reap ranikust's own children of the tree; the others become its
         // children when their parents die, and are reaped in a later round.
-        for &pid in tree.iter().filter(|&&p| table.get(&p) == Some(&me)) {
+        for &pid in tree
+            .iter()
+            .filter(|p| table.get(p).map(|s| s.ppid) == Some(me))
+        {
             reap(pid)?;
         }
+        std::thread::sleep(PAUSE);
     }
     Err(Error::Survivors { left })
 }
 
-fn kill(pid: i32) -> Result<()> {
-    let Some(pid) = Pid::from_raw(pid) else {
+/// `SIGKILL` to `pid` if it is still the process `stat` describes: opened
+/// as a pidfd, then checked again, then signalled through the pidfd.
+fn kill(pid: i32, stat: Stat) -> Result<()> {
+    let Some(raw) = Pid::from_raw(pid) else {
         return Ok(());
     };
-    match rustix::process::kill_process(pid, Signal::KILL) {
+    let fd = match rustix::process::pidfd_open(raw, PidfdFlags::empty()) {
+        Ok(fd) => fd,
+        Err(Errno::SRCH) => return Ok(()),
+        Err(e) => return Err(sys_err("pidfd_open a process the RUN left", e)),
+    };
+    // The pidfd holds the process: if the stat still matches, the pidfd is
+    // that process and no other one that took its pid since.
+    if read_stat(pid) != Some(stat) {
+        return Ok(());
+    }
+    match rustix::process::pidfd_send_signal(&fd, Signal::KILL) {
         Ok(()) | Err(Errno::SRCH) => Ok(()),
         Err(e) => Err(sys_err("kill a process the RUN left", e)),
     }
 }
 
+/// Reaps `pid` if it has exited; never waits.
 fn reap(pid: i32) -> Result<()> {
     let Some(pid) = Pid::from_raw(pid) else {
         return Ok(());
     };
     loop {
-        match rustix::process::waitpid(Some(pid), WaitOptions::empty()) {
+        match rustix::process::waitpid(Some(pid), WaitOptions::NOHANG) {
             Ok(_) | Err(Errno::CHILD) => return Ok(()),
             Err(Errno::INTR) => {}
             Err(e) => return Err(sys_err("reap a process the RUN left", e)),
         }
+    }
+}
+
+/// Warns when `kernel.yama.ptrace_scope` is 0: a `RUN` process may then
+/// attach to any other process of its uid that is dumpable, other `RUN`
+/// processes included (ranikust itself is not dumpable). Silent when Yama
+/// is absent or stricter.
+pub(crate) fn warn_ptrace_scope() {
+    if let Ok(scope) = fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
+        && scope.trim() == "0"
+    {
+        tracing::warn!(
+            "kernel.yama.ptrace_scope is 0 on this host: a RUN process may attach to another \
+             dumpable process of its user; ranikust itself is not dumpable"
+        );
     }
 }
 

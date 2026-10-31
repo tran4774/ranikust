@@ -122,6 +122,7 @@ impl Sandbox {
     pub fn start_direct() -> Result<Self> {
         rustix::process::set_child_subreaper(Some(rustix::process::getpid()))
             .map_err(|e| sys_err("prctl(PR_SET_CHILD_SUBREAPER)", e))?;
+        sweep::warn_ptrace_scope();
         Self::spawn_thread(Runner::direct_only())
     }
 
@@ -1443,9 +1444,11 @@ fn wait_exited(pid: Pid) -> Result<()> {
 }
 
 /// Whether a `Direct` child on `/` drops capabilities from its bounding set
-/// (ADR-0051): only those outside Docker's defaults, and only where
-/// ranikust holds `CAP_SETPCAP`. Without it, a bounding set that still
-/// holds `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` stops the `RUN`.
+/// (ADR-0051): those outside Docker's defaults, where ranikust holds
+/// `CAP_SETPCAP`. Without it, any capability outside the defaults left in
+/// the bounding set stops the `RUN`. The child trims its ambient,
+/// inheritable, permitted and effective sets to the defaults in every case,
+/// which needs no privilege.
 fn direct_slash_drop() -> Result<bool> {
     // Only a root parent gives its `RUN` the bounding set as permitted
     // capabilities; kaniko mode always runs as root. A non-root process
@@ -1461,13 +1464,6 @@ fn direct_slash_drop() -> Result<bool> {
     match caps::direct_caps(bounding, setpcap) {
         caps::DirectCaps::Keep => Ok(false),
         caps::DirectCaps::Drop => Ok(true),
-        caps::DirectCaps::KeepExtras(extras) => {
-            tracing::debug!(
-                "rnk-sandbox: RUN keeps capabilities {extras:#x} outside Docker's defaults: no \
-                 CAP_SETPCAP to drop them, none of them reads ranikust's state"
-            );
-            Ok(false)
-        }
         caps::DirectCaps::Refuse(names) => Err(Error::RunReachesState {
             caps: names.join(", "),
         }),

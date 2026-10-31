@@ -21,7 +21,7 @@ use rustix::io::Errno;
 
 use crate::child::{
     ChildArgs, ChildFds, ExecPtrs, ParentCheck, arm_death_signal, check, drop_capabilities, fail,
-    switch_user_and_exec,
+    switch_user_and_exec, trim_capabilities,
 };
 use crate::error::Step;
 
@@ -68,6 +68,11 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         // those outside Docker's defaults: a `RUN` with `CAP_SYS_PTRACE`
         // would read ranikust's descriptors and memory (ADR-0051).
         drop_capabilities(fds.err_w, args);
+    } else {
+        // Nothing to drop from the bounding set (or no `CAP_SETPCAP`, and
+        // the parent checked nothing is there to drop): the other sets
+        // still go to Docker's defaults, which needs no privilege.
+        trim_capabilities(fds.err_w, args);
     }
     // `setsid` there also makes the process group the parent kills once the
     // command exits, as kaniko does.

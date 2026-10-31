@@ -283,7 +283,11 @@ fn prepare<S: Snapshotter>(
         LayerExporter::new(store.build_dir(), encode_options(config, threads), &time)
     };
 
-    let options = client_options(config, &graph)?;
+    let mut options = client_options(config, &graph)?;
+    // Kaniko mode on `/` (the anonymous store): a `RUN` may edit
+    // /etc/hosts or /etc/resolv.conf and redirect later requests, so only a
+    // verified certificate carries credentials (ADR-0051).
+    options.verified_credentials_only = store.is_anonymous();
     let credentials = credentials()?;
     let client = Client::new(options, TrustStore::load(), credentials)
         .map_err(|e| format!("setting up the registry client: {e}"))?;

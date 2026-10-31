@@ -275,14 +275,15 @@ pub enum Error {
         /// Why the user-namespace path failed.
         userns: io::Error,
     },
-    /// A `Direct` `RUN` on `/` would keep a capability that reads ranikust's
-    /// state through `/proc` or by file handle, and ranikust lacks
-    /// `CAP_SETPCAP` to drop it (ADR-0051).
+    /// A `Direct` `RUN` on `/` would keep a capability outside Docker's
+    /// defaults (any may reach ranikust's state: ptrace, a mount over
+    /// `/proc`, BPF, modules, raw I/O), and ranikust lacks `CAP_SETPCAP` to
+    /// drop it (ADR-0051).
     #[error(
-        "RUN directly on /: the container grants {caps}, which would let a RUN read \
-         ranikust's state and credentials through /proc, and ranikust lacks CAP_SETPCAP \
-         to take it away from the RUN; start the container without {caps}, or with \
-         CAP_SETPCAP"
+        "RUN directly on /: the container grants {caps}, beyond Docker's defaults, which \
+         a RUN could use to reach ranikust's state and credentials, and ranikust lacks \
+         CAP_SETPCAP to take them away from the RUN; start the container without them, \
+         or with CAP_SETPCAP"
     )]
     RunReachesState {
         /// The capabilities, comma-separated.

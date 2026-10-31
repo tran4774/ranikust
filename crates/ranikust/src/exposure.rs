@@ -42,12 +42,35 @@ pub(crate) fn warn_build_args(args: &[BuildArg]) {
             tracing::warn!(
                 "--build-arg {}=…: the value is on ranikust's command line, which every RUN can \
                  read through /proc/<pid>/cmdline in kaniko mode on /; pass a secret with \
-                 --secret, or as `--build-arg {}` with the value in the environment",
+                 --secret, or as `--build-arg {}` with the value in the environment and \
+                 ranikust started as the container's PID 1 (exec it), else the shell that \
+                 started it holds the value where a RUN reads it",
                 arg.name,
                 arg.name
             );
         }
     }
+}
+
+/// Every variable of ranikust's environment that holds a credential or a
+/// secret: [`CREDENTIAL_VARS`], the variable of each `--secret` read from
+/// the environment (`env=`, or the id itself when set), and each
+/// `--build-arg NAME` given without a value.
+pub(crate) fn secret_variables(config: &crate::config::BuildConfig) -> Vec<String> {
+    let mut names: Vec<String> = CREDENTIAL_VARS.iter().map(|&n| n.to_owned()).collect();
+    for (_, secret) in &config.secrets {
+        if let rnk_builder::Secret::Env(var) = secret {
+            names.push(var.to_string_lossy().into_owned());
+        }
+    }
+    for arg in &config.build_args {
+        if arg.value.is_none() {
+            names.push(arg.name.clone());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// The names among `names` set to a non-empty value in an `environ` file's
@@ -68,11 +91,12 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Warns for every other process of the PID namespace whose environment
-/// holds one of [`CREDENTIAL_VARS`]: a `RUN` reads it through that
-/// process's `/proc/<pid>/environ`. Processes ranikust cannot read (not
-/// dumpable, another user) are skipped: a `RUN` running as root cannot read
-/// them either without `CAP_SYS_PTRACE`.
-pub(crate) fn warn_credential_holders() {
+/// holds one of `variables` ([`secret_variables`]): a `RUN` reads it
+/// through that process's `/proc/<pid>/environ`. Processes ranikust cannot
+/// read (not dumpable, another user) are skipped: a `RUN` running as root
+/// cannot read them either without `CAP_SYS_PTRACE`.
+pub(crate) fn warn_credential_holders(variables: &[String]) {
+    let names: Vec<&str> = variables.iter().map(String::as_str).collect();
     let me = std::process::id().to_string();
     let Ok(dir) = fs::read_dir("/proc") else {
         return;
@@ -91,7 +115,7 @@ pub(crate) fn warn_credential_holders() {
         let Ok(environ) = fs::read(entry.path().join("environ")) else {
             continue;
         };
-        let found = held(&environ, &CREDENTIAL_VARS);
+        let found = held(&environ, &names);
         if found.is_empty() {
             continue;
         }
@@ -132,5 +156,30 @@ mod tests {
         assert_eq!(held(env, &CREDENTIAL_VARS), ["DOCKER_AUTH_CONFIG"]);
         assert!(held(b"DOCKER_AUTH_CONFIG=\0", &CREDENTIAL_VARS).is_empty());
         assert!(held(b"DOCKER_AUTH_CONFIGX=a\0", &CREDENTIAL_VARS).is_empty());
+    }
+
+    #[test]
+    fn secret_variables_cover_env_secrets_and_valueless_build_args() {
+        let argv = [
+            "ranikust",
+            "--no-push",
+            "--secret",
+            "id=npm,env=NPM_SECRET_VAR",
+            "--secret",
+            "id=file_one,src=/ranikust/s",
+            "--build-arg",
+            "GH_TOKEN",
+            "--build-arg",
+            "VERSION=1",
+        ];
+        let crate::cli::Command::Build(args) = crate::cli::parse(argv).unwrap().cli.into_command()
+        else {
+            panic!("expected build");
+        };
+        let config = crate::config::BuildConfig::from_args(&args).unwrap();
+        assert_eq!(
+            secret_variables(&config),
+            ["DOCKER_AUTH_CONFIG", "GH_TOKEN", "NPM_SECRET_VAR"]
+        );
     }
 }

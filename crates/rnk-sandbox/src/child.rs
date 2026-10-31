@@ -1184,6 +1184,14 @@ pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
             Err(e) => fail(err, Step::BoundingSet, e),
         }
     }
+    trim_capabilities(err, args);
+}
+
+/// Clears the ambient and inheritable sets and keeps only Docker's defaults
+/// in the permitted and effective sets: lowering them needs no privilege,
+/// unlike the bounding set (ADR-0051). Same rules as
+/// [`drop_capabilities`].
+pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
     match rustix::thread::clear_ambient_capability_set() {
         // Kernels before 4.3 have no ambient set.
         Ok(()) | Err(Errno::INVAL) => {}

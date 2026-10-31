@@ -59,10 +59,12 @@ impl AnonFiles {
     /// `0600`, close-on-exec. Not kept: [`AnonFiles::keep`] keeps it.
     pub(crate) fn create(&self) -> Result<File> {
         if !self.in_memory() {
+            // `O_EXCL`: the file can never be linked into the filesystem,
+            // by ranikust or by anyone reaching its descriptor.
             match rustix::fs::openat(
                 &self.dir,
                 ".",
-                OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
+                OFlags::TMPFILE | OFlags::EXCL | OFlags::RDWR | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o600),
             ) {
                 Ok(fd) => return Ok(File::from(fd)),
@@ -81,9 +83,18 @@ impl AnonFiles {
                 Err(e) => return Err(self.err(e)),
             }
         }
-        rustix::fs::memfd_create(c"ranikust-state", MemfdFlags::CLOEXEC)
-            .map(File::from)
-            .map_err(|e| self.err(e))
+        // Never executable (Linux 6.3); older kernels refuse the flag with
+        // `EINVAL`, and get a plain one.
+        match rustix::fs::memfd_create(
+            c"ranikust-state",
+            MemfdFlags::CLOEXEC | MemfdFlags::NOEXEC_SEAL,
+        ) {
+            Ok(fd) => Ok(File::from(fd)),
+            Err(Errno::INVAL) => rustix::fs::memfd_create(c"ranikust-state", MemfdFlags::CLOEXEC)
+                .map(File::from)
+                .map_err(|e| self.err(e)),
+            Err(e) => Err(self.err(e)),
+        }
     }
 
     /// Keeps `file` open for the life of the store and returns its name for

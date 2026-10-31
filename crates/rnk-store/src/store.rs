@@ -317,11 +317,19 @@ impl Store {
             rustix::fs::Mode::empty(),
         )
         .map_err(|e| host_err("open", e.into()))?;
-        fs::metadata("/proc/self/fd").map_err(|e| Error::Io {
-            op: "find",
-            path: PathBuf::from("/proc/self/fd"),
+        // The names handed out resolve through it: it must be procfs, not
+        // something mounted over `/proc` (a `RUN` could only do that with
+        // `CAP_SYS_ADMIN`, which kaniko mode on `/` never leaves it).
+        let proc_fd = Path::new("/proc/self/fd");
+        let proc_err = |e: io::Error| Error::Io {
+            op: "check",
+            path: proc_fd.to_owned(),
             source: e,
-        })?;
+        };
+        let fs = rustix::fs::statfs(proc_fd).map_err(|e| proc_err(e.into()))?;
+        if fs.f_type != rustix::fs::PROC_SUPER_MAGIC {
+            return Err(proc_err(io::Error::other("not procfs")));
+        }
         if !list(&root, Path::new("."))?.is_empty() {
             tracing::warn!(
                 target: "rnk_store",
@@ -372,18 +380,12 @@ impl Store {
         let files = match &self.anon {
             Some(anon) => &anon.files,
             None => {
-                let dir = rustix::fs::open(
-                    &self.build_dir,
-                    rustix::fs::OFlags::PATH
-                        | rustix::fs::OFlags::DIRECTORY
-                        | rustix::fs::OFlags::NOFOLLOW
-                        | rustix::fs::OFlags::CLOEXEC,
-                    rustix::fs::Mode::empty(),
-                )
-                .map_err(|e| Error::AnonymousFile {
-                    path: self.build_dir.clone(),
-                    source: e.into(),
-                })?;
+                // Through the state directory's own descriptor, never the
+                // build directory's path again.
+                let rel = Path::new("builds").join(&self.id);
+                let dir = self
+                    .state
+                    .open_at(&rel, &OpenHow::path().directory().no_follow())?;
                 return self.persistent_anonymous_file(dir);
             }
         };

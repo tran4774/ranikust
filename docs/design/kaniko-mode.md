@@ -52,11 +52,18 @@ overlay mode).
   - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
     need `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers);
   - the `RUN` child drops every capability outside Docker's defaults from
-    its bounding set (`CAP_SETPCAP`); without it, a remaining
-    `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` stops the `RUN`;
+    its bounding set (`CAP_SETPCAP`); without it, any capability outside
+    them stops the `RUN`; the ambient, inheritable, permitted and
+    effective sets go to the defaults in every case; ranikust's own soft
+    `RLIMIT_CORE` is 0;
+  - registry credentials only over verified TLS: a `RUN` may edit
+    `/etc/hosts` and `/etc/resolv.conf`;
+  - kaniko mode on `/` where root may mount is refused [open: Q-341];
   - ranikust is a child subreaper (`Sandbox::start_direct`); after each
-    `RUN` it kills and reaps by pid everything that became its child
-    during the `RUN`, and their descendants, never `waitpid(-1)`;
+    `RUN` it kills, through a pidfd after checking the parent and start
+    time again, everything that became its child during the `RUN` and
+    their descendants, and reaps them by pid without blocking, never
+    `waitpid(-1)`;
   - warnings for what it cannot close: a `--build-arg NAME=value` whose
     name looks like a secret (`/proc/<pid>/cmdline`), another process
     holding `DOCKER_AUTH_CONFIG` in its environment.

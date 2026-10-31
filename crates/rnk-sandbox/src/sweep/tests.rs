@@ -1,15 +1,37 @@
 use super::*;
 
-fn table(rows: &[(i32, i32)]) -> BTreeMap<i32, i32> {
-    rows.iter().copied().collect()
+fn table(rows: &[(i32, i32)]) -> BTreeMap<i32, Stat> {
+    rows.iter()
+        .map(|&(pid, ppid)| (pid, Stat { ppid, start: 0 }))
+        .collect()
+}
+
+/// A stat line with `ppid` and `start` where the kernel puts them.
+fn line(name: &str, ppid: i32, start: u64) -> Vec<u8> {
+    let mut fields = vec!["S".to_owned(), ppid.to_string()];
+    // Fields 5 to 21, then 22 the start time, then more.
+    fields.extend((5..=21).map(|_| "0".to_owned()));
+    fields.push(start.to_string());
+    fields.push("1234".to_owned());
+    format!("42 ({name}) {}", fields.join(" ")).into_bytes()
 }
 
 #[test]
-fn the_stat_parent_survives_odd_command_names() {
-    assert_eq!(parent_of(b"42 (sh) S 7 42 42 0 -1"), Some(7));
-    assert_eq!(parent_of(b"42 (a) b) S 9 1 1"), Some(9));
-    assert_eq!(parent_of(b"42 (x y) Z 1 0"), Some(1));
-    assert_eq!(parent_of(b"garbage"), None);
+fn the_stat_line_survives_odd_command_names() {
+    let want = Some(Stat { ppid: 7, start: 99 });
+    assert_eq!(parse_stat(&line("sh", 7, 99)), want);
+    assert_eq!(parse_stat(&line("a) b", 7, 99)), want);
+    assert_eq!(parse_stat(&line("x y", 7, 99)), want);
+    assert_eq!(parse_stat(b"garbage"), None);
+    assert_eq!(parse_stat(b"42 (sh) S 7"), None, "no start time");
+}
+
+#[test]
+fn this_process_reads_back_unchanged() {
+    let me = rustix::process::getpid().as_raw_nonzero().get();
+    let first = read_stat(me).unwrap();
+    assert_eq!(read_stat(me), Some(first));
+    assert!(first.start > 0);
 }
 
 #[test]
@@ -36,6 +58,29 @@ fn a_looping_table_ends() {
     // A table read while processes were dying can hold a cycle.
     let t = table(&[(10, 1), (5, 6), (6, 5)]);
     assert!(run_tree(&t, 10, 0, &[]).is_empty());
+}
+
+#[test]
+fn a_process_whose_stat_changed_is_not_killed() {
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = i32::try_from(child.id()).unwrap();
+    let stat = read_stat(pid).unwrap();
+    // Another start time: a pid reused by another process.
+    kill(
+        pid,
+        Stat {
+            start: stat.start + 1,
+            ..stat
+        },
+    )
+    .unwrap();
+    assert_eq!(child.try_wait().unwrap(), None, "left alive");
+    kill(pid, stat).unwrap();
+    let status = child.wait().unwrap();
+    assert!(!status.success());
 }
 
 #[test]

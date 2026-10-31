@@ -611,6 +611,17 @@ fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
 }
 
 #[test]
+fn a_persistent_store_gives_anonymous_files_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let (mut f, path) = store.anonymous_file().unwrap();
+    f.write_all(b"kept tree").unwrap();
+    assert!(path.starts_with("/proc/self/fd"), "{}", path.display());
+    assert_eq!(fs::read(&path).unwrap(), b"kept tree");
+    assert!(names(store.build_dir()).is_empty());
+}
+
+#[test]
 fn a_failed_anonymous_fill_publishes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_anonymous(dir.path()).unwrap();

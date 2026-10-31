@@ -36,6 +36,7 @@ pub struct Credentials;  // none(); config_path(DOCKER_CONFIG, HOME); load(path)
 pub enum Credential { Basic { username, password }, IdentityToken(String), RegistryToken(String) } // Debug redacts
 #[non_exhaustive] pub struct ClientOptions { pub insecure: BTreeSet<String>,
     pub http_credentials: BTreeSet<String>,  // may get credentials over plain HTTP: operator-typed names only (T11)
+    pub verified_credentials_only: bool,     // credentials only over verified TLS, overriding both sets (kaniko mode on /, ADR-0051: a RUN may redirect names)
     pub skip_tls_verify: BTreeSet<String>,   // everything sent to the registry, token realm included
     pub registry_certificates: Vec<(String, PathBuf)>, pub retry: RetryPolicy,
     pub manifest_retries: u32,               // kaniko's --image-download-retry around pull_image_manifest

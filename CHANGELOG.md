@@ -165,7 +165,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   grants `CAP_SYS_PTRACE` without `CAP_SETPCAP` is refused; processes a
   `RUN` leaves in the background, `setsid` ones included, are killed when
   it ends. Warnings for a secret-looking `--build-arg NAME=value` and for
-  another process holding `DOCKER_AUTH_CONFIG` (ADR-0051).
+  another process holding `DOCKER_AUTH_CONFIG`, a `--secret` or a
+  `--build-arg` read from the environment. There, registry credentials go
+  only over verified TLS, and a container granting any capability beyond
+  Docker's defaults without `CAP_SETPCAP` is refused (ADR-0051).
 
 - `--mode=kaniko` in a container where root may mount (`--privileged`,
   `CAP_SYS_ADMIN`) refuses to build on `/`: its `RUN` would see the host's

@@ -64,11 +64,59 @@ pub(crate) fn last_cap() -> u32 {
     kernel_last_cap().map_or(MAX_CAP, |c| c.min(MAX_CAP))
 }
 
-/// `CAP_DAC_READ_SEARCH`: opens any file by handle (`open_by_handle_at`).
-const CAP_DAC_READ_SEARCH: u32 = 2;
-/// `CAP_SYS_PTRACE`: reads another process's descriptors, environment and
-/// memory through `/proc/<pid>/`, whatever `PR_SET_DUMPABLE` says.
-const CAP_SYS_PTRACE: u32 = 19;
+/// Names of the capabilities Linux defines, by number.
+const NAMES: [&str; 41] = [
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "DAC_READ_SEARCH",
+    "FOWNER",
+    "FSETID",
+    "KILL",
+    "SETGID",
+    "SETUID",
+    "SETPCAP",
+    "LINUX_IMMUTABLE",
+    "NET_BIND_SERVICE",
+    "NET_BROADCAST",
+    "NET_ADMIN",
+    "NET_RAW",
+    "IPC_LOCK",
+    "IPC_OWNER",
+    "SYS_MODULE",
+    "SYS_RAWIO",
+    "SYS_CHROOT",
+    "SYS_PTRACE",
+    "SYS_PACCT",
+    "SYS_ADMIN",
+    "SYS_BOOT",
+    "SYS_NICE",
+    "SYS_RESOURCE",
+    "SYS_TIME",
+    "SYS_TTY_CONFIG",
+    "MKNOD",
+    "LEASE",
+    "AUDIT_WRITE",
+    "AUDIT_CONTROL",
+    "SETFCAP",
+    "MAC_OVERRIDE",
+    "MAC_ADMIN",
+    "SYSLOG",
+    "WAKE_ALARM",
+    "BLOCK_SUSPEND",
+    "AUDIT_READ",
+    "PERFMON",
+    "BPF",
+    "CHECKPOINT_RESTORE",
+];
+
+/// `CAP_<NAME>` of capability `cap`, or `CAP_<n>` for one this crate does
+/// not name.
+pub(crate) fn name(cap: u32) -> String {
+    usize::try_from(cap)
+        .ok()
+        .and_then(|i| NAMES.get(i))
+        .map_or_else(|| format!("CAP_{cap}"), |n| format!("CAP_{n}"))
+}
 
 /// What a `Direct` `RUN` on `/` does with ranikust's bounding set
 /// (ADR-0051).
@@ -78,13 +126,12 @@ pub(crate) enum DirectCaps {
     Keep,
     /// The child drops every capability outside Docker's defaults.
     Drop,
-    /// Extra capabilities, none that reaches ranikust's state, and no
-    /// `CAP_SETPCAP` to drop them: the `RUN` keeps them.
-    KeepExtras(u64),
-    /// `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` in the bounding set and no
-    /// `CAP_SETPCAP` to drop them: the `RUN` could read ranikust's state, so
-    /// it does not run. The names, for the message.
-    Refuse(Vec<&'static str>),
+    /// Capabilities outside Docker's defaults in the bounding set, and no
+    /// `CAP_SETPCAP` to drop them: any of them may reach ranikust's state
+    /// (`SYS_PTRACE` its memory, `SYS_ADMIN` a mount over `/proc`, `BPF` with
+    /// `PERFMON` kernel memory, `SYS_MODULE`, `SYS_RAWIO`…), so the `RUN`
+    /// does not run. Their names, for the message.
+    Refuse(Vec<String>),
 }
 
 /// The policy for a bounding set `bounding` (bit `n` for capability `n`)
@@ -97,19 +144,12 @@ pub(crate) fn direct_caps(bounding: u64, setpcap: bool) -> DirectCaps {
     if setpcap {
         return DirectCaps::Drop;
     }
-    let reaching: Vec<&'static str> = [
-        (CAP_SYS_PTRACE, "CAP_SYS_PTRACE"),
-        (CAP_DAC_READ_SEARCH, "CAP_DAC_READ_SEARCH"),
-    ]
-    .into_iter()
-    .filter(|&(cap, _)| extras & (1u64 << cap) != 0)
-    .map(|(_, name)| name)
-    .collect();
-    if reaching.is_empty() {
-        DirectCaps::KeepExtras(extras)
-    } else {
-        DirectCaps::Refuse(reaching)
-    }
+    DirectCaps::Refuse(
+        (0..=MAX_CAP)
+            .filter(|&cap| extras & (1u64 << cap) != 0)
+            .map(name)
+            .collect(),
+    )
 }
 
 /// This thread's bounding set up to `last_cap`, as a bit mask
@@ -162,13 +202,20 @@ mod tests {
         assert_eq!(direct_caps(ptrace, true), DirectCaps::Drop);
         assert_eq!(
             direct_caps(ptrace | (1 << 2), false),
-            DirectCaps::Refuse(vec!["CAP_SYS_PTRACE", "CAP_DAC_READ_SEARCH"])
+            DirectCaps::Refuse(vec![
+                "CAP_DAC_READ_SEARCH".to_owned(),
+                "CAP_SYS_PTRACE".to_owned()
+            ])
         );
-        let net_admin = defaults | (1 << 12);
+        // Any extra one without CAP_SETPCAP: SYS_ADMIN could mount over
+        // /proc, NET_ADMIN is refused alike.
+        let admin = defaults | (1 << 21) | (1 << 12);
         assert_eq!(
-            direct_caps(net_admin, false),
-            DirectCaps::KeepExtras(1 << 12)
+            direct_caps(admin, false),
+            DirectCaps::Refuse(vec!["CAP_NET_ADMIN".to_owned(), "CAP_SYS_ADMIN".to_owned()])
         );
+        assert_eq!(name(39), "CAP_BPF");
+        assert_eq!(name(63), "CAP_63");
     }
 
     #[test]
