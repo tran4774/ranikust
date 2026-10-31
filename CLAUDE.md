@@ -78,7 +78,8 @@ damage the machine or the design:
 
 ## Claude Code setup
 
-Project skills: `dev-loop`, `kaniko-parity`, `vm-test`, `/adr`, `/sync-docs`, vendored
+Project skills: `dev-loop`, `kaniko-parity`, `vm-test`, `refactor` (the
+end-of-phase clean-up, when the maintainer asks), `/adr`, `/sync-docs`, vendored
 `security-audit` (milestones only). Subagents: `reviewer`, `host-safety`
 (any diff in `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`),
 `kaniko-oracle` (kaniko source at `${KANIKO_SRC:-../kaniko}`). Durable
