@@ -83,9 +83,10 @@ Chosen: the second option ([design/streaming.md](../design/streaming.md)).
   in kaniko mode on `/` with a node base image, a stage's peak memory fell
   from 157–163 MiB to 49–54 MiB and the container's from 480–492 MiB to
   387–390 MiB; the `--reproducible` digest is unchanged. Measured again
-  with the state on disk (ADR-0056) and the spool on `/`: stage peak
-  162–170 → 52 MiB, and under a 128 MiB container limit the build passes
-  3 times of 3 against 2 of 3 before.
+  with the state on disk (ADR-0056) and the compressed spool on `/`:
+  stage peak 157–170 → 49–52 MiB, container peak 481–485 → 385–389 MiB,
+  and under a 128 MiB container limit the build passes 6 times of 6
+  against 3 of 6 before.
 - `oci-client` 0.18 verifies a blob's digest at the end of a pull
   (`src/client.rs:1352-1358`) and offers a streamed push with a known
   digest (`push_blob_stream`).

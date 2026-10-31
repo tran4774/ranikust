@@ -191,18 +191,19 @@ the spool on `/`, same build, no patch:
 
 | | before | after |
 |---|---:|---:|
-| Stage peak memory | 162–170 MiB | 52 MiB |
-| Container peak (`memory.peak`, no limit) | 485 MiB | 466–472 MiB |
-| ranikust's own max RSS | 140–144 MiB | 120–125 MiB |
-| `RUN`'s max RSS | 114–122 MiB | 98–101 MiB |
-| Under `--memory 128m --memory-swap 128m` | 2 builds of 3 | 3 of 3 |
+| Stage peak memory | 157–170 MiB | 49–52 MiB |
+| Container peak (`memory.peak`, no limit) | 481–485 MiB | 385–389 MiB |
+| ranikust's own max RSS | 140–147 MiB | 123–124 MiB |
+| `RUN`'s max RSS | 114–122 MiB | 98–100 MiB |
+| Under `--memory 128m --memory-swap 128m` | 3 builds of 6 | 6 of 6 |
 | Under `--memory 112m` or `96m` | killed | killed |
 
-With the state on disk, most of the container's peak is page cache (the
-downloaded blobs before, the spools and the extracted root after),
-which the kernel reclaims under a limit, so `memory.peak` without a limit
-says little; under a limit the build now passes where it sometimes did
-not. Below about 120 MiB the floor is ranikust's own heap and the `RUN`
+The spool is the compressed blob (a first version spooled the
+decompressed tar: its container peak was 466–472 MiB). With the state on
+disk, much of the container's peak is page cache (the downloaded blobs
+before, the compressed spool and the extracted root after), which the
+kernel reclaims under a limit; under a limit the build now passes where
+it failed half the time. Below about 120 MiB the floor is ranikust's own heap and the `RUN`
 (node), neither of which grows with the image. The `--reproducible`
 digest is again the same.
 
