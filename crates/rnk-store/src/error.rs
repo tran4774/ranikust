@@ -67,6 +67,25 @@ pub enum Error {
     #[error("cancelled while waiting for a locked cache mount")]
     Cancelled,
 
+    /// What the caller asked for needs a path in the state directory, and
+    /// the store keeps nothing there (kaniko mode on `/`, ADR-0051).
+    #[error(
+        "{0} is not available in kaniko mode on /: the store keeps nothing a RUN could \
+         reach (ADR-0051)"
+    )]
+    Anonymous(&'static str),
+
+    /// An anonymous file could not be made: neither `O_TMPFILE` in the state
+    /// directory nor `memfd_create`.
+    #[error("cannot make an anonymous file in {}: {source}", path.display())]
+    AnonymousFile {
+        /// The state directory.
+        path: PathBuf,
+        /// The cause.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// An operation inside the state directory failed.
     #[error("state directory: {0}")]
     Rootfs(#[from] rnk_rootfs::Error),

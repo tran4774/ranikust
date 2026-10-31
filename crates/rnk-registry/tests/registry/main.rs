@@ -208,6 +208,35 @@ async fn an_insecure_registry_not_named_for_credentials_gets_none() {
     .unwrap();
 }
 
+/// In kaniko mode on `/` a `RUN` may redirect a registry's name: only
+/// verified TLS carries credentials there, even to a registry the operator
+/// named for plain HTTP (ADR-0051).
+#[tokio::test]
+async fn verified_credentials_only_withholds_them_from_plain_http() {
+    let registry = FakeRegistry::start(Auth::Basic {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+    })
+    .await;
+    add_image(&registry, "app", "v1", b"x".to_vec());
+    let mut opts = options(&registry);
+    assert!(opts.http_credentials.contains(&registry.host()));
+    opts.verified_credentials_only = true;
+    let client = Client::new(
+        opts,
+        TrustStore::load(),
+        support::credentials(&basic_auth_entry(&registry.host(), "builder", "s3cret")),
+    )
+    .unwrap();
+    let err = client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    assert!(err.to_string().contains("verified TLS"), "{err}");
+    assert_eq!(registry.count("GET /v2/app"), 0);
+}
+
 #[tokio::test]
 async fn an_unlisted_loopback_registry_asking_for_basic_auth_is_refused() {
     let registry = FakeRegistry::start(Auth::Basic {

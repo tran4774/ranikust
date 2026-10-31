@@ -156,6 +156,26 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   also after a crash; `RUN` commands keep the open-file limit ranikust
   started with. Not used by a build yet.
 
+- Kaniko mode on a container's `/` keeps ranikust's state and credentials
+  out of `RUN`'s reach: pulled and encoded layers are files without a name
+  (`O_TMPFILE`, or `memfd` where the filesystem lacks it) and the state
+  directory stays empty; ranikust is not dumpable, so `/proc/<pid>/` of
+  ranikust (descriptors, environment, memory) is closed to a `RUN`; `RUN`
+  loses every capability outside Docker's defaults, and a container that
+  grants `CAP_SYS_PTRACE` without `CAP_SETPCAP` is refused; processes a
+  `RUN` leaves in the background, `setsid` ones included, are killed when
+  it ends. Warnings for a secret-looking `--build-arg NAME=value` and for
+  another process holding `DOCKER_AUTH_CONFIG`, a `--secret` or a
+  `--build-arg` read from the environment. There, registry credentials go
+  only over verified TLS, and a container granting any capability beyond
+  Docker's defaults without `CAP_SETPCAP` is refused. ranikust's soft
+  `RLIMIT_CORE` is 0; every `RUN` gets the original back (ADR-0051).
+
+- `--mode=kaniko` in a container where root may mount (`--privileged`,
+  `CAP_SYS_ADMIN`) refuses to build on `/`: its `RUN` would see the host's
+  devices and a writable `/proc/sys`; overlay mode builds there. So does a
+  container whose `/proc/sys` is writable (Q-341).
+
 ### Changed
 
 - ranikust picks the build root itself and keeps everything in one state

@@ -151,8 +151,15 @@ pub(crate) struct ChildArgs {
     /// `root_dir` first, and check that the new `/` is this directory,
     /// `(dev major, dev minor, ino)`, the one the parent checked.
     pub(crate) chroot: Option<(u32, u32, u64)>,
+    /// `Isolation::Direct` on `/` with capabilities outside Docker's
+    /// defaults in the bounding set and `CAP_SETPCAP` to drop them: the
+    /// child drops them before `execve` (ADR-0051), so a `RUN` never holds
+    /// `CAP_SYS_PTRACE` against ranikust.
+    pub(crate) direct_drop: bool,
     /// The `RLIMIT_NOFILE` the command starts with; `None` keeps ranikust's.
     pub(crate) nofile: Option<rustix::process::Rlimit>,
+    /// The `RLIMIT_CORE` the command starts with; `None` keeps ranikust's.
+    pub(crate) core: Option<rustix::process::Rlimit>,
     pub(crate) stdio: [ChildStdio; 3],
     pub(crate) argv: Vec<CString>,
     pub(crate) envp: Vec<CString>,
@@ -485,6 +492,13 @@ pub(crate) fn switch_user_and_exec(
             err,
             Step::FileLimit,
             rustix::process::setrlimit(rustix::process::Resource::Nofile, limit),
+        );
+    }
+    if let Some(limit) = args.core {
+        check(
+            err,
+            Step::CoreLimit,
+            rustix::process::setrlimit(rustix::process::Resource::Core, limit),
         );
     }
     exec(err, args, ptrs)
@@ -1180,6 +1194,14 @@ pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
             Err(e) => fail(err, Step::BoundingSet, e),
         }
     }
+    trim_capabilities(err, args);
+}
+
+/// Clears the ambient and inheritable sets and keeps only Docker's defaults
+/// in the permitted and effective sets: lowering them needs no privilege,
+/// unlike the bounding set (ADR-0051). Same rules as
+/// [`drop_capabilities`].
+pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
     match rustix::thread::clear_ambient_capability_set() {
         // Kernels before 4.3 have no ambient set.
         Ok(()) | Err(Errno::INVAL) => {}
@@ -1511,7 +1533,9 @@ mod tests {
             groups: Vec::new(),
             workdir: c"/".into(),
             chroot: None,
+            direct_drop: false,
             nofile: None,
+            core: None,
             stdio: [ChildStdio::Inherit; 3],
             argv: vec![c"sh".into(), c"-c".into()],
             envp: vec![c"A=1".into()],

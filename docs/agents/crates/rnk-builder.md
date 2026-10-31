@@ -49,7 +49,7 @@ pub trait LayerSource: Send {                           // rnk-snapshot's export
 pub struct EntriesLayer<S: EntrySource + Send>;         // entries plus a content source
 pub struct BlobLayer { pub diff_id: Digest, pub blob: Descriptor, pub path: PathBuf, pub mount_from: Option<Reference> }
 impl BlobLayer { pub fn base(diff_id: Digest, blob: Descriptor, path: PathBuf, from: Reference) -> Self; }
-pub struct LayerExporter;                               // into the build dir, blobs named by digest
+pub struct LayerExporter;                               // into the build dir, blobs named by digest; LayerExporter::anonymous(store, ..): anonymous files of the store (ADR-0051)
 impl LayerExporter {
     pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self;  // dir: Store::build_dir(); mtime from time
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;

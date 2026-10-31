@@ -44,11 +44,13 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
+    pub fn start_direct() -> Result<Self>;                         // kaniko mode on / (ADR-0051): Direct on / only, no directory or journal, process made a child subreaper; after each RUN its process tree is killed through pidfds (parent and start time checked again; where seccomp refuses pidfd_open, a plain kill for ranikust's own children only, deeper ones on later rounds) and reaped by pid with WNOHANG; the child drops caps outside Docker's defaults from its bounding set (CAP_SETPCAP), or the RUN is refused (Error::RunReachesState) if any such cap would stay; ambient and inheritable cleared, permitted/effective cut to Docker's defaults; warns when Yama ptrace_scope is 0
     pub fn start_with_root(caps, dir, shared_root: &Path, checked: &RootPath) -> Result<Self>; // the path must be `checked`'s directory; replays journals of that root, by identity; refuses the host's /, /etc, /dev; a later RUN on another path, or whose reopened root differs (dev, ino, mnt_id), is refused
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
 }
+pub fn forbid_core_dumps() -> rustix::io::Result<()>;  // first in main (ADR-0051): soft RLIMIT_CORE 0, hard kept; every later RUN gets the recorded soft limit back (Step::CoreLimit)
 pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation */ }  // #[non_exhaustive]; RunSpec::new
 pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache
 pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // RunSpec::secrets: written
@@ -141,7 +143,9 @@ from `rnk-store`, secret file) and passes `--network`.
   resolve, and an entry that is a mount point or on another mount is left.
 - Every `RUN` (`Full` or `Direct`) gets the `RLIMIT_NOFILE` of
   `Sandbox::set_nofile_limit`, set after the close-on-exec pass, right
-  before `execve` (`Step::FileLimit`); unset, it inherits ranikust's.
+  before `execve` (`Step::FileLimit`); unset, it inherits ranikust's. The
+  `RLIMIT_CORE` recorded by `forbid_core_dumps` is given back the same way
+  (`Step::CoreLimit`).
 - Stubs are journaled in `<state-dir>/sandbox/runs` before they exist (the
   journal is locked before it gets its name, so a replay never takes a live
   one) and removed before the diff; the parent's mtime returns to m0 only if it still

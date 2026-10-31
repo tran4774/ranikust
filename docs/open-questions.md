@@ -402,6 +402,56 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
+### Q-340: Where do kaniko mode's anonymous files live when the container's root has no O_TMPFILE?
+
+- **Blocks:** nothing yet; **Area:** `rnk-store`, `ranikust`
+- **Context:** ADR-0051 keeps kaniko mode's state on `/` in anonymous
+  files: `O_TMPFILE` in the state directory, `memfd` where the filesystem
+  refuses it. Measured on 2026-10-31 (VM `secrets` suite): the overlayfs
+  root of a Docker container refuses `O_TMPFILE` (`EOPNOTSUPP`) on Ubuntu
+  24.04's kernel 6.8 (and on 22.04's 5.15, see the suite's results), so
+  every pulled blob and encoded layer sits in memory, counted against the
+  container's memory limit; a large image can then be killed by the OOM
+  killer. A volume mounted at the state directory (ext4, xfs, tmpfs) takes
+  `O_TMPFILE`, its files as anonymous as on any filesystem.
+- **Options:** (a) keep `memfd` and document the volume (and a warning at
+  start when `memfd` is in use under a cgroup memory limit); (b) refuse
+  kaniko mode on `/` without `O_TMPFILE` unless a flag accepts memory;
+  (c) a named file unlinked at once, which leaves a window a `RUN` running
+  at that moment could use (ruled out by ADR-0051).
+- **Recommendation:** (a): it keeps the default setup flag-free and the
+  state unreachable; the cost is memory only where no volume is mounted.
+- **Interim:** (a) without the warning: `memfd`, with an `info` log line
+  when the fallback starts (`rnk_store`).
+- **Raised:** 2026-10-31
+
+### Q-341: May kaniko mode build on `/` in a container where root may mount?
+
+- **Blocks:** nothing yet; **Area:** `ranikust`, `rnk-sandbox`
+- **Context:** found by the host-safety review of ADR-0051's branch: in a
+  `--privileged` container (or one with `CAP_SYS_ADMIN`), `--mode=kaniko`
+  built on `/` with `Isolation::Direct`, which mounts nothing, so a `RUN`
+  as uid 0 saw the host's devices (`/dev/sda`) and a writable `/proc/sys`
+  (`kernel/core_pattern` runs a binary as host root). Overlay mode, which
+  that container can run, gives `RUN` the full sandbox.
+- **Options:** (a) refuse kaniko mode on `/` where root may mount, and
+  point to overlay mode; (b) in that case, enter a private mount namespace
+  and apply Docker's read-only and masked paths (`/proc/sys`,
+  `sysrq-trigger`, `kcore`…) and a `nodev` remount before the first `RUN`.
+- **Recommendation:** (a): overlay mode is the better build there anyway;
+  (b) adds a second sandbox to maintain for a case nobody needs.
+- **Meanwhile:** (a) is in place, and kaniko mode on `/` also refuses a
+  `/proc/sys` that `statvfs` does not report read-only (Docker's
+  `systempaths=unconfined`, Kubernetes' `procMount: Unmasked`), which hands
+  a uid 0 `RUN` `kernel/core_pattern` without any capability. Host devices
+  given with `--device` stay readable and writable by such a `RUN`:
+  ranikust cannot tell them from the container's own, so the docs leave
+  them to the operator.
+- **Interim:** (a): `--mode=kaniko` on `/` with the namespace entered
+  refuses with that guidance (`crates/ranikust/src/main.rs`); `--mode=auto`
+  picks overlay mode there already.
+- **Raised:** 2026-10-31
+
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?

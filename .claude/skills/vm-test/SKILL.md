@@ -19,6 +19,7 @@ RANIKUST_QUICK_CASES="run copy" just test-vm quick   # some of them
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
 just test-vm e2e          # large benchmark only: nextjs-kaniko W1-W3
 just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
+just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker (ADR-0051)
 ```
 
 - **Smoke test or proof of concept as real root: `quick`**, the small
@@ -29,6 +30,8 @@ just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS regis
   `RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1` unless official
   numbers are needed.
 
+- `secrets` runs only when named: a few minutes; a change to kaniko mode
+  on `/`, the store's anonymous mode or `Isolation::Direct` reruns it.
 - `push` runs only when named and needs the host's test registries
   (`just registry-up`, docs/testing.md#test-registries), which the VM
   reaches as `10.0.2.2`.

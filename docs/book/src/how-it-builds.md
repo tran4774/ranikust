@@ -81,6 +81,22 @@ with the default security profile or in most Kubernetes pods.
 - `RUN` commands run in the same container as ranikust, without extra
   isolation. The container is the only boundary, as with kaniko. Run it in a
   container made for the build.
+- What ranikust holds stays out of `RUN`'s reach even there: the image
+  layers it pulls and writes are files without a name, its own process
+  cannot be inspected through `/proc` (unless the container grants
+  `CAP_SYS_PTRACE` and ranikust cannot take it away from `RUN`, in which
+  case it refuses to build), and no process a `RUN` starts in the
+  background outlives that `RUN`. Three things ranikust cannot hide, and
+  warns about: a value on its own command line (a `--build-arg TOKEN=…`:
+  pass secrets with `--secret`), credentials held in the environment of
+  another process of the container (start ranikust as the container's
+  first process, `exec` it, rather than from a shell that keeps them), and
+  any file mounted into the container (pass registry credentials in
+  `DOCKER_AUTH_CONFIG` rather than a mounted `config.json`).
+  A container's own root filesystem cannot hold such files on most
+  kernels, so they are kept in memory there, counted against the
+  container's memory limit; mount a volume at `/var/lib/ranikust` to keep
+  them on disk.
 - Stages build one after another. The `--parallel-stages` option builds
   independent stages in parallel, each in its own directory, at a cost:
   `RUN` commands then have no `/proc`, and some tools fail or quietly

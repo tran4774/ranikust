@@ -576,3 +576,59 @@ fn a_failed_new_cache_leaves_nothing() {
     let ok = store.cache_lease("k", CacheSharing::Shared, None, &never);
     assert!(ok.unwrap().created());
 }
+
+#[test]
+fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(store.is_anonymous());
+    let key = EntryKey::Blob(digest(1));
+    assert_eq!(store.get(&key).unwrap(), None);
+    let path = store.fill(&key, |e| write_blob(e, b"blob")).unwrap();
+    assert!(path.starts_with("/proc/self/fd"), "{}", path.display());
+    assert_eq!(fs::read(&path).unwrap(), b"blob");
+    // A second fill reuses the entry, without running the filler.
+    let again = store
+        .fill(&key, |_| -> io::Result<u64> { panic!("filled twice") })
+        .unwrap();
+    assert_eq!(again, path);
+    assert_eq!(store.get(&key).unwrap(), Some(path.clone()));
+    let (mut f, other) = store.anonymous_file().unwrap();
+    f.write_all(b"layer").unwrap();
+    assert_eq!(fs::read(&other).unwrap(), b"layer");
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+    let layer = store.fill(&EntryKey::Layer(digest(2)), |_| -> io::Result<u64> {
+        Ok(0)
+    });
+    assert!(matches!(layer, Err(Error::Anonymous(_))), "{layer:?}");
+    let never = || false;
+    let cache = store.cache_lease("k", CacheSharing::Shared, None, &never);
+    assert!(matches!(cache, Err(Error::Anonymous(_))));
+    store.close().unwrap();
+    assert!(names(&state).is_empty());
+}
+
+#[test]
+fn a_persistent_store_gives_anonymous_files_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let (mut f, path) = store.anonymous_file().unwrap();
+    f.write_all(b"kept tree").unwrap();
+    assert!(path.starts_with("/proc/self/fd"), "{}", path.display());
+    assert_eq!(fs::read(&path).unwrap(), b"kept tree");
+    assert!(names(store.build_dir()).is_empty());
+}
+
+#[test]
+fn a_failed_anonymous_fill_publishes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_anonymous(dir.path()).unwrap();
+    let key = EntryKey::Blob(digest(3));
+    let r = store.fill(&key, |_| -> io::Result<u64> {
+        Err(io::Error::other("digest mismatch"))
+    });
+    assert!(matches!(r, Err(Error::Fill { .. })), "{r:?}");
+    assert_eq!(store.get(&key).unwrap(), None);
+}

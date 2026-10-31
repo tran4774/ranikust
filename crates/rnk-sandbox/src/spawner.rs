@@ -37,6 +37,7 @@ use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
 use crate::seccomp;
 use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, SecretFile, Stdio};
+use crate::sweep;
 
 /// Runs `RUN` commands.
 ///
@@ -108,6 +109,23 @@ impl Sandbox {
         Ok(sandbox)
     }
 
+    /// Starts the spawner for kaniko mode on `/` in a container (ADR-0051):
+    /// [`Isolation::Direct`] on `/` only, with no directory of its own (it
+    /// places nothing, so it journals nothing), and the process made a
+    /// child subreaper, so that whatever a `RUN` leaves behind, `setsid`
+    /// ones included, becomes ranikust's child and is killed and reaped
+    /// once the `RUN` ends. Process-wide; call it once, from the binary.
+    ///
+    /// # Errors
+    ///
+    /// `prctl(PR_SET_CHILD_SUBREAPER)` failed, or the thread cannot start.
+    pub fn start_direct() -> Result<Self> {
+        rustix::process::set_child_subreaper(Some(rustix::process::getpid()))
+            .map_err(|e| sys_err("prctl(PR_SET_CHILD_SUBREAPER)", e))?;
+        sweep::warn_ptrace_scope();
+        Self::spawn_thread(Runner::direct_only())
+    }
+
     fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
         let runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
         let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
@@ -118,6 +136,10 @@ impl Sandbox {
                 replayed.journals
             );
         }
+        Self::spawn_thread(runner)
+    }
+
+    fn spawn_thread(runner: Runner) -> Result<Self> {
         let parent = ParentPid::new()?;
         let (requests, received) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -598,6 +620,9 @@ pub(crate) struct Runner {
     /// its identity then (device, inode, mount id): a `RUN` on that path
     /// whose reopened root is another directory is refused.
     shared_root: Option<(PathBuf, RootId)>,
+    /// [`Sandbox::start_direct`]: `Direct` on `/` only, which places nothing
+    /// and so has no journal and no directory (ADR-0051).
+    direct_only: bool,
 }
 
 /// What identifies a root directory: device, inode and mount id.
@@ -626,7 +651,25 @@ impl Runner {
             userns_network: false,
             nofile: None,
             shared_root: None,
+            direct_only: false,
         })
+    }
+
+    /// A runner for `Direct` on `/` only: no directory, no journal, nothing
+    /// to replay (ADR-0051).
+    fn direct_only() -> Self {
+        Self {
+            runs_dir: PathBuf::new(),
+            state_dir: PathBuf::new(),
+            root_entry: None,
+            drops: caps::bounding_drops(caps::last_cap()),
+            next: AtomicU64::new(0),
+            net_mode: OnceLock::new(),
+            userns_network: false,
+            nofile: None,
+            shared_root: None,
+            direct_only: true,
+        }
     }
 
     pub(crate) fn runs_dir(&self) -> &Path {
@@ -697,7 +740,7 @@ impl Runner {
         } else {
             Span::none()
         };
-        let result = span.in_scope(|| execute(job, spawn, &program, running));
+        let result = span.in_scope(|| execute(job, spawn, &program, running, self.direct_only));
         match &result {
             Ok((status, usage)) => {
                 record_usage(&span, usage);
@@ -750,11 +793,18 @@ impl Runner {
             std::mem::take(&mut spec.stderr),
         ];
         if direct && spec.root_dir == Path::new("/") {
-            // As kaniko: the container's own files, nothing placed.
-            return Ok((
-                self.job(spec, &user, Vec::new(), None, stdio, root_entry, None)?,
-                None,
-            ));
+            // As kaniko: the container's own files, nothing placed; but no
+            // capability that reads ranikust's state (ADR-0051).
+            let drop = direct_slash_drop()?;
+            let mut job = self.job(spec, &user, Vec::new(), None, stdio, root_entry, None)?;
+            job.args.direct_drop = drop;
+            return Ok((job, None));
+        }
+        if self.direct_only {
+            return Err(Error::InvalidSpec(format!(
+                "this sandbox runs Isolation::Direct on / only, not on {}",
+                spec.root_dir.display()
+            )));
         }
         let chroot = if direct {
             // By identity, not by name: a bind mount of `/` passes any
@@ -927,10 +977,12 @@ impl Runner {
                 .collect(),
             workdir: cstring(&spec.workdir)?,
             chroot,
+            direct_drop: false,
             nofile: self.nofile.map(|l| rustix::process::Rlimit {
                 current: l.soft,
                 maximum: l.hard,
             }),
+            core: crate::spec::original_core_limit(),
             stdio,
             argv: spec.argv.iter().map(cstring).collect::<Result<_>>()?,
             envp,
@@ -1274,16 +1326,28 @@ fn kill_run(pid: Pid, isolation: Isolation) {
 
 /// Clones the child, learns whether it reached `execve`, and reaps it. With
 /// `running`, the child can be killed by [`Sandbox::cancel`] until it exits.
+/// With `sweep` (a [`Sandbox::start_direct`] sandbox: a subreaper running
+/// one `RUN` at a time), what the `RUN` left is killed and reaped too.
 fn execute(
     job: Job,
     spawn: impl FnOnce(Job) -> Result<Spawned>,
     program: &str,
     running: Option<&Running>,
+    sweep: bool,
 ) -> Result<(ExitStatus, libc::rusage)> {
     let isolation = job.isolation;
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
     }
+    // ranikust's own children before the `RUN`: whatever else becomes its
+    // child while the `RUN` runs is the `RUN`'s, reparented to the
+    // subreaper (ADR-0051).
+    let sweep = sweep && isolation == Isolation::Direct;
+    let helpers = if sweep {
+        sweep::children_of_self()?
+    } else {
+        Vec::new()
+    };
     let Spawned {
         pid,
         failures,
@@ -1313,6 +1377,9 @@ fn execute(
     });
     let cancelled = running.is_some_and(|r| r.remove(pid));
     let killed = match (exited, isolation) {
+        (Ok(()), Isolation::Direct) if sweep => {
+            kill_leftovers(pid).and_then(|()| sweep::kill_run_tree(pid, &helpers))
+        }
         (Ok(()), Isolation::Direct) => kill_leftovers(pid),
         // The child is PID 1 of its namespace: when it exits, the kernel
         // kills the rest.
@@ -1374,6 +1441,33 @@ fn wait_exited(pid: Pid) -> Result<()> {
             Err(Errno::INTR) => {}
             Err(e) => return Err(sys_err("waitid", e)),
         }
+    }
+}
+
+/// Whether a `Direct` child on `/` drops capabilities from its bounding set
+/// (ADR-0051): those outside Docker's defaults, where ranikust holds
+/// `CAP_SETPCAP`. Without it, any capability outside the defaults left in
+/// the bounding set stops the `RUN`. The child trims its ambient,
+/// inheritable, permitted and effective sets to the defaults in every case,
+/// which needs no privilege.
+fn direct_slash_drop() -> Result<bool> {
+    // Only a root parent gives its `RUN` the bounding set as permitted
+    // capabilities; kaniko mode always runs as root. A non-root process
+    // (a test) keeps a full bounding set it never passes on.
+    if !rustix::process::geteuid().is_root() {
+        return Ok(false);
+    }
+    let bounding = caps::bounding_set(caps::last_cap());
+    let setpcap = rustix::thread::capabilities(None)
+        .map_err(|e| sys_err("read the capability sets", e))?
+        .effective
+        .contains(rustix::thread::CapabilitySet::SETPCAP);
+    match caps::direct_caps(bounding, setpcap) {
+        caps::DirectCaps::Keep => Ok(false),
+        caps::DirectCaps::Drop => Ok(true),
+        caps::DirectCaps::Refuse(names) => Err(Error::RunReachesState {
+            caps: names.join(", "),
+        }),
     }
 }
 
@@ -1805,7 +1899,8 @@ mod tests {
     /// A real `Direct` `RUN` in a `chroot`, as root in the VM: the shell and
     /// its libraries are copied from the VM into a fresh root, which then
     /// sees ranikust's `hosts` and `resolv.conf`, `/dev` nodes, no `/proc`,
-    /// and the `RLIMIT_NOFILE` given back; after it, the root is as before.
+    /// and the `RLIMIT_NOFILE` and `RLIMIT_CORE` given back; after it, the
+    /// root is as before.
     #[test]
     #[ignore = "T2: chroot and mknod as real root; run in the test VM only"]
     fn direct_runs_in_a_chroot_with_placed_files_as_root() {
@@ -1821,12 +1916,28 @@ mod tests {
             soft: Some(777),
             hard,
         });
+        // An unlimited core size (raised as root: the VM's hard limit may be
+        // 0) that `forbid_core_dumps` cuts to 0 here and the `RUN` gets back.
+        rustix::process::setrlimit(
+            rustix::process::Resource::Core,
+            rustix::process::Rlimit {
+                current: None,
+                maximum: None,
+            },
+        )
+        .unwrap();
+        crate::forbid_core_dumps().unwrap();
+        assert_eq!(
+            rustix::process::getrlimit(rustix::process::Resource::Core).current,
+            Some(0)
+        );
         let script = "exec >/out.txt; \
             while read -r l; do echo \"hosts:$l\"; done </etc/hosts; \
             [ -f /etc/resolv.conf ] && echo resolv; \
             [ -c /dev/null ] && echo null; [ -c /dev/urandom ] && echo urandom; \
             [ -d /proc/self ] || echo noproc; \
-            echo \"nofile:$(ulimit -n)\"; echo x >/dev/null && echo devnull-ok";
+            echo \"nofile:$(ulimit -n)\"; echo \"core:$(ulimit -c)\"; \
+            echo x >/dev/null && echo devnull-ok";
         let mut spec = RunSpec::new(&wd, vec!["/bin/sh".into(), "-c".into(), script.into()]);
         spec.isolation = Isolation::Direct;
         let status = sandbox.run(spec).unwrap();
@@ -1842,6 +1953,7 @@ mod tests {
         ] {
             assert!(out.lines().any(|l| l == line), "{line}: {out}");
         }
+        assert!(out.lines().any(|l| l == "core:unlimited"), "{out}");
         assert!(
             out.contains("hosts:") && !out.contains("hosts:image"),
             "{out}"
@@ -1969,6 +2081,55 @@ mod tests {
         });
         assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
         assert!(start.elapsed() < std::time::Duration::from_secs(20));
+    }
+
+    /// Processes a `Direct` `RUN` leaves, in its group, `setsid` out of it
+    /// or double-forked, are gone when `run` returns (ADR-0051). Real root
+    /// (the `RUN` switches to root's ids); T2.
+    #[test]
+    #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+    fn a_direct_run_leaves_no_process_behind() {
+        let sandbox = Sandbox::start_direct().unwrap();
+        let script = "sleep 3001 & setsid sleep 3002 & (setsid sh -c 'sleep 3003 &' &); exit 0";
+        let mut spec = RunSpec::new("/", vec!["/bin/sh".into(), "-c".into(), script.into()]);
+        spec.isolation = Isolation::Direct;
+        spec.workdir = "/".into();
+        let status = sandbox.run(spec).unwrap();
+        assert!(status.success());
+        let mut alive = Vec::new();
+        for entry in fs::read_dir("/proc").unwrap().flatten() {
+            let Ok(cmd) = fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let cmd = String::from_utf8_lossy(&cmd).replace('\0', " ");
+            if ["3001", "3002", "3003"]
+                .iter()
+                .any(|n| cmd.trim_end() == format!("sleep {n}"))
+            {
+                alive.push(cmd);
+            }
+        }
+        assert!(alive.is_empty(), "left alive: {alive:?}");
+    }
+
+    /// A `Direct` `RUN` on `/` never holds `CAP_SYS_PTRACE` (ADR-0051):
+    /// the VM's root has every capability, all dropped from the bounding
+    /// set but Docker's defaults. T2.
+    #[test]
+    #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+    fn a_direct_run_on_slash_keeps_only_dockers_capabilities() {
+        let sandbox = Sandbox::start_direct().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("status");
+        let script = format!("grep CapBnd /proc/self/status > {}", out.display());
+        let mut spec = RunSpec::new("/", vec!["/bin/sh".into(), "-c".into(), script.into()]);
+        spec.isolation = Isolation::Direct;
+        spec.workdir = "/".into();
+        assert!(sandbox.run(spec).unwrap().success());
+        let line = fs::read_to_string(&out).unwrap();
+        let hex = line.split_whitespace().nth(1).unwrap();
+        let bounding = u64::from_str_radix(hex, 16).unwrap();
+        assert_eq!(bounding & !caps::docker_default_mask(), 0, "{line}");
     }
 
     #[test]

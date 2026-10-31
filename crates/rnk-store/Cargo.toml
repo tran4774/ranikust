@@ -15,7 +15,7 @@ workspace = true
 rnk-oci.workspace = true
 rnk-rootfs.workspace = true
 # `process`: `geteuid`, for the warning about a shared state directory.
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

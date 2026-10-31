@@ -59,6 +59,13 @@ pub struct ClientOptions {
     /// network (threat model T11). Any other plain-HTTP registry is
     /// accessed anonymously.
     pub http_credentials: BTreeSet<String>,
+    /// Credentials only over verified TLS: never over plain HTTP (whatever
+    /// [`Self::http_credentials`] lists) nor to a registry in
+    /// [`Self::skip_tls_verify`]. For kaniko mode on `/`, where a `RUN` can
+    /// edit `/etc/hosts` or `/etc/resolv.conf` and send later requests to a
+    /// host of its choosing; only a verified certificate tells it apart
+    /// (ADR-0051).
+    pub verified_credentials_only: bool,
     /// Registries whose TLS certificate is not verified
     /// (`--skip-tls-verify`, `--skip-tls-verify-pull`,
     /// `--skip-tls-verify-registry`).
@@ -88,6 +95,7 @@ impl Default for ClientOptions {
         Self {
             insecure: BTreeSet::new(),
             http_credentials: BTreeSet::new(),
+            verified_credentials_only: false,
             skip_tls_verify: BTreeSet::new(),
             registry_certificates: Vec::new(),
             retry: RetryPolicy::default(),
@@ -206,6 +214,12 @@ struct Host {
 const WITHHELD: &str = "its credentials are not sent over plain HTTP to a \
     registry the operator did not name for it; list it with \
     --insecure-registry (or, for a destination, use --insecure) to send them";
+
+/// Why configured credentials are not sent in kaniko mode on `/`.
+const WITHHELD_UNVERIFIED: &str = "in kaniko mode on / its credentials go only over \
+    verified TLS: a RUN can edit /etc/hosts and /etc/resolv.conf, so plain HTTP or an \
+    unverified certificate could carry them to a host of its choosing; use the registry \
+    over HTTPS with a certificate ranikust trusts (--registry-certificate)";
 
 /// Whether `e` is a registry refusing access: an authentication failure,
 /// or 401/403 and the distribution codes for them.
@@ -949,18 +963,27 @@ impl Client {
         // (`http_credentials`, threat model T11). Any other plain-HTTP
         // registry, a loopback one or one only `--insecure-pull` allows, is
         // accessed anonymously.
-        let withheld = scheme == "http"
-            && !self.options.http_credentials.contains(registry)
-            && configured.is_some();
+        // With `verified_credentials_only` (kaniko mode on `/`), nothing
+        // but verified TLS carries them (ADR-0051).
+        let unverified =
+            self.options.verified_credentials_only && (scheme == "http" || skip_verify);
+        let withheld = configured.is_some()
+            && (unverified
+                || (scheme == "http" && !self.options.http_credentials.contains(registry)));
+        let why = if unverified {
+            WITHHELD_UNVERIFIED
+        } else {
+            WITHHELD
+        };
         let credential = if withheld { None } else { configured };
         if withheld {
             if matches!(ping, Ping::Basic) {
                 return Err(Error::Auth {
                     host: registry.to_owned(),
-                    reason: format!("it asks for basic authentication; {WITHHELD}"),
+                    reason: format!("it asks for basic authentication; {why}"),
                 });
             }
-            tracing::warn!(registry, "{WITHHELD}; accessing it anonymously");
+            tracing::warn!(registry, "{why}; accessing it anonymously");
         }
         if configured.is_none()
             && let Some(helper) = self.credentials.helper(registry)

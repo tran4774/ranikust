@@ -43,23 +43,42 @@ store: there `RUN` has its own namespaces.
   stage image for `FROM`) is kept as a tar in an anonymous file.
 - **Non-dumpable process.** `prctl(PR_SET_DUMPABLE, 0)` first in `main`,
   again after any credential change: `/proc/<ranikust>/{fd,environ,mem,
-  maps,root}` need `CAP_SYS_PTRACE`.
+  maps,root}` need `CAP_SYS_PTRACE`. The soft `RLIMIT_CORE` is set to 0
+  as well, so no core dump of ranikust lands where `RUN` reads it; the
+  `RUN` child gets the original soft limit back, as with `RLIMIT_NOFILE`.
 - **No ptrace for `RUN`.** In the `RUN` child, before `execve`, every
   capability outside Docker's defaults is dropped from the bounding set
   (the child is single-threaded, so no constraint on ranikust's own
   threads). Where it cannot be dropped (no `CAP_SETPCAP`) and the bounding
-  set still holds `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH`, the build
-  stops with the reason; no flag lifts it.
+  set holds any capability outside Docker's defaults (`SYS_PTRACE` and
+  `DAC_READ_SEARCH` read the state; `SYS_ADMIN` could mount over `/proc`;
+  `BPF`, `SYS_MODULE`, `SYS_RAWIO` reach kernel memory), the build stops
+  with the reason; no flag lifts it. In every case the child clears its
+  ambient and inheritable sets and keeps only Docker's defaults in its
+  permitted and effective sets.
+- **Where root may mount, or `/proc/sys` is writable, kaniko mode on `/`
+  is refused** (Q-341): a privileged container could undo every barrier
+  above (mount over `/proc`, write `kernel/core_pattern` with no
+  capability at all); overlay mode or a build root in the state directory
+  is the way there. Host devices passed with `--device` are outside what
+  ranikust can see and stay the operator's choice.
 - **No surviving process (B6).** ranikust is a subreaper; after each `RUN`
   it kills the `RUN`'s process tree (a cgroup of its own where ranikust may
   make one, else the descendants it tracks, `setsid` ones included) and
-  reaps exactly those pids, never `waitpid(-1)`. Helpers of ranikust's own
-  (an external `git`) are not touched.
+  reaps exactly those pids, never `waitpid(-1)`, without blocking. Each
+  kill goes through a pidfd after the process's parent and start time are
+  checked again, so a reused pid is never signalled; where seccomp refuses
+  `pidfd_open`, ranikust's own children (whose pids cannot be reused
+  before ranikust reaps them) get a plain `kill`, and a deeper descendant
+  fails the build closed. Helpers of ranikust's own (an external `git`) are not touched.
 - **Credentials in memory only.** `RUN` gets only the Dockerfile's
   environment; every descriptor is `O_CLOEXEC`; registry credentials are
   read from the environment (`DOCKER_AUTH_CONFIG`) into memory and never
   written to disk. A credential file (`config.json`) is still read; the
   docs say `RUN` can read any file mounted into the container (B7).
+  Because a `RUN` may edit `/etc/hosts` or `/etc/resolv.conf` and redirect
+  later requests, credentials go only over verified TLS in this mode,
+  never over plain HTTP or `--skip-tls-verify`, whatever the flags say.
 - **Routes the proof of concept found (B4, B5).** `/proc/<pid>/cmdline` is
   readable by every process even when not dumpable: a `--build-arg` whose
   name looks like a secret (`TOKEN`, `PASSWORD`, `SECRET`, `KEY`, …) gets a
@@ -80,6 +99,11 @@ store: there `RUN` has its own namespaces.
   run ranikust as PID 1 to close every route; ranikust can only warn.
 - Neutral, because files the operator mounts into the container (a
   `config.json`, a service-account token) stay readable by `RUN`.
+- Bad, because a `RUN` can still redirect anonymous requests and any
+  request to a plain-HTTP or unverified registry through the resolver
+  files; only credentials are kept from them.
+- Bad, because a container that grants extra capabilities without
+  `CAP_SETPCAP`, or runs privileged, cannot use kaniko mode on `/`.
 
 ## Evidence
 
@@ -92,6 +116,12 @@ store: there `RUN` has its own namespaces.
   bounding set. To repeat in the VM under rootful Docker with vectors
   V1–V9 (state, `/proc/*/fd`, `/proc/*/environ`, own environment,
   surviving processes, `unshare -Ur`, cmdline, memory, a parent shell).
+- VM suite `secrets`, 2026-10-31, rootful Docker, Ubuntu 24.04 (6.8) and
+  22.04 (5.15) [measured]: V1-V7 blocked as PID 1, with
+  `--cap-add SYS_PTRACE` and under `sh -c`; V8 (`cmdline`) leaks as
+  expected; V9 (a parent shell's `environ`) leaks only under `sh -c`.
+  `O_TMPFILE` is refused on the container's overlayfs root on both
+  kernels, so the state lives in memfds (Q-340).
 
 ## More Information
 

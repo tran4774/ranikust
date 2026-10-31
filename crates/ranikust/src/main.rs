@@ -34,6 +34,7 @@ mod build;
 mod cli;
 mod config;
 mod container;
+mod exposure;
 mod setup;
 mod startup;
 mod statedir;
@@ -86,6 +87,24 @@ impl Failure {
 }
 
 fn main() -> ExitCode {
+    // ADR-0051: first of all, before any credential is read. A process that
+    // is not dumpable keeps `/proc/<pid>/{fd,environ,mem,maps,root}` from
+    // any process without `CAP_SYS_PTRACE`: a `RUN` sharing ranikust's PID
+    // namespace (kaniko mode on `/`) reads none of them. Nothing here
+    // changes ranikust's credentials later; a change would reset the flag.
+    if let Err(e) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        report(&format!("prctl(PR_SET_DUMPABLE, 0): {e}"));
+        return ExitCode::from(1);
+    }
+    // No core file of ranikust either, whatever `core_pattern` and
+    // `suid_dumpable` say: its memory holds the credentials. Every `RUN`
+    // gets the original soft limit back.
+    if let Err(e) = rnk_sandbox::forbid_core_dumps() {
+        report(&format!("setrlimit(RLIMIT_CORE, 0): {e}"));
+        return ExitCode::from(1);
+    }
     let (command, metrics_file) = match cli::parse(std::env::args_os()) {
         Ok(parsed) => {
             let file = parsed.cli.metrics_file().map(Path::to_path_buf);
@@ -329,6 +348,40 @@ fn kaniko(
             false
         }
     };
+    if on_slash && can_mount {
+        // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
+        // also gives a `Direct` `RUN` on `/` the host's devices and a
+        // writable /proc/sys: refused until it gets Docker's read-only and
+        // masked paths [open: Q-341]. Overlay mode runs there instead.
+        return Err(Failure::error(format!(
+            "{how}: kaniko mode on / in a container where root may mount would run RUN with \
+             the host's devices and a writable /proc/sys; use overlay mode there \
+             (--mode=overlay or --mode=auto), with a volume at the state directory"
+        )));
+    }
+    if on_slash {
+        // A writable /proc/sys hands a uid 0 `RUN` the host's root through
+        // kernel/core_pattern without any capability (ADR-0051, Q-341).
+        match exposure::proc_sys_read_only(Path::new("/proc/sys")) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Failure::error(format!(
+                    "{how}: kaniko mode on / with a writable /proc/sys would let RUN write \
+                     kernel/core_pattern and run a program as the host's root; keep the \
+                     container's default read-only /proc/sys, or use overlay mode"
+                )));
+            }
+            Err(e) => {
+                return Err(Failure::error(format!(
+                    "{how}: cannot tell whether /proc/sys is read-only ({e}); kaniko mode on / \
+                     refuses to build without knowing"
+                )));
+            }
+        }
+        // What ranikust cannot close itself (ADR-0051, B4 and B5).
+        exposure::warn_build_args(&config.build_args);
+        exposure::warn_credential_holders(&exposure::secret_variables(config));
+    }
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
         // The walk still runs, with fewer descriptors to hold directories.

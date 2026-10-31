@@ -92,10 +92,12 @@ pub enum Step {
     Chroot,
     /// Giving the command the `RLIMIT_NOFILE` ranikust started with.
     FileLimit,
+    /// Giving the command the `RLIMIT_CORE` ranikust started with.
+    CoreLimit,
 }
 
 impl Step {
-    const ALL: [Step; 39] = [
+    const ALL: [Step; 40] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -135,6 +137,7 @@ impl Step {
         Step::Seccomp,
         Step::Chroot,
         Step::FileLimit,
+        Step::CoreLimit,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -194,6 +197,7 @@ impl Step {
             Step::Seccomp => "install the seccomp filter",
             Step::Chroot => "chroot into the root",
             Step::FileLimit => "set RLIMIT_NOFILE",
+            Step::CoreLimit => "set RLIMIT_CORE",
         }
     }
 }
@@ -274,6 +278,27 @@ pub enum Error {
         direct: io::Error,
         /// Why the user-namespace path failed.
         userns: io::Error,
+    },
+    /// A `Direct` `RUN` on `/` would keep a capability outside Docker's
+    /// defaults (any may reach ranikust's state: ptrace, a mount over
+    /// `/proc`, BPF, modules, raw I/O), and ranikust lacks `CAP_SETPCAP` to
+    /// drop it (ADR-0051).
+    #[error(
+        "RUN directly on /: the container grants {caps}, beyond Docker's defaults, which \
+         a RUN could use to reach ranikust's state and credentials, and ranikust lacks \
+         CAP_SETPCAP to take them away from the RUN; start the container without them, \
+         or with CAP_SETPCAP"
+    )]
+    RunReachesState {
+        /// The capabilities, comma-separated.
+        caps: String,
+    },
+    /// The `RUN` left processes that kept appearing after every kill: a
+    /// fork loop faster than the sweep (ADR-0051).
+    #[error("RUN left processes that could not all be killed ({left} still alive)")]
+    Survivors {
+        /// How many were alive after the last round.
+        left: usize,
     },
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
