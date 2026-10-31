@@ -2,7 +2,7 @@
 
 **TL;DR:** Where each kaniko package lands in ranikust, what happens to each
 common flag, and the behaviour to match, cited as `kaniko@44aa7ddc0 path:line`.
-For anything else, use `kaniko-parity` or `kaniko-oracle`, never memory.
+For anything else, use `kaniko-parity` or `upstream-oracle`, never memory.
 
 ## Source
 

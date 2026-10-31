@@ -12,7 +12,7 @@ source; do not load the long documents unless a card sends you there.
 | First time in the repo | [overview.md](overview.md), [rules.md](rules.md) |
 | Work on a crate | [rules.md](rules.md), [crates/\<crate\>.md](crates/), then the design doc the card links |
 | Pick the next Phase 2 task | [phase-2.md](phase-2.md), then the crate card; Phase 1 history in [phase-1.md](phase-1.md) |
-| Match kaniko behaviour, port a kaniko feature or flag | [kaniko-map.md](kaniko-map.md), then `kaniko-oracle` / the `kaniko-parity` skill |
+| Match kaniko behaviour, port a kaniko feature or flag | [kaniko-map.md](kaniko-map.md), then `upstream-oracle` / the `kaniko-parity` skill; for BuildKit, `buildkit-parity` |
 | Build, test, commit, open a PR | [workflow.md](workflow.md) |
 | Unknown term (whiteout, copy-up, lazy export, W3…) | [glossary.md](glossary.md) |
 | Need a spec, upstream source or crate doc | [refs.md](refs.md) |

@@ -1,3 +1,9 @@
 * text=auto eol=lf
 *.rs diff=rust
 *.md diff=markdown
+# Parallel branches only append to these two: a union merge keeps both sides'
+# lines instead of a conflict. Never for files whose lines are edited in place
+# (phase-N.md checklists, open-questions.md, crate cards): union would keep the
+# old and the new line (docs/agents/workflow.md#merging-parallel-branches).
+docs/adr/README.md merge=union
+CHANGELOG.md merge=union

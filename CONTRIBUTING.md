@@ -66,7 +66,8 @@ just ci                   # everything CI runs, before you open a pull request
 
 Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
-documentation. Every recipe that mirrors CI runs exactly the command of the
+documentation; `just docs-lint` (local only, needs python3) after an ADR or
+an open question changes. Every recipe that mirrors CI runs exactly the command of the
 CI job; if you change one, change the other.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do

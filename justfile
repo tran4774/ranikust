@@ -188,6 +188,14 @@ book:
 changelog *args:
     git cliff --unreleased {{ args }}
 
+# Local only, not in CI yet: mechanical checks of the decision records (every ADR indexed with its status, no duplicate question, no `[open: Q-NNN]` left for an answered question). Requires python3.
+docs-lint:
+    python3 -I scripts/docs-lint.py
+
+# Local only: print the brief the `host-safety` subagent needs for a branch against main (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries). Requires python3; graphify optional.
+review-pack branch *args:
+    python3 -I scripts/review-pack.py {{ branch }} {{ args }}
+
 # Everything CI runs, in CI's order.
 ci: fmt-check lint test build-static check-aarch64 test-aarch64 deny doc book
 

@@ -7,8 +7,11 @@ digests. If a rule blocks the task, stop and ask.
 ## Host safety
 
 - ranikust runs `RUN` as root, mounts and empties build roots. Never run it
-  in kaniko mode with rootfs `/` on the host: it deletes the host's files.
-  Use a `--workdir` under a fresh temp dir, or the VM tier.
+  in kaniko mode inside a container whose `/` is the host's (or anything the
+  container heuristic could mistake for one): there the root is `/` and it
+  is extracted over and emptied (ADR-0048, ADR-0050). On a host, kaniko mode
+  builds in `<state>/builds/<id>/rootfs`; use a fresh temp `--state-dir`
+  or the VM tier.
 - Never use `sudo`, `pkexec`, `su`, `doas`, `mount`, `umount`, `unshare` or
   `nsenter`. If a task needs root, stop and say so.
 - Privileged tests (tier T2) run only in a disposable VM, never on the host.
@@ -22,12 +25,15 @@ digests. If a rule blocks the task, stop and ask.
 
 From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the [threat model](../security/threat-model.md#5-threats-and-mitigations) (T-ids).
 
-- Write only to the workdir, the state directory or store, and the outputs.
+- Write only to the build root ranikust picked, the state directory or
+  store, and the outputs.
 - Delete by file descriptor, never following symlinks or crossing a mount
   point (mount id, never `st_dev` alone; T4).
-- Workdir outside a container: not `/`, no system directory inside (by
-  `(dev, ino)`), `.ranikust-root` marker if not empty; locked in kaniko mode.
-  There the state directory is on the ignore list (`ADR-0022`).
+- No user-supplied build root (`ADR-0050`): `/` only in a container
+  (`ADR-0048`), locked, with the state directory on the ignore list;
+  otherwise `<state>/builds/<id>/rootfs`. The state directory is checked by
+  descriptor: owned by the running user, `0700`, its ancestors not writable
+  by group or others (root-owned sticky directories excepted).
 - `RUN` enters via `pivot_root` (`MS_MOVE` + `chroot` if seccomp blocks it);
   bare `chroot` only with `--parallel-stages` (T5). Bounding and inheritable
   capabilities drop to Docker's defaults for every `USER` (T6).
