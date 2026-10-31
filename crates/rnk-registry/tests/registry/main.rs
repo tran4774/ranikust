@@ -847,7 +847,10 @@ async fn a_streamed_blob_broken_after_its_first_bytes_fails_at_once_and_for_good
     });
     let (read, first, again) = receive.await.unwrap();
     assert!(read <= 100, "{read}");
-    assert!(!first.contains("restart"), "the first error is reported: {first}");
+    assert!(
+        !first.contains("restart"),
+        "the first error is reported: {first}"
+    );
     assert_eq!(first, again);
     // Bytes went out: no retry, no wait.
     assert_eq!(registry.count("GET /v2/app/blobs/"), 1);

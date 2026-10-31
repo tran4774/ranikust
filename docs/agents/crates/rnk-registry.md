@@ -21,6 +21,11 @@ while streaming; never log a credential.
   blocking reader over a 256 KiB pipe (`PIPE_BYTES`) that a thread of its
   own fills, for kaniko mode's extraction; `BlobBody::Remote`, a push
   whose body is pulled from another repository through the same pipe.
+  The reader (or body) owns the thread: dropped, it stops the pull and
+  joins the thread, so no pull outlives the runtime. A pull into a pipe is
+  retried only until its first byte; after that its first error is final,
+  and a reader that failed fails on every read. Read only from a thread
+  outside the runtime (a stage's): inside, the read fails.
 
 ## Must not
 
@@ -53,7 +58,7 @@ pub struct ImageManifests { pub manifest: RawManifest, pub index: Option<RawMani
 pub enum PushOutcome { Existed, Mounted, Uploaded }
 pub enum BlobBody { Bytes(Bytes), File(PathBuf), Remote(Box<RemoteBlob>) } // reopened per attempt; Remote pulled through a pipe
 pub fn Client::open_blob(self: &Arc<Self>, h: &Handle, r: &Reference, d: &Descriptor) -> io::Result<BlobReader>; // blocking Read, fails unless size and digest match
-pub trait BlobSink: AsyncWrite + Unpin + Send { fn reset(&mut self) -> impl Future<Output = io::Result<()>>; } // File, Vec<u8>
+pub trait BlobSink: AsyncWrite + Unpin + Send { fn reset(&mut self) -> impl Future<Output = io::Result<()>>; fn can_restart(&self) -> bool { true } } // File, Vec<u8>
 pub fn select_platform<'a>(index: &'a ImageIndex, p: &Platform) -> Option<&'a Descriptor>;
 impl Client {
     pub fn new(options: ClientOptions, trust: TrustStore, credentials: Credentials) -> Result<Client, Error>;

@@ -70,6 +70,8 @@ pub(crate) struct State {
     /// Break the connection after this many bytes of a blob's body (its
     /// full length announced), on every GET of it.
     pub(crate) cut: HashMap<String, usize>,
+    /// Requests whose path contains one of these are never answered.
+    pub(crate) stalled: Vec<String>,
     /// Answer mounts with `202` and an upload session.
     pub(crate) refuse_mounts: bool,
     /// `METHOD path?query` of every request, in order.
@@ -220,6 +222,17 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         .map(|b| b.to_bytes())
         .unwrap_or_default();
 
+    let stalled = {
+        let mut state = state.lock().unwrap();
+        let stalled = state.stalled.iter().any(|s| path.contains(s.as_str()));
+        if stalled {
+            state.log.push(format!("{method} {path}?{query}"));
+        }
+        stalled
+    };
+    if stalled {
+        return std::future::pending::<Reply>().await;
+    }
     let mut state = state.lock().unwrap();
     state.log.push(format!("{method} {path}?{query}"));
     let fault = state

@@ -38,9 +38,10 @@ impl BuildTime {
     pub fn layer_mtime(&self) -> Option<i64>;           // for EncodeOptions::mtime: later mtimes clamped to it
     pub fn rfc3339(&self) -> String;                    // Go's RFC3339Nano, as kaniko writes
 }
-pub struct LayerDemand { pub push: bool, pub cache: bool, pub target: bool, pub output: bool }
+pub struct LayerDemand { pub push: bool, pub cache: bool, pub target: bool, pub output: bool, pub saved: bool }
 impl LayerDemand {
     pub fn for_stage(in_target: bool, outputs: &Outputs, cache: bool) -> Self;  // [open: Q-029] rnk-sched calls it
+    pub fn saved(self, saved: bool) -> Self;  // kaniko mode: a later stage is built FROM it; encoded, never pushed or written
     pub fn needed(&self) -> bool;
 }
 pub trait LayerSource: Send {                           // rnk-snapshot's exporter implements it
@@ -58,9 +59,11 @@ impl LayerExporter {
     pub fn with_uploader(self, uploader: Uploader) -> Self;  // ADR-0055: pushed layers go to the destinations as exported
     pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand);  // hands a pushed layer to the uploader
     pub async fn finish_uploads(&self) -> Result<BTreeSet<Digest>>;  // the digests every destination holds
+    pub async fn cancel_uploads(&self);                 // after a failed build: drops running uploads, releases the files
 }
 pub struct Uploader;                                    // Uploader::start(client, destinations, jobs, Release::{Keep, Free(store)}, &Handle): its own thread
-                                                        // driving the runtime; at most `jobs` layers at once; a layer released once every destination has it
+                                                        // driving the runtime; at most `jobs` layers at once and `jobs` waiting (submit blocks:
+                                                        // stage threads only); a layer released once every destination has it, or on failure
 pub const HISTORY_COMMENT: &str = "buildkit.dockerfile.v0";
 pub fn instruction_history(created_by: &str, time: &BuildTime) -> History;  // BuildKit's entry, no author (Q-131)
 pub fn image_format() -> ImageFormat;                   // OCI, as BuildKit (Q-006)

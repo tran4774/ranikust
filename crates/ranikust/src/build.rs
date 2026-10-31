@@ -189,11 +189,11 @@ where
     };
     let result = runtime.block_on(build(config, &shared));
     release_all(&shared);
-    // The uploads run on the runtime: they end before it does. A failure
-    // there was already reported by the build, or does not matter after
-    // one.
+    // The uploads run on the runtime: they end before it does. After a
+    // failed build they are cancelled, not awaited, and the files still
+    // waiting are released.
     if result.is_err() {
-        let _ignored = runtime.block_on(shared.exporter.finish_uploads());
+        runtime.block_on(shared.exporter.cancel_uploads());
     }
     drop(runtime);
     match Arc::into_inner(shared) {

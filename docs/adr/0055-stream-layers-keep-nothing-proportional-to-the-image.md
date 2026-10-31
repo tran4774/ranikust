@@ -38,19 +38,22 @@ Chosen: the second option ([design/streaming.md](../design/streaming.md)).
   image's base layers are mounted from their source repository on the
   same registry, else streamed from the source registry to the
   destination.
-- Overlay mode extracts while downloading too, teeing into the store's
-  blob, which it keeps for later builds.
-- Built layers the target needs are pushed to every destination as soon
-  as they are exported, at most `--jobs` at once; the final push sends the
-  config and manifest. A layer's file is released once every destination
+- Overlay mode keeps the store's blob for later builds, on disk through
+  fixed buffers; it still downloads, then extracts (extracting while
+  teeing into the blob is left for later).
+- Built layers of the target's `FROM` chain are pushed to every
+  destination as soon as they are exported, at most `--jobs` at once and
+  `--jobs` more waiting; the final push sends the config and manifest. A
+  failed build cancels the uploads. A layer's file is released once every destination
   holds it and no output needs it.
 - `--tar-path` and `--oci-layout-path` keep the blobs they need in the
   build directory until written.
 - Every pipeline uses fixed-size buffers; nothing in memory scales with a
   layer's size.
-- Destination credentials are needed from the start of the build. A
-  failed build leaves unreferenced blobs, which registries collect; the
-  manifest is always pushed last.
+- Destination credentials are needed from the start of the build; a
+  refused push fails the build at its first uploaded layer. A failed
+  build leaves unreferenced blobs, which registries collect; the manifest
+  is always pushed last.
 - Encoding straight into the upload is left open (Q-370): it saves the
   one-layer file but loses the existence check before sending and the
   retry of a failed request.
@@ -66,9 +69,10 @@ Chosen: the second option ([design/streaming.md](../design/streaming.md)).
   the download (a request refused before any byte is still retried).
 - Bad, because a streamed layer's entries are in the root before its
   digest is checked at the end of the body: a mismatch fails the stage
-  with part of the layer extracted, and the root is emptied before it is
-  used again (ADR-0052 D1 on `/`), where a kept blob was verified before
-  any byte was used.
+  with part of the layer extracted, where a kept blob was verified before
+  any byte was used. A host root is emptied at the end of the build, but
+  on `/` nothing empties the container's root (ADR-0052 D1). Hence the
+  amendment below.
 - Bad, because a cross-registry push of a base layer downloads it again
   from its source, where it used to be read from the store.
 - Neutral, because digests do not change.
@@ -82,6 +86,18 @@ Chosen: the second option ([design/streaming.md](../design/streaming.md)).
 - `oci-client` 0.18 verifies a blob's digest at the end of a pull
   (`src/client.rs:1352-1358`) and offers a streamed push with a known
   digest (`push_blob_stream`).
+
+### Amendment, 2026-11-01: verify before extracting on `/`
+
+The main session decided, under the maintainer's rule of the decision
+(memory as small as possible, safely), after a host-safety review: in
+kaniko mode on `/` each streamed base layer is spooled to a disk-backed
+anonymous file of the store, its compressed digest and diff ID verified,
+and only then extracted. Memory stays bounded and the disk holds one
+layer at a time; nothing unverified ever reaches a root that nothing
+empties. Overlay mode and host roots keep extracting while downloading:
+their root is always emptied after a failure. This needs the store's
+disk-backed anonymous files and lands with them.
 
 ## More Information
 

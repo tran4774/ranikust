@@ -118,6 +118,112 @@ async fn exported_layers_are_pushed_during_the_build_then_released() {
     );
 }
 
+/// An uploader to `destination` with one upload at a time (and one more
+/// waiting), releasing into an anonymous store; the exporter that feeds it,
+/// and the store to check releases against.
+fn uploading(
+    registry: &FakeRegistry,
+    destination: &str,
+) -> (
+    LayerExporter,
+    std::sync::Arc<rnk_store::Store>,
+    tempfile::TempDir,
+) {
+    let state = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(rnk_store::Store::open_anonymous(state.path()).unwrap());
+    let uploader = rnk_builder::Uploader::start(
+        client(registry),
+        vec![reference(registry, destination)],
+        NonZeroUsize::new(1).unwrap(),
+        rnk_builder::Release::Free(std::sync::Arc::clone(&store)),
+        &tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    let time = BuildTime::reproducible(None).unwrap();
+    let exporter = LayerExporter::anonymous(
+        std::sync::Arc::clone(&store),
+        options(Compression::Gzip, 2),
+        &time,
+    )
+    .with_uploader(uploader);
+    (exporter, store, state)
+}
+
+const PUSH: rnk_builder::LayerDemand = rnk_builder::LayerDemand {
+    push: true,
+    target: true,
+    cache: false,
+    output: false,
+    saved: false,
+};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_upload_releases_every_layer_handed_over() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    registry.state().faults.push(crate::fake::Fault {
+        method: hyper::Method::POST,
+        path_contains: "/blobs/uploads/".to_owned(),
+        status: 503,
+        remaining: 1000,
+    });
+    let (exporter, store, _state) = uploading(&registry, "out:v1");
+    let exporter = std::sync::Arc::new(exporter);
+    let feeding = std::sync::Arc::clone(&exporter);
+    let blobs = tokio::task::spawn_blocking(move || {
+        (0..3)
+            .map(|seed| {
+                let blob = feeding.export(Box::new(layer(seed, 40))).unwrap();
+                feeding.exported(&blob, PUSH);
+                blob
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap();
+    assert!(exporter.finish_uploads().await.is_err());
+    for blob in &blobs {
+        // Released, whether it was running, waiting or refused. Never read
+        // the old name: its descriptor number may name another file now.
+        assert!(!store.release_anonymous_file(blob.path().unwrap()));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uploads_wait_for_room_and_a_cancel_stops_them_and_releases_their_layers() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    // The registry never answers an upload: the first layer's runs forever.
+    registry.state().stalled.push("/blobs/uploads/".to_owned());
+    let (exporter, store, _state) = uploading(&registry, "out:v1");
+    let exporter = std::sync::Arc::new(exporter);
+    let feeding = std::sync::Arc::clone(&exporter);
+    let (sent, mut fed) = tokio::sync::mpsc::unbounded_channel();
+    let feeder = std::thread::spawn(move || {
+        for seed in 0..3 {
+            let blob = feeding.export(Box::new(layer(seed, 40))).unwrap();
+            feeding.exported(&blob, PUSH);
+            let _ = sent.send(blob);
+        }
+    });
+    // One runs, one waits: the third waits for room.
+    let mut blobs = Vec::new();
+    for _ in 0..2 {
+        blobs.push(fed.recv().await.unwrap());
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(fed.try_recv().is_err(), "a third layer waits for room");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        exporter.cancel_uploads(),
+    )
+    .await
+    .expect("a cancel does not wait for the registry");
+    blobs.push(fed.recv().await.unwrap());
+    feeder.join().unwrap();
+    for blob in &blobs {
+        assert!(!store.release_anonymous_file(blob.path().unwrap()));
+    }
+}
+
 #[test]
 fn an_anonymous_exporter_writes_the_same_bytes_and_names_nothing() {
     let time = BuildTime::reproducible(None).unwrap();

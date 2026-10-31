@@ -241,6 +241,13 @@ impl LayerExporter {
         }
     }
 
+    /// Cancels the uploads after a failed build ([`Uploader::cancel`]).
+    pub async fn cancel_uploads(&self) {
+        if let Some(uploader) = &self.uploader {
+            uploader.cancel().await;
+        }
+    }
+
     /// Waits for the uploads handed over and returns the digests every
     /// destination holds; empty without an uploader.
     ///

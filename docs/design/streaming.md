@@ -34,9 +34,12 @@ bytes. So in kaniko mode:
   becomes a reference to the registry (repository, descriptor), not a file.
 - `prepare(Image)` streams each layer from the registry through the
   decoder into `extract_live`: download → decompress → extract in one
-  pass, through a bounded channel (a few chunks of at most 64 KiB). The
-  compressed digest is checked by the registry client at the end of the
-  body, the diff ID by the decoder at the end of the tar.
+  pass, through an in-memory pipe of 256 KiB (`rnk_registry::PIPE_BYTES`).
+  The compressed digest is checked by the registry client at the end of
+  the body, the diff ID by the decoder at the end of the tar. The pull
+  runs on a thread owned by the reader: a reader dropped early stops the
+  pull and waits for its thread, and a reader that failed fails on every
+  later read.
 - The pushed image takes its base layers from where they came from: a
   cross-repository mount on the same registry (ADR-0032, Q-014), else the
   layer streamed from the source registry to the destination, again
@@ -58,10 +61,17 @@ A built layer that the target image needs is handed to an uploader when
 its export finishes. The uploader pushes it to every destination (mount
 from the first destination for the later ones on the same registry, as
 before) while the next instructions run, with at most `--jobs` transfers
-at once. The final push sends only the config and the manifest, after
+at once, and at most `--jobs` more waiting: a stage that exports faster
+than the registry takes the layers waits for room instead of piling up
+files. The final push sends only the config and the manifest, after
 waiting for the layer uploads. Once every destination holds a layer and
 no output needs its bytes, its file is released: removed from the build
-directory, or, for an anonymous file, its descriptor closed.
+directory, or, for an anonymous file, its descriptor closed. Only the
+target's `FROM` chain is pushed: a stage that a later stage is built
+`FROM` in kaniko mode keeps its layers for that stage, and a stage the
+target only copies from never reaches a destination. A failed build
+cancels the uploads (running ones are dropped, waiting ones never start)
+and releases their files.
 
 The layer is still encoded to a file before it is sent, rather than
 encoded straight into the request: its digest must be known for the
@@ -75,9 +85,10 @@ computed while sending) is [open: Q-370].
 
 Decompression, extraction, encoding and the transfers each work through
 fixed buffers: the decoder's window, the tar writer's blocks, the encoder's
-frames (zstd per 1 MiB frame, gzip members), 64 KiB to 256 KiB transfer
-chunks, at most a few of them queued. Nothing scales with a layer's size;
-the number of layers in flight is bounded by `--jobs`.
+frames (zstd per 1 MiB frame, gzip members), 256 KiB transfer chunks and
+pipes, at most a few of them queued. Nothing scales with a layer's size;
+the number of layers uploading or waiting to is bounded by twice
+`--jobs`.
 
 ## Both modes
 
@@ -91,10 +102,11 @@ the number of layers in flight is bounded by `--jobs`.
 ## Credentials and failures
 
 - **Credentials are needed from the start.** The uploader pushes during
-  the build, so destination credentials are resolved and checked at
-  set-up, before the first stage, as the pulls' are. A destination that
-  refuses the push fails the build at its first layer instead of at the
-  end.
+  the build, so destination credentials are resolved at set-up, with the
+  pulls'. ranikust makes no write check before the build (kaniko's
+  `--skip-push-permission-check` is accepted and changes nothing): a
+  destination that refuses the push fails the build at its first
+  uploaded layer instead of at the end.
 - **A failed build leaves blobs in the destination repository** that no
   manifest references: the manifest is pushed last, only after every
   blob. Registries collect such blobs (garbage collection of unreferenced
@@ -102,12 +114,18 @@ the number of layers in flight is bounded by `--jobs`.
 - **A base layer whose digest or diff ID does not match** fails the build.
   In kaniko mode its entries are already in the root when the check fails
   at the end of the stream; nothing runs on that root again in this build
-  (the stage fails before its first instruction). The root is emptied
-  before its next use: on a host at the end of the build, on `/` by the
-  next build (ADR-0052 D1). A partial upload is an upload session the
-  registry discards.
+  (the stage fails before its first instruction). On a host root the root
+  is emptied at the end of the build, and a later stage's root holds none
+  of those entries. On `/` nothing empties the container's root (ADR-0052
+  D1 leaves it as it is), so unverified entries would stay there: on `/`
+  each base layer is to be spooled to a disk-backed anonymous file,
+  verified, and only then extracted (decided 2026-11-01, see ADR-0055;
+  it needs the disk-backed anonymous files of the store and is not built
+  yet: until then `/` extracts while downloading, as a host root does). A
+  partial upload is an upload session the registry discards.
 - **A dropped connection during a streamed extraction** cannot be retried
-  in place (part of the layer is extracted): the build fails. A request
+  in place (part of the layer is extracted): the build fails at once,
+  with the connection's error, without waiting for a retry. A request
   refused or broken before the first byte of the body (a 503, a reset
   connection) is retried as before, since nothing was read yet. The pull
   of manifests and configs, and the uploads from files, keep their
