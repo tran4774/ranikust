@@ -1,0 +1,7 @@
+# Must fail: a link into /proc, which is never kept.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS a
+RUN ln -s /proc/self/environ /to-environ
+
+FROM ${BASE}
+COPY --from=a /to-environ /x

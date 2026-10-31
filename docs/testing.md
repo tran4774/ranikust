@@ -343,6 +343,9 @@ nextjs-kaniko workloads (`e2e`) are for large benchmarks only.
 | `metadata` | The image config as BuildKit writes it: `ARG` before `FROM`, `ARG`/`ENV` expansion, relative and absolute `WORKDIR`, `USER name:group`, `LABEL`, `EXPOSE` (tcp, udp, a range expanded), `STOPSIGNAL`, `HEALTHCHECK`, `SHELL`, exec-form `ENTRYPOINT` with `CMD`; with `--target shellform`, a shell-form `ENTRYPOINT` that clears the `CMD` inherited from its base stage |
 | `copy` | `COPY` wildcards, one matching nothing (not an error), `.dockerignore` with an exception, `--chown`, `--chmod` octal and symbolic, a symlinked source (followed), a directory into a new destination, a heredoc; checked inside the image |
 | `multistage` | Two independent stages at `--jobs 2`, `FROM <stage>`, `COPY --from` all of them |
+| `copy-from` | Red team of what kaniko mode keeps (ADR-0051): a hostile stage (links out of its root, to the state directory, `/ranikust`, `/` and `/proc`; a FIFO, a setuid file, a hardlink, a `0700` directory of uid 1000, a device node where root may make one) read with `COPY --from` and built `FROM` after another stage reused the root; in the image its metadata as it was; four builds whose sources reach the state directory, `/ranikust` or `/proc` through links or by name fail without an image |
+| `copy-from-root` | `COPY --from=<stage> / /all/`: the whole stage, without the state directory, `/ranikust` or `/proc`. Fails in kaniko mode on the container's `/` (`RANIKUST_CASE_MODE=kaniko`), a red-team finding: the keep refuses `/` as "on another mount" |
+| `copy-from-daemon` | A `setsid` process left by a `RUN` (kaniko#1697) changes the root while kaniko mode with `RUN` `Direct` walks, keeps, empties and copies it back: the build fails closed, or its image holds nothing of the state directory, `/ranikust` or the secret |
 | `run` | `RUN` in shell and exec form, a heredoc and a `#!` heredoc, a cache mount a second build sees, a secret as a file (`0400`, by its sha256) and as `env=`, `--network=none` seeing only `lo`, a `RUN` that changes nothing giving an empty layer |
 | `reproducible` | `--reproducible`: one digest across builds a second apart and at `--jobs 1` and `2`, `created` at the epoch, another digest without the flag |
 
@@ -352,8 +355,8 @@ secret in the build log. `tests/smoke/cases.bash` runs them; a case is a
 its helpers (`build`, `run`, `expect`, `expect_config`, `config`, `out`).
 
 - `just smoke-case [name...]` (T1): the binary in rootless `podman run
-  --privileged`, podman loading and running the images. All seven take
-  under a minute once the binary is built. The shared state directory
+  --privileged`, podman loading and running the images. All ten take
+  about a minute once the binary is built. The shared state directory
   under `target/smoke/cases/.state`, mounted at `/var/lib/ranikust`, keeps
   the store between runs.
 - `just test-vm quick` (T2): the same as real root on the VM, Docker

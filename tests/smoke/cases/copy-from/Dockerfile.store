@@ -1,0 +1,7 @@
+# Must fail: the state directory named directly, which is never kept.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS a
+RUN true
+
+FROM ${BASE}
+COPY --from=a /var/lib/ranikust/ /x/
