@@ -749,3 +749,29 @@ fn on_slash_a_streamed_copy_from_image_is_verified_before_it_is_unpacked() {
     assert_eq!(f.state_names(), ["blob"]);
     holder.release().unwrap();
 }
+
+#[test]
+fn on_slash_a_streamed_gzip_layer_is_spooled_compressed_and_extracted() {
+    use std::io::Write as _;
+    let (f, _store) = Fixture::tars();
+    let plain = f.layer("l1", &[("a", b"gzipped")]);
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&fs::read(plain.blob().unwrap()).unwrap())
+        .unwrap();
+    let gzipped = f.tmp.path().join("l1.gz");
+    fs::write(&gzipped, gz.finish().unwrap()).unwrap();
+    let source = Arc::new(Streamed {
+        blob: gzipped,
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(plain.diff_id(), Arc::clone(&source) as Arc<dyn LayerOpen>)
+        .unwrap();
+    let root = f.kaniko.prepare(Base::Image(&[layer])).unwrap();
+    assert_eq!(fs::read(f.host.join("a")).unwrap(), b"gzipped");
+    // Downloaded once: the second decompression reads the spool.
+    assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+    root.release().unwrap();
+}

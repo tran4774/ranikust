@@ -765,79 +765,95 @@ fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
     extract_blob(&shared.root, &shared.ignore, layer)
 }
 
-/// A base layer as a plain tar in an anonymous file of the store, its
-/// compressed digest and diff ID verified (ADR-0055 amendment): read
-/// before anything of it is extracted. The file's disk space goes with it.
+/// A base layer in an anonymous file of the store, as its compressed blob,
+/// its compressed digest and diff ID verified (ADR-0055 amendment) before
+/// anything of it is extracted. The spool is the compressed blob, capped
+/// by the descriptor's size: disk, or memory under the `memfd` fallback,
+/// holds no more than the download. The file's space goes with it.
 #[derive(Debug)]
-struct Spooled(SpooledTar);
+struct Spooled(SpooledBlob);
 
 #[derive(Debug)]
-enum SpooledTar {
+enum SpooledBlob {
     /// A layer already verified on disk (a blob of the store): read as is.
     Blob(KanikoLayer),
-    /// A streamed layer, decompressed into an anonymous file.
-    File(File),
+    /// A streamed layer's compressed bytes, with its diff ID.
+    File { file: File, diff_id: Digest },
 }
 
 impl Spooled {
-    /// Spools `layer` when it is streamed: decompressed into an anonymous
-    /// file of `store` while its diff ID is computed, the body read to its
-    /// end so that its source checks the compressed digest. A blob already
-    /// on disk is kept as it is.
+    /// Spools `layer` when it is streamed. One read of the body writes the
+    /// compressed bytes into an anonymous file of `store` and decompresses
+    /// them to compute the diff ID, which nothing else sees; the body is
+    /// read to its end, where its source checks the size and the
+    /// compressed digest. A blob already on disk is kept as it is.
     fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
         let LayerSource::Stream(_) = &layer.source else {
-            return Ok(Self(SpooledTar::Blob(layer.clone())));
+            return Ok(Self(SpooledBlob::Blob(layer.clone())));
         };
-        let mut file = store.scratch_file()?;
-        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let body = ToTheEnd {
-            inner: layer.open()?,
-            ended: Arc::clone(&ended),
-        };
-        let mut decoder = rnk_layer::Decoder::new(body)?;
-        std::io::copy(&mut decoder, &mut file).map_err(|source| Error::Io {
+        let what = || PathBuf::from(layer.diff_id.as_str());
+        let file = store.scratch_file()?;
+        let copy = file.try_clone().map_err(|source| Error::Io {
             op: "spool the stream of layer",
-            path: PathBuf::from(layer.diff_id.as_str()),
+            path: what(),
             source,
         })?;
-        let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
-        if actual != layer.diff_id {
-            return Err(Error::DiffIdMismatch {
-                expected: layer.diff_id.to_string(),
-                actual: actual.to_string(),
-            });
-        }
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let body = Spool {
+            inner: layer.open()?,
+            copy,
+            ended: Arc::clone(&ended),
+        };
+        let actual = Digest::from_sha256_bytes(rnk_layer::Decoder::new(body)?.finish()?.as_bytes());
         // The source verifies the digest only at the end of its body.
         if !ended.load(Ordering::Relaxed) {
             return Err(Error::State(
                 "a streamed layer was not read to its end, so its digest is unchecked",
             ));
         }
-        Ok(Self(SpooledTar::File(file)))
+        if actual != layer.diff_id {
+            return Err(Error::DiffIdMismatch {
+                expected: layer.diff_id.to_string(),
+                actual: actual.to_string(),
+            });
+        }
+        Ok(Self(SpooledBlob::File {
+            file,
+            diff_id: layer.diff_id.clone(),
+        }))
     }
 
-    /// Extracts the verified layer into `root`.
+    /// Extracts the verified layer into `root`, decompressing the spool a
+    /// second time; its diff ID is checked again on the way.
     fn extract(&self, root: &RootPath, ignore: &IgnoreList) -> Result<()> {
         match &self.0 {
-            SpooledTar::Blob(layer) => extract_blob(root, ignore, layer),
-            SpooledTar::File(file) => Ok(extract_live(root, reopen(file)?, ignore)?),
+            SpooledBlob::Blob(layer) => extract_blob(root, ignore, layer),
+            SpooledBlob::File { file, diff_id } => {
+                extract_checked(root, ignore, Box::new(reopen(file)?), diff_id)
+            }
         }
     }
 }
 
-/// A reader that records whether it reached its end (a read of 0 bytes
-/// into a non-empty buffer).
-struct ToTheEnd {
+/// The body of a streamed layer, each byte read also written to the spool;
+/// records whether it reached its end (a read of 0 bytes into a non-empty
+/// buffer).
+struct Spool {
     inner: Box<dyn std::io::Read + Send>,
+    copy: File,
     ended: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl std::io::Read for ToTheEnd {
+impl std::io::Read for Spool {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        if n == 0 && !buf.is_empty() {
-            self.ended.store(true, Ordering::Relaxed);
+        if n == 0 {
+            if !buf.is_empty() {
+                self.ended.store(true, Ordering::Relaxed);
+            }
+            return Ok(0);
         }
+        self.copy.write_all(buf.get(..n).unwrap_or_default())?;
         Ok(n)
     }
 }
@@ -850,12 +866,23 @@ impl std::io::Read for ToTheEnd {
 /// root is emptied after a failure (a host root, a fresh keep directory);
 /// on `/` see [`extract_base_layer`].
 fn extract_blob(root: &RootPath, ignore: &IgnoreList, layer: &KanikoLayer) -> Result<()> {
-    let mut decoder = rnk_layer::Decoder::new(layer.open()?)?;
+    extract_checked(root, ignore, layer.open()?, &layer.diff_id)
+}
+
+/// Decompresses `blob` into `root` and checks the tar's digest against
+/// `diff_id` at its end.
+fn extract_checked(
+    root: &RootPath,
+    ignore: &IgnoreList,
+    blob: Box<dyn std::io::Read + Send>,
+    diff_id: &Digest,
+) -> Result<()> {
+    let mut decoder = rnk_layer::Decoder::new(blob)?;
     extract_live(root, &mut decoder, ignore)?;
     let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
-    if actual != layer.diff_id {
+    if actual != *diff_id {
         return Err(Error::DiffIdMismatch {
-            expected: layer.diff_id.to_string(),
+            expected: diff_id.to_string(),
             actual: actual.to_string(),
         });
     }

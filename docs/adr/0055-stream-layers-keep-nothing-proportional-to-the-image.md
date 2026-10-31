@@ -51,7 +51,7 @@ Chosen: the second option ([design/streaming.md](../design/streaming.md)).
 - Every pipeline uses fixed-size buffers; nothing in memory scales with a
   layer's size.
 - Destination credentials are needed from the start of the build; a
-  refused push fails the build at its first uploaded layer. A failed
+  refused push fails the stage at its next exported layer. A failed
   build leaves unreferenced blobs, which registries collect; the manifest
   is always pushed last.
 - Encoding straight into the upload is left open (Q-370): it saves the
@@ -102,9 +102,12 @@ empties. Overlay mode and host roots keep extracting while downloading:
 their root is always emptied after a failure. Built with the store's
 disk-backed anonymous files (ADR-0056); a `COPY --from=<image>` on `/` is
 spooled and verified the same way before it is unpacked. The spool is the
-decompressed tar: one pass computes the diff ID while the source checks
-the compressed digest, and extraction reads it without decompressing
-again.
+compressed blob, capped by its descriptor's size: one read of the body
+writes it and decompresses it to compute the diff ID while the source
+checks the compressed digest; extraction decompresses the spool again.
+Two decompressions cost CPU; the spool stays the download's size (on disk,
+or in memory under the `memfd` fallback), and nothing unverified reaches
+`/` even when the published diff ID is wrong.
 
 ## More Information
 

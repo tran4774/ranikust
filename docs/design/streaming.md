@@ -35,7 +35,7 @@ bytes. So in kaniko mode:
 - `prepare(Image)` streams each layer from the registry through the
   decoder into `extract_live`: download → decompress → extract in one
   pass, through an in-memory pipe of 256 KiB (`rnk_registry::PIPE_BYTES`);
-  on `/` the decompressed tar goes to a disk-backed anonymous file first,
+  on `/` the compressed blob goes to a disk-backed anonymous file first,
   and is extracted once verified (see Credentials and failures).
   The compressed digest is checked by the registry client at the end of
   the body, the diff ID by the decoder at the end of the tar. The pull
@@ -109,22 +109,29 @@ the number of layers uploading or waiting to is bounded by twice
 - **Credentials are needed from the start.** The uploader pushes during
   the build, so destination credentials are resolved at set-up, with the
   pulls'. ranikust makes no write check before the build (kaniko's
-  `--skip-push-permission-check` is accepted and changes nothing): a
-  destination that refuses the push fails the build at its first
-  uploaded layer instead of at the end.
+  `--skip-push-permission-check` is accepted and changes nothing): once
+  a destination has refused a layer, the next layer the stage exports
+  fails the stage with the registry's answer, and a build with no more
+  layers fails at its final push; never only at the end of a long build.
 - **A failed build leaves blobs in the destination repository** that no
   manifest references: the manifest is pushed last, only after every
   blob. Registries collect such blobs (garbage collection of unreferenced
   blobs; upload sessions expire). No tag ever points at a partial image.
 - **A base layer whose digest or diff ID does not match** fails the build.
   On `/`, which nothing empties (ADR-0052 D1), none of its entries ever
-  reaches the root: each streamed layer is first spooled, decompressed,
-  into a disk-backed anonymous file of the store (ADR-0056), its diff ID
-  computed on the way and its compressed digest checked at the end of the
-  body, and only then extracted; the spool goes with its file, so the disk
-  holds one layer at a time. A `COPY --from=<image>` on `/` is spooled and
-  verified the same way before any directory is unpacked for it, and its
-  verified tars kept for the stage's later readers. On a host root, and in
+  reaches the root: each streamed layer's compressed blob is first spooled
+  into a disk-backed anonymous file of the store (ADR-0056), capped by
+  its descriptor's size, while one decompression of the same bytes
+  computes the diff ID; the size and compressed digest are checked at the
+  end of the body. Only then is the spool decompressed a second time into
+  the root (the diff ID checked again). Decompressing twice costs CPU but
+  keeps the spool, on disk or under the `memfd` fallback, to the
+  download's size, and keeps the rule that nothing unverified reaches `/`
+  even when the publisher's diff ID is wrong. The spool goes with its
+  file, so the disk holds one compressed layer at a time. A
+  `COPY --from=<image>` on `/` is spooled and verified the same way before
+  any directory is unpacked for it, and its verified compressed blobs kept
+  for the stage's later readers. On a host root, and in
   a fresh keep directory, a layer is extracted as it arrives: a mismatch
   fails the stage with part of the layer there, nothing runs on it again,
   and the root is emptied at the end of the build (a later stage's root
@@ -192,7 +199,7 @@ the spool on `/`, same build, no patch:
 | Under `--memory 112m` or `96m` | killed | killed |
 
 With the state on disk, most of the container's peak is page cache (the
-downloaded blobs before, the spooled tars and the extracted root after),
+downloaded blobs before, the spools and the extracted root after),
 which the kernel reclaims under a limit, so `memory.peak` without a limit
 says little; under a limit the build now passes where it sometimes did
 not. Below about 120 MiB the floor is ranikust's own heap and the `RUN`

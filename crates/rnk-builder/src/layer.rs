@@ -302,11 +302,14 @@ impl LayerExporter {
 
     /// After [`LayerExporter::export`]: hands `layer` to the uploader when
     /// `demand` pushes it. Without an uploader, nothing happens.
-    pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand) {
-        if demand.push
-            && let Some(uploader) = &self.uploader
-        {
-            uploader.submit(layer);
+    ///
+    /// # Errors
+    ///
+    /// Once an earlier upload failed ([`Uploader::submit`]).
+    pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand) -> Result<()> {
+        match &self.uploader {
+            Some(uploader) if demand.push => uploader.submit(layer),
+            Some(_) | None => Ok(()),
         }
     }
 

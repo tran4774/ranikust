@@ -86,11 +86,11 @@ async fn exported_layers_are_pushed_during_the_build_then_released() {
         let mut blobs = Vec::new();
         for seed in 0..3 {
             let blob = exporter.export(Box::new(layer(seed, 40))).unwrap();
-            exporter.exported(&blob, push);
+            exporter.exported(&blob, push).unwrap();
             blobs.push(blob);
         }
         // The same layer again is not sent twice.
-        exporter.exported(&blobs[0], push);
+        exporter.exported(&blobs[0], push).unwrap();
         let handle = tokio::runtime::Handle::current();
         let uploaded = handle.block_on(exporter.finish_uploads()).unwrap();
         (blobs, uploaded)
@@ -156,7 +156,7 @@ const PUSH: rnk_builder::LayerDemand = rnk_builder::LayerDemand {
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_upload_releases_every_layer_handed_over() {
+async fn a_refused_push_fails_the_stage_at_its_next_layer_and_releases_every_layer() {
     let registry = FakeRegistry::start(Auth::Open).await;
     registry.state().faults.push(crate::fake::Fault {
         method: hyper::Method::POST,
@@ -167,17 +167,31 @@ async fn a_failed_upload_releases_every_layer_handed_over() {
     let (exporter, _store, _state) = uploading(&registry, "out:v1");
     let exporter = std::sync::Arc::new(exporter);
     let feeding = std::sync::Arc::clone(&exporter);
-    let blobs = tokio::task::spawn_blocking(move || {
-        (0..3)
-            .map(|seed| {
-                let blob = feeding.export(Box::new(layer(seed, 40))).unwrap();
-                feeding.exported(&blob, PUSH);
-                blob
-            })
-            .collect::<Vec<_>>()
+    let (blobs, refused) = tokio::task::spawn_blocking(move || {
+        let mut blobs = Vec::new();
+        // The registry refuses the first layer; a later one, handed over
+        // once that is known, fails as a stage's next layer would.
+        for seed in 0..200 {
+            let blob = feeding.export(Box::new(layer(seed, 40))).unwrap();
+            let r = feeding.exported(&blob, PUSH);
+            blobs.push(blob);
+            if let Err(e) = r {
+                return (blobs, e.to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("no layer was refused");
     })
     .await
     .unwrap();
+    assert!(
+        refused.contains("pushing the image's layers failed"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("503"),
+        "the registry's answer is kept: {refused}"
+    );
     assert!(exporter.finish_uploads().await.is_err());
     for blob in &blobs {
         // Released, whether it was running, waiting or refused.
@@ -197,7 +211,8 @@ async fn uploads_wait_for_room_and_a_cancel_stops_them_and_releases_their_layers
     let feeder = std::thread::spawn(move || {
         for seed in 0..3 {
             let blob = feeding.export(Box::new(layer(seed, 40))).unwrap();
-            feeding.exported(&blob, PUSH);
+            // A cancel is the build's own failure: no error here.
+            feeding.exported(&blob, PUSH).unwrap();
             let _ = sent.send(blob);
         }
     });

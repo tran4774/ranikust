@@ -60,7 +60,8 @@ impl LayerExporter {
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
     pub fn with_uploader(self, uploader: Uploader) -> Self;  // ADR-0055: pushed layers go to the destinations as exported
-    pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand);  // hands a pushed layer to the uploader
+    pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand) -> Result<()>;  // hands a pushed layer to the uploader;
+                                                        // Err once an upload failed: the stage stops at its next layer
     pub async fn finish_uploads(&self) -> Result<BTreeSet<Digest>>;  // the digests every destination holds
     pub async fn cancel_uploads(&self);                 // after a failed build: drops running uploads, releases the files
 }

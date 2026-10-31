@@ -53,6 +53,9 @@ pub struct Uploader {
     seen: Mutex<BTreeSet<Digest>>,
     /// For a layer handed over after the uploads stopped.
     release: Release,
+    /// The first upload's failure, as the uploader's thread saw it: the
+    /// next layer handed over fails its stage with it.
+    failed: Arc<Mutex<Option<String>>>,
 }
 
 impl std::fmt::Debug for Job {
@@ -83,6 +86,8 @@ impl Uploader {
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let handle = handle.clone();
         let kept = release.clone();
+        let failed = Arc::new(Mutex::new(None));
+        let failure = Arc::clone(&failed);
         std::thread::Builder::new()
             .name("rnk-upload".to_owned())
             .spawn(move || {
@@ -90,6 +95,7 @@ impl Uploader {
                     client: &client,
                     destinations: &destinations,
                     release: &release,
+                    failed: &failure,
                 };
                 let r = handle.block_on(uploads.run(jobs, receive, stopped));
                 // The build gave up waiting only if it failed already.
@@ -102,6 +108,7 @@ impl Uploader {
             stop: Mutex::new(Some(stop)),
             seen: Mutex::new(BTreeSet::new()),
             release: kept,
+            failed,
         })
     }
 
@@ -110,9 +117,15 @@ impl Uploader {
     /// never from async code. A layer already handed over (the same
     /// digest) is not sent twice. A layer without a file (streamed from its
     /// registry) is not a built layer and is ignored.
-    pub fn submit(&self, layer: &BlobLayer) {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] once an upload has failed (a
+    /// destination that refuses the push): the stage stops at its next
+    /// layer rather than at the end of the build. The layer is released.
+    pub fn submit(&self, layer: &BlobLayer) -> Result<()> {
         if let LayerBytes::Registry(_) = &layer.bytes {
-            return;
+            return Ok(());
         }
         let first = self
             .seen
@@ -120,7 +133,7 @@ impl Uploader {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(layer.blob.digest.clone());
         if !first {
-            return;
+            return Ok(());
         }
         // A clone, so that waiting for room never holds the lock that
         // `finish` and `cancel` take.
@@ -133,15 +146,31 @@ impl Uploader {
             blob: layer.blob.clone(),
             bytes: layer.bytes.clone(),
         };
-        // A closed channel means the uploader stopped on an error, which
-        // `finish` reports, or was cancelled: the layer will not go.
-        let refused = match jobs {
-            Some(jobs) => jobs.blocking_send(job).err().map(|e| e.0),
-            None => Some(job),
+        // A closed channel means the uploader stopped on an error, or was
+        // cancelled: the layer will not go.
+        let refused = match (self.failure(), jobs) {
+            (None, Some(jobs)) => jobs.blocking_send(job).err().map(|e| e.0),
+            (Some(_), _) | (None, None) => Some(job),
         };
-        if let (Some(job), Release::Free(store)) = (refused, &self.release) {
-            free(store, &job.bytes);
+        if let Some(job) = refused {
+            if let Release::Free(store) = &self.release {
+                free(store, &job.bytes);
+            }
+            if let Some(why) = self.failure() {
+                return Err(Error::Invalid(format!(
+                    "pushing the image's layers failed: {why}"
+                )));
+            }
         }
+        Ok(())
+    }
+
+    /// The first upload's failure, once there was one.
+    fn failure(&self) -> Option<String> {
+        self.failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Cancels the uploads after a failed build: those running are
@@ -188,6 +217,7 @@ struct Uploads<'a> {
     client: &'a Arc<Client>,
     destinations: &'a [Reference],
     release: &'a Release,
+    failed: &'a Mutex<Option<String>>,
 }
 
 impl Uploads<'_> {
@@ -222,8 +252,14 @@ impl Uploads<'_> {
                         pending.remove(&digest);
                         uploaded.insert(digest);
                     }
-                    // The first failure ends the uploads: the build reports it.
-                    Err(e) => break Err(e),
+                    // The first failure ends the uploads, and the stage at
+                    // its next layer.
+                    Err(e) => {
+                        let e: Error = e;
+                        *self.failed.lock().unwrap_or_else(PoisonError::into_inner) =
+                            Some(e.to_string());
+                        break Err(e);
+                    }
                 },
                 job = receive.recv(), if open && running.len() < jobs.get() => match job {
                     Some(job) => {

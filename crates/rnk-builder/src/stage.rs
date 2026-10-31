@@ -615,7 +615,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         self.new_layers += 1;
         if self.input.demand.needed() {
             let blob = self.cx.exporter.export(Box::new(DiffLayer(diff)))?;
-            self.cx.exporter.exported(&blob, self.input.demand);
+            self.cx.exporter.exported(&blob, self.input.demand)?;
             self.config.push_layer(
                 blob.diff_id.clone(),
                 instruction_history(created_by, self.cx.time),
