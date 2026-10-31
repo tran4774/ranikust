@@ -113,27 +113,6 @@ Entry format:
   Revisit with kaniko mode (Phase 2).
 - **Raised:** 2026-10-30
 
-### Q-110: What is the overlay-mode state directory without `--workdir`?
-
-- **Blocks:** Phase 1 task 8; **Area:** `ranikust`
-- **Context:** the overlay-mode default is `<workdir>/.ranikust`
-  (ADR-0022), and `--workdir` defaults to `/` only inside a container
-  ([modes-and-detection](design/modes-and-detection.md#workdir-rules)),
-  which needs a container check that is not built (Q-011). In a container,
-  `/.ranikust` usually sits on the container's overlay root, which cannot
-  hold an upper directory, so the overlay probe would fail there anyway.
-- **Options:** (a) require `--workdir` or `--state-dir` in overlay mode;
-  (b) default the workdir to `/` in a container, as designed, and let the
-  probe refuse; (c) a temporary directory.
-- **Recommendation:** (a): an explicit `--workdir` or `--state-dir`, never
-  an implicit `/` chosen by a heuristic, and never a temporary directory
-  that loses the store between builds; the design's container default
-  was for kaniko compatibility, which is not a goal (2026-10-31).
-- **Interim:** (a), on `feat/ranikust-setup`: without either flag, overlay
-  mode (and `auto`, whose only Phase 1 outcome is overlay) stops with a
-  usage error, exit code 2. Reversible: one check in `main.rs`.
-- **Raised:** 2026-10-30
-
 ### Q-152: How are read-only layer roots published without root?
 
 - **Blocks:** Phase 3 (rootless overlay); **Area:** `rnk-store`,
@@ -188,24 +167,6 @@ Entry format:
   Reversible: the graph type is pure data, and routing it through
   `rnk-builder` would only move the import. The other edges are still
   undeclared.
-- **Raised:** 2026-10-30
-
-### Q-162: Where do the blobs of built layers live?
-
-- **Blocks:** nothing in Phase 1; Phase 4 (cache); **Area:** `rnk-builder`,
-  `rnk-store`
-- **Context:** `rnk_store::Store::fill` takes the digest before the content
-  is written, which suits pulled blobs; a built layer's digest is known only
-  after encoding. `LayerExporter` therefore encodes into the build
-  directory, where the blob is deleted with the build.
-- **Options:** (a) the build directory; (b) a store call that publishes a
-  temporary file under the digest computed while writing it, so later
-  builds and the cache reuse it.
-- **Recommendation:** (b): a built layer published once in the store is
-  reused by later builds and the cache instead of encoded again; the
-  digest is verified as it is written (2026-10-31).
-- **Interim:** (a), on branch `feat/rnk-builder-outputs`. Reversible: the
-  exporter's directory and one rename.
 - **Raised:** 2026-10-30
 
 ### Q-029: Which crate computes LayerDemand?
@@ -392,22 +353,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-048: What does the push subcommand take, and when does it come?
-
-- **Blocks:** nothing yet; **Area:** `ranikust`, `rnk-registry`
-- **Context:** `ADR-0011` named `push`; no phase has it
-  ([ranikust](agents/crates/ranikust.md#phase-1)). kaniko's `push` takes a
-  docker-save tar or an OCI layout. `login` is dropped for good
-  ([ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md)).
-- **Options:** phase: none listed; input: (a) both formats, as kaniko; (b)
-  an OCI layout only.
-- **Recommendation:** (b): one parser for untrusted input instead of two,
-  and the layout is what `--oci-layout-path` writes; the docker-save tar
-  only served kaniko compatibility. Phase: none yet (2026-10-31).
-- **Interim:** `ranikust` has `build` and `version` only; `ranikust push`
-  is a clap error (exit code 2).
-- **Raised:** 2026-10-30
-
 ### Q-245: Should one overlay mount serve consecutive instructions?
 
 - **Blocks:** nothing yet; **Area:** `rnk-snapshot`
@@ -420,7 +365,8 @@ Entry format:
 - **Recommendation:** (a), behind a measurement: time the mount and
   unmount per instruction on W1–W3; build it if it is a visible share of
   a build, with the `volatile` rules unchanged (2026-10-31).
-- **Interim:** none
+- **Interim:** measure first (ADR-0052): time the mount and unmount per
+  instruction on W1–W3; nothing is built before that.
 - **Raised:** 2026-10-30
 
 ### Q-057: Does ranikust offer CPU and heap profiling?
@@ -585,6 +531,27 @@ Entry format:
   if measured faster. The maintainer, with the priority of
   security, then performance; recorded in
   [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md).
+
+### Q-048: What does the push subcommand take, and when does it come?
+
+- **Answer (2026-10-31):** an OCI layout only, what `--oci-layout-path`
+  writes; no docker-save tar; no phase yet. `login` is dropped (ADR-0049).
+  Recorded in [ADR-0052](adr/0052-push-input-aliases-and-issue-mining-fixes.md).
+
+### Q-110: What is the overlay-mode state directory without `--workdir`?
+
+- **Answer (2026-10-31):** a fixed default, `/var/lib/ranikust` as root in
+  every mode, `--state-dir` to change it; `--workdir` is gone: ranikust
+  picks the build root itself. Recorded in
+  [ADR-0050](adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md).
+
+### Q-162: Where do the blobs of built layers live?
+
+- **Answer (2026-10-31):** option (b), in Phase 4: published in the
+  persistent store under the digest computed while writing, for overlay
+  mode and kaniko mode on a host; kaniko mode on `/` keeps no state
+  between runs (ADR-0051). Recorded in
+  [ADR-0052](adr/0052-push-input-aliases-and-issue-mining-fixes.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

@@ -37,7 +37,7 @@ Built items say `built`; the rest is planned.
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;          // [decided] ADR-0020; task 5a
 fn main() -> std::process::ExitCode;   // built; no #[tokio::main]: runtime built by hand after set-up [design]
 enum Command { Build(Box<BuildArgs>), Version }                  // built (clap, Q-012); no subcommand = Build
-    // Push(PushArgs), Prune(PruneArgs): later [open: Q-048]; no Login (ADR-0049)
+    // Push(PushArgs), Prune(PruneArgs): later (`push` takes an OCI layout, ADR-0052); no Login (ADR-0049)
 struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, destination, no_push,
     tar_path, oci_layout_path, compression, compression_level, image_format, label, annotation,
     digest files, insecure*, skip_tls_verify*, push_retry, image_download_retry, verbosity,
@@ -68,7 +68,7 @@ struct Setup { outcome: Outcome, state_dir: PathBuf, store: Arc<rnk_store::Store
 fn set_up(state_dir: &Path, workdir: Option<&Path>) -> Result<Setup, Refusal>;  // namespace → state dir → store → probes → outcome → spawner
 fn prepare_state_dir(state_dir, workdir, euid) -> Result<(), Refusal>; // 0700; no symlink, owner euid, no g/o write up to the workdir
 fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal>; // rnk_snapshot::probe in builds/<id>/overlay-probe
-struct PushArgs { path: PathBuf, destination: Vec<String> } // [open: Q-048] kaniko pushes a docker-save tar or OCI layout
+struct PushArgs { path: PathBuf, destination: Vec<String> } // an OCI layout only (ADR-0052)
 ```
 
 Set-up order, built so far: parse the flags (no I/O; refused kaniko flags
@@ -309,4 +309,4 @@ error, a refused kaniko flag, an invalid combination, and for now every
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
 - Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push`
-  [open: Q-048]; no `login` (ADR-0049).
+  (an OCI layout only, ADR-0052); no `login` (ADR-0049).
