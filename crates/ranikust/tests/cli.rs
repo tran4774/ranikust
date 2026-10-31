@@ -22,7 +22,8 @@ fn ranikust(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env_remove("SOURCE_DATE_EPOCH")
         .env_remove("NO_COLOR")
         .env("RUST_BACKTRACE", "0");
-    // kaniko's variables change what the binary does (ADR-0036).
+    // kaniko's variables are not read (ADR-0049); scrubbed so a test
+    // never depends on the developer's environment.
     for (key, _) in std::env::vars_os() {
         let k = key.to_string_lossy();
         if k.starts_with("KANIKO_") || k.starts_with("FF_KANIKO_") {
@@ -161,7 +162,7 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("Phase 2"), "{}", stderr(&out));
     // In overlay mode they would change the image: refused before the
-    // set-up (Q-260).
+    // set-up (ADR-0049).
     let out = ranikust(
         tmp.path(),
         &["--no-push", "--mode=overlay", "--single-snapshot"],
@@ -376,7 +377,7 @@ fn a_relative_metrics_file_is_relative_to_the_working_directory() {
 #[test]
 fn logging_flags_change_what_is_written() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let base = ["--no-push", "--mode=overlay", "--cleanup"];
+    let base = ["--no-push", "--mode=overlay", "--snapshot-mode=full"];
     let run = |extra: &[&str]| {
         let mut args: Vec<&str> = base.iter().chain(extra).copied().collect();
         if !extra.iter().any(|a| a.starts_with("--log-format")) {
@@ -393,7 +394,7 @@ fn logging_flags_change_what_is_written() {
     };
     // `text` is logrus's plain formatter: time, level, msg, never colored.
     let info = run(&[]);
-    assert!(info.contains("--cleanup is ignored"), "{info}");
+    assert!(info.contains("--snapshot-mode is ignored"), "{info}");
     assert!(!info.contains("build settings validated"), "{info}");
     let first = info.lines().next().expect("a line");
     assert!(first.starts_with("time="), "{first}");
@@ -402,8 +403,8 @@ fn logging_flags_change_what_is_written() {
     let debug = run(&["-v", "DEBUG"]);
     assert!(debug.contains("build settings validated"), "{debug}");
     let quiet = run(&["--verbosity=error"]);
-    assert!(!quiet.contains("--cleanup is ignored"), "{quiet}");
-    assert!(run(&["-v", "warning"]).contains("--cleanup is ignored"));
+    assert!(!quiet.contains("--snapshot-mode is ignored"), "{quiet}");
+    assert!(run(&["-v", "warning"]).contains("--snapshot-mode is ignored"));
     // `color`, kaniko's default, forces colors and counts seconds since
     // start; `--log-timestamp` gives the full time instead.
     let color = run(&["--log-format=color"]);
@@ -422,19 +423,26 @@ fn logging_flags_change_what_is_written() {
         .expect("the warning");
     let value: Value = serde_json::from_str(line).expect("a JSON line");
     assert_eq!(value["level"], "warning");
-    assert!(value["msg"].as_str().unwrap().contains("--cleanup"));
+    assert!(value["msg"].as_str().unwrap().contains("--snapshot-mode"));
     assert!(value["time"].is_string());
 }
 
-/// kaniko's variables (ADR-0036): mirrors are refused before anything runs.
+/// ADR-0049: kaniko's variables are not read, so a mirror variable changes
+/// nothing: the run stops where it would without it.
 #[test]
-fn a_registry_mirror_variable_is_refused() {
+fn kaniko_variables_are_not_read() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let out = ranikust(
-        tmp.path(),
-        &["--no-push"],
-        &[("KANIKO_REGISTRY_MIRROR", "mirror.example")],
-    );
-    assert_eq!(out.status.code(), Some(2));
-    assert!(stderr(&out).contains("Phase 5"), "{}", stderr(&out));
+    for env in [
+        &[("KANIKO_REGISTRY_MIRROR", "mirror.example")][..],
+        &[("KANIKO_NO_PUSH", "maybe")],
+    ] {
+        let out = ranikust(tmp.path(), &["--no-push", "--mode=overlay"], env);
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        let err = stderr(&out);
+        assert!(
+            err.contains("--workdir"),
+            "stopped for want of --workdir: {err}"
+        );
+        assert!(!err.contains("KANIKO"), "{err}");
+    }
 }

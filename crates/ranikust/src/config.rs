@@ -5,7 +5,6 @@
 //! no design document assigns it to a library yet.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -142,7 +141,8 @@ pub(crate) struct BuildConfig {
     pub(crate) dockerfile: PathBuf,
     /// Build arguments in command-line order.
     pub(crate) build_args: Vec<BuildArg>,
-    /// Stages to build; the first is the image pushed. Empty: the last stage.
+    /// The stage to build and push, at most one (ADR-0049). Empty: the last
+    /// stage.
     pub(crate) targets: Vec<String>,
     /// The image platform, `linux/amd64`.
     pub(crate) platform: &'static str,
@@ -251,61 +251,6 @@ fn key_value(flag: &str, arg: &str) -> Result<(String, String), Invalid> {
             "--{flag}={arg}: expected key=value, as kaniko"
         ))),
     }
-}
-
-/// Applies kaniko's environment variables to `args` (ADR-0036) and returns
-/// the warnings for those ranikust does not honour.
-///
-/// `vars` is the environment, passed in so tests need not change the
-/// process's.
-///
-/// # Errors
-///
-/// [`Invalid`] for `KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP`, which
-/// would silently change where images come from, and for a `KANIKO_NO_PUSH`
-/// that is not a boolean.
-pub(crate) fn apply_env(
-    args: &mut BuildArgs,
-    vars: impl IntoIterator<Item = (OsString, OsString)>,
-) -> Result<Vec<String>, Invalid> {
-    let mut ignored = Vec::new();
-    let mut warnings = Vec::new();
-    for (name, value) in vars {
-        let Some(name) = name.to_str() else { continue };
-        if !(name.starts_with("KANIKO_") || name.starts_with("FF_KANIKO_")) {
-            continue;
-        }
-        let value = value.to_string_lossy();
-        match name {
-            // `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:83-89`: overrides
-            // the flag.
-            "KANIKO_NO_PUSH" => {
-                args.no_push = crate::cli::parse_bool(&value)
-                    .map_err(|_| Invalid(format!("invalid value {value:?} for KANIKO_NO_PUSH")))?;
-            }
-            "KANIKO_PRESERVE_CONTEXT" => {
-                // Its meaning holds: overlay mode never touches the context.
-            }
-            "KANIKO_REGISTRY_MIRROR" | "KANIKO_REGISTRY_MAP" => {
-                return Err(Invalid(format!(
-                    "{name} is set, but registry mirrors and maps come in Phase 5 (Q-047): \
-                     unset it rather than pull from another registry than the one it names"
-                )));
-            }
-            "KANIKO_DIR" => warnings.push(
-                "KANIKO_DIR is ignored: ranikust's state directory is --state-dir".to_owned(),
-            ),
-            _ => ignored.push(name.to_owned()),
-        }
-    }
-    if !ignored.is_empty() {
-        ignored.sort();
-        warnings.push(format!(
-            "kaniko settings ranikust does not honour are ignored: {}",
-            ignored.join(", ")
-        ));
-    }
-    Ok(warnings)
 }
 
 /// Where a `--secret` comes from, as BuildKit's secrets store
@@ -419,6 +364,15 @@ impl BuildConfig {
         }
         if args.targets.iter().any(String::is_empty) {
             return Err(Invalid("--target names an empty stage".to_owned()));
+        }
+        // One stage per build (ADR-0049): kaniko's list builds the stages
+        // after the first and throws them away.
+        if args.targets.len() > 1 {
+            return Err(Invalid(format!(
+                "--target names {} stages ({}): give one; build the others in separate runs",
+                args.targets.len(),
+                args.targets.join(", ")
+            )));
         }
         // kaniko keeps a relative `--ignore-path`, which then never matches
         // the absolute paths of its walk; ranikust says so instead.
@@ -547,7 +501,8 @@ impl BuildConfig {
 ///
 /// [`Invalid`] for those that would change the image: `--ignore-path`,
 /// `--single-snapshot` and `--ignore-var-run=false` take effect in kaniko
-/// mode only for now [open: Q-260].
+/// mode only (ADR-0049): overlay mode's layers never hold mounts or
+/// `/var/run`, and squashing them costs a re-encode.
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
     let mut changes = Vec::new();
     if !args.ignore_paths.is_empty() {
@@ -561,7 +516,7 @@ pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invali
     }
     if !changes.is_empty() {
         return Err(Invalid(format!(
-            "{} take effect in kaniko mode only (Q-260); overlay mode would build a \
+            "{} take effect in kaniko mode only (ADR-0049); overlay mode would build a \
              different image: drop them, or use --mode=kaniko",
             changes.join(", ")
         )));

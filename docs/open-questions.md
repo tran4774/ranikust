@@ -34,48 +34,6 @@ Entry format:
 
 <!-- Entries are added below this line. -->
 
-### Q-008: What does a repeated target flag mean?
-
-- **Blocks:** Phase 1 tasks 2, 8; **Area:** `rnk-dockerfile`, `ranikust`
-- **Context:** kaniko's `--target` is a list whose first stage is pushed
-  (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:333`;
-  [kaniko-map](agents/kaniko-map.md#flags)); `stage_graph()` takes one
-  `Option<&str>` ([rnk-dockerfile](agents/crates/rnk-dockerfile.md#api-planned)).
-- **Options:** (a) kaniko's list: build every listed stage, push the first;
-  (b) one target, a repeated flag rejected with a message (`ADR-0011`).
-- **Recommendation:** (b), one target: the stages after the first in
-  kaniko's list are built and thrown away, work no output needs;
-  compatibility with kaniko's list is not a goal (2026-10-31).
-- **Interim:** in `feat/rnk-dockerfile-parser`, `stage_graph()` takes
-  `GraphOptions::targets: Vec<String>`: every listed stage is built, the
-  first is the result (`StageGraph::primary_target`), and `TARGETSTAGE` is
-  the first name. Reversible because a single target is a one-element list:
-  option (b) only needs the CLI (task 8) to reject a repeated flag. The CLI
-  (`feat/ranikust-cli`) follows: `--target` takes a list, comma-separated
-  or repeated, an empty name refused.
-- **Raised:** 2026-10-30
-
-### Q-010: Which path type does rnk-ignore match on?
-
-- **Blocks:** Phase 1 task 3; **Area:** `rnk-ignore`
-- **Context:** the planned `Matcher` takes `&str`, which cannot hold
-  non-UTF-8 file names; the card says to decide the path type first
-  ([rnk-ignore](agents/crates/rnk-ignore.md#api),
-  [Phase 1](agents/crates/rnk-ignore.md#phase-1)).
-- **Options:** (a) `&str`; (b) bytes, matched with `regex::bytes`.
-- **Recommendation:** (b), bytes, as the interim: a file whose name is
-  not UTF-8 must still match an exclude, or it slips into the context
-  (a secret, a key) unseen (2026-10-31).
-- **Interim:** bytes, on branch `feat/rnk-ignore-matcher`: patterns and
-  paths are `impl AsRef<[u8]>` (so `&str` callers need no change) and
-  `read_patterns` returns `Vec<Vec<u8>>`. Go strings are bytes too, so this
-  is the only choice that matches `patternmatcher` on non-UTF-8 names:
-  regexps see an invalid byte as U+FFFD, as Go's do (matched with `regex`
-  on the decoded text rather than `regex::bytes`). Reversible: the crate is
-  unpublished and has no callers yet; narrowing to `&str` changes only
-  signatures.
-- **Raised:** 2026-10-30
-
 ### Q-015: Which digest names an extracted layer, and where do locks live?
 
 - **Blocks:** Phase 1 task 7; **Area:** `rnk-store`
@@ -109,7 +67,9 @@ Entry format:
 - **Recommendation:** (a): a lock race or a crash mid-extraction can
   publish a partial layer that later builds trust; proven when the store
   is built, not left for Phase 6 (2026-10-31).
-- **Interim:** none
+- **Interim:** decided in Phase 6 (maintainer, 2026-10-31): the T0
+  multi-process and T2 `SIGKILL` tests come with the Phase 6 host-safety
+  suite.
 - **Raised:** 2026-10-30
 
 ### Q-017: Which type carries the probe outcome to the libraries?
@@ -214,7 +174,7 @@ Entry format:
   `rnk-cache` → `rnk-registry`, `rnk-dockerfile`, `rnk-ignore`, `rnk-layer`
   (Phase 4); `rnk-context` → `rnk-layer` for tar contexts, and to the TLS
   configuration that `rnk-registry` owns since `ADR-0024` (Phase 5);
-  `ranikust` → `rnk-registry` for `login` and `push` (Q-048).
+  `ranikust` → `rnk-registry` for `push` (Q-048; `login` is dropped, ADR-0049).
 - **Options:** per edge, (a) allow the direct dependency; (b) route it
   through `rnk-builder`, which already depends on all of them.
 - **Recommendation:** none
@@ -351,7 +311,7 @@ Entry format:
   file meant for a service user becomes the build user's, a change of
   permissions nobody reviewed; podman's flag is not a reason to copy it
   (2026-10-31).
-- **Interim:** none
+- **Interim:** decided when Phase 3 starts (maintainer, 2026-10-31).
 - **Raised:** 2026-10-30
 
 ### Q-041: What exactly goes into a cache key and its tag?
@@ -412,7 +372,8 @@ Entry format:
 - **Recommendation:** (d): one fragment grammar, so no URL is read two
   ways; a full commit hash pins the source as kaniko's second part did.
   Accepting kaniko's form only served compatibility (2026-10-31).
-- **Interim:** none
+- **Interim:** decided when Phase 5 starts, with ADR-0035 (maintainer,
+  2026-10-31).
 - **Raised:** 2026-10-30
 
 ### Q-252: Which `--git-config` keys does the built-in backend honour?
@@ -429,41 +390,20 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-047: What are the mirror, registry-map and helper flags called?
-
-- **Blocks:** Phase 5; **Area:** `ranikust`, `rnk-registry`
-- **Context:** mirrors and credential helpers land in Phase 5; the names
-  for kaniko's `--registry-mirror`, `--registry-map` and
-  `--credential-helpers` are open ([kaniko-map](agents/kaniko-map.md#flags)).
-- **Options:** (a) kaniko's names and meanings (`ADR-0011`); (b) other
-  names; (c) names chosen with the semantics, set first by which
-  credentials each registry receives.
-- **Recommendation:** (c): decide first that a mirror or mapped registry
-  never receives another registry's credentials and never serves a push,
-  then name the flags; kaniko's names only where its meaning is exactly
-  that. Compatibility is not a goal (2026-10-31).
-- **Interim:** none
-- **Raised:** 2026-10-30
-
-### Q-048: When do the push and login subcommands come?
+### Q-048: What does the push subcommand take, and when does it come?
 
 - **Blocks:** nothing yet; **Area:** `ranikust`, `rnk-registry`
-- **Context:** `ADR-0011` names `push` and `login`, but no phase has them
-  ([ranikust](agents/crates/ranikust.md#phase-1),
-  [rnk-registry](agents/crates/rnk-registry.md#phase-1)). kaniko's `push`
-  takes a docker-save tar or an OCI layout
-  ([ranikust](agents/crates/ranikust.md#api-planned)); `login` writes
-  `config.json`, which `docker_credential` cannot
-  ([rnk-registry](agents/crates/rnk-registry.md#pitfalls)).
-- **Options:** phase: none listed; `push` input: (a) both formats, as
-  kaniko; (b) one format.
-- **Recommendation:** `push` input (b), an OCI layout only: one parser
-  for untrusted input instead of two, and the layout is what
-  `--oci-layout-path` writes; the docker-save tar only served kaniko
-  compatibility. `login` not at all: it writes credentials to disk, which
-  a tool that reads existing ones does not need. Phase: none (2026-10-31).
-- **Interim:** `feat/ranikust-cli` has `build` and `version` only;
-  `ranikust push` and `ranikust login` are clap errors (exit code 2).
+- **Context:** `ADR-0011` named `push`; no phase has it
+  ([ranikust](agents/crates/ranikust.md#phase-1)). kaniko's `push` takes a
+  docker-save tar or an OCI layout. `login` is dropped for good
+  ([ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md)).
+- **Options:** phase: none listed; input: (a) both formats, as kaniko; (b)
+  an OCI layout only.
+- **Recommendation:** (b): one parser for untrusted input instead of two,
+  and the layout is what `--oci-layout-path` writes; the docker-save tar
+  only served kaniko compatibility. Phase: none yet (2026-10-31).
+- **Interim:** `ranikust` has `build` and `version` only; `ranikust push`
+  is a clap error (exit code 2).
 - **Raised:** 2026-10-30
 
 ### Q-245: Should one overlay mount serve consecutive instructions?
@@ -513,30 +453,6 @@ Entry format:
 - **Recommendation:** none
 - **Interim:** none
 - **Raised:** 2026-10-30
-
-### Q-260: Should overlay mode honour kaniko's snapshot flags?
-
-- **Blocks:** nothing yet; **Area:** `ranikust`, `rnk-snapshot`
-- **Context:** `--ignore-path`, `--single-snapshot` and
-  `--ignore-var-run=false` change the image kaniko builds. Kaniko mode
-  takes them ([ADR-0040](adr/0040-kaniko-mode-selection-container-check-and-flags.md));
-  overlay mode could too (filter the upper directory's diff, squash the
-  layers, keep `/var/run`), but nothing is designed.
-- **Options:** (a) refuse them in overlay mode; (b) implement them in
-  overlay mode's exporter; (c) ignore them with a warning (breaks
-  `ADR-0036`'s rule that a flag changing the image is never dropped);
-  (d) refuse them in overlay mode for good, and in kaniko mode keep only
-  what safety or performance needs.
-- **Recommendation:** (d): overlay mode needs none of them: its layers
-  hold only what `RUN` wrote, never container mounts or `/var/run`, and
-  squashing costs a full re-encode for no safety gain. In kaniko mode
-  mounts are already ignored through mountinfo, so `--ignore-path` and
-  `--ignore-var-run=false` stay only if a case needs them;
-  `--single-snapshot` only if measured faster. They existed for kaniko
-  compatibility, which is not a goal (2026-10-31).
-- **Interim:** (a): exit code 2 naming the flags and `--mode=kaniko`.
-  Reversible: one function, `config::overlay_mode_flags`.
-- **Raised:** 2026-10-31
 
 ## Answered
 
@@ -635,6 +551,38 @@ Entry format:
   container heuristic and `--force`, so a container build needs no extra
   flag; revisit with (b) if a host is seen to match the heuristic.
   Recorded in [ADR-0048](adr/0048-container-heuristic-guards-the-root.md).
+
+### Q-008: What does a repeated target flag mean?
+
+- **Answer (2026-10-31):** option (b): one `--target`; a repeated flag or a
+  comma-separated list is a usage error (exit 2). The maintainer, with the priority of
+  security, then performance; recorded in
+  [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md).
+
+### Q-010: Which path type does rnk-ignore match on?
+
+- **Answer (2026-10-31):** option (b), bytes, as built: a file whose name is not
+  UTF-8 still matches an exclude. The maintainer, with the priority of
+  security, then performance; recorded in
+  [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md).
+
+### Q-047: What are the mirror, registry-map and helper flags called?
+
+- **Answer (2026-10-31):** option (c): a mirror or mapped registry never
+  receives another registry's credentials and never serves a push; the
+  flags are named when Phase 5 builds them, kaniko's names only where the
+  meaning is exactly that. The maintainer, with the priority of
+  security, then performance; recorded in
+  [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md).
+
+### Q-260: Should overlay mode honour kaniko's snapshot flags?
+
+- **Answer (2026-10-31):** option (d): overlay mode refuses `--ignore-path`,
+  `--single-snapshot` and `--ignore-var-run=false` for good; kaniko mode
+  keeps the first two while a case needs them and `--single-snapshot` only
+  if measured faster. The maintainer, with the priority of
+  security, then performance; recorded in
+  [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md).
 
 ### Q-140: How is the aarch64 binary made static-pie with symbols?
 

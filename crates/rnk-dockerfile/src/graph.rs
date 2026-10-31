@@ -5,7 +5,8 @@
 // initOnBuildTriggers, validateCircularDependency, allReachableStages).
 // Copyright The BuildKit Authors. Licensed under the Apache License, Version 2.0.
 // Modified for ranikust: an explicit graph of stage indices instead of LLB
-// states; several targets (open question Q-008).
+// states; a list of targets, of which the CLI passes at most one
+// (ADR-0049).
 
 //! The stage graph: which stage or image each stage builds on and reads
 //! from, which stages the targets need, in an order that never depends on
@@ -30,9 +31,8 @@ pub struct GraphOptions {
     /// The platform the image is for (`TARGETPLATFORM`…).
     pub target_platform: Platform,
     /// `--target` values; empty means the last stage. Every listed stage is
-    /// built; the first is the result.
-    // [open: Q-008] kaniko accepts a repeated --target; until the question
-    // is answered the graph takes a list, which also covers a single target.
+    /// built; the first is the result. `ranikust` passes at most one
+    /// (ADR-0049); the list type stays for callers that build several.
     pub targets: Vec<String>,
 }
 
@@ -294,7 +294,7 @@ pub fn stage_graph(df: &Dockerfile, opts: &GraphOptions) -> Result<StageGraph, E
     }
     check_cycles(&stages)?;
 
-    // [open: Q-008] every listed target is built; the first is the result.
+    // Every listed target is built; the first is the result.
     let mut targets = Vec::new();
     if opts.targets.is_empty() {
         targets.push(n_stages - 1);

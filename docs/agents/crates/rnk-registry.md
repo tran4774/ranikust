@@ -190,6 +190,6 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   ranikust's shares the host's and could sniff `lo` or serve the port
   (threat model T11). Any other plain-HTTP registry, a loopback one or one
   a Dockerfile names under `--insecure-pull`, is accessed anonymously, and
-  a refusal names the flags. [open: Q-048] `login`.
+  a refusal names the flags. No `login` subcommand (ADR-0049).
   Only a loopback registry was measured
   ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).

@@ -117,8 +117,8 @@ gets kaniko mode ("cannot mount"), with the reason logged. Otherwise the
 overlay probes run as in Phase 1, and their refusal stands until the
 "kaniko, can mount" variant (Phase 2 task 9). Kaniko mode's flags
 (`--ignore-path`, `--ignore-var-run`, `--single-snapshot`, `--materialize`)
-are refused in overlay mode where they would change the image
-[open: Q-260].
+are refused in overlay mode where they would change the image, for good
+([ADR-0049](../adr/0049-security-and-performance-over-kaniko-compatibility.md)).
 
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode
 that cannot work fails with the probe's diagnosis

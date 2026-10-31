@@ -34,9 +34,9 @@ parent's lower stack, so parent stages are never squashed into children.
 (`dockerfile2llb`): `ADD` has no `--from`; a reference names a stage
 defined earlier in the file (a later one is an error, as in BuildKit,
 which builds stages in file order); anything that is not a stage name is
-an image the scheduler pulls up front. Several `--target`s are accepted
-until [Q-008](../open-questions.md#q-008-what-does-a-repeated-target-flag-mean)
-is answered; the first is the result.
+an image the scheduler pulls up front. The graph takes a list of targets,
+the first being the result; `ranikust` passes at most one
+([ADR-0049](../adr/0049-security-and-performance-over-kaniko-compatibility.md)).
 
 ## Execution
 

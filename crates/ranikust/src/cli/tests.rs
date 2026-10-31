@@ -75,9 +75,7 @@ fn kaniko_spellings_are_accepted() {
         (&["--build-arg", "A=1", "--build-arg=B"], |a| {
             a.build_args == ["A=1", "B"]
         }),
-        (&["--target=a,b", "--target", "c"], |a| {
-            a.targets == ["a", "b", "c"]
-        }),
+        (&["--target", "build"], |a| a.targets == ["build"]),
         (&["--compression=zstd"], |a| {
             a.compression == Some(Compression::Zstd)
         }),
@@ -236,31 +234,28 @@ fn warnings(args: &[&str]) -> (BuildArgs, Vec<String>) {
     (*build, parsed.warnings)
 }
 
-/// ADR-0036: flags whose absence leaves the image's bytes unchanged are
-/// accepted with one warning each, their values taken out with them.
+/// ADR-0049: a kaniko flag that changes nothing in ranikust is refused with
+/// its reason, never ignored; `--cache=false` asks for what ranikust does.
 #[test]
-fn flags_that_change_nothing_are_ignored_with_a_warning() {
-    let (args, w) = warnings(&[
-        "--cache-dir",
-        "/cache",
-        "--use-new-run",
-        "--cleanup=true",
-        "--pre-cleanup",
-        "--image-fs-extract-retry=3",
-        "--force-build-metadata",
-        "--skip-unused-stages",
-        "--no-push",
-    ]);
-    assert_eq!(w.len(), 7, "{w:?}");
-    assert!(w.iter().all(|l| l.contains("is ignored")), "{w:?}");
-    assert!(args.no_push, "the flag after a consumed value still parses");
-    // `--cache=false` asks for what Phase 1 does: no warning, no refusal.
+fn flags_that_change_nothing_are_refused() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["--cache-dir", "/cache"], "out of scope"),
+        (&["--use-new-run"], "drop the flag"),
+        (&["--cleanup=true"], "drop the flag"),
+        (&["--pre-cleanup"], "drop the flag"),
+        (&["--image-fs-extract-retry=3"], "--image-download-retry"),
+        (&["--force-build-metadata"], "deprecated in kaniko"),
+        (&["--skip-unused-stages"], "deprecated in kaniko"),
+        (&["--compressed-caching=false"], "Phase 4"),
+        (&["--no-push-cache"], "Phase 4"),
+    ];
+    for (args, reason) in cases {
+        let lines = refused(args);
+        assert_eq!(lines.len(), 1, "{args:?}: {lines:?}");
+        assert!(lines[0].contains(reason), "{args:?}: {}", lines[0]);
+    }
     let (_, w) = warnings(&["--cache=false", "--no-push"]);
     assert!(w.is_empty(), "{w:?}");
-    // Without a cache, not compressing or not pushing it changes nothing.
-    let (_, w) = warnings(&["--compressed-caching=false", "--no-push-cache", "--no-push"]);
-    assert_eq!(w.len(), 2, "{w:?}");
-    assert!(w.iter().all(|l| l.contains("Phase 4")), "{w:?}");
 }
 
 /// The kaniko-mode flags of Phase 2 (ADR-0040), with kaniko's defaults and

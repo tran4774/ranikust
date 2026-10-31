@@ -94,14 +94,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   deprecated `--tarPath`, `--snapshotMode` and `--customPlatform`.
   Credentials go over plain HTTP only to registries named with
   `--insecure-registry` or destinations under `--insecure`, never to one a
-  Dockerfile names under `--insecure-pull`. Flags that change nothing in the
-  image built, such as
-  `--cache-dir` and `--cleanup`, are accepted with a warning;
-  the others are refused with the release that brings them.
-- kaniko's variables: `KANIKO_NO_PUSH`, `DOCKER_AUTH_CONFIG` (read before
-  `config.json`), and a warning naming every other `KANIKO_*` or
-  `FF_KANIKO_*` variable that is set. `KANIKO_REGISTRY_MIRROR` and
-  `KANIKO_REGISTRY_MAP` stop the build until mirrors are supported.
+  Dockerfile names under `--insecure-pull`. Every other kaniko flag is
+  refused with its reason, those that would change nothing (such as
+  `--cache-dir` and `--cleanup`) too.
+- `DOCKER_AUTH_CONFIG`, read before `config.json`. kaniko's own variables
+  (`KANIKO_*`, `FF_KANIKO_*`) are not read.
 - Kaniko mode's workdir checks: `--mode=kaniko --workdir DIR` refuses `/`,
   a system directory such as `/usr` or `/home` or an ancestor of one
   (compared by device and inode, so `//` and symlinks are caught), a
@@ -167,6 +164,17 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   started with. Not used by a build yet.
 
 ### Changed
+
+- Compatibility with kaniko pipelines is no longer a goal (ADR-0049):
+  `--target` takes one stage (a repeated flag or a comma-separated list is
+  refused); kaniko flags that change nothing (`--cache-dir`,
+  `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`,
+  `--force-build-metadata`, `--skip-unused-stages`,
+  `--compressed-caching=false`, `--no-push-cache`) are refused instead of
+  ignored with a warning; `KANIKO_NO_PUSH` no longer sets `--no-push`,
+  `KANIKO_REGISTRY_MIRROR` and `KANIKO_REGISTRY_MAP` no longer stop the
+  run, and no warning names kaniko's variables. There will be no `login`
+  subcommand.
 
 - Log lines look like kaniko's: `INFO[0005] message` by default, with the
   full time under `--log-timestamp`; `--log-format=text` and `json` write
