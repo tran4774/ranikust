@@ -722,7 +722,18 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 mounts.finish();
                 return Err(Error::Cancelled);
             };
+            // In kaniko mode on `/`, no named state exists on disk while
+            // the RUN's processes do, nor is any made (Q-340, ADR-0055).
+            let fence = match b.cx.store.enter_run() {
+                Ok(fence) => fence,
+                Err(e) => {
+                    drop(permit);
+                    mounts.finish();
+                    return Err(e.into());
+                }
+            };
             let status = b.cx.sandbox.run(spec);
+            drop(fence);
             drop(permit);
             // The RUN is gone: its cache leases end.
             mounts.finish();

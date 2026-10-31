@@ -18,8 +18,9 @@ use rustix::io::Errno;
 use sha2::{Digest as _, Sha256};
 use tracing::field::Empty;
 
-use crate::anon::AnonFiles;
+use crate::anon::{self, AnonFiles};
 use crate::error::{Error, Result};
+use crate::fence::{Fence, NamedGuard, RunGuard};
 use crate::key::EntryKey;
 use crate::lock;
 
@@ -227,6 +228,8 @@ pub struct Store {
     anon: Option<Anon>,
     /// [`Store::anonymous_file`] in a persistent store, made on first use.
     build_files: OnceLock<AnonFiles>,
+    /// Keeps names and `RUN`s apart in an anonymous store; open otherwise.
+    fence: Fence,
     /// The per-digest locks held by this store's threads.
     held: lock::InProcess,
     /// The cache directories held by this store's threads.
@@ -277,6 +280,7 @@ impl Store {
             _build_lock: Some(build_lock),
             anon: None,
             build_files: OnceLock::new(),
+            fence: Fence::default(),
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
@@ -330,6 +334,7 @@ impl Store {
         if fs.f_type != rustix::fs::PROC_SUPER_MAGIC {
             return Err(proc_err(io::Error::other("not procfs")));
         }
+        anon::remove_leftovers(&root, &state_path)?;
         if !list(&root, Path::new("."))?.is_empty() {
             tracing::warn!(
                 target: "rnk_store",
@@ -342,10 +347,11 @@ impl Store {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let id = format!("{:x}-{nanos:x}", std::process::id());
+        let fence = Fence::closed();
         Ok(Self {
             build_dir: state_path.join("builds").join(&id),
             anon: Some(Anon {
-                files: AnonFiles::new(dir, &state_path),
+                files: AnonFiles::new(dir, &state_path, fence.clone()),
                 entries: Mutex::default(),
             }),
             state: root,
@@ -353,6 +359,7 @@ impl Store {
             id,
             _build_lock: None,
             build_files: OnceLock::new(),
+            fence,
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
@@ -397,12 +404,66 @@ impl Store {
         Ok((file, files.keep(kept)))
     }
 
+    /// A new anonymous file like [`Store::anonymous_file`], but owned by the
+    /// caller: its disk space or memory goes with the file's last
+    /// descriptor, not with the store. Name it to this process with
+    /// `/proc/self/fd/<n>` of the file's descriptor. For what a build keeps
+    /// for a while and then drops, such as a kept stage's tar.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::anonymous_file`].
+    pub fn scratch_file(&self) -> Result<File> {
+        match &self.anon {
+            Some(anon) => anon.files.create(),
+            None => self.anonymous_file().map(|(file, _)| file),
+        }
+    }
+
+    /// Counts a `RUN` in: in an anonymous store, waits until no named file
+    /// or unpacked directory of the build is on disk, and keeps any from
+    /// being made until the guard drops. Drop it once the `RUN`'s process
+    /// tree is gone. In a persistent store it does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Anonymous`] when named state outlives the wait: a bug in the
+    /// order of work, not a race.
+    pub fn enter_run(&self) -> Result<RunGuard> {
+        self.fence.enter_run()
+    }
+
+    /// A window in which named state may exist on disk, for a directory the
+    /// caller unpacks in the state directory and deletes before it drops
+    /// the guard (an image or a kept stage read by `COPY --from`): in an
+    /// anonymous store, waits until no `RUN` runs and keeps any from
+    /// starting until the guard drops. The directory's name comes from
+    /// [`Store::scratch_name`]. In a persistent store it does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Anonymous`] when asked from inside a `RUN` on this thread.
+    pub fn named_window(&self) -> Result<NamedGuard> {
+        self.fence.named()
+    }
+
+    /// A fresh name in the state directory for named state an anonymous
+    /// store's next start removes if this build leaves it (a crash):
+    /// [`crate::ANON_PREFIX`] and 128 random bits.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AnonymousFile`] when the kernel has no randomness to give.
+    pub fn scratch_name(&self) -> Result<String> {
+        anon::random_name()
+    }
+
     /// [`Store::anonymous_file`] in a persistent store: kept by a store-wide
     /// set made on first use.
     fn persistent_anonymous_file(&self, dir: OwnedFd) -> Result<(File, PathBuf)> {
         let files = self
             .build_files
-            .get_or_init(|| AnonFiles::new(dir, &self.build_dir));
+            .get_or_init(|| AnonFiles::new(dir, &self.build_dir, Fence::default()));
         let file = files.create()?;
         let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
             path: self.build_dir.clone(),

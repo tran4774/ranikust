@@ -34,10 +34,13 @@
 
 mod anon;
 mod error;
+mod fence;
 mod key;
 mod lock;
 mod store;
 
+pub use anon::PREFIX as ANON_PREFIX;
 pub use error::{Error, Result};
+pub use fence::{NamedGuard, RunGuard};
 pub use key::EntryKey;
 pub use store::{BuildPaths, CacheLease, CacheOwner, CacheSharing, STATE_MARKER, Store, TmpEntry};
