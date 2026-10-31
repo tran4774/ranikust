@@ -53,7 +53,7 @@ naming the reason, never silently ignored.
 
 | kaniko flag | `root.go` | Default | ranikust | Now |
 |---|---|---|---|---|
-| `--context`, `-c` | `:338` | `/workspace/` | accept; s3/gcs/azure schemes out of scope | parsed; a local directory, `dir://` stripped; `git://`, `tar://`, `http(s)://` refused (Phase 5) |
+| `--context`, `-c` | `:338` | `/workspace/` | accept; s3/gcs/azure schemes out of scope | parsed; a local directory as a plain path (`dir://` is dropped, ADR-0053; still stripped until task 7's branch); `git://`, `tar://`, `http(s)://` refused (Phase 5) |
 | `--dockerfile`, `-f` | `:337` | `Dockerfile` | accept | parsed |
 | `--destination`, `-d` | `:332` | none; required unless `--no-push` (`:201`) | accept | parsed, with kaniko's check |
 | `--no-push` | `:349` | false | accept | parsed; pflag booleans (`--no-push=false`) |
@@ -91,7 +91,7 @@ meaning tests are listed there):
 | `--push-retry`, `--image-download-retry` (`:396`, `:398`) | accepted as kaniko's outer loops (`util.go:221`, 1 s doubling, any error) around the client's own retries: the whole push (`push.go:364`), the image manifest fetch (`remote.go:79,121`) |
 | `--skip-push-permission-check` (`:372`), `--preserve-context` (`:375`) | accepted: their meaning holds without code in overlay mode |
 | `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | refused with the reason: they change nothing in ranikust, and no flag is ignored (ADR-0049) |
-| `--context-sub-path` (`:339`) | joined onto a `dir://` context, inside it (`root.go:599-631`, `buildcontext/dir.go:25`); ignored with a warning for a plain path, as kaniko |
+| `--context-sub-path` (`:339`) | kaniko joins it onto a `dir://` or fetched context (`root.go:599-631`, `buildcontext/dir.go:25`) and ignores it for a plain path; ranikust drops `dir://` and applies it to fetched contexts only (ADR-0053; the code still joins it onto `dir://` until task 7's branch) |
 | `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
 | `--single-snapshot`, `--materialize`, `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | accepted with kaniko's meaning in kaniko mode (ADR-0040), `--whitelist-var-run` refused, naming `--ignore-var-run` (ADR-0052); in overlay mode `--single-snapshot` and `--ignore-var-run=false` refused for good (ADR-0049), `--materialize` and `--ignore-var-run=true` warned about; wired to the walk by Phase 2 tasks 3–6 |
 | `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-ignore-immutable-tag-errors` | refused until Phase 5 |

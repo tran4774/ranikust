@@ -32,7 +32,7 @@ Phase 1 (`[design]` unless marked):
 
 ```rust
 pub enum ContextSpec { Dir(PathBuf), Tar(String), Git(String), Https(String) }  // kaniko prefixes; #[non_exhaustive]
-pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // dir://, tar://, git://, https://; bare path = dir; gs://, s3:// refused
+pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // tar://, git://, https://; bare path = dir; gs://, s3:// refused; `dir://` dropped (ADR-0053, code pending: task 7 branch)
 pub trait ContextSource {                             // [decided] open trait, ADR-0008
     fn open(&self) -> Result<Context>;                // sync for now [open: Q-027]
 }
@@ -41,7 +41,7 @@ pub fn open(spec: &ContextSpec) -> Result<Context>;   // Dir only; Tar, Git, Htt
 impl Context {
     pub fn root(&self) -> &RootPath;                  // unfiltered: ignored files are reachable through it
     pub fn origin(&self) -> &Path;                    // the canonical directory, for messages
-    pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context>;  // --context-sub-path; `..` clamped (Q-081, ADR-0032)
+    pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context>;  // --context-sub-path, fetched contexts only; `..` clamped (Q-081, ADR-0032, ADR-0053)
     pub fn find_dockerignore(&self, dockerfile: Option<&Path>) -> Result<Option<IgnoreFile>>;
     pub fn matcher(&self, ignore: &IgnoreFile) -> Result<rnk_ignore::Matcher>;
     pub fn walk<'c>(&'c self, ignore: Option<&'c Matcher>) -> Walk<'c>;  // Iterator<Item = Result<Entry>>
@@ -124,7 +124,8 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
 - `tar://stdin` is a gzip stream on stdin (`tar.go:41-56`);
   `--context-sub-path` applies after fetching (`root.go:625-630`), and
   kaniko ignores it for a bare path, which returns before that line
-  (`root.go:599-601`) (Q-081, ADR-0032).
+  (`root.go:599-601`) (Q-081, ADR-0032). ranikust drops `dir://` and applies
+  the sub-path to fetched contexts only (ADR-0053).
 - HTTPS needs the explicit trust store: reqwest's default fails in `scratch`
   ([exp-05](../../research/experiments/05-rust-ecosystem.md#q1-static-binary), ADR-0020).
 - A static binary in `scratch` has no `git` to call, so git contexts are

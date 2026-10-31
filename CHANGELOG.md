@@ -207,6 +207,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   - times clamped to `SOURCE_DATE_EPOCH`.
 
   These land in the releases that follow; the decisions are recorded now.
+- Decided, not yet in the code (ADR-0053; it lands with the Phase 2 task 7
+  integration branch): a local build context is a plain path and kaniko's
+  `dir://` form is dropped; `--context-sub-path` applies only to fetched
+  contexts (git, tar, HTTPS). Until then `dir://` is still accepted.
 
 ### Removed
 

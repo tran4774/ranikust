@@ -38,8 +38,8 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 
 | Flag | Meaning |
 |---|---|
-| `-c`, `--context=DIR` | The build context, a local directory (`dir://` allowed). Default `/workspace/`. git, tar and HTTPS contexts come later; S3, GCS and Azure are not planned. |
-| `--context-sub-path=DIR` | Build from this sub-directory of a `dir://` context (inside it: no `..`). Ignored, with a warning, for a plain path, as kaniko does. |
+| `-c`, `--context=DIR` | The build context, a local directory given as a plain path. kaniko's `dir://` form is dropped ([ADR-0053](../adr/0053-local-context-is-a-plain-path-no-dir-scheme.md)); the build accepts it until that change lands. Default `/workspace/`. git, tar and HTTPS contexts come later; S3, GCS and Azure are not planned. |
+| `--context-sub-path=DIR` | Build from this sub-directory of a fetched context (git, tar or HTTPS, which come later; inside it: no `..`). Ignored, with a warning, for a local directory. Until the change of ADR-0053 lands, a `dir://` context also takes it. |
 | `-f`, `--dockerfile=PATH` | The Dockerfile. Default `Dockerfile`. |
 | `--build-arg=KEY=VALUE` | A build argument; `KEY` alone takes its value from the environment. Repeatable. |
 | `--target=STAGE` | The stage to build and produce. One only: kaniko's list (comma-separated or repeated) is refused, since the stages after the first would be built for nothing. Default: the last stage. |
