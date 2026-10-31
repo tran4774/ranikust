@@ -1,13 +1,16 @@
 //! Pulling an image for `FROM` or `COPY --from`: its manifest and config,
 //! its blobs into the store, and its layers as the snapshotter keeps them
-//! (extracted lower layers in overlay mode, the blobs in kaniko mode).
+//! (extracted lower layers in overlay mode, the blobs in kaniko mode). In
+//! kaniko mode, when no output needs a base layer's bytes, no blob is
+//! pulled at all: each layer is streamed from the registry into the root
+//! when a stage is prepared on it (ADR-0055).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use rnk_oci::{ImageConfig, ImageFormat, ImageManifest, Platform, Reference};
 use rnk_registry::Client;
-use rnk_snapshot::{LayerDir, Snapshotter};
+use rnk_snapshot::{LayerDir, LayerOpen, Snapshotter};
 use rnk_store::{EntryKey, Store};
 use tokio::io::AsyncWriteExt as _;
 
@@ -35,6 +38,13 @@ pub struct PulledImage<L = LayerDir> {
 /// layer made a base layer by the snapshotter (in overlay mode extracted in
 /// `layers/`, checked against the config's diff IDs).
 ///
+/// Unless `keep_blobs` (an output written to a file needs the bytes), a
+/// snapshotter that streams base layers ([`Snapshotter::streamed_layer`],
+/// kaniko mode) gets each layer as a stream from the registry instead, and
+/// no blob is pulled or kept: the image's layers are then
+/// [`LayerBytes::Registry`](crate::LayerBytes::Registry), which a push mounts or streams
+/// from their source.
+///
 /// Blocking work (the store's locked fills, extraction) runs on blocking
 /// threads of the current runtime.
 ///
@@ -48,6 +58,7 @@ pub async fn pull_image<S>(
     snapshotter: &Arc<S>,
     reference: &str,
     platform: &Platform,
+    keep_blobs: bool,
 ) -> Result<PulledImage<S::Layer>>
 where
     S: Snapshotter + Send + Sync + 'static,
@@ -75,6 +86,19 @@ where
         )));
     }
 
+    if !keep_blobs
+        && let Some(streamed) = streamed(client, snapshotter, &reference, &manifest, &config)
+    {
+        let (blobs, layers) = streamed.into_iter().unzip();
+        return Ok(PulledImage {
+            reference,
+            config,
+            format,
+            blobs,
+            layers,
+        });
+    }
+
     let mut blobs = Vec::with_capacity(manifest.layers.len());
     for (layer, diff_id) in manifest.layers.iter().zip(&config.rootfs.diff_ids) {
         let path = pull_blob(client, store, &reference, layer).await?;
@@ -91,7 +115,10 @@ where
         let snapshotter = Arc::clone(snapshotter);
         let below = layers.clone();
         let diff_id = blob.diff_id.clone();
-        let path = blob.path.clone();
+        let path = blob
+            .path()
+            .ok_or_else(|| Error::Invalid("a pulled blob has no file".to_owned()))?
+            .to_owned();
         let dir = tokio::task::spawn_blocking(move || -> Result<S::Layer> {
             Ok(snapshotter.base_layer(&diff_id, &path, &below)?)
         })
@@ -106,6 +133,55 @@ where
         blobs,
         layers,
     })
+}
+
+/// The image's layers as streams, if the snapshotter takes them
+/// (ADR-0055): nothing is pulled now, each layer is read from the registry
+/// when a stage is prepared on it, through a bounded pipe.
+fn streamed<S: Snapshotter>(
+    client: &Arc<Client>,
+    snapshotter: &Arc<S>,
+    reference: &Reference,
+    manifest: &ImageManifest,
+    config: &ImageConfig,
+) -> Option<Vec<(BlobLayer, S::Layer)>> {
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    manifest
+        .layers
+        .iter()
+        .zip(&config.rootfs.diff_ids)
+        .map(|(blob, diff_id)| {
+            let open = Arc::new(RegistryLayer {
+                handle: handle.clone(),
+                client: Arc::clone(client),
+                from: reference.clone(),
+                blob: blob.clone(),
+            });
+            let layer = snapshotter.streamed_layer(diff_id, open)?;
+            Some((
+                BlobLayer::remote(diff_id.clone(), blob.clone(), reference.clone()),
+                layer,
+            ))
+        })
+        .collect()
+}
+
+/// A base layer read from its registry each time it is extracted.
+#[derive(Debug)]
+struct RegistryLayer {
+    handle: tokio::runtime::Handle,
+    client: Arc<Client>,
+    from: Reference,
+    blob: rnk_oci::Descriptor,
+}
+
+impl LayerOpen for RegistryLayer {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        let reader = self
+            .client
+            .open_blob(&self.handle, &self.from, &self.blob)?;
+        Ok(Box::new(reader))
+    }
 }
 
 /// One blob into the store, unless it is there; its host path.

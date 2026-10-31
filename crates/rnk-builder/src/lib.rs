@@ -34,12 +34,15 @@ mod pull;
 mod sources;
 mod stage;
 mod time;
+mod upload;
 
 pub use error::{Error, Result};
 pub use image::{
     HISTORY_COMMENT, Image, assemble, assemble_annotated, image_format, instruction_history,
 };
-pub use layer::{BlobLayer, EntriesLayer, LayerDemand, LayerExporter, LayerSource};
+pub use layer::{
+    AnonBlob, BlobLayer, EntriesLayer, LayerBytes, LayerDemand, LayerExporter, LayerSource,
+};
 pub use mounts::{MAX_SECRET_SIZE, Secret};
 pub use output::{Outputs, UNSET_DESTINATION, push, write_docker_tar, write_oci_layout};
 pub use pull::{PulledImage, pull_image};
@@ -49,3 +52,4 @@ pub use stage::{
     build_stage,
 };
 pub use time::BuildTime;
+pub use upload::{Release, Uploader};

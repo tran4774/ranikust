@@ -763,3 +763,189 @@ async fn real_registry_round_trip() {
         .map(|r| r.status());
     eprintln!("manifest delete: {status:?}");
 }
+
+/// Reads a blob through [`Client::open_blob`] on a blocking thread, as a
+/// stage's thread does.
+async fn read_streamed(
+    client: &std::sync::Arc<Client>,
+    reference: &Reference,
+    blob: &rnk_oci::Descriptor,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let handle = tokio::runtime::Handle::current();
+    let (client, reference, blob) = (
+        std::sync::Arc::clone(client),
+        reference.clone(),
+        blob.clone(),
+    );
+    // A plain thread, as a stage's: a streamed blob is never read from a
+    // thread inside the runtime.
+    let (send, receive) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let read = || {
+            let mut reader = client.open_blob(&handle, &reference, &blob)?;
+            let mut out = Vec::new();
+            reader.read_to_end(&mut out).map(|_| out)
+        };
+        let _ = send.send(read());
+    });
+    receive.await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_reads_whole_and_verified() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    // Larger than the pipe, so the reader drains it while the pull fills it.
+    let content = b"streamed layer ".repeat(60_000);
+    let image = add_image(&registry, "app", "v1", content.clone());
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let got = read_streamed(&client, &reference(&registry, "app"), &blob)
+        .await
+        .unwrap();
+    assert_eq!(got, content);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_with_a_wrong_digest_never_reads_to_a_clean_end() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let image = add_image(&registry, "app", "v1", b"genuine".to_vec());
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    // Same length, other bytes: only the digest tells.
+    registry
+        .state()
+        .tampered
+        .insert(blob.digest.to_string(), Bytes::from_static(b"forgery"));
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let err = read_streamed(&client, &reference(&registry, "app"), &blob)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("digest"), "{err}");
+    // A streamed pull is not retried once bytes went out: what was read cannot be taken back.
+    assert_eq!(registry.count("GET /v2/app/blobs/"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_broken_after_its_first_bytes_fails_at_once_and_for_good() {
+    use std::io::Read as _;
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let content = b"broken layer ".repeat(1000);
+    let image = add_image(&registry, "app", "v1", content);
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    registry.state().cut.insert(blob.digest.to_string(), 100);
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let handle = tokio::runtime::Handle::current();
+    let from = reference(&registry, "app");
+    let (send, receive) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut reader = client.open_blob(&handle, &from, &blob).unwrap();
+        let mut out = Vec::new();
+        let first = reader.read_to_end(&mut out).unwrap_err().to_string();
+        // Never a clean end after the failure, however often it is read.
+        let again = reader.read(&mut [0; 16]).unwrap_err().to_string();
+        let _ = send.send((out.len(), first, again));
+    });
+    let (read, first, again) = receive.await.unwrap();
+    assert!(read <= 100, "{read}");
+    assert!(
+        !first.contains("restart"),
+        "the first error is reported: {first}"
+    );
+    assert_eq!(first, again);
+    // Bytes went out: no retry, no wait.
+    assert_eq!(registry.count("GET /v2/app/blobs/"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_dropped_early_stops_its_pull() {
+    use std::io::Read as _;
+    let registry = FakeRegistry::start(Auth::Open).await;
+    // Far larger than the pipe: the pull blocks on a full pipe.
+    let content = b"unread ".repeat(200_000);
+    let image = add_image(&registry, "app", "v1", content);
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let handle = tokio::runtime::Handle::current();
+    let from = reference(&registry, "app");
+    let (send, receive) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut reader = client.open_blob(&handle, &from, &blob).unwrap();
+        reader.read_exact(&mut [0; 16]).unwrap();
+        // Returns only once the pull's thread is gone.
+        drop(reader);
+        let _ = send.send(());
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), receive)
+        .await
+        .expect("dropping the reader stops the pull")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_blob_is_retried_while_nothing_was_read() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let content = b"retry me".repeat(100);
+    let image = add_image(&registry, "app", "v1", content.clone());
+    registry.state().faults.push(Fault {
+        method: Method::GET,
+        path_contains: "/blobs/".to_owned(),
+        status: 503,
+        remaining: 2,
+    });
+    let client = std::sync::Arc::new(client(&registry, Credentials::none()));
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let got = read_streamed(&client, &reference(&registry, "app"), &blob)
+        .await
+        .unwrap();
+    assert_eq!(got, content);
+    assert_eq!(registry.count("GET /v2/app/blobs/"), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_body_is_pulled_from_its_source_while_it_is_pushed() {
+    let source = FakeRegistry::start(Auth::Open).await;
+    let target = FakeRegistry::start(Auth::Open).await;
+    let content = vec![5u8; 700 * 1024];
+    let image = add_image(&source, "base", "v1", content.clone());
+    let mut opts = options(&source);
+    opts.insecure.insert(target.host());
+    let client =
+        std::sync::Arc::new(Client::new(opts, TrustStore::load(), Credentials::none()).unwrap());
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let body = BlobBody::Remote(Box::new(rnk_registry::RemoteBlob {
+        client: std::sync::Arc::clone(&client),
+        from: reference(&source, "base:v1"),
+        blob: blob.clone(),
+    }));
+    let outcome = client
+        .push_blob(&reference(&target, "out:latest"), &blob, &body)
+        .await
+        .unwrap();
+    assert_eq!(outcome, PushOutcome::Uploaded);
+    assert_eq!(
+        target.state().blobs[blob.digest.as_str()].as_ref(),
+        content.as_slice()
+    );
+
+    // A source that serves other bytes fails the push: the destination's
+    // upload is never committed.
+    let other = add_image(&source, "base", "v2", vec![6u8; 4096]);
+    let bad = descriptor(MediaType::OCI_LAYER_GZIP, &other.layer);
+    source
+        .state()
+        .tampered
+        .insert(bad.digest.to_string(), Bytes::from(vec![7u8; 4096]));
+    let body = BlobBody::Remote(Box::new(rnk_registry::RemoteBlob {
+        client: std::sync::Arc::clone(&client),
+        from: reference(&source, "base:v2"),
+        blob: bad.clone(),
+    }));
+    let err = client
+        .push_blob(&reference(&target, "out:latest"), &bad, &body)
+        .await
+        .unwrap_err();
+    assert!(
+        !target.state().blobs.contains_key(bad.digest.as_str()),
+        "{err}"
+    );
+}

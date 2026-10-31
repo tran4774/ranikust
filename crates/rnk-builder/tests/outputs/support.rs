@@ -2,10 +2,11 @@
 
 #![allow(dead_code, reason = "each test file uses a part")]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rnk_builder::{
@@ -159,12 +160,16 @@ pub(crate) fn time() -> BuildTime {
 }
 
 /// A client for the plain-HTTP fake registry, with fast retries.
-pub(crate) fn client(registry: &FakeRegistry) -> Client {
+pub(crate) fn client(registry: &FakeRegistry) -> Arc<Client> {
     client_with(registry, Credentials::none())
 }
 
 /// A client with basic credentials for `registry`, from a `config.json`.
-pub(crate) fn client_with_basic(registry: &FakeRegistry, user: &str, password: &str) -> Client {
+pub(crate) fn client_with_basic(
+    registry: &FakeRegistry,
+    user: &str,
+    password: &str,
+) -> Arc<Client> {
     use base64::Engine as _;
     let auth = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
     let dir = tempfile::tempdir().unwrap();
@@ -180,16 +185,25 @@ pub(crate) fn client_with_basic(registry: &FakeRegistry, user: &str, password: &
     client_with(registry, Credentials::load(&path).unwrap())
 }
 
-fn client_with(registry: &FakeRegistry, credentials: Credentials) -> Client {
+fn client_with(registry: &FakeRegistry, credentials: Credentials) -> Arc<Client> {
+    client_over(&[registry], credentials)
+}
+
+/// A client for several plain-HTTP fake registries, without credentials.
+pub(crate) fn client_for(registries: &[&FakeRegistry]) -> Arc<Client> {
+    client_over(registries, Credentials::none())
+}
+
+fn client_over(registries: &[&FakeRegistry], credentials: Credentials) -> Arc<Client> {
     let mut options = ClientOptions::default();
-    options.insecure = BTreeSet::from([registry.host()]);
+    options.insecure = registries.iter().map(|r| r.host()).collect();
     options.http_credentials = options.insecure.clone();
     options.retry = RetryPolicy {
         attempts: 3,
         initial_delay: Duration::from_millis(1),
         factor: 2,
     };
-    Client::new(options, TrustStore::load(), credentials).unwrap()
+    Arc::new(Client::new(options, TrustStore::load(), credentials).unwrap())
 }
 
 pub(crate) fn reference(registry: &FakeRegistry, rest: &str) -> Reference {

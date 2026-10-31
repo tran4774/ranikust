@@ -506,7 +506,7 @@ impl Store {
     /// A new, empty file open for reading and writing that no other process
     /// can reach by a path, kept open as long as the store, and its name
     /// for this process's own code (`/proc/self/fd/<n>`): for what a build
-    /// writes and reads back, such as an encoded layer or a kept tree's tar.
+    /// writes and reads back for the whole build.
     /// In an anonymous store it lives in the state directory (`O_TMPFILE`)
     /// or in memory (`memfd`); in a persistent one, in the build directory.
     ///
@@ -516,15 +516,7 @@ impl Store {
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)> {
         let files = match &self.anon {
             Some(anon) => &anon.files,
-            None => {
-                // Through the state directory's own descriptor, never the
-                // build directory's path again.
-                let rel = Path::new("builds").join(&self.id);
-                let dir = self
-                    .state
-                    .open_at(&rel, &OpenHow::path().directory().no_follow())?;
-                return self.persistent_anonymous_file(dir);
-            }
+            None => self.persistent_files()?,
         };
         let file = files.create()?;
         let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
@@ -538,7 +530,8 @@ impl Store {
     /// caller: its disk space or memory goes with the file's last
     /// descriptor, not with the store. Name it to this process with
     /// `/proc/self/fd/<n>` of the file's descriptor. For what a build keeps
-    /// for a while and then drops, such as a kept stage's tar.
+    /// for a while and then drops, such as an encoded layer released once
+    /// pushed (ADR-0055) or a kept stage's tar.
     ///
     /// # Errors
     ///
@@ -546,7 +539,8 @@ impl Store {
     pub fn scratch_file(&self) -> Result<File> {
         match &self.anon {
             Some(anon) => anon.files.create(),
-            None => self.anonymous_file().map(|(file, _)| file),
+            // Not kept by the store either: gone with the caller's file.
+            None => self.persistent_files()?.create(),
         }
     }
 
@@ -641,18 +635,21 @@ impl Store {
         anon::random_name()
     }
 
-    /// [`Store::anonymous_file`] in a persistent store: kept by a store-wide
-    /// set made on first use.
-    fn persistent_anonymous_file(&self, dir: OwnedFd) -> Result<(File, PathBuf)> {
-        let files = self
+    /// The anonymous files of a persistent store, in its build directory:
+    /// a store-wide set made on first use.
+    fn persistent_files(&self) -> Result<&AnonFiles> {
+        if let Some(files) = self.build_files.get() {
+            return Ok(files);
+        }
+        // Through the state directory's own descriptor, never the build
+        // directory's path again.
+        let rel = Path::new("builds").join(&self.id);
+        let dir = self
+            .state
+            .open_at(&rel, &OpenHow::path().directory().no_follow())?;
+        Ok(self
             .build_files
-            .get_or_init(|| AnonFiles::new(dir, &self.build_dir, Fence::default()));
-        let file = files.create()?;
-        let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
-            path: self.build_dir.clone(),
-            source: e,
-        })?;
-        Ok((file, files.keep(kept)))
+            .get_or_init(|| AnonFiles::new(dir, &self.build_dir, Fence::default())))
     }
 
     /// The canonical state directory.

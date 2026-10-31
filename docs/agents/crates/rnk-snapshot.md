@@ -46,11 +46,13 @@ pub enum Keep { All, Paths(Vec<PathBuf>) }         // Paths: physical (no link b
                                                    // a final symlink kept as the link, the root = All
 pub trait Snapshotter {                            // ADR-0046
     type Root: StageRootfs;
-    type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (the blob)
+    type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (a blob, or streamed)
     fn base_layer(&self, diff_id: &Digest, blob: &Path, below: &[Self::Layer]) -> Result<Self::Layer>;
+    fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<Self::Layer>; // ADR-0055: kaniko Some, overlay None
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;  // Scratch | Image(&[Layer]) | Stage(&Root)
     fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root>;  // COPY --from=<image>; default prepare(Image)
 }
+pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction (rnk-builder: from the registry)
 impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
 // kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
@@ -64,12 +66,15 @@ impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk
 // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
 // prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /
 //   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641); a root off `/` 0755;
-//   extracts each blob with extract_live, diff ID checked. prepare(Stage(p)): takes the root over
+//   extracts each blob with extract_live, diff ID checked; on `/` a streamed layer's compressed blob is
+//   first spooled (scratch_file) while its diff ID is computed, verified, then decompressed again into the
+//   root (ADR-0055). prepare(Stage(p)): takes the root over
 //   from p if p still holds it (a squashed chain); from a kept p, copies p's copy into the emptied
 //   root; else Error::State.
 // keep(All | Paths): copies the root (ignore list left out) into a new directory of the keep area,
 //   then view() reads it and the root is given up; again while no new base started (epoch).
-// prepare_source: unpacks a COPY --from image into the keep area, never into the shared root.
+// prepare_source: unpacks a COPY --from image into the keep area, never into the shared root; on `/`
+//   kept as blobs, streamed ones spooled and verified before the first unpacked view.
 // end_layer: walk + diff when layers are needed, else an empty diff and no walk.
 // release: gives the root up; the next base or finish() empties it (delete_contents + ignore list),
 //   a root off `/` getting its own owner and mode back.

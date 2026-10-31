@@ -110,9 +110,12 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
 - **Never on this machine's `/`:** `--force`. Outside a container kaniko
   mode builds in a directory of the state directory instead.
 - **Change nothing in ranikust:** `--cache-dir` (the warmer is not planned;
-  base images are pulled into the store), `--use-new-run`, `--cleanup`,
+  base images are pulled into the store, or in kaniko mode streamed from the
+  registry straight into the root), `--use-new-run`, `--cleanup`,
   `--pre-cleanup` (ranikust decides what to empty itself),
-  `--image-fs-extract-retry` (use `--image-download-retry`),
+  `--image-fs-extract-retry` (use `--image-download-retry`; a base layer
+  streamed in kaniko mode fails the build if its download breaks after its
+  first bytes, since they are already extracted),
   `--force-build-metadata`, `--skip-unused-stages` (deprecated in kaniko).
   Drop them. `--cache=false` is accepted: it asks for what ranikust does.
 - **With the layer cache:** `--cache`, `--cache-repo`, `--cache-ttl`,

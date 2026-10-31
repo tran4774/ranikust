@@ -23,8 +23,8 @@ use std::time::SystemTime;
 
 use rnk_builder::{
     BuildCx, BuildTime, ContextFiles, Error, ImageSource, KeepNeed, LayerDemand, LayerExporter,
-    Outputs, PulledImage, RunGate, StageBase, StageDone, StageInput, assemble_annotated,
-    build_stage, image_format, pull_image,
+    Outputs, PulledImage, Release, RunGate, StageBase, StageDone, StageInput, Uploader,
+    assemble_annotated, build_stage, image_format, pull_image,
 };
 use rnk_context::{Context, ContextSpec};
 use rnk_dockerfile::{Dockerfile, GraphOptions, StageGraph};
@@ -177,6 +177,7 @@ where
         sandbox,
         snapshotter,
         (isolation, shared_root),
+        runtime.handle(),
     );
     let shared = match prepared {
         Ok(s) => Arc::new(s),
@@ -188,6 +189,12 @@ where
     };
     let result = runtime.block_on(build(config, &shared));
     release_all(&shared);
+    // The uploads run on the runtime: they end before it does. After a
+    // failed build they are cancelled, not awaited, and the files still
+    // waiting are released.
+    if result.is_err() {
+        runtime.block_on(shared.exporter.cancel_uploads());
+    }
     drop(runtime);
     match Arc::into_inner(shared) {
         Some(s) => {
@@ -220,6 +227,7 @@ fn prepare<S: Snapshotter>(
     sandbox: Sandbox,
     snapshotter: Arc<S>,
     (isolation, shared_root): (Isolation, bool),
+    runtime: &tokio::runtime::Handle,
 ) -> Result<Shared<S>, String> {
     let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
         .map_err(|e| format!("opening the build context: {e}"))?;
@@ -293,8 +301,30 @@ fn prepare<S: Snapshotter>(
     // verified certificate carries credentials (ADR-0051).
     options.verified_credentials_only = store.is_anonymous();
     let credentials = credentials()?;
-    let client = Client::new(options, TrustStore::load(), credentials)
-        .map_err(|e| format!("setting up the registry client: {e}"))?;
+    let client = Arc::new(
+        Client::new(options, TrustStore::load(), credentials)
+            .map_err(|e| format!("setting up the registry client: {e}"))?,
+    );
+    // Built layers go to the destinations as they are exported, and are
+    // released once there unless a file output needs them (ADR-0055).
+    let exporter = if outputs.push && !outputs.destinations.is_empty() {
+        let release = if outputs.needs_blob_files() {
+            Release::Keep
+        } else {
+            Release::Free(Arc::clone(&store))
+        };
+        let uploader = Uploader::start(
+            Arc::clone(&client),
+            outputs.destinations.clone(),
+            push_jobs(config),
+            release,
+            runtime,
+        )
+        .map_err(|e| e.to_string())?;
+        exporter.with_uploader(uploader)
+    } else {
+        exporter
+    };
     let (units, layers_needed, keep) = if shared_root {
         let (units, needed, keep) = kaniko_units(&graph, &dockerfile);
         (units, Some(needed), keep)
@@ -331,7 +361,7 @@ fn prepare<S: Snapshotter>(
         secrets,
         allow_network_host: config.allow_network_host,
         platform: Platform::new(os, arch),
-        client: Arc::new(client),
+        client,
         dockerfile,
         graph,
         outputs,
@@ -685,6 +715,21 @@ fn in_target(graph: &StageGraph) -> Vec<bool> {
     out
 }
 
+/// What stage `index` must do with its layers. Only the target's `FROM`
+/// chain (`in_target`) is pushed or written out; a stage that a later stage
+/// is built from in kaniko mode (`layers_needed`) keeps its layers for that
+/// stage alone, so a stage the target never inherits never reaches a
+/// destination.
+fn stage_demand(
+    index: usize,
+    in_target: &[bool],
+    layers_needed: Option<&[bool]>,
+    outputs: &Outputs,
+) -> LayerDemand {
+    LayerDemand::for_stage(in_target[index], outputs, false)
+        .saved(layers_needed.is_some_and(|n| n[index]))
+}
+
 /// The stages, then the outputs.
 async fn build<S: Snapshotter + Send + Sync + 'static>(
     config: &BuildConfig,
@@ -711,7 +756,7 @@ where
         .ok_or("the target stage was not built")?;
     let done: &Stage<S> = &target;
     let format = requested_format(config);
-    let image = assemble_annotated(
+    let mut image = assemble_annotated(
         done.config.clone(),
         done.layers.clone(),
         format,
@@ -729,10 +774,22 @@ where
             .map_err(|e| e.to_string())?;
     }
     if outputs.push {
-        let jobs = config
-            .jobs
-            .or_else(|| std::thread::available_parallelism().ok())
-            .unwrap_or(NonZeroUsize::MIN);
+        let jobs = push_jobs(config);
+        // Layers pushed during the build are in every destination: the push
+        // finds them there and, should one have gone, takes them from the
+        // first destination rather than from a released file.
+        let uploaded = shared
+            .exporter
+            .finish_uploads()
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(first) = outputs.destinations.first() {
+            for layer in &mut image.layers {
+                if uploaded.contains(&layer.blob.digest) {
+                    layer.bytes = rnk_builder::LayerBytes::Registry(first.clone());
+                }
+            }
+        }
         // kaniko's `--push-retry`: the whole push again, around the client's
         // own per-request retries (`push.go:364`, ADR-0036).
         rnk_registry::retry_kaniko(config.push_retry.unwrap_or(0), async || {
@@ -744,6 +801,14 @@ where
     Ok(Built {
         digest: image.digest().to_string(),
     })
+}
+
+/// How many blobs a push sends at once: `--jobs`, else the CPUs.
+fn push_jobs(config: &BuildConfig) -> NonZeroUsize {
+    config
+        .jobs
+        .or_else(|| std::thread::available_parallelism().ok())
+        .unwrap_or(NonZeroUsize::MIN)
 }
 
 /// Cancels the build on the first SIGINT or SIGTERM: running `RUN`s are
@@ -835,6 +900,7 @@ async fn prepare_stage<S: Snapshotter + Send + Sync + 'static>(
             &shared.snapshotter,
             &r,
             &shared.platform,
+            shared.outputs.needs_blob_files(),
         )
         .await?;
         prepared.base = Some(Arc::new(image));
@@ -846,6 +912,7 @@ async fn prepare_stage<S: Snapshotter + Send + Sync + 'static>(
             &shared.snapshotter,
             &r,
             &shared.platform,
+            shared.outputs.needs_blob_files(),
         )
         .await?;
         prepared.images.insert(r, Arc::new(image));
@@ -1143,13 +1210,11 @@ fn run_stage<S: Snapshotter>(
         base,
         stages: deps.iter().map(|(i, d)| (*i, &**d)).collect(),
         images: sources.iter().map(|(k, v)| (k.clone(), &**v)).collect(),
-        demand: LayerDemand::for_stage(
-            shared
-                .layers_needed
-                .as_ref()
-                .map_or(shared.in_target[index], |n| n[index]),
+        demand: stage_demand(
+            index,
+            &shared.in_target,
+            shared.layers_needed.as_deref(),
             &shared.outputs,
-            false,
         ),
         labels: if index == shared.graph.primary_target() {
             &shared.labels
@@ -1438,6 +1503,34 @@ mod tests {
         .unwrap();
         let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
         assert_eq!(in_target(&graph), [false, false, true, true]);
+    }
+
+    #[test]
+    fn layers_of_stages_the_target_does_not_inherit_are_never_pushed() {
+        // `secrets` and the `b` stages are built FROM in kaniko mode, so
+        // their layers are kept, but the target only copies from them.
+        let text = "FROM alpine AS secrets\nCOPY key /key\n\
+                    FROM secrets AS b1\nRUN true\n\
+                    FROM secrets AS b2\nRUN true\n\
+                    FROM alpine\nCOPY --from=b1 /a /a\nCOPY --from=b2 /b /b\n";
+        let df = rnk_dockerfile::parse(text).unwrap();
+        let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+        let (_, needed, _) = kaniko_units(&graph, &df);
+        assert!(needed[0], "the secrets stage keeps its layers for b1, b2");
+        let in_target = in_target(&graph);
+        let outputs = Outputs::new(
+            &["r.example/app".to_owned()],
+            true,
+            None,
+            Some(PathBuf::from("/out")),
+        )
+        .unwrap();
+        for (index, is_target) in [(0, false), (1, false), (2, false), (3, true)] {
+            let demand = stage_demand(index, &in_target, Some(&needed), &outputs);
+            assert_eq!(demand.push, is_target, "stage {index}");
+            assert_eq!(demand.output, is_target, "stage {index}");
+        }
+        assert!(stage_demand(0, &in_target, Some(&needed), &outputs).needed());
     }
 
     #[test]

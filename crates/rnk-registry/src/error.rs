@@ -110,6 +110,14 @@ pub enum Error {
 }
 
 impl Error {
+    /// This error, never retried: what it interrupted cannot restart.
+    pub(crate) fn not_retryable(mut self) -> Self {
+        if let Self::Registry { retryable, .. } = &mut self {
+            *retryable = false;
+        }
+        self
+    }
+
     /// Whether the failed operation may succeed if repeated.
     pub fn is_retryable(&self) -> bool {
         matches!(

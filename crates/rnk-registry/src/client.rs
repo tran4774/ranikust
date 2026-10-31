@@ -2,6 +2,7 @@
 //! authentication, retries, size checks and spans `oci-client` lacks.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -186,6 +187,13 @@ pub struct Client {
     /// Trust stores for registries with their own certificates.
     trust_per_registry: BTreeMap<String, TrustStore>,
     hosts: Mutex<HashMap<String, Arc<Host>>>,
+}
+
+/// Shows nothing of the client: its credentials must never reach a log.
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client").finish_non_exhaustive()
+    }
 }
 
 /// One registry's connection state.
@@ -476,10 +484,14 @@ impl Client {
                 expected: blob.size,
                 actual,
             };
-            match (result, bounded.overflow()) {
+            let (overflow, written) = (bounded.overflow(), bounded.written());
+            match (result, overflow) {
                 (Err(_), Some(received)) => Err(size_error(received)),
+                // A sink that took bytes it cannot give back is not retried:
+                // no wait, and this first error is the one reported.
+                (Err(e), None) if !out.can_restart() => Err(ctx.error(e).not_retryable()),
                 (Err(e), None) => Err(ctx.error(e)),
-                (Ok(()), _) if bounded.written() != blob.size => Err(size_error(bounded.written())),
+                (Ok(()), _) if written != blob.size => Err(size_error(written)),
                 (Ok(()), _) => Ok(()),
             }
         })
@@ -489,6 +501,26 @@ impl Client {
         span.record("retries", retries);
         span.record("bytes_in", bytes_in);
         result
+    }
+
+    /// Opens the blob `blob` of `reference`'s repository for blocking reads
+    /// while it is pulled, through a pipe of [`crate::PIPE_BYTES`]: a base
+    /// layer extracted as it arrives, never kept (ADR-0055). The pull is
+    /// retried only until the first byte of the body arrives; the reader
+    /// fails if the blob's size or digest does not match, after the bytes
+    /// that arrived, and every read after a failure fails again. `handle`'s runtime drives the
+    /// pull; read it on a thread outside that runtime's workers.
+    ///
+    /// # Errors
+    ///
+    /// When the pull's thread cannot start.
+    pub fn open_blob(
+        self: &Arc<Self>,
+        handle: &tokio::runtime::Handle,
+        reference: &Reference,
+        blob: &Descriptor,
+    ) -> io::Result<crate::BlobReader> {
+        crate::BlobReader::open(handle, self, reference, blob)
     }
 
     /// Whether `reference`'s repository holds the blob `digest`.

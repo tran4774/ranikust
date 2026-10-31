@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::Engine as _;
 use bytes::Bytes;
-use http_body_util::{BodyExt as _, Full};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::Incoming;
 use hyper::header::{self, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
@@ -66,6 +67,11 @@ pub(crate) struct State {
     pub(crate) faults: Vec<Fault>,
     /// Serve these bytes for a blob digest instead of the stored ones.
     pub(crate) tampered: HashMap<String, Bytes>,
+    /// Break the connection after this many bytes of a blob's body (its
+    /// full length announced), on every GET of it.
+    pub(crate) cut: HashMap<String, usize>,
+    /// Requests whose path contains one of these are never answered.
+    pub(crate) stalled: Vec<String>,
     /// Answer mounts with `202` and an upload session.
     pub(crate) refuse_mounts: bool,
     /// `METHOD path?query` of every request, in order.
@@ -171,10 +177,10 @@ pub(crate) fn sha256(content: &[u8]) -> String {
     format!("sha256:{hex}")
 }
 
-type Reply = Response<Full<Bytes>>;
+type Reply = Response<BoxBody<Bytes, std::convert::Infallible>>;
 
 fn reply(status: u16, body: impl Into<Bytes>) -> Reply {
-    let mut response = Response::new(Full::new(body.into()));
+    let mut response = Response::new(Full::new(body.into()).boxed());
     *response.status_mut() = StatusCode::from_u16(status).unwrap();
     response
 }
@@ -216,6 +222,17 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         .map(|b| b.to_bytes())
         .unwrap_or_default();
 
+    let stalled = {
+        let mut state = state.lock().unwrap();
+        let stalled = state.stalled.iter().any(|s| path.contains(s.as_str()));
+        if stalled {
+            state.log.push(format!("{method} {path}?{query}"));
+        }
+        stalled
+    };
+    if stalled {
+        return std::future::pending::<Reply>().await;
+    }
     let mut state = state.lock().unwrap();
     state.log.push(format!("{method} {path}?{query}"));
     let fault = state
@@ -281,9 +298,31 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
                 .or_else(|| state.blobs.get(&target))
                 .filter(|_| held)
                 .cloned();
-            match served {
-                Some(blob) => reply(200, blob),
-                None => error_envelope(404, "BLOB_UNKNOWN"),
+            match (served, state.cut.get(&target)) {
+                (Some(blob), Some(&at)) => {
+                    // A body of unknown length that ends short of the
+                    // announced one: the server drops the connection.
+                    let part = blob.slice(..at.min(blob.len()));
+                    use futures_util::StreamExt as _;
+                    let frames = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(
+                        hyper::body::Frame::data(part),
+                    )])
+                    // A pause, so the bytes are flushed before the end.
+                    .chain(
+                        futures_util::stream::once(tokio::time::sleep(
+                            std::time::Duration::from_millis(50),
+                        ))
+                        .filter_map(|()| async { None }),
+                    );
+                    let mut response = Response::new(BodyExt::boxed(StreamBody::new(frames)));
+                    response.headers_mut().insert(
+                        header::CONTENT_LENGTH,
+                        HeaderValue::from_str(&blob.len().to_string()).unwrap(),
+                    );
+                    response
+                }
+                (Some(blob), None) => reply(200, blob),
+                (None, _) => error_envelope(404, "BLOB_UNKNOWN"),
             }
         }
         ("uploads", Method::POST) => {

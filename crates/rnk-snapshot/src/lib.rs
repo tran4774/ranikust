@@ -44,4 +44,6 @@ pub use kaniko::{
 pub use layer::LayerDir;
 pub use mount::{MAX_LOWERS, MountApi, OVERLAY_OPTIONS};
 pub use probe::{OverlayCaps, probe};
-pub use stage::{Base, ExportLayer, Keep, Overlay, OverlayStage, Snapshotter, StageRootfs};
+pub use stage::{
+    Base, ExportLayer, Keep, LayerOpen, Overlay, OverlayStage, Snapshotter, StageRootfs,
+};

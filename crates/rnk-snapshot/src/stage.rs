@@ -174,6 +174,13 @@ pub trait Snapshotter {
         below: &[Self::Layer],
     ) -> Result<Self::Layer>;
 
+    /// A base layer whose compressed bytes `open` yields each time a stage
+    /// is prepared on it, its blob never kept (ADR-0055); `None` when this
+    /// snapshotter keeps base layers itself (overlay mode). Default: `None`.
+    fn streamed_layer(&self, _diff_id: &Digest, _open: Arc<dyn LayerOpen>) -> Option<Self::Layer> {
+        None
+    }
+
     /// A new stage root on `base`. No layer is open yet.
     ///
     /// # Errors
@@ -194,6 +201,19 @@ pub trait Snapshotter {
     fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root> {
         self.prepare(Base::Image(layers))
     }
+}
+
+/// A base layer's compressed bytes, opened when a stage is prepared on it
+/// instead of kept: kaniko mode streams them from the registry into the
+/// root (ADR-0055).
+pub trait LayerOpen: std::fmt::Debug + Send + Sync {
+    /// The blob from its first byte, compressed as in the registry. A read
+    /// error, a digest that does not match included, ends the extraction.
+    ///
+    /// # Errors
+    ///
+    /// When the source cannot be reached.
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>>;
 }
 
 /// Overlay mode: one overlay mount per layer over the store's extracted

@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read as _;
 use std::num::NonZeroUsize;
 
 use rnk_layer::Compression;
@@ -252,13 +253,89 @@ fn other_view_after_release(f: &Fixture) -> Result<()> {
     a.view().map(drop)
 }
 
+/// A streamed source of the bytes of `blob`, failing at their end when
+/// `fail_at_end` (a digest the source found wrong); counts its opens.
+#[derive(Debug)]
+struct Streamed {
+    blob: PathBuf,
+    fail_at_end: bool,
+    opens: std::sync::atomic::AtomicUsize,
+}
+
+impl LayerOpen for Streamed {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
+        let bytes = std::io::Cursor::new(fs::read(&self.blob)?);
+        if !self.fail_at_end {
+            return Ok(Box::new(bytes));
+        }
+        Ok(Box::new(bytes.chain(FailingReader)))
+    }
+}
+
+/// Fails every read: the source's verdict at the end of the body.
+struct FailingReader;
+
+impl std::io::Read for FailingReader {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("digest mismatch"))
+    }
+}
+
+#[test]
+fn a_streamed_base_layer_is_read_anew_for_each_stage_and_never_kept() {
+    let f = Fixture::new();
+    let kept = f.layer("l1", &[("a", b"from the registry")]);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(kept.diff_id(), Arc::clone(&source) as Arc<dyn LayerOpen>)
+        .unwrap();
+    assert_eq!(layer.blob(), None, "a streamed layer has no file");
+    let root = f
+        .kaniko
+        .prepare(Base::Image(std::slice::from_ref(&layer)))
+        .unwrap();
+    assert_eq!(fs::read(f.host.join("a")).unwrap(), b"from the registry");
+    root.release().unwrap();
+    f.kaniko.prepare(Base::Image(&[layer])).unwrap();
+    assert_eq!(source.opens.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn a_streamed_base_layer_whose_source_fails_at_its_end_fails_the_stage() {
+    let f = Fixture::new();
+    let kept = f.layer("l1", &[("a", b"tampered")]);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: true,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(kept.diff_id(), source as Arc<dyn LayerOpen>)
+        .unwrap();
+    let e = f.kaniko.prepare(Base::Image(&[layer])).unwrap_err();
+    assert!(format!("{e:?}").contains("digest mismatch"), "{e:?}");
+    // The failed layer's entries reached the root before its digest was
+    // checked; the next stage's root holds none of them.
+    let good = f.layer("l2", &[("b", b"b")]);
+    let root = f.kaniko.prepare(Base::Image(&[good])).unwrap();
+    assert_eq!(f.names(), ["b", "state"]);
+    root.release().unwrap();
+}
+
 #[test]
 fn a_wrong_diff_id_is_refused() {
     let f = Fixture::new();
     let good = f.layer("l1", &[("a", b"a")]);
     let bad = KanikoLayer {
         diff_id: Digest::from_sha256_bytes(&[0; 32]),
-        blob: good.blob.clone(),
+        source: good.source.clone(),
     };
     let e = f.kaniko.prepare(Base::Image(&[bad])).unwrap_err();
     assert!(matches!(e, Error::DiffIdMismatch { .. }), "{e}");
@@ -609,4 +686,92 @@ fn on_slash_a_view_swapped_for_a_link_is_never_emptied_through_it() {
     b.begin_layer().unwrap();
     assert!(matches!(b.end_layer(), Err(Error::State(_))));
     assert_eq!(fs::read(f.host.join("precious")).unwrap(), b"p");
+}
+
+/// A streamed layer of `files` in `f`'s snapshotter, failing at the end of
+/// its body when `fail_at_end`.
+fn streamed(f: &Fixture, name: &str, files: &[(&str, &[u8])], fail_at_end: bool) -> KanikoLayer {
+    let kept = f.layer(name, files);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    f.kaniko
+        .streamed_layer(kept.diff_id(), source as Arc<dyn LayerOpen>)
+        .unwrap()
+}
+
+#[test]
+fn on_slash_a_streamed_layer_is_verified_before_any_entry_reaches_the_root() {
+    let (f, _store) = Fixture::tars();
+    let good = streamed(&f, "l1", &[("a", b"a")], false);
+    let root = f.kaniko.prepare(Base::Image(&[good])).unwrap();
+    assert_eq!(f.names(), ["a", "state"]);
+    assert_eq!(f.state_names(), ["blob"], "the spool has no name");
+    root.release().unwrap();
+    // A layer whose digest turns out wrong at the end of its body: none of
+    // its entries is in `/`, which nothing empties.
+    let bad = streamed(&f, "l2", &[("unverified", b"x")], true);
+    let e = f.kaniko.prepare(Base::Image(&[bad])).unwrap_err();
+    assert!(format!("{e:?}").contains("digest mismatch"), "{e:?}");
+    assert!(!f.host.join("unverified").exists());
+    assert_eq!(f.state_names(), ["blob"]);
+}
+
+#[test]
+fn on_slash_a_streamed_layer_with_a_wrong_diff_id_never_reaches_the_root() {
+    let (f, _store) = Fixture::tars();
+    let good = streamed(&f, "l1", &[("unverified", b"x")], false);
+    let bad = KanikoLayer {
+        diff_id: Digest::from_sha256_bytes(&[0; 32]),
+        source: good.source.clone(),
+    };
+    let e = f.kaniko.prepare(Base::Image(&[bad])).unwrap_err();
+    assert!(matches!(e, Error::DiffIdMismatch { .. }), "{e}");
+    assert!(!f.host.join("unverified").exists());
+}
+
+#[test]
+fn on_slash_a_streamed_copy_from_image_is_verified_before_it_is_unpacked() {
+    let (f, _store) = Fixture::tars();
+    let holder = f.kaniko.prepare(Base::Scratch).unwrap();
+    let bad = streamed(&f, "img", &[("bin-tool", b"tool")], true);
+    let mut source = f.kaniko.prepare_source(&[bad]).unwrap();
+    assert!(source.view().is_err());
+    // No directory was made for it: the check came first.
+    assert_eq!(f.state_names(), ["blob"]);
+    source.release().unwrap();
+    let good = streamed(&f, "img", &[("bin-tool", b"tool")], false);
+    let mut source = f.kaniko.prepare_source(&[good]).unwrap();
+    assert_eq!(read(source.view().unwrap(), "bin-tool"), "tool");
+    source.release().unwrap();
+    assert_eq!(f.state_names(), ["blob"]);
+    holder.release().unwrap();
+}
+
+#[test]
+fn on_slash_a_streamed_gzip_layer_is_spooled_compressed_and_extracted() {
+    use std::io::Write as _;
+    let (f, _store) = Fixture::tars();
+    let plain = f.layer("l1", &[("a", b"gzipped")]);
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&fs::read(plain.blob().unwrap()).unwrap())
+        .unwrap();
+    let gzipped = f.tmp.path().join("l1.gz");
+    fs::write(&gzipped, gz.finish().unwrap()).unwrap();
+    let source = Arc::new(Streamed {
+        blob: gzipped,
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(plain.diff_id(), Arc::clone(&source) as Arc<dyn LayerOpen>)
+        .unwrap();
+    let root = f.kaniko.prepare(Base::Image(&[layer])).unwrap();
+    assert_eq!(fs::read(f.host.join("a")).unwrap(), b"gzipped");
+    // Downloaded once: the second decompression reads the spool.
+    assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+    root.release().unwrap();
 }

@@ -4,8 +4,9 @@
 //! The root (`/` in a container, else a directory `ranikust` made in its
 //! state directory, ADR-0050) is opened
 //! once by the caller and held by at most one [`KanikoRoot`] at a time.
-//! Base layers stay blobs in the store; a stage on an image extracts them
-//! into the root, which is emptied first unless nothing has changed it yet
+//! Base layers stay blobs in the store, or are streamed from their
+//! registry each time (ADR-0055); a stage on an image extracts them into
+//! the root, which is emptied first unless nothing has changed it yet
 //! and it is `/`. Layers come from the walk, only for a stage whose layers
 //! are needed.
 //!
@@ -54,15 +55,39 @@ use rnk_store::{NamedGuard, Store};
 use super::walk::{SnapshotMode, WalkDiff, WalkOptions, Walker};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
-use crate::stage::{Base, ExportLayer, Keep, Snapshotter, StageRootfs};
+use crate::stage::{Base, ExportLayer, Keep, LayerOpen, Snapshotter, StageRootfs};
 
-/// A base layer in kaniko mode: its blob in the store, extracted into the
-/// root only when a stage is prepared on it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A base layer in kaniko mode, extracted into the root only when a stage
+/// is prepared on it: its blob in the store, or streamed from its source
+/// each time, never kept (ADR-0055).
+#[derive(Clone, Debug)]
 pub struct KanikoLayer {
     diff_id: Digest,
-    blob: PathBuf,
+    source: LayerSource,
 }
+
+/// Where a [`KanikoLayer`]'s compressed bytes come from.
+#[derive(Clone, Debug)]
+enum LayerSource {
+    /// A blob file in the store.
+    Blob(PathBuf),
+    /// Opened anew for each extraction.
+    Stream(Arc<dyn LayerOpen>),
+}
+
+impl PartialEq for KanikoLayer {
+    fn eq(&self, other: &Self) -> bool {
+        self.diff_id == other.diff_id
+            && match (&self.source, &other.source) {
+                (LayerSource::Blob(a), LayerSource::Blob(b)) => a == b,
+                (LayerSource::Stream(a), LayerSource::Stream(b)) => Arc::ptr_eq(a, b),
+                (LayerSource::Blob(_), LayerSource::Stream(_))
+                | (LayerSource::Stream(_), LayerSource::Blob(_)) => false,
+            }
+    }
+}
+
+impl Eq for KanikoLayer {}
 
 impl KanikoLayer {
     /// The diff ID of the layer.
@@ -71,10 +96,33 @@ impl KanikoLayer {
         &self.diff_id
     }
 
-    /// The blob, compressed as pulled, in the store.
+    /// The blob, compressed as pulled, in the store; `None` for a layer
+    /// streamed from its source.
     #[must_use]
-    pub fn blob(&self) -> &Path {
-        &self.blob
+    pub fn blob(&self) -> Option<&Path> {
+        match &self.source {
+            LayerSource::Blob(path) => Some(path),
+            LayerSource::Stream(_) => None,
+        }
+    }
+
+    /// The layer's compressed bytes from the first one.
+    fn open(&self) -> Result<Box<dyn std::io::Read + Send>> {
+        match &self.source {
+            LayerSource::Blob(path) => {
+                let file = File::open(path).map_err(|source| Error::Io {
+                    op: "open",
+                    path: path.clone(),
+                    source,
+                })?;
+                Ok(Box::new(file))
+            }
+            LayerSource::Stream(open) => open.open().map_err(|source| Error::Io {
+                op: "open the stream of layer",
+                path: PathBuf::from(self.diff_id.as_str()),
+                source,
+            }),
+        }
     }
 }
 
@@ -328,7 +376,14 @@ impl Snapshotter for Kaniko {
     ) -> Result<KanikoLayer> {
         Ok(KanikoLayer {
             diff_id: diff_id.clone(),
-            blob: blob.to_owned(),
+            source: LayerSource::Blob(blob.to_owned()),
+        })
+    }
+
+    fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
+        Some(KanikoLayer {
+            diff_id: diff_id.clone(),
+            source: LayerSource::Stream(open),
         })
     }
 
@@ -402,7 +457,7 @@ impl Snapshotter for Kaniko {
                 let _entered = span.enter();
                 new_base(shared, &mut hold)?;
                 for layer in layers {
-                    extract_blob(&shared.root, &shared.ignore, layer)?;
+                    extract_base_layer(shared, layer)?;
                 }
             }
         }
@@ -424,10 +479,12 @@ impl Snapshotter for Kaniko {
         let span = tracing::info_span!("rnk_snapshot.prepare", layers = layers.len());
         let _entered = span.enter();
         let kept = if shared.tars.get().is_some() {
-            // On `/`: the blobs, already anonymous files of the store,
+            // On `/`: the layers as they are (a streamed one is spooled and
+            // verified on first read, before any directory is made),
             // unpacked only when a `COPY --from` reads them.
             Kept::Image {
                 layers: layers.to_vec(),
+                tars: None,
             }
         } else {
             let (name, root, _) = make_dir(shared, &format!("k{id}"))?;
@@ -496,8 +553,13 @@ enum Kept {
     },
     /// A plain tar of the stage in an anonymous file (`/`, ADR-0056).
     Tar { file: File },
-    /// The layers of a `COPY --from` image, unpacked when read (`/`).
-    Image { layers: Vec<KanikoLayer> },
+    /// The layers of a `COPY --from` image, unpacked when read (`/`). A
+    /// streamed layer is spooled and verified on first use, before any
+    /// directory is made, and its plain tar kept in `tars` for later reads.
+    Image {
+        layers: Vec<KanikoLayer>,
+        tars: Option<Vec<Spooled>>,
+    },
 }
 
 impl Kept {
@@ -688,19 +750,139 @@ fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Extracts one base layer into `root`, checking its diff ID.
+/// Extracts one base layer into the shared root. On `/`, which nothing
+/// empties, a streamed layer is first spooled and verified
+/// ([`Spooled::of`]): nothing unverified reaches the root. Elsewhere it is
+/// extracted as it arrives ([`extract_blob`]): the root is emptied after a
+/// failure.
+fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
+    if shared.is_slash() && matches!(layer.source, LayerSource::Stream(_)) {
+        let store = shared.tar_store()?.ok_or(Error::State(
+            "no store to verify a streamed layer in before it reaches /",
+        ))?;
+        return Spooled::of(&store, layer)?.extract(&shared.root, &shared.ignore);
+    }
+    extract_blob(&shared.root, &shared.ignore, layer)
+}
+
+/// A base layer in an anonymous file of the store, as its compressed blob,
+/// its compressed digest and diff ID verified (ADR-0055 amendment) before
+/// anything of it is extracted. The spool is the compressed blob, capped
+/// by the descriptor's size: disk, or memory under the `memfd` fallback,
+/// holds no more than the download. The file's space goes with it.
+#[derive(Debug)]
+struct Spooled(SpooledBlob);
+
+#[derive(Debug)]
+enum SpooledBlob {
+    /// A layer already verified on disk (a blob of the store): read as is.
+    Blob(KanikoLayer),
+    /// A streamed layer's compressed bytes, with its diff ID.
+    File { file: File, diff_id: Digest },
+}
+
+impl Spooled {
+    /// Spools `layer` when it is streamed. One read of the body writes the
+    /// compressed bytes into an anonymous file of `store` and decompresses
+    /// them to compute the diff ID, which nothing else sees; the body is
+    /// read to its end, where its source checks the size and the
+    /// compressed digest. A blob already on disk is kept as it is.
+    fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
+        let LayerSource::Stream(_) = &layer.source else {
+            return Ok(Self(SpooledBlob::Blob(layer.clone())));
+        };
+        let what = || PathBuf::from(layer.diff_id.as_str());
+        let file = store.scratch_file()?;
+        let copy = file.try_clone().map_err(|source| Error::Io {
+            op: "spool the stream of layer",
+            path: what(),
+            source,
+        })?;
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let body = Spool {
+            inner: layer.open()?,
+            copy,
+            ended: Arc::clone(&ended),
+        };
+        let actual = Digest::from_sha256_bytes(rnk_layer::Decoder::new(body)?.finish()?.as_bytes());
+        // The source verifies the digest only at the end of its body.
+        if !ended.load(Ordering::Relaxed) {
+            return Err(Error::State(
+                "a streamed layer was not read to its end, so its digest is unchecked",
+            ));
+        }
+        if actual != layer.diff_id {
+            return Err(Error::DiffIdMismatch {
+                expected: layer.diff_id.to_string(),
+                actual: actual.to_string(),
+            });
+        }
+        Ok(Self(SpooledBlob::File {
+            file,
+            diff_id: layer.diff_id.clone(),
+        }))
+    }
+
+    /// Extracts the verified layer into `root`, decompressing the spool a
+    /// second time; its diff ID is checked again on the way.
+    fn extract(&self, root: &RootPath, ignore: &IgnoreList) -> Result<()> {
+        match &self.0 {
+            SpooledBlob::Blob(layer) => extract_blob(root, ignore, layer),
+            SpooledBlob::File { file, diff_id } => {
+                extract_checked(root, ignore, Box::new(reopen(file)?), diff_id)
+            }
+        }
+    }
+}
+
+/// The body of a streamed layer, each byte read also written to the spool;
+/// records whether it reached its end (a read of 0 bytes into a non-empty
+/// buffer).
+struct Spool {
+    inner: Box<dyn std::io::Read + Send>,
+    copy: File,
+    ended: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::io::Read for Spool {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 {
+            if !buf.is_empty() {
+                self.ended.store(true, Ordering::Relaxed);
+            }
+            return Ok(0);
+        }
+        self.copy.write_all(buf.get(..n).unwrap_or_default())?;
+        Ok(n)
+    }
+}
+
+/// Extracts one base layer into `root`, checking its diff ID. A streamed
+/// layer is decompressed and extracted as it arrives; its compressed digest
+/// is checked by its source at the end of the body, which then fails the
+/// read, and its diff ID here at the end of the tar. Either mismatch fails
+/// the stage after part of the layer is in `root`: used only where the
+/// root is emptied after a failure (a host root, a fresh keep directory);
+/// on `/` see [`extract_base_layer`].
 fn extract_blob(root: &RootPath, ignore: &IgnoreList, layer: &KanikoLayer) -> Result<()> {
-    let file = File::open(&layer.blob).map_err(|source| Error::Io {
-        op: "open",
-        path: layer.blob.clone(),
-        source,
-    })?;
-    let mut decoder = rnk_layer::Decoder::new(file)?;
+    extract_checked(root, ignore, layer.open()?, &layer.diff_id)
+}
+
+/// Decompresses `blob` into `root` and checks the tar's digest against
+/// `diff_id` at its end.
+fn extract_checked(
+    root: &RootPath,
+    ignore: &IgnoreList,
+    blob: Box<dyn std::io::Read + Send>,
+    diff_id: &Digest,
+) -> Result<()> {
+    let mut decoder = rnk_layer::Decoder::new(blob)?;
     extract_live(root, &mut decoder, ignore)?;
     let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
-    if actual != layer.diff_id {
+    if actual != *diff_id {
         return Err(Error::DiffIdMismatch {
-            expected: layer.diff_id.to_string(),
+            expected: diff_id.to_string(),
             actual: actual.to_string(),
         });
     }
@@ -744,6 +926,17 @@ impl KanikoRoot {
             let store = shared
                 .tar_store()?
                 .ok_or(Error::State("no store for kept tars"))?;
+            // Verified before any name exists: nothing unverified is ever
+            // written into a directory.
+            if let Some(Kept::Image { layers, tars }) = &mut self.kept
+                && tars.is_none()
+            {
+                let spooled = layers
+                    .iter()
+                    .map(|layer| Spooled::of(&store, layer))
+                    .collect::<Result<Vec<_>>>()?;
+                *tars = Some(spooled);
+            }
             let window = store.named_window()?;
             let name = store.scratch_name()?;
             let (name, root, id) = match make_dir(&shared, &name) {
@@ -770,11 +963,16 @@ impl KanikoRoot {
                 // nodes and FIFOs are made here too: no `RUN` runs while the
                 // directory exists.
                 Some(Kept::Tar { file }) => extract(&root, reopen(file)?, Whiteouts::Literal)?,
-                Some(Kept::Image { layers }) => {
+                Some(Kept::Image {
+                    tars: Some(tars), ..
+                }) => {
                     let none = IgnoreList::new();
-                    for layer in layers {
-                        extract_blob(&root, &none, layer)?;
+                    for tar in tars {
+                        tar.extract(&root, &none)?;
                     }
+                }
+                Some(Kept::Image { tars: None, .. }) => {
+                    return Err(Error::State("an image unpacked before it was verified"));
                 }
                 Some(Kept::Dir { .. }) | None => {
                     return Err(Error::State("nothing to unpack"));

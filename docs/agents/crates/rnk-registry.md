@@ -17,6 +17,15 @@ while streaming; never log a credential.
 - Retries, streamed blob pulls into a caller's sink (an `rnk-store`
   temporary file) and pushes; cross-repository mounts with a fallback to a
   regular upload; platform selection from an index. Mirrors in Phase 5.
+- Blobs streamed without being kept (ADR-0055): `Client::open_blob`, a
+  blocking reader over a 256 KiB pipe (`PIPE_BYTES`) that a thread of its
+  own fills, for kaniko mode's extraction; `BlobBody::Remote`, a push
+  whose body is pulled from another repository through the same pipe.
+  The reader (or body) owns the thread: dropped, it stops the pull and
+  joins the thread, so no pull outlives the runtime. A pull into a pipe is
+  retried only until its first byte; after that its first error is final,
+  and a reader that failed fails on every read. Read only from a thread
+  outside the runtime (a stage's): inside, the read fails.
 
 ## Must not
 
@@ -47,8 +56,10 @@ pub async fn retry_kaniko<T, E: Display>(retries: u32, op: impl AsyncFn() -> Res
 pub struct RawManifest;  // new(media_type, bytes) hashes; media_type(), digest(), bytes(), size(), descriptor()
 pub struct ImageManifests { pub manifest: RawManifest, pub index: Option<RawManifest> }
 pub enum PushOutcome { Existed, Mounted, Uploaded }
-pub enum BlobBody { Bytes(Bytes), File(PathBuf) }          // reopened per attempt
-pub trait BlobSink: AsyncWrite + Unpin + Send { fn reset(&mut self) -> impl Future<Output = io::Result<()>>; } // File, Vec<u8>
+pub enum BlobBody { Bytes(Bytes), Opened(Arc<dyn BlobFile>), File(PathBuf), Remote(Box<RemoteBlob>) } // reopened per attempt; Remote pulled through a pipe
+pub trait BlobFile: Debug + Send + Sync { fn open(&self) -> io::Result<std::fs::File>; } // a file reached by a handle, not a path (an anonymous layer)
+pub fn Client::open_blob(self: &Arc<Self>, h: &Handle, r: &Reference, d: &Descriptor) -> io::Result<BlobReader>; // blocking Read, fails unless size and digest match
+pub trait BlobSink: AsyncWrite + Unpin + Send { fn reset(&mut self) -> impl Future<Output = io::Result<()>>; fn can_restart(&self) -> bool { true } } // File, Vec<u8>
 pub fn select_platform<'a>(index: &'a ImageIndex, p: &Platform) -> Option<&'a Descriptor>;
 impl Client {
     pub fn new(options: ClientOptions, trust: TrustStore, credentials: Credentials) -> Result<Client, Error>;
@@ -65,8 +76,11 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 
 ## Invariants
 
-- No pulled byte is used before its digest is verified; a mismatch discards
-  the temporary file ([design/cache-and-store.md#failure-handling](../../design/cache-and-store.md#failure-handling)). Memory stays flat
+- No pulled byte is used before its digest is verified, except a blob read
+  through `open_blob` or `BlobBody::Remote` (ADR-0055): its reader or push
+  fails at the end of the body, never ends cleanly, and the caller's use of
+  the bytes (an extraction, an upload session) fails with it. Otherwise a
+  mismatch discards the temporary file ([design/cache-and-store.md#failure-handling](../../design/cache-and-store.md#failure-handling)). Memory stays flat
   whatever the blob size: stream both ways. A pull never writes more than
   the descriptor's size.
 - Credentials never reach `Debug`, `Display`, logs, errors, the image or

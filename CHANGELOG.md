@@ -188,6 +188,18 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   with `--device` stay reachable by `RUN`: they are the operator's
   responsibility.
 
+- Layers are streamed (ADR-0055): in kaniko mode, a base layer is
+  extracted while it downloads and never kept, unless `--tar-path` or
+  `--oci-layout-path` needs its bytes; a push takes such a layer from
+  its source registry (a mount, else streamed through). Built layers of
+  the target's `FROM` chain are pushed to every destination as soon as
+  they are exported (at most `--jobs` at once, `--jobs` more waiting) and
+  released once there; a failed build cancels them. On `/`, where nothing
+  empties the root, a streamed base layer is spooled to a disk-backed
+  anonymous file and verified before it is extracted. Measured on a node
+  base image in kaniko mode on `/`: the peak memory of a stage falls from
+  about 160 to about 50 MiB.
+
 ### Changed
 
 - `COPY` and `ADD` refuse a source that expands to an empty string (it

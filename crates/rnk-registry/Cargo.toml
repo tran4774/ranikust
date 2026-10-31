@@ -26,7 +26,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+# `rt`: the runtime handle that drives a pull-through push (ADR-0055).
+tokio = { workspace = true, features = ["rt"] }
 tokio-util.workspace = true
 tracing.workspace = true
 webpki-root-certs.workspace = true
