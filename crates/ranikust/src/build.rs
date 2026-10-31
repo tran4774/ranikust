@@ -1216,6 +1216,153 @@ mod tests {
         }
     }
 
+    /// Red team (T1): a stage that another unit reads is a unit of its
+    /// own, built before the reader, never folded into a chain whose later
+    /// stages change the root first, and kept with at least every source
+    /// its readers name, whatever the targets, triggers or indexes.
+    #[test]
+    fn every_stage_another_unit_reads_is_its_own_unit_and_kept() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "FROM alpine AS a\nRUN x\nFROM a AS b\nRUN y\nFROM b\nCOPY --from=a /f /g\n",
+                &[],
+            ),
+            (
+                "FROM alpine AS a\nFROM a AS b\nCOPY --from=a /x /y\nFROM b\nCOPY --from=b /z /w\n",
+                &[],
+            ),
+            (
+                "FROM alpine AS a\nFROM alpine AS b\nCOPY --from=a /1 /1\nFROM b AS c\n\
+                 COPY --from=a /2 /2\nFROM c\nCOPY --from=b /3 /3\n",
+                &[],
+            ),
+            (
+                "FROM alpine AS a\nRUN x\nFROM a AS b\nCOPY --from=a /x /y\n",
+                &["a", "b"],
+            ),
+            (
+                "FROM alpine AS a\nFROM a AS b\nFROM alpine AS c\nCOPY --from=b /x /y\n",
+                &["b", "c"],
+            ),
+            (
+                "FROM alpine AS a\nFROM a AS b\nFROM alpine AS c\nCOPY --from=b /x /y\n",
+                &["c", "b"],
+            ),
+            (
+                "FROM alpine\nRUN x\nFROM alpine\nCOPY --from=0 /x /y\n",
+                &[],
+            ),
+            (
+                "FROM alpine AS src\nFROM alpine AS base\nONBUILD COPY --from=src /x /y\n\
+                 FROM base\nRUN z\n",
+                &[],
+            ),
+            (
+                "FROM alpine AS a\nFROM a AS b\nFROM b AS c\nFROM c AS d\nFROM d\n\
+                 COPY --from=b /x /y\nCOPY --from=c /p /q\n",
+                &[],
+            ),
+            (
+                "FROM alpine AS a\nFROM alpine\nCOPY --from=a /x /x/ /y\nCOPY --from=a /x/../z /w\n",
+                &[],
+            ),
+        ];
+        for (text, targets) in cases {
+            let df = rnk_dockerfile::parse(text).unwrap();
+            let options = GraphOptions {
+                targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+                ..GraphOptions::default()
+            };
+            let graph = rnk_dockerfile::stage_graph(&df, &options).unwrap();
+            let plan = rnk_dockerfile::squash_for_shared_root(&graph);
+            let (_, _, keep) = kaniko_units(&graph, &df);
+            for (ui, unit) in plan.iter().enumerate() {
+                for &c in &unit.chain {
+                    for (ri, r) in graph.stages[c].references.iter().enumerate() {
+                        let rnk_dockerfile::Source::Stage(t) = r.source else {
+                            continue;
+                        };
+                        let tu = plan
+                            .iter()
+                            .position(|u| u.stage == t)
+                            .unwrap_or_else(|| panic!("{text}: stage {t} is read but no unit"));
+                        assert!(tu < ui, "{text}: stage {t} is built after its reader {c}");
+                        assert!(
+                            !unit.chain.contains(&t),
+                            "{text}: stage {c} reads {t} from its own live chain"
+                        );
+                        for u in &plan {
+                            if let Some(pos) = u.chain.iter().position(|&x| x == t) {
+                                assert_eq!(
+                                    pos + 1,
+                                    u.chain.len(),
+                                    "{text}: stage {t} is read but folded mid-chain"
+                                );
+                            }
+                        }
+                        match &keep[t] {
+                            None => panic!("{text}: stage {t} is read by {c} but not kept"),
+                            Some(KeepNeed::All) => {}
+                            Some(KeepNeed::Sources(list)) => {
+                                let sources = copy_sources(&df, c, &r.clone())
+                                    .unwrap_or_else(|| panic!("{text}: reference {ri} of {c}"));
+                                for s in sources {
+                                    assert!(list.contains(&s), "{text}: {s} of {c} not kept");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Red team (kaniko-oss#724, T16): hostile `--from` values never panic
+    /// the planning of a kaniko-mode build: out-of-range, negative, huge or
+    /// zero-padded indexes, a stage reading itself, a stage named like an
+    /// index, cycles, case, empty and variable names. Each is planned or
+    /// refused with an error.
+    #[test]
+    fn hostile_from_values_are_planned_or_refused_never_a_panic() {
+        let cases = [
+            "FROM scratch\nCOPY --from=01 0 0\n",
+            "FROM scratch\nCOPY --from=1 0 0\n",
+            "FROM scratch\nCOPY --from=0 0 0\n",
+            "FROM scratch\nCOPY --from=-1 0 0\n",
+            "FROM scratch\nCOPY --from=99999999999999999999 0 0\n",
+            "FROM scratch AS 1\nFROM scratch\nCOPY --from=1 /a /a\n",
+            "FROM scratch AS a\nFROM scratch AS a\nCOPY --from=a /a /a\n",
+            "FROM scratch AS a\nCOPY --from=a /x /y\n",
+            "FROM b AS a\nFROM a AS b\n",
+            "FROM scratch AS a\nFROM scratch\nCOPY --from=A /x /y\n",
+            "FROM scratch\nCOPY --from= /x /y\n",
+            "FROM scratch\nCOPY --from=$X /x /y\n",
+            "FROM scratch\nARG X=a\nCOPY --from=${X} /x /y\n",
+            "FROM scratch AS a\nFROM scratch\nCOPY --from=a --from=b /a /a\n",
+            "FROM scratch AS a\nFROM scratch\nCOPY --from=a\n",
+            "FROM scratch AS a\nFROM scratch\nCOPY --from=a /\n",
+            "FROM scratch AS a\nFROM scratch\nRUN --mount=from=a,target=/m true\n",
+            "FROM scratch AS a\nFROM scratch\nRUN --mount=from=9,target=/m true\n",
+            "FROM scratch AS a\nONBUILD COPY --from=a /x /y\nFROM a\n",
+            "FROM scratch AS a\nONBUILD COPY --from=9 /x /y\nFROM a\n",
+        ];
+        for text in cases {
+            let r = std::panic::catch_unwind(|| {
+                let df = rnk_dockerfile::parse(text).map_err(|e| e.to_string())?;
+                let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default())
+                    .map_err(|e| e.to_string())?;
+                refuse_bare_copy_from(&graph)?;
+                let (units, needed, keep) = kaniko_units(&graph, &df);
+                Ok::<_, String>((units.len(), needed.len(), keep.len()))
+            });
+            match r {
+                Ok(Ok(planned)) => eprintln!("{text:?}: planned {planned:?}"),
+                Ok(Err(e)) => eprintln!("{text:?}: refused: {e}"),
+                Err(_) => panic!("{text:?}: panicked"),
+            }
+        }
+    }
+
     #[test]
     fn kaniko_units_keep_what_later_units_read() {
         let units = |text: &str| {

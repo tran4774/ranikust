@@ -172,7 +172,13 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `Direct`) builds 6, `run` stopping at its `#!` heredoc (Direct, task
   7). T0: `statedir/tests.rs` each ADR-0050 refusal, `main.rs` operator paths in the root and the
   state directory bound from inside it, `build.rs` `kaniko_units` (what
-  each unit keeps) and the bare `COPY --from` refusal.
+  each unit keeps) and the bare `COPY --from` refusal; red team: every
+  stage another unit reads is a unit of its own, built first, never
+  folded mid-chain and kept with its readers' sources (targets, triggers,
+  indexes), and hostile `--from` values (out-of-range, negative, huge,
+  zero-padded, self, cycles, case, empty) planned or refused, never a
+  panic (kaniko-oss#724). T1 and T2: the `copy-from`, `copy-from-root`
+  and `copy-from-daemon` quick cases ([testing](../../testing.md#quick-smoke-cases)).
 - T0 built, `src/cli/tests.rs`: kaniko spellings per accepted flag
   (short forms, `=` and separate values, pflag booleans, `--target` lists),
   ranikust's flags, refused flags with their reasons (all reported at once,
