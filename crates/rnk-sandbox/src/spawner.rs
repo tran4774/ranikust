@@ -982,6 +982,7 @@ impl Runner {
                 current: l.soft,
                 maximum: l.hard,
             }),
+            core: crate::spec::original_core_limit(),
             stdio,
             argv: spec.argv.iter().map(cstring).collect::<Result<_>>()?,
             envp,
@@ -1898,7 +1899,8 @@ mod tests {
     /// A real `Direct` `RUN` in a `chroot`, as root in the VM: the shell and
     /// its libraries are copied from the VM into a fresh root, which then
     /// sees ranikust's `hosts` and `resolv.conf`, `/dev` nodes, no `/proc`,
-    /// and the `RLIMIT_NOFILE` given back; after it, the root is as before.
+    /// and the `RLIMIT_NOFILE` and `RLIMIT_CORE` given back; after it, the
+    /// root is as before.
     #[test]
     #[ignore = "T2: chroot and mknod as real root; run in the test VM only"]
     fn direct_runs_in_a_chroot_with_placed_files_as_root() {
@@ -1914,12 +1916,30 @@ mod tests {
             soft: Some(777),
             hard,
         });
+        // An unlimited core size (root's usual hard limit in the VM) that
+        // `forbid_core_dumps` cuts to 0 here and the `RUN` gets back.
+        let core = rustix::process::getrlimit(rustix::process::Resource::Core);
+        let unlimited = core.maximum.is_none();
+        rustix::process::setrlimit(
+            rustix::process::Resource::Core,
+            rustix::process::Rlimit {
+                current: core.maximum,
+                maximum: core.maximum,
+            },
+        )
+        .unwrap();
+        crate::forbid_core_dumps().unwrap();
+        assert_eq!(
+            rustix::process::getrlimit(rustix::process::Resource::Core).current,
+            Some(0)
+        );
         let script = "exec >/out.txt; \
             while read -r l; do echo \"hosts:$l\"; done </etc/hosts; \
             [ -f /etc/resolv.conf ] && echo resolv; \
             [ -c /dev/null ] && echo null; [ -c /dev/urandom ] && echo urandom; \
             [ -d /proc/self ] || echo noproc; \
-            echo \"nofile:$(ulimit -n)\"; echo x >/dev/null && echo devnull-ok";
+            echo \"nofile:$(ulimit -n)\"; echo \"core:$(ulimit -c)\"; \
+            echo x >/dev/null && echo devnull-ok";
         let mut spec = RunSpec::new(&wd, vec!["/bin/sh".into(), "-c".into(), script.into()]);
         spec.isolation = Isolation::Direct;
         let status = sandbox.run(spec).unwrap();
@@ -1935,6 +1955,10 @@ mod tests {
         ] {
             assert!(out.lines().any(|l| l == line), "{line}: {out}");
         }
+        if unlimited {
+            assert!(out.lines().any(|l| l == "core:unlimited"), "{out}");
+        }
+        assert!(!out.lines().any(|l| l == "core:0"), "{out}");
         assert!(
             out.contains("hosts:") && !out.contains("hosts:image"),
             "{out}"

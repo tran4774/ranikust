@@ -168,11 +168,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   another process holding `DOCKER_AUTH_CONFIG`, a `--secret` or a
   `--build-arg` read from the environment. There, registry credentials go
   only over verified TLS, and a container granting any capability beyond
-  Docker's defaults without `CAP_SETPCAP` is refused (ADR-0051).
+  Docker's defaults without `CAP_SETPCAP` is refused. ranikust's soft
+  `RLIMIT_CORE` is 0; every `RUN` gets the original back (ADR-0051).
 
 - `--mode=kaniko` in a container where root may mount (`--privileged`,
   `CAP_SYS_ADMIN`) refuses to build on `/`: its `RUN` would see the host's
-  devices and a writable `/proc/sys`; overlay mode builds there (Q-341).
+  devices and a writable `/proc/sys`; overlay mode builds there. So does a
+  container whose `/proc/sys` is writable (Q-341).
 
 ### Changed
 

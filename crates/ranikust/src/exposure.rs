@@ -7,8 +7,12 @@
 //! - another process of the container that holds a credential in its
 //!   environment (the CI shell that started ranikust) exposes it through its
 //!   own `/proc/<pid>/environ`.
+//!
+//! It also checks what it refuses to build under: a writable `/proc/sys`
+//! ([`proc_sys_read_only`]).
 
 use std::fs;
+use std::path::Path;
 
 use crate::config::BuildArg;
 
@@ -130,9 +134,31 @@ pub(crate) fn warn_credential_holders(variables: &[String]) {
     }
 }
 
+/// Whether `path` (`/proc/sys`) is on a read-only mount. A writable one lets
+/// a uid 0 `RUN` write `kernel/core_pattern` and run a program as the
+/// host's root, with no capability at all; Docker and Kubernetes mount it
+/// read-only unless told otherwise (`--privileged`,
+/// `systempaths=unconfined`, `procMount: Unmasked`). Kaniko mode on `/`
+/// refuses to build there (ADR-0051, [open: Q-341]).
+///
+/// # Errors
+///
+/// What `statvfs` returns.
+pub(crate) fn proc_sys_read_only(path: &Path) -> rustix::io::Result<bool> {
+    let flags = rustix::fs::statvfs(path)?.f_flag;
+    Ok(flags.contains(rustix::fs::StatVfsMountFlags::RDONLY))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_writable_directory_is_not_read_only_and_a_missing_one_errs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(proc_sys_read_only(dir.path()), Ok(false));
+        assert!(proc_sys_read_only(&dir.path().join("missing")).is_err());
+    }
 
     #[test]
     fn secret_looking_names() {

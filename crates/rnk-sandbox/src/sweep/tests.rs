@@ -68,6 +68,7 @@ fn a_process_whose_stat_changed_is_not_killed() {
         .unwrap();
     let pid = i32::try_from(child.id()).unwrap();
     let stat = read_stat(pid).unwrap();
+    let me = rustix::process::getpid().as_raw_nonzero().get();
     // Another start time: a pid reused by another process.
     kill(
         pid,
@@ -75,10 +76,11 @@ fn a_process_whose_stat_changed_is_not_killed() {
             start: stat.start + 1,
             ..stat
         },
+        me,
     )
     .unwrap();
     assert_eq!(child.try_wait().unwrap(), None, "left alive");
-    kill(pid, stat).unwrap();
+    kill(pid, stat, me).unwrap();
     let status = child.wait().unwrap();
     assert!(!status.success());
 }
@@ -95,4 +97,16 @@ fn ranikusts_own_children_are_listed() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(listed.contains(&pid), "{listed:?}");
+}
+
+#[test]
+fn without_pidfds_only_ranikusts_own_children_get_a_plain_kill() {
+    use super::{NoPidfd, without_pidfd};
+    use rustix::io::Errno;
+    assert_eq!(without_pidfd(Errno::SRCH, 7, 7), NoPidfd::Gone);
+    assert_eq!(without_pidfd(Errno::NOSYS, 7, 7), NoPidfd::Kill);
+    assert_eq!(without_pidfd(Errno::PERM, 7, 7), NoPidfd::Kill);
+    assert_eq!(without_pidfd(Errno::NOSYS, 8, 7), NoPidfd::Later);
+    assert_eq!(without_pidfd(Errno::PERM, 8, 7), NoPidfd::Later);
+    assert_eq!(without_pidfd(Errno::MFILE, 7, 7), NoPidfd::Fail);
 }

@@ -58,12 +58,18 @@ overlay mode).
     `RLIMIT_CORE` is 0;
   - registry credentials only over verified TLS: a `RUN` may edit
     `/etc/hosts` and `/etc/resolv.conf`;
-  - kaniko mode on `/` where root may mount is refused [open: Q-341];
+  - kaniko mode on `/` where root may mount, or where `/proc/sys` is not
+    a read-only mount, is refused [open: Q-341]; devices passed with
+    `--device` stay the operator's choice;
+  - the `RUN` gets ranikust's original soft `RLIMIT_CORE` back, as it gets
+    `RLIMIT_NOFILE`;
   - ranikust is a child subreaper (`Sandbox::start_direct`); after each
     `RUN` it kills, through a pidfd after checking the parent and start
     time again, everything that became its child during the `RUN` and
     their descendants, and reaps them by pid without blocking, never
-    `waitpid(-1)`;
+    `waitpid(-1)`; where seccomp refuses `pidfd_open`, a plain `kill` for
+    its own children only (a pid stays theirs until reaped), deeper
+    processes on the next rounds, once reparented to ranikust;
   - warnings for what it cannot close: a `--build-arg NAME=value` whose
     name looks like a secret (`/proc/<pid>/cmdline`), another process
     holding `DOCKER_AUTH_CONFIG` in its environment.

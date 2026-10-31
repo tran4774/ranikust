@@ -65,6 +65,36 @@ impl NofileLimit {
     }
 }
 
+/// The `RLIMIT_CORE` this process had before [`forbid_core_dumps`].
+static ORIGINAL_CORE: std::sync::OnceLock<rustix::process::Rlimit> = std::sync::OnceLock::new();
+
+/// Sets this process's soft `RLIMIT_CORE` to 0, the hard limit kept: no
+/// core file of ranikust, whose memory holds credentials, lands where a
+/// `RUN` reads it (ADR-0051). Every `RUN` started afterwards gets the soft
+/// limit back, as with [`NofileLimit`]. Called first in `main`; a second
+/// call keeps the limit recorded by the first.
+///
+/// # Errors
+///
+/// What `setrlimit` returns.
+pub fn forbid_core_dumps() -> rustix::io::Result<()> {
+    let original =
+        *ORIGINAL_CORE.get_or_init(|| rustix::process::getrlimit(rustix::process::Resource::Core));
+    rustix::process::setrlimit(
+        rustix::process::Resource::Core,
+        rustix::process::Rlimit {
+            current: Some(0),
+            maximum: original.maximum,
+        },
+    )
+}
+
+/// The limit a `RUN` starts with: the one recorded by [`forbid_core_dumps`],
+/// or `None` (ranikust's own) when it was never called.
+pub(crate) fn original_core_limit() -> Option<rustix::process::Rlimit> {
+    ORIGINAL_CORE.get().copied()
+}
+
 /// Whether a bind mount's target is a directory or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MountKind {

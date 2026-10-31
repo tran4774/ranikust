@@ -158,6 +158,8 @@ pub(crate) struct ChildArgs {
     pub(crate) direct_drop: bool,
     /// The `RLIMIT_NOFILE` the command starts with; `None` keeps ranikust's.
     pub(crate) nofile: Option<rustix::process::Rlimit>,
+    /// The `RLIMIT_CORE` the command starts with; `None` keeps ranikust's.
+    pub(crate) core: Option<rustix::process::Rlimit>,
     pub(crate) stdio: [ChildStdio; 3],
     pub(crate) argv: Vec<CString>,
     pub(crate) envp: Vec<CString>,
@@ -489,6 +491,13 @@ pub(crate) fn switch_user_and_exec(
             err,
             Step::FileLimit,
             rustix::process::setrlimit(rustix::process::Resource::Nofile, limit),
+        );
+    }
+    if let Some(limit) = args.core {
+        check(
+            err,
+            Step::CoreLimit,
+            rustix::process::setrlimit(rustix::process::Resource::Core, limit),
         );
     }
     exec(err, args, ptrs)
@@ -1525,6 +1534,7 @@ mod tests {
             chroot: None,
             direct_drop: false,
             nofile: None,
+            core: None,
             stdio: [ChildStdio::Inherit; 3],
             argv: vec![c"sh".into(), c"-c".into()],
             envp: vec![c"A=1".into()],

@@ -99,16 +99,9 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     // No core file of ranikust either, whatever `core_pattern` and
-    // `suid_dumpable` say: its memory holds the credentials. The hard limit
-    // stays, so a `RUN` may raise its own.
-    let core = rustix::process::getrlimit(rustix::process::Resource::Core);
-    if let Err(e) = rustix::process::setrlimit(
-        rustix::process::Resource::Core,
-        rustix::process::Rlimit {
-            current: Some(0),
-            maximum: core.maximum,
-        },
-    ) {
+    // `suid_dumpable` say: its memory holds the credentials. Every `RUN`
+    // gets the original soft limit back.
+    if let Err(e) = rnk_sandbox::forbid_core_dumps() {
         report(&format!("setrlimit(RLIMIT_CORE, 0): {e}"));
         return ExitCode::from(1);
     }
@@ -367,6 +360,24 @@ fn kaniko(
         )));
     }
     if on_slash {
+        // A writable /proc/sys hands a uid 0 `RUN` the host's root through
+        // kernel/core_pattern without any capability (ADR-0051, Q-341).
+        match exposure::proc_sys_read_only(Path::new("/proc/sys")) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Failure::error(format!(
+                    "{how}: kaniko mode on / with a writable /proc/sys would let RUN write \
+                     kernel/core_pattern and run a program as the host's root; keep the \
+                     container's default read-only /proc/sys, or use overlay mode"
+                )));
+            }
+            Err(e) => {
+                return Err(Failure::error(format!(
+                    "{how}: cannot tell whether /proc/sys is read-only ({e}); kaniko mode on / \
+                     refuses to build without knowing"
+                )));
+            }
+        }
         // What ranikust cannot close itself (ADR-0051, B4 and B5).
         exposure::warn_build_args(&config.build_args);
         exposure::warn_credential_holders(&exposure::secret_variables(config));

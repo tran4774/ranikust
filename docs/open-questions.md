@@ -440,6 +440,13 @@ Entry format:
   `sysrq-trigger`, `kcore`…) and a `nodev` remount before the first `RUN`.
 - **Recommendation:** (a): overlay mode is the better build there anyway;
   (b) adds a second sandbox to maintain for a case nobody needs.
+- **Meanwhile:** (a) is in place, and kaniko mode on `/` also refuses a
+  `/proc/sys` that `statvfs` does not report read-only (Docker's
+  `systempaths=unconfined`, Kubernetes' `procMount: Unmasked`), which hands
+  a uid 0 `RUN` `kernel/core_pattern` without any capability. Host devices
+  given with `--device` stay readable and writable by such a `RUN`:
+  ranikust cannot tell them from the container's own, so the docs leave
+  them to the operator.
 - **Interim:** (a): `--mode=kaniko` on `/` with the namespace entered
   refuses with that guidance (`crates/ranikust/src/main.rs`); `--mode=auto`
   picks overlay mode there already.

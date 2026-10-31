@@ -14,8 +14,13 @@
 //! A pid read from `/proc` may be reused before the kill: each process is
 //! opened as a pidfd first, its `/proc/<pid>/stat` read again and compared
 //! (parent, start time), and the signal sent through the pidfd, which names
-//! that process and no later one. Reaps never block: a child some `RUN`
-//! process holds traced stays for the next round.
+//! that process and no later one. Where seccomp refuses `pidfd_open` (an
+//! older Docker or libseccomp), ranikust's own children still get a plain
+//! `kill`: a child's pid cannot be reused before ranikust reaps it, which
+//! it does only after the kill. Deeper processes are left for a later
+//! round, when their parents are dead and they are ranikust's children;
+//! a tree still there after [`ROUNDS`] rounds fails the build. Reaps never
+//! block: a child some `RUN` process holds traced stays for the next round.
 //!
 //! Relies on `/proc` (the container's, which a `RUN` without
 //! `CAP_SYS_ADMIN` cannot replace) and on nothing else of ranikust's
@@ -141,7 +146,7 @@ pub(crate) fn kill_run_tree(leader: Pid, helpers: &[i32]) -> Result<()> {
         left = tree.len();
         for &pid in &tree {
             if let Some(&stat) = table.get(&pid) {
-                kill(pid, stat)?;
+                kill(pid, stat, me)?;
             }
         }
         // Reap ranikust's own children of the tree; the others become its
@@ -157,16 +162,53 @@ pub(crate) fn kill_run_tree(leader: Pid, helpers: &[i32]) -> Result<()> {
     Err(Error::Survivors { left })
 }
 
+/// What to do with a process `pidfd_open` failed on with `errno`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoPidfd {
+    /// Gone already.
+    Gone,
+    /// ranikust's own child: its pid stays its own until reaped, so a plain
+    /// `kill` names it.
+    Kill,
+    /// Deeper: left for a later round, when it is ranikust's child.
+    Later,
+    /// Any other failure.
+    Fail,
+}
+
+/// [`NoPidfd`] for a process whose parent is `ppid`; `me` is ranikust.
+/// `ENOSYS` and `EPERM` are what a seccomp filter returns for a system call
+/// it does not know.
+fn without_pidfd(errno: Errno, ppid: i32, me: i32) -> NoPidfd {
+    match errno {
+        Errno::SRCH => NoPidfd::Gone,
+        Errno::NOSYS | Errno::PERM if ppid == me => NoPidfd::Kill,
+        Errno::NOSYS | Errno::PERM => NoPidfd::Later,
+        _ => NoPidfd::Fail,
+    }
+}
+
 /// `SIGKILL` to `pid` if it is still the process `stat` describes: opened
-/// as a pidfd, then checked again, then signalled through the pidfd.
-fn kill(pid: i32, stat: Stat) -> Result<()> {
+/// as a pidfd, then checked again, then signalled through the pidfd; or,
+/// where seccomp refuses pidfds, as [`without_pidfd`] says. `me` is
+/// ranikust's pid.
+fn kill(pid: i32, stat: Stat, me: i32) -> Result<()> {
     let Some(raw) = Pid::from_raw(pid) else {
         return Ok(());
     };
     let fd = match rustix::process::pidfd_open(raw, PidfdFlags::empty()) {
         Ok(fd) => fd,
-        Err(Errno::SRCH) => return Ok(()),
-        Err(e) => return Err(sys_err("pidfd_open a process the RUN left", e)),
+        Err(e) => {
+            return match without_pidfd(e, stat.ppid, me) {
+                NoPidfd::Gone | NoPidfd::Later => Ok(()),
+                // Not reaped yet, so still this child (or its zombie).
+                NoPidfd::Kill => match rustix::process::kill_process(raw, Signal::KILL) {
+                    Ok(()) | Err(Errno::SRCH) => Ok(()),
+                    Err(e) => Err(sys_err("kill a process the RUN left", e)),
+                },
+                NoPidfd::Fail => Err(sys_err("pidfd_open a process the RUN left", e)),
+            };
+        }
     };
     // The pidfd holds the process: if the stat still matches, the pidfd is
     // that process and no other one that took its pid since.

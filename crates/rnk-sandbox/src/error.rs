@@ -92,10 +92,12 @@ pub enum Step {
     Chroot,
     /// Giving the command the `RLIMIT_NOFILE` ranikust started with.
     FileLimit,
+    /// Giving the command the `RLIMIT_CORE` ranikust started with.
+    CoreLimit,
 }
 
 impl Step {
-    const ALL: [Step; 39] = [
+    const ALL: [Step; 40] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -135,6 +137,7 @@ impl Step {
         Step::Seccomp,
         Step::Chroot,
         Step::FileLimit,
+        Step::CoreLimit,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -194,6 +197,7 @@ impl Step {
             Step::Seccomp => "install the seccomp filter",
             Step::Chroot => "chroot into the root",
             Step::FileLimit => "set RLIMIT_NOFILE",
+            Step::CoreLimit => "set RLIMIT_CORE",
         }
     }
 }
