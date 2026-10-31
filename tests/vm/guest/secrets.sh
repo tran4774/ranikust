@@ -123,6 +123,8 @@ VECTORS=(V1 V2 V3 V4 V5 V6 V7 V8 V9 V10)
     printf '\n'
   done
 } | tee "$OUT/table.txt"
+# The table runs in a subshell: its verdict is read back from it.
+! grep -q '!' "$OUT/table.txt" || status=1
 grep -h '^VEC' "$OUT"/*.log >"$OUT/vectors.txt" || true
 
 for s in pid1 ptrace shell; do

@@ -67,7 +67,8 @@ Chosen: the third. In kaniko mode on `/`:
   mount); otherwise the build fails and the fence is poisoned.
 - **A build cut short.** The anonymous store keeps a marker,
   `.ranikust-building`, in the state directory while a build runs,
-  holding the PID namespace and boot id it was made in, and removes it
+  holding the PID namespace and boot id it was made in (nothing a `RUN`
+  cannot read itself; the only name a `RUN` sees there), and removes it
   only after a clean build. Opening on this container's marker, or on
   leftover names with no marker, means an earlier ranikust here was
   killed, possibly mid-`RUN` and not as PID 1, so its `RUN` processes may
