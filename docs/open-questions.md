@@ -446,6 +446,23 @@ Entry format:
   `<state>/builds/<id>/kept`, deleted with their stage or the build.
 - **Raised:** 2026-10-31
 
+### Q-370: Should a built layer be encoded straight into its upload?
+
+- **Blocks:** nothing; **Area:** `rnk-builder`, `rnk-registry`
+- **Context:** ADR-0055 pushes a built layer as soon as it is exported,
+  from a file that lives one upload long. `oci-client`'s
+  `push_blob_stream_chunked` could take the encoder's output directly and
+  compute the digest while sending, saving that file
+  ([streaming](design/streaming.md#built-layers-pushed-as-soon-as-they-are-exported)).
+- **Options:** (a) keep the one-layer file: the existence check before
+  sending, retries of a failed request, one encode; (b) encode into the
+  request: no file, but every layer sent even when the registry has it, a
+  failed request re-encodes the layer from the root, chunked uploads only.
+- **Recommendation:** (a) until a measurement shows the one-layer file
+  matters; (b) costs bandwidth and CPU on every rebuild.
+- **Interim:** (a).
+- **Raised:** 2026-11-01
+
 ## Answered
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?

@@ -23,6 +23,7 @@ them is a bug.
 | [rootfs.md](rootfs.md) | Confined path resolution (`RootPath`), `EAGAIN` and missing-syscall handling, metadata order, layer extraction and whiteout forms, `USER` and `--chown` lookup, fd-based deletion | `rnk-rootfs` |
 | [sandbox.md](sandbox.md) | `RUN` isolation: namespaces, mount sequence, `pivot_root`, capabilities, stubs, users | `rnk-sandbox` |
 | [cache-and-store.md](cache-and-store.md) | State directory, persistent store layout, locks, atomic publication, prune, cache keys | `rnk-store`, `rnk-cache`, `rnk-snapshot`, `rnk-registry` |
+| [streaming.md](streaming.md) | What a build keeps and for how long: base layers extracted while downloading, built layers pushed as they are exported, bounded buffers | `rnk-builder`, `rnk-registry`, `rnk-snapshot`, `rnk-store` |
 | [metrics.md](metrics.md) | Opt-in build metrics: span conventions, the spans every crate emits, the JSON report, comparison with kaniko's `metrics.json` | `rnk-metrics`, every crate |
 
 ## Conventions
