@@ -35,6 +35,18 @@ pub enum Base<'a, R, L> {
     Stage(&'a R),
 }
 
+/// What a finished stage keeps of its root for the stages that read it
+/// later (`COPY --from`, `RUN --mount from=`) or build `FROM` it, when its
+/// root is about to be reused ([`StageRootfs::keep`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Keep {
+    /// The whole root, as the stage ended with it.
+    All,
+    /// These paths of the root: a symlink is kept as the link, anything
+    /// else with everything below it; the directories above each are made.
+    Paths(Vec<PathBuf>),
+}
+
 /// A closed layer, ready to be encoded: an overlay upper directory
 /// ([`LayerDiff`]) or a kaniko-mode walk diff (`KanikoDiff`).
 pub trait ExportLayer: Send {
@@ -115,6 +127,20 @@ pub trait StageRootfs {
     /// mounted.
     fn view(&mut self) -> Result<&RootPath>;
 
+    /// The stage is done and later stages read it, but its root is about to
+    /// be reused: keep `what` of it, and from then [`StageRootfs::view`]
+    /// and `Base::Stage` read the kept copy. May be called again, with more,
+    /// until the root is reused. Overlay mode keeps every stage root until
+    /// it is released, so its default does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::State`] when the root was reused since; [`Error::Rootfs`]
+    /// when copying fails.
+    fn keep(&mut self, _what: &Keep) -> Result<()> {
+        Ok(())
+    }
+
     /// Unmounts and deletes the stage's directories, diffs included: every
     /// [`LayerDiff`] of the stage must be exported, and every stage built
     /// on it done, before.
@@ -156,6 +182,18 @@ pub trait Snapshotter {
     /// kaniko mode, no longer holds the root; [`Error::Rootfs`] when the
     /// stage directory cannot be made.
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;
+
+    /// A root on an image's layers that a stage only reads (`COPY
+    /// --from=<image>`), made while that stage holds its own root. Default:
+    /// [`Snapshotter::prepare`]; kaniko mode unpacks it beside the shared
+    /// root instead of into it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Snapshotter::prepare`].
+    fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root> {
+        self.prepare(Base::Image(layers))
+    }
 }
 
 /// Overlay mode: one overlay mount per layer over the store's extracted

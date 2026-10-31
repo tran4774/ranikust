@@ -243,16 +243,26 @@ impl Copier<'_> {
             let from = top.from.join(&name);
             let to = top.to.join(&name);
             // Below the source given, never into another mount: a live
-            // `/proc` or `/sys` there would be read as files.
-            let pin = root::open_name(
+            // `/proc` or `/sys` there would be read as files. A mount point
+            // that `keep` refuses (kaniko mode copying its root out, with
+            // the mounts on its ignore list) is left out instead.
+            let pin = match root::open_name(
                 top.src.as_fd(),
                 &name,
                 OFlags::PATH | OFlags::NOFOLLOW,
                 0,
                 true,
                 &from,
-            )
-            .map_err(|e| on_mount(e, &from))?;
+            ) {
+                Ok(pin) => pin,
+                Err(e)
+                    if e.raw_os_error() == Some(Errno::XDEV.raw_os_error())
+                        && !(self.keep)(&from, true) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(on_mount(e, &from)),
+            };
             let st = meta::statx_at(pin.as_fd(), OsStr::new(""), &from)?;
             if !(self.keep)(&from, st.file_type() == FileType::Directory) {
                 continue;

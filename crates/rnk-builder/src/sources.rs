@@ -321,6 +321,54 @@ pub(crate) fn resolve_in_root(root: &RootPath, source: &str) -> Result<Vec<Resol
     Ok(out)
 }
 
+/// The entries of `root` that reading `path` goes through: each symlink on
+/// the way, as a link, then what it leads to, until the entry itself, last.
+/// A copy holding these entries resolves `path` to the same entry, as
+/// `RESOLVE_IN_ROOT` resolves it (`..` stops at the root, an absolute
+/// target starts there).
+///
+/// # Errors
+///
+/// [`Error::Invalid`] after 40 symlinks; [`Error::Rootfs`] when an entry on
+/// the way is missing.
+pub(crate) fn link_closure(root: &RootPath, path: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut todo = clean_source(&path.to_string_lossy());
+    let mut hops = 0;
+    'walk: loop {
+        let names: Vec<_> = todo.iter().map(ToOwned::to_owned).collect();
+        let mut at = PathBuf::new();
+        for (i, name) in names.iter().enumerate() {
+            let next = at.join(name);
+            if root.statx(&next)?.file_type() == rnk_rootfs::FileType::Symlink {
+                hops += 1;
+                if hops > 40 {
+                    return Err(Error::Invalid(format!(
+                        "too many symlinks on the way to {}",
+                        path.display()
+                    )));
+                }
+                let target = root.read_link(&next)?;
+                out.push(next);
+                let from = if target.is_absolute() {
+                    PathBuf::new()
+                } else {
+                    at.clone()
+                };
+                let mut rest = from.join(target);
+                for n in &names[i + 1..] {
+                    rest.push(n);
+                }
+                todo = clean_source(&rest.to_string_lossy());
+                continue 'walk;
+            }
+            at = next;
+        }
+        out.push(at);
+        return Ok(out);
+    }
+}
+
 /// The components of a cleaned pattern before its first wildcard, as
 /// fsutil's `splitWildcards` (`fsutil copy/copy.go:687-705`).
 fn wildcard_base(pattern: &str) -> PathBuf {

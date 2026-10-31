@@ -45,7 +45,7 @@ pub use output::{Outputs, UNSET_DESTINATION, push, write_docker_tar, write_oci_l
 pub use pull::{PulledImage, pull_image};
 pub use sources::ContextFiles;
 pub use stage::{
-    BuildCx, ImageSource, RunGate, SourceRoot, StageBase, StageDone, StageInput, Ungated,
+    BuildCx, ImageSource, KeepNeed, RunGate, SourceRoot, StageBase, StageDone, StageInput, Ungated,
     build_stage,
 };
 pub use time::BuildTime;

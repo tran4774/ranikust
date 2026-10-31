@@ -408,6 +408,8 @@ fn later_phase_features_and_bad_sources_are_refused_with_a_reason() {
         ("COPY ignored.txt /", "not found"),
         ("COPY missing/*.txt /", "not found"),
         ("COPY --chmod=u+q a.txt /", "invalid mode"),
+        ("COPY $NOTHING /x", "expands to an empty string"),
+        ("ARG E=\nCOPY a.txt ${E} /x", "expands to an empty string"),
         ("ADD --chown={ID} archive.tgz /", "Phase 5"),
         ("ONBUILD RUN true\nFROM p", "ONBUILD"),
     ];

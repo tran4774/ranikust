@@ -22,9 +22,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
 use rnk_builder::{
-    BuildCx, BuildTime, ContextFiles, Error, ImageSource, LayerDemand, LayerExporter, Outputs,
-    PulledImage, RunGate, StageBase, StageDone, StageInput, assemble_annotated, build_stage,
-    image_format, pull_image,
+    BuildCx, BuildTime, ContextFiles, Error, ImageSource, KeepNeed, LayerDemand, LayerExporter,
+    Outputs, PulledImage, RunGate, StageBase, StageDone, StageInput, assemble_annotated,
+    build_stage, image_format, pull_image,
 };
 use rnk_context::{Context, ContextSpec};
 use rnk_dockerfile::{Dockerfile, GraphOptions, StageGraph};
@@ -70,6 +70,9 @@ struct Shared<S: Snapshotter> {
     /// Kaniko mode: per stage, whether its unit's layers are needed (the
     /// lazy-snapshot rule, ADR-0038, ADR-0044); `None` in overlay mode.
     layers_needed: Option<Vec<bool>>,
+    /// Kaniko mode: per stage, what later units read of it, kept before
+    /// the shared root is reused; empty in overlay mode.
+    keep: Vec<Option<KeepNeed>>,
     store: Arc<Store>,
     context: Context,
     context_files: ContextFiles,
@@ -250,6 +253,7 @@ fn prepare<S: Snapshotter>(
         targets: config.targets.clone(),
     };
     let graph = rnk_dockerfile::stage_graph(&dockerfile, &options).map_err(|e| e.to_string())?;
+    refuse_bare_copy_from(&graph)?;
 
     let ignore = context
         .find_dockerignore(Some(&dockerfile_path))
@@ -282,11 +286,11 @@ fn prepare<S: Snapshotter>(
     let credentials = credentials()?;
     let client = Client::new(options, TrustStore::load(), credentials)
         .map_err(|e| format!("setting up the registry client: {e}"))?;
-    let (units, layers_needed) = if shared_root {
-        let (units, needed) = kaniko_units(&graph)?;
-        (units, Some(needed))
+    let (units, layers_needed, keep) = if shared_root {
+        let (units, needed, keep) = kaniko_units(&graph, &dockerfile);
+        (units, Some(needed), keep)
     } else {
-        (own_root_units(&graph), None)
+        (own_root_units(&graph), None, Vec::new())
     };
 
     let in_target = in_target(&graph);
@@ -305,6 +309,7 @@ fn prepare<S: Snapshotter>(
         isolation,
         units,
         layers_needed,
+        keep,
         store,
         context,
         context_files,
@@ -570,53 +575,90 @@ fn write_digest_files(config: &BuildConfig, digest: &str) -> Result<(), String> 
     Ok(())
 }
 
-/// The units of a sequential kaniko-mode build, kaniko's squashed plan
-/// (ADR-0044), and per stage whether its unit's layers are needed. A plan
-/// in which a later unit reads an emptied unit's root (`COPY --from`,
-/// `RUN --mount from=`) or starts from its saved image is refused until
-/// the state directory keeps those (Phase 2 task 8).
-fn kaniko_units(graph: &StageGraph) -> Result<(Vec<Unit>, Vec<bool>), String> {
+/// What a sequential kaniko-mode build runs: kaniko's squashed plan
+/// (ADR-0044) as units, per stage whether its unit's layers are needed, and
+/// per stage what later units read of it, kept before the root is reused
+/// (`SourceRoot::keep`): everything for a unit built `FROM` it or mounted
+/// by `RUN --mount from=`, the sources of the `COPY --from` instructions
+/// that read it otherwise.
+fn kaniko_units(
+    graph: &StageGraph,
+    dockerfile: &Dockerfile,
+) -> (Vec<Unit>, Vec<bool>, Vec<Option<KeepNeed>>) {
     let plan = rnk_dockerfile::squash_for_shared_root(graph);
-    let name = |i: usize| graph.stages[i].display_name.clone();
-    for unit in &plan {
-        for &s in &unit.chain {
-            if let Some(image) = graph.stages[s].images().first() {
-                return Err(format!(
-                    "kaniko mode cannot build this Dockerfile yet: stage {} reads the image \
-                     {image} (COPY --from or RUN --mount from=), which would be unpacked into \
-                     the shared root (Phase 2); use --mode=overlay as root",
-                    name(s)
-                ));
-            }
-        }
-        if let Some(&(reader, _)) = unit.readers.first() {
-            return Err(format!(
-                "kaniko mode cannot build this Dockerfile yet: stage {} reads stage {} \
-                 (COPY --from or RUN --mount from=), whose files are not kept once the \
-                 root is emptied (Phase 2); use --mode=overlay as root",
-                name(reader),
-                name(unit.stage)
-            ));
-        }
-        if let rnk_dockerfile::Base::Stage(b) = unit.base {
-            return Err(format!(
-                "kaniko mode cannot build this Dockerfile yet: stage {} builds FROM stage {} \
-                 after the root was emptied, and its image is not kept (Phase 2); use \
-                 --mode=overlay as root",
-                name(unit.chain.first().copied().unwrap_or(unit.stage)),
-                name(b)
-            ));
-        }
-    }
     let mut needed = vec![false; graph.stages.len()];
+    let mut keep: Vec<Option<KeepNeed>> = vec![None; graph.stages.len()];
     for unit in &plan {
         for &s in &unit.chain {
             if let Some(n) = needed.get_mut(s) {
                 *n = unit.layers_needed;
             }
         }
+        let mut need = if unit.save_image {
+            Some(KeepNeed::All)
+        } else {
+            None
+        };
+        for &(reader, r) in &unit.readers {
+            let sources = graph.stages[reader]
+                .references
+                .get(r)
+                .and_then(|reference| copy_sources(dockerfile, reader, reference));
+            need = match (need, sources) {
+                (Some(KeepNeed::All), _) | (_, None) => Some(KeepNeed::All),
+                (Some(KeepNeed::Sources(mut have)), Some(more)) => {
+                    have.extend(more);
+                    Some(KeepNeed::Sources(have))
+                }
+                (None, Some(more)) => Some(KeepNeed::Sources(more)),
+            };
+        }
+        if let Some(slot) = keep.get_mut(unit.stage) {
+            *slot = need;
+        }
     }
-    Ok((shared_root_units(&plan), needed))
+    (shared_root_units(&plan), needed, keep)
+}
+
+/// The sources of the `COPY --from` that `reference` is, when known before
+/// the build: `None` for a mount, an `ONBUILD` trigger or a source with a
+/// variable in it, which make the whole stage kept.
+fn copy_sources(
+    dockerfile: &Dockerfile,
+    reader: usize,
+    reference: &rnk_dockerfile::Reference,
+) -> Option<Vec<String>> {
+    let (rnk_dockerfile::ReferenceKind::CopyFrom, rnk_dockerfile::Origin::Instruction(i)) =
+        (reference.kind, reference.origin)
+    else {
+        return None;
+    };
+    let ins = dockerfile.stages.get(reader)?.instructions.get(i)?;
+    let rnk_dockerfile::Instruction::Copy(c) = &ins.value else {
+        return None;
+    };
+    (!c.sources.iter().any(|s| s.contains('$'))).then(|| c.sources.clone())
+}
+
+/// `COPY --from=<name>` where `<name>` is no stage and a bare word (no tag,
+/// digest, registry or path) is refused (ADR-0052): a mistyped stage name
+/// would otherwise pull an image of that name. BuildKit pulls it.
+fn refuse_bare_copy_from(graph: &StageGraph) -> Result<(), String> {
+    for node in &graph.stages {
+        for r in &node.references {
+            if let (rnk_dockerfile::ReferenceKind::CopyFrom, rnk_dockerfile::Source::Image(name)) =
+                (r.kind, &r.source)
+                && !name.contains(['/', ':', '@'])
+            {
+                return Err(format!(
+                    "line {}: COPY --from={name} names no stage; to copy from an image, \
+                     give its tag or digest (for example --from={name}:latest)",
+                    r.lines.start
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Per stage: whether the target's image inherits its layers, through
@@ -1033,8 +1075,14 @@ fn run_unit<S: Snapshotter>(
         previous = Some(done);
     }
     let done = previous.ok_or_else(|| Error::Invalid("an empty unit".to_owned()))?;
-    if shared.layers_needed.is_some() && index != shared.graph.primary_target() {
-        done.root.release()?;
+    if shared.layers_needed.is_some() {
+        // What later units read is kept, which gives the root up; the
+        // root of a unit nobody reads is given up as it is.
+        if let Some(need) = shared.keep.get(index).and_then(Option::as_ref) {
+            done.root.keep(need)?;
+        } else if index != shared.graph.primary_target() {
+            done.root.release()?;
+        }
     }
     Ok(done)
 }
@@ -1131,19 +1179,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kaniko_units_refuse_what_the_shared_root_cannot_keep_yet() {
+    fn kaniko_units_keep_what_later_units_read() {
         let units = |text: &str| {
             let df = rnk_dockerfile::parse(text).unwrap();
             let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
-            kaniko_units(&graph)
+            kaniko_units(&graph, &df)
         };
-        let (u, needed) = units("FROM alpine AS a\nRUN true\nFROM a\nRUN true\n").unwrap();
+        let (u, needed, keep) = units("FROM alpine AS a\nRUN true\nFROM a\nRUN true\n");
         assert_eq!(u.len(), 1, "a FROM chain is squashed into one unit");
         assert_eq!(needed, [true, true]);
-        let e = units("FROM alpine\nCOPY --from=busybox /bin/sh /x\n").unwrap_err();
-        assert!(e.contains("reads the image busybox"), "{e}");
-        let e = units("FROM alpine AS a\nFROM alpine\nCOPY --from=a / /x\n").unwrap_err();
-        assert!(e.contains("reads stage a"), "{e}");
+        assert_eq!(keep, [None, None], "nothing reads a squashed chain");
+
+        let (_, _, keep) = units(
+            "FROM alpine AS a\nFROM alpine\nCOPY --from=a /out /x\nCOPY --from=a /etc/*.conf /y\n",
+        );
+        let sources = KeepNeed::Sources(vec!["/out".to_owned(), "/etc/*.conf".to_owned()]);
+        assert_eq!(keep, [Some(sources), None]);
+
+        let (_, _, keep) = units("FROM alpine AS a\nFROM alpine\nCOPY --from=a /$DIR /x\n");
+        assert_eq!(
+            keep[0],
+            Some(KeepNeed::All),
+            "a variable keeps the whole stage"
+        );
+        let (_, _, keep) =
+            units("FROM alpine AS a\nFROM alpine\nRUN --mount=from=a,target=/m true\n");
+        assert_eq!(
+            keep[0],
+            Some(KeepNeed::All),
+            "a mount keeps the whole stage"
+        );
+        // Two stages built FROM `a`: it is not folded, and its image is kept.
+        let (_, _, keep) = units("FROM alpine AS a\nFROM a AS b\nFROM a\nCOPY --from=b /b /b\n");
+        assert_eq!(
+            keep[0],
+            Some(KeepNeed::All),
+            "a saved image keeps the whole stage"
+        );
+        assert_eq!(keep[1], Some(KeepNeed::Sources(vec!["/b".to_owned()])));
+    }
+
+    #[test]
+    fn a_bare_copy_from_name_that_is_no_stage_is_refused() {
+        let check = |text: &str| {
+            let df = rnk_dockerfile::parse(text).unwrap();
+            let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+            refuse_bare_copy_from(&graph)
+        };
+        let e = check("FROM alpine AS build\nFROM alpine\nCOPY --from=biuld /a /a\n").unwrap_err();
+        assert!(e.contains("--from=biuld names no stage"), "{e}");
+        assert!(e.contains("line 3"), "{e}");
+        check("FROM alpine AS build\nFROM alpine\nCOPY --from=build /a /a\n").unwrap();
+        check("FROM alpine\nCOPY --from=busybox:1.36 /bin/sh /x\n").unwrap();
+        check("FROM alpine\nCOPY --from=ghcr.io/o/i /a /a\n").unwrap();
+        check("FROM alpine\nCOPY --from=busybox@sha256:00 /a /a\n").unwrap();
+        check("FROM alpine AS a\nFROM alpine\nCOPY --from=0 /a /a\n").unwrap();
     }
 
     #[test]

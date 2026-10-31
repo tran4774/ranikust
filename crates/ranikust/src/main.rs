@@ -356,6 +356,7 @@ fn kaniko(
         root,
         &root_path,
         on_slash.then_some(state_dir.as_path()),
+        store.build_dir(),
         metrics_file,
     )?;
     let built = build::run(
@@ -381,12 +382,15 @@ fn kaniko(
 /// `state_dir` is given when it lies inside the root (`/` in a container):
 /// it goes on the ignore list. The paths given to the ignore list are
 /// physical: `/`, or the build root the set-up made, and the state
-/// directory, canonical and opened without following a symlink.
+/// directory, canonical and opened without following a symlink. What later
+/// stages read of earlier ones is kept in `<build_dir>/kept`, made here,
+/// private to the build.
 fn kaniko_snapshotter(
     config: &BuildConfig,
     root: rnk_rootfs::RootPath,
     root_path: &Path,
     state_dir: Option<&Path>,
+    build_dir: &Path,
     metrics_file: Option<&Path>,
 ) -> Result<rnk_snapshot::Kaniko, Failure> {
     let fail = |what: &str, e: &dyn std::fmt::Display| Failure::error(format!("{what}: {e}"));
@@ -414,11 +418,18 @@ fn kaniko_snapshotter(
             config::SnapshotMode::Time => rnk_snapshot::SnapshotMode::Time,
         },
     };
+    let build = rnk_rootfs::RootPath::open(build_dir)
+        .map_err(|e| fail(&format!("opening {}", build_dir.display()), &e))?;
+    let kept = build
+        .create_dir("kept", 0o700)
+        .and_then(|()| build.sub_root("kept"))
+        .map_err(|e| fail(&format!("making {}/kept", build_dir.display()), &e))?;
     Ok(rnk_snapshot::Kaniko::new(
         root,
         root_path.to_owned(),
         ignore,
         walk,
+        kept,
     ))
 }
 
