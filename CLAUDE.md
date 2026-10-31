@@ -23,6 +23,8 @@ cargo test -p rnk-rootfs <name>   # a single test (name filter)
 just test <filter>                # name filter across the whole workspace
 just ci                           # exactly what CI runs (also static musl build, aarch64 check, deny, docs)
 just fmt | just lint | just deny | just doc | just book
+just docs-lint                    # ADR index, question numbers, stale [open: Q-NNN] markers (local only)
+just review-pack <branch>         # the brief for the host-safety subagent (local only)
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` (1.99.1, edition 2024);
@@ -78,26 +80,43 @@ damage the machine or the design:
 
 ## Claude Code setup
 
-Project skills: `dev-loop`, `kaniko-parity`, `vm-test`, `refactor` (the
-end-of-phase clean-up, when the maintainer asks), `/adr`, `/sync-docs`, vendored
-`security-audit` (milestones only). Subagents: `reviewer`, `host-safety`
-(any diff in `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`),
-`kaniko-oracle` (kaniko source at `${KANIKO_SRC:-../kaniko}`). Durable
-decisions belong in ADRs, not in auto memory.
+Project skills: `dev-loop`, `kaniko-parity`, `buildkit-parity`, `vm-test`,
+`test`, `refactor` (the end-of-phase clean-up, when the maintainer asks),
+`/adr`, `/sync-docs`, vendored `security-audit` (milestones only).
+Subagents (`.claude/agents/`; when to use each: `docs/agents/workflow.md`):
+
+- `host-safety` (opus): any diff in `rnk-rootfs`, `rnk-sandbox`,
+  `rnk-snapshot`, `rnk-store` or set-up; then the fix loop of workflow.md.
+- `red-team` (opus): hostile inputs and attack tests after `host-safety`;
+  never product code.
+- `reviewer` (opus): fresh-context review before merge.
+- `poc-runner` (sonnet): settles an unverified claim about Linux or a
+  runtime by experiment, in the VM for anything privilege-related.
+- `upstream-oracle` (sonnet, formerly `kaniko-oracle`): what kaniko,
+  BuildKit or buildah do, from their source. Use it instead of reading
+  upstream source in the main session or a fork.
+- `scribe` (sonnet): records the maintainer's decisions as ADRs and syncs
+  docs with a diff.
+- `bench-runner` (sonnet): W1–W3 and benchmarks, when no other VM runs.
+
+Durable decisions belong in ADRs, not in auto memory.
 
 Delegating to subagents (keeps their start-up cheap):
 
-- `host-safety` and `kaniko-oracle` cannot run Bash, so they cannot query
-  graphify. Run the queries yourself and put the results in their prompt:
-  for `host-safety`, the changed files, `graphify affected`/`explain` output
-  for the changed symbols, and the threat-model sections that apply; for
-  `kaniko-oracle`, the kaniko checkout path and
-  `graphify query "<question>" --graph <kaniko>/graphify-out/graph.json`
-  output when that graph exists (build it with `graphify update <kaniko>`).
+- `host-safety` and `upstream-oracle` cannot run Bash, so they cannot query
+  graphify. For `host-safety`, `just review-pack <branch>` prints the brief
+  (changed files, `graphify affected`, threat-model rows, design sections,
+  crate boundaries); add the requirement. For `upstream-oracle`, pass the
+  checkout paths (`${KANIKO_SRC:-../kaniko}`, `../buildkit`) and
+  `graphify query "<question>" --graph <checkout>/graphify-out/graph.json`
+  output when that graph exists (build it with `graphify update <checkout>`).
 - `reviewer` gets only the scope and the requirement; it runs graphify
   itself.
+- Forks never edit `docs/agents/phase-N.md`; the main session ticks it after
+  merging. `just docs-lint` checks the decision records after a merge.
 - Pick the model by the task: `haiku` for locating code, `sonnet` for
-  reading and summarising, `opus` only for review and host-safety judgement.
+  reading, summarising, recording and measuring, `opus` only for review,
+  host-safety and red-team judgement.
 - Continue a finished agent with `SendMessage` rather than starting a new
   one for a follow-up question.
 

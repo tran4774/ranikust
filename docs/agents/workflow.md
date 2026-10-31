@@ -52,6 +52,8 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just registry-up`, `just registry-down` | the HTTP and HTTPS test registries on the host's loopback, data in `tests/registry/_data` ([testing](../testing.md#test-registries)) | |
 | `just smoke-case [name]...` | T1: the quick smoke cases of `tests/smoke/cases` (small Dockerfiles, one concern each) built by the `ranikust` binary in rootless podman; the default for a smoke test or proof of concept ([testing](../testing.md#quick-smoke-cases)) | |
 | `just test-vm [suite]...` | T2 in a disposable QEMU/KVM VM, as the user: `unit` (the `T2:` ignored tests as root) and `smoke` (`smoke-build` as real root and in rootful Docker) by default; `quick` when named (the quick smoke cases as real root); `e2e` when named, for large benchmarks only (the `nextjs-kaniko` workloads against kaniko and BuildKit, [testing](../testing.md#end-to-end-workloads-e2e)); `push` when named (needs `just registry-up`, [testing](../testing.md#test-registries)); results in `target/vm/results/<release>/` ([testing](../testing.md#the-vm-harness-tier-t2)) | |
+| `just docs-lint` | `scripts/docs-lint.py`: every ADR indexed with its status, no duplicate question, no `[open: Q-NNN]` left for an answered question | local only for now |
+| `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
 | `just ci` | all of the above that CI runs, in CI's order | all |
 
 `just` lists them. A recipe that mirrors CI runs exactly the job's command:
@@ -131,8 +133,12 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 | When | Use |
 |---|---|
 | Changing code in `crates/` | `dev-loop` skill |
-| Must match kaniko | `kaniko-parity` skill; `kaniko-oracle` subagent with the resolved `${KANIKO_SRC:-../kaniko}` (`--add-dir`) |
-| Changing `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store` | plan mode first; `host-safety` subagent on the diff, then the fix loop below |
+| What kaniko or BuildKit does | `kaniko-parity` or `buildkit-parity` skill; for anything beyond a quick look, the `upstream-oracle` subagent (formerly `kaniko-oracle`) with the resolved checkout paths (`${KANIKO_SRC:-../kaniko}`, `../buildkit`), never reading upstream source in the main session or a fork |
+| Changing `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`, or set-up | plan mode first; `host-safety` subagent on the diff with `just review-pack <branch>` as its brief, then the fix loop below; then `red-team` |
+| A claim about Linux or a runtime is unverified (`[inferred]`, "not checkable from the code") | `poc-runner` subagent: a minimal experiment, in the VM for anything privilege-related |
+| Attack tests for a change, regression tests from upstream issues | `red-team` subagent: hostile inputs and T0–T2 tests, never product code |
+| The maintainer decided; a diff needs its docs | `scribe` subagent: ADRs, answered questions, markers, cards, design, CHANGELOG, then `just docs-lint` |
+| Performance numbers (W1–W3, benchmarks, Q-033, Q-245) | `bench-runner` subagent, only when no other VM runs |
 | Final review | `reviewer` subagent: only the scope and the requirement, not your suspicions |
 | Decision; before a PR | `/adr`; `/sync-docs [base]` (user-invoked) |
 | Any diff; `rnk-rootfs`, `rnk-sandbox`, `rnk-layer`, `rnk-registry` | `/code-review`; `/security-review` |
@@ -143,6 +149,25 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 `.claude/settings.json` denies `sudo`, `mount`, `unshare` and the like, and
 asks before `cargo add`/`install`/`run`, `docker`, `podman`, `git commit`,
 `git push`.
+
+Models: `haiku` to locate code; `sonnet` to read, summarise, record or
+measure (`upstream-oracle`, `scribe`, `poc-runner`, `bench-runner`); `opus`
+for judgement (`host-safety`, `reviewer`, `red-team`). Continue a finished
+agent with `SendMessage` rather than starting a new one.
+
+### Merging parallel branches
+
+- Forks never edit `docs/agents/phase-N.md`: its checklist lines are edited
+  in place, so parallel branches conflict on it. The main session ticks it
+  after each merge, and briefs say so.
+- `.gitattributes` merges `docs/adr/README.md` and `CHANGELOG.md` with
+  `merge=union`: branches only append rows or entries there, so both sides
+  are kept instead of a conflict. Check the result's order after a merge.
+  Files whose lines change in place (`phase-N.md`, `open-questions.md`,
+  crate cards) keep normal merges: union would keep the old line next to
+  the new one.
+- Each fork gets its own range of question and ADR numbers in its brief.
+- After merging, `just docs-lint` catches what the merge left behind.
 
 ### Host-safety fix loop
 
