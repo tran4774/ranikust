@@ -43,6 +43,8 @@ struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, d
     tar_path, oci_layout_path, compression, compression_level, image_format, label, annotation,
     digest files, insecure*, skip_tls_verify*, push_retry, image_download_retry, verbosity,
     log_format, log_timestamp, reproducible, registry_certificate, snapshot_mode (ADR-0036);
+    context is a plain path and `dir://` goes (ADR-0053, task 7 branch); `context_sub_path` then
+    applies to fetched contexts only;
     kaniko mode (ADR-0040): ignore_paths, ignore_var_run, single_snapshot, materialize;
     ours: mode, state_dir, jobs, network, secret, allow, metrics_file, snapshot_workers.
     No --workdir, --force refused (ADR-0050); kaniko's old spellings refused (ADR-0052).

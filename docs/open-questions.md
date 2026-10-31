@@ -856,6 +856,13 @@ Entry format:
   (git, HTTPS, tar) contexts and is ignored for a local directory, as both
   BuildKit and kaniko do. Recorded in
   [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
+- **Answer (2026-10-31):** "Q81 theo đề xuất": drop kaniko's `dir://`
+  context syntax (option (b) of the recommendation). A local context is a
+  plain path, and `--context-sub-path` applies only to fetched contexts
+  (git, HTTPS, tar), as the answer above says. The code still joined the
+  sub-path onto a `dir://` context; that changes with the Phase 2 task 7
+  integration branch. Recorded in
+  [ADR-0053](adr/0053-local-context-is-a-plain-path-no-dir-scheme.md).
 
 ### Q-100: How durable is a published store entry after a power loss?
 
