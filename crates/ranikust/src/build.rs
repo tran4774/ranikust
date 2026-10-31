@@ -715,6 +715,21 @@ fn in_target(graph: &StageGraph) -> Vec<bool> {
     out
 }
 
+/// What stage `index` must do with its layers. Only the target's `FROM`
+/// chain (`in_target`) is pushed or written out; a stage that a later stage
+/// is built from in kaniko mode (`layers_needed`) keeps its layers for that
+/// stage alone, so a stage the target never inherits never reaches a
+/// destination.
+fn stage_demand(
+    index: usize,
+    in_target: &[bool],
+    layers_needed: Option<&[bool]>,
+    outputs: &Outputs,
+) -> LayerDemand {
+    LayerDemand::for_stage(in_target[index], outputs, false)
+        .saved(layers_needed.is_some_and(|n| n[index]))
+}
+
 /// The stages, then the outputs.
 async fn build<S: Snapshotter + Send + Sync + 'static>(
     config: &BuildConfig,
@@ -1195,13 +1210,11 @@ fn run_stage<S: Snapshotter>(
         base,
         stages: deps.iter().map(|(i, d)| (*i, &**d)).collect(),
         images: sources.iter().map(|(k, v)| (k.clone(), &**v)).collect(),
-        demand: LayerDemand::for_stage(
-            shared
-                .layers_needed
-                .as_ref()
-                .map_or(shared.in_target[index], |n| n[index]),
+        demand: stage_demand(
+            index,
+            &shared.in_target,
+            shared.layers_needed.as_deref(),
             &shared.outputs,
-            false,
         ),
         labels: if index == shared.graph.primary_target() {
             &shared.labels
@@ -1490,6 +1503,34 @@ mod tests {
         .unwrap();
         let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
         assert_eq!(in_target(&graph), [false, false, true, true]);
+    }
+
+    #[test]
+    fn layers_of_stages_the_target_does_not_inherit_are_never_pushed() {
+        // `secrets` and the `b` stages are built FROM in kaniko mode, so
+        // their layers are kept, but the target only copies from them.
+        let text = "FROM alpine AS secrets\nCOPY key /key\n\
+                    FROM secrets AS b1\nRUN true\n\
+                    FROM secrets AS b2\nRUN true\n\
+                    FROM alpine\nCOPY --from=b1 /a /a\nCOPY --from=b2 /b /b\n";
+        let df = rnk_dockerfile::parse(text).unwrap();
+        let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+        let (_, needed, _) = kaniko_units(&graph, &df);
+        assert!(needed[0], "the secrets stage keeps its layers for b1, b2");
+        let in_target = in_target(&graph);
+        let outputs = Outputs::new(
+            &["r.example/app".to_owned()],
+            true,
+            None,
+            Some(PathBuf::from("/out")),
+        )
+        .unwrap();
+        for (index, is_target) in [(0, false), (1, false), (2, false), (3, true)] {
+            let demand = stage_demand(index, &in_target, Some(&needed), &outputs);
+            assert_eq!(demand.push, is_target, "stage {index}");
+            assert_eq!(demand.output, is_target, "stage {index}");
+        }
+        assert!(stage_demand(0, &in_target, Some(&needed), &outputs).needed());
     }
 
     #[test]

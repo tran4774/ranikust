@@ -41,6 +41,12 @@ pub struct LayerDemand {
     pub target: bool,
     /// The image is written as a Docker tar or an OCI layout.
     pub output: bool,
+    /// A later stage is built `FROM` this one in kaniko mode, which keeps
+    /// the stage's layers (kaniko's `save_image`) though the target does
+    /// not inherit them. They are encoded for that stage, never pushed or
+    /// written out: only the target's own `FROM` chain reaches a
+    /// destination.
+    pub saved: bool,
 }
 
 impl LayerDemand {
@@ -54,6 +60,18 @@ impl LayerDemand {
             cache,
             target: in_target,
             output: in_target && (outputs.docker_tar.is_some() || outputs.oci_layout.is_some()),
+            saved: false,
+        }
+    }
+
+    /// This demand, with the stage's layers kept for a later stage built
+    /// `FROM` it when `saved` (kaniko mode). Pushes and outputs are
+    /// unchanged.
+    #[must_use]
+    pub fn saved(self, saved: bool) -> Self {
+        Self {
+            saved: self.saved || saved,
+            ..self
         }
     }
 
@@ -63,7 +81,7 @@ impl LayerDemand {
     /// image is still assembled and its digest reported, as kaniko does with
     /// `--no-push`.
     pub fn needed(&self) -> bool {
-        self.push || self.cache || self.target || self.output
+        self.push || self.cache || self.target || self.output || self.saved
     }
 }
 
