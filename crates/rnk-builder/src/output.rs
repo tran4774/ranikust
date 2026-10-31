@@ -241,8 +241,7 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
 /// A base layer is first mounted from the repository it came from, and
 /// every blob from the first destination for later ones on the same
 /// registry; a refused mount falls back to an upload. Blobs the registry
-/// has are not sent again. [open: Q-014] Interim: mounts are part of
-/// Phase 1.
+/// has are not sent again. Mounts are part of Phase 1 (ADR-0032).
 ///
 /// # Errors
 ///

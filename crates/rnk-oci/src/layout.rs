@@ -8,7 +8,8 @@
 //! the config is stored under its digest (`sha256:<hex>`), each layer as
 //! `<hex>.tar.gz`. The layout follows OCI image-spec v1.1.1
 //! [image-layout.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/image-layout.md).
-//! [open: Q-007] Kept here, with `ConfigEdit`, as pure types.
+//! Kept here, with `ConfigEdit`, as pure types (Q-007, answered in
+//! `docs/open-questions.md`).
 
 use std::collections::BTreeMap;
 

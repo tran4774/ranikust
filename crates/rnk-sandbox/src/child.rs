@@ -366,7 +366,8 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         RootEntry::MoveMount => {
             // The old root stays mounted underneath; `..` stops at the
             // moved root only because the probe chose this entry where `/`
-            // is a mount root. Root keeps CAP_SYS_CHROOT [open: Q-077].
+            // is a mount root. Root keeps CAP_SYS_CHROOT (Q-077,
+            // answered in `docs/open-questions.md`).
             check(err, Step::MoveRoot, rustix::mount::mount_move(c".", c"/"));
             check(err, Step::ChrootAfterMove, rustix::process::chroot(c"."));
         }

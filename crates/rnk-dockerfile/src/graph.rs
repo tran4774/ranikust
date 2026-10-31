@@ -104,8 +104,9 @@ pub struct StageNode {
     pub lines: Lines,
     /// `ONBUILD` triggers of a base stage, parsed; they run before the
     /// stage's own instructions. Filled for stages the targets need.
-    // [open: Q-044] triggers of a base image come from its config, which
-    // the caller pulls; how they enter the graph is undecided.
+    // Triggers of a base image come from its config, which the caller
+    // pulls; a separate step extends the graph with them until no new
+    // dependency appears (ADR-0032, as BuildKit's `initOnBuildTriggers`).
     pub triggers: Vec<Located<Instruction>>,
     /// `COPY --from` and `RUN --mount from=` references, triggers first,
     /// then in instruction order.

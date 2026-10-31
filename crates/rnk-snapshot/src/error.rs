@@ -56,7 +56,7 @@ pub enum Error {
         /// What it holds.
         reason: &'static str,
     },
-    /// More lower layers than overlay allows [open: Q-026].
+    /// More lower layers than overlay allows; layers are not merged (ADR-0032).
     #[error("a stage root needs {lowers} lower layers; overlay takes at most {max}")]
     TooManyLowers {
         /// How many were needed.

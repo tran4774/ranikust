@@ -297,7 +297,7 @@ impl Store {
     /// `f` runs at most once per digest. `f` fills a new [`TmpEntry`] and
     /// returns the number of bytes it wrote; it must return `Ok` only for a
     /// verified entry (a blob whose digest matched, a layer extracted
-    /// completely). A blob is then `fsync`ed [open: Q-100] and the entry
+    /// completely). A blob is then `fsync`ed (an extracted layer is not; ADR-0032) and the entry
     /// renamed into place.
     ///
     /// # Errors

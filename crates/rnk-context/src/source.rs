@@ -119,7 +119,7 @@ impl Context {
     }
 
     /// The directory `sub` inside this context as a context of its own
-    /// (`--context-sub-path`; when the CLI applies it is [open: Q-081]).
+    /// (`--context-sub-path`; which contexts the CLI applies it to: ADR-0032).
     /// `sub` cannot lead outside the context.
     ///
     /// # Errors
