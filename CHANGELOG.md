@@ -155,9 +155,19 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   place for the command and the image's own entries put back afterwards,
   also after a crash; `RUN` commands keep the open-file limit ranikust
   started with. Not used by a build yet.
+- Kaniko mode builds multi-stage Dockerfiles: a stage read by a later
+  `COPY --from` or `RUN --mount from=`, or built on with `FROM`, is copied
+  aside (only the paths `COPY --from` names, when that is enough) before
+  the root is emptied, and a `COPY --from=<image>` is unpacked beside the
+  root.
 
 ### Changed
 
+- `COPY` and `ADD` refuse a source that expands to an empty string (it
+  copied the whole context or stage), and `COPY --from=<name>` where
+  `<name>` is no stage and has no tag, digest, registry or path (a
+  mistyped stage name pulled an image of that name); write
+  `--from=<image>:<tag>` to copy from an image.
 - ranikust picks the build root itself and keeps everything in one state
   directory, `/var/lib/ranikust` by default (ADR-0050): `--workdir` is
   gone, and kaniko's `--force` is refused, since ranikust never builds on

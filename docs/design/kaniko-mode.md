@@ -57,9 +57,9 @@ pkg/dockerfile/dockerfile.go:297-415`. A base folds into its only child
 when no `COPY --from` or `RUN --mount from=` reads it and it is not the
 result; chains fold whole. Each unit lists what later units read from it
 (`readers`: `COPY --from` sources, `RUN --mount from=` roots) and whether
-its image is kept for a later `FROM` (`save_image`); both are kept in the
-state directory before the root is emptied. `rnk-sched` runs the units one
-at a time, in plan order (`Placement::Shared`).
+its image is kept for a later `FROM` (`save_image`); both are kept before
+the root is reused (below). `rnk-sched` runs the units one at a time, in
+plan order (`Placement::Shared`).
 
 ## Stage roots on the shared root
 
@@ -137,12 +137,29 @@ settles them (Q-024):
   `Sandbox::set_nofile_limit`). The sandbox reopens the root by path for
   each `RUN` and refuses it when it is no longer the directory
   `Sandbox::start_with_root` checked (device, inode, mount id).
-- **Not on this path yet** (Phase 2 task 8 integration): keeping a stage's
-  `COPY --from` files and saved image in the state directory before the
-  root is emptied. Until then a sequential build whose stages read an
-  earlier, emptied stage, or that reads an image with `COPY --from`,
-  stops before the root changes with a message naming the stage; squashed
-  chains and single-stage builds run.
+- **What later units read is kept** before the root is reused, in the
+  build's keep area `<state>/builds/<id>/kept`, beside the root and never
+  inside it (on `/` it lies in the ignored state directory). At the end of
+  a unit that later units read, `ranikust` asks for it
+  (`rnk_builder::SourceRoot::keep`), and `KanikoRoot::keep` copies it out
+  (`rnk_rootfs::copy_filtered`, owners, modes, times, xattrs and
+  hardlinks kept, the ignore list's paths left out) and gives the root up;
+  from then `view` reads the copy:
+  - a unit only read by `COPY --from` keeps the entries its sources name,
+    with every symlink on the way to them, and the copy must resolve each
+    source to the same entries; otherwise, and for a source with a
+    variable, a `RUN --mount from=` or an `ONBUILD` trigger, the whole
+    root is kept;
+  - a unit a later `FROM` builds on (`save_image`) is kept whole, and
+    `prepare(Base::Stage(kept))` copies it back into the emptied root,
+    whose baseline walk then starts from it;
+  - an image read by `COPY --from=<image>` is unpacked into the keep area
+    (`Snapshotter::prepare_source`), never into the shared root.
+
+  A kept copy is deleted when its stage is released at the end of the
+  build, with the build directory otherwise. On `/` the keep area is a
+  directory a `RUN` can reach, as the state directory is, until ADR-0051
+  moves state out of its reach [open: Q-350].
 - **Refused:** kaniko mode without root, per-stage directories (task 9)
   and `--parallel-stages` (task 10), each with its reason.
 

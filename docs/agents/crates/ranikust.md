@@ -102,8 +102,11 @@ refused, by
 mountinfo's device and `fs_root` (`same_mount_only_inside`); the context, outputs and file secrets refused in
 the root unless ignored, `paths_outside_the_root`), then `build::run` with
 `Snapshots::Kaniko`: kaniko's squashed units one at a time on the shared
-root (`kaniko_units`, refusing a plan whose later unit reads an emptied
-one), the root emptied after each unit and at the end. Overlay mode: `setup::enter_namespace`
+root (`kaniko_units`: per stage what later units read, kept with
+`SourceRoot::keep` in `<state>/builds/<id>/kept` before the root is
+reused), the root emptied before the next base and at the end.
+`COPY --from=<bare word>` naming no stage, and a `COPY`/`ADD` source
+expanding to an empty string, are refused in both modes (ADR-0052 D2). Overlay mode: `setup::enter_namespace`
 (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
 `unshare(CLONE_NEWNS)`, `/` rslave) → `setup::set_up`: the state
 directory (`--state-dir`, default `/var/lib/ranikust`, ADR-0050) checked
@@ -159,16 +162,17 @@ error, a refused kaniko flag, an invalid combination, and for now every
 
 ## Tests
 
-- Kaniko-mode builds (Phase 2 task 6), measured 2026-10-31: T2
+- Kaniko-mode builds (Phase 2 tasks 6 and 8), measured 2026-10-31: T2
   `RANIKUST_QUICK_MODE=kaniko just test-vm quick` (VM root, full sandbox
-  on a root in the state directory) builds and runs `minimal`, `copy`,
-  `metadata` and `run`,
-  and refuses `multistage`, `reproducible` and `scratch` (`COPY --from`);
+  on a root in the state directory) builds all 7 cases, the multi-stage
+  `multistage`, `reproducible` (equal digests across runs and `--jobs`)
+  and `scratch` included;
   T1 `RANIKUST_CASE_MODE=kaniko just smoke-case` (default rootless
   podman, kaniko mode on the container's `/` since ADR-0050, `RUN`
-  `Direct`) builds `minimal`, `copy` and `metadata`, `run` stopping at its
-  `#!` heredoc. T0: `statedir/tests.rs` each ADR-0050 refusal, `main.rs` operator paths in the root and the
-  state directory bound from inside it, `build.rs` `kaniko_units`.
+  `Direct`) builds 6, `run` stopping at its `#!` heredoc (Direct, task
+  7). T0: `statedir/tests.rs` each ADR-0050 refusal, `main.rs` operator paths in the root and the
+  state directory bound from inside it, `build.rs` `kaniko_units` (what
+  each unit keeps) and the bare `COPY --from` refusal.
 - T0 built, `src/cli/tests.rs`: kaniko spellings per accepted flag
   (short forms, `=` and separate values, pflag booleans, `--target` lists),
   ranikust's flags, refused flags with their reasons (all reported at once,

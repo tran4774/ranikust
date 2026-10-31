@@ -56,7 +56,7 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  //
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // built: kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; copy_file_range
-pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore)
+pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore; kaniko's ignore list, a refused mount point skipped, not an error)
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<u32> } // built: None keeps the source's
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built
 pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component); covers, has_below, contains (exact literal)

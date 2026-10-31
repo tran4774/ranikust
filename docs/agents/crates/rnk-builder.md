@@ -103,6 +103,9 @@ pub enum StageBase<'a, R, L> { Scratch, Image(&'a PulledImage<L>), Stage(&'a Sta
 pub struct StageDone<R> { pub root: SourceRoot<R>, pub scope: StageScope, pub config: ImageConfig,
     pub layers: Vec<BlobLayer>, pub complete: bool, pub base_format: Option<ImageFormat> }
 pub struct SourceRoot<R>;                                // a root behind a mutex; release() once, children first
+impl SourceRoot<R> { pub fn keep(&self, need: &KeepNeed) -> Result<()>; } // kaniko: keep what later stages read
+pub enum KeepNeed { All, Sources(Vec<String>) }          // COPY --from sources: their entries + links on the way,
+                                                         // checked to resolve the same in the copy, else All
 pub struct ImageSource<R, L> { pub image: Arc<PulledImage<L>>, pub root: SourceRoot<R> }  // COPY --from=<image>
 pub struct ContextFiles;                                 // ContextFiles::load(&Context, Option<&Matcher>)
 pub async fn pull_image<S>(client: &Arc<Client>, store: &Arc<Store>, snapshotter: &Arc<S>,
@@ -170,6 +173,11 @@ through a descriptor of its directory.
 
 ## Tests
 
+- **T0:** kaniko-mode keeping (`src/stage.rs` tests): `COPY --from`
+  sources kept with the symlinks on their way and nothing else, a source
+  that cannot be kept by its paths keeping the whole stage,
+  `link_closure` through relative, absolute and `..` links and a loop;
+  `tests/stage.rs`: a source expanding to an empty string refused.
 - **T0:** each executor's config change (`ENV`, `LABEL`, `USER`, `WORKDIR`,
   `ENTRYPOINT`, `CMD`, `SHELL`, `EXPOSE`, `VOLUME`, `STOPSIGNAL`,
   `HEALTHCHECK`): the rules are `rnk_oci::ConfigEdit`'s, tested in

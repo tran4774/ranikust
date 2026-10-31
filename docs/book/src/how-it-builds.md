@@ -70,14 +70,18 @@ privileged container, or as a regular user who may create user namespaces.
 Used when ranikust runs as root but may not mount, as in a Docker container
 with the default security profile or in most Kubernetes pods.
 
-> Built so far: sequential builds. Not yet: a
-> stage that reads an earlier stage with `COPY --from`, `RUN --mount`,
-> `--parallel-stages` and per-stage directories.
+> Built so far: sequential builds, multi-stage included. Not yet:
+> `--parallel-stages` and per-stage directories; on `/` in a container,
+> heredocs, `RUN --mount` and `--network=none` in `RUN`.
 
 - It works the way kaniko does. The build root is the container's own `/`:
   base image layers are unpacked there, `RUN` commands run there, and changes
   are found by walking and hashing the filesystem after each instruction.
-  Between stages, the root filesystem is emptied.
+  Between stages, the root filesystem is emptied. What a later stage reads
+  of an earlier one (`COPY --from`, `RUN --mount from=`, `FROM <stage>`)
+  is copied aside first, into the build's directory under the state
+  directory; for `COPY --from` only the paths it names, and an image read
+  by `COPY --from=<image>` is unpacked there, never into `/`.
 - `RUN` commands run in the same container as ranikust, without extra
   isolation. The container is the only boundary, as with kaniko. Run it in a
   container made for the build.
