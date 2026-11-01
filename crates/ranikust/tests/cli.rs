@@ -426,3 +426,54 @@ fn kaniko_variables_are_not_read() {
         assert!(!err.contains("KANIKO"), "{err}");
     }
 }
+
+/// Red team (ADR-0060, T12): `--parallel-stages` exits 2 before any work,
+/// with any mode, in any spelling the pre-pass knows, also repeated: the
+/// state directory is never created and the value is never echoed. A
+/// `RANIKUST_PARALLEL_STAGES` variable is not read: the run stops where it
+/// stops without it.
+#[test]
+fn parallel_stages_is_refused_before_any_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let state_arg = format!("--state-dir={}", state.display());
+    let mut cases: Vec<Vec<&str>> = vec![
+        vec!["--parallel-stages"],
+        vec!["--parallel-stages=false"],
+        vec!["--parallel-stages=0"],
+        vec!["--parallel-stages=tok-RNK-4242"],
+        vec!["--parallel-stages", "--parallel-stages"],
+        vec!["build", "--parallel-stages"],
+    ];
+    // As root a mode that went past the refusal would really build.
+    if !running_as_root() {
+        cases.push(vec!["--mode=kaniko", "--parallel-stages"]);
+        cases.push(vec!["--mode=overlay", "--parallel-stages"]);
+    }
+    for case in &cases {
+        let mut args = case.clone();
+        args.extend(["--no-push", "--context=/nonexistent-rnk-ctx", &state_arg]);
+        let out = ranikust(tmp.path(), &args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{case:?}: {}", stderr(&out));
+        let err = stderr(&out);
+        assert!(err.contains("ADR-0060"), "{case:?}: {err}");
+        assert!(
+            !err.contains("tok-RNK-4242"),
+            "{case:?}: the value is echoed: {err}"
+        );
+        assert!(!state.exists(), "{case:?}: the state directory was created");
+    }
+    if skip_as_root() {
+        return;
+    }
+    for env in [
+        &[("RANIKUST_PARALLEL_STAGES", "true")][..],
+        &[("RANIKUST_PARALLEL_STAGES", "1"), ("PARALLEL_STAGES", "1")],
+    ] {
+        let out = ranikust(tmp.path(), &["--no-push", "--mode=overlay"], env);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        let err = stderr(&out);
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
+        assert!(!err.to_lowercase().contains("parallel"), "{err}");
+    }
+}

@@ -301,6 +301,90 @@ fn old_spellings_and_force_are_refused() {
     assert_eq!(clap_error(&["--workdir=/w", "--no-push"]).exit_code(), 2);
 }
 
+/// Red team (ADR-0060, T12): no spelling turns `--parallel-stages` on.
+/// Every form the pre-pass knows is refused with the reason, one line per
+/// occurrence, and never echoes the value; every other form (prefixes,
+/// other cases, underscores, after `--`, an `@argfile`, a non-UTF-8 value)
+/// is a clap error. None parses into a build.
+#[test]
+fn parallel_stages_cannot_be_turned_on_by_any_spelling() {
+    let prepass: &[&[&str]] = &[
+        &["--parallel-stages"],
+        &["--parallel-stages=true"],
+        &["--parallel-stages=false"],
+        &["--parallel-stages=0"],
+        &["--parallel-stages=1"],
+        &["--parallel-stages="],
+        &["--parallel-stages=tok-RNK-4242"],
+        &["build", "--parallel-stages"],
+        &["--no-push", "--parallel-stages", "--parallel-stages=false"],
+        // Taken as the value of a flag by clap, refused all the same.
+        &["--build-arg", "--parallel-stages"],
+        &["--metrics-file", "--parallel-stages"],
+    ];
+    for args in prepass {
+        let mut argv = args.to_vec();
+        argv.push("--no-push");
+        let lines = refused(&argv);
+        let wanted = args
+            .iter()
+            .filter(|a| a.starts_with("--parallel-stages"))
+            .count();
+        assert_eq!(lines.len(), wanted, "{args:?}: {lines:?}");
+        for l in &lines {
+            assert!(l.contains("ADR-0060"), "{args:?}: {l}");
+            assert!(!l.contains("tok-RNK-4242"), "the value is echoed: {l}");
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let argfile = dir.path().join("args");
+    std::fs::write(&argfile, "--parallel-stages\n").unwrap();
+    let at = format!("@{}", argfile.display());
+    let others: &[&[&str]] = &[
+        &["--parallel-stage"],
+        &["--parallel"],
+        &["--parallel-s"],
+        &["--Parallel-Stages"],
+        &["--PARALLEL-STAGES"],
+        &["--parallel_stages"],
+        &["---parallel-stages"],
+        &["-parallel-stages"],
+        &["--", "--parallel-stages"],
+        &["build", "--", "--parallel-stages"],
+        &[&at],
+    ];
+    for args in others {
+        let mut argv = vec!["--no-push"];
+        argv.extend_from_slice(args);
+        let err = clap_error(&argv);
+        assert_eq!(err.exit_code(), 2, "{args:?}: {err}");
+    }
+    // A non-UTF-8 value: the pre-pass passes it on, clap refuses it.
+    use std::os::unix::ffi::OsStringExt as _;
+    for raw in [
+        &b"--parallel-stages=\xff"[..],
+        b"--parallel-stages\xff",
+        b"--\xffparallel-stages",
+    ] {
+        let argv = [
+            OsString::from("ranikust"),
+            OsString::from("--no-push"),
+            OsString::from_vec(raw.to_vec()),
+        ];
+        match parse(argv) {
+            Err(ParseError::Clap(e)) => assert_eq!(e.exit_code(), 2, "{raw:?}"),
+            Err(ParseError::Refused(_)) => {}
+            Ok(p) => panic!("{raw:?} parsed: {:?}", p.cli),
+        }
+    }
+    // No field of the parsed command line holds the flag under any name.
+    let args = build(&["--no-push"]);
+    assert!(
+        !format!("{args:?}").to_lowercase().contains("parallel"),
+        "{args:?}"
+    );
+}
+
 #[test]
 fn logging_flags_take_kanikos_values() {
     let a = build(&[

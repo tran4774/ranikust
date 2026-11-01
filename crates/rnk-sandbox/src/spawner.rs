@@ -2645,6 +2645,194 @@ mod tests {
         .unwrap();
     }
 
+    /// Red team (ADR-0060, T18): the fallback reads this process's real
+    /// mountinfo: `/` has mounts below it (`/proc` at least) and is
+    /// refused, naming one; a fresh directory has none and passes.
+    #[test]
+    fn red_team_the_submount_fallback_reads_the_real_mountinfo() {
+        let r = refuse_submounts(Path::new("/"));
+        assert!(
+            matches!(&r, Err(Error::InvalidSpec(m)) if m.contains("mount below")),
+            "{r:?}"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        refuse_submounts(&root).unwrap();
+    }
+
+    /// Red team (ADR-0060, T18): mount points with names a build can
+    /// choose (spaces, tabs, newlines, backslashes, a literal `\040`, a
+    /// deleted mount point) are found below a root spelled the same way;
+    /// a sibling whose name only starts like the root (`root x`,
+    /// `root\nx`) is not, and every mount is below `/`.
+    #[test]
+    fn red_team_hostile_mount_point_names_are_matched_exactly() {
+        let line = |mp: &str| format!("40 22 0:9 / {mp} rw - tmpfs t rw\n");
+        // (mount point as mountinfo prints it, root, mount found below it)
+        type Case<'a> = (&'a str, &'a [u8], Option<&'a [u8]>);
+        let cases: &[Case<'_>] = &[
+            (r"/s/a\040b/sub", b"/s/a b", Some(b"/s/a b/sub")),
+            (r"/s/t\011ab/sub", b"/s/t\tab", Some(b"/s/t\tab/sub")),
+            (r"/s/n\012l/sub", b"/s/n\nl", Some(b"/s/n\nl/sub")),
+            (r"/s/b\134s/sub", b"/s/b\\s", Some(b"/s/b\\s/sub")),
+            // A directory literally named `x\040y`: mountinfo escapes the
+            // backslash.
+            (r"/s/x\134040y/sub", b"/s/x\\040y", Some(b"/s/x\\040y/sub")),
+            (r"/s/x\134040y/sub", b"/s/x y", None),
+            // A mount point removed while mounted.
+            (
+                r"/s/r/sub\040(deleted)",
+                b"/s/r",
+                Some(b"/s/r/sub (deleted)"),
+            ),
+            // Siblings that share the root's prefix.
+            (r"/s/root\040x", b"/s/root", None),
+            (r"/s/root\012x", b"/s/root", None),
+            (r"/s/rootx/sub", b"/s/root", None),
+            // The root itself.
+            (r"/s/root", b"/s/root", None),
+            (r"/proc", b"/", Some(b"/proc")),
+        ];
+        for (mp, root, want) in cases {
+            let info = format!("22 1 8:1 / / rw - ext4 /dev/sda1 rw\n{}", line(mp));
+            assert_eq!(
+                submount_below(info.as_bytes(), root).as_deref(),
+                *want,
+                "{mp} below {}",
+                String::from_utf8_lossy(root)
+            );
+        }
+        // Optional fields (`shared:N`, `master:N`) do not shift the mount
+        // point.
+        let info = b"40 22 0:9 / /s/root/sub rw,nodev shared:5 master:1 - tmpfs t rw\n";
+        assert_eq!(
+            submount_below(info, b"/s/root").as_deref(),
+            Some(&b"/s/root/sub"[..])
+        );
+    }
+
+    /// Red team (T2, the VM only; ADR-0060, T18): no mount of a full
+    /// sandbox's root tree lets a device node open, wherever the node comes
+    /// from: a mount two levels below the root, a read-only bind of a host
+    /// directory below the root, a `RUN --mount` bind of a directory
+    /// holding one, or a node a `RUN` makes with `mknod` on a submount or
+    /// in the bind and a later `RUN` opens. The sandbox's own `/dev/null`
+    /// opens. Same isolation as `a_mount_below_the_root_is_nodev_in_the_run`:
+    /// a thread in a private mount namespace, every mount detached before
+    /// its directory is removed.
+    #[test]
+    #[ignore = "T2: mounts and mknod as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_no_mount_of_the_root_tree_lets_a_device_node_open() {
+        std::thread::spawn(|| {
+            use rustix::mount::MountPropagationFlags;
+            use rustix::thread::UnshareFlags;
+            // SAFETY: this thread shares nothing that the unshared
+            // filesystem attributes or mount namespace would break; it ends
+            // with the test.
+            unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+                .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+            rustix::mount::mount_change(
+                "/",
+                MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+            )
+            .expect("make every mount private");
+            assert!(mount_setattr_supported(), "the VM kernel has mount_setattr");
+            let mknod = |p: &Path| {
+                rustix::fs::mknodat(
+                    rustix::fs::CWD,
+                    p,
+                    FileType::CharacterDevice,
+                    Mode::from_raw_mode(0o666),
+                    rustix::fs::makedev(1, 3),
+                )
+                .unwrap_or_else(|e| panic!("mknod {}: {e}", p.display()));
+            };
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            let outside = top.join("outside");
+            let cache = top.join("cache");
+            for d in ["usr", "sub", "robind", "cache"] {
+                fs::create_dir_all(root.join(d)).unwrap();
+            }
+            fs::create_dir(&outside).unwrap();
+            fs::create_dir(&cache).unwrap();
+            for l in ["bin", "lib", "lib64", "sbin"] {
+                std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).unwrap();
+            }
+            mknod(&outside.join("null"));
+            mknod(&cache.join("null"));
+            rustix::mount::mount_bind("/usr", root.join("usr")).expect("bind /usr");
+            mounts.add(root.join("usr"));
+            rustix::mount::mount_remount(
+                root.join("usr"),
+                MountFlags::BIND | MountFlags::RDONLY,
+                c"",
+            )
+            .expect("remount the /usr bind read-only");
+            let tmpfs = |at: &Path| {
+                rustix::mount::mount("tmpfs", at, "tmpfs", MountFlags::empty(), None)
+                    .unwrap_or_else(|e| panic!("tmpfs at {}: {e}", at.display()));
+            };
+            tmpfs(&root.join("sub"));
+            mounts.add(root.join("sub"));
+            fs::create_dir(root.join("sub/deeper")).unwrap();
+            tmpfs(&root.join("sub/deeper"));
+            mounts.add(root.join("sub/deeper"));
+            mknod(&root.join("sub/deeper/null"));
+            // Read-only: neither the `RUN` nor a removal reaches `outside`
+            // through it.
+            rustix::mount::mount_bind(&outside, root.join("robind")).expect("bind outside");
+            mounts.add(root.join("robind"));
+            rustix::mount::mount_remount(
+                root.join("robind"),
+                MountFlags::BIND | MountFlags::RDONLY,
+                c"",
+            )
+            .expect("remount the bind read-only");
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let sh = |script: &str| {
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                spec.mounts.push(crate::BindMount {
+                    source: cache.clone(),
+                    target: "/cache".into(),
+                    kind: MountKind::Directory,
+                    read_only: false,
+                });
+                runner
+                    .run(spec, None, |job| clone_child(job, parent))
+                    .unwrap()
+            };
+            let control = sh("echo x > /dev/null");
+            let opened: Vec<(&str, ExitStatus)> = [
+                ("deeper", "echo x > /sub/deeper/null"),
+                ("robind", "echo x > /robind/null"),
+                ("cache", "echo x > /cache/null"),
+            ]
+            .into_iter()
+            .map(|(n, s)| (n, sh(s)))
+            .collect();
+            let made = sh("mknod /sub/deeper/made c 1 3 && mknod /cache/made c 1 3");
+            let made_opens = [
+                ("made on a submount", sh("echo x > /sub/deeper/made")),
+                ("made in the RUN bind", sh("echo x > /cache/made")),
+            ];
+            drop(mounts);
+            assert!(control.success(), "the sandbox's /dev/null: {control:?}");
+            for (n, st) in &opened {
+                assert!(!st.success(), "a device node opens via {n}: {st:?}");
+            }
+            assert!(made.success(), "the RUN may mknod (CAP_MKNOD): {made:?}");
+            for (n, st) in &made_opens {
+                assert!(!st.success(), "a node {n} opens in a later RUN: {st:?}");
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
     #[test]
     fn dev_nodes_are_remounted_read_only_and_never_nodev() {
         for flags in dev_remount() {

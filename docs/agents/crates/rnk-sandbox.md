@@ -232,6 +232,14 @@ from `rnk-store`, secret file) and passes `--network`.
   `a_stolen_stderr_does_not_stall_stdout` fail: findings, open
   (2026-11-01); the probe's `EPERM`-only fallback and the mount-root check; the
   spans (`tests/spans.rs`).
+  Red team of ADR-0060: `tests/direct_only.rs` (a `start_direct`
+  sandbox refuses `Direct` off `/`, through a symlink to `/`, the full
+  sandbox, and `//`, `/.`, trailing-`/` and `..` roots, placing nothing);
+  the submount fallback on the real mountinfo and hostile mount point
+  names (`red_team_hostile_mount_point_names_are_matched_exactly`); T2
+  `red_team_no_mount_of_the_root_tree_lets_a_device_node_open` (nested
+  tmpfs, a read-only host bind, a `RUN --mount` bind and nodes a `RUN`
+  makes there, all `nodev`).
 - **T1** (rootless podman): `just smoke` (2026-10-30, kernel 7.0, podman
   5.7): probe → `pivot_root`; `apk add` through the sandbox's network and
   `/etc` copies; checked inside: PID 1, host name, CapBnd/Prm/Eff

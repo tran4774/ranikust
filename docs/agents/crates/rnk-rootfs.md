@@ -124,6 +124,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   reproducer of a red-team finding: a source cut short between
   `SEEK_DATA` calls is copied at its old size with zeros, without an
   error. Still to do: `cargo fuzz` on `extract`.
+  Red team of ADR-0060: `skip_special` leaves FIFOs, sockets and (`0:0`)
+  device nodes out at every depth, hardlinked, behind a symlinked
+  directory and named as the source; a file swapped for a FIFO during the
+  walk is copied from its pinned inode, never blocking.
 - **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
   survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
   and setuid in `extract`.
