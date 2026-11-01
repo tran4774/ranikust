@@ -2,7 +2,8 @@
 
 Reads every <workload>/<builder>-r<round>/run.json and the compare-*.txt and
 metrics-*.md files next to them; prints a Markdown report: host wall time per
-workload and builder (median, min-max over the rounds), the status of each
+workload and builder (median, min-max over the rounds), the peak memory of
+each build's cgroup (memory.peak, page cache included), the status of each
 ranikust build, the image checks and the metrics comparison.
 """
 import json
@@ -27,8 +28,8 @@ def main():
     if os.path.exists(env):
         print("```\n" + open(env).read().strip() + "\n```\n")
     print("## Host wall time (s)\n")
-    print("| Workload | Builder | Rounds | Median | Min-max | Status |")
-    print("|---|---|---|---|---|---|")
+    print("| Workload | Builder | Rounds | Median | Min-max | Peak MiB (median) | Status |")
+    print("|---|---|---|---|---|---|---|")
     keys = sorted({(r["workload"], r["builder"]) for r in runs})
     for w, b in keys:
         rs = [r for r in runs if r["workload"] == w and r["builder"] == b]
@@ -36,7 +37,10 @@ def main():
         status = ",".join(sorted({r["status"] for r in rs}))
         med = f"{statistics.median(ok):.2f}" if ok else "-"
         rng = f"{min(ok):.2f}-{max(ok):.2f}" if ok else "-"
-        print(f"| {w} | {b} | {len(rs)} | {med} | {rng} | {status} |")
+        peaks = [int(r["limits"]["memory.peak"]) for r in rs
+                 if r["status"] == "ok" and str(r.get("limits", {}).get("memory.peak", "")).isdecimal()]
+        peak = f"{statistics.median(peaks) / 1048576:.0f}" if peaks else "-"
+        print(f"| {w} | {b} | {len(rs)} | {med} | {rng} | {peak} | {status} |")
     pending = [r for r in runs if r["status"] == "pending"]
     if pending:
         print("\n## Pending builds\n")

@@ -310,6 +310,29 @@ container_limits() {
     tr ' ' '\n' >"$2/limits.txt" 2>/dev/null || true
 }
 
+# mem_watch_start <container> <dir> / mem_watch_end <dir>: the container's
+# peak memory (its cgroup's memory.peak, page cache included), sampled every
+# 0.2 s while it runs (its cgroup goes with it), appended to <dir>/limits.txt;
+# the scope builders get theirs from limits.sh self. One cat per sample:
+# nothing measurable next to a build.
+MEMW=
+mem_watch_start() {
+  local pid
+  MEMW=
+  pid="$(sudo docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || echo 0)"
+  [ "${pid:-0}" != 0 ] || return 0
+  # Read as root, written as rnk.
+  # shellcheck disable=SC2024
+  sudo bash "$LIMITS" watch "$pid" >"$2/peak.txt" 2>/dev/null &
+  MEMW=$!
+}
+mem_watch_end() {
+  [ -z "$MEMW" ] || wait "$MEMW" || true
+  MEMW=
+  [ ! -s "$1/peak.txt" ] || cat "$1/peak.txt" >>"$1/limits.txt"
+  rm -f "$1/peak.txt"
+}
+
 is_rnk() { case "$1" in ranikust | rk-*) return 0 ;; *) return 1 ;; esac; }
 # The builders that take --jobs on W3 (their stages may run side by side).
 has_jobs() { case "$1" in ranikust | rk-kaniko-host) return 0 ;; *) return 1 ;; esac; }
@@ -330,7 +353,9 @@ build() {
         --insecure-registry=registry:5000 --build-arg "BASE_IMAGE=$base" --digest-file=/bench-out/digest.txt \
         --verbosity=info --log-timestamp=true >/dev/null
       container_limits "$name" "$d"
+      mem_watch_start "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
+      mem_watch_end "$d"
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
       take_results "$d" "$name"
@@ -347,7 +372,9 @@ build() {
         --opt "build-arg:BASE_IMAGE=$base" \
         --output "type=image,\"name=registry:5000/$repo:latest\",push=true,compression=zstd" >/dev/null
       container_limits "$name" "$d"
+      mem_watch_start "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
+      mem_watch_end "$d"
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
       sudo docker volume rm -f "$vol" >/dev/null
@@ -367,7 +394,9 @@ build() {
         --build-arg="BASE_IMAGE=$base" --metrics-file=/rnk-out/metrics.json --digest-file=/rnk-out/digest.txt \
         "${extra[@]}" >/dev/null
       container_limits "$name" "$d"
+      mem_watch_start "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
+      mem_watch_end "$d"
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
       take_results "$d" "$name"
