@@ -300,11 +300,13 @@ take_results() {
   sudo rm -rf -- "$1/mnt"
 }
 CPID=0
+CID=
 container_limits() {
-  local pid
-  pid="$(sudo docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || echo 0)"
+  local pid id
+  read -r pid id < <(sudo docker inspect -f '{{.State.Pid}} {{.Id}}' "$1" 2>/dev/null || echo 0)
   # For mem_watch_start: no second inspect while the build is timed.
   CPID="${pid:-0}"
+  CID="${id:-}"
   # Read as root, written as rnk.
   # shellcheck disable=SC2024
   [ "${pid:-0}" = 0 ] || sudo bash "$LIMITS" pid "$pid" >"$2/limits.txt" 2>/dev/null || true
@@ -317,31 +319,39 @@ container_limits() {
 # peak memory (its cgroup's memory.peak, page cache included), sampled every
 # 0.2 s while it runs (its cgroup goes with it), appended to <dir>/limits.txt;
 # the scope builders get theirs from limits.sh self. Started in the
-# background with the pid container_limits read; one cat per sample:
-# nothing measurable next to a build.
+# background, as rnk (the cgroup files are world-readable), with the pid
+# and id container_limits read, so that a pid reused meanwhile cannot
+# point it at another cgroup; one cat per sample: nothing measurable next
+# to a build.
 MEMW=
 mem_watch_start() {
   MEMW=
-  [[ $CPID =~ ^[1-9][0-9]*$ ]] || return 0
-  # Read as root, written as rnk.
-  # shellcheck disable=SC2024
-  sudo bash "$LIMITS" watch "$CPID" >"$2/peak.txt" 2>/dev/null &
+  [[ $CPID =~ ^[1-9][0-9]*$ ]] && [[ $CID =~ ^[0-9a-f]{64}$ ]] || return 0
+  bash "$LIMITS" watch "$CPID" "$CID" >"$2/peak.txt" 2>/dev/null &
   MEMW=$!
+}
+# proc_state <pid>: its state letter (after the last `)`, as the command
+# name may hold spaces and parentheses), or nothing.
+proc_state() {
+  local s
+  s="$(cat "/proc/$1/stat" 2>/dev/null)" || return 0
+  s="${s##*) }"
+  echo "${s%% *}"
 }
 mem_watch_end() {
   local i st
   if [ -n "$MEMW" ]; then
     # The container is gone; its cgroup goes within moments, ending the
-    # watcher. After about 1 s it is told to print what it has (a
-    # zombie, state Z, has already ended).
+    # watcher (our own child: a zombie, state Z, has ended). After about
+    # 1 s it is told to print what it has.
     for i in 1 2 3 4 5; do
-      st="$(awk '{ print $3 }' "/proc/$MEMW/stat" 2>/dev/null || true)"
+      st="$(proc_state "$MEMW")"
       { [ -n "$st" ] && [ "$st" != Z ]; } || break
       sleep 0.2
     done
-    st="$(awk '{ print $3 }' "/proc/$MEMW/stat" 2>/dev/null || true)"
+    st="$(proc_state "$MEMW")"
     if [ -n "$st" ] && [ "$st" != Z ]; then
-      sudo kill -TERM "$MEMW" 2>/dev/null || true
+      kill -TERM "$MEMW" 2>/dev/null || true
     fi
     wait "$MEMW" 2>/dev/null || true
   fi
