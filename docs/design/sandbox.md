@@ -90,8 +90,13 @@ rtnetlink first; the ADR lists them as residual risk.
       The remount reaches the top mount only, so every mount of the bind,
       submounts below the root included, is then made `nodev` with
       `mount_setattr(AT_RECURSIVE)` (Linux 5.12); on an older kernel a root
-      with any mount below it (`/proc/self/mountinfo`) is refused before
-      the clone.
+      with any mount below it (`/proc/thread-self/mountinfo`, the root given
+      as the kernel names it) is refused before the clone. Because of this
+      `nodev`, `COPY` into such a root keeps device nodes, FIFOs and sockets
+      (as BuildKit); only where a `RUN` enters the root without it
+      (`Isolation::Direct`, kaniko mode on `/`) does `COPY` leave them out
+      (ADR-0060). An image built with the full sandbox can therefore hold a
+      device node copied in; it opens in no `RUN`.
    2. A new `proc`. If `/proc` is masked and a new user namespace was created,
       the kernel refuses (`EPERM`); fall back to an rbind of the existing
       `/proc`.

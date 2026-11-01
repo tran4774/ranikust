@@ -23,5 +23,5 @@ tracing.workspace = true
 [dev-dependencies]
 rnk-metrics.workspace = true
 # `mount`: the T2 test that puts a bind mount where clean-up deletes.
-rustix = { workspace = true, features = ["mount", "process"] }
+rustix = { workspace = true, features = ["mount", "process", "thread"] }
 tempfile.workspace = true

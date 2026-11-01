@@ -490,6 +490,14 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   root's owner, mode and times; never a hardlink to it (ADR-0017). Device
   nodes, FIFOs and sockets a parent's `RUN` made are left out
   (`CopyOpts::skip_special`, ADR-0041).
+- **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
+  `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as
+  BuildKit, because every `RUN` enters the root `nodev` (the full
+  sandbox). So an image built off `/` can hold a device node that came
+  from the context or another stage by `COPY`; ADR-0060's "the image never
+  holds a device node a `RUN` did not make in its own layer" holds for
+  kaniko mode on `/` (`Isolation::Direct`) only. Base layers and
+  `FROM <stage>` copies leave them out in both.
 - **Scheduling**: as overlay mode's stages: the stage graph and `--jobs`,
   no squashing, nothing kept or emptied between stages; a `COPY --from`
   reads the finished stage's directory as it is. A stage the target does

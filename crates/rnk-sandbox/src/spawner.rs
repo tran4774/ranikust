@@ -644,6 +644,40 @@ pub(crate) struct Runner {
 /// What identifies a root directory: device, inode and mount id.
 type RootId = (u32, u32, u64, u64);
 
+/// Refuses a `root_dir` that is not the path the kernel gives its
+/// directory (`/proc/thread-self/fd/<n>`): a symlink on the way, or a
+/// directory since moved or removed. The root is compared with mount points
+/// byte for byte ([`refuse_submounts`]); the binary always passes resolved
+/// paths. The descriptor read is checked to be `root`'s directory.
+fn refuse_unresolved(root_dir: &Path, root: &RootPath) -> Result<()> {
+    let fd = rustix::fs::open(
+        root_dir,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| io_err("open", root_dir, e.into()))?;
+    let link = Path::new("/proc/thread-self/fd").join(fd.as_raw_fd().to_string());
+    let resolved = fs::read_link(&link).map_err(|e| io_err("readlink", &link, e))?;
+    let st = rustix::fs::statx(
+        &fd,
+        c"",
+        rustix::fs::AtFlags::EMPTY_PATH,
+        rustix::fs::StatxFlags::BASIC_STATS,
+    )
+    .map_err(|e| io_err("statx", root_dir, e.into()))?;
+    let want = root.statx("/")?;
+    let same = (st.stx_dev_major, st.stx_dev_minor, st.stx_ino)
+        == (want.dev_major, want.dev_minor, want.ino);
+    if resolved != root_dir || !same {
+        return Err(Error::InvalidSpec(format!(
+            "the root {} must be given resolved: the kernel names it {}",
+            root_dir.display(),
+            resolved.display()
+        )));
+    }
+    Ok(())
+}
+
 fn root_id(root: &RootPath) -> Result<RootId> {
     let st = root.statx("/")?;
     Ok((st.dev_major, st.dev_minor, st.ino, st.mnt_id))
@@ -806,6 +840,7 @@ impl Runner {
     fn prepare(&self, spec: &mut RunSpec, root_entry: RootEntry) -> Result<(Job, Option<Journal>)> {
         let direct = spec.isolation == Isolation::Direct;
         let root = RootPath::open(&spec.root_dir)?;
+        refuse_unresolved(&spec.root_dir, &root)?;
         // The caller's root, by identity: the path is reopened here and
         // again in the child.
         if let Some(want) = spec.root_id
@@ -2505,6 +2540,29 @@ mod tests {
         );
         assert_eq!(submount_below(&all, b"/state/builds/1/rootfs2"), None);
         assert_eq!(unescape_octal(b"a\\134b\\011c\\0"), b"a\\b\tc\\0");
+    }
+
+    /// A root reached through a symlinked parent is refused: mount points
+    /// are compared with its path byte for byte. Its resolved path passes.
+    #[test]
+    fn a_root_behind_a_symlink_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top = tmp.path().canonicalize().unwrap();
+        fs::create_dir_all(top.join("real/root")).unwrap();
+        std::os::unix::fs::symlink("real", top.join("link")).unwrap();
+        let via = top.join("link/root");
+        let real = top.join("real/root");
+        // `RootPath::open` already refuses a symlink on the way (`ELOOP`);
+        // the path check holds on its own too.
+        assert!(RootPath::open(&via).is_err());
+        let e = refuse_unresolved(&via, &RootPath::open(&real).unwrap()).unwrap_err();
+        assert!(e.to_string().contains("must be given resolved"), "{e}");
+        refuse_unresolved(&real, &RootPath::open(&real).unwrap()).unwrap();
+        // The path now leads to another directory than the one held.
+        let other = top.join("real/other");
+        fs::create_dir(&other).unwrap();
+        assert!(refuse_unresolved(&real, &RootPath::open(&other).unwrap()).is_err());
+        refuse_unresolved(Path::new("/"), &RootPath::open("/").unwrap()).unwrap();
     }
 
     /// The probe of `mount_setattr` answers the same every time and never
