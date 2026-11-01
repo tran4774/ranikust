@@ -229,6 +229,32 @@ const WITHHELD_UNVERIFIED: &str = "in kaniko mode on / its credentials go only o
     unverified certificate could carry them to a host of its choosing; use the registry \
     over HTTPS with a certificate ranikust trusts (--registry-certificate)";
 
+/// Why configured credentials must not be sent to `registry`, reached over
+/// `scheme`, with its certificate unverified if `skip_verify`; `None` when
+/// they may be.
+///
+/// Unlike BuildKit's, a ranikust `RUN` shares the host's network namespace
+/// and may sniff `lo` or serve a loopback port: credentials go over plain
+/// HTTP only to a registry the operator named for it (`http_credentials`,
+/// threat model T11). Any other plain-HTTP registry, a loopback one or one
+/// only `--insecure-pull` allows, is accessed anonymously. With
+/// `verified_credentials_only` (kaniko mode on `/`), nothing but verified
+/// TLS carries them (ADR-0051).
+fn withheld_because(
+    options: &ClientOptions,
+    registry: &str,
+    scheme: &str,
+    skip_verify: bool,
+) -> Option<&'static str> {
+    if options.verified_credentials_only && (scheme == "http" || skip_verify) {
+        Some(WITHHELD_UNVERIFIED)
+    } else if scheme == "http" && !options.http_credentials.contains(registry) {
+        Some(WITHHELD)
+    } else {
+        None
+    }
+}
+
 /// Whether `e` is a registry refusing access: an authentication failure,
 /// or 401/403 and the distribution codes for them.
 fn is_refusal(e: &Error) -> bool {
@@ -989,26 +1015,14 @@ impl Client {
         })?;
 
         let configured = self.credentials.get(registry);
-        // Unlike BuildKit's, a ranikust `RUN` shares the host's network
-        // namespace and may sniff `lo` or serve a loopback port: credentials
-        // go over plain HTTP only to a registry the operator named for it
-        // (`http_credentials`, threat model T11). Any other plain-HTTP
-        // registry, a loopback one or one only `--insecure-pull` allows, is
-        // accessed anonymously.
-        // With `verified_credentials_only` (kaniko mode on `/`), nothing
-        // but verified TLS carries them (ADR-0051).
-        let unverified =
-            self.options.verified_credentials_only && (scheme == "http" || skip_verify);
-        let withheld = configured.is_some()
-            && (unverified
-                || (scheme == "http" && !self.options.http_credentials.contains(registry)));
-        let why = if unverified {
-            WITHHELD_UNVERIFIED
+        // Only configured credentials can be held back.
+        let withheld = if configured.is_some() {
+            withheld_because(&self.options, registry, scheme, skip_verify)
         } else {
-            WITHHELD
+            None
         };
-        let credential = if withheld { None } else { configured };
-        if withheld {
+        let credential = if withheld.is_some() { None } else { configured };
+        if let Some(why) = withheld {
             if matches!(ping, Ping::Basic) {
                 return Err(Error::Auth {
                     host: registry.to_owned(),
@@ -1046,7 +1060,7 @@ impl Client {
             base_url: format!("{scheme}://{endpoint}"),
             challenge,
             mount_tokens: Mutex::new(BTreeMap::new()),
-            withheld,
+            withheld: withheld.is_some(),
         })
     }
 
