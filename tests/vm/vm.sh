@@ -351,11 +351,16 @@ for i in 1 2 3 4 5; do
   # could point the host's tar outside $RESULTS, a device or FIFO has no
   # business there. A builder container left running could still write, so
   # those go first. The guest deletes everything else, and the host again
-  # after extracting; the host's tar refuses absolute names and `..` anyway.
-  vssh 'c=$(sudo docker ps -aq --filter name=rnk-e2e- 2>/dev/null); [ -z "$c" ] || sudo docker rm -f $c >/dev/null
+  # after every attempt, failed or not (tar still creates the links it
+  # delayed after an error); the host's tar refuses absolute names and `..`.
+  copied=0
+  if vssh 'c=$(sudo docker ps -aq --filter name=rnk-e2e- 2>/dev/null); [ -z "$c" ] || sudo docker rm -f $c >/dev/null
     sudo find rnk/out ! -type f ! -type d -delete && tar -C rnk/out -cf - .' |
-    tar -C "$RESULTS" --no-same-owner --no-same-permissions -xf - &&
-    find "$RESULTS" ! -type f ! -type d -delete && break
+    tar -C "$RESULTS" --no-same-owner --no-same-permissions -xf -; then
+    copied=1
+  fi
+  find "$RESULTS" ! -type f ! -type d -delete
+  [ "$copied" = 1 ] && break
   [ "$i" = 5 ] && log "could not copy the results out"
   sleep 10
 done
