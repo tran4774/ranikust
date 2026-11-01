@@ -246,8 +246,9 @@ impl Transport {
 enum Withheld {
     /// Plain HTTP to a registry the operator did not name for it (T11).
     PlainHttp,
-    /// Kaniko mode on `/`: anything but verified TLS (ADR-0051).
-    UnverifiedTls,
+    /// Kaniko mode on `/`: only verified TLS carries them, so neither plain
+    /// HTTP nor an unverified certificate does (ADR-0051).
+    VerifiedTlsOnly,
 }
 
 impl Withheld {
@@ -255,7 +256,7 @@ impl Withheld {
     fn reason(self) -> &'static str {
         match self {
             Self::PlainHttp => WITHHELD,
-            Self::UnverifiedTls => WITHHELD_UNVERIFIED,
+            Self::VerifiedTlsOnly => WITHHELD_UNVERIFIED,
         }
     }
 }
@@ -290,7 +291,7 @@ fn withheld_because(
     match transport {
         Transport::VerifiedTls => None,
         Transport::PlainHttp | Transport::UnverifiedTls if options.verified_credentials_only => {
-            Some(Withheld::UnverifiedTls)
+            Some(Withheld::VerifiedTlsOnly)
         }
         Transport::PlainHttp if !options.http_credentials.contains(registry) => {
             Some(Withheld::PlainHttp)
@@ -1485,15 +1486,15 @@ mod tests {
         ] {
             assert_eq!(
                 withheld_because(&options, registry, transport),
-                Some(Withheld::UnverifiedTls),
+                Some(Withheld::VerifiedTlsOnly),
                 "{registry} {transport:?}"
             );
         }
         assert_eq!(Withheld::PlainHttp.reason(), WITHHELD);
-        assert_eq!(Withheld::UnverifiedTls.reason(), WITHHELD_UNVERIFIED);
+        assert_eq!(Withheld::VerifiedTlsOnly.reason(), WITHHELD_UNVERIFIED);
         // The advice must work for both halves: plain HTTP and a registry
         // listed under `--skip-tls-verify*`.
-        let advice = Withheld::UnverifiedTls.reason();
+        let advice = Withheld::VerifiedTlsOnly.reason();
         assert!(advice.contains("over HTTPS"), "{advice}");
         assert!(advice.contains("--skip-tls-verify"), "{advice}");
     }
