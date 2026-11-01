@@ -2115,4 +2115,72 @@ mod tests {
         );
         assert!(matches!(r, Err(Error::Cancelled)));
     }
+
+    /// Red team (ADR-0062): references written in every way the graph
+    /// resolves them (an index, another case, a name a later stage takes
+    /// again, an `ONBUILD` trigger of a local base, a secret mount's
+    /// `from=`) and `--target` choices count as readers exactly as the
+    /// builder will read them: a stage takes its base over only where no
+    /// other needed stage reads that base.
+    #[test]
+    fn red_team_hostile_references_never_let_two_readers_share_a_hand_over() {
+        let takes = |text: &str, targets: &[&str]| -> Vec<&'static str> {
+            let df = rnk_dockerfile::parse(text).unwrap();
+            let opts = GraphOptions {
+                targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+                ..GraphOptions::default()
+            };
+            let graph = rnk_dockerfile::stage_graph(&df, &opts).unwrap();
+            let sole = sole_readers(&stage_readers(&graph));
+            graph
+                .needed
+                .iter()
+                .map(|&s| match graph.stages[s].base {
+                    rnk_dockerfile::Base::Stage(b) if sole[b] => "take",
+                    rnk_dockerfile::Base::Stage(_) => "copy",
+                    _ => "-",
+                })
+                .collect()
+        };
+        // An index names the base.
+        assert_eq!(
+            takes("FROM alpine AS p\nFROM p AS c\nCOPY --from=0 /x /x\n", &[]),
+            ["-", "copy"]
+        );
+        // A name in another case.
+        assert_eq!(
+            takes(
+                "FROM alpine AS p\nFROM p AS c\nFROM alpine\nCOPY --from=P /x /x\nCOPY --from=c /y /y\n",
+                &[]
+            ),
+            ["-", "copy", "-"]
+        );
+        // A name a later stage takes again: `FROM p` reads the first, the
+        // `COPY --from=p` the second; each has one reader.
+        assert_eq!(
+            takes(
+                "FROM alpine AS p\nFROM p AS c\nFROM busybox AS p\nFROM c\nCOPY --from=p /x /x\n",
+                &[]
+            ),
+            ["-", "take", "-", "take"]
+        );
+        // An `ONBUILD COPY --from=p` of a local base reads p in the stage
+        // built on that base.
+        assert_eq!(
+            takes(
+                "FROM alpine AS p\nFROM alpine AS b\nONBUILD COPY --from=p /x /x\nFROM b AS c\nFROM p\nCOPY --from=c /y /y\n",
+                &[]
+            ),
+            ["-", "-", "take", "copy"]
+        );
+        // `--target` changes the readers.
+        let two = "FROM alpine AS p\nFROM p AS a\nFROM p AS b\nCOPY --from=a /x /x\n";
+        assert_eq!(takes(two, &[]), ["-", "copy", "copy"]);
+        assert_eq!(takes(two, &["a"]), ["-", "take"]);
+        assert_eq!(takes(two, &["A"]), ["-", "take"]);
+        // A stage reading itself is refused before anything is counted.
+        let df =
+            rnk_dockerfile::parse("FROM alpine AS p\nFROM p AS c\nCOPY --from=c /x /x\n").unwrap();
+        assert!(rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).is_err());
+    }
 }

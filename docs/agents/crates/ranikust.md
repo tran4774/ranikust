@@ -194,7 +194,10 @@ error, a refused kaniko flag, an invalid combination, and for now every
   folded mid-chain and kept with its readers' sources (targets, triggers,
   indexes), and hostile `--from` values (out-of-range, negative, huge,
   zero-padded, self, cycles, case, empty) planned or refused, never a
-  panic (kaniko-oss#724). T1 and T2: the `copy-from`, `copy-from-root`
+  panic (kaniko-oss#724); references by index, in another case, to a
+  name a later stage takes again, from a local base's `ONBUILD`, and
+  `--target` choices count readers as the builder reads them, so no
+  stage with two readers is handed over (ADR-0062). T1 and T2: the `copy-from`, `copy-from-root`
   and `copy-from-daemon` quick cases ([testing](../../testing.md#quick-smoke-cases)).
 - T0 built, `src/cli/tests.rs`: kaniko spellings per accepted flag
   (short forms, `=` and separate values, pflag booleans, `--target` lists),
