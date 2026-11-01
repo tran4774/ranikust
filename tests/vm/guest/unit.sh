@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs in the T2 VM: every `#[ignore = "T2: ..."]` test, as root, from the
+# Runs in the T2 VM: every `#[ignore = "T2: ..."]` and `"T2c: ..."` test, as root, from the
 # static test binaries in ~/rnk/bin/tests. vm.sh lists their names in
 # ~/rnk/t2-tests.txt; each must run exactly once and pass.
 set -euo pipefail

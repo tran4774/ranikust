@@ -85,6 +85,7 @@ for p in "${PROFILES[@]}"; do
   rc=0
   docker run --rm --network none --name "rnk-t2c-$p-$$" \
     --tmpfs /work:rw,exec,suid,dev,mode=1777,size=4g \
+    --tmpfs /var/tmp:rw,exec,suid,dev,mode=1777,size=4g \
     --memory 6g --pids-limit 8192 --ulimit nofile=65536:65536 \
     "${flags[@]}" "$tag" /t2c/run-profile.sh "$p" >"$RESULTS/$p.log" 2>&1 || rc=$?
   grep -E '^(control:|T2c |error)' "$RESULTS/$p.log" || true

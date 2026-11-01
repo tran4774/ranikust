@@ -33,10 +33,14 @@ case "$prof" in
     ;;
   sysadmin | netadmin)
     check "private mount namespace with a tmpfs" unshare -m sh -c 'mkdir -p /work/.t && mount -t tmpfs none /work/.t'
-    check "overlay mount" sh -c 'mkdir -p /work/.l /work/.u /work/.w /work/.m && echo x >/work/.l/a &&
-      unshare -m sh -c "mount -t overlay overlay -o lowerdir=/work/.l,upperdir=/work/.u,workdir=/work/.w /work/.m && grep -qx x /work/.m/a"'
+    # Both work directories: the overlay tests make their state in /var/tmp.
+    for d in /work /var/tmp; do
+      check "overlay mount in $d" sh -c "mkdir -p $d/.l $d/.u $d/.w $d/.m && echo x >$d/.l/a &&
+        unshare -m sh -c 'mount -t overlay overlay -o lowerdir=$d/.l,upperdir=$d/.u,workdir=$d/.w $d/.m && grep -qx x $d/.m/a'"
+      rm -rf "$d/.l" "$d/.u" "$d/.w" "$d/.m"
+    done
     check "user namespace" unshare -U true
-    rm -rf /work/.t /work/.l /work/.u /work/.w /work/.m
+    rm -rf /work/.t
     if [ "$prof" = netadmin ]; then
       check "loopback up in a new network namespace" unshare -n sh -c 'ip link set lo up && ip -o link show lo | grep -q "UP"'
     elif unshare -n ip link set lo up 2>/dev/null; then
@@ -51,18 +55,22 @@ esac
 mapfile -t names <"/t2c/$prof.txt"
 [ "${#names[@]}" -gt 0 ] || { echo "T2c $prof tests: none listed"; exit 0; }
 ran=0
+failed=0
+# Every binary runs, even after one fails, so one run shows every failure.
 for bin in /t2c/bin/*; do
   # libtest takes several filters; --ignored runs only the ignored tests.
-  out="$("$bin" --ignored --test-threads=1 "${names[@]}" 2>&1)" || {
+  rc=0
+  out="$("$bin" --ignored --test-threads=1 "${names[@]}" 2>&1)" || rc=$?
+  n="$(sed -nE 's/^test result: [a-zA-Z]+\. ([0-9]+) passed.*/\1/p' <<<"$out" | awk '{ s += $1 } END { print s + 0 }')"
+  if [ "$rc" != 0 ]; then
     echo "$out"
     echo "error: $(basename "$bin") failed" >&2
-    exit 1
-  }
-  n="$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' <<<"$out" | awk '{ s += $1 } END { print s + 0 }')"
-  if [ "$n" -gt 0 ]; then
+    failed=1
+  elif [ "$n" -gt 0 ]; then
     echo "$out" | grep -E '^test .* \.\.\. '
-    ran=$((ran + n))
   fi
+  ran=$((ran + n))
 done
 echo "T2c $prof tests: $ran passed of ${#names[@]} listed"
+[ "$failed" = 0 ] || exit 1
 [ "$ran" = "${#names[@]}" ] || { echo "error: expected ${#names[@]} T2c $prof tests to run" >&2; exit 1; }

@@ -65,8 +65,10 @@ dependencies:
   test that spawns processes or takes locks goes in its own test binary
   (`crates/rnk-store/tests/processes.rs`).
 - **Platform limits are skips with a reason**, in one place: `#[ignore =
-  "T2: ..."]` for root, the documented skip list of `just test-aarch64` for
-  emulation. Never delete a test to make a run pass.
+  "T2: ..."]` or `#[ignore = "T2c: <profile>: ..."]` for root (T2c: also
+  meaningful in a throwaway rootful Docker container, run by `just
+  test-container unit-c`; ADR-0063), the documented skip list of `just
+  test-aarch64` for emulation. Never delete a test to make a run pass.
 
 Not adopted yet (need a maintainer decision because they add a dev-dependency
 or a tool): `cargo-nextest` with a `ci` profile (retries, timeouts, a
