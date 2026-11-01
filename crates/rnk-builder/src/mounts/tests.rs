@@ -347,23 +347,53 @@ fn a_secret_mounted_twice_is_read_once() {
     assert!(Arc::ptr_eq(&r.secrets[0].data, &r.secrets[1].data));
 }
 
-/// A `Direct` `RUN` keeps a secret as a variable only; a secret file and a
-/// cache mount are refused (ADR-0057).
+/// A `Direct` `RUN` keeps a secret as a variable only and runs without its
+/// cache mounts; a secret file is refused (ADR-0057, Q-380, Q-381).
 #[test]
-fn direct_runs_take_secrets_as_variables_only() {
+fn direct_runs_take_secrets_as_variables_and_drop_caches() {
     let mut env = mount(MountType::Secret);
     env.cache_id = "tok".into();
     env.env = Some("TOK".into());
-    assert!(refuse_direct_mounts(std::slice::from_ref(&env)).is_ok());
-    let mut file = env.clone();
-    file.target = "/run/secrets/tok".into();
-    let e = refuse_direct_mounts(&[file]).unwrap_err().to_string();
-    assert!(e.contains("env=<NAME>"), "{e}");
-    let mut plain = env.clone();
-    plain.env = None;
-    assert!(refuse_direct_mounts(&[plain]).is_err());
     let mut cache = mount(MountType::Cache);
     cache.target = "/cache".into();
-    let e = refuse_direct_mounts(&[env, cache]).unwrap_err().to_string();
-    assert!(e.contains("type=cache"), "{e}");
+    cache.sharing = Some(Sharing::Locked);
+    let kept = direct_mounts(&[cache.clone(), env.clone()]).unwrap();
+    assert_eq!(kept, vec![env.clone()]);
+    let mut file = env.clone();
+    file.target = "/run/secrets/tok".into();
+    let e = direct_mounts(&[file]).unwrap_err().to_string();
+    assert!(e.contains("env=<NAME>"), "{e}");
+    let mut plain = env;
+    plain.env = None;
+    assert!(direct_mounts(&[plain]).is_err());
+    // A cache with `from=` is refused, not dropped.
+    cache.from = "stage".into();
+    assert!(direct_mounts(&[cache]).is_err());
+}
+
+/// An unsupported mount after a secret is refused before the secret is
+/// read, in every mode: here reading it would fail with another error.
+#[test]
+fn unsupported_mounts_are_refused_before_any_secret_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let secrets: BTreeMap<String, Secret> =
+        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    let mut env = mount(MountType::Secret);
+    env.cache_id = "tok".into();
+    env.env = Some("TOK".into());
+    let mut bind = mount(MountType::Bind);
+    bind.target = "/src".into();
+    let e = run_mounts(
+        &[env.clone(), bind.clone()],
+        Path::new("/"),
+        &store,
+        &secrets,
+        &never,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("type=bind"), "{e}");
+    let e = direct_mounts(&[env, bind]).unwrap_err().to_string();
+    assert!(e.contains("type=bind"), "{e}");
 }

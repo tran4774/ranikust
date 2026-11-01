@@ -457,70 +457,6 @@ Entry format:
 - **Interim:** (a).
 - **Raised:** 2026-11-01
 
-### Q-380: How does a `Direct` `RUN` on `/` get a secret as a file?
-
-- **Blocks:** nothing (Phase 2 refuses it); **Area:** `rnk-builder`,
-  `rnk-sandbox`
-- **Context:** `RUN --mount=type=secret` without `env=` (or with a
-  `target=`) is a file at `/run/secrets/<id>`, which the full sandbox
-  writes on a tmpfs of the `RUN`'s own. Kaniko mode on a container's `/`
-  cannot mount (ADR-0057); a secret as a variable (`env=`) works there.
-- **Options:** (a) refuse, pointing to `env=` or to overlay mode; (b)
-  write the file on `/` for the `RUN`, removed before the walk and kept
-  out of it by the ignore list: the secret lands on the container's disk
-  (its overlay upper directory), a crash leaves it there and every
-  process of the container reads it meanwhile; (c) a symlink at the
-  target to `/proc/<ranikust>/fd/<n>` of a memfd: needs a named link in
-  the root and gives every process of the container that reads the link
-  the secret; (d) hand the `RUN` an inherited memfd and an environment
-  variable with its `/dev/fd/<n>` path: no file at the target, so
-  Dockerfiles reading `/run/secrets/<id>` break.
-- **Recommendation:** (a): a secret never touches the image's
-  filesystem; `env=` covers most uses (tokens) at no cost.
-- **Interim:** (a) (`rnk_builder::mounts::refuse_direct_mounts`).
-- **Raised:** 2026-11-01
-
-### Q-381: How does a `Direct` `RUN` on `/` get a cache mount?
-
-- **Blocks:** nothing (Phase 2 refuses it); **Area:** `rnk-builder`,
-  `rnk-store`
-- **Context:** `RUN --mount=type=cache` binds a store directory at the
-  target. On `/` nothing can be bound and the store keeps no named
-  directory while a `RUN` runs (ADR-0056).
-- **Options:** (a) refuse; (b) copy the cache into the target before the
-  `RUN` and back after, the target then removed before the walk: a copy
-  of the whole cache twice per `RUN`, a crash leaves it in the root, and
-  a target over image files must restore them; (c) ignore the mount (run
-  without cache), with a warning: the build's result stays right, only
-  slower, but a `sharing=locked` cache (used to serialize) is silently
-  not shared.
-- **Recommendation:** (c) for builds whose correctness does not hang on
-  the cache, which BuildKit documents caches must be; (a) until the
-  maintainer accepts that a cache mount may be a no-op in this mode.
-- **Interim:** (a) (`rnk_builder::mounts::refuse_direct_mounts`).
-- **Raised:** 2026-11-01
-
-### Q-382: What does `--network=none` do for a `Direct` `RUN` on `/`?
-
-- **Blocks:** nothing (Phase 2 refuses it); **Area:** `rnk-sandbox`
-- **Context:** root in a default container has no `CAP_SYS_ADMIN` and
-  Docker's seccomp profile denies new user namespaces, so no network
-  namespace can be made. Kaniko has no `--network`.
-- **Options:** (a) refuse, the flag at start-up and a `RUN
-  --network=none` at that `RUN`; (b) a seccomp filter (with
-  `no_new_privs`, the only way without `CAP_SYS_ADMIN`) refusing `socket`
-  for every family but `AF_UNIX`: no new network sockets, but set-id
-  programs in the `RUN` lose their privileges and a mounted Unix socket
-  (a Docker socket) stays reachable; (c) a user and network namespace
-  where the container allows it (unconfined seccomp), else (a); (d) run
-  on the container's network with a warning.
-- **Recommendation:** (a) now; (b) only if builds need it, documented as
-  weaker than a namespace. (d) never: a build that asked for no network
-  must not get one.
-- **Interim:** (a) (`rnk_builder::stage::refuse_direct_network`, the CLI
-  check before the pull).
-- **Raised:** 2026-11-01
-
 ### Q-383: How do `bind`, `tmpfs` and `from=` mounts work for a `Direct` `RUN` on `/`?
 
 - **Blocks:** Phase 5 (those mounts); **Area:** `rnk-builder`
@@ -538,6 +474,32 @@ Entry format:
 - **Raised:** 2026-11-01
 
 ## Answered
+
+### Q-380: How does a `Direct` `RUN` on `/` get a secret as a file?
+
+- **Answer (2026-11-01):** "Q380-382 làm theo đề xuất": option (a). A
+  secret as a file (no `env=`, or a `target=`) is refused in kaniko mode
+  on `/`, pointing to `env=` or overlay mode; a secret never touches the
+  image's filesystem. Options (b) a file on `/` removed before the walk,
+  (c) a symlink to ranikust's memfd and (d) an inherited memfd with its
+  `/dev/fd` path were not taken. Recorded in [ADR-0057](adr/0057-direct-run-heredoc-from-memfd-and-refusals.md).
+
+### Q-381: How does a `Direct` `RUN` on `/` get a cache mount?
+
+- **Answer (2026-11-01):** "Q380-382 làm theo đề xuất": option (c). A
+  cache mount of a `RUN` in kaniko mode on `/` is left out with a warning
+  and the `RUN` runs without the cache; the warning says that a
+  `sharing=locked` cache then serializes nothing. A cache with `from=`
+  stays refused (Phase 5). Option (b), copying the cache in and out, was
+  not taken. Recorded in [ADR-0057](adr/0057-direct-run-heredoc-from-memfd-and-refusals.md).
+
+### Q-382: What does `--network=none` do for a `Direct` `RUN` on `/`?
+
+- **Answer (2026-11-01):** "Q380-382 làm theo đề xuất": option (a). The
+  `--network=none` flag is refused at start-up, before the pull, and a
+  `RUN --network=none` at that `RUN`; a build that asked for no network
+  never gets the container's. Options (b) a seccomp filter and (c) a user
+  namespace remain possible later; (d) is never taken. Recorded in [ADR-0057](adr/0057-direct-run-heredoc-from-memfd-and-refusals.md).
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?
 

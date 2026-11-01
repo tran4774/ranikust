@@ -35,6 +35,7 @@ use crate::error::{Error, Result, Step, io_err, sys_err};
 use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
+use crate::relay::Relay;
 use crate::seccomp;
 use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, SecretFile, Stdio};
 use crate::sweep;
@@ -728,8 +729,13 @@ impl Runner {
         };
         let (mut job, journal) = setup.in_scope(|| self.prepare(&mut spec, root_entry))?;
         setup.record("stubs", journal.as_ref().map_or(0, Journal::stub_count));
-        let relays = match relay_stdio(&mut job) {
-            Ok(relays) => relays,
+        let relay = match Relay::start(
+            &mut job.args.stdio,
+            &mut job.fds,
+            job.args.uid,
+            job.args.gid,
+        ) {
+            Ok(relay) => relay,
             Err(e) => {
                 if let Some(j) = journal
                     && let Err(c) = j.finish()
@@ -769,13 +775,10 @@ impl Runner {
             }
         }
         drop(span);
-        // Every writer is gone once the RUN's processes are: the relays
-        // reach the end of their pipes. Left running otherwise, so that a
-        // survivor never blocks the build.
-        if result.is_ok() {
-            for relay in relays {
-                let _ = relay.join();
-            }
+        // The RUN is reaped and swept (or failed): the relay copies what is
+        // left without waiting for a write end that outlived it.
+        if let Some(relay) = relay {
+            relay.finish();
         }
 
         // Stubs go before the caller diffs the root, whatever happened.
@@ -1514,70 +1517,6 @@ fn direct_slash_drop() -> Result<bool> {
     }
 }
 
-/// Gives a `RUN` under a `USER` other than root a pipe of its own, owned by
-/// that user, for each of stdout and stderr it would inherit from
-/// ranikust, and a thread copying the pipe to ranikust's stream. Inherited
-/// streams belong to ranikust's user (root): a `RUN` reopening
-/// `/dev/stdout` (`/proc/self/fd/1`) as another user would be refused
-/// (kaniko#2928). runc changes the owner of the container's own streams;
-/// ranikust's may be the operator's terminal or log file, whose owner must
-/// not change, hence the pipes (ADR-0057).
-fn relay_stdio(job: &mut Job) -> Result<Vec<JoinHandle<()>>> {
-    let mut relays = Vec::new();
-    if job.args.uid.is_root() {
-        return Ok(relays);
-    }
-    for (stream, slot) in [(1, 1usize), (2, 2usize)] {
-        if job.args.stdio[slot] != ChildStdio::Inherit {
-            continue;
-        }
-        let (read, write) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC)
-            .map_err(|e| sys_err("create a stdio pipe", e))?;
-        let write = rustix::io::fcntl_dupfd_cloexec(&write, 3)
-            .map_err(|e| sys_err("duplicate a stdio pipe", e))?;
-        // An id this process cannot give (unmapped in its user namespace):
-        // the stream is inherited as before, the pipe dropped.
-        if let Err(e) = rustix::fs::fchown(&write, Some(job.args.uid), Some(job.args.gid)) {
-            tracing::debug!("rnk-sandbox: RUN keeps ranikust's stream {stream}: fchown: {e}");
-            continue;
-        }
-        job.args.stdio[slot] = ChildStdio::Fd(write.as_raw_fd());
-        job.fds.push(write);
-        let relay = std::thread::Builder::new()
-            .name("rnk-sandbox-stdio".into())
-            .spawn(move || copy_to_stream(&read, stream))
-            .map_err(|e| sys_err("start a stdio relay", e))?;
-        relays.push(relay);
-    }
-    Ok(relays)
-}
-
-/// Copies `from` to ranikust's descriptor `stream` until the end; once
-/// `stream` refuses a write, the rest is read and dropped so that the
-/// `RUN` never blocks on a full pipe.
-fn copy_to_stream(from: &OwnedFd, stream: RawFd) {
-    // SAFETY: stdout and stderr stay open for the life of the process.
-    let to = unsafe { std::os::fd::BorrowedFd::borrow_raw(stream) };
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut open = true;
-    loop {
-        let n = match rustix::io::read(from, &mut buf) {
-            Ok(0) => return,
-            Ok(n) => n,
-            Err(Errno::INTR) => continue,
-            Err(_) => return,
-        };
-        let mut rest = &buf[..n];
-        while open && !rest.is_empty() {
-            match rustix::io::write(to, rest) {
-                Ok(w) => rest = &rest[w..],
-                Err(Errno::INTR) => {}
-                Err(_) => open = false,
-            }
-        }
-    }
-}
-
 /// A `#!` heredoc of a `Direct` `RUN` on `/` in a memfd (ADR-0057): sealed
 /// against any change, close-on-exec until the child clears it, numbered 3
 /// or higher. Executable memfds need `MFD_EXEC` where the kernel knows it
@@ -2251,43 +2190,33 @@ mod tests {
     #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
     fn a_direct_run_leaves_no_process_behind() {
         let sandbox = Sandbox::start_direct().unwrap();
-        let script = "sleep 3001 & setsid sleep 3002 & (setsid sh -c 'sleep 3003 &' &); exit 0";
+        // `sleep` under a name of this test's own: its processes, alive or
+        // zombie, are told from those of tests running beside it by their
+        // `comm`, which a zombie keeps.
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let sleeper = dir.path().join("rnkzsleeper");
+        std::os::unix::fs::symlink("/bin/sleep", &sleeper).unwrap();
+        let script = format!(
+            "{s} 3001 & setsid {s} 3002 & (setsid sh -c '{s} 3003 &' &); exit 0",
+            s = sleeper.display()
+        );
         let mut spec = RunSpec::new("/", vec!["/bin/sh".into(), "-c".into(), script.into()]);
         spec.isolation = Isolation::Direct;
         spec.workdir = "/".into();
         let status = sandbox.run(spec).unwrap();
         assert!(status.success());
-        let mut alive = Vec::new();
-        for entry in fs::read_dir("/proc").unwrap().flatten() {
-            let Ok(cmd) = fs::read(entry.path().join("cmdline")) else {
-                continue;
-            };
-            let cmd = String::from_utf8_lossy(&cmd).replace('\0', " ");
-            if ["3001", "3002", "3003"]
-                .iter()
-                .any(|n| cmd.trim_end() == format!("sleep {n}"))
-            {
-                alive.push(cmd);
-            }
-        }
-        assert!(alive.is_empty(), "left alive: {alive:?}");
-        // Nor as zombies: the subreaper reaped them (issue mining,
-        // buildkit#5763, kaniko#1697).
-        let me = rustix::process::getpid().as_raw_nonzero().get();
-        let mut zombies = Vec::new();
+        // Neither alive nor zombies: the subreaper killed and reaped them
+        // (issue mining, buildkit#5763, kaniko#1697).
+        let mut left = Vec::new();
         for entry in fs::read_dir("/proc").unwrap().flatten() {
             let Ok(stat) = fs::read(entry.path().join("stat")) else {
                 continue;
             };
-            let Some((_, ppid)) = child::stat_pid_and_ppid(&stat) else {
-                continue;
-            };
-            let close = stat.iter().rposition(|&b| b == b')').unwrap();
-            if ppid == me && stat.get(close + 2) == Some(&b'Z') {
-                zombies.push(String::from_utf8_lossy(&stat).into_owned());
+            if stat.windows(13).any(|w| w == b"(rnkzsleeper)") {
+                left.push(String::from_utf8_lossy(&stat).into_owned());
             }
         }
-        assert!(zombies.is_empty(), "zombies left: {zombies:?}");
+        assert!(left.is_empty(), "left behind: {left:?}");
     }
 
     /// A `#!` heredoc of a `Direct` `RUN` on `/` runs from a sealed memfd

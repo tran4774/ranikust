@@ -147,14 +147,10 @@ pub(crate) fn run_mounts(
     // Each secret is read once per RUN and shared by all its mounts, which
     // share one file on the RUN's tmpfs.
     let mut read: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+    check_supported(mounts)?;
     for m in mounts {
         match m.kind {
             MountType::Cache => {
-                if !m.from.is_empty() {
-                    return Err(Error::Invalid(
-                        "RUN --mount=type=cache,from= is not supported yet (Phase 5)".to_owned(),
-                    ));
-                }
                 if m.target.is_empty() {
                     return Err(Error::Invalid(
                         "RUN --mount=type=cache needs a target".to_owned(),
@@ -163,12 +159,8 @@ pub(crate) fn run_mounts(
                 caches.push((cache_key(m), m));
             }
             MountType::Secret => secret_mount(m, workdir, secrets, &mut read, &mut out)?,
-            MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
-                return Err(Error::Invalid(format!(
-                    "RUN --mount=type={} is not supported yet (Phase 5)",
-                    m.kind
-                )));
-            }
+            // Refused by `check_supported` above.
+            MountType::Bind | MountType::Tmpfs | MountType::Ssh => {}
         }
     }
     let mut order: Vec<usize> = (0..caches.len()).collect();
@@ -205,34 +197,65 @@ pub(crate) fn run_mounts(
     Ok(out)
 }
 
-/// Refuses the `RUN --mount`s a `Direct` `RUN` (kaniko mode on `/`, where
-/// nothing can be mounted) cannot give, before any cache is leased or
-/// secret read (ADR-0057): a secret becomes a variable only (`env=`
-/// without `target=`); a secret file needs the `RUN`'s own tmpfs
-/// [open: Q-380] and a cache mount a bind [open: Q-381]. `bind`, `tmpfs`
-/// and `ssh` are refused in every mode until Phase 5 ([`run_mounts`])
-/// [open: Q-383].
-pub(crate) fn refuse_direct_mounts(mounts: &[Mount]) -> Result<()> {
-    const WHY: &str = "kaniko mode on / runs RUN directly, where nothing can be mounted";
+/// Refuses the `RUN --mount` types and options this phase lacks, in every
+/// mode, before any secret is read or cache leased: `bind`, `tmpfs` and
+/// `ssh` (Phase 5) [open: Q-383], and `cache,from=`.
+pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {
     for m in mounts {
         match m.kind {
-            MountType::Cache => {
+            MountType::Cache if !m.from.is_empty() => {
+                return Err(Error::Invalid(
+                    "RUN --mount=type=cache,from= is not supported yet (Phase 5)".to_owned(),
+                ));
+            }
+            MountType::Cache | MountType::Secret => {}
+            MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
                 return Err(Error::Invalid(format!(
-                    "RUN --mount=type=cache: {WHY}; build in overlay mode (a container \
-                     where ranikust may mount), or drop the cache mount"
+                    "RUN --mount=type={} is not supported yet (Phase 5)",
+                    m.kind
                 )));
             }
-            MountType::Secret if m.env.is_none() || !m.target.is_empty() => {
-                return Err(Error::Invalid(format!(
-                    "RUN --mount=type=secret as a file: {WHY}, and a secret is never written \
-                     to the image's files; pass it as a variable with \
-                     --mount=type=secret,id=<id>,env=<NAME> (no target=)"
-                )));
-            }
-            _ => {}
         }
     }
     Ok(())
+}
+
+/// The `RUN --mount`s a `Direct` `RUN` (kaniko mode on `/`, where nothing
+/// can be mounted) runs with, checked before any secret is read
+/// (ADR-0057): a secret only as a variable (`env=` without `target=`); a
+/// secret as a file is refused, as it would need the `RUN`'s own tmpfs
+/// (Q-380); a cache mount is left out with a warning, the `RUN` running
+/// without the cache (Q-381).
+pub(crate) fn direct_mounts(mounts: &[Mount]) -> Result<Vec<Mount>> {
+    check_supported(mounts)?;
+    let mut kept = Vec::with_capacity(mounts.len());
+    for m in mounts {
+        match m.kind {
+            MountType::Cache => {
+                tracing::warn!(
+                    "RUN --mount=type=cache,target={}: ignored: kaniko mode on / runs RUN \
+                     directly, where nothing can be mounted, so this RUN runs without the cache{}",
+                    m.target,
+                    if m.sharing == Some(Sharing::Locked) {
+                        "; sharing=locked does not serialize it with other RUNs either"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            MountType::Secret if m.env.is_none() || !m.target.is_empty() => {
+                return Err(Error::Invalid(
+                    "RUN --mount=type=secret as a file: kaniko mode on / runs RUN directly, \
+                     where nothing can be mounted, and a secret is never written to the \
+                     image's files; pass it as a variable with \
+                     --mount=type=secret,id=<id>,env=<NAME> (no target=)"
+                        .to_owned(),
+                ));
+            }
+            _ => kept.push(m.clone()),
+        }
+    }
+    Ok(kept)
 }
 
 /// A `RUN --mount` target inside the root: absolute, or relative to the

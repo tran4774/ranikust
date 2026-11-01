@@ -79,8 +79,10 @@ with the default security profile or in most Kubernetes pods.
   Heredocs work; one starting with `#!` runs from an in-memory file its
   interpreter reads as `/dev/fd/<n>` (its `$0`), never a file in the
   image. A secret works as a variable:
-  `RUN --mount=type=secret,id=tok,env=TOKEN`. A cache mount, a secret as
-  a file (`/run/secrets/…`) and `--network=none` (the flag, or `RUN
+  `RUN --mount=type=secret,id=tok,env=TOKEN`. A cache mount is left out
+  with a warning: the `RUN` runs without the cache, and a
+  `sharing=locked` cache serializes nothing. A secret as a file
+  (`/run/secrets/…`) and `--network=none` (the flag, or `RUN
   --network=none`) are refused with the reason rather than run without
   them; use overlay mode, in a container that may mount, for those.
 

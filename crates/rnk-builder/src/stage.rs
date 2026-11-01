@@ -668,13 +668,17 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         let workdir = self.working_dir();
         let network = run_network(run.network, self.cx.network, self.cx.allow_network_host)?;
         let direct = self.cx.isolation == Isolation::Direct;
-        if direct {
-            // Refused before a cache is leased or a secret read (ADR-0057).
+        // Under `Direct`, checked before any secret is read (ADR-0057).
+        let direct_mounts;
+        let run_mounts = if direct {
             refuse_direct_network(network)?;
-            mounts::refuse_direct_mounts(&run.mounts)?;
-        }
+            direct_mounts = mounts::direct_mounts(&run.mounts)?;
+            &direct_mounts
+        } else {
+            &run.mounts
+        };
         let mut mounts = mounts::run_mounts(
-            &run.mounts,
+            run_mounts,
             &workdir,
             self.cx.store,
             self.cx.secrets,
@@ -1122,7 +1126,7 @@ fn run_network(asked: DfNetwork, build: Network, allow_host: bool) -> Result<Net
 
 /// A `Direct` `RUN` (kaniko mode on `/`) cannot make a network namespace:
 /// `--network=none` is refused, never run on the container's network in
-/// its place (ADR-0057) [open: Q-382].
+/// its place (ADR-0057, Q-382).
 fn refuse_direct_network(network: Network) -> Result<()> {
     if network == Network::None {
         return Err(Error::Invalid(

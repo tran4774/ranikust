@@ -144,7 +144,7 @@ Every non-Windows config without `PATH` gets the default one (Q-185). `ranikust`
 Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
 or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
 --link/--parents/--exclude`, `RUN --mount` other than `cache` and
-`secret`, `RUN --security=insecure` and `--device`, `RUN --network=host`
+`secret` (before any of them is read or leased), `RUN --security=insecure` and `--device`, `RUN --network=host`
 under the operator's `--network=none` without `--allow network.host`
 (BuildKit's entitlement, ADR-0032), a heredoc name with
 `/`. A `#!` `RUN` heredoc runs as a script `/dev/pipes/<name>`: as
@@ -153,11 +153,13 @@ read-only at `/dev/pipes`, which `rnk-sandbox` makes in the `/dev` tmpfs
 (the quick smoke case `run` covers it). Under `Isolation::Direct` (kaniko
 mode on `/`) the body goes to `RunSpec::script` instead, which the sandbox
 runs from a sealed memfd, the argv kept only for the history; a cache
-mount, a secret as a file (no `env=`, or a `target=`) and
-`--network=none` are refused before any lease or secret read
-(`mounts::refuse_direct_mounts`, `refuse_direct_network`; ADR-0057,
-Q-380 to Q-382); the quick smoke case `run` builds `direct.Dockerfile`
-there and checks each refusal. A symlinked context source is followed
+mount is left out with a warning, and a secret as a file (no `env=`, or a
+`target=`) and `--network=none` are refused before any secret is read
+(`mounts::direct_mounts`, `refuse_direct_network`; ADR-0057). In every
+mode, `mounts::check_supported` refuses the mount types this phase lacks
+before any secret is read or cache leased. The quick smoke case `run`
+builds `direct.Dockerfile` there and checks the warning and each
+refusal. A symlinked context source is followed
 only through kept entries; a copy onto a symlink to a directory goes
 inside it, as BuildKit. A cache mount's `mode`, `uid` and `gid` are set
 through a descriptor of its directory.

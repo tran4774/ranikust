@@ -148,11 +148,15 @@ from `rnk-store`, secret file) and passes `--network`.
   `/dev/fd/<n>`. Refused where `/dev/fd` is not a directory, where the
   kernel refuses executable memfds, and on a `Direct` root other than `/`
   (`ADR-0057`).
-- A `RUN` whose `USER` is not root gets, for each of stdout and stderr it
-  would inherit, a pipe whose inode `fchown`s to its ids and a relay thread
-  to ranikust's stream, joined after the `RUN`'s processes are gone (left
-  running on an error, so a survivor never blocks); an id the process
-  cannot give keeps the inherited stream (kaniko#2928, `ADR-0057`).
+- No `RUN` holds ranikust's stream descriptors (`relay.rs`): each of
+  stdout and stderr it would inherit becomes a pipe, `fchown`ed to the
+  `RUN`'s ids when not root (an id the process cannot give leaves it
+  root's), and one thread per `RUN` copies the pipes to ranikust's streams,
+  waiting with `poll` on a full one. Once the `RUN` is reaped and swept an
+  `eventfd` stops it: the pipes are read without blocking until empty, a
+  stream that refuses writes gets two seconds, and the thread is joined;
+  never waiting for a write end that outlived the `RUN` (kaniko#2928,
+  `ADR-0057`).
 - The journal places and undoes on the root's own mount only
   (`RootPath::stay_on_mount`): a parent below another mount does not
   resolve, and an entry that is a mount point or on another mount is left.
@@ -215,7 +219,8 @@ from `rnk-store`, secret file) and passes `--network`.
   `WORKDIR`, then `setgroups` or a missing program; on a temp workdir,
   `chroot` refused as a normal user with every placed file undone); mount sources
   (symlink and type refused); remount flags (`nodev`, read-only `/dev`
-  nodes); `Direct` refusals (`Error::Direct`); the sealed heredoc memfd; the probe's `EPERM`-only fallback and the mount-root check; the
+  nodes); `Direct` refusals (`Error::Direct`); the sealed heredoc memfd; the relay
+  (a surviving write end, a full stream); the probe's `EPERM`-only fallback and the mount-root check; the
   spans (`tests/spans.rs`).
 - **T1** (rootless podman): `just smoke` (2026-10-30, kernel 7.0, podman
   5.7): probe → `pivot_root`; `apk add` through the sandbox's network and
@@ -227,8 +232,9 @@ from `rnk-store`, secret file) and passes `--network`.
 - **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`);
   `a_direct_heredoc_runs_from_an_anonymous_file` (`$0` is `/dev/fd/<n>`,
   as root and uid 65534, which also writes `/dev/stdout` and
-  `/dev/stderr`) and `a_direct_run_leaves_no_process_behind` (no live
-  process, no zombie) (`#[ignore]`, ADR-0057);
+  `/dev/stderr`) and `a_direct_run_leaves_no_process_behind` (no process
+  of the `RUN`, alive or zombie, told by a `comm` of its own)
+  (`#[ignore]`, ADR-0057);
   `direct_runs_in_a_chroot_with_placed_files_as_root` (`#[ignore]`: a
   shell copied into a temp root sees the placed files and nodes, no
   `/proc`, `ulimit -n` 777; the root is as before after) [measured: passed

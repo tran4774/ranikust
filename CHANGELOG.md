@@ -203,10 +203,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - Kaniko mode on a container's `/` runs a `#!` heredoc from a sealed
   in-memory file, read by its interpreter as `/dev/fd/<n>`, so no file of
   it is named in the container (ADR-0057). A secret given as a variable
-  (`RUN --mount=type=secret,id=…,env=NAME`) works there; a cache mount, a
-  secret as a file and `--network=none` (the flag before anything is
-  pulled, `RUN --network=none` at that `RUN`) are refused with the
-  reason, never run without them. A container granting capabilities
+  (`RUN --mount=type=secret,id=…,env=NAME`) works there; a cache mount is
+  left out with a warning (the `RUN` runs without the cache); a secret as
+  a file and `--network=none` (the flag before anything is pulled, `RUN
+  --network=none` at that `RUN`) are refused with the reason, never run
+  without them. A container granting capabilities
   beyond Docker's defaults without `CAP_SETPCAP` is refused before the
   pull rather than at the first `RUN`.
 
@@ -287,8 +288,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   target in the root"; its script now runs from `/dev/pipes`, as in
   BuildKit.
 - A `RUN` under a `USER` other than root can write `/dev/stdout` and
-  `/dev/stderr` (kaniko#2928): its inherited streams become pipes owned by
-  that user, copied to ranikust's.
+  `/dev/stderr` (kaniko#2928), and no `RUN` holds ranikust's own stdout
+  and stderr any more (a root `RUN` could truncate or rewrite a
+  `> build.log`): every `RUN` writes to pipes of its own, owned by its
+  user, which ranikust copies to its streams.
+- An unsupported `RUN --mount` (`bind`, `tmpfs`, `ssh`, `cache,from=`) is
+  refused before any secret of the same `RUN` is read.
 - In kaniko mode, a file deleted and created again between the walk and
   the layer export could get its old inode number back and be written with
   content the walk never compared. The export now also checks size,

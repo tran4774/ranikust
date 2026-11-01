@@ -16,13 +16,15 @@ case_run() {
 }
 
 # T1 kaniko mode, on the container's `/` with RUN `Direct` (ADR-0057): what
-# needs no mount is built; a cache mount, a secret file and --network=none
-# (in the Dockerfile or as the flag) are refused, never run without.
+# needs no mount is built, a cache mount is left out with a warning; a
+# secret file and --network=none (in the Dockerfile or as the flag) are
+# refused, never run without.
 case_run_direct() {
   build direct --dockerfile "$IN/ctx/direct.Dockerfile" >/dev/null
   expect "$(run direct)" "shell exec heredoc shebang " "output"
   smoke_check_empty_layer "$(out direct)/oci"
-  refused cache 'RUN --mount=type=cache' "RUN --mount=type=cache,target=/c true"
+  grep -qF 'RUN --mount=type=cache,target=/cache: ignored' "$(out direct)/build.log" ||
+    fail "no warning for the ignored cache mount"
   refused secret 'RUN --mount=type=secret as a file' "RUN --mount=type=secret,id=tok true"
   refused network 'RUN --network=none' "RUN --network=none true"
   refused flag '--network=none' "RUN true" --network=none

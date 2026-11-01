@@ -219,16 +219,17 @@ own for the kaniko-mode walk; the child sets it right before `execve`.
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root: the old root stays mounted underneath, and `..` stops at the moved root only then [inferred] ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)) |
 | Rootless (user namespace) | Multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail |
-| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own session, whose process group is killed once the command exits ([kaniko-mode](kaniko-mode.md)). `Sandbox::start_direct` starts this variant: no directory, no journal (nothing is placed on `/`), and the process a child subreaper, so every process the `RUN` leaves, `setsid` ones included, becomes ranikust's child and is killed and reaped by pid once the command exits; the child drops every capability outside Docker's defaults from its bounding set, and a `RUN` that would keep `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` (no `CAP_SETPCAP` to drop them) is refused ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)). On a root other than `/` (a host `--workdir`, only where the full sandbox cannot run) the child `chroot`s into it with Docker's default capabilities, with ranikust's `resolv.conf`, `hosts`, `hostname` and `/dev` nodes swapped in for the `RUN` and journaled, no `/proc` ([ADR-0043](../adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)). `Direct` refuses mounts, secret files and `--network=none` (`Error::Direct`); a `#!` heredoc on `/` runs from a sealed memfd with `execveat`, read by its interpreter as `/dev/fd/<n>`; a container granting capabilities ranikust cannot drop is refused at `start_direct` ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)) |
+| kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own session, whose process group is killed once the command exits ([kaniko-mode](kaniko-mode.md)). `Sandbox::start_direct` starts this variant: no directory, no journal (nothing is placed on `/`), and the process a child subreaper, so every process the `RUN` leaves, `setsid` ones included, becomes ranikust's child and is killed and reaped by pid once the command exits; the child drops every capability outside Docker's defaults from its bounding set, and a `RUN` that would keep `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` (no `CAP_SETPCAP` to drop them) is refused ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)). On a root other than `/` (a host `--workdir`, only where the full sandbox cannot run) the child `chroot`s into it with Docker's default capabilities, with ranikust's `resolv.conf`, `hosts`, `hostname` and `/dev` nodes swapped in for the `RUN` and journaled, no `/proc` ([ADR-0043](../adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)). `Direct` refuses mounts, secret files and `--network=none` (`Error::Direct`; `rnk-builder` leaves cache mounts out first, with a warning); a `#!` heredoc on `/` runs from a sealed memfd with `execveat`, read by its interpreter as `/dev/fd/<n>`; a container granting capabilities ranikust cannot drop is refused at `start_direct` ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)) |
 | `--parallel-stages` | Bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
 ## Differences from Docker
 
-- A `RUN` whose `USER` is not root gets stdout and stderr as pipes of its
-  own, owned by that user and copied by a thread to ranikust's streams:
-  runc instead gives the container's own streams to the container's user.
-  Either way `/dev/stdout` reopens (kaniko#2928,
-  [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)).
+- A `RUN` gets stdout and stderr as pipes of its own, owned by its user
+  and copied by a thread to ranikust's streams, never ranikust's own
+  descriptors: runc instead gives the container's own streams to the
+  container's user. Either way `/dev/stdout` reopens (kaniko#2928), and
+  here a `RUN` cannot truncate or rewrite an operator's log file
+  ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)).
 - A device node a `RUN` creates with `mknod` does not open, even one
   Docker's device cgroup allows (`/dev/null`'s 1:3): every mount but the
   `/dev` node binds and `devpts` is `nodev`.

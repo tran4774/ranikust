@@ -181,10 +181,10 @@ settles them (Q-024):
   each `RUN` and refuses it when it is no longer the directory
   `Sandbox::start_with_root` checked (device, inode, mount id). On `/` a
   `#!` heredoc runs from a sealed memfd (`RunSpec::script`), a secret as
-  a variable works, and a cache mount, a secret as a file and
-  `--network=none` are refused before any lease or secret read
-  ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md),
-  Q-380 to Q-382).
+  a variable works, a cache mount is left out with a warning (the `RUN`
+  runs without it), and a secret as a file and `--network=none` are
+  refused before any secret is read
+  ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)).
 - **What later units read is kept** before the root is reused, in the
   build's keep area `<state>/builds/<id>/kept`, beside the root and never
   inside it (on `/` it lies in the ignored state directory). At the end of
