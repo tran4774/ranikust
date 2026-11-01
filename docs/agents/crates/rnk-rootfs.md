@@ -149,6 +149,13 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   a thread exchanging a walked directory with a symlink out never gets
   anything outside deleted or retimed; a directory of 100,000 entries
   pruned to what a filtered copy gives, its times kept.
+  Ignored red-team finding (criterion 8, resources):
+  `red_team_finding_a_glob_with_stars_against_a_long_name_takes_linear_time`:
+  the ignore list's glob matcher backtracks over every split of a name
+  among the stars, so `/var/cache/*a*a*a*a*b` against one 255-character
+  name takes 14 s on a release build (Go's `filepath.Match` never
+  backtracks across stars); the walk, extraction and deletion call it on
+  every name an image brings.
 - **T1** (written, `#[ignore]`): foreign owners and setuid in `extract`.
 - **T2** (VM only, `just test-vm unit`): exp-09's D2,
   `mounts_inside_the_root_survive`: a bind mount of a directory on the

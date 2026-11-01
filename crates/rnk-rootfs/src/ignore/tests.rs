@@ -187,3 +187,30 @@ fn a_deep_path_is_covered_by_a_shallow_entry_and_a_deep_one() {
     assert!(!only_below.covers("d0/d1/d2/d3"));
     assert!(only_below.covers(format!("{deep}/x")));
 }
+
+/// Red team (criterion 8, resources): an `--ignore-path` glob is matched
+/// against every name the walk, extraction and deletion reach, and those
+/// names come from the image. The matcher backtracks over every split of a
+/// name among the stars, so a pattern with a few stars meets a long name
+/// in time exponential in the stars (measured on a release build: 120
+/// characters, 4 stars 21 ms, 5 stars 0.46 s, 6 stars 9 s; 255
+/// characters, 4 stars 14 s; 200 characters, 5 stars 135 s), per name. Go's
+/// `filepath.Match`, which kaniko uses, takes each star's next chunk at
+/// its first match and never backtracks across stars. A file named by a
+/// hostile base image
+/// or `RUN` then stalls a build whose operator passed such a pattern.
+#[test]
+#[ignore = "red team finding: ignore-list glob matching is exponential in the number of stars"]
+fn red_team_finding_a_glob_with_stars_against_a_long_name_takes_linear_time() {
+    let mut l = IgnoreList::new();
+    l.insert_glob("/var/cache/*a*a*a*a*b").unwrap();
+    // NAME_MAX: the longest name a layer or a `RUN` can make.
+    let name = format!("var/cache/{}", "a".repeat(255));
+    let started = std::time::Instant::now();
+    assert!(!l.covers(&name));
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(1),
+        "4 stars against a 255-character name took {took:?}"
+    );
+}
