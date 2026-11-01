@@ -263,14 +263,9 @@ impl KanikoStage {
                 }
             }
             Base::Stage(parent) => {
-                copy_filtered(
-                    &parent.root,
-                    "",
-                    root,
-                    "",
-                    &CopyOpts::default(),
-                    &|p, _| !ignore.covers(p),
-                )?;
+                copy_filtered(&parent.root, "", root, "", &CopyOpts::default(), &|p, _| {
+                    !ignore.covers(p)
+                })?;
                 root.set_meta("", &root_meta(&parent.root)?)?;
             }
         }

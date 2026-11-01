@@ -197,10 +197,10 @@ pub(crate) struct KanikoSetup {
     /// How `RUN` is isolated: the full sandbox on a root in the state
     /// directory, `Direct` on `/` in a container (ADR-0043, ADR-0050).
     pub(crate) isolation: rnk_sandbox::Isolation,
-    /// The build's root, opened once: `/`, or the directory made for it.
-    pub(crate) root: RootPath,
-    /// Its path, for the ignore list, messages and the sandbox.
-    pub(crate) root_path: PathBuf,
+    /// On `/`: the shared root, opened once, with its path. `None` off
+    /// `/`, where each stage gets a directory of its own in the state
+    /// directory (ADR-0059).
+    pub(crate) root: Option<(RootPath, PathBuf)>,
     /// The canonical state directory.
     pub(crate) state_dir: PathBuf,
     /// On `/`: the `flock` on `/` that keeps a second build off it, held
@@ -215,11 +215,12 @@ const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switchin
 /// Sets kaniko mode up (ADR-0050): the state directory's check, the store,
 /// the build's root, and the spawner. With `on_slash` (ranikust runs in a
 /// container) the root is `/`, locked for this build by `flock` on `/`
-/// itself, and `RUN` runs `Direct`, as kaniko. Otherwise the root is
-/// `<state>/builds/<id>/rootfs`, made here and removed with the build, and
-/// `RUN` gets the full sandbox, probed here; without mount privileges
-/// (`can_mount` false) that case is refused (Q-330, ADR-0050), never a bare
-/// `chroot` on the host. `nofile` is the `RLIMIT_NOFILE` ranikust
+/// itself, and `RUN` runs `Direct`, as kaniko. Otherwise every stage gets
+/// a directory of its own, `<state>/builds/<id>/stages/<n>/rootfs`, made by
+/// the snapshotter and removed with the build (ADR-0059), and `RUN` gets
+/// the full sandbox, probed here; without mount privileges (`can_mount`
+/// false) that case is refused (Q-330, ADR-0050), never a bare `chroot` on
+/// the host. `nofile` is the `RLIMIT_NOFILE` ranikust
 /// started with, given back to every `RUN`.
 ///
 /// # Errors
@@ -257,27 +258,11 @@ pub(crate) fn set_up_kaniko(
     } else {
         open_store(state_dir, state_dir)?
     };
-    let state = RootPath::open(store.state_dir())
-        .map_err(|e| failed(&format!("opening {}", store.state_dir().display()), &e))?;
-    let (root, root_path) = if on_slash {
+    let root = if on_slash {
         let root = RootPath::open(slash).map_err(|e| failed("opening /", &e))?;
-        (root, slash.to_path_buf())
+        Some((root, slash.to_path_buf()))
     } else {
-        let path = store.build_dir().join("rootfs");
-        let rel = path
-            .strip_prefix(store.state_dir())
-            .map_err(|_| Refusal {
-                reason: format!("the build root {} is outside the store", path.display()),
-                guidance: "",
-            })?
-            .to_path_buf();
-        state
-            .create_dir(&rel, 0o755)
-            .map_err(|e| failed(&format!("creating {}", path.display()), &e))?;
-        let root = state
-            .sub_root(&rel)
-            .map_err(|e| failed(&format!("opening {}", path.display()), &e))?;
-        (root, path)
+        None
     };
     let sandbox_dir = store.state_dir().join("sandbox");
     // Off `/` root may mount here (`host_without_mounts`): the full sandbox.
@@ -303,29 +288,31 @@ pub(crate) fn set_up_kaniko(
         // process becomes the subreaper of what a `RUN` leaves (ADR-0051).
         Sandbox::start_direct()
     } else {
-        Sandbox::start_with_root(caps, &sandbox_dir, &root_path, &root)
+        // Stage directories in the state directory, as overlay mode's
+        // mount points: the full sandbox enters each (ADR-0059).
+        Sandbox::start(caps, &sandbox_dir)
     };
     let mut sandbox = started.map_err(|e| Refusal {
         reason: e.to_string(),
         guidance: "",
     })?;
     sandbox.set_nofile_limit(nofile);
-    tracing::info!(
-        "ranikust: kaniko mode on {}, RUN {}",
-        root_path.display(),
-        if caps.is_some() {
-            "in the full sandbox"
-        } else {
-            "directly, as kaniko"
-        }
-    );
+    match &root {
+        Some((_, path)) => tracing::info!(
+            "ranikust: kaniko mode on {}, RUN directly, as kaniko",
+            path.display()
+        ),
+        None => tracing::info!(
+            "ranikust: kaniko mode with a directory per stage in {}, RUN in the full sandbox",
+            store.build_dir().join("stages").display()
+        ),
+    }
     Ok(KanikoSetup {
         state_dir: store.state_dir().to_path_buf(),
         store: Arc::new(store),
         sandbox,
         isolation,
         root,
-        root_path,
         root_lock,
     })
 }

@@ -8,10 +8,12 @@
 //! parents, on success and on failure alike; the store is closed last.
 //!
 //! Generic over the snapshotter (ADR-0046): overlay mode builds every
-//! stage on a root of its own; kaniko mode runs kaniko's squashed units
-//! one at a time on the shared root, empties it after each unit that no
-//! later unit needs, and runs `RUN` with `Isolation::Direct` where nothing
-//! can be mounted (`design/kaniko-mode.md#stage-roots-on-the-shared-root`).
+//! stage on a root of its own; kaniko mode on `/` runs kaniko's squashed
+//! units one at a time on the shared root, empties it after each unit that
+//! no later unit needs, and runs `RUN` with `Isolation::Direct`
+//! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`); kaniko mode
+//! off `/` gives every stage a directory of its own and schedules them as
+//! overlay mode does (`#per-stage-directories`, ADR-0059).
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -36,7 +38,7 @@ use rnk_sched::{
     CancellationToken, PrepareJob, Scheduler, StageJob, StageRunner, Unit, own_root_units,
     shared_root_units,
 };
-use rnk_snapshot::{Kaniko, Overlay, Snapshotter};
+use rnk_snapshot::{Kaniko, KanikoStages, Overlay, Snapshotter};
 use rnk_store::Store;
 
 use crate::config::{self, BuildConfig};
@@ -48,13 +50,16 @@ type ImageRoot<S> = ImageSource<<S as Snapshotter>::Root, <S as Snapshotter>::La
 pub(crate) enum Snapshots {
     /// Overlay mode, with what the probe found.
     Overlay(rnk_snapshot::OverlayCaps),
-    /// Kaniko mode on its shared root; `RUN` with `isolation`: the full
-    /// sandbox on a root in the state directory where mounting works, else
-    /// `Direct`.
+    /// Kaniko mode on the shared root `/` in a container; `RUN` with
+    /// `isolation` (`Direct`).
     Kaniko {
         snapshotter: Kaniko,
         isolation: Isolation,
     },
+    /// Kaniko mode off `/`: a directory per stage in the state directory,
+    /// the stages scheduled as overlay mode's, `RUN` in the full sandbox
+    /// (ADR-0059).
+    KanikoStages(KanikoStages),
 }
 
 /// Everything the stages share; owned by the build, borrowed by each
@@ -152,6 +157,17 @@ pub(crate) fn run(
                 &finish,
             )
         }
+        // Each stage's directory goes with its release; the rest with the
+        // build directory when the store closes.
+        Snapshots::KanikoStages(stages) => run_with(
+            config,
+            store,
+            sandbox,
+            Arc::new(stages),
+            Isolation::Full,
+            false,
+            &|| {},
+        ),
     }
 }
 
