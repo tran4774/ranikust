@@ -30,6 +30,11 @@
 #   BUILDERS   default "kaniko buildkit ranikust rk-kaniko rk-kaniko-host"
 #   ROUNDS     default 1                  WARMUP    default 1 (one discarded kaniko build per workload)
 #   CPUS       default 4                  MEMORY    default 8g (as run-fair.sh)
+#   CPUSET     the vCPUs every builder is pinned to, the same for all (a
+#              container's --cpuset-cpus, a scope's AllowedCPUs): default
+#              the VM's last CPUS vCPUs when it has CPUS + 2 or more, the
+#              registry and the npm proxy on the others; `none` pins nothing
+#              (the quota alone, as run-fair.sh)
 #   JOBS       default "1 2 default"      --jobs values on W3 (with --reproducible) of
 #                                         `ranikust` and `rk-kaniko-host`
 #   QUICK      1: defaults for a check that the suite works (W1 and W3, no
@@ -79,6 +84,30 @@ for b in "${BUILDERS[@]}"; do
   case "$b" in kaniko | buildkit | ranikust | rk-kaniko | rk-kaniko-host) ;; *) bad_opt BUILDERS "known builders" "$b" ;; esac
 done
 
+# Every builder gets the same budget, whether Docker or a systemd scope
+# enforces it: CPUS CPUs of quota and MEMORY of memory (and as much swap:
+# what Docker gives a container with --memory alone), on the same pinned
+# vCPUs. Pinned, because a tool sizes its threads from what it sees: with
+# a 12-vCPU VM, Node or Go in a container would see 12 CPUs for a quota of
+# 4 and be throttled (Rust's available_parallelism reads the quota).
+NVCPU=$(nproc)
+CPUSET=${RANIKUST_E2E_CPUSET:-}
+if [ -z "$CPUSET" ]; then
+  if [ "$NVCPU" -ge $((CPUS + 2)) ]; then CPUSET="$((NVCPU - CPUS))-$((NVCPU - 1))"; else CPUSET=none; fi
+fi
+SVC_CPUSET=
+if [ "$CPUSET" = none ]; then
+  CPUSET=
+elif [[ "$CPUSET" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then
+  # The services stay off the builders' vCPUs when the default set is used.
+  [ -n "${RANIKUST_E2E_CPUSET:-}" ] || SVC_CPUSET="0-$((NVCPU - CPUS - 1))"
+else
+  bad_opt CPUSET "a cpuset list such as 8-11, or none" "$CPUSET"
+fi
+DOCKER_LIMITS=(--cpus="$CPUS" --memory="$MEMORY" ${CPUSET:+--cpuset-cpus="$CPUSET"})
+SCOPE_LIMITS=(-p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -p MemorySwapMax="${MEMORY^^}" ${CPUSET:+-p AllowedCPUs="$CPUSET"})
+SVC_LIMITS=(${SVC_CPUSET:+--cpuset-cpus="$SVC_CPUSET"})
+
 # Empties a state directory of the VM's builds: never while anything is
 # mounted below it (a build cut short), and never across a filesystem.
 reset_state() {
@@ -119,9 +148,9 @@ sudo mv "$E/verdaccio" "$W/verdaccio"
 sudo chown -R 10001:65533 "$W/verdaccio" # the verdaccio image's user
 sudo docker network create --internal nk-internal >/dev/null
 sudo docker network create nk-egress >/dev/null
-sudo docker run -d --name nk-registry --network nk-egress -p 127.0.0.1:5000:5000 \
+sudo docker run -d --name nk-registry --network nk-egress -p 127.0.0.1:5000:5000 "${SVC_LIMITS[@]}" \
   -e REGISTRY_STORAGE_DELETE_ENABLED=true -v "$W/registry:/var/lib/registry" registry:2 >/dev/null
-sudo docker run -d --name nk-verdaccio --network nk-egress -p 127.0.0.1:4873:4873 \
+sudo docker run -d --name nk-verdaccio --network nk-egress -p 127.0.0.1:4873:4873 "${SVC_LIMITS[@]}" \
   -v "$NK/verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro" -v "$W/verdaccio:/verdaccio/storage" \
   verdaccio/verdaccio:6.1.6 >/dev/null
 sudo docker network connect --alias registry nk-internal nk-registry
@@ -142,7 +171,7 @@ chmod 644 "$TOML"
   echo "buildkit: $BK_IMAGE ($(sudo docker image inspect -f '{{.Id}}' "$BK_IMAGE")), zstd"
   echo "ranikust: $("$BIN" version 2>/dev/null | head -1) (sha256 $(sha256sum "$BIN" | cut -d' ' -f1))"
   echo "kernel: $(uname -r); cpus: $(nproc); mem: $(awk '/MemTotal/ {print $2}' /proc/meminfo) kB; disk free: $(df -Ph / | awk 'NR == 2 { print $4 }')"
-  echo "limits: --cpus=$CPUS --memory=$MEMORY (ranikust: a systemd scope with the same CPUQuota and MemoryMax)"
+  echo "limits: --cpus=$CPUS --memory=$MEMORY --cpuset-cpus=${CPUSET:-none} (ranikust, rk-kaniko-host: a systemd scope, CPUQuota=${CPUS}00% MemoryMax=MemorySwapMax=${MEMORY^^} AllowedCPUs=${CPUSET:-all}); registry and npm proxy on vCPUs ${SVC_CPUSET:-any}; each build's own in <build>/limits.txt and run.json"
   echo "workloads: ${WORKLOADS[*]}; builders: ${BUILDERS[*]}; rounds: $ROUNDS; warm-up: $WARMUP; W3 jobs: ${JOBS[*]}"
 } | tee "$OUT/env.txt"
 
@@ -184,6 +213,18 @@ guard_disk() {
   exit 1
 }
 
+LIMITS="$HOME/rnk/guest/e2e/limits.sh"
+# container_limits <container> <dir>: the limits a container's build runs
+# under, from its cgroup while it runs (Docker's settings if it has ended).
+container_limits() {
+  local pid
+  pid="$(sudo docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || echo 0)"
+  [ "${pid:-0}" = 0 ] || sudo bash "$LIMITS" pid "$pid" "$2/limits.txt" 2>/dev/null || true
+  [ -s "$2/limits.txt" ] ||
+    sudo docker inspect -f 'docker.cpus={{.HostConfig.NanoCpus}} docker.cpuset={{.HostConfig.CpusetCpus}} docker.memory={{.HostConfig.Memory}} docker.memory_swap={{.HostConfig.MemorySwap}}' "$1" |
+    tr ' ' '\n' >"$2/limits.txt" 2>/dev/null || true
+}
+
 is_rnk() { case "$1" in ranikust | rk-*) return 0 ;; *) return 1 ;; esac; }
 # The builders that take --jobs on W3 (their stages may run side by side).
 has_jobs() { case "$1" in ranikust | rk-kaniko-host) return 0 ;; *) return 1 ;; esac; }
@@ -197,12 +238,13 @@ build() {
     kaniko)
       # shellcheck disable=SC2046
       t0=$(now)
-      sudo docker run -d --name "$name" --network nk-internal --cpus="$CPUS" --memory="$MEMORY" \
+      sudo docker run -d --name "$name" --network nk-internal "${DOCKER_LIMITS[@]}" \
         $(cat "$NK/bench/cfg-final-opt.env") -e FF_KANIKO_STREAM_TAR_COMPRESS=1 \
         -v "$ctx:/workspace:ro" -v "$d:/bench-out" -e KANIKO_METRICS_FILE=/bench-out/metrics.json "$KANIKO_IMAGE" \
         --dockerfile=/workspace/Dockerfile --context=dir:///workspace --destination="registry:5000/$repo:latest" \
         --insecure-registry=registry:5000 --build-arg "BASE_IMAGE=$BASE" --digest-file=/bench-out/digest.txt \
         --verbosity=info --log-timestamp=true >/dev/null
+      container_limits "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
@@ -211,13 +253,14 @@ build() {
       vol="rnk-e2e-bk-$RANDOM"; sudo docker volume create "$vol" >/dev/null
       t0=$(now)
       sudo docker run -d --name "$name" --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-        --network nk-internal --cpus="$CPUS" --memory="$MEMORY" \
+        --network nk-internal "${DOCKER_LIMITS[@]}" \
         -e BUILDKITD_FLAGS="--oci-worker-no-process-sandbox --config /home/user/.config/buildkit/buildkitd.toml" \
         -v "$vol:/home/user/.local/share/buildkit" -v "$ctx:/workspace:ro" \
         -v "$TOML:/home/user/.config/buildkit/buildkitd.toml:ro" --entrypoint buildctl-daemonless.sh "$BK_IMAGE" \
         build --progress plain --frontend dockerfile.v0 --local context=/workspace --local dockerfile=/workspace \
         --opt "build-arg:BASE_IMAGE=$BASE" \
         --output "type=image,\"name=registry:5000/$repo:latest\",push=true,compression=zstd" >/dev/null
+      container_limits "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
@@ -230,13 +273,14 @@ build() {
       local extra=()
       [ "$jobs" = - ] || extra+=(--reproducible)
       t0=$(now)
-      sudo docker run -d --name "$name" --network nk-internal --cpus="$CPUS" --memory="$MEMORY" \
+      sudo docker run -d --name "$name" --network nk-internal "${DOCKER_LIMITS[@]}" \
         -v "$BIN:/ranikust/bin/ranikust:ro" -v "$ctx:/workspace:ro" -v "$d:/rnk-out" \
         -v /etc/ssl/certs:/etc/ssl/certs:ro "$EMPTY_IMAGE" \
         /ranikust/bin/ranikust build --mode=kaniko --context=/workspace --dockerfile=/workspace/Dockerfile \
         --destination="registry:5000/$repo:latest" --insecure-registry=registry:5000 \
         --build-arg="BASE_IMAGE=$BASE" --metrics-file=/rnk-out/metrics.json --digest-file=/rnk-out/digest.txt \
         "${extra[@]}" >/dev/null
+      container_limits "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
@@ -250,8 +294,8 @@ build() {
       sudo mkdir -m 700 -p "$W/rnk-kwork"
       t0=$(now)
       set +e
-      sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \
-        "$BIN" build --mode=kaniko --context="$ctx" --dockerfile="$ctx/Dockerfile" \
+      sudo systemd-run --quiet --scope "${SCOPE_LIMITS[@]}" -- \
+        bash "$LIMITS" self "$d/limits.txt" "$BIN" build --mode=kaniko --context="$ctx" --dockerfile="$ctx/Dockerfile" \
         --destination="registry:5000/$repo:latest" --insecure-registry=registry:5000 \
         --build-arg="BASE_IMAGE=$BASE" --state-dir="$W/rnk-kwork" \
         --metrics-file="$d/metrics.json" "${extra[@]}" >"$d/build.log" 2>&1
@@ -268,8 +312,8 @@ build() {
       sudo mkdir -m 700 -p "$W/rnk-work"
       t0=$(now)
       set +e
-      sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \
-        "$BIN" build --context="$ctx" --dockerfile="$ctx/Dockerfile" --destination="registry:5000/$repo:latest" \
+      sudo systemd-run --quiet --scope "${SCOPE_LIMITS[@]}" -- \
+        bash "$LIMITS" self "$d/limits.txt" "$BIN" build --context="$ctx" --dockerfile="$ctx/Dockerfile" --destination="registry:5000/$repo:latest" \
         --insecure-registry=registry:5000 --build-arg="BASE_IMAGE=$BASE" --state-dir="$W/rnk-work" \
         --metrics-file="$d/metrics.json" "${extra[@]}" >"$d/build.log" 2>&1
       rc=$?
@@ -290,12 +334,21 @@ build() {
   local label=$b
   [ "$jobs" = - ] || label="$b-j$jobs"
   "${PY[@]}" - "$d/run.json" "$w" "$label" "$rc" "$t0" "$t1" "$status" "$reason" "$repo" <<'PY'
-import json, sys
+import json, os, sys
 out, w, b, rc, t0, t1, status, reason, repo = sys.argv[1:10]
+# The CPU and memory limits the build ran under (guest/e2e/limits.sh).
+limits = {}
+lf = os.path.join(os.path.dirname(out), "limits.txt")
+if os.path.exists(lf):
+    for line in open(lf):
+        k, _, v = line.strip().partition("=")
+        if k:
+            limits[k] = v
 json.dump({"workload": w, "builder": b, "exit_code": int(rc), "wall_secs": round(float(t1) - float(t0), 3),
-           "status": status, "reason": reason, "repository": repo}, open(out, "w"), indent=2)
+           "status": status, "reason": reason, "repository": repo, "limits": limits}, open(out, "w"), indent=2)
 PY
   log "$w $label: $status (exit $rc, $(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.2f", b - a }') s)"
+  [ ! -s "$d/limits.txt" ] || log "  limits: $(paste -sd' ' "$d/limits.txt")"
   [ "$status" != failed ] || { tail -20 "$d/build.log" >&2; return 1; }
 }
 

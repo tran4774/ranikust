@@ -25,8 +25,8 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 - **Smoke test or proof of concept as real root: `quick`**, the small
   Dockerfiles of `tests/smoke/cases` (a few seconds each; a new concern is
   a new case there, see the `test` skill). Not `e2e`.
-- **`e2e` only for a large benchmark or an acceptance measurement**: a
-  12 GiB VM and 45–60 minutes for 3 rounds of all three builders. Prefer
+- **`e2e` only for a large benchmark or an acceptance measurement**:
+  45–60 minutes or more for 3 rounds of every builder. Prefer
   `RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1` unless official
   numbers are needed.
 
@@ -49,8 +49,15 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
   `tests/e2e/_vm-image/` of the main checkout, shared by every worktree,
   and a second run waits on its lock (the `test` skill has the rules and
   the clean-up policy).
-- Run it in the background: a cold run (image download, release build,
-  boot, cloud-init installing Docker) takes several minutes.
+- Every suite gets a 12-vCPU, 16 GiB VM (`RANIKUST_VM_CPUS`/`_MEM`; the
+  memory shrinks to what the host can spare, the CPUs to the host's less
+  2), booted from a cached, provisioned base image (Docker installed):
+  the first run after a new cloud image or a change to
+  `tests/vm/cloud-init/provision` builds it, a few minutes, once.
+  `RANIKUST_VM_GOLDEN=0` boots the plain cloud image instead.
+  `timings.txt` in the results says where a run's time went.
+- Run it in the background: a cold run (image download, base image,
+  release build) takes several minutes.
 - If `just` or `cargo-zigbuild` is not found, put `~/.cargo/bin` on `PATH`.
 - Never `sudo` anything on the host to make it pass. No `/dev/kvm` access
   means stop and tell the maintainer.
@@ -58,8 +65,10 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 ## Read the results
 
 `target/vm/results/<release>/`: `summary.txt` (one line per suite),
-`env.txt` (kernel, Docker, cgroup), `<suite>.log`, `serial.log` (boot and
-cloud-init, for a VM that never answered SSH). Quote the summary and the
+`env.txt` (kernel, Docker, cgroup, CPUs, memory, the VM's size),
+`<suite>.log`, `suite-times.txt`, `timings.txt` (boot, SSH, cloud-init,
+suites), `serial.log` (boot and cloud-init, for a VM that never answered
+SSH; `base-image-serial.log` when the run built the base image). Quote the summary and the
 failing lines in your report; a run that did not happen is "not run", not
 "passes".
 

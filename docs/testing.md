@@ -84,32 +84,63 @@ runs as root on the host:
    VM runs at a time on the machine: a run holds `flock` on
    `_vm-image/.vm.lock` from start to teardown, and a second run waits for
    it (`RANIKUST_VM_LOCK_WAIT`, default an hour) instead of booting
-   another 4–12 GiB VM beside it.
-3. **Prepare** a run directory under `target/vm/`: a copy-on-write qcow2
-   overlay on the cached image, a fresh SSH key and a NoCloud seed
-   (`tests/vm/cloud-init/user-data`: user `rnk` with passwordless `sudo`,
-   Docker from the Ubuntu archive). Docker Hub images come through
+   another 16 GiB VM beside it.
+3. **Provision** the base image once: the verified cloud image booted with
+   `tests/vm/cloud-init/provision`, which installs the packages (Docker
+   from the Ubuntu archive, `zstd`), disables the background apt timers,
+   removes what is per machine (SSH host keys, machine ID; no user, no
+   key, no password is created) and powers the VM off. The disk is
+   flattened into one qcow2, checked, made read-only, and kept in the cache
+   as `base-<release>-<key>.qcow2` with its SHA-256 beside it, checked
+   before every use. `<key>` hashes what it is made from (the release, the
+   cloud image's SHA-256, the package list, the provisioning seed), so a
+   new cloud image or a changed seed builds a new one (a few minutes, once)
+   and deletes the release's old one; a base image that no longer matches
+   its SHA-256 is built again. `RANIKUST_VM_GOLDEN=0` skips it: the run
+   boots the cloud image and cloud-init installs the packages, as every run
+   did before.
+4. **Prepare** a run directory under `target/vm/`: a copy-on-write qcow2
+   overlay on the base image (only ever a read-only backing file: every
+   write goes to the overlay, deleted with the run), a fresh SSH key and a
+   NoCloud seed with a new instance ID (`tests/vm/cloud-init/user-data`:
+   user `rnk` with passwordless `sudo` and the run's key; new SSH host
+   keys and machine ID at first boot). Docker Hub images come through
    `RANIKUST_VM_IMAGE_REGISTRY`, by default `mirror.gcr.io` (Google's
    public Docker Hub mirror, which has no pull rate limit): the guest's
    Docker uses it as a `registry-mirrors` entry, and the `smoke` suite
    pulls `python:3.13-alpine` and the e2e base `alpine:3.20` from it by
    name. `RANIKUST_VM_IMAGE_REGISTRY=docker.io` pulls from Docker Hub
    itself, which allows anonymous clients only a few pulls per hour.
-4. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
+5. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
    ACL, never `sudo`), user-mode networking, SSH forwarded to a free port
-   on `127.0.0.1` only. The disk is 20 GB (`RANIKUST_VM_DISK`) and the
-   memory 4 GiB (`RANIKUST_VM_MEM`), more for `e2e`. A balloon device
-   with free-page reporting hands memory the guest frees back to the host.
-5. **Copy in** the binaries and `tests/vm/guest/`, **run** the suites
+   on `127.0.0.1` only, one SSH connection shared by every command. Every
+   suite gets 12 vCPUs (`RANIKUST_VM_CPUS`; at most the host's CPUs less
+   2) and 16 GiB (`RANIKUST_VM_MEM`). The memory is measured once the
+   previous run's VM has gone: when the host has less than 16 GiB plus
+   3 GiB available, the default shrinks to fit, never below 4 GiB (8 GiB
+   for `e2e`), and the run says so; a value set in the variables is used as
+   is, with a warning if it leaves the host under 2 GiB. The disk is 20 GB
+   (`RANIKUST_VM_DISK`, 40 GB for `e2e`, at least 10 GB over the base
+   image). All devices are virtio: the disk on its own I/O thread with
+   `cache=unsafe` (the disk is thrown away) and `aio=io_uring` where QEMU
+   and the kernel allow it (else the thread pool), an entropy source, and
+   a balloon with free-page reporting that hands memory the guest frees
+   back to the host. The effective size goes into `env.txt` and
+   `timings.txt` (boot started, SSH up, cloud-init done, suites done,
+   total, in seconds since the start).
+6. **Copy in** the binaries and `tests/vm/guest/`, **run** the suites
    (`guest/run.sh`) detached in the guest while the host follows their log
-   over SSH every 15 s, reconnecting for up to 15 minutes, so a VM that
+   over SSH every 5 s, reconnecting for up to 15 minutes, so a VM that
    stalls while the host swaps loses neither the run nor its results;
    **copy out** `target/vm/results/<release>/` (retried):
-   `env.txt` (kernel, Docker, cgroup), one log per suite, `summary.txt`
-   and the VM's serial log.
-6. **Tear down** on every exit path, Ctrl-C included: QEMU is stopped
-   through its monitor (then `SIGKILL`), and the overlay, seed and key are
-   deleted. The script fails if QEMU is still running.
+   `env.txt` (kernel, Docker, cgroup, CPUs, memory, the VM's size), one
+   log per suite, `summary.txt`, `suite-times.txt` (each suite's wall time),
+   `timings.txt` and the VM's serial log (`base-image-serial.log` too when
+   this run built the base image).
+7. **Tear down** on every exit path, Ctrl-C included: QEMU is stopped
+   through its monitor (then `SIGKILL`), the shared SSH connection is
+   closed, and the overlay, seed and key are deleted (the base image stays
+   in the cache). The script fails if QEMU is still running.
 
 | Suite | What it runs |
 |---|---|
@@ -168,9 +199,12 @@ host's `nextjs-kaniko` containers:
 - **Builds.** kaniko with `cfg-final-opt.env` and
   `FF_KANIKO_STREAM_TAR_COMPRESS` (experiment 07's `k-stream`), BuildKit
   as `run-fair.sh`'s `bk` (zstd), each in `docker run --cpus=4
-  --memory=8g`; `ranikust` three ways (Phase 2 acceptance): `ranikust`,
-  overlay mode as root in a systemd scope with the same CPU quota and
-  memory limit; `rk-kaniko`, `--mode=kaniko` on the `/` of a default
+  --memory=8g` pinned to the VM's last 4 vCPUs (`--cpuset-cpus`; the
+  registry and verdaccio on the others); `ranikust` three ways (Phase 2
+  acceptance): `ranikust`, overlay mode as root in a systemd scope with the
+  same budget (`CPUQuota=400%`, `MemoryMax` and `MemorySwapMax` 8 GiB,
+  as Docker gives a container with `--memory` alone, `AllowedCPUs` the
+  same vCPUs); `rk-kaniko`, `--mode=kaniko` on the `/` of a default
   `docker run` (root, Docker's capabilities, no option) from an empty
   image, the static binary mounted at `/ranikust/bin` (ADR-0048);
   `rk-kaniko-host`, `--mode=kaniko` as root on the VM in the same kind of
@@ -235,7 +269,9 @@ A `ranikust` build that stops because a part is not built yet (`not
 implemented`, a flag refused until a later phase) is recorded as
 `pending` and does not fail the suite; any other failure does. Options:
 `RANIKUST_E2E_WORKLOADS`, `_BUILDERS`, `_ROUNDS` (default 1; use 3 or more
-for the acceptance timings), `_WARMUP`, `_CPUS`, `_MEMORY`, `_JOBS`,
+for the acceptance timings), `_WARMUP`, `_CPUS`, `_MEMORY`, `_CPUSET`
+(the vCPUs every builder is pinned to: by default the VM's last `_CPUS`
+when it has at least `_CPUS` + 2; `none` for the quota alone), `_JOBS`,
 `_MIN_FREE_GB`, and `_QUICK=1` (W1 and W3, one round, no warm-up, kaniko
 and the three `ranikust` builders, `--jobs` 1 and the default; the
 others still win). Phase 2 acceptance runs everything:
@@ -250,10 +286,17 @@ bounds the disk is the guest: e2e stops before its free space falls under
 host. The guest's results reach the host as regular files and
 directories only (anything else is deleted on both sides), after any
 builder container left behind is removed. The
-VM gets 12 GiB and a 40 GB disk (it peaked at 6.3 GB on W1 and W3 with
-the registry pruned; it was 80 GB before) unless `RANIKUST_VM_MEM`/`_DISK` say
-otherwise; when the host has less than 12 GiB plus 3 GiB available, the
-default shrinks to fit (never below 8 GiB) and the run says so. A guest
+VM gets 12 vCPUs, 16 GiB and a 40 GB disk (it peaked at 6.3 GB on W1 and
+W3 with the registry pruned; it was 80 GB before) unless
+`RANIKUST_VM_CPUS`/`_MEM`/`_DISK` say otherwise; when the host has less
+than 16 GiB plus 3 GiB available, the default shrinks to fit (never below
+8 GiB) and the run says so. The builders' limits do not grow with the VM:
+each build's own, read from its cgroup while it runs (`cpu.max`,
+`cpuset.cpus.effective`, `memory.max`, `memory.swap.max`), are in its
+`limits.txt` and `run.json`, and in the log after its time. Runs before
+2026-11-01 had a 4-vCPU VM and no pinning: every builder already had the
+same quota and memory limit, but the VM's own services shared its 4
+vCPUs, so their times are not comparable with later ones. A guest
 fills its memory with page cache, which QEMU keeps: on a host short of
 memory, with swap full, an earlier version of the harness lost whole runs
 when the VM stalled for over 45 s and its single SSH session dropped. A run of one round took about 15 minutes on noble, most of it

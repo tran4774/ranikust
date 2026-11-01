@@ -1,0 +1,32 @@
+#cloud-config
+# Provisions the T2 VM's base image ("golden" image): tests/vm/vm.sh boots
+# the verified cloud image once with this seed, waits for the VM to power
+# itself off, and keeps the result in its cache as the read-only backing
+# file of every run's throwaway disk (docs/testing.md#the-vm-harness-tier-t2).
+# vm.sh puts the package list in place of @PACKAGES@.
+#
+# Nothing to log in with is left in it: no user, no key, no password; the
+# SSH host keys and the machine ID are removed, so that each run's first
+# boot (a new instance ID) makes its own, and each run's seed adds user
+# `rnk` with that run's key.
+users: []
+ssh_pwauth: false
+disable_root: true
+
+@PACKAGES@
+
+runcmd:
+  - [systemctl, enable, docker]
+  # Background apt runs compete with the suites for CPU and disk, and with
+  # e2e's timings: none in the base image.
+  - [systemctl, disable, --now, apt-daily.timer, apt-daily-upgrade.timer, unattended-upgrades.service]
+  - [apt-get, clean]
+  - [sh, -c, 'rm -f /etc/ssh/ssh_host_*']
+  - [sh, -c, 'truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id']
+  # Read by vm.sh from the serial log: the image is complete.
+  - [sh, -c, 'command -v docker && command -v zstd && systemctl is-enabled docker && echo ranikust-golden-ready >/dev/ttyS0']
+
+power_state:
+  mode: poweroff
+  timeout: 120
+  condition: true
