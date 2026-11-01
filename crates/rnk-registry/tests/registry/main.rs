@@ -514,18 +514,28 @@ async fn manifest_retries_wrap_the_default_policy() {
     assert_eq!(registry.count("GET /v2/app/manifests/"), before + 2);
 }
 
-/// A file reopened through its handle for each attempt (ADR-0055): the
-/// whole file is sent, and a handle that cannot reopen it fails the push.
+/// A file reopened through its handle for each attempt (ADR-0055): a
+/// failed upload is retried from a new descriptor, the whole file is sent,
+/// and a handle that cannot reopen it fails the push.
 #[tokio::test]
-async fn an_opened_file_body_is_reopened_for_the_push() {
+async fn an_opened_file_body_is_reopened_for_each_attempt() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     #[derive(Debug)]
-    struct Reopen(std::path::PathBuf);
+    struct Reopen(std::path::PathBuf, Arc<AtomicUsize>);
     impl rnk_registry::BlobFile for Reopen {
         fn open(&self) -> std::io::Result<std::fs::File> {
+            self.1.fetch_add(1, Ordering::SeqCst);
             std::fs::File::open(&self.0)
         }
     }
     let registry = FakeRegistry::start(Auth::Open).await;
+    registry.state().faults.push(Fault {
+        method: Method::PUT,
+        path_contains: "/blobs/uploads/".to_owned(),
+        status: 503,
+        remaining: 1,
+    });
     let client = client(&registry, Credentials::none());
     let target = reference(&registry, "out:latest");
     let dir = tempfile::tempdir().unwrap();
@@ -533,11 +543,18 @@ async fn an_opened_file_body_is_reopened_for_the_push() {
     let path = dir.path().join("layer");
     std::fs::write(&path, &layer).unwrap();
     let blob = descriptor(MediaType::OCI_LAYER_GZIP, &layer);
-    let body = BlobBody::Opened(std::sync::Arc::new(Reopen(path.clone())));
+    let opens = Arc::new(AtomicUsize::new(0));
+    let body = BlobBody::Opened(Arc::new(Reopen(path.clone(), Arc::clone(&opens))));
     assert_eq!(
         client.push_blob(&target, &blob, &body).await.unwrap(),
         PushOutcome::Uploaded
     );
+    assert_eq!(
+        opens.load(Ordering::SeqCst),
+        2,
+        "one descriptor per attempt"
+    );
+    assert_eq!(registry.count("PUT /v2/out/blobs/uploads/"), 2);
     assert_eq!(
         registry.state().blobs[blob.digest.as_str()].as_ref(),
         layer.as_slice()
@@ -545,7 +562,7 @@ async fn an_opened_file_body_is_reopened_for_the_push() {
 
     let other = vec![8u8; 1024];
     let gone = descriptor(MediaType::OCI_LAYER_GZIP, &other);
-    let body = BlobBody::Opened(std::sync::Arc::new(Reopen(dir.path().join("gone"))));
+    let body = BlobBody::Opened(Arc::new(Reopen(dir.path().join("gone"), opens)));
     let err = client.push_blob(&target, &gone, &body).await.unwrap_err();
     assert!(matches!(err, Error::Io { .. }), "{err}");
 }
