@@ -275,7 +275,7 @@ fn split_reused_inodes(entries: &mut [Entry], contents: &[Option<u128>]) {
 }
 
 /// Pins `p` ([`RootPath::pin`]) and fails unless it is still the entry the
-/// walk saw: the same type, device, inode, size, `mtime` and `ctime`.
+/// walk saw, as [`same_stat`] compares it.
 fn pin_same(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Pinned> {
     let pinned = root.pin(p)?;
     if same_stat(pinned.stat(), meta) {
