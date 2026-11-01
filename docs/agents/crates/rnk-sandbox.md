@@ -221,7 +221,13 @@ from `rnk-store`, secret file) and passes `--network`.
   `chroot` refused as a normal user with every placed file undone); mount sources
   (symlink and type refused); remount flags (`nodev`, read-only `/dev`
   nodes); `Direct` refusals (`Error::Direct`); the sealed heredoc memfd; the relay
-  (a surviving write end, a full stream); the probe's `EPERM`-only fallback and the mount-root check; the
+  (a surviving write end, a full stream); red team of the relay (T21,
+  ADR-0057): a `RUN` that reads its own stream back through
+  `/proc/self/fd/<n>` leaves the relay blocked in `read` after `poll`
+  said ready, so `finish_returns_when_the_run_steals_its_own_output`
+  (a write end kept after the `RUN`) and
+  `a_stolen_stderr_does_not_stall_stdout` fail: findings, open
+  (2026-11-01); the probe's `EPERM`-only fallback and the mount-root check; the
   spans (`tests/spans.rs`).
 - **T1** (rootless podman): `just smoke` (2026-10-30, kernel 7.0, podman
   5.7): probe → `pivot_root`; `apk add` through the sandbox's network and
@@ -236,6 +242,23 @@ from `rnk-store`, secret file) and passes `--network`.
   `/dev/stderr`) and `a_direct_run_leaves_no_process_behind` (no process
   of the `RUN`, alive or zombie, told by a `comm` of its own)
   (`#[ignore]`, ADR-0057);
+  red team of the `Direct` `RUN` on `/` (`tests/direct_attacks.rs`, T7,
+  T11, T21, ADR-0057) [measured: VM, Ubuntu 24.04, kernel 6.8,
+  2026-11-01]: held: a `#!` script cannot append to, truncate or rewrite
+  its memfd (also through `/proc/self/fd/<n>`, as uid 65534), reads back
+  unchanged, re-executes itself, and `#!/dev/fd/3` or a missing
+  interpreter fails at once; a `RUN` holds only its pipes, `/dev/null`
+  and its script, never a descriptor the parent opened without
+  close-on-exec, and as uid 65534 owns and reopens its streams;
+  `O_NONBLOCK` on its streams, a 4 MiB flood relayed whole and streams
+  closed early leave ranikust's stdout flags as they were; a Python
+  fork-and-exit loop under `setsid` (6000 pid changes a second) was
+  caught by the sweep. Broken (findings, open):
+  `red_team_direct_run_stealing_its_output_cannot_hang_the_build` (the
+  build waits as long as a process outside the `RUN` keeps the stderr it
+  was handed over `SCM_RIGHTS`) and
+  `red_team_direct_run_reading_its_stderr_back_does_not_stall_its_stdout`
+  (stdout no longer copied once the relay waits on stderr);
   `direct_runs_in_a_chroot_with_placed_files_as_root` (`#[ignore]`: a
   shell copied into a temp root sees the placed files and nodes, no
   `/proc`, `ulimit -n` 777; the root is as before after) [measured: passed

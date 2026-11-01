@@ -331,6 +331,174 @@ mod tests {
         drop(out_r);
     }
 
+    /// Red team (T21, ADR-0057): a `RUN` reopens its own stdout pipe for
+    /// reading (`exec 3</proc/self/fd/1`, which needs no privilege) and
+    /// reads it while it writes, so that the relay, woken by `poll`, finds
+    /// the pipe empty; a write end that outlived the `RUN` (passed to
+    /// another process, or a survivor) never writes again. `finish` must
+    /// still return after the drain time: the relay never waits on the
+    /// pipe outside `poll`.
+    #[test]
+    fn finish_returns_when_the_run_steals_its_own_output() {
+        use std::sync::mpsc;
+        let null = rustix::fs::open(
+            "/dev/null",
+            OFlags::WRONLY | OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let n = std::os::fd::AsRawFd::as_raw_fd(&null);
+        for trial in 0..20 {
+            let mut stdio = [ChildStdio::Null, ChildStdio::Inherit, ChildStdio::Null];
+            let mut keep = Vec::new();
+            let relay = Relay::start_into(&mut stdio, &mut keep, Uid::ROOT, Gid::ROOT, [n, n, n])
+                .unwrap()
+                .unwrap();
+            let survivor = keep.pop().unwrap();
+            // The `RUN`'s second read end, through /proc as a `RUN` opens it.
+            let stolen = rustix::fs::open(
+                format!(
+                    "/proc/self/fd/{}",
+                    std::os::fd::AsRawFd::as_raw_fd(&survivor)
+                ),
+                OFlags::RDONLY | OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap();
+            let thief = std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                while matches!(rustix::io::read(&stolen, &mut buf), Ok(n) if n > 0) {}
+            });
+            // Each write wakes both readers; the thief, already in `read`,
+            // takes the byte before the relay, back from `poll`, reads.
+            for _ in 0..50 {
+                std::thread::sleep(Duration::from_millis(2));
+                rustix::io::write(&survivor, b"x").unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            let (done, finished) = mpsc::channel();
+            let finisher = std::thread::spawn(move || {
+                relay.finish();
+                let _ = done.send(());
+            });
+            let returned = finished
+                .recv_timeout(DRAIN_TIME + Duration::from_secs(5))
+                .is_ok();
+            // Where the relay thread waits, while it still does.
+            let waits = if returned {
+                String::new()
+            } else {
+                relay_thread_wait()
+            };
+            // Closing the last write end ends both readers either way.
+            drop(survivor);
+            finisher.join().unwrap();
+            thief.join().unwrap();
+            assert!(
+                returned,
+                "trial {trial}: Relay::finish still blocked {:?} after the stop, held by a \
+                 write end that outlived the RUN; relay thread: {waits}",
+                DRAIN_TIME + Duration::from_secs(5)
+            );
+        }
+        drop(null);
+    }
+
+    /// Red team (T21, ADR-0057): a `RUN` reads its own stderr pipe back
+    /// while it writes stdout bursts, each followed by one byte of stderr.
+    /// The relay, woken with both ready, copies stdout first; the byte is
+    /// gone when it reads stderr. Whatever happens on stderr, stdout must
+    /// keep being copied: the `RUN`'s later stdout writes must not wait.
+    #[test]
+    fn a_stolen_stderr_does_not_stall_stdout() {
+        let null = rustix::fs::open(
+            "/dev/null",
+            OFlags::WRONLY | OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let n = std::os::fd::AsRawFd::as_raw_fd(&null);
+        let mut stdio = [ChildStdio::Null, ChildStdio::Inherit, ChildStdio::Inherit];
+        let mut keep = Vec::new();
+        let relay = Relay::start_into(&mut stdio, &mut keep, Uid::ROOT, Gid::ROOT, [n, n, n])
+            .unwrap()
+            .unwrap();
+        let err = keep.pop().unwrap();
+        let out = keep.pop().unwrap();
+        // The test never blocks on stdout itself: it gives up instead.
+        set_nonblocking(&out).unwrap();
+        let stolen = rustix::fs::open(
+            format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&err)),
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let thief = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while matches!(rustix::io::read(&stolen, &mut buf), Ok(n) if n > 0) {}
+        });
+        let burst = vec![b'y'; 64 * 1024];
+        // Writes `bytes` to stdout within `limit`; false if it stays full.
+        let write_out = |bytes: usize, limit: Duration| {
+            let deadline = Instant::now() + limit;
+            let mut left = bytes;
+            while left > 0 {
+                match rustix::io::write(&out, &burst[..left.min(burst.len())]) {
+                    Ok(k) => left -= k,
+                    Err(Errno::AGAIN) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(_) => return false,
+                }
+            }
+            true
+        };
+        // After each round, with nothing more on stderr: 1 MiB more on
+        // stdout, which the relay copies to /dev/null at once, unless it
+        // has stopped reading stdout.
+        let mut drained = true;
+        let mut waits = String::new();
+        for _ in 0..200 {
+            let _ = write_out(burst.len(), Duration::from_millis(200));
+            rustix::io::write(&err, b"z").unwrap();
+            std::thread::sleep(Duration::from_millis(2));
+            if !write_out(1 << 20, Duration::from_secs(2)) {
+                drained = false;
+                waits = relay_thread_wait();
+                break;
+            }
+        }
+        // The last write ends: both readers see the end.
+        drop(out);
+        drop(err);
+        relay.finish();
+        thief.join().unwrap();
+        drop(null);
+        assert!(
+            drained,
+            "stdout stopped being relayed for 2 s while stderr was read back by the RUN; \
+             relay thread: {waits}"
+        );
+    }
+
+    /// The kernel function and syscall number of this process's relay
+    /// threads (`read` is 0 on x86_64), for a failure message.
+    fn relay_thread_wait() -> String {
+        let mut out = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task").unwrap().flatten() {
+            let p = task.path();
+            let comm = std::fs::read_to_string(p.join("comm")).unwrap_or_default();
+            if comm.trim() != "rnk-sandbox-std" {
+                continue;
+            }
+            let wchan = std::fs::read_to_string(p.join("wchan")).unwrap_or_default();
+            let syscall = std::fs::read_to_string(p.join("syscall")).unwrap_or_default();
+            let nr = syscall.split_whitespace().next().unwrap_or("?").to_owned();
+            out.push(format!("wchan={wchan} syscall={nr}"));
+        }
+        out.join("; ")
+    }
+
     #[test]
     fn nothing_inherited_needs_no_relay() {
         let mut stdio = [ChildStdio::Null; 3];
