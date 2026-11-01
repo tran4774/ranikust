@@ -703,7 +703,12 @@ On the shared root a unit whose image is kept for a later `FROM` is walked
 too, since that image is the only way to rebuild the root for the child
 (ADR-0044). `rnk_dockerfile::squash_for_shared_root` sets
 `layers_needed` per unit; `rnk_dockerfile::layers_needed` gives the rule
-for per-stage directories.
+for per-stage directories. Those stages are exactly the ones whose layers
+the target's image inherits, and the only ones `ranikust` pushes or writes
+out (`in_target`, in every mode): widening that set would send a stage the
+target only copies from, such as a secrets stage, to a destination. A
+further reason to snapshot a stage (Phase 4's `--cache`) goes into
+`rnk-builder`'s `LayerDemand`, never into this rule.
 
 ## Memory
 
