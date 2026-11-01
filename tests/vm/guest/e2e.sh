@@ -173,8 +173,8 @@ guard_disk() {
   [ "$(free_gb)" -lt "$MIN_FREE_GB" ] || return 0
   sudo docker container prune -f >/dev/null
   sudo docker image prune -f >/dev/null
-  reset_state rnk-work
-  reset_state rnk-kwork
+  reset_state rnk-work || exit 1
+  reset_state rnk-kwork || exit 1
   local f
   f=$(free_gb)
   [ "$f" -lt "$MIN_FREE_GB" ] || return 0
@@ -246,7 +246,8 @@ build() {
       local extra=()
       [ "$jobs" = - ] || [ "$jobs" = default ] || extra+=("--jobs=$jobs")
       [ "$jobs" = - ] || extra+=(--reproducible)
-      reset_state rnk-kwork && sudo mkdir -m 700 -p "$W/rnk-kwork"
+      reset_state rnk-kwork || exit 1
+      sudo mkdir -m 700 -p "$W/rnk-kwork"
       t0=$(now)
       set +e
       sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \
@@ -263,7 +264,8 @@ build() {
       local extra=()
       [ "$jobs" = - ] || [ "$jobs" = default ] || extra+=("--jobs=$jobs")
       [ "$jobs" = - ] || extra+=(--reproducible)
-      reset_state rnk-work && sudo mkdir -m 700 -p "$W/rnk-work"
+      reset_state rnk-work || exit 1
+      sudo mkdir -m 700 -p "$W/rnk-work"
       t0=$(now)
       set +e
       sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \

@@ -14,13 +14,13 @@ it never follows a symbolic link: every directory from the registry root
 down to `blobs/sha256` is opened with O_NOFOLLOW, blob directories are
 reached through their parent's descriptor and must be named as the
 registry names them (two hex digits, then the 64-digit digest starting
-with them); anything else there stops the run. It fails closed: an
+with them) and hold one regular file, `data`; anything else there stops
+the run. Python 3.10 or later (jammy's). It fails closed: an
 unreadable directory, no `repositories`, or no link at all while blobs
 exist stops it before anything is deleted.
 """
 import os
 import re
-import shutil
 import stat
 import sys
 
@@ -91,16 +91,20 @@ def main():
         die("blobs exist but no repository links any: refusing to delete them all")
     freed = 0
     for pfd, prefix, name in plan:
+        # A blob directory holds one regular file, `data`, and nothing else;
+        # anything else stops the run. No shutil.rmtree(dir_fd=): Python
+        # 3.10 (jammy) lacks it.
+        where = f"blobs/sha256/{prefix}/{name}"
         dfd = open_dir(name, dir_fd=pfd)
-        try:
-            st = os.stat("data", dir_fd=dfd, follow_symlinks=False)
-            if stat.S_ISREG(st.st_mode):
-                freed += st.st_size
-        except FileNotFoundError:
-            pass
+        if sorted(os.listdir(dfd)) != ["data"]:
+            die(f"{where} holds something other than one file `data`")
+        st = os.stat("data", dir_fd=dfd, follow_symlinks=False)
+        if not stat.S_ISREG(st.st_mode):
+            die(f"{where}/data is not a regular file")
+        os.unlink("data", dir_fd=dfd)
         os.close(dfd)
-        # shutil.rmtree with dir_fd never follows a symbolic link.
-        shutil.rmtree(name, dir_fd=pfd)
+        os.rmdir(name, dir_fd=pfd)
+        freed += st.st_size
     print(f"pruned {len(plan)} unlinked blobs, {freed / 1e9:.2f} GB; {len(linked)} linked")
 
 

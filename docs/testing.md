@@ -241,9 +241,15 @@ and the three `ranikust` builders, `--jobs` 1 and the default; the
 others still win). Phase 2 acceptance runs everything:
 `RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm e2e'`. vm.sh refuses to
 start any suite when the host has less free space where the VM's disk
-lives than the disk's size (`RANIKUST_VM_DISK`) less 4 GiB, which the
-cloud image and the guest's system use without writing to the overlay;
-it checks before it writes or locks anything. The
+lives than the disk's size (`RANIKUST_VM_DISK`, a whole number of M, G or
+T) less 2 GiB, about the cloud image's own content, which stays in the
+backing file: the overlay's worst case. It checks before it writes or
+locks anything, and again right before it creates the disk. What really
+bounds the disk is the guest: e2e stops before its free space falls under
+`RANIKUST_E2E_MIN_FREE_GB`, and what it frees and trims goes back to the
+host. The guest's results reach the host as regular files and
+directories only (anything else is deleted on both sides), after any
+builder container left behind is removed. The
 VM gets 12 GiB and a 40 GB disk (it peaked at 6.3 GB on W1 and W3 with
 the registry pruned; it was 80 GB before) unless `RANIKUST_VM_MEM`/`_DISK` say
 otherwise; when the host has less than 12 GiB plus 3 GiB available, the

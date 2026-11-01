@@ -338,7 +338,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   SSH. Unlinked blobs are now deleted before each build (following no
   symbolic link) and handed back to the host by `fstrim` over a disk with
   discard, a build does not start with less than 10 GiB free, and the
-  host needs as much free space as the VM's disk can grow to, less 4 GiB. kaniko's results directory in the suite moved off `/out`,
+  host needs as much free space as the VM's disk can grow to, less 2 GiB.
+  kaniko's results directory in the suite moved off `/out`,
   which W3 writes and kaniko leaves out of its image as a mount point.
 - In kaniko mode, copying a stage and walking a root grew with the cube of
   a directory chain's depth (a `RUN` can make 20,000 levels in seconds;

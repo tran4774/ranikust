@@ -30,7 +30,7 @@
 #   RANIKUST_VM_CPUS     vCPUs, default 4
 #   RANIKUST_VM_MEM      memory in MiB, default 4096 (12288 with e2e)
 #   RANIKUST_VM_DISK     disk size in M, G or T, default 20G (40G with e2e);
-#                        the host needs that much free, less 4 GiB
+#                        the host needs that much free, less 2 GiB
 #   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout e2e reads, default
 #                        ../nextjs-kaniko next to the repository
 #   RANIKUST_E2E_*       options of the e2e suite (tests/vm/guest/e2e.sh)
@@ -75,34 +75,38 @@ done
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
 # The VM's disk: a qcow2 overlay over the cloud image that grows with what
-# the guest writes, up to $DISK. With discard the guest's freed blocks
-# return to the host (fstrim after each e2e build), but at its peak it can
-# hold nearly all of $DISK, so the host must have that much free where it
-# lives: $DISK less 4 GiB, which the cloud image (the backing file) and the
-# guest's own system use without writing to the overlay. Checked before
-# anything is written or locked.
+# the guest writes, up to about $DISK less the 2 GiB or so of the cloud
+# image's own content, which stays in the backing file. What really bounds
+# it is the guest: e2e.sh stops before its free space falls under
+# RANIKUST_E2E_MIN_FREE_GB, and the disk has discard, so the blocks the
+# guest frees and trims (fstrim after each prune) go back to the host. The
+# host must still have room for the worst case, $DISK less 2 GiB: checked
+# here, before anything is written or locked, and again right before the
+# disk is created.
 DISK="${RANIKUST_VM_DISK:-20G}"
 # e2e: the reference images, the npm proxy's storage, one build's root and
 # image at a time (the registry is pruned between builds): the guest
 # peaked at 6.3 GB on W1 and W3 (2026-11-01), so 40G leaves room for W2
 # and many rounds.
 wants e2e && DISK="${RANIKUST_VM_DISK:-40G}"
-disk_gib() {
-  case "$1" in
-    *[Tt]) echo $((${1%?} * 1024)) ;;
-    *[Gg]) echo "${1%?}" ;;
-    *[Mm]) echo $((${1%?} / 1024)) ;;
-    *) return 1 ;;
-  esac
+# Validated before any arithmetic: no octal, no expansion of raw input.
+[[ "$DISK" =~ ^[1-9][0-9]*[MmGgTt]$ ]] ||
+  die "RANIKUST_VM_DISK must be a whole number of M, G or T without a leading zero (got '$DISK')"
+disk_n=${DISK%?}
+case "$DISK" in
+  *[Tt]) disk_gib=$((disk_n * 1024)) ;;
+  *[Gg]) disk_gib=$disk_n ;;
+  *) disk_gib=$((disk_n / 1024)) ;;
+esac
+need_gib=$((disk_gib > 2 ? disk_gib - 2 : 0))
+check_host_free() {
+  local there="$TARGET" free
+  until [ -d "$there" ]; do there="$(dirname "$there")"; done
+  free=$(($(df -Pk "$there" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
+  [ "$free" -ge "$need_gib" ] ||
+    die "only ${free} GiB free under $TARGET for a VM disk of $DISK (needs ${need_gib} GiB); free space or set RANIKUST_VM_DISK"
 }
-need_gib=$(disk_gib "$DISK") && [[ "$need_gib" =~ ^[0-9]+$ ]] ||
-  die "RANIKUST_VM_DISK must be a whole number of M, G or T (got '$DISK')"
-need_gib=$((need_gib > 4 ? need_gib - 4 : 0))
-there="$TARGET"
-until [ -d "$there" ]; do there="$(dirname "$there")"; done
-host_free=$(($(df -Pk "$there" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
-[ "$host_free" -ge "$need_gib" ] ||
-  die "only ${host_free} GiB free under $TARGET for a VM disk of $DISK (needs ${need_gib} GiB); free space or set RANIKUST_VM_DISK"
+check_host_free
 
 # One VM at a time on this machine, whichever checkout or worktree starts
 # it: the lock is held on fd 9 until this script exits, so it also guards
@@ -280,6 +284,8 @@ sed -e "s|@SSH_KEY@|$(cat "$RUN/key.pub")|" -e "s|@REGISTRY_MIRRORS@|$MIRRORS|" 
 printf 'instance-id: ranikust-vm-%s\nlocal-hostname: ranikust-vm\n' "$(basename "$RUN")" >"$RUN/seed/meta-data"
 xorriso -as mkisofs -quiet -output "$RUN/seed.iso" -volid cidata -joliet -rock \
   "$RUN/seed/user-data" "$RUN/seed/meta-data"
+# Again: the builds and downloads above took space since the first check.
+check_host_free
 qemu-img create -q -f qcow2 -F qcow2 -b "$IMG" "$RUN/disk.qcow2" "$DISK"
 
 PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -341,11 +347,15 @@ while :; do
 done
 mkdir -p "$RESULTS"
 for i in 1 2 3 4 5; do
-  # The guest's results hold no symbolic link: a link there could point the
-  # host's tar outside $RESULTS. Links are deleted in the guest, and the
-  # host's tar refuses absolute names and `..` anyway.
-  vssh 'sudo find rnk/out -type l -delete && tar -C rnk/out -cf - .' |
-    tar -C "$RESULTS" --no-same-owner --no-same-permissions -xf - && break
+  # The guest's results hold only regular files and directories: a link
+  # could point the host's tar outside $RESULTS, a device or FIFO has no
+  # business there. A builder container left running could still write, so
+  # those go first. The guest deletes everything else, and the host again
+  # after extracting; the host's tar refuses absolute names and `..` anyway.
+  vssh 'c=$(sudo docker ps -aq --filter name=rnk-e2e- 2>/dev/null); [ -z "$c" ] || sudo docker rm -f $c >/dev/null
+    sudo find rnk/out ! -type f ! -type d -delete && tar -C rnk/out -cf - .' |
+    tar -C "$RESULTS" --no-same-owner --no-same-permissions -xf - &&
+    find "$RESULTS" ! -type f ! -type d -delete && break
   [ "$i" = 5 ] && log "could not copy the results out"
   sleep 10
 done
