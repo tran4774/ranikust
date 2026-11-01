@@ -337,3 +337,71 @@ fn kaniko_mode_on_a_host_without_mounts_is_refused() {
     assert!(host_without_mounts(true, false).is_none());
     assert!(host_without_mounts(false, true).is_none());
 }
+
+/// Red team (criterion 8): only a refused overlay mount routes `--mode=auto`
+/// to kaniko mode. A probe that mounted but could not unmount, failed
+/// writing through the overlay, a state directory path overlay's options
+/// cannot carry, an option string too long, a `Mount` error not wrapped
+/// as the probe's, a probe error wrapping a probe error, and `ENFILE`
+/// (the one excluded errno the earlier test leaves out) all refuse, in a
+/// container or not.
+#[test]
+fn red_team_probe_failures_other_than_a_refused_mount_never_route() {
+    use rustix::io::Errno;
+    let mount = |errno| SnapshotError::Mount {
+        target: "/s/merged".into(),
+        lowers: 1,
+        how: "mount(2)",
+        step: "mount".into(),
+        errno,
+        options: Some(120),
+    };
+    let probe = |step, source| SnapshotError::Probe {
+        step,
+        source: Box::new(source),
+    };
+    let not_routed = [
+        probe(
+            "unmount",
+            SnapshotError::Unmount {
+                target: "/s/merged".into(),
+                errno: Errno::BUSY,
+            },
+        ),
+        probe(
+            "write through the overlay",
+            SnapshotError::Rootfs(rnk_rootfs::Error::InvalidPath {
+                path: "new".into(),
+                reason: "test",
+            }),
+        ),
+        SnapshotError::UnsafePath {
+            path: "/s,lowerdir=/".into(),
+            reason: "a comma",
+        },
+        probe(
+            "mount",
+            SnapshotError::OptionsTooLong {
+                target: "/s/merged".into(),
+                lowers: 1,
+                len: 5000,
+                max: 4095,
+            },
+        ),
+        // Not the probe's: never a refused probe mount.
+        mount(Errno::INVAL),
+        probe("mount", probe("mount", mount(Errno::INVAL))),
+        probe("mount", mount(Errno::NFILE)),
+    ];
+    for e in &not_routed {
+        let r = overlay_refusal(e, 0);
+        assert_eq!(r.kind, Kind::Other, "{e}");
+        for in_container in [false, true] {
+            assert_eq!(route(&r, in_container), Route::Refuse, "{e}");
+        }
+        assert!(!r.needs_kaniko_mode(), "{e}");
+    }
+    // Not root: whatever the kernel said, never kaniko mode.
+    let r = overlay_refusal(&probe("mount", mount(Errno::INVAL)), USER);
+    assert_eq!(route(&r, false), Route::Refuse);
+}

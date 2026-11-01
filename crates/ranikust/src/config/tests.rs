@@ -407,3 +407,32 @@ fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
             .is_empty()
     );
 }
+
+/// Red team (criterion 8, review finding #7): the early `--ignore-path`
+/// check probes each path alone, against short names. Several paths that
+/// each pass can together take every possible top-level name, and `/??*`
+/// (every name of two characters or more, so every top-level entry of a real
+/// image) passes while `/?*` is refused. Either leaves every layer empty;
+/// no host path is touched, so this is a gap in the best-effort refusal,
+/// not in host safety.
+#[test]
+#[ignore = "red team finding: --ignore-path whole-root check is per path and probes short names; a union of paths or /??* passes"]
+fn red_team_finding_ignore_paths_that_together_take_the_whole_root_pass_the_early_check() {
+    // Together: every name starting with a-m, n-z, or anything else.
+    let union = config(&[
+        "--no-push",
+        "--ignore-path=/[a-m]*",
+        "--ignore-path=/[n-z]*",
+        "--ignore-path=/[^a-z]*",
+    ]);
+    assert!(
+        union.is_err(),
+        "a union of --ignore-paths covering every top-level name is accepted"
+    );
+    for every_real in ["--ignore-path=/??*", "--ignore-path=/[^.]?*"] {
+        assert!(
+            config(&["--no-push", every_real]).is_err(),
+            "{every_real} takes every top-level entry of a real image and is accepted"
+        );
+    }
+}
