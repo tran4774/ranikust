@@ -255,7 +255,7 @@ settles them (Q-024):
   closed to other stages' `RUN`s, which wait at most a minute: to design
   there.
 - **Refused:** kaniko mode without root, and `--parallel-stages`
-  (ADR-0060, [open: Q-400]), each with its reason. Off `/` the stages do not share a root: see
+  (ADR-0060, Q-400: a), each with its reason. Off `/` the stages do not share a root: see
   [Per-stage directories](#per-stage-directories).
 
 `Kaniko` also takes a root other than `/` (a directory, its keep area
@@ -522,10 +522,11 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
 
 ## The `--parallel-stages` path (bare `chroot`)
 
-> Not built: the flag is refused until Q-400 is answered (ADR-0060). A
+> Not built: the flag is refused (ADR-0060, Q-400: a). A
 > `RUN` that escapes a bare `chroot` reaches what ADR-0051 keeps out of
-> its reach; Q-400 holds a hardened variant (capabilities dropped after
-> the `chroot`, no procfs) to measure first. The text below is the plan of
+> its reach; Q-400's option (b), a hardened variant (capabilities dropped
+> after the `chroot`, no procfs), may be reconsidered after a VM
+> measurement. The text below is the plan of
 > ADR-0014.
 
 Used only on request where mounting is impossible. `RUN` needs

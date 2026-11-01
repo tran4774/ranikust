@@ -12,8 +12,8 @@
 //! picks the mode.
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
-//! nothing can be mounted; it is not built, and the flag is refused until
-//! Q-400 is answered (ADR-0060). A bare `chroot` is never used when mounting
+//! nothing can be mounted; it is not built, and the flag is refused
+//! (ADR-0060). A bare `chroot` is never used when mounting
 //! is possible.
 //!
 //! # Use

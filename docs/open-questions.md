@@ -480,55 +480,22 @@ Entry format:
 - **Interim:** refused in every mode (Phase 5).
 - **Raised:** 2026-11-01
 
+## Answered
+
 ### Q-400: How does `--parallel-stages` run stages at once on a container's `/` without mounts?
 
-- **Blocks:** `--parallel-stages` (Phase 2 task 10); **Area:**
-  `rnk-sandbox`, `rnk-snapshot`, `ranikust`
-- **Context:** [ADR-0014](adr/0014-kaniko-mode-sequential-by-default.md)
-  planned one directory per stage and `RUN` in a bare `chroot`, accepting
-  that a `RUN` "escapes the `chroot` and reads or writes another stage"
-  ([experiment 12](research/experiments/12-kaniko-mode-parallel.md#isolation),
-  threat model T12). Since then
-  [ADR-0051](adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md) and
-  [ADR-0056](adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) keep the state
-  directory, the store and the credentials out of a kaniko-mode `RUN`'s
-  reach on `/`. Stage directories must be named directories on `/` (a
-  `chroot` needs one), so a `RUN` that escapes its `chroot` (it keeps
-  `CAP_SYS_CHROOT`, in Docker's default set) reaches the state directory,
-  every other stage and ranikust's `/proc` again, which ADR-0051 rules out.
-  Outside a container the question does not arise: stages already run in
-  parallel there, each in its own directory with the full sandbox
-  ([ADR-0059](adr/0059-kaniko-mode-off-root-builds-each-stage-in-its-own-directory.md)).
-- **Options:**
-  - (a) Refuse `--parallel-stages` everywhere (outside a container it adds
-    nothing; on `/` it cannot be made safe yet); overlay mode, where the
-    container allows mounts, is the way to parallel stages.
-  - (b) A hardened bare `chroot`: the `RUN` child `chroot`s into its stage
-    directory under the `0700` state directory, then drops
-    `CAP_SYS_CHROOT`, `CAP_MKNOD` (ranikust makes the `/dev` nodes first),
-    and everything ADR-0051 already drops, from all its sets, keeps no
-    inherited descriptor and gets the static fake `/proc` of ADR-0038, no
-    procfs. The classic escapes then need a capability it lacks (a second
-    `chroot`, `open_by_handle_at`, `mount`, a raw block device)
-    **[inferred]**. Left: with `kernel.yama.ptrace_scope` 0 a `RUN` may
-    `ptrace` a sibling stage's `RUN` (same uid, dumpable after `execve`)
-    and read that stage's secrets; any `RUN` may signal the others or
-    ranikust (a failed build, not a leak); abstract Unix sockets are shared.
-    Refuse where `ptrace_scope` is 0, or document it. Dockerfiles whose
-    `RUN` uses `mknod`, `chroot` or `/proc` fail; heredoc `#!` scripts have
-    no `/dev/fd`. Needs a VM test of every escape vector before it ships.
-  - (c) ADR-0014 as written (bare `chroot`, no capability change): a `RUN`
-    escapes to `/`; contradicts ADR-0051.
-- **Recommendation:** (a) now; (b) only if builds need parallel stages
-  inside containers that forbid mounts, after `poc-runner` measures the
-  escape vectors of (b) (rootful Docker, Kubernetes' default profile,
-  `ptrace_scope` 0 and 1) and the maintainer accepts its residual risks.
-  (c) never.
-- **Interim:** (a): the flag exits 2 with this reason (`cli.rs`
-  `PARALLEL_STAGES`).
-- **Raised:** 2026-11-01
-
-## Answered
+- **Answer (2026-11-01):** "Ok làm theo đề xuất của bạn": option (a).
+  `--parallel-stages` stays refused with exit 2 and guidance, whatever
+  the environment: outside a container stages already run in parallel
+  with the full sandbox (ADR-0059), and on a container's `/` a bare
+  `chroot` per stage lets a `RUN` escape to what ADR-0051 and ADR-0056
+  keep out of its reach. Option (b), a hardened bare `chroot`
+  (capabilities dropped after the `chroot`, static fake `/proc`, no
+  procfs), may be reconsidered only after `poc-runner` measures its escape
+  vectors in the VM (rootful Docker, Kubernetes' default profile,
+  `ptrace_scope` 0 and 1); option (c), ADR-0014 as written, never.
+  Recorded in
+  [ADR-0060](adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md).
 
 ### Q-380: How does a `Direct` `RUN` on `/` get a secret as a file?
 

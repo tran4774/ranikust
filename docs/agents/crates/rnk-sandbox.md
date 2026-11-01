@@ -21,7 +21,7 @@ where mounting is possible; no `RUN` process outlives the build.
   `chroot` of a root other than `/` (a root in the state directory, ADR-0050) with journaled placed files (`ADR-0043`).
 - The no-mount `--parallel-stages` path (bare `chroot`, `mknod` `/dev`
   nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`): not built, the flag
-  is refused until Q-400 is answered (ADR-0060).
+  is refused (ADR-0060).
 
 ## Must not
 

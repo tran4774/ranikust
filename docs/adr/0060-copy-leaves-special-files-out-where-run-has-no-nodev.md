@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-01
 decision-makers: Tran Nguyen (maintainer)
 ---
@@ -33,7 +33,8 @@ default set) escapes it to `/` (experiment 12), reaching all of that.
 - `COPY`: (a) keep device nodes, FIFOs and sockets in every mode, as
   BuildKit; (b) leave them out wherever the `RUN` enters the root without
   `nodev`; (c) leave them out in every mode.
-- `--parallel-stages`: the options of Q-400.
+- `--parallel-stages`: the options of Q-400: (a) refuse it; (b) a
+  hardened bare `chroot`; (c) ADR-0014's bare `chroot` as written.
 
 ## Decision Outcome
 
@@ -45,11 +46,18 @@ default set) escapes it to `/` (experiment 12), reaching all of that.
   `RUN` did not make in its own layer.
 - `--parallel-stages` is recognised and refused with exit 2 and the reason
   (ADR-0049's rule for flags that would change nothing, or that cannot be
-  honoured), whatever the environment, until Q-400 is answered
-  [open: Q-400]. Outside a container it would add nothing (stages already
-  run in parallel, ADR-0059); on a container's `/` none of the designs so
-  far keeps ADR-0051's guarantees. ADR-0014's opt-in, ADR-0019's
-  `JAVA_TOOL_OPTIONS` and ADR-0038's fake `/proc` (Q-037) wait with it.
+  honoured), whatever the environment (Q-400: a). Outside a container it
+  would add nothing (stages already run in parallel, ADR-0059); on a
+  container's `/` none of the designs so far keeps ADR-0051's guarantees.
+  This supersedes ADR-0014's `--parallel-stages` opt-in; ADR-0019's
+  `JAVA_TOOL_OPTIONS` and ADR-0038's fake `/proc` (Q-037), which only
+  that path used, are not built.
+- A later ADR may supersede this one with Q-400's option (b), a hardened
+  bare `chroot`, only after `poc-runner` has measured its escape vectors
+  in the VM (rootful Docker, Kubernetes' default profile,
+  `kernel.yama.ptrace_scope` 0 and 1) and the maintainer accepts the
+  residual risks it leaves (`ptrace` of a sibling `RUN` where
+  `ptrace_scope` is 0, signals, shared abstract Unix sockets).
 
 ### Consequences
 
@@ -66,6 +74,10 @@ default set) escapes it to `/` (experiment 12), reaching all of that.
 
 ## More Information
 
+- Accepted by the maintainer on 2026-11-01 ("Ok làm theo đề xuất của
+  bạn": Q-400 option (a)).
+
 - [Q-400](../open-questions.md#q-400-how-does---parallel-stages-run-stages-at-once-on-a-containers--without-mounts)
-  holds the hardened-`chroot` design and what must be measured first.
+  holds the hardened-`chroot` design (option (b)) and what must be
+  measured before it is reconsidered.
 - Host-safety review of task 9 raised the `COPY` gap (2026-11-01).

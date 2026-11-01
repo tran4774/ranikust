@@ -325,6 +325,6 @@ error, a refused kaniko flag, an invalid combination, and for now every
   the kaniko-mode workdir lock (`ADR-0038`, Q-011), built in Phase 2 task
   1, then replaced by ranikust picking the root (ADR-0050).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
-- `--parallel-stages` refused with exit 2 until Q-400 (ADR-0060). Deferred: `--ignore-path` (phase 2); `--seccomp`,
+- `--parallel-stages` refused with exit 2 (ADR-0060). Deferred: `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push`
   (an OCI layout only, ADR-0052); no `login` (ADR-0049).

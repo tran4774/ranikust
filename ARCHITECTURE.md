@@ -159,7 +159,7 @@ the root through `rnk-rootfs`, exec. Also the probes of its own
 capabilities, each tried for real: namespaces, the uid map, `proc`,
 `pivot_root`/`MS_MOVE`, `sysfs`. In sequential kaniko mode it runs `RUN`
 directly on `/`, like kaniko (`Isolation::Direct`). When nothing can be
-mounted, `--parallel-stages` was to use (it is held back: refused with exit 2 until Q-400 is answered (ADR-0060)) a bare `chroot` into a per-stage directory
+mounted, `--parallel-stages` was to use (it is held back: refused with exit 2 (ADR-0060)) a bare `chroot` into a per-stage directory
 with `mknod` `/dev` nodes, the static fake `/proc` and `/sys`, and the
 `JAVA_TOOL_OPTIONS` limits of
 [ADR-0019](docs/adr/0019-java-tool-options-on-parallel-path.md); a bare

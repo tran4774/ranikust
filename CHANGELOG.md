@@ -215,7 +215,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 ### Changed
 
 - `--parallel-stages` is recognised and refused with exit 2 and its reason
-  until open question Q-400 is answered (ADR-0060): outside a container
+  (ADR-0060, Q-400): outside a container
   kaniko mode already builds stages in parallel, and on a container's `/`
   a bare `chroot` per stage would let a `RUN` reach the state directory,
   the credentials and the other stages.
