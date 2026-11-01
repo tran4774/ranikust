@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Independent stages built at once (ADR-0013, ADR-0059): with
 # --reproducible, the image is the same at --jobs 1 and 4, and the same as
 # the one built with the stages forced one after the other
@@ -30,7 +31,7 @@ case_run() {
 # which records the scope's memory.peak (page cache included) when the
 # build ends. One warm-up round, then RANIKUST_QUICK_BENCH_ROUNDS (3).
 case_bench() {
-  local o wrap n cpuset rounds round mode cap work jobs t0 t1 rc tag peak
+  local o wrap n cpuset rounds round mode cap work w j t0 t1 rc tag peak
   o="$(out bench)"
   rm -rf "$o" && mkdir -p "$o"
   wrap="$W/bench-wrap.sh"
@@ -56,21 +57,23 @@ EOF
     for mode in kaniko overlay; do
       for cap in cap4 all; do
         for work in "chain default" "par 1" "par default"; do
-          set -- $work
-          tag="$mode-$cap-$1-j$2-r$round"
+          read -r w j <<<"$work"
+          tag="$mode-$cap-$w-j$j-r$round"
           local scope=(--quiet --scope --collect)
           [ "$cap" = all ] || scope+=(-p CPUQuota=400% -p AllowedCPUs="$cpuset" -p MemoryMax=8G -p MemorySwapMax=0)
           local args=(--context "$SMOKE_CASES_DIR/$CASE" --mode="$mode" --state-dir "$W/bench-$mode"
             --no-push --reproducible --build-arg "BASE=$BASE" --build-arg FILES=20000 --build-arg MB=300
             --metrics-file "$o/$tag.json")
-          [ "$1" = chain ] && args+=(-f Dockerfile.chain)
-          [ "$2" = default ] || args+=(--jobs "$2")
+          [ "$w" = chain ] && args+=(-f Dockerfile.chain)
+          [ "$j" = default ] || args+=(--jobs "$j")
           rc=0
           t0="$(date +%s%N)"
+          # The log is written as rnk; the build runs as root.
+          # shellcheck disable=SC2024
           sudo systemd-run "${scope[@]}" -- "$wrap" "$o/peak" "$RNK" "${args[@]}" >"$o/$tag.log" 2>&1 || rc=$?
           t1="$(date +%s%N)"
           peak="$(sudo cat "$o/peak" 2>/dev/null || echo 0)"
-          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mode" "$cap" "$1" "$2" "$round" \
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mode" "$cap" "$w" "$j" "$round" \
             "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.2f", (b - a) / 1e9 }')" \
             "$((peak / 1048576))" "$rc" >>"$o/bench.tsv"
           [ "$rc" = 0 ] || { cat "$o/$tag.log" >&2; fail "bench build $tag exited $rc" || return 1; }
