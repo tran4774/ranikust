@@ -117,6 +117,30 @@ fn xattr(p: &Path, name: &str) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// A `security.capability` that cannot be set (no `CAP_SETFCAP`, as here
+/// unprivileged; a filesystem without xattrs) fails the extraction, naming
+/// the file, instead of leaving a binary without its capability
+/// (kaniko#738, kaniko#2201): the image's layer keeps it either way, but a
+/// `RUN` would run the binary without it.
+#[test]
+fn a_file_capability_that_cannot_be_set_fails_the_extraction() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("skipped: root may set security.capability");
+        return;
+    }
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    // VFS_CAP_REVISION_2, cap_net_raw (13) permitted and effective.
+    let cap: [u8; 20] = [
+        0x01, 0x00, 0x00, 0x02, 0x00, 0x20, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    t.pax(&[("SCHILY.xattr.security.capability", &cap)])
+        .file("ping", 0o755, b"elf");
+    let e = extract(&f.root, t.bytes().as_slice(), Whiteouts::Overlay).unwrap_err();
+    let text = e.to_string();
+    assert!(text.contains("setxattr") && text.contains("ping"), "{text}");
+}
+
 #[test]
 fn regular_layer_keeps_raw_modes_times_and_links() {
     let f = Fixture::new();

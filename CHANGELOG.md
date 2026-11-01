@@ -262,6 +262,18 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   message naming the plain path, and `--context-sub-path` with a local
   context is refused (exit 2) with a message naming the sub-directory to
   pass as `--context` (ADR-0054).
+- Fixes from mining kaniko's, BuildKit's and buildah's issues (ADR-0052):
+  - a kaniko-mode build on a container's `/` that follows an earlier one
+    in the same container empties `/` before its first base, so its image
+    never holds what the earlier build left (a marker,
+    `/ranikust/.built`, tells them apart);
+  - kaniko mode keeps `/var/run` out of layers only where it is a mount
+    point, so an image's `/var/run -> /run` link (alpine 3.12 and later)
+    is kept; `--ignore-var-run` and `--whitelist-var-run` now change
+    nothing and are refused (exit 2);
+  - `COPY --from=<name>` where `<name>` is no stage and a bare word (a
+    mistyped stage name) is refused instead of pulled from Docker Hub;
+    name an image with a tag, a digest or a registry.
 
 ### Removed
 

@@ -10,6 +10,22 @@
 > --mount=type=bind`, `ONBUILD`…) stop the build with a message naming
 > the phase.
 
+Where a Dockerfile most likely says something it did not mean, ranikust
+stops instead of guessing
+([ADR-0052](../adr/0052-push-input-aliases-and-issue-mining-fixes.md)):
+
+- A `COPY` or `ADD` source that expands to an empty string (an unset
+  `ARG`) is refused; BuildKit copies the whole context. Write `.` for
+  that.
+- `COPY --from=<name>`, where `<name>` is no stage and a bare word, such as
+  a mistyped stage name, is refused; BuildKit pulls an image of that name
+  from Docker Hub. Name an image with a tag, a digest or a registry:
+  `--from=busybox:latest`, `--from=docker.io/library/busybox`.
+- As in BuildKit, an octal `COPY --chmod` applies to the directories it
+  copies and creates too: `--chmod=0640` leaves them without `x`, so only
+  root can enter them. Use a symbolic mode (`--chmod=go+rX`) to keep
+  directories traversable.
+
 ## Running it
 
 Without a subcommand, ranikust builds, as kaniko's `executor` does, so the
@@ -53,7 +69,6 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--insecure-registry=REGISTRY` | Reach this registry (`host[:port]`) over plain HTTP when HTTPS fails, as kaniko. Repeatable. A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP without it, as BuildKit. |
 | `--snapshot-mode=full\|redo\|time` | What kaniko mode compares between snapshots, as in kaniko; ignored, with a warning, in overlay mode. kaniko's `--snapshotMode` is refused, naming this flag. |
 | `--ignore-path=PATH` | An absolute path kaniko mode keeps out of every layer, as in kaniko. Repeatable. Refused in overlay mode for now. |
-| `--ignore-var-run[=BOOL]` | Keep `/var/run` out of kaniko mode's layers, as in kaniko; default `true`. kaniko's `--whitelist-var-run` is refused, naming this flag. `false` is refused in overlay mode for now. |
 | `--single-snapshot` | Kaniko mode takes one snapshot at the end of the build, as in kaniko. Refused in overlay mode for now. |
 | `--materialize` | As in kaniko; it matters only with a layer cache, which ranikust does not have yet. |
 | `--compression-level=N` | gzip `-1` (6) to `9`, zstd `1` to `19`. gzip `-2` and zstd `20` to `22`, which kaniko takes, are refused. Default: ranikust's (gzip 6, zstd 3). |
@@ -104,9 +119,12 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
 ```
 
 - **Renamed:** `--kaniko-dir` is `--state-dir`; kaniko's old spellings
-  `--tarPath`, `--snapshotMode`, `--customPlatform`, `--custom-platform`
-  and `--whitelist-var-run` are `--tar-path`, `--snapshot-mode`,
-  `--platform` and `--ignore-var-run`.
+  `--tarPath`, `--snapshotMode`, `--customPlatform` and `--custom-platform`
+  are `--tar-path`, `--snapshot-mode` and `--platform`.
+- **`/var/run`:** `--ignore-var-run` and `--whitelist-var-run`. kaniko mode
+  keeps `/var/run` out of layers only where it is a mount point, as every
+  mount point, so an image's `/var/run -> /run` link is kept
+  ([ADR-0052](../adr/0052-push-input-aliases-and-issue-mining-fixes.md)).
 - **Never on this machine's `/`:** `--force`. Outside a container kaniko
   mode builds in a directory of the state directory instead.
 - **Change nothing in ranikust:** `--cache-dir` (the warmer is not planned;

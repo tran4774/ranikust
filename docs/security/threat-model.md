@@ -126,6 +126,13 @@ These follow from decisions and are documented to users rather than fixed:
   `RUN`'s choosing. With `kernel.yama.ptrace_scope` 0 a `RUN` process may
   trace other dumpable processes of its user (ranikust warns). Nothing of ranikust's
   state outlives a kaniko-mode build on `/`.
+- Builds one after the other in one container trust one another. A later
+  build empties `/` before its first base when an earlier build left its
+  marker, `/ranikust/.built` (ADR-0052, D1), so files left by accident never
+  reach its image; but a `RUN` of the earlier build runs as root on `/` and
+  can delete the marker, or replace the `ranikust` binary under
+  `/ranikust`, which no build empties. Run each untrusted Dockerfile in a
+  fresh container.
 - Until `--seccomp` (Phase 3), a root `RUN` in the full sandbox can use
   uid 0's user and persistent keyrings, which Docker's seccomp profile
   denies (T11).

@@ -46,7 +46,8 @@ struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, d
     context is a plain path and `dir://` is refused, exit 2 (ADR-0053, ADR-0054);
     `context_sub_path` then applies to fetched contexts only and a local context with it is
     refused, exit 2 (ADR-0054);
-    kaniko mode (ADR-0040): ignore_paths, ignore_var_run, single_snapshot, materialize;
+    kaniko mode (ADR-0040): ignore_paths, single_snapshot, materialize (`--ignore-var-run`
+    and `--whitelist-var-run` refused, ADR-0052 D4);
     ours: mode, state_dir, jobs, network, secret, allow, metrics_file, snapshot_workers.
     No --workdir, --force refused (ADR-0050); kaniko's old spellings refused (ADR-0052).
     Planned: cache, cache_repo (4), parallel_stages (2), seccomp, userns (3) */ }

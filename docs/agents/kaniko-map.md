@@ -91,9 +91,10 @@ meaning tests are listed there):
 | `--push-retry`, `--image-download-retry` (`:396`, `:398`) | accepted as kaniko's outer loops (`util.go:221`, 1 s doubling, any error) around the client's own retries: the whole push (`push.go:364`), the image manifest fetch (`remote.go:79,121`) |
 | `--skip-push-permission-check` (`:372`), `--preserve-context` (`:375`) | accepted: their meaning holds without code in overlay mode |
 | `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | refused with the reason: they change nothing in ranikust, and no flag is ignored (ADR-0049) |
-| `--context-sub-path` (`:339`) | kaniko joins it onto a `dir://` or fetched context (`root.go:599-631`, `buildcontext/dir.go:25`) and ignores it for a plain path; ranikust drops `dir://` and applies it to fetched contexts only, and refuses it with a local context, exit 2 (ADR-0053, ADR-0054; the code still joins it onto `dir://` and warns for a plain path until task 7's branch) |
+| `--context-sub-path` (`:339`) | kaniko joins it onto a `dir://` or fetched context (`root.go:599-631`, `buildcontext/dir.go:25`) and ignores it for a plain path; ranikust drops `dir://` (refused, exit 2) and applies it to fetched contexts only, and refuses it with a local context, exit 2 (ADR-0053, ADR-0054) |
 | `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
-| `--single-snapshot`, `--materialize`, `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | accepted with kaniko's meaning in kaniko mode (ADR-0040), `--whitelist-var-run` refused, naming `--ignore-var-run` (ADR-0052); in overlay mode `--single-snapshot` and `--ignore-var-run=false` refused for good (ADR-0049), `--materialize` and `--ignore-var-run=true` warned about; wired to the walk by Phase 2 tasks 3–6 |
+| `--single-snapshot`, `--materialize` | accepted with kaniko's meaning in kaniko mode (ADR-0040); in overlay mode `--single-snapshot` refused for good (ADR-0049), `--materialize` warned about; wired to the walk by Phase 2 tasks 3–6 |
+| `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | refused, exit 2: kaniko mode ignores `/var/run` only where it is a mount point, as every mount point, so the flag changes nothing (ADR-0052 D4, ADR-0049) |
 | `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-ignore-immutable-tag-errors` | refused until Phase 5 |
 | `--dryrun` | refused, not scheduled |
 | `--azure-container-registry-config` (hidden, `:413`), `bake` | refused for good (`ADR-0008`) |
@@ -149,9 +150,14 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   `--ignore-path`, `/proc`, `/sys`, `/dev` and the state directory
   (`/var/lib/ranikust` in a container, `ADR-0050`;
   `design/kaniko-mode.md#ignore-list`), and, as kaniko, all of
-  `/ranikust`, `/etc/mtab`, `/tmp/apt-key-gpghome` and `/var/run` while
-  `--ignore-var-run` is true (`ADR-0038`). Overlay mode needs no list: mounts
-  live in `RUN`'s namespace.
+  `/ranikust`, `/etc/mtab` and `/tmp/apt-key-gpghome` (`ADR-0038`), but not
+  `/var/run` unless it is a mount point, so alpine's `/var/run -> /run`
+  link survives (ADR-0052 D4; kaniko#1297). Overlay mode needs no list:
+  mounts live in `RUN`'s namespace.
+- **A second build on `/`.** kaniko extracts the first base over whatever
+  `/` holds, so a second build in one container ships the first's files
+  (kaniko#3310); ranikust marks `/` under `/ranikust` and empties it first
+  when the marker is there (ADR-0052 D1).
 - **Timestamps and `--reproducible`.** kaniko stamps the pushed image with
   the current time (`pkg/executor/build.go:2100`); with `--reproducible` it
   rewrites the image through `mutate.Canonical` and switches to Docker v2s2

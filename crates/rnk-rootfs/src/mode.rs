@@ -341,6 +341,10 @@ mod tests {
         assert_eq!(Chmod::created_dir_mode(None), 0o755);
         assert_eq!(Chmod::created_dir_mode(Some(&Chmod::Octal(0o700))), 0o700);
         assert_eq!(Chmod::created_dir_mode(Some(&Chmod::Octal(0o7755))), 0o755);
+        // ADR-0052, D3: kept as BuildKit (moby/buildkit#5943): no `x` is
+        // added, so `0640` leaves created directories untraversable.
+        assert_eq!(Chmod::created_dir_mode(Some(&Chmod::Octal(0o640))), 0o640);
+        assert_eq!(Chmod::created_dir_mode(Some(&Chmod::Octal(0o444))), 0o444);
         let sym = Chmod::parse("u+x").unwrap();
         assert_eq!(Chmod::created_dir_mode(Some(&sym)), 0o755);
     }

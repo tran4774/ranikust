@@ -77,7 +77,14 @@ with the default security profile or in most Kubernetes pods.
 - It works the way kaniko does. The build root is the container's own `/`:
   base image layers are unpacked there, `RUN` commands run there, and changes
   are found by walking and hashing the filesystem after each instruction.
-  Between stages, the root filesystem is emptied. What a later stage reads
+  Between stages, the root filesystem is emptied. A second build in the
+  same container empties it before its first base too, so its image never
+  holds what the first build left: the first build leaves a marker,
+  `/ranikust/.built`; without it the first base is unpacked over what the
+  container holds, as kaniko does, so the container's own tools stay
+  ([ADR-0052](https://github.com/tran4774/ranikust/blob/main/docs/adr/0052-push-input-aliases-and-issue-mining-fixes.md)).
+  `/var/run` is kept out of layers only where it is a mount point, so an
+  image's `/var/run -> /run` link is kept. What a later stage reads
   of an earlier one (`COPY --from`, `RUN --mount from=`, `FROM <stage>`)
   is copied aside first, into the build's directory under the state
   directory; for `COPY --from` only the paths it names, and an image read
