@@ -124,7 +124,7 @@ stands with what makes overlay mode work (a volume at the state
 directory). No refusal's guidance sends a user back to the mode they
 used. `--ignore-path` is refused in overlay mode where it would change the
 image, for good (ADR-0049); `--single-snapshot` is refused in every mode
-until Q-420 is answered; `--materialize` is refused until Phase 4
+for good (ADR-0065); `--materialize` is refused until Phase 4
 (ADR-0064); `--ignore-var-run` is refused in both modes (ADR-0052 D4)
 ([ADR-0049](../adr/0049-security-and-performance-over-kaniko-compatibility.md)).
 

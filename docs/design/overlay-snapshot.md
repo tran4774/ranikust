@@ -261,7 +261,7 @@ stages as in kaniko.
 ## Open questions
 
 - [Q-245](../open-questions.md#q-245-should-one-overlay-mount-serve-consecutive-instructions) Should one overlay mount serve consecutive instructions?
-- [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
+- [Q-421](../open-questions.md#q-421-which-performance-conditions-does-phase-6-measure) Which performance conditions does Phase 6 measure? (Q-033's leftovers)
 - [Q-026](../open-questions.md#q-026-when-and-how-are-layers-merged-near-the-500-lower-limit) When and how are layers merged near the 500-lower limit?
 - [Q-152](../open-questions.md#q-152-how-are-read-only-layer-roots-published-without-root) How are read-only layer roots published without root?
 - [Q-013](../open-questions.md#q-013-how-does-the-layer-writer-learn-missing-parent-metadata) How does the layer writer learn missing parent metadata?

@@ -227,26 +227,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-033: Which performance conditions are still unmeasured?
-
-- **Blocks:** Phase 1 task 13; Phase 2; **Area:** performance
-- **Context:** not measured: sha256 of large layers with `sha2` against
-  `ring::digest`, which the TLS provider already brings in (Q-012 kept
-  `sha2`; the switch stays inside `rnk_layer::Sha256Digest`); real network
-  registries, where overlapping
-  pulls may matter more than CPU
-  ([scheduler](design/scheduler.md#open-questions));
-  export on memory-starved runners, where one layer took 1.8–6.6 s
-  ([overlay-snapshot](design/overlay-snapshot.md#open-questions)); cold page
-  cache, slow disks and deletion of very large roots in kaniko mode
-  ([kaniko-mode](design/kaniko-mode.md#open-questions)); `--snapshot-mode=redo`
-  and `time` against `full`, which decides whether they stay (ADR-0023,
-  [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md)).
-- **Options:** none listed.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
 ### Q-039: Which environments must the probe be tested in?
 
 - **Blocks:** Phase 3; **Area:** `ranikust`, `rnk-sandbox`, `rnk-snapshot`
@@ -409,44 +389,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-360: What does kaniko mode on `/` do after an earlier build in the container was cut short?
-
-- **Blocks:** nothing yet; **Area:** `rnk-store`, `ranikust`
-- **Context:** found by the host-safety review of ADR-0056: the fence
-  keeps names away from this build's `RUN` processes only. When an earlier
-  ranikust in the same container was killed mid-`RUN` and was not PID 1,
-  its `RUN`'s processes live on, outside any fence and any sweep, and
-  could open a name in the moment it exists. ranikust sees the trace: its
-  marker `.ranikust-building` left in the state directory, or leftover
-  `.ranikust-anon-*` names.
-  The marker holds the PID namespace and boot id: one from another
-  container or boot is stale and taken over. It covers accidental kills
-  only: a `RUN` can delete the marker and then try to get ranikust killed;
-  leftover names with no marker still count. A `RUN` that failed after
-  its command ran, or was cancelled, also leaves the marker (its sweep may
-  not have finished), so later builds in the container use memory too.
-- **Options:** (a) make no name for that build: state in `memfd`, with a
-  warning saying why and how to avoid it (run ranikust as PID 1, or
-  restart the container), the marker kept for later builds; a `COPY
-  --from` a kept stage or an image on `/`, which needs a named directory,
-  fails the build with that advice; (b) refuse the build; (c) kill every
-  process that is not an ancestor of ranikust, which cannot be done
-  safely: the container's other processes (a CI shell, a sidecar) are not
-  identifiable as the dead build's; (d) make names only when ranikust is
-  PID 1 (no process of a dead build can outlive it there), `memfd`
-  otherwise: safe against a deleted marker too, at a memory cost under a
-  CI shell, the common case.
-- **Recommendation:** (a). The build still succeeds unless it needs a
-  `COPY --from`, and it costs only memory, in a container where something
-  unusual already happened. Choose (d) instead if a `RUN` deleting the
-  marker must be covered too.
-- **Note:** an anonymous store holds an exclusive `flock` on its state
-  directory, so two containers sharing a volume never build on it at the
-  same time (the second is refused): a marker is taken over only from a
-  dead build.
-- **Interim:** (a), on `feat/kaniko-state-on-disk` (`rnk_store::Store::open_anonymous`).
-- **Raised:** 2026-11-01
-
 ### Q-370: Should a built layer be encoded straight into its upload?
 
 - **Blocks:** nothing; **Area:** `rnk-builder`, `rnk-registry`
@@ -480,40 +422,95 @@ Entry format:
 - **Interim:** refused in every mode (Phase 5).
 - **Raised:** 2026-11-01
 
-### Q-420: Does kaniko mode offer `--single-snapshot`?
+### Q-421: Which performance conditions does Phase 6 measure?
 
-- **Blocks:** Phase 2 criterion 8 (the flag's meaning); **Area:**
-  `ranikust`, `rnk-snapshot`
-- **Context:** kaniko's `--single-snapshot` takes one snapshot at the end
-  of the build instead of one per step, giving one layer. ADR-0049 accepts
-  it only if measured faster; the maintainer asked for a measurement first
-  (2026-11-01, "1: theo đề xuất"). Measured
-  (`rnk-snapshot` `single_snapshot_poc`, release build, 32-core host, a
-  tree on an ext4 NVMe disk, page cache warm, medians of 3; a light
-  synthetic workload, not W1–W3): 10 steps of 200 rewrites and 200 new
-  files each.
-  - 80 000 files: a walk takes 0.07 s; per-step walks 0.69 s in all, one
-    walk at the end 0.08 s: 0.61 s saved.
-  - 250 000 files (about W1's size): 0.14 s a walk; 1.39 s against 0.24 s:
-    1.16 s saved.
-  - W1 in the VM spends 3.3 s in its ten walks (ADR-0061's run), so a
-    single snapshot would save up to about 3 s of its 22 s [inferred from
-    those numbers, not measured on W1].
-  The cost: the image gets one layer instead of one per step, so Phase 4's
-  layer cache can reuse nothing of a rebuild, and a step's files can no
-  longer be told apart.
-- **Options:** (a) implement it in kaniko mode (one walk and one layer at
-  the end); (b) refuse it for good, an ADR; (c) leave it refused until
-  Phase 4's cache shows what per-step layers are worth on rebuilds.
-- **Recommendation:** (b): at most a few seconds on a build the size of
-  W1, against the per-step layers a cached rebuild needs (security
-  neutral, performance a loss on rebuilds, one flag fewer); (c) if the
-  maintainer wants the Phase 4 numbers first.
-- **Interim:** refused in every mode with a message naming this question
-  (`config::SINGLE_SNAPSHOT`, `[open: Q-420]` in `crates/ranikust/src/main.rs`).
+- **Blocks:** Phase 6; **Area:** performance
+- **Context:** what Q-033 left unmeasured after Phases 1 and 2 (see its
+  answer). Measured once by the ultra benchmark that closes Phase 2
+  (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`, criteria 1–6):
+  W2 cold and full rounds of W1–W3 against kaniko and BuildKit. Left for
+  Phase 6: sha256 of large layers with `sha2` against `ring::digest`
+  (ADR-0030); real network registries, where overlapping pulls may matter
+  more than CPU ([scheduler](design/scheduler.md#open-questions)); export
+  on memory-starved runners
+  ([overlay-snapshot](design/overlay-snapshot.md#open-questions)); cold
+  page cache, slow or network disks (NFS, FUSE state directories) and the
+  deletion of very large roots in kaniko mode
+  ([kaniko-mode](design/kaniko-mode.md#open-questions), ADR-0039's worker
+  cap); `--snapshot-mode=redo` and `time` against `full` on real builds
+  (ADR-0023, ADR-0049); cgroup v1 hosts (only experiment 16's
+  correctness runs); real aarch64 hardware ([testing](testing.md)); W3 with
+  more than 4 CPUs per builder (`RANIKUST_E2E_CPUS`), against experiment
+  12's 32-CPU numbers.
+- **Options:** none listed.
+- **Recommendation:** measure with `bench-runner` in Phase 6, the VM only,
+  no other VM running.
+- **Interim:** none
 - **Raised:** 2026-11-01
 
 ## Answered
+
+### Q-033: Which performance conditions are still unmeasured?
+
+- **Answer (2026-11-01):** "5. theo ý bạn": closed with what Phases 1
+  and 2 measured; what is left moves to Phase 6 as
+  [Q-421](#q-421-which-performance-conditions-does-phase-6-measure).
+  Measured:
+  - walk and hash against kaniko: kaniko's `snapshot.walk` 3.18 s and
+    `resolve` 2.48 s on W1
+    ([experiment 07](research/experiments/07-kaniko-vs-overlay.md));
+    ranikust's ten W1 walks 3.3 s in the VM (ADR-0061's run);
+  - parallel stages: W3 −41 to −44 % at 32 CPUs, −21 % at `--cpus=4`
+    ([experiment 12](research/experiments/12-kaniko-mode-parallel.md));
+    the `par-stages` bench (four independent stages against the same work
+    chained, VM, 4-CPU cap and uncapped): per-stage kaniko mode −43 to
+    −45 %, overlay mode −38 to −40 %, peak memory about 550–650 MiB
+    ([testing](testing.md), criterion 7);
+  - the shortened VM e2e runs of 2026-11-01 (one round each, builders
+    capped at 4 CPUs and 8 GiB, quiet host): W1 kaniko 23.4–26.2 s,
+    overlay 20.5–21.2 s, kaniko mode on a container's `/` 21.8–22.9 s,
+    per-stage kaniko mode 29.5–31.6 s before and 22.1 s after ADR-0061's
+    hand-over (Q-410); W3 kaniko 28.9–30.3 s, overlay 14.1–16.0 s, kaniko
+    mode on `/` 20.5–21.5 s, per-stage 14.5–17.2 s; every build's peak
+    memory now recorded per builder;
+  - `--single-snapshot`: 0.61 s saved at 80 000 files and 1.16 s at
+    250 000 files over 10 steps (Q-420, ADR-0065);
+  - the e2e harness itself: flatten 23.4 s → 3.9 s (1.1 s from its cache)
+    on a 220 000-path image; the light W0 suite in about 25 s, VM boot
+    included.
+- **Context (as asked):** not measured then: `sha2` against
+  `ring::digest`, real network registries, export on memory-starved
+  runners, cold page cache, slow disks and deletion of very large roots,
+  `--snapshot-mode=redo` and `time` against `full`. All carried into
+  Q-421.
+
+### Q-360: What does kaniko mode on `/` do after an earlier build in the container was cut short?
+
+- **Answer (2026-11-01):** "4: ok chốt a": option (a), the interim
+  behaviour stays. A store opened on this container's marker or on an
+  earlier store's leftover names makes no name for the build (state in
+  `memfd`, warned with why and how to avoid it: ranikust as PID 1, or
+  restart the container), keeps the marker, and a `COPY --from` a kept
+  stage or an image unpacked by name fails with that advice. Recorded in
+  [ADR-0066](adr/0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md).
+- **Context (as asked):** found by the host-safety review of ADR-0056: the
+  fence holds only this build's `RUN` processes, so a `RUN` of an earlier
+  ranikust killed mid-`RUN` (not PID 1) may live on and open a name in the
+  moment it exists. Options were (a) no names, `memfd`; (b) refuse; (c)
+  kill non-ancestors (unsafe); (d) names only as PID 1.
+
+### Q-420: Does kaniko mode offer `--single-snapshot`?
+
+- **Answer (2026-11-01):** "1. theo đề xuất": option (b), refused for good
+  in every mode, whatever its value, from the table of refused kaniko flags
+  (exit 2, before the arguments are parsed). Recorded in
+  [ADR-0065](adr/0065-single-snapshot-refused-for-good.md).
+- **Context (as asked):** measured with `rnk-snapshot`
+  `single_snapshot_poc` (release build, ext4, page cache warm, 10 steps of
+  200 rewrites and 200 new files): one walk at the end saves 0.61 s at
+  80 000 files and 1.16 s at 250 000 files (about W1's size), up to about
+  3 s on W1 [inferred], against the per-step layers Phase 4's cache reuses
+  on a rebuild.
 
 ### Q-410: How do per-stage directories stop costing more than kaniko on W1?
 

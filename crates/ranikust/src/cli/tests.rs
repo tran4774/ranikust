@@ -250,13 +250,11 @@ fn flags_that_change_nothing_are_refused() {
 fn kaniko_mode_flags_parse_with_kanikos_defaults() {
     let args = build(&["--no-push"]);
     assert!(args.ignore_paths.is_empty());
-    assert!(!args.single_snapshot);
     assert_eq!(args.snapshot_workers, None);
     let args = build(&[
         "--ignore-path=/a",
         "--ignore-path",
         "/b/../c",
-        "--single-snapshot",
         "--snapshot-workers=3",
         "--no-push",
     ]);
@@ -264,7 +262,6 @@ fn kaniko_mode_flags_parse_with_kanikos_defaults() {
         args.ignore_paths,
         [PathBuf::from("/a"), PathBuf::from("/b/../c")]
     );
-    assert!(args.single_snapshot);
     assert_eq!(args.snapshot_workers.map(NonZeroUsize::get), Some(3));
     assert_eq!(
         clap_error(&["--snapshot-workers=0", "--no-push"]).exit_code(),
@@ -298,6 +295,24 @@ fn old_spellings_and_force_are_refused() {
     assert!(lines[0].contains("ADR-0051"), "{}", lines[0]);
     // `--workdir` is gone: ranikust picks the root (ADR-0050).
     assert_eq!(clap_error(&["--workdir=/w", "--no-push"]).exit_code(), 2);
+}
+
+/// `--single-snapshot` is refused for good (ADR-0065, Q-420: b) in every
+/// value, `=false` included, before the arguments are parsed, with the
+/// decision named.
+#[test]
+fn single_snapshot_is_refused_for_good_whatever_its_value() {
+    for flag in [
+        "--single-snapshot",
+        "--single-snapshot=true",
+        "--single-snapshot=false",
+        "--single-snapshot=",
+    ] {
+        let lines = refused(&[flag, "--no-push"]);
+        assert_eq!(lines.len(), 1, "{flag}: {lines:?}");
+        assert!(lines[0].contains("ADR-0065"), "{flag}: {}", lines[0]);
+        assert!(!lines[0].contains("--mode=kaniko"), "{flag}: {}", lines[0]);
+    }
 }
 
 /// Red team (ADR-0060, T12): no spelling turns `--parallel-stages` on.

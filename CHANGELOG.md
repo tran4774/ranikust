@@ -246,12 +246,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   sandbox never routes there. Refusals no longer tell a user to use the
   mode they already used.
 - `--materialize` is refused until the layer cache (ADR-0064), and
-  `--single-snapshot` in every mode until Q-420 is answered (a measurement:
-  about 1 s saved per 250 000-file build of 10 steps, against a layer per
-  step). An `--ignore-path` of the whole root, `--ignore-path`s that together
+  `--single-snapshot` for good, in every mode and whatever its value,
+  `=false` included (ADR-0065; a measurement: about 1 s saved per 250 000-file
+  build of 10 steps, against the layer per step a cached rebuild reuses). An `--ignore-path` of the whole root, `--ignore-path`s that together
   take every top-level entry of a real image (`/*`, `/??*`, or `/[a-m]*`
   with `/[n-z]*` and `/[^a-z]*`; best effort), and a malformed pattern are
-  refused while the flags are read (exit 2), as is `--single-snapshot`. `--parallel-stages` is a
+  refused while the flags are read (exit 2). `--parallel-stages` is a
   decided refusal (ADR-0060), not a later phase. The `--jobs` warning in
   kaniko mode on `/` says it still bounds the uploads; the help of
   `--preserve-context`, `--jobs` and `--network` says what kaniko mode on

@@ -369,11 +369,6 @@ impl BuildConfig {
                 args.targets.join(", ")
             )));
         }
-        // Refused in every mode while the flags are read, before any I/O
-        // [open: Q-420].
-        if args.single_snapshot {
-            return Err(Invalid(SINGLE_SNAPSHOT.to_owned()));
-        }
         // kaniko keeps a relative `--ignore-path`, which then never matches
         // the absolute paths of its walk; ranikust says so instead.
         if let Some(path) = args.ignore_paths.iter().find(|p| !p.is_absolute()) {
@@ -506,8 +501,8 @@ impl BuildConfig {
 ///
 /// [`Invalid`] for those that would change the image: `--ignore-path` takes
 /// effect in kaniko mode only (ADR-0049): overlay mode's layers never hold
-/// mounts. (`--single-snapshot` never gets here: [`BuildConfig::from_args`]
-/// refuses it in every mode.)
+/// mounts. (`--single-snapshot` never gets here: it is refused with the
+/// other refused kaniko flags, before the arguments are parsed, ADR-0065.)
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
     if !args.ignore_paths.is_empty() {
         return Err(Invalid(
@@ -552,13 +547,6 @@ const TOP_LEVEL_PROBES: [&str; 13] = [
     "a-long-top-level-directory-name-of-sixty-characters-or-so-xx",
     "données",
 ];
-
-/// The refusal of `--single-snapshot`, in every mode, until a measurement
-/// settles whether one walk at the end of the build is worth the per-step
-/// layers it gives up [open: Q-420].
-pub(crate) const SINGLE_SNAPSHOT: &str = "--single-snapshot is not offered yet: whether one \
-     snapshot at the end beats a snapshot per step is still being measured (Q-420); drop the \
-     flag";
 
 /// A value enum's command-line name.
 pub(crate) fn name<T: ValueEnum>(value: T) -> String {

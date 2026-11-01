@@ -142,8 +142,8 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
         &[],
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    // Offered in no mode until Q-420 is answered.
-    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    // Refused for good, in every mode (ADR-0065, Q-420: b).
+    assert!(stderr(&out).contains("ADR-0065"), "{}", stderr(&out));
     // Nor in overlay mode, whose refusal no longer sends the user to
     // `--mode=kaniko` (criterion 8, review finding #1).
     let out = ranikust(
@@ -152,7 +152,7 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
         &[],
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("ADR-0065"), "{}", stderr(&out));
     assert!(!stderr(&out).contains("--mode=kaniko"), "{}", stderr(&out));
     // `--ignore-path` would change an overlay-mode image: refused before
     // the set-up (ADR-0049).
@@ -179,8 +179,8 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
 }
 
 /// `--single-snapshot` is refused with `--mode=auto` too (no `--mode`), as a
-/// non-root user, before anything is created [open: Q-420] (host-safety
-/// round 1, item 1).
+/// non-root user, before anything is created (ADR-0065; host-safety round 1
+/// of criterion 8, item 1).
 #[test]
 fn single_snapshot_is_refused_in_auto_mode_before_any_work() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -188,7 +188,7 @@ fn single_snapshot_is_refused_in_auto_mode_before_any_work() {
     let arg = format!("--state-dir={}", state.display());
     let out = ranikust(tmp.path(), &["--no-push", &arg, "--single-snapshot"], &[]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("ADR-0065"), "{}", stderr(&out));
     assert!(!state.exists(), "nothing is created");
 }
 
@@ -639,7 +639,10 @@ fn red_team_single_snapshot_and_materialize_have_no_bypass_spelling() {
         assert_eq!(out.status.code(), Some(1), "{env:?}: {}", stderr(&out));
         let err = stderr(&out);
         assert!(err.contains(STOPS_AS_A_USER), "{err}");
-        assert!(!err.contains("Q-420") && !err.contains("Phase 4"), "{err}");
+        assert!(
+            !err.contains("ADR-0065") && !err.contains("Phase 4"),
+            "{err}"
+        );
     }
 }
 

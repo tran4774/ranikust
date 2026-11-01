@@ -18,7 +18,7 @@
 //!    poisoned by a `RUN` that ended with an error, or when the store opened
 //!    on traces of an earlier build cut short ([`AnonFiles::tainted`]): a
 //!    `RUN` of that build may have left processes no sweep reached, which
-//!    could see a name [open: Q-360]. A full disk or quota is an error in
+//!    could see a name (ADR-0066). A full disk or quota is an error in
 //!    every way, never memory.
 //!
 //! A crash between the create and the unlink leaves a name with the
