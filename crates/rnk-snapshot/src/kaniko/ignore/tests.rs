@@ -70,6 +70,8 @@ fn in_a_container_mounts_and_kanikos_defaults_are_ignored() {
         "/data/my vol\tx/f",
         "/var/run/docker.sock",
         "/ranikust/executor",
+        "/.dockerenv",
+        "/run/.containerenv",
         "/ranikust/state/blobs",
         "/tmp/apt-key-gpghome/k",
         "/var/cache/apt",

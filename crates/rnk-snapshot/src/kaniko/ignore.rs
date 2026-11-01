@@ -161,7 +161,18 @@ pub struct IgnoreSpec<'a> {
 }
 
 /// Paths inside the root that kaniko mode always ignores, it and below.
-const FIXED: [&str; 5] = ["/proc", "/sys", "/dev", "/ranikust", "/etc/mtab"];
+/// `/.dockerenv` and `/run/.containerenv` are the runtime's markers of a
+/// container, not image content: kept out of layers and of every emptying,
+/// so a later build in the container still sees where it runs.
+const FIXED: [&str; 7] = [
+    "/proc",
+    "/sys",
+    "/dev",
+    "/ranikust",
+    "/etc/mtab",
+    "/.dockerenv",
+    "/run/.containerenv",
+];
 
 /// kaniko's `PrefixMatchOnly` entry: only what is below it.
 const BELOW_ONLY: &str = "/tmp/apt-key-gpghome";

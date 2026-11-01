@@ -34,6 +34,7 @@ impl Fixture {
         fs::write(host.join("state/blob"), b"kept").unwrap();
         let mut ignore = IgnoreList::new();
         ignore.insert("/state").unwrap();
+        ignore.insert("/ranikust").unwrap();
         let root = RootPath::open(&host).unwrap();
         let walk = WalkOptions {
             workers: NonZeroUsize::new(2).unwrap(),
@@ -58,6 +59,7 @@ impl Fixture {
         let kept = RootPath::open(&state).unwrap();
         let mut ignore = IgnoreList::new();
         ignore.insert("/state").unwrap();
+        ignore.insert("/ranikust").unwrap();
         let walk = WalkOptions {
             workers: NonZeroUsize::new(2).unwrap(),
             mode: SnapshotMode::Full,
@@ -117,10 +119,13 @@ impl Fixture {
             .unwrap()
     }
 
+    /// The names in the root but `ranikust`, where a build on `/` keeps its
+    /// marker (ADR-0052, D1).
     fn names(&self) -> Vec<String> {
         let mut v: Vec<_> = fs::read_dir(&self.host)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n != "ranikust")
             .collect();
         v.sort();
         v
@@ -376,69 +381,137 @@ fn on_slash_the_first_base_goes_over_the_root_and_the_end_leaves_it() {
     assert_eq!(f.names(), ["a", "state"]);
 }
 
-/// ADR-0052, D1: a build on `/` marks it under `/ranikust`; the next build
-/// in the same container finds the marker and empties `/` (the ignore list
-/// kept) before its first base, so nothing of the first build is inherited.
+/// The snapshotter of a build on `/` (the fixture's root), with
+/// `/ranikust` on the ignore list as `kaniko::ignore` puts it.
+fn at_slash(f: &Fixture) -> Kaniko {
+    let mut ignore = IgnoreList::new();
+    ignore.insert("/state").unwrap();
+    ignore.insert("/ranikust").unwrap();
+    Kaniko::new(
+        RootPath::open(&f.host).unwrap(),
+        PathBuf::from("/"),
+        ignore,
+        WalkOptions {
+            workers: NonZeroUsize::new(2).unwrap(),
+            mode: SnapshotMode::Full,
+        },
+        RootPath::open(f.host.with_file_name("kept")).unwrap(),
+    )
+}
+
+/// ADR-0052, D1: a build on `/` marks it under `/ranikust` at its first
+/// base; the next build in the same container finds the marker and empties
+/// `/` (the ignore list kept) before its first base, so nothing of the
+/// first build is inherited.
 #[test]
 fn a_second_build_on_slash_does_not_inherit_the_first() {
-    // The ignore list of `/` holds `/ranikust`, as `kaniko::ignore` does.
-    let at_slash = |f: &Fixture| {
-        let mut ignore = IgnoreList::new();
-        ignore.insert("/state").unwrap();
-        ignore.insert("/ranikust").unwrap();
-        let kept = f.host.with_file_name("kept");
-        Kaniko::new(
-            RootPath::open(&f.host).unwrap(),
-            PathBuf::from("/"),
-            ignore,
-            WalkOptions {
-                workers: NonZeroUsize::new(2).unwrap(),
-                mode: SnapshotMode::Full,
-            },
-            RootPath::open(kept).unwrap(),
-        )
-    };
     let f = Fixture::at(Some("/"));
     fs::write(f.host.join("tool"), b"the container's own").unwrap();
     let first = at_slash(&f);
-    assert!(!first.mark_root().unwrap(), "no earlier build");
-    assert!(f.host.join(BUILT_MARKER).is_file());
     let base = f.layer("l1", &[("a", b"a")]);
     let root = first
         .prepare(Base::Image(std::slice::from_ref(&base)))
         .unwrap();
+    assert!(f.host.join(BUILT_MARKER).is_file());
+    assert_eq!(
+        f.names(),
+        ["a", "state", "tool"],
+        "no earlier build: extracted over"
+    );
     fs::write(f.host.join("left-by-run"), b"secret").unwrap();
     root.release().unwrap();
     assert!(!first.finish().unwrap());
     assert!(f.host.join("left-by-run").exists(), "/ is left as it is");
 
     let second = at_slash(&f);
-    assert!(second.mark_root().unwrap(), "the marker is found");
     let root = second.prepare(Base::Image(&[base])).unwrap();
-    assert_eq!(f.names(), ["a", "ranikust", "state"]);
+    assert_eq!(f.names(), ["a", "state"]);
     assert!(f.host.join(BUILT_MARKER).is_file(), "the marker stays");
     root.release().unwrap();
-    // Too late once a base is prepared.
-    assert!(matches!(second.mark_root(), Err(Error::State(_))));
+}
+
+/// A build that stops before its first base (a typo, a failed pull) leaves
+/// no marker; off `/` nothing is marked.
+#[test]
+fn only_a_base_on_slash_marks_it() {
+    let f = Fixture::at(Some("/"));
+    assert!(!at_slash(&f).finish().unwrap());
+    assert!(!f.host.join("ranikust").exists());
+    let f = Fixture::new();
+    f.kaniko.prepare(Base::Scratch).unwrap().release().unwrap();
+    assert!(!f.host.join("ranikust").exists());
 }
 
 #[test]
-fn the_marker_needs_a_real_directory_and_only_slash_is_marked() {
-    let f = Fixture::new();
-    assert!(!f.kaniko.mark_root().unwrap(), "not /: nothing to mark");
-    assert!(!f.host.join("ranikust").exists());
-
+fn the_marker_needs_a_real_directory_and_keeps_it_private() {
+    // A symlink at /ranikust is refused, and nothing is written through it.
     let f = Fixture::at(Some("/"));
     fs::create_dir(f.host.join("elsewhere")).unwrap();
     std::os::unix::fs::symlink("elsewhere", f.host.join("ranikust")).unwrap();
-    assert!(matches!(f.kaniko.mark_root(), Err(Error::State(_))));
+    let e = at_slash(&f).prepare(Base::Scratch).unwrap_err();
+    assert!(matches!(e, Error::State(_)), "{e}");
     assert_eq!(fs::read_dir(f.host.join("elsewhere")).unwrap().count(), 0);
 
-    // A symlink at the marker's name counts as a marker and is not followed.
+    // An existing /ranikust becomes 0700; a symlink at the marker's name
+    // counts as a marker and is not followed.
     let f = Fixture::at(Some("/"));
     fs::create_dir(f.host.join("ranikust")).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(f.host.join("ranikust"), fs::Permissions::from_mode(0o777)).unwrap();
+    }
     std::os::unix::fs::symlink("/nowhere", f.host.join(BUILT_MARKER)).unwrap();
-    assert!(f.kaniko.mark_root().unwrap());
+    fs::write(f.host.join("tool"), b"x").unwrap();
+    at_slash(&f)
+        .prepare(Base::Scratch)
+        .unwrap()
+        .release()
+        .unwrap();
+    assert_eq!(f.names(), ["state"], "the marker was found: / emptied");
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = fs::metadata(f.host.join("ranikust"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7777, 0o700);
+    }
+}
+
+/// `/ranikust` on another mount (a volume shared between containers) is
+/// refused, and so is a directory swapped between look-up and opening.
+#[test]
+fn the_marker_directory_must_be_on_slashs_own_mount() {
+    let f = Fixture::at(Some("/"));
+    fs::create_dir(f.host.join("ranikust")).unwrap();
+    let root = RootPath::open(&f.host).unwrap();
+    let made = root.statx("ranikust").unwrap();
+    check_marker_dir_name(&made, root.mnt_id()).unwrap();
+    let mut other = made;
+    other.mnt_id += 1;
+    assert!(matches!(
+        check_marker_dir_name(&other, root.mnt_id()),
+        Err(Error::State(_))
+    ));
+    let mut point = made;
+    point.mount_root = true;
+    assert!(matches!(
+        check_marker_dir_name(&point, root.mnt_id()),
+        Err(Error::State(_))
+    ));
+    let opened = root.sub_root("ranikust").unwrap();
+    let st = opened.statx("/").unwrap();
+    check_marker_dir_opened(&made, &st, root.mnt_id(), opened.mnt_id()).unwrap();
+    assert!(matches!(
+        check_marker_dir_opened(&made, &st, root.mnt_id(), opened.mnt_id() + 1),
+        Err(Error::State(_))
+    ));
+    let mut swapped = st;
+    swapped.ino += 1;
+    assert!(matches!(
+        check_marker_dir_opened(&made, &swapped, root.mnt_id(), opened.mnt_id()),
+        Err(Error::State(_))
+    ));
 }
 
 fn read(view: &RootPath, p: &str) -> String {
@@ -523,6 +596,7 @@ fn kept_inside(ignored: bool) -> (tempfile::TempDir, PathBuf, Kaniko) {
     fs::create_dir_all(host.join("state/kept")).unwrap();
     fs::write(host.join("state/blob"), b"store").unwrap();
     let mut ignore = IgnoreList::new();
+    ignore.insert("/ranikust").unwrap();
     if ignored {
         ignore.insert("/state").unwrap();
     }

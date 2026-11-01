@@ -62,14 +62,13 @@ impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk
 //   kept stages are tars in the store's anonymous files and `kept` is the state directory,
 //   where a reader's view is unpacked inside a fence window and deleted at the end of the
 //   instruction that read it.
-    pub fn mark_root(&self) -> Result<bool>;       // on /, before the first base: /ranikust/.built found → the first
-                                                   //   base empties / too; made either way (ADR-0052 D1); off / a no-op
     pub fn finish(&self) -> Result<bool>; }        // end of build: empties a root off `/` a stage changed; never /
 pub const BUILT_MARKER: &str = "ranikust/.built";  // relative to the root, under the ignored /ranikust
 // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
 // prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /
-//   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641) unless mark_root found an
-//   earlier build's marker; a root off `/` 0755;
+//   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641) unless /ranikust/.built is
+//   there (ADR-0052 D1: looked up and made at that first base, /ranikust 0700 on /'s own
+//   mount, else refused); a root off `/` 0755;
 //   extracts each blob with extract_live, diff ID checked; on `/` a streamed layer's compressed blob is
 //   first spooled (scratch_file) while its diff ID is computed, verified, then decompressed again into the
 //   root (ADR-0055). prepare(Stage(p)): takes the root over
@@ -98,7 +97,7 @@ pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
 pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused beyond, no merging yet
 // kaniko mode (Phase 2), module `kaniko`:
 // MountInfo also carries `device` (major:minor) and `fs_root` (field 4), for ranikust's state-dir check
-pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf] } // /var/run only as a mount point (ADR-0052 D4)
+pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf] } // /var/run only as a mount point (ADR-0052 D4); /.dockerenv, /run/.containerenv always
 pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>; // mounts below the root, kaniko's defaults, /proc /sys /dev /ranikust, the state dir, a host workdir's marker; root and state_dir physical and normalized
 pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // octal escapes, optional fields; a malformed line is an error
 

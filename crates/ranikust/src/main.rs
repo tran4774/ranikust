@@ -406,17 +406,6 @@ fn kaniko(
         &store,
         metrics_file,
     )?;
-    // Under the lock of `/`, before any base: a build that finds an earlier
-    // one's marker empties `/` first (ADR-0052, D1).
-    if snapshotter
-        .mark_root()
-        .map_err(|e| Failure::error(format!("marking / as built on: {e}")))?
-    {
-        tracing::info!(
-            "an earlier build ran on / in this container: / is emptied (the ignore list \
-             kept) before the first base, so nothing of it reaches the image"
-        );
-    }
     let built = build::run(
         config,
         store,
