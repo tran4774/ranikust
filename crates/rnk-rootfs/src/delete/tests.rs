@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -197,28 +197,86 @@ fn concurrent_swap_never_deletes_outside() {
     }
 }
 
-/// Run by the T1 harness inside a mount namespace, which prepares
-/// `$RNK_T1_ROOT` with `bind/` (a bind mount of a directory on the same
-/// filesystem) and `tmpfs/` (a tmpfs), each holding a file `keep`, and the
-/// regular file `.rnk-t1-root` that marks the directory as disposable.
+/// Detaches its mounts, last first, when dropped (also on a panic), before
+/// the temporary directory holding them is deleted; aborts if one stays,
+/// so `remove_dir_all` never walks into a mount.
+struct Detach(Vec<PathBuf>);
+
+impl Drop for Detach {
+    fn drop(&mut self) {
+        for m in self.0.iter().rev() {
+            if rustix::mount::unmount(m, rustix::mount::UnmountFlags::DETACH).is_err() {
+                eprintln!(
+                    "could not detach {}; aborting before any deletion",
+                    m.display()
+                );
+                std::process::abort();
+            }
+        }
+    }
+}
+
+/// D2 of experiment 09, T2 (root, the VM only): emptying a root keeps a
+/// bind mount of a directory on the **same filesystem** (same `st_dev`,
+/// so only the mount id tells it apart) and a tmpfs, with what they hold,
+/// and a symlink and a hardlink pointing at them change nothing. The test
+/// runs on a thread of its own in a new mount namespace, every mount
+/// private there, so nothing it mounts reaches another namespace.
 #[test]
-#[ignore = "T1: needs a bind mount and a tmpfs inside the root (mount namespace)"]
+#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
 fn mounts_inside_the_root_survive() {
-    let dir = std::env::var_os("RNK_T1_ROOT").expect("RNK_T1_ROOT is set by the T1 harness");
-    // Never empty a directory the harness did not prepare.
-    let marker = fs::symlink_metadata(Path::new(&dir).join(".rnk-t1-root"));
-    assert!(
-        marker.is_ok_and(|m| m.is_file()),
-        "$RNK_T1_ROOT has no .rnk-t1-root marker; refusing to delete it"
-    );
-    let mut keep = IgnoreList::new();
-    keep.insert(".rnk-t1-root").unwrap();
-    let root = RootPath::open(&dir).unwrap();
-    delete_contents(&root, &keep).unwrap();
-    let dir = PathBuf::from(dir);
-    assert!(
-        dir.join("bind/keep").exists(),
-        "same-filesystem bind mount emptied"
-    );
-    assert!(dir.join("tmpfs/keep").exists(), "tmpfs emptied");
+    std::thread::spawn(|| {
+        use rustix::mount::{MountFlags, MountPropagationFlags, mount, mount_bind, mount_change};
+        use rustix::thread::UnshareFlags;
+        // SAFETY: this thread shares nothing that the unshared filesystem
+        // attributes or mount namespace would break; it ends with the test.
+        unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+            .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+        mount_change(
+            "/",
+            MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+        )
+        .expect("make every mount private");
+        let f = Fixture::new();
+        let (out, before) = f.outside();
+        let source = f.host.parent().unwrap().join("same-fs-source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("keep"), b"bind").unwrap();
+        fs::create_dir_all(f.host("bind")).unwrap();
+        fs::create_dir_all(f.host("tmpfs")).unwrap();
+        let mut guard = Detach(Vec::new());
+        mount_bind(&source, f.host("bind")).expect("bind mount");
+        guard.0.push(f.host("bind"));
+        mount("tmpfs", f.host("tmpfs"), "tmpfs", MountFlags::empty(), None).expect("tmpfs");
+        guard.0.push(f.host("tmpfs"));
+        fs::write(f.host("tmpfs/keep"), b"tmpfs").unwrap();
+        assert_eq!(
+            fs::metadata(f.host("bind")).unwrap().dev(),
+            fs::metadata(&f.host).unwrap().dev(),
+            "the bind mount is on the root's filesystem"
+        );
+        symlink(f.host("bind"), f.host("to-bind")).unwrap();
+        symlink("bind/keep", f.host("to-keep")).unwrap();
+        fs::write(f.host("file"), b"gone").unwrap();
+        delete_contents(&f.root, &IgnoreList::new()).unwrap();
+        assert_eq!(
+            fs::read(source.join("keep")).unwrap(),
+            b"bind",
+            "bind emptied"
+        );
+        assert_eq!(
+            fs::read(f.host("tmpfs/keep")).unwrap(),
+            b"tmpfs",
+            "tmpfs emptied"
+        );
+        assert!(
+            fs::symlink_metadata(f.host("file")).is_err(),
+            "the root not emptied"
+        );
+        assert!(fs::symlink_metadata(f.host("to-bind")).is_err());
+        assert_eq!(snapshot(&out), before);
+        drop(guard);
+    })
+    .join()
+    .unwrap();
 }

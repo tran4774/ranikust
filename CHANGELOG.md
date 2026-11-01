@@ -211,6 +211,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   without them. A container granting capabilities
   beyond Docker's defaults without `CAP_SETPCAP` is refused before the
   pull rather than at the first `RUN`.
+- The VM's `e2e` suite builds the Phase 2 acceptance workloads in kaniko
+  mode too: on the `/` of a default `docker run` (`rk-kaniko`) and as
+  root on the VM with a directory per stage (`rk-kaniko-host`, `--jobs`
+  compared on W3), next to kaniko, BuildKit and overlay mode; every
+  ranikust image is checked for state, runtime markers and mount points
+  that must not reach a layer. `RANIKUST_E2E_QUICK=1` runs a short check
+  of the suite.
 
 ### Changed
 
@@ -325,6 +332,15 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- The VM's `e2e` suite no longer fills the guest's disk: the registry
+  freed no blob when the suite deleted its repositories before each build,
+  so a few dozen builds filled the 80 GB disk and the VM stopped answering
+  SSH. Unlinked blobs are now deleted before each build (following no
+  symbolic link) and handed back to the host by `fstrim` over a disk with
+  discard, a build does not start with less than 10 GiB free, and the
+  host needs as much free space as the VM's disk can grow to, less 2 GiB.
+  kaniko's results directory in the suite moved off `/out`,
+  which W3 writes and kaniko leaves out of its image as a mount point.
 - In kaniko mode, copying a stage and walking a root grew with the cube of
   a directory chain's depth (a `RUN` can make 20,000 levels in seconds;
   3000 took 17 s per copy and per walk): the ignore-list check looked up

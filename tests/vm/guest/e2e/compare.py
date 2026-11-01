@@ -9,7 +9,10 @@ differ. Differences fall in three classes:
 - noise: files that are not deterministic between two runs of the same
   builder on W1 (experiment 07, section "Image check": the pnpm store,
   node's compile cache, npm's cache, two pnpm state files, /etc/hostname),
-  plus each path given with --noise (W3's `du`-derived files, Q-187);
+  plus npm's debug logs (named by the time of the run) and pnpm's
+  `pnpm-state.json` (holds a timestamp), seen when kaniko and ranikust
+  were first compared on W1 in kaniko mode (2026-11-01), plus each path
+  given with --noise (W3's `du`-derived files, Q-187);
 - hardlink: an entry that is a hardlink on either side (ADR-0012: overlay
   splits hardlinks on copy-up, kaniko rewrites every name);
 - other: everything else, which the Phase 1 acceptance criterion requires to
@@ -22,8 +25,9 @@ import gzip
 import json
 import sys
 
-NOISE_PREFIXES = ("/root/.local/share/", "/tmp/node-compile-cache/", "/root/.npm/_cacache/", "/root/.cache/")
-NOISE_NAMES = (".modules.yaml", ".pnpm-workspace-state-v1.json")
+NOISE_PREFIXES = ("/root/.local/share/", "/tmp/node-compile-cache/", "/root/.npm/_cacache/", "/root/.cache/",
+                  "/root/.npm/_logs/")
+NOISE_NAMES = (".modules.yaml", ".pnpm-workspace-state-v1.json", "pnpm-state.json")
 NOISE_PATHS = ("/etc/hostname",)
 CONFIG_FIELDS = ("Env", "Cmd", "Entrypoint", "WorkingDir", "User", "Labels", "ExposedPorts", "Volumes",
                  "StopSignal", "Shell", "Healthcheck", "OnBuild")

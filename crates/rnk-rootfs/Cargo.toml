@@ -22,5 +22,5 @@ tracing.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 rnk-metrics.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["mount", "process", "thread"] }
 tempfile.workspace = true

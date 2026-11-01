@@ -302,7 +302,8 @@ impl WalkDiff {
   file refused on the pinned fd, the read bounded by `statx`'s size
   (`/dev/zero` included), 3,000 subdirectories in one directory, arena
   offsets beyond `u32`; T2 (VM): a device node swapped in is never opened (passed, kernel 6.8, 2026-10-31);
-  `tests/spans.rs` the walk spans. kaniko exporter built
+  `tests/spans.rs` the walk spans, and a kaniko stage directory's
+  `prepare` and `release` (its baseline waits for the first layer). kaniko exporter built
   (`src/kaniko/export/tests.rs`): an unchanged root gives an empty tar, a
   deleted directory one whiteout under its parents, a deep new file its
   unchanged parents read from the root, a link into a lower layer a

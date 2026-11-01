@@ -140,3 +140,35 @@ fn a_walk_diff_export_and_its_diff_are_recorded() {
     assert_eq!(phases["rnk_snapshot.diff"]["whiteouts"], 1);
     assert_eq!(phases["rnk_snapshot.diff"]["bytes"], 5);
 }
+
+#[test]
+fn a_kaniko_stage_directory_records_prepare_and_release() {
+    let capture = Capture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let state = fs::canonicalize(dir.path()).unwrap().join("state");
+    let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    let (tar, id) = empty_layer();
+    let blob = dir.path().join("layer.tar");
+    fs::write(&blob, &tar).unwrap();
+    capture.run(|| {
+        let stages = rnk_snapshot::KanikoStages::new(
+            &store,
+            rnk_rootfs::IgnoreList::new(),
+            rnk_snapshot::WalkOptions::default(),
+        )
+        .unwrap();
+        let base = [stages.base_layer(&id, &blob, &[]).unwrap()];
+        let stage = stages.prepare(Base::Image(&base)).unwrap();
+        stage.release().unwrap();
+    });
+    let report = capture.report();
+    let phases = &report["phases"];
+    assert_eq!(phases["rnk_snapshot.prepare"]["count"], 1);
+    assert_eq!(phases["rnk_snapshot.prepare"]["layers"], 1);
+    assert_eq!(phases["rnk_rootfs.extract"]["count"], 1);
+    // The baseline walk waits for the first layer (lazy snapshots, ADR-0038).
+    assert!(phases["rnk_snapshot.baseline"].is_null(), "{report}");
+    // Releasing deletes the stage directory through descriptors.
+    assert_eq!(phases["rnk_snapshot.release"]["count"], 1);
+    assert_eq!(phases["rnk_rootfs.delete"]["count"], 1);
+}

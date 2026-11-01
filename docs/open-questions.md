@@ -480,6 +480,32 @@ Entry format:
 - **Interim:** refused in every mode (Phase 5).
 - **Raised:** 2026-11-01
 
+### Q-410: How do per-stage directories stop costing more than kaniko on W1?
+
+- **Blocks:** Phase 2 acceptance ("no build is slower than kaniko's");
+  **Area:** `rnk-snapshot`, `rnk-rootfs`
+- **Context:** the first VM `e2e` run with kaniko mode (2026-11-01, noble,
+  4 vCPUs, one round, so indicative only) took 31.3 s on W1 as root on the
+  VM with a directory per stage (ADR-0059), against kaniko's 23.7 s and
+  22.3 s for kaniko mode on a container's `/`. The difference is the
+  stage directories: `FROM <stage>` copies took 7.2 s
+  (`rnk_rootfs.copy`, ext4, so no reflink) and their release at the end
+  4.2 s (`rnk_rootfs.delete`). The walks (3.3 s for ten) and exports are
+  as on `/`. On W3, whose stages are independent, it was 14.5 s against
+  kaniko's 28.9 s.
+- **Options:** (a) hand the parent's directory to its last child by
+  renaming it, copying only for the other children (no inode shared, so
+  ADR-0017 holds; the parent must not be read again after it); (b)
+  release stage directories in the background, off the critical path,
+  and as soon as nothing depends on them (a follow-up of task 9); (c)
+  both; (d) accept the cost where a reflink is unavailable and document
+  it.
+- **Recommendation:** (c): (a) removes the copy for linear chains such as
+  W1 and (b) the deletion wait, with no change to what a `RUN` can reach.
+- **Interim:** the copy and the release as built by task 9; the
+  acceptance criterion is not met for W1 in this mode.
+- **Raised:** 2026-11-01
+
 ## Answered
 
 ### Q-400: How does `--parallel-stages` run stages at once on a container's `/` without mounts?
