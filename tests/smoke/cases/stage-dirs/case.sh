@@ -3,7 +3,8 @@
 # disk; a writer left by a RUN is gone before a stage built FROM its stage
 # starts; a stage built FROM a hostile one gets its links as links, its
 # setuid hardlink, its 15 TiB sparse file as a sparse file; --reproducible
-# gives one digest at --jobs 1 and 4 with stages built FROM stages. Kaniko
+# gives one digest at --jobs 1 and 4 with stages built FROM stages (copied,
+# or handed to the last stage that reads them, ADR-0061). Kaniko
 # mode off / (the VM's `quick` with RANIKUST_QUICK_MODE=kaniko): FIFOs and
 # device nodes are left out of the child, no stage directory outlives a
 # build, and builds that fill a small state directory (a RUN, a copy of a
@@ -34,11 +35,17 @@ $want"
   fi
   expect "$got" "$want" "what the stages saw (empty reports from a, b and heir, then the child's)"
 
-  local d1 d4
+  local d1 d4 metrics=()
+  # Kaniko mode off /: the metrics show the hand-over (ADR-0061).
+  [ -z "$per_stage" ] || metrics=(--metrics-file "$(out repro4)/metrics.json")
   d1="$(build repro1 -f Dockerfile.repro --reproducible --jobs 1)"
-  d4="$(build repro4 -f Dockerfile.repro --reproducible --jobs 4)"
+  d4="$(build repro4 -f Dockerfile.repro --reproducible --jobs 4 "${metrics[@]}")"
   expect "$d4" "$d1" "digest at --jobs 4 and --jobs 1"
-  expect "$(run repro1)" "p c s1 s2 " "the reproducible image"
+  expect "$(run repro1)" "p c s1 s2 q " "the reproducible image"
+  if [ -n "$per_stage" ]; then
+    grep -q 'rnk_snapshot.hand_over' "$(out repro4)/metrics.json" ||
+      fail "no stage took its parent's directory over (metrics in $(out repro4))"
+  fi
 
   [ -z "$per_stage" ] || case_run_per_stage
 }

@@ -1,5 +1,7 @@
 # A stage built FROM a parent too big to copy twice on the state
-# directory's filesystem (T15, ADR-0059).
+# directory's filesystem (T15, ADR-0059). The last stage also reads `big`
+# and is built after `copy`, so `copy` is never the last to read `big` and
+# copies it instead of taking its directory over (ADR-0061).
 ARG BASE=docker.io/library/alpine:3.20
 FROM ${BASE} AS big
 RUN dd if=/dev/zero of=/fill bs=1M count=100
@@ -9,3 +11,4 @@ RUN true
 
 FROM ${BASE}
 COPY --from=copy /etc/os-release /x
+COPY --from=big /etc/os-release /y

@@ -1,10 +1,18 @@
 # --reproducible across --jobs with stages built FROM stages (ADR-0059:
-# each a copy of its parent in kaniko mode off /), independent stages at
-# once, a hardlink, a symlink, a setuid file and a sparse file.
+# each a copy of its parent in kaniko mode off /, or the parent's own
+# directory for the last stage to read it, ADR-0061), independent stages at
+# once, a hardlink, a symlink, a setuid file, a sparse file and a FIFO.
+# `p` has two children, `q` and `c`: whichever is made last takes `p`'s
+# directory over and the other copies it, in an order --jobs changes; the
+# digest must not show which.
 ARG BASE=docker.io/library/alpine:3.20
 FROM ${BASE} AS p
 RUN mkdir -p /app/d && echo p >/app/d/f && ln /app/d/f /app/hl && ln -s d/f /app/sl \
- && chmod 4755 /app/d/f && dd if=/dev/null of=/app/sparse bs=1 seek=67108864 count=0 2>/dev/null
+ && chmod 4755 /app/d/f && dd if=/dev/null of=/app/sparse bs=1 seek=67108864 count=0 2>/dev/null \
+ && mkfifo /app/fifo
+
+FROM p AS q
+RUN echo q >/app/q
 
 FROM ${BASE} AS s1
 RUN echo s1 >/s1
@@ -18,5 +26,6 @@ RUN echo c >/app/new && chmod 0600 /app/new
 FROM c
 COPY --from=s1 /s1 /s1
 COPY --from=s2 /s2 /s2
+COPY --from=q /app/q /q
 RUN rm /app/sl
-CMD ["sh", "-c", "cat /app/d/f /app/new /s1 /s2 | tr '\\n' ' '"]
+CMD ["sh", "-c", "cat /app/d/f /app/new /s1 /s2 /q | tr '\\n' ' '"]
