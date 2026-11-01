@@ -14,6 +14,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Added
 
+- The `par-stages` smoke case: four independent stages give one digest at
+  `--jobs 1` and `4` and the same as when chained; with
+  `RANIKUST_QUICK_BENCH=1` the VM's `quick` also runs the Phase 2 criterion 7
+  bench (chained against independent stages, kaniko mode off `/` and overlay
+  mode, capped at the e2e builders' 4 CPUs / 8 GiB and uncapped, with each
+  build's peak memory). The e2e and ultra suites record every build's peak
+  memory (`memory.peak` of its cgroup) and the report shows it per builder.
 - Repository setup: a Cargo workspace with one crate per component (no
   functionality yet), a static musl release build, CI (format, clippy, tests,
   aarch64 check, cargo-deny, docs), architecture decision records, the

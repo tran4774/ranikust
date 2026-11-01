@@ -299,15 +299,65 @@ take_results() {
   done
   sudo rm -rf -- "$1/mnt"
 }
+CPID=0
+CID=
 container_limits() {
-  local pid
-  pid="$(sudo docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || echo 0)"
+  local pid id
+  read -r pid id < <(sudo docker inspect -f '{{.State.Pid}} {{.Id}}' "$1" 2>/dev/null || echo 0)
+  # For mem_watch_start: no second inspect while the build is timed.
+  CPID="${pid:-0}"
+  CID="${id:-}"
   # Read as root, written as rnk.
   # shellcheck disable=SC2024
   [ "${pid:-0}" = 0 ] || sudo bash "$LIMITS" pid "$pid" >"$2/limits.txt" 2>/dev/null || true
   [ -s "$2/limits.txt" ] ||
     sudo docker inspect -f 'docker.cpus={{.HostConfig.NanoCpus}} docker.cpuset={{.HostConfig.CpusetCpus}} docker.memory={{.HostConfig.Memory}} docker.memory_swap={{.HostConfig.MemorySwap}}' "$1" |
     tr ' ' '\n' >"$2/limits.txt" 2>/dev/null || true
+}
+
+# mem_watch_start <container> <dir> / mem_watch_end <dir>: the container's
+# peak memory (its cgroup's memory.peak, page cache included), sampled every
+# 0.2 s while it runs (its cgroup goes with it), appended to <dir>/limits.txt;
+# the scope builders get theirs from limits.sh self. Started in the
+# background, as rnk (the cgroup files are world-readable), with the pid
+# and id container_limits read, so that a pid reused meanwhile cannot
+# point it at another cgroup; one cat per sample: nothing measurable next
+# to a build.
+MEMW=
+mem_watch_start() {
+  MEMW=
+  [[ $CPID =~ ^[1-9][0-9]*$ ]] && [[ $CID =~ ^[0-9a-f]{64}$ ]] || return 0
+  bash "$LIMITS" watch "$CPID" "$CID" >"$2/peak.txt" 2>/dev/null &
+  MEMW=$!
+}
+# proc_state <pid>: its state letter (after the last `)`, as the command
+# name may hold spaces and parentheses), or nothing.
+proc_state() {
+  local s
+  s="$(cat "/proc/$1/stat" 2>/dev/null)" || return 0
+  s="${s##*) }"
+  echo "${s%% *}"
+}
+mem_watch_end() {
+  local i st
+  if [ -n "$MEMW" ]; then
+    # The container is gone; its cgroup goes within moments, ending the
+    # watcher (our own child: a zombie, state Z, has ended). After about
+    # 1 s it is told to print what it has.
+    for i in 1 2 3 4 5; do
+      st="$(proc_state "$MEMW")"
+      { [ -n "$st" ] && [ "$st" != Z ]; } || break
+      sleep 0.2
+    done
+    st="$(proc_state "$MEMW")"
+    if [ -n "$st" ] && [ "$st" != Z ]; then
+      kill -TERM "$MEMW" 2>/dev/null || true
+    fi
+    wait "$MEMW" 2>/dev/null || true
+  fi
+  MEMW=
+  [ ! -s "$1/peak.txt" ] || cat "$1/peak.txt" >>"$1/limits.txt"
+  rm -f "$1/peak.txt"
 }
 
 is_rnk() { case "$1" in ranikust | rk-*) return 0 ;; *) return 1 ;; esac; }
@@ -330,7 +380,9 @@ build() {
         --insecure-registry=registry:5000 --build-arg "BASE_IMAGE=$base" --digest-file=/bench-out/digest.txt \
         --verbosity=info --log-timestamp=true >/dev/null
       container_limits "$name" "$d"
+      mem_watch_start "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
+      mem_watch_end "$d"
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
       take_results "$d" "$name"
@@ -347,7 +399,9 @@ build() {
         --opt "build-arg:BASE_IMAGE=$base" \
         --output "type=image,\"name=registry:5000/$repo:latest\",push=true,compression=zstd" >/dev/null
       container_limits "$name" "$d"
+      mem_watch_start "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
+      mem_watch_end "$d"
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
       sudo docker volume rm -f "$vol" >/dev/null
@@ -367,7 +421,9 @@ build() {
         --build-arg="BASE_IMAGE=$base" --metrics-file=/rnk-out/metrics.json --digest-file=/rnk-out/digest.txt \
         "${extra[@]}" >/dev/null
       container_limits "$name" "$d"
+      mem_watch_start "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
+      mem_watch_end "$d"
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
       take_results "$d" "$name"

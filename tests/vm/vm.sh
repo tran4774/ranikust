@@ -49,6 +49,10 @@
 #   RANIKUST_QUICK_CASES the cases `quick` runs, space-separated; default all
 #   RANIKUST_QUICK_MODE  `kaniko` builds the `quick` cases in kaniko mode on
 #                        the workdir (default: the probed mode, overlay)
+#   RANIKUST_QUICK_BENCH=1  the par-stages case also runs its bench (criterion 7:
+#                        chained vs independent stages, capped and uncapped,
+#                        kaniko off / and overlay); RANIKUST_QUICK_BENCH_ROUNDS
+#                        rounds after a warm-up, default 3
 #   RANIKUST_VM_IMAGE_REGISTRY  where the guest pulls Docker Hub images
 #                        from: default mirror.gcr.io (Google's public Docker
 #                        Hub mirror, no pull rate limit); docker.io to pull
@@ -248,8 +252,10 @@ cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
 cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
 cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
 # Quoted: `RANIKUST_QUICK_CASES="run copy"` names two cases.
+[[ ${RANIKUST_QUICK_BENCH:-} =~ ^1?$ ]] || die "RANIKUST_QUICK_BENCH must be 1 or unset"
+[[ ${RANIKUST_QUICK_BENCH_ROUNDS:-1} =~ ^[1-9][0-9]?$ ]] || die "RANIKUST_QUICK_BENCH_ROUNDS must be 1-99"
 : >"$STAGE/quick.env"
-for v in RANIKUST_QUICK_CASES RANIKUST_QUICK_MODE; do
+for v in RANIKUST_QUICK_CASES RANIKUST_QUICK_MODE RANIKUST_QUICK_BENCH RANIKUST_QUICK_BENCH_ROUNDS; do
   [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/quick.env"
 done
 # Without the lock's descriptor: a build server or podman's pause process

@@ -379,7 +379,11 @@ than 16 GiB plus 3 GiB available, the default shrinks to fit (never below
 so, or stops when even that would leave the host under 2 GiB. The builders' limits do not grow with the VM:
 each build's own, read from its cgroup while it runs (`cpu.max`,
 `cpuset.cpus.effective`, `memory.max`, `memory.swap.max`), are in its
-`limits.txt` and `run.json`, and in the log after its time. Runs before
+`limits.txt` and `run.json`, and in the log after its time, with its peak
+memory (`memory.peak` of its cgroup, page cache included: read by
+`limits.sh self` when a scope's build ends, sampled every 0.2 s while a
+container runs, its cgroup going with it), which the report gives per
+builder as `Peak MiB`. Runs before
 2026-11-01 had a 4-vCPU VM and no pinning: every builder already had the
 same quota and memory limit, but the VM's own services shared its 4
 vCPUs, so their times are not comparable with later ones. A guest
@@ -654,6 +658,7 @@ nextjs-kaniko workloads (`e2e`) are for large benchmarks only.
 | `hygiene-mounts` | Red team (ADR-0052 D1, D4; ADR-0058). Every mode: steps that only delete a file, replace a directory by an empty one, or change a mode or an mtime keep their layer, `RUN true` gets `empty_layer` only. Kaniko mode (`RANIKUST_CASE_MODE=kaniko`): two builds in one container holding volumes at `/run/vol` (reached through alpine's `/var/run -> /run`) and `/srv/vol`; the second finds the marker and empties `/`, both volumes keep exactly their files, and no layer of either image holds them, `/run/.containerenv`, `/.dockerenv` or `/ranikust` |
 | `reproducible` | `--reproducible`: one digest across builds a second apart and at `--jobs 1` and `2`, `created` at the epoch, another digest without the flag |
 | `stage-dirs` | Red team of per-stage directories (ADR-0059). Every mode: two stages at `--jobs 4` each looking for the other's marker through `/proc/<pid>/root`, pid 1's root and its own tree, and trying a tmpfs mount, a `core_pattern` write and a read of every disk in `/proc/partitions` through its own `mknod` (all refused or `nodev`); a `setsid` writer a `RUN` leaves is gone before a stage built `FROM` its stage starts; a child built `FROM` a stage leaving links out (`/`, `../..`, `/proc/self/root`), a FIFO, device nodes, a setuid file with a hardlink, a 15 TiB sparse file and a name with a newline gets the links as links, the hardlink, the file sparse; `--reproducible` gives one digest at `--jobs 1` and `4` with stages built `FROM` stages, one with two readers finishing in an order `--jobs` changes (both copy it, ADR-0062), a FIFO, and a large directory emptied down to one entry where a child adds an entry and puts the directory's time back (a copy and a directory handed over differ in its size); a stage read by one stage only is handed over (ADR-0061). The VM's kaniko mode off `/` (`RANIKUST_QUICK_MODE=kaniko`): the log names the per-stage directories, the metrics show a hand-over (`rnk_snapshot.hand_over`), the child gets no FIFO or device node, no build directory outlives a build, and on a 160 MiB tmpfs state directory a `RUN` filling it and a copy of a 100 MiB parent (read by a later stage too, so never handed over) fail, leave no build directory, mount or process, and a later build works; a stage copying from a parent with `COPY --from` long after the parent's other reader ended still finds it (`Dockerfile.release`, the background release); two SIGINTs while a stage takes over its parent's directory (300,000 files, `Dockerfile.signal`) stop the build (130) with nothing changed outside its `builds/` and `tmp/` entries, no mount or process left, and the next build cleans up and works; one SIGINT there fails the build, which leaves no build directory |
+| `par-stages` | Four independent stages, each hashing zeros and writing small files, read by a final stage: with `--reproducible` one digest at `--jobs 1` and `4` and the same as `Dockerfile.chain` (the same stages forced one after the other by a `COPY --from` of the stage before). With `RANIKUST_QUICK_BENCH=1` (VM only), the bench for Phase 2 acceptance criterion 7: chained against independent stages at `--jobs 1` and the default, in kaniko mode off `/` and in overlay mode, each build in a systemd scope capped like the e2e builders (4 CPUs, 8 GiB) or uncapped, with wall time, the scope's `memory.peak` and the metrics of round 1 (`bench.md`, `bench.tsv`); `RANIKUST_QUICK_BENCH_ROUNDS` rounds after a warm-up (default 3) |
 | `special-files` | Red team of `COPY` and special files (ADR-0060). The context, made by `case.sh` (git keeps none), holds FIFOs and Unix sockets at the top, nested and behind a symlinked directory; a stage leaves FIFOs and, where root may make one, a device node. Kaniko mode on a container's `/` (`RANIKUST_CASE_MODE=kaniko`, `RUN` `Direct`): none reaches the image, from the context or `COPY --from`, and the log warns once per copy; with the full sandbox the FIFOs are kept, as BuildKit. A node a `RUN` makes never opens in a later `RUN` |
 
 Every build is also checked for a stub or the secret in any blob and the
@@ -675,4 +680,6 @@ its helpers (`build`, `run`, `expect`, `expect_config`, `config`, `out`).
   container's `/` for `just smoke-case`, in a default rootless podman
   container where root may not mount, so `RUN` runs `Direct`; the binary,
   context and outputs sit under `/ranikust`); `RANIKUST_QUICK_CASES="run copy"`
-  picks cases.
+  picks cases. `RANIKUST_QUICK_BENCH=1` adds the `par-stages` bench (light: a
+  synthetic workload, about 10 minutes), the way to look at stage
+  parallelism without the ultra benchmark.
