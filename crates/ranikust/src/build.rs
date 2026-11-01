@@ -1150,6 +1150,7 @@ where
         // A unit starts from the base of the first stage it runs; it reads
         // the images every stage of it reads.
         let chain: Vec<usize> = unit_chain(job.folded, job.stage).collect();
+        // Never empty: the chain ends with `job.stage`.
         let first = chain.first().copied().unwrap_or(job.stage);
         let base = match &job.graph.stages[first].base {
             rnk_dockerfile::Base::Image(r) => Some(r.clone()),
