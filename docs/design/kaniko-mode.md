@@ -487,9 +487,29 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   (`rnk_rootfs::copy_filtered`: owners, modes, times, xattrs, hardlinks
   inside the tree; a file cloned with `FICLONE` where the filesystem
   shares extents, else only its data ranges, holes kept) with the parent
-  root's owner, mode and times; never a hardlink to it (ADR-0017). Device
-  nodes, FIFOs and sockets a parent's `RUN` made are left out
-  (`CopyOpts::skip_special`, ADR-0041).
+  root's owner, mode, times and xattrs (overlay's own left out); never a
+  hardlink to it (ADR-0017). Device nodes, FIFOs and sockets a parent's
+  `RUN` made are left out (`CopyOpts::skip_special`, ADR-0041).
+- **Hand-over to the last reader** ([ADR-0061](../adr/0061-per-stage-directories-hand-over-to-the-last-reader-and-release-early.md)):
+  the build counts, per stage, the stages that read its root after it is
+  built (each `FROM` it one, each other stage reading it with `COPY
+  --from` or `RUN --mount from=` one; a stage doing both counts twice). A
+  stage built `FROM` another counts its read off once its own root is
+  made; any other reader when it ends. When a stage built `FROM <stage>`
+  finds only its own read left, decided under the parent's lock, it takes
+  the parent's directory over (`Snapshotter::prepare_last`) instead of
+  copying it: `rnk_rootfs::prune` deletes in place what the copy leaves
+  out (the ignore list, device nodes, FIFOs, sockets; through descriptors,
+  a mount below the root refused) and sets each directory's times back,
+  then `RootPath::move_sub_root` moves `stages/<p>/rootfs` to
+  `stages/<c>/rootfs` (`renameat2(RENAME_NOREPLACE)` between the stage
+  directories' descriptors, device, inode and mount checked before and
+  after). The result equals the copy entry for entry (contents, owners,
+  modes, modification times, links, hardlinks), so the layers do not
+  depend on which path a stage took; only access and change times and
+  overlay's own xattrs, which no layer holds, differ. The parent is read
+  no more: its view, root, a second child and a layer are refused, and its
+  release deletes an empty directory.
 - **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
   `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as
   BuildKit, because every `RUN` enters the root `nodev` (the full
@@ -513,13 +533,19 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   instructions. The ignore list of a stage root is the fixed paths and
   `--ignore-path`; nothing is mounted in a directory ranikust made.
 - **Release**: safe deletion of the stage directory, through descriptors,
-  crossing no mount; the rest goes with the build directory.
-- **Cost**: one copy of the base per stage (its data on ext4 and tmpfs,
-  a reflink on xfs and btrfs), all stage directories held to the end of
-  the build, so the peak is about the sum of the stages' roots;
-  experiment 12 measured W3 at 3.28 GB against 2.13 GB for overlay mode.
-  Releasing a stage's directory once no later stage reads it is not done
-  yet.
+  crossing no mount; the rest goes with the build directory. A directory
+  whose readers are all done (its own stage done too), and the root of a
+  `COPY --from` image once the stage that read it is done, go at once to
+  one release thread (ADR-0061); at the end the build hands it every root
+  left and waits for it before the store closes. A second signal exits at
+  once and leaves the rest to the next build's clean-up.
+- **Cost**: one copy of the base per stage built `FROM` a stage, except
+  for the last reader of each parent, which takes the directory over (a
+  chain of stages copies nothing); its data on ext4 and tmpfs, a reflink
+  on xfs and btrfs. The peak is the roots read at the same time plus the
+  copies being made, not every stage's root: a directory goes once nobody
+  reads it. Experiment 12 measured W3 at 3.28 GB against 2.13 GB for
+  overlay mode before ADR-0061.
 - **Placed files**: `hosts`, `resolv.conf`, stub mount points and `/dev`
   nodes change the mtime of their parent, so `/etc` would enter every layer.
   The full sandbox records the parent's mtime before placing (m0) and after

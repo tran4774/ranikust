@@ -112,7 +112,12 @@ pub enum Secret { File(PathBuf), Env(OsString) }         // a --secret, read whe
 pub const MAX_SECRET_SIZE: u64;                          // 500 KiB, as BuildKit
 pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
 pub struct StageInput<'a, R, L> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R, L>,
-    pub stages: BTreeMap<usize, &StageDone<R>>, pub images: BTreeMap<String, &ImageSource<R, L>>, pub demand: LayerDemand }
+    pub stages: BTreeMap<usize, &StageDone<R>>, pub images: BTreeMap<String, &ImageSource<R, L>>, pub demand: LayerDemand,
+    pub labels: &[(String, String)], pub base_readers: Option<&AtomicUsize> }
+// base_readers (ADR-0061): the base stage's readers still to read it, this FROM included; build_stage
+// counts its FROM off exactly once (every path), as soon as its root is made, and calls
+// snapshotter.prepare_last(parent) instead of prepare(Stage(parent)) when it is down to 1, under the
+// parent's lock.
 // build_stage calls root.set_layers_needed(demand.needed()) once after prepare (ADR-0046),
 // and root.done() after the last instruction, before the root goes into StageDone (ADR-0059);
 // a RUN's spec gets spec.expect_root(root) for the root the layer holds (ADR-0059)
@@ -120,6 +125,7 @@ pub enum StageBase<'a, R, L> { Scratch, Image(&'a PulledImage<L>), Stage(&'a Sta
 pub struct StageDone<R> { pub root: SourceRoot<R>, pub scope: StageScope, pub config: ImageConfig,
     pub layers: Vec<BlobLayer>, pub complete: bool, pub base_format: Option<ImageFormat> }
 pub struct SourceRoot<R>;                                // a root behind a mutex; release() once, children first
+                                                         // take(): the root out, for a background release (ADR-0061)
 impl SourceRoot<R> { pub fn keep(&self, need: &KeepNeed) -> Result<()>; } // kaniko: keep what later stages read
 pub enum KeepNeed { All, Sources(Vec<String>) }          // COPY --from sources: their entries + links on the way,
                                                          // checked to resolve the same in the copy, else All

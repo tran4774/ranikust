@@ -179,6 +179,7 @@ attempts.
 | `rnk_rootfs.extract` | `mode`, `entries`, `files`, `whiteouts`, `ignored`, `hardlinks`, `bytes_in`, `bytes_written` | One layer into a directory: kaniko's `layer.extract` (bytes = tar content, items = entries). `mode` `Live` is kaniko mode's extraction into the root, where `ignored` counts the entries skipped for the ignore list or a mount and `nodes_skipped` the device nodes and FIFOs not created (ADR-0041). |
 | `rnk_rootfs.copy` | `files`, `dirs`, `bytes` | One `COPY`/`ADD` source set into a root. |
 | `rnk_rootfs.delete` | `entries` | One safe deletion of a tree: kaniko's `fs.delete`; `exp-09`. |
+| `rnk_rootfs.prune` | `entries`, `files`, `dirs`, `kept` | One root pruned in place of what a stage copy leaves out, directory times set back (ADR-0061); no kaniko equivalent. |
 
 ### `rnk-store`
 
@@ -204,6 +205,7 @@ attempts.
 | `rnk_snapshot.prepare` | `layers` | A stage root: overlay mount over the store, or, in kaniko mode, emptying the root and extracting the base (extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`); the baseline walk is its own `rnk_snapshot.walk`. |
 | `rnk_snapshot.empty` | | Kaniko mode: the shared root emptied (before a base, on release, at the end of the build), `rnk_rootfs.delete` inside. |
 | `rnk_snapshot.keep` | `paths` | Kaniko mode: what later stages read of a finished stage copied into the keep area before the root is reused; `paths` the entries kept, 0 for the whole root; `rnk_rootfs.copy` inside. |
+| `rnk_snapshot.hand_over` | | Kaniko mode off `/`: a stage's directory handed to the last stage that reads it, inside that stage's `rnk_snapshot.prepare` (`handed_over = true`); `rnk_rootfs.prune` inside, then the move (ADR-0061). |
 | `rnk_snapshot.mount` | `lowers` | One instruction's overlay mount; with `umount`, the cost overlay adds per instruction (`exp-06`; mount reuse, `Q-245`). |
 | `rnk_snapshot.umount` | | One instruction's unmount. |
 | `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs` (always 0 since ADR-0034), `bytes`, `unchanged`, `bytes_compared` | Record: one instruction's diff; kaniko's `snapshot.command`. `exp-06`: 0.51–0.58 s overlay against 2.3–3.7 s walk for five steps. |

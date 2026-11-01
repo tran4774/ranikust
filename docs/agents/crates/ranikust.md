@@ -315,7 +315,14 @@ error, a refused kaniko flag, an invalid combination, and for now every
   a `--jobs` permit per `RUN` over a channel; then the outputs in
   kaniko's order (OCI layout, Docker tar, push) and the digest on stdout.
   Roots are released children first, then the store closed, on success
-  and failure alike. `--secret` takes buildctl's and kaniko's syntax
+  and failure alike. Kaniko mode off `/` (ADR-0061): `stage_readers`
+  counts each stage's readers from the stage graph, `build_stage` gets
+  the base's count (`base_readers`) for the hand-over to the last reader,
+  each stage counts its `COPY --from` and `RUN --mount from=` reads off
+  when it ends, and a root nobody reads any more (and a `COPY --from`
+  image's root once its stage is done) goes at once to one release
+  thread (`Releaser`); `release_all` hands it the rest and waits for it
+  before the store closes. `--secret` takes buildctl's and kaniko's syntax
   (`id=`, `type=file|env`, `src=`, `env=`; without a source the variable
   named by the id, else the file), ids unique; a file secret must exist
   and fit 500 KiB at the start. `--allow network.host` is BuildKit's

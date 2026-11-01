@@ -331,7 +331,7 @@ in I/O.
 |---|---|---|
 | Needs | mount privileges (root, or a usable user namespace) | root |
 | State directory | `/var/lib/ranikust` by default; a volume in a container | `/var/lib/ranikust` by default, on the ignore list when inside the root |
-| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container; else one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059); `--parallel-stages` refused (ADR-0060, Q-400) |
+| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container; else one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059), copied for a stage built `FROM` it or moved to the last one, released once nobody reads it (ADR-0061); `--parallel-stages` refused (ADR-0060, Q-400) |
 | Root lock | none: builds share the state directory | `/` is `flock`ed, one build per container |
 | Diff | the upper directory, plus a walk of the diff only | parallel walk and hash with a stat cache |
 | Stages | parallel (DAG) | sequential by default |

@@ -235,6 +235,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   went. In `e2e`, every builder is pinned to the same vCPUs as well as
   limited to the same CPU quota, memory and swap, and each build's limits,
   read from its cgroup, are in its results.
+- Kaniko mode off `/` (a directory per stage): the last stage to read a
+  stage takes its directory over instead of copying it, pruned of what
+  the copy leaves out and moved with `renameat2(RENAME_NOREPLACE)`, with
+  the same result as the copy; a stage directory nobody reads any more is
+  released at once on a release thread, which the build's end waits for
+  (ADR-0061, Q-410). A chain of stages copies nothing, and the peak disk
+  use drops. A `FROM <stage>` copy now also keeps the parent root's own
+  xattrs.
 - `--parallel-stages` is recognised and refused with exit 2 and its reason
   (ADR-0060, Q-400): outside a container
   kaniko mode already builds stages in parallel, and on a container's `/`

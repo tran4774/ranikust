@@ -43,6 +43,7 @@ impl RootPath {
     pub fn open_regular(&self, p) -> Result<OwnedFd>;    // built: reads a file; FIFOs, devices refused unopened
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
     pub fn create_sub_root(&self, p, mode) -> Result<RootPath>; // built: mkdirat + openat(O_PATH|O_DIRECTORY|O_NOFOLLOW) on one parent fd; empty, euid's, parent's mount, else refused (kaniko stage dirs, ADR-0059)
+    pub fn move_sub_root(&self, name, moved: &RootPath, to: &RootPath, to_name) -> Result<RootPath>; // built: renameat2(RENAME_NOREPLACE) of one plain name between two roots' fds; the name must be `moved`'s directory before, the opened result again after (dev, ino, mount), else refused (ADR-0061)
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (a directory listing)
     pub fn pin(&self, p) -> Result<Pinned>;              // built: O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (a physical path: the kaniko exporter)
@@ -61,6 +62,7 @@ pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore; kaniko's ignore list, a refused mount point skipped, not an error)
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<Chmod>, pub skip_special: bool } // built: None keeps the source's; skip_special leaves devices, FIFOs, sockets out (ADR-0059)
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built
+pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<()>; // built: deletes what `remove` names (each with what is below), every touched directory's times set back: equals copy_filtered with that filter; a mount below the root is an error (ADR-0061)
 pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component); covers (looks only at prefixes as long as the longest literal entry: a path's length, not its depth times its length), has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
@@ -127,12 +129,21 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   device nodes out at every depth, hardlinked, behind a symlinked
   directory and named as the source; a file swapped for a FIFO during the
   walk is copied from its pinned inode, never blocking.
+  ADR-0061: `prune_gives_what_a_filtered_copy_gives` (ignored paths,
+  below-only entries, FIFOs, a socket, a setuid hardlink split by an
+  ignored name, links out, every directory's times) compares entry for
+  entry with `copy_filtered`; `prune` never follows a link out and
+  refuses a root on another mount; `move_sub_root` moves between two
+  roots' descriptors, refuses a swapped name (a directory or a symlink),
+  never replaces a name taken and takes only plain names.
 - **T1** (written, `#[ignore]`): foreign owners and setuid in `extract`.
 - **T2** (VM only, `just test-vm unit`): exp-09's D2,
   `mounts_inside_the_root_survive`: a bind mount of a directory on the
   same filesystem (same `st_dev`) and a tmpfs inside a root, with links
   to them, survive `delete_contents`, run in a private mount namespace
-  whose mounts a guard detaches before anything is deleted; device nodes
+  whose mounts a guard detaches before anything is deleted;
+  `prune_refuses_a_mount_below_the_root` (ADR-0061: a bind mount below
+  the root is refused, nothing on it touched); device nodes
   in `extract`, device nodes and foreign owners in `copy` (written,
   `#[ignore]`).
 
@@ -141,7 +152,8 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 - `rnk_rootfs.extract` per layer (`mode`: `Apply`, `Overlay` or `Live`;
   `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`, `hardlinks`, `bytes_in`,
   `bytes_written`), `rnk_rootfs.copy` per `COPY`
-  source set, `rnk_rootfs.delete` per tree ([rows](../../design/metrics.md#rnk-rootfs)).
+  source set, `rnk_rootfs.delete` per tree, `rnk_rootfs.prune` per
+  pruned root (`entries`, `files`, `dirs`, `kept`) ([rows](../../design/metrics.md#rnk-rootfs)).
 - Count in the entry loop, record once at the end: never a span per entry.
 
 ## Pitfalls
