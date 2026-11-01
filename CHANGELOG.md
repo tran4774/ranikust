@@ -214,6 +214,20 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
+- Kaniko mode outside a container builds each stage in a directory of its
+  own, `<state>/builds/<id>/stages/<n>/rootfs`, and runs independent
+  stages in parallel (`--jobs`), as overlay mode does, instead of one
+  stage at a time on one root (ADR-0059). A stage built `FROM` another
+  gets a copy of it (a reflink where the filesystem has them, never a
+  hardlink; device nodes, FIFOs and sockets left out), so each stage
+  costs disk until the build ends. Kaniko mode on `/` in a container is
+  unchanged.
+- Copying a file (`COPY`, `ADD`, `COPY --from`, a stage built `FROM`
+  another off `/`) clones it where the filesystem shares extents and
+  otherwise copies only its data: a sparse file keeps its holes instead
+  of being written out at its full size. A file that holds more than its
+  size once copied (appended to meanwhile) fails the copy instead of
+  being cut short.
 - `COPY` and `ADD` refuse a source that expands to an empty string (it
   copied the whole context or stage), and `COPY --from=<name>` where
   `<name>` is no stage and has no tag, digest, registry or path (a
@@ -296,6 +310,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- In kaniko mode, copying a stage and walking a root grew with the cube of
+  a directory chain's depth (a `RUN` can make 20,000 levels in seconds;
+  3000 took 17 s per copy and per walk): the ignore-list check looked up
+  every ancestor of every entry. It now looks only at prefixes as long as
+  the longest entry. A file cut short or rewritten while a stage was
+  copied is refused instead of being copied with zeros in place of the
+  cut part.
 - A `RUN` heredoc whose body starts with `#!` failed with "resolve a mount
   target in the root"; its script now runs from `/dev/pipes`, as in
   BuildKit.

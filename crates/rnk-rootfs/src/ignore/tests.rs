@@ -123,3 +123,67 @@ fn malformed_patterns_are_refused() {
         assert!(matches!(e, Error::InvalidPath { .. }), "{bad}: {e}");
     }
 }
+
+/// `covers` as it was before it bounded the prefixes it looks at: every
+/// ancestor looked up. The reference for the property below.
+fn covers_by_every_ancestor(l: &IgnoreList, p: &Path) -> bool {
+    let Some(c) = path::clean(p) else {
+        return false;
+    };
+    if c.as_os_str().is_empty() {
+        return false;
+    }
+    let mut first = true;
+    for a in c.ancestors() {
+        if a.as_os_str().is_empty() {
+            break;
+        }
+        if l.paths.contains(a) || (!first && l.below.contains(a)) {
+            return true;
+        }
+        first = false;
+    }
+    let names: Vec<&OsStr> = c.iter().collect();
+    l.globs.iter().any(|g| g.covers(&names))
+}
+
+proptest::proptest! {
+    /// Bounding the prefixes by the longest literal entry changes no
+    /// answer: random entries (literal, below-only, globs) and paths over a
+    /// small alphabet, with `.`, `..`, doubled and trailing slashes.
+    #[test]
+    fn covers_agrees_with_looking_up_every_ancestor(
+        lit in proptest::collection::vec("(/?(a|b|ab|\\.|\\.\\.)){1,4}/?", 0..4),
+        below in proptest::collection::vec("(/?(a|b|ab)){1,4}", 0..3),
+        globs in proptest::collection::vec("(/?(a|b|\\*|a\\*)){1,3}", 0..2),
+        paths in proptest::collection::vec("(/{1,2}(a|b|ab|\\.|\\.\\.)){0,7}/?", 1..16),
+    ) {
+        let mut l = IgnoreList::new();
+        for p in &lit {
+            let _ = l.insert(p);
+        }
+        for p in &below {
+            let _ = l.insert_below(p);
+        }
+        for p in &globs {
+            let _ = l.insert_glob(p);
+        }
+        for p in &paths {
+            let p = Path::new(p);
+            proptest::prop_assert_eq!(l.covers(p), covers_by_every_ancestor(&l, p), "{}", p.display());
+        }
+    }
+}
+
+#[test]
+fn a_deep_path_is_covered_by_a_shallow_entry_and_a_deep_one() {
+    let deep: String = (0..3000).map(|i| format!("/d{i}")).collect();
+    let l = list(&["d0/d1", &deep[1..]], &["d0/d1/d2/d3"], &[]);
+    assert!(l.covers(format!("{deep}/x")));
+    assert!(l.covers(&deep));
+    assert!(l.covers("d0/d1/d2/d3/d4"));
+    assert!(!l.covers("d0"));
+    let only_below = list(&[], &["d0/d1/d2/d3"], &[]);
+    assert!(!only_below.covers("d0/d1/d2/d3"));
+    assert!(only_below.covers(format!("{deep}/x")));
+}

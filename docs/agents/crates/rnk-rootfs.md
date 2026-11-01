@@ -42,6 +42,7 @@ impl RootPath {
     pub fn open_at(&self, p, how: &OpenHow) -> Result<OwnedFd>; // built: RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS
     pub fn open_regular(&self, p) -> Result<OwnedFd>;    // built: reads a file; FIFOs, devices refused unopened
     pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
+    pub fn create_sub_root(&self, p, mode) -> Result<RootPath>; // built: mkdirat + openat(O_PATH|O_DIRECTORY|O_NOFOLLOW) on one parent fd; empty, euid's, parent's mount, else refused (kaniko stage dirs, ADR-0059)
     pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (a directory listing)
     pub fn pin(&self, p) -> Result<Pinned>;              // built: O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (a physical path: the kaniko exporter)
@@ -56,11 +57,11 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  //
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // built: kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // built: as extract_live with Whiteouts::Literal (a kept kaniko-mode stage, ADR-0056): `.wh.*` names are files
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
-pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; copy_file_range
+pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused ("changed while it was copied"), never cut short
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore; kaniko's ignore list, a refused mount point skipped, not an error)
-pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<u32> } // built: None keeps the source's
+pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<Chmod>, pub skip_special: bool } // built: None keeps the source's; skip_special leaves devices, FIFOs, sockets out (ADR-0059)
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built
-pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component); covers, has_below, contains (exact literal)
+pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component); covers (looks only at prefixes as long as the longest literal entry: a path's length, not its depth times its length), has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
 pub fn probe_support() -> Result<(), Unsupported>;             // built: start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
@@ -118,7 +119,11 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   physical path, a link climbing above the root kept in it, one into
   `/proc` leading nowhere; an opaque marker below the `var/run` link fails
   the extraction (never followed) unless the layer's own `var/run/`
-  replaces the link first. Still to do: `cargo fuzz` on `extract`.
+  replaces the link first. `copy_data` (ADR-0059): sparse, empty and
+  dense files, a source holding more than its size refused; ignored
+  reproducer of a red-team finding: a source cut short between
+  `SEEK_DATA` calls is copied at its old size with zeros, without an
+  error. Still to do: `cargo fuzz` on `extract`.
 - **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
   survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
   and setuid in `extract`.

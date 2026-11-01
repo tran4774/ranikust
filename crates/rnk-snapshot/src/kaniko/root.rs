@@ -91,6 +91,22 @@ impl PartialEq for KanikoLayer {
 impl Eq for KanikoLayer {}
 
 impl KanikoLayer {
+    /// A layer whose blob is `blob` in the store.
+    pub(super) fn from_blob(diff_id: &Digest, blob: &Path) -> Self {
+        Self {
+            diff_id: diff_id.clone(),
+            source: LayerSource::Blob(blob.to_owned()),
+        }
+    }
+
+    /// A layer opened anew from its source for each extraction.
+    pub(super) fn from_stream(diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Self {
+        Self {
+            diff_id: diff_id.clone(),
+            source: LayerSource::Stream(open),
+        }
+    }
+
     /// The diff ID of the layer.
     #[must_use]
     pub fn diff_id(&self) -> &Digest {
@@ -974,7 +990,11 @@ impl std::io::Read for Spool {
 /// the stage after part of the layer is in `root`: used only where the
 /// root is emptied after a failure (a host root, a fresh keep directory);
 /// on `/` see [`extract_base_layer`].
-fn extract_blob(root: &RootPath, ignore: &IgnoreList, layer: &KanikoLayer) -> Result<()> {
+pub(super) fn extract_blob(
+    root: &RootPath,
+    ignore: &IgnoreList,
+    layer: &KanikoLayer,
+) -> Result<()> {
     extract_checked(root, ignore, layer.open()?, &layer.diff_id)
 }
 

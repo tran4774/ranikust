@@ -42,6 +42,19 @@ pub struct CopyOpts {
     /// changes each entry's own bits. `None` keeps the raw bits of the
     /// source, and created directories get `0755`.
     pub chmod: Option<Chmod>,
+    /// Leaves device nodes, FIFOs and sockets out instead of making them
+    /// again (`mknodat`, or an empty file for a socket): kaniko mode copying
+    /// one stage directory into another (ADR-0059), as its extraction and
+    /// its exporter leave them out (ADR-0041).
+    pub skip_special: bool,
+}
+
+/// Whether `t` is a node [`CopyOpts::skip_special`] leaves out.
+fn special(t: FileType) -> bool {
+    matches!(
+        t,
+        FileType::Fifo | FileType::CharDevice | FileType::BlockDevice | FileType::Socket
+    )
 }
 
 /// Copies `from` in the root `src` to `to` in the root `dst`.
@@ -204,6 +217,7 @@ impl Copier<'_> {
                 self.check_not_inside(&st, from)?;
                 self.walk(sfd, dfd, pending, from, &to)
             }
+            t if self.o.skip_special && special(t) => Ok(()),
             _ => {
                 let (parent, name) = path::entry(&to)?;
                 let pfd = self.parents(&parent)?;
@@ -269,7 +283,9 @@ impl Copier<'_> {
                 Err(e) => return Err(on_mount(e, &from)),
             };
             let st = meta::statx_at(pin.as_fd(), OsStr::new(""), &from)?;
-            if !(self.keep)(&from, st.file_type() == FileType::Directory) {
+            if !(self.keep)(&from, st.file_type() == FileType::Directory)
+                || (self.o.skip_special && special(st.file_type()))
+            {
                 continue;
             }
             match st.file_type() {
@@ -611,16 +627,7 @@ pub(crate) fn copy_node(
                 true,
                 path,
             )?;
-            let mut out = std::fs::File::from(out);
-            // `copy_file_range` on Linux: a reflink where the filesystem
-            // shares extents.
-            let n = std::io::copy(&mut std::fs::File::from(src), &mut out).map_err(|source| {
-                Error::Io {
-                    op: "copy",
-                    path: path.to_owned(),
-                    source,
-                }
-            })?;
+            let n = copy_data(src.as_fd(), out.as_fd(), path)?;
             set_meta(&Handle::Open(out.as_fd()), &m)?;
             Ok(n)
         }
@@ -667,6 +674,173 @@ pub(crate) fn copy_node(
             reason: "only a file, symlink, FIFO, socket or device node is copied as one entry",
         }),
     }
+}
+
+/// Copies the content of `src` into the new, empty file `out` and returns
+/// its size: a reflink (`FICLONE`) where the filesystem shares extents,
+/// else only the data ranges (`SEEK_DATA`/`SEEK_HOLE`), each with
+/// `copy_file_range` or reads and writes, the holes left as holes and the
+/// size set at the end. A sparse file costs its data, never its size.
+/// Without `SEEK_DATA` everything up to the size is data.
+///
+/// The size is read once, first. A file holding more than that afterwards
+/// (one appended to while copied, or a filesystem whose size understates
+/// its content) is refused, never cut short; so is one whose size, `mtime`
+/// or `ctime` differ at the end from the start (cut short or rewritten
+/// meanwhile, which `SEEK_DATA` would read as a hole and copy as zeros):
+/// as the walk and the exporter refuse a file that changes under them.
+fn copy_data(src: BorrowedFd<'_>, out: BorrowedFd<'_>, path: &Path) -> Result<u64> {
+    let err = |op| move |e: Errno| io_err(op, path, e);
+    let first = rustix::fs::fstat(src).map_err(err("stat"))?;
+    let size = u64::try_from(first.st_size).unwrap_or(0);
+    if size > 0 && rustix::fs::ioctl_ficlone(out, src).is_ok() {
+        // The clone takes the whole file as it is now.
+        let cloned = rustix::fs::fstat(out).map_err(err("stat"))?.st_size;
+        return Ok(u64::try_from(cloned).unwrap_or(0));
+    }
+    let mut at = 0_u64;
+    let mut seek = true;
+    while at < size {
+        let data = if seek {
+            match rustix::fs::seek(src, rustix::fs::SeekFrom::Data(at)) {
+                Ok(d) => d,
+                // No data after `at`: the rest is a hole.
+                Err(Errno::NXIO) => break,
+                // A filesystem without `SEEK_DATA`: the rest is data.
+                Err(Errno::INVAL | Errno::OPNOTSUPP) => {
+                    seek = false;
+                    at
+                }
+                Err(e) => return Err(io_err("seek", path, e)),
+            }
+        } else {
+            at
+        };
+        if data >= size {
+            break;
+        }
+        let hole = if seek {
+            match rustix::fs::seek(src, rustix::fs::SeekFrom::Hole(data)) {
+                Ok(h) if h > data => h.min(size),
+                // No progress, or no `SEEK_HOLE`: the rest is data.
+                Ok(_) | Err(Errno::INVAL | Errno::OPNOTSUPP) => size,
+                Err(e) => return Err(io_err("seek", path, e)),
+            }
+        } else {
+            size
+        };
+        copy_range(src, out, data, hole, path)?;
+        at = hole;
+    }
+    rustix::fs::ftruncate(out, size).map_err(err("truncate"))?;
+    let mut byte = [0_u8; 1];
+    loop {
+        match rustix::io::pread(src, &mut byte, size) {
+            Ok(0) => break,
+            Ok(_) => {
+                return Err(Error::InvalidPath {
+                    path: path.to_owned(),
+                    reason: "the file changed while it was copied: it holds more than its size",
+                });
+            }
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(io_err("read", path, e)),
+        }
+    }
+    // A file cut short, or rewritten, while its ranges were copied: a
+    // `SEEK_DATA` past the cut reads as a hole and the rest would come out
+    // as zeros. The size and times read again must be the ones read first.
+    let last = rustix::fs::fstat(src).map_err(err("stat"))?;
+    if (
+        last.st_size,
+        last.st_mtime,
+        last.st_mtime_nsec,
+        last.st_ctime,
+        last.st_ctime_nsec,
+    ) != (
+        first.st_size,
+        first.st_mtime,
+        first.st_mtime_nsec,
+        first.st_ctime,
+        first.st_ctime_nsec,
+    ) {
+        return Err(Error::InvalidPath {
+            path: path.to_owned(),
+            reason: "the file changed while it was copied",
+        });
+    }
+    Ok(size)
+}
+
+/// Copies bytes `from..to` of `src` to the same offsets of `out`.
+fn copy_range(
+    src: BorrowedFd<'_>,
+    out: BorrowedFd<'_>,
+    from: u64,
+    to: u64,
+    path: &Path,
+) -> Result<()> {
+    let (mut off_in, mut off_out) = (from, from);
+    while off_in < to {
+        let want = usize::try_from(to - off_in)
+            .unwrap_or(usize::MAX)
+            .min(1 << 30);
+        match rustix::fs::copy_file_range(src, Some(&mut off_in), out, Some(&mut off_out), want) {
+            Ok(0) => {
+                return Err(Error::InvalidPath {
+                    path: path.to_owned(),
+                    reason: "the file shrank while it was copied",
+                });
+            }
+            Ok(_) => {}
+            Err(Errno::INTR) => {}
+            // Across filesystems on older kernels, or where it is refused:
+            // plain reads and writes.
+            Err(Errno::XDEV | Errno::INVAL | Errno::NOSYS | Errno::OPNOTSUPP | Errno::PERM) => {
+                return copy_range_rw(src, out, off_in, to, path);
+            }
+            Err(e) => return Err(io_err("copy_file_range", path, e)),
+        }
+    }
+    Ok(())
+}
+
+/// [`copy_range`] with `pread` and `pwrite`.
+fn copy_range_rw(
+    src: BorrowedFd<'_>,
+    out: BorrowedFd<'_>,
+    from: u64,
+    to: u64,
+    path: &Path,
+) -> Result<()> {
+    let mut buf = vec![0_u8; 1 << 17];
+    let mut at = from;
+    while at < to {
+        let want = usize::try_from(to - at)
+            .unwrap_or(usize::MAX)
+            .min(buf.len());
+        let n = match rustix::io::pread(src, &mut buf[..want], at) {
+            Ok(0) => {
+                return Err(Error::InvalidPath {
+                    path: path.to_owned(),
+                    reason: "the file shrank while it was copied",
+                });
+            }
+            Ok(n) => n,
+            Err(Errno::INTR) => continue,
+            Err(e) => return Err(io_err("read", path, e)),
+        };
+        let mut done = 0;
+        while done < n {
+            match rustix::io::pwrite(out, &buf[done..n], at + done as u64) {
+                Ok(w) => done += w,
+                Err(Errno::INTR) => {}
+                Err(e) => return Err(io_err("write", path, e)),
+            }
+        }
+        at += n as u64;
+    }
+    Ok(())
 }
 
 /// The names in `fd`, sorted so that the copy, and which name of a

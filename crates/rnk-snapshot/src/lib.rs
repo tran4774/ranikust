@@ -39,7 +39,8 @@ pub use error::{Error, Result};
 pub use export::{DiffCounts, LayerDiff};
 pub use kaniko::{
     Change, Changed, DEFAULT_WALK_WORKERS, EntryMeta, Kaniko, KanikoDiff, KanikoLayer, KanikoRoot,
-    SnapshotMode, WalkDiff, WalkOptions, WalkStats, Walker,
+    KanikoStage, KanikoStageDiff, KanikoStages, SnapshotMode, WalkDiff, WalkOptions, WalkStats,
+    Walker,
 };
 pub use layer::LayerDir;
 pub use mount::{MAX_LOWERS, MountApi, OVERLAY_OPTIONS};

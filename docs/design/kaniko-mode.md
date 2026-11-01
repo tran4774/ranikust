@@ -1,10 +1,10 @@
 # kaniko mode
 
-How ranikust builds when overlay is not available: one root filesystem
-(`/` in a container, else a directory ranikust makes in its state
-directory, ADR-0050), each layer is found by walking and hashing it, and the root is
-emptied safely between stages. Also covers the per-stage directory variants,
-including the opt-in `--parallel-stages` path with its fake `/proc`.
+How ranikust builds when overlay is not available: on `/` in a container
+one root filesystem, emptied safely between stages; anywhere else a
+directory per stage in the state directory (ADR-0050, ADR-0059). Each
+layer is found by walking and hashing the root. Also covers the opt-in
+`--parallel-stages` path with its fake `/proc`.
 
 Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0014](../adr/0014-kaniko-mode-sequential-by-default.md),
@@ -13,20 +13,21 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0019](../adr/0019-java-tool-options-on-parallel-path.md),
 [ADR-0022](../adr/0022-common-state-dir.md),
 [ADR-0023](../adr/0023-mode-flag.md),
-[ADR-0038](../adr/0038-kaniko-mode-settings-for-phase-2.md).
+[ADR-0038](../adr/0038-kaniko-mode-settings-for-phase-2.md),
+[ADR-0059](../adr/0059-kaniko-mode-off-root-builds-each-stage-in-its-own-directory.md).
 
 ## Variants
 
 | Variant | When | Stage root | `RUN` | Stages |
 |---|---|---|---|---|
-| **Sequential** (default) | root, cannot mount (Docker default, ordinary pods) | `/` in a container, else `<state>/builds/<id>/rootfs` | on `/`, directly (`rnk-sandbox`'s `Isolation::Direct`), with the container's real `/proc`, `/dev` and network files; on a root in the state directory, the full sandbox ([sandbox](sandbox.md)); a host where root may not mount is refused (Q-330, `ADR-0050`), so the `chroot` path of `ADR-0043` is not used | one at a time, `--jobs` ignored |
-| **Per-stage, sandboxed** | root, can mount, overlay unusable | one directory per stage | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
+| **Sequential** (default in a container) | root in a container, cannot mount (Docker default, ordinary pods) | `/` | directly (`rnk-sandbox`'s `Isolation::Direct`), with the container's real `/proc`, `/dev` and network files | one at a time, `--jobs` ignored |
+| **Per-stage, sandboxed** | root outside a container (it must be able to mount: a host where root may not mount is refused, Q-330, `ADR-0050`, so the `chroot` path of `ADR-0043` is not used) | `<state>/builds/<id>/stages/<n>/rootfs`, one per stage (ADR-0059) | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
 | **Per-stage, bare chroot** | as Sequential, plus `--parallel-stages` | one directory per stage | bare `chroot`, no `/proc` | DAG, `--jobs` |
 
 All variants share the walk, the diff, the exporter and safe deletion. They
-implement the `StageRootfs` trait of `rnk-snapshot`: `/` (shared, the
-scheduler runs one stage at a time) or a private directory (scheduled like
-overlay mode).
+implement the `StageRootfs` trait of `rnk-snapshot`: `/` (`Kaniko`, shared,
+the scheduler runs one stage at a time) or a private directory per stage
+(`KanikoStages`, scheduled like overlay mode).
 
 ## Invariants
 
@@ -37,8 +38,8 @@ overlay mode).
 - The state directory is never walked, snapshotted or deleted; otherwise its
   files leak into layers. With the root `/` (in a container) it is
   `/var/lib/ranikust` (or `--state-dir`), inside the root and on the ignore
-  list, as kaniko's `/kaniko`; with any other root the root lies inside it,
-  `<state>/builds/<id>/rootfs` (ADR-0050).
+  list, as kaniko's `/kaniko`; off `/` every stage root lies inside it,
+  `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0050, ADR-0059).
 - On `/`, a `RUN` reaches nothing of ranikust's ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)):
   - the store keeps nothing with a path: `Store::open_anonymous`; pulled
     blobs and encoded layers are anonymous files on disk, held by
@@ -177,8 +178,11 @@ settles them (Q-024):
   directories excepted), walked by descriptor before anything is created.
   Each emptying gives the root its own owner and mode back. The sandbox is
   started with the root's descriptor and refuses a `RUN` on any other path
-  or directory. Kaniko mode on `/` takes `flock` on a descriptor of `/`
-  itself: one build per container, whatever the state directories.
+  or directory. (The binary builds off `/` in per-stage directories since
+  ADR-0059: each `0700` below the same checked chain, the sandbox started
+  as for overlay mode's mount points.) Kaniko mode on `/` takes `flock` on
+  a descriptor of `/` itself: one build per container, whatever the state
+  directories.
 - **Layers.** A stage whose layers are needed (`set_layers_needed`, from the
   lazy-snapshot rule) takes a baseline walk after its base, then
   `end_layer` walks and diffs, and the diff, held with the root, is the
@@ -250,8 +254,13 @@ settles them (Q-024):
   exists. With `--parallel-stages` (task 10), a view would keep the fence
   closed to other stages' `RUN`s, which wait at most a minute: to design
   there.
-- **Refused:** kaniko mode without root, per-stage directories (task 9)
-  and `--parallel-stages` (task 10), each with its reason.
+- **Refused:** kaniko mode without root, and `--parallel-stages` (task
+  10), each with its reason. Off `/` the stages do not share a root: see
+  [Per-stage directories](#per-stage-directories).
+
+`Kaniko` also takes a root other than `/` (a directory, its keep area
+beside it, emptied at the end of the build): the binary no longer uses it
+that way since ADR-0059, its tests do, and `--parallel-stages` may.
 
 ## Walk, hash and diff
 
@@ -374,8 +383,9 @@ file descriptors:
 
 ranikust never fills or empties a directory the operator names (ADR-0050,
 which replaces the `--workdir` checks of ADR-0038 and ADR-0047): the root
-is `/` in a container, chosen by kaniko's heuristic (ADR-0048), or
-`<state>/builds/<id>/rootfs`, made for the build. Before anything is
+is `/` in a container, chosen by kaniko's heuristic (ADR-0048), or a
+directory per stage, `<state>/builds/<id>/stages/<n>/rootfs`, made for the
+build (ADR-0059). Before anything is
 written, `ranikust::statedir::prepare` checks the state directory:
 
 1. Before it is created, its nearest existing directory and every real
@@ -459,19 +469,56 @@ kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
 
 ## Per-stage directories
 
-- **Location**: `builds/<build-id>/stages/<n>/rootfs` in the build's private
-  area of the state directory, never on the container's own root [inferred;
-  see [cache-and-store](cache-and-store.md)].
-- **Creation**: extract the layers, or copy from the extracted store with
-  reflinks where available; never hardlink to the store (ADR-0017).
-- **Release**: safe deletion of the directory.
+Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-builds-each-stage-in-its-own-directory.md)),
+`rnk_snapshot::KanikoStages`:
+
+- **Location**: `<state>/builds/<build-id>/stages/<n>/rootfs`, in the
+  build's private area of the state directory (the stage directory `0700`,
+  its parents checked by the set-up, ADR-0050), never on the machine's own
+  root. Each directory is made with `mkdirat` and opened with
+  `openat(O_PATH | O_DIRECTORY | O_NOFOLLOW)` on the same parent
+  descriptor (`RootPath::create_sub_root`): it must be empty, owned by the
+  effective uid and on the parent's mount, else it is refused.
+- **Creation**: a stage on an image extracts its base layers into its
+  directory (a blob of the store, or streamed and checked at its end,
+  ADR-0055; a failure deletes the directory; device nodes and FIFOs left
+  out, ADR-0041); `FROM scratch` and an image start at `0755` and the epoch
+  unless a layer sets `./`. `FROM <stage>` copies the parent's directory
+  (`rnk_rootfs::copy_filtered`: owners, modes, times, xattrs, hardlinks
+  inside the tree; a file cloned with `FICLONE` where the filesystem
+  shares extents, else only its data ranges, holes kept) with the parent
+  root's owner, mode and times; never a hardlink to it (ADR-0017). Device
+  nodes, FIFOs and sockets a parent's `RUN` made are left out
+  (`CopyOpts::skip_special`, ADR-0041).
+- **Scheduling**: as overlay mode's stages: the stage graph and `--jobs`,
+  no squashing, nothing kept or emptied between stages; a `COPY --from`
+  reads the finished stage's directory as it is. A stage the target does
+  not inherit (only read by `COPY --from`) is never walked (ADR-0038).
+- **`RUN`**: the full sandbox ([sandbox](sandbox.md)), started with
+  `Sandbox::start` as for overlay mode's mount points. The stage root is
+  reopened by path for each `RUN`, and must still be the directory the
+  stage holds (`RunSpec::expect_root`): checked in the parent after the
+  reopening and in the child after the bind.
+- **Walk**: each stage has its own walker, made at its first walk and
+  dropped when the stage ran its last instruction (`StageRootfs::done`):
+  its record of the root and its thread pool do not outlive the stage's
+  instructions. The ignore list of a stage root is the fixed paths and
+  `--ignore-path`; nothing is mounted in a directory ranikust made.
+- **Release**: safe deletion of the stage directory, through descriptors,
+  crossing no mount; the rest goes with the build directory.
+- **Cost**: one copy of the base per stage (its data on ext4 and tmpfs,
+  a reflink on xfs and btrfs), all stage directories held to the end of
+  the build, so the peak is about the sum of the stages' roots;
+  experiment 12 measured W3 at 3.28 GB against 2.13 GB for overlay mode.
+  Releasing a stage's directory once no later stage reads it is not done
+  yet.
 - **Placed files**: `hosts`, `resolv.conf`, stub mount points and `/dev`
   nodes change the mtime of their parent, so `/etc` would enter every layer.
-  Record the parent's mtime before placing (m0) and after (m1); after `RUN`,
-  if it is still m1, restore m0, otherwise keep what `RUN` set. Built for
-  the sequential `Direct` `RUN` on a root in the state directory (`rnk-sandbox`'s `swap`
-  journal records, `ADR-0043`): the image's entry is renamed aside in the
-  same directory and back after, never rewritten.
+  The full sandbox records the parent's mtime before placing (m0) and after
+  (m1); after `RUN`, if it is still m1, it restores m0, otherwise keeps what
+  `RUN` set (`rnk-sandbox`'s `swap` journal records, `ADR-0043`): the
+  image's entry is renamed aside in the same directory and back after,
+  never rewritten.
 
 ## The `--parallel-stages` path (bare `chroot`)
 

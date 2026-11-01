@@ -151,6 +151,10 @@ pub(crate) struct ChildArgs {
     /// `root_dir` first, and check that the new `/` is this directory,
     /// `(dev major, dev minor, ino)`, the one the parent checked.
     pub(crate) chroot: Option<(u32, u32, u64)>,
+    /// The full sandbox: the device and inode the root's bind must show
+    /// (`RunSpec::root_id`), checked on the descriptor opened after the
+    /// bind; a path that now leads elsewhere fails the `RUN`.
+    pub(crate) root_check: Option<(u32, u32, u64)>,
     /// `Isolation::Direct` on `/` with capabilities outside Docker's
     /// defaults in the bounding set and `CAP_SETPCAP` to drop them: the
     /// child drops them before `execve` (ADR-0051), so a `RUN` never holds
@@ -352,6 +356,21 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
             Mode::empty(),
         ),
     );
+    if let Some(want) = args.root_check {
+        let st = check(
+            err,
+            Step::EnterRoot,
+            rustix::fs::statx(
+                &root,
+                c"",
+                rustix::fs::AtFlags::EMPTY_PATH,
+                rustix::fs::StatxFlags::BASIC_STATS,
+            ),
+        );
+        if (st.stx_dev_major, st.stx_dev_minor, st.stx_ino) != want {
+            fail(err, Step::EnterRoot, Errno::XDEV);
+        }
+    }
     for m in &args.mounts {
         mount_one(err, root.as_fd(), &args.dev_remount, args.dev_pipes, m);
     }
@@ -1567,6 +1586,7 @@ mod tests {
             groups: Vec::new(),
             workdir: c"/".into(),
             chroot: None,
+            root_check: None,
             direct_drop: false,
             nofile: None,
             core: None,

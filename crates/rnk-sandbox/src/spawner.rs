@@ -798,6 +798,16 @@ impl Runner {
     fn prepare(&self, spec: &mut RunSpec, root_entry: RootEntry) -> Result<(Job, Option<Journal>)> {
         let direct = spec.isolation == Isolation::Direct;
         let root = RootPath::open(&spec.root_dir)?;
+        // The caller's root, by identity: the path is reopened here and
+        // again in the child.
+        if let Some(want) = spec.root_id
+            && root_id(&root)? != want
+        {
+            return Err(Error::InvalidSpec(format!(
+                "the root {} is no longer the directory the caller holds",
+                spec.root_dir.display()
+            )));
+        }
         // The shared root is reopened by path for each `RUN`: it must still
         // be the directory checked at the start, for `Full` and `Direct`.
         if let Some((path, id)) = &self.shared_root {
@@ -1019,6 +1029,11 @@ impl Runner {
                 .collect(),
             workdir: cstring(&spec.workdir)?,
             chroot,
+            // Checked after the bind of the full sandbox's root.
+            root_check: match spec.isolation {
+                Isolation::Full => spec.root_id.map(|(maj, min, ino, _)| (maj, min, ino)),
+                Isolation::Direct => None,
+            },
             direct_drop: false,
             nofile: self.nofile.map(|l| rustix::process::Rlimit {
                 current: l.soft,
@@ -1993,6 +2008,35 @@ mod tests {
             "{:?}",
             e.err()
         );
+        assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
+    }
+
+    /// The root the caller holds (`RunSpec::expect_root`, ADR-0059): a path
+    /// swapped since for another directory is refused before anything is
+    /// placed or cloned, in every isolation.
+    #[test]
+    fn a_root_swapped_since_the_caller_opened_it_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let wd = parent.path().canonicalize().unwrap().join("w");
+        fs::create_dir(&wd).unwrap();
+        let held = RootPath::open(&wd).unwrap();
+        fs::rename(&wd, parent.path().join("moved")).unwrap();
+        fs::create_dir(&wd).unwrap();
+        for (isolation, entry) in [
+            (Isolation::Direct, None),
+            (Isolation::Full, Some(RootEntry::PivotRoot)),
+        ] {
+            let runner = Runner::new(dir.path(), entry).unwrap();
+            let mut spec = RunSpec::new(&wd, vec!["/missing".into()]);
+            spec.isolation = isolation;
+            spec.expect_root(&held).unwrap();
+            let r = runner.run(spec, None, |_| panic!("nothing is cloned"));
+            let Err(Error::InvalidSpec(why)) = r else {
+                panic!("{isolation:?}: {r:?}");
+            };
+            assert!(why.contains("no longer the directory"), "{why}");
+        }
         assert_eq!(fs::read_dir(dir.path().join("runs")).unwrap().count(), 0);
     }
 

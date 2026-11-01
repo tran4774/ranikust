@@ -1,0 +1,11 @@
+# A stage built FROM a parent too big to copy twice on the state
+# directory's filesystem (T15, ADR-0059).
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS big
+RUN dd if=/dev/zero of=/fill bs=1M count=100
+
+FROM big AS copy
+RUN true
+
+FROM ${BASE}
+COPY --from=copy /etc/os-release /x

@@ -52,10 +52,9 @@ ranikust, `0700`, below directories only root may write
 - **kaniko mode**: on `/` in a container the state directory lies inside
   the root, the counterpart of kaniko's `/kaniko`, so it is on the
   kaniko-mode ignore list and is never walked, snapshotted or deleted
-  ([kaniko-mode](kaniko-mode.md#ignore-list)); elsewhere the root is
-  `builds/<build-id>/rootfs`.
-  kaniko mode also keeps per-build `deps/` (files for `COPY --from`) and
-  stage images there.
+  ([kaniko-mode](kaniko-mode.md#ignore-list)); elsewhere every stage has
+  a root of its own, `builds/<build-id>/stages/<n>/rootfs` (ADR-0059),
+  as overlay mode's stage directories.
 
 Extracted layers use overlay's whiteout form (`mknod c 0 0`,
 `user.overlay.opaque=y`) so that overlay mode can stack them directly.

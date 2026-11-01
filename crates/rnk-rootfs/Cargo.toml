@@ -12,13 +12,15 @@ publish = false
 workspace = true
 
 [dependencies]
-# `system`: `uname` for the start-up probe's message (ADR-0028).
-rustix = { workspace = true, features = ["system"] }
+# `system`: `uname` for the start-up probe's message (ADR-0028);
+# `process`: `geteuid`, the owner a directory just made must have.
+rustix = { workspace = true, features = ["process", "system"] }
 tar.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 rnk-metrics.workspace = true
 rustix = { workspace = true, features = ["process"] }
 tempfile.workspace = true

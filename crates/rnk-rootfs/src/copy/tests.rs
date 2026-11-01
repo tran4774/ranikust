@@ -97,6 +97,7 @@ fn chown_and_chmod_apply_to_every_entry_but_symlink_modes() {
     let o = CopyOpts {
         owner: Some(Owner { uid, gid }),
         chmod: Some(Chmod::Octal(0o750)),
+        skip_special: false,
     };
     copy(&s.root, "a", &d.root, "deep/er/app", &o).unwrap();
     for p in ["deep/er/app/f", "deep/er/app/ro", "deep/er/app/fifo"] {
@@ -393,6 +394,7 @@ fn device_nodes_and_foreign_owners_are_copied() {
     let o = CopyOpts {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
+        skip_special: false,
     };
     copy(&s.root, "a", &d.root, "root", &o).unwrap();
     let owned = d.root.statx("root/owned").unwrap();
@@ -410,6 +412,7 @@ fn foreign_owners_fail_cleanly_unprivileged() {
     let o = CopyOpts {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
+        skip_special: false,
     };
     let e = copy(&s.root, "a/f", &d.root, "f", &o).unwrap_err();
     assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
@@ -452,4 +455,150 @@ fn a_filter_leaves_out_refused_entries_and_whole_directories() {
     assert!(fs::symlink_metadata(d.host("app/hl")).is_err());
     assert!(fs::symlink_metadata(d.host("app/ro")).is_err());
     assert!(fs::symlink_metadata(d.host("app/fifo")).is_ok());
+}
+
+#[test]
+fn skip_special_leaves_fifos_out_and_copies_the_rest() {
+    let s = source();
+    let d = Fixture::new();
+    let o = CopyOpts {
+        skip_special: true,
+        ..CopyOpts::default()
+    };
+    copy_filtered(&s.root, "a", &d.root, "out", &o, &|_, _| true).unwrap();
+    assert!(
+        fs::symlink_metadata(d.host("out/fifo")).is_err(),
+        "no FIFO made"
+    );
+    assert_eq!(fs::read(d.host("out/f")).unwrap(), b"content");
+    assert_eq!(
+        fs::metadata(d.host("out/f")).unwrap().ino(),
+        fs::metadata(d.host("out/hl")).unwrap().ino(),
+        "hardlinks inside the tree kept"
+    );
+    // A FIFO named as the source itself is left out too.
+    copy(&s.root, "a/fifo", &d.root, "lone", &o).unwrap();
+    assert!(fs::symlink_metadata(d.host("lone")).is_err());
+    // Without the switch it is made again, never opened.
+    copy(&s.root, "a/fifo", &d.root, "made", &CopyOpts::default()).unwrap();
+    assert!(
+        fs::symlink_metadata(d.host("made"))
+            .unwrap()
+            .file_type()
+            .is_fifo()
+    );
+}
+
+#[test]
+fn a_sparse_file_is_copied_without_filling_its_holes() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    let s = Fixture::new();
+    let d = Fixture::new();
+    let big = 1_u64 << 33; // 8 GiB, nearly all holes
+    {
+        let mut f = fs::File::create(s.host("sparse")).unwrap();
+        f.write_all(b"head").unwrap();
+        f.seek(SeekFrom::Start(big / 2)).unwrap();
+        f.write_all(b"middle").unwrap();
+        f.set_len(big).unwrap();
+    }
+    copy(&s.root, "sparse", &d.root, "copy", &CopyOpts::default()).unwrap();
+    let m = fs::metadata(d.host("copy")).unwrap();
+    assert_eq!(m.len(), big, "the size kept");
+    assert!(
+        m.blocks() * 512 < 64 << 20,
+        "holes stay holes: {} bytes allocated",
+        m.blocks() * 512
+    );
+    let f = fs::File::open(d.host("copy")).unwrap();
+    let mut buf = [0_u8; 6];
+    rustix::io::pread(&f, &mut buf[..4], 0).unwrap();
+    assert_eq!(&buf[..4], b"head");
+    rustix::io::pread(&f, &mut buf, big / 2).unwrap();
+    assert_eq!(&buf, b"middle");
+    rustix::io::pread(&f, &mut buf[..4], big - 4).unwrap();
+    assert_eq!(&buf[..4], &[0; 4]);
+}
+
+#[test]
+fn an_empty_file_and_a_dense_file_copy_exactly() {
+    let s = Fixture::new();
+    let d = Fixture::new();
+    fs::write(s.host("empty"), b"").unwrap();
+    let dense: Vec<u8> = (0..300_000_u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    fs::write(s.host("dense"), &dense).unwrap();
+    copy(&s.root, "empty", &d.root, "e", &CopyOpts::default()).unwrap();
+    copy(&s.root, "dense", &d.root, "d", &CopyOpts::default()).unwrap();
+    assert_eq!(fs::read(d.host("e")).unwrap(), b"");
+    assert_eq!(fs::read(d.host("d")).unwrap(), dense);
+}
+
+#[test]
+fn a_file_holding_more_than_its_size_is_refused_never_cut_short() {
+    // procfs shows size 0 for a file with content: the case of a source
+    // whose size understates it, or one appended to while copied.
+    let src = fs::File::open("/proc/self/status").unwrap();
+    assert_eq!(src.metadata().unwrap().len(), 0);
+    let d = Fixture::new();
+    let out = fs::File::create(d.host("out")).unwrap();
+    let e = copy_data(src.as_fd(), out.as_fd(), Path::new("status")).unwrap_err();
+    assert!(e.to_string().contains("changed while it was copied"), "{e}");
+}
+
+// Red team (T3, T15, ADR-0059): a source changed while `copy_data` copies
+// it, as a process left behind in a parent stage would change it.
+
+/// A sparse source of many data ranges, truncated to nothing while it is
+/// copied: the copy fails, or holds what the source held at one moment
+/// (all of it, or nothing). A copy of the old size with the ranges after
+/// the cut turned into zeros is a file cut short without an error.
+#[test]
+fn red_team_a_source_truncated_while_copied_is_refused_never_zero_filled() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    const STEP: u64 = 1 << 20;
+    const RANGES: u64 = 256;
+    let s = Fixture::new();
+    let d = Fixture::new();
+    let mut silent = 0;
+    for attempt in 0..200_u64 {
+        let src_path = s.host("src");
+        {
+            let mut f = fs::File::create(&src_path).unwrap();
+            for i in 0..RANGES {
+                f.seek(SeekFrom::Start(i * STEP)).unwrap();
+                f.write_all(&[0xab; 4096]).unwrap();
+            }
+            f.set_len(RANGES * STEP).unwrap();
+        }
+        let src = fs::File::open(&src_path).unwrap();
+        let out_path = d.host("out");
+        let _ = fs::remove_file(&out_path);
+        let out = fs::File::create(&out_path).unwrap();
+        let cutter = fs::OpenOptions::new().write(true).open(&src_path).unwrap();
+        let r = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // A varying delay, so that the cut lands at a different
+                // range each attempt.
+                for _ in 0..(attempt * 997) % 50_000 {
+                    std::hint::spin_loop();
+                }
+                cutter.set_len(0).unwrap();
+            });
+            copy_data(src.as_fd(), out.as_fd(), Path::new("src"))
+        });
+        if let Ok(n) = r {
+            let got = fs::read(&out_path).unwrap();
+            assert_eq!(n, u64::try_from(got.len()).unwrap());
+            let present = (0..RANGES)
+                .filter(|i| got.get(usize::try_from(i * STEP).unwrap()) == Some(&0xab))
+                .count();
+            if n != 0 && present != usize::try_from(RANGES).unwrap() {
+                silent += 1;
+                eprintln!("attempt {attempt}: copied {n} bytes, {present} of {RANGES} ranges, Ok");
+            }
+        }
+    }
+    assert_eq!(silent, 0, "copies cut short without an error");
 }

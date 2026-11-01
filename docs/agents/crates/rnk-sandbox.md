@@ -51,7 +51,7 @@ impl Sandbox {
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub fn forbid_core_dumps() -> rustix::io::Result<()>;  // first in main (ADR-0051): soft RLIMIT_CORE 0, hard kept; every later RUN gets the recorded soft limit back (Step::CoreLimit)
-pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation, script */ }  // #[non_exhaustive]; RunSpec::new; script: a #! heredoc body, Direct on / only: sealed memfd run with execveat (ADR-0057)
+pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation, script, root_id */ }  // #[non_exhaustive]; RunSpec::new; script: a #! heredoc body, Direct on / only: sealed memfd run with execveat (ADR-0057); root_id via RunSpec::expect_root(&RootPath): the reopened root must be that (dev, ino, mnt) in the parent, (dev, ino) in the child after the bind (ADR-0059)
 pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache
 pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // RunSpec::secrets: written
     // by the child on its own tmpfs, bound read-only; Debug hides the bytes, as RunSpec's the env values
