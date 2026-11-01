@@ -1535,8 +1535,12 @@ fn relay_stdio(job: &mut Job) -> Result<Vec<JoinHandle<()>>> {
             .map_err(|e| sys_err("create a stdio pipe", e))?;
         let write = rustix::io::fcntl_dupfd_cloexec(&write, 3)
             .map_err(|e| sys_err("duplicate a stdio pipe", e))?;
-        rustix::fs::fchown(&write, Some(job.args.uid), Some(job.args.gid))
-            .map_err(|e| sys_err("give a stdio pipe to the RUN's user", e))?;
+        // An id this process cannot give (unmapped in its user namespace):
+        // the stream is inherited as before, the pipe dropped.
+        if let Err(e) = rustix::fs::fchown(&write, Some(job.args.uid), Some(job.args.gid)) {
+            tracing::debug!("rnk-sandbox: RUN keeps ranikust's stream {stream}: fchown: {e}");
+            continue;
+        }
         job.args.stdio[slot] = ChildStdio::Fd(write.as_raw_fd());
         job.fds.push(write);
         let relay = std::thread::Builder::new()
@@ -2296,7 +2300,8 @@ mod tests {
     fn a_direct_heredoc_runs_from_an_anonymous_file() {
         use std::os::unix::fs::PermissionsExt as _;
         let sandbox = Sandbox::start_direct().unwrap();
-        let dir = tempfile::tempdir().unwrap();
+        // In `/tmp` itself: the test's `TMPDIR` may be closed to uid 65534.
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
         fs::set_permissions(dir.path(), Permissions::from_mode(0o777)).unwrap();
         for user in ["", "65534:65534"] {
             let out = dir.path().join(format!("out-{}", user.len()));

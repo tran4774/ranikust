@@ -71,8 +71,18 @@ Used when ranikust runs as root but may not mount, as in a Docker container
 with the default security profile or in most Kubernetes pods.
 
 > Built so far: sequential builds, multi-stage included. Not yet:
-> `--parallel-stages` and per-stage directories; on `/` in a container,
-> heredocs, `RUN --mount` and `--network=none` in `RUN`.
+> `--parallel-stages` and per-stage directories.
+
+- On `/` in a container nothing can be mounted, so a `RUN` gets only what
+  needs no mount
+  ([ADR-0057](https://github.com/tran4774/ranikust/blob/main/docs/adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)).
+  Heredocs work; one starting with `#!` runs from an in-memory file its
+  interpreter reads as `/dev/fd/<n>` (its `$0`), never a file in the
+  image. A secret works as a variable:
+  `RUN --mount=type=secret,id=tok,env=TOKEN`. A cache mount, a secret as
+  a file (`/run/secrets/…`) and `--network=none` (the flag, or `RUN
+  --network=none`) are refused with the reason rather than run without
+  them; use overlay mode, in a container that may mount, for those.
 
 - It works the way kaniko does. The build root is the container's own `/`:
   base image layers are unpacked there, `RUN` commands run there, and changes

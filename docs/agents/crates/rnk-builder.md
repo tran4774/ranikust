@@ -150,7 +150,14 @@ under the operator's `--network=none` without `--allow network.host`
 `/`. A `#!` `RUN` heredoc runs as a script `/dev/pipes/<name>`: as
 BuildKit's, its directory (in the build directory, mode 0755) is bound
 read-only at `/dev/pipes`, which `rnk-sandbox` makes in the `/dev` tmpfs
-(the quick smoke case `run` covers it). A symlinked context source is followed
+(the quick smoke case `run` covers it). Under `Isolation::Direct` (kaniko
+mode on `/`) the body goes to `RunSpec::script` instead, which the sandbox
+runs from a sealed memfd, the argv kept only for the history; a cache
+mount, a secret as a file (no `env=`, or a `target=`) and
+`--network=none` are refused before any lease or secret read
+(`mounts::refuse_direct_mounts`, `refuse_direct_network`; ADR-0057,
+Q-380 to Q-382); the quick smoke case `run` builds `direct.Dockerfile`
+there and checks each refusal. A symlinked context source is followed
 only through kept entries; a copy onto a symlink to a directory goes
 inside it, as BuildKit. A cache mount's `mode`, `uid` and `gid` are set
 through a descriptor of its directory.

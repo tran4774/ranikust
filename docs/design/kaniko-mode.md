@@ -179,7 +179,12 @@ settles them (Q-024):
   started (`NofileLimit::current()` before the raise,
   `Sandbox::set_nofile_limit`). The sandbox reopens the root by path for
   each `RUN` and refuses it when it is no longer the directory
-  `Sandbox::start_with_root` checked (device, inode, mount id).
+  `Sandbox::start_with_root` checked (device, inode, mount id). On `/` a
+  `#!` heredoc runs from a sealed memfd (`RunSpec::script`), a secret as
+  a variable works, and a cache mount, a secret as a file and
+  `--network=none` are refused before any lease or secret read
+  ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md),
+  Q-380 to Q-382).
 - **What later units read is kept** before the root is reused, in the
   build's keep area `<state>/builds/<id>/kept`, beside the root and never
   inside it (on `/` it lies in the ignored state directory). At the end of

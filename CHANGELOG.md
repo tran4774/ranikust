@@ -200,6 +200,16 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   base image in kaniko mode on `/`: the peak memory of a stage falls from
   about 160 to about 50 MiB.
 
+- Kaniko mode on a container's `/` runs a `#!` heredoc from a sealed
+  in-memory file, read by its interpreter as `/dev/fd/<n>`, so no file of
+  it is named in the container (ADR-0057). A secret given as a variable
+  (`RUN --mount=type=secret,id=…,env=NAME`) works there; a cache mount, a
+  secret as a file and `--network=none` (the flag before anything is
+  pulled, `RUN --network=none` at that `RUN`) are refused with the
+  reason, never run without them. A container granting capabilities
+  beyond Docker's defaults without `CAP_SETPCAP` is refused before the
+  pull rather than at the first `RUN`.
+
 ### Changed
 
 - `COPY` and `ADD` refuse a source that expands to an empty string (it
@@ -276,5 +286,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - A `RUN` heredoc whose body starts with `#!` failed with "resolve a mount
   target in the root"; its script now runs from `/dev/pipes`, as in
   BuildKit.
+- A `RUN` under a `USER` other than root can write `/dev/stdout` and
+  `/dev/stderr` (kaniko#2928): its inherited streams become pipes owned by
+  that user, copied to ranikust's.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main
