@@ -1154,12 +1154,12 @@ where
         let cancel = job.cancel.clone();
         // A unit starts from the base of the first stage it runs; it reads
         // the images every stage of it reads.
-        let first = job.folded.first().copied().unwrap_or(job.stage);
+        let chain: Vec<usize> = unit_chain(job.folded, job.stage).collect();
+        let first = chain.first().copied().unwrap_or(job.stage);
         let base = match &job.graph.stages[first].base {
             rnk_dockerfile::Base::Image(r) => Some(r.clone()),
             rnk_dockerfile::Base::Scratch | rnk_dockerfile::Base::Stage(_) => None,
         };
-        let chain: Vec<usize> = job.folded.iter().copied().chain([job.stage]).collect();
         let platform_ok = chain.iter().all(|&i| {
             job.graph.stages[i]
                 .platform
@@ -1313,6 +1313,12 @@ impl RunGate for ChannelGate {
     }
 }
 
+/// A unit's stages in build order, as [`rnk_sched::Unit::chain`] gives
+/// them: the stages folded into it, base first, then its own `stage`.
+fn unit_chain(folded: &[usize], stage: usize) -> impl Iterator<Item = usize> + '_ {
+    folded.iter().copied().chain(std::iter::once(stage))
+}
+
 /// Builds a unit on the calling thread: the stages folded into it, base
 /// first, then stage `index`, each built on the root the one before ended
 /// with. On the shared root the unit's root is emptied as soon as it is
@@ -1331,7 +1337,7 @@ where
     S::Root: Send + 'static,
 {
     let mut previous: Option<Arc<Stage<S>>> = None;
-    for &stage in folded.iter().chain([&index]) {
+    for stage in unit_chain(folded, index) {
         let done = run_stage(
             shared,
             stage,
@@ -1541,6 +1547,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_units_stages_are_built_in_the_order_rnk_sched_plans_them() {
+        for folded in [vec![], vec![0], vec![0, 1, 2]] {
+            let unit = rnk_sched::Unit {
+                stage: 3,
+                folded,
+                placement: rnk_sched::Placement::Shared,
+            };
+            assert_eq!(
+                unit_chain(&unit.folded, unit.stage).collect::<Vec<_>>(),
+                unit.chain().collect::<Vec<_>>()
+            );
+        }
+    }
 
     #[test]
     fn every_stage_a_later_unit_builds_from_is_kept_whole() {
