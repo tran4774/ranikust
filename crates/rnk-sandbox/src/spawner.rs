@@ -57,15 +57,17 @@ impl Sandbox {
     /// Replays the stub journals that dead builds left in `dir/runs`, then
     /// starts the spawner thread. `dir` is the sandbox's directory in the
     /// state directory, `<state-dir>/sandbox`; `caps` is what [`crate::probe`]
-    /// found, `None` where it failed: kaniko mode that cannot mount, which
-    /// runs [`Isolation::Direct`] only.
+    /// found. Such a sandbox runs [`Isolation::Full`] on any root, and
+    /// [`Isolation::Direct`] on `/` only: a bare `chroot` is never used where
+    /// the full sandbox can run (ADR-0014, ADR-0060). Kaniko mode that
+    /// cannot mount uses [`Sandbox::start_direct`].
     ///
     /// # Errors
     ///
     /// The directory cannot be created or is a symlink, a journal cannot be
     /// listed, or the thread cannot start.
-    pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self> {
-        Self::start_inner(caps, dir, None)
+    pub fn start(caps: Caps, dir: &Path) -> Result<Self> {
+        Self::start_inner(Some(caps), dir, None)
     }
 
     /// [`Sandbox::start`] for kaniko mode on a shared root outside the state
@@ -85,7 +87,13 @@ impl Sandbox {
     /// As [`Sandbox::start`], and [`Error::InvalidSpec`] when `shared_root`
     /// is not absolute, is the host's `/`, `/etc` or `/dev`, or is no longer
     /// the directory `checked` is.
-    pub fn start_with_root(
+    ///
+    /// Test-only: with `caps` `None` it turns on the bare-`chroot` `Direct`
+    /// path off `/`, which the binary never uses (ADR-0050, ADR-0060); it is
+    /// kept out of the library's API so that no caller turns it on by
+    /// mistake.
+    #[cfg(test)]
+    pub(crate) fn start_with_root(
         caps: Option<Caps>,
         dir: &Path,
         shared_root: &Path,
@@ -945,6 +953,16 @@ impl Runner {
             Isolation::Direct => (MountFlags::BIND, [MountFlags::BIND; DEV_NODES.len()]),
             Isolation::Full => (root_remount(&spec.root_dir)?, dev_remount()),
         };
+        // Every mount under the root's bind is `nodev`: recursively where
+        // the kernel can, else no mount may sit below the root.
+        let root_nodev_rec = match spec.isolation {
+            Isolation::Direct => false,
+            Isolation::Full if mount_setattr_supported() => true,
+            Isolation::Full => {
+                refuse_submounts(&spec.root_dir)?;
+                false
+            }
+        };
         let envp = env
             .iter()
             .map(|(k, v)| {
@@ -1007,6 +1025,7 @@ impl Runner {
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
+            root_nodev_rec,
             mounts,
             secrets,
             dev_remount,
@@ -1157,6 +1176,87 @@ fn host_null() -> Result<OwnedFd> {
 fn root_remount(root_dir: &Path) -> Result<MountFlags> {
     let st = rustix::fs::statvfs(root_dir).map_err(|e| io_err("statvfs", root_dir, e.into()))?;
     Ok(plan::remount_flags(st.f_flag, MountFlags::NODEV))
+}
+
+/// Whether the kernel has `mount_setattr` (5.12) and lets this process call
+/// it: a call with no valid argument fails with `EBADF`, `EINVAL` or
+/// `EFAULT` where it exists, `ENOSYS` (or `EPERM` under a seccomp filter
+/// that does not know it) where it does not. Probed once.
+fn mount_setattr_supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        // SAFETY: null pointers with size 0; the kernel validates them and
+        // fails before touching memory.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_mount_setattr,
+                -1,
+                std::ptr::null::<libc::c_char>(),
+                0,
+                std::ptr::null::<u8>(),
+                0usize,
+            )
+        };
+        let errno = io::Error::last_os_error().raw_os_error();
+        r != 0 && !matches!(errno, Some(libc::ENOSYS | libc::EPERM))
+    })
+}
+
+/// Refuses `root_dir` when a mount sits below it (`/proc/self/mountinfo`):
+/// without `mount_setattr` only the top mount of the root's bind becomes
+/// `nodev`, so a device node on a submount would open.
+fn refuse_submounts(root_dir: &Path) -> Result<()> {
+    let p = Path::new("/proc/self/mountinfo");
+    let text = fs::read(p).map_err(|e| io_err("read", p, e))?;
+    match submount_below(&text, root_dir.as_os_str().as_bytes()) {
+        Some(m) => Err(Error::InvalidSpec(format!(
+            "the root {} has a mount below it ({}); without mount_setattr (Linux 5.12) it \
+             cannot be made nodev",
+            root_dir.display(),
+            String::from_utf8_lossy(&m)
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// The first mount point of `mountinfo` strictly below `root` (absolute,
+/// clean), unescaped.
+fn submount_below(mountinfo: &[u8], root: &[u8]) -> Option<Vec<u8>> {
+    let prefix: Vec<u8> = if root == b"/" {
+        b"/".to_vec()
+    } else {
+        [root, b"/"].concat()
+    };
+    mountinfo
+        .split(|&b| b == b'\n')
+        .filter_map(|line| line.split(|&b| b == b' ').nth(4))
+        .map(unescape_octal)
+        .find(|m| m.len() > prefix.len() && m.starts_with(&prefix))
+}
+
+/// Undoes mountinfo's `\ooo` escapes (space, tab, newline, backslash).
+fn unescape_octal(field: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(field.len());
+    let mut i = 0;
+    while i < field.len() {
+        let oct = field
+            .get(i + 1..i + 4)
+            .filter(|d| field[i] == b'\\' && d.iter().all(|c| (b'0'..=b'7').contains(c)));
+        match oct {
+            Some(d) => {
+                out.push(
+                    d.iter()
+                        .fold(0u8, |a, c| a.wrapping_mul(8).wrapping_add(c - b'0')),
+                );
+                i += 4;
+            }
+            None => {
+                out.push(field[i]);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// The read-only remount of each `/dev` node bind, the outer mount's flags
@@ -1718,7 +1818,7 @@ mod tests {
         let sandbox = state.path().join("sandbox");
         std::os::unix::fs::symlink(elsewhere.path(), &sandbox).unwrap();
         assert!(Runner::new(&sandbox, None).is_err());
-        assert!(Sandbox::start(None, &sandbox).is_err());
+        assert!(Sandbox::start_inner(None, &sandbox, None).is_err());
 
         let real = state.path().join("real");
         fs::create_dir(&real).unwrap();
@@ -1828,7 +1928,7 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let empty = empty.path().canonicalize().unwrap();
         let missing = empty.join("missing");
-        let sandbox = Sandbox::start(None, dir.path()).unwrap();
+        let sandbox = Sandbox::start_inner(None, dir.path(), None).unwrap();
         match sandbox.run(direct(&missing, &missing)) {
             Err(Error::Setup {
                 step: Step::Workdir,
@@ -2195,7 +2295,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let empty = tempfile::tempdir().unwrap();
         let missing = empty.path().canonicalize().unwrap().join("missing");
-        let sandbox = Sandbox::start(None, dir.path()).unwrap();
+        let sandbox = Sandbox::start_inner(None, dir.path(), None).unwrap();
         sandbox.cancel();
         assert!(matches!(
             sandbox.run(direct(&missing, Path::new("/"))),
@@ -2211,7 +2311,7 @@ mod tests {
     #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
     fn a_cancel_kills_a_running_run() {
         let dir = tempfile::tempdir().unwrap();
-        let sandbox = Sandbox::start(None, dir.path()).unwrap();
+        let sandbox = Sandbox::start_inner(None, dir.path(), None).unwrap();
         let mut spec = RunSpec::new("/", vec!["/bin/sleep".into(), "60".into()]);
         spec.isolation = Isolation::Direct;
         spec.workdir = "/".into();
@@ -2384,6 +2484,107 @@ mod tests {
         assert_eq!(source.as_bytes(), d.join("cache").as_os_str().as_bytes());
         assert!(is_dir);
         assert!(remount.contains(MountFlags::BIND | MountFlags::NODEV | MountFlags::RDONLY));
+    }
+
+    /// The fallback without `mount_setattr`: a mount point strictly below
+    /// the root is found, escapes undone; the root itself, a sibling with a
+    /// common prefix and mounts above it are not.
+    #[test]
+    fn a_mount_below_the_root_is_found_in_mountinfo() {
+        let above = b"22 1 8:1 / / rw - ext4 /dev/sda1 rw\n\
+            30 22 0:5 / /state/builds/1/rootfs rw - tmpfs t rw\n\
+            31 22 0:6 / /state/builds/1/rootfs2 rw - tmpfs t rw\n";
+        let below = b"32 30 0:7 / /state/builds/1/rootfs/a\\040b rw - tmpfs t rw\n";
+        let root = b"/state/builds/1/rootfs";
+        assert_eq!(submount_below(above, root), None);
+        let all = [&above[..], &below[..]].concat();
+        assert_eq!(
+            submount_below(&all, root).as_deref(),
+            Some(&b"/state/builds/1/rootfs/a b"[..])
+        );
+        assert_eq!(submount_below(&all, b"/state/builds/1/rootfs2"), None);
+        assert_eq!(unescape_octal(b"a\\134b\\011c\\0"), b"a\\b\tc\\0");
+    }
+
+    /// The probe of `mount_setattr` answers the same every time and never
+    /// crashes where the syscall is missing.
+    #[test]
+    fn mount_setattr_is_probed_once() {
+        let first = mount_setattr_supported();
+        assert_eq!(first, mount_setattr_supported());
+    }
+
+    /// T2 (root, the VM only): a mount below a full-sandbox root, holding a
+    /// device node, is `nodev` in the `RUN` too, not only the root's own
+    /// mount: writing to `/sub/null` fails, while the sandbox's own
+    /// `/dev/null` opens. The test runs on a thread of its own in a new
+    /// mount namespace, all mounts private, so nothing it mounts reaches
+    /// another namespace.
+    #[test]
+    #[ignore = "T2: mounts and mknod as real root in a private mount namespace; run in the test VM only"]
+    fn a_mount_below_the_root_is_nodev_in_the_run() {
+        std::thread::spawn(|| {
+            use rustix::mount::{MountPropagationFlags, UnmountFlags};
+            use rustix::thread::UnshareFlags;
+            // SAFETY: this thread shares nothing that the unshared
+            // filesystem attributes or mount namespace would break; it ends
+            // with the test.
+            unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+                .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+            rustix::mount::mount_change(
+                "/",
+                MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+            )
+            .expect("make every mount private");
+            assert!(mount_setattr_supported(), "the VM kernel has mount_setattr");
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap().join("root");
+            fs::create_dir_all(root.join("usr")).unwrap();
+            fs::create_dir(root.join("sub")).unwrap();
+            for l in ["bin", "lib", "lib64", "sbin"] {
+                std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).unwrap();
+            }
+            rustix::mount::mount_bind("/usr", root.join("usr")).expect("bind /usr");
+            rustix::mount::mount(
+                "tmpfs",
+                root.join("sub"),
+                "tmpfs",
+                MountFlags::empty(),
+                None,
+            )
+            .expect("tmpfs below the root");
+            rustix::fs::mknodat(
+                rustix::fs::CWD,
+                root.join("sub/null"),
+                FileType::CharacterDevice,
+                Mode::from_raw_mode(0o666),
+                rustix::fs::makedev(1, 3),
+            )
+            .expect("mknod /sub/null");
+            let runner =
+                Runner::new(&dir.path().join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let sh = |script: &str| {
+                let spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                runner
+                    .run(spec, None, |job| clone_child(job, parent))
+                    .unwrap()
+            };
+            let control = sh("echo x > /dev/null");
+            let below = sh("echo x > /sub/null");
+            let _ = rustix::mount::unmount(root.join("sub"), UnmountFlags::DETACH);
+            let _ = rustix::mount::unmount(root.join("usr"), UnmountFlags::DETACH);
+            assert!(
+                control.success(),
+                "the sandbox's /dev/null opens: {control:?}"
+            );
+            assert!(
+                !below.success(),
+                "a device node on a submount opens: {below:?}"
+            );
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

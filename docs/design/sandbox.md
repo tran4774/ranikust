@@ -83,10 +83,15 @@ rtnetlink first; the ADR lists them as residual risk.
    `setgroups`; otherwise `USER _apt` (used by apt-get) fails with
    `setgroups: EPERM`.
 3. Mounts, in this order:
-   1. Bind the root onto itself (required by `pivot_root`) and remount the
-      bind `nodev`: Docker blocks device nodes with its device cgroup, which
-      ranikust does not have, so no node in the root opens, neither one a
-      `RUN` creates with `mknod` nor one from a layer.
+   1. Bind the root onto itself, recursively (required by `pivot_root`),
+      and remount the bind `nodev`: Docker blocks device nodes with its
+      device cgroup, which ranikust does not have, so no node in the root
+      opens, neither one a `RUN` creates with `mknod` nor one from a layer.
+      The remount reaches the top mount only, so every mount of the bind,
+      submounts below the root included, is then made `nodev` with
+      `mount_setattr(AT_RECURSIVE)` (Linux 5.12); on an older kernel a root
+      with any mount below it (`/proc/self/mountinfo`) is refused before
+      the clone.
    2. A new `proc`. If `/proc` is masked and a new user namespace was created,
       the kernel refuses (`EPERM`); fall back to an rbind of the existing
       `/proc`.

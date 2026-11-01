@@ -43,9 +43,11 @@ pub struct CopyOpts {
     /// source, and created directories get `0755`.
     pub chmod: Option<Chmod>,
     /// Leaves device nodes, FIFOs and sockets out instead of making them
-    /// again (`mknodat`, or an empty file for a socket): kaniko mode copying
-    /// one stage directory into another (ADR-0059), as its extraction and
-    /// its exporter leave them out (ADR-0041).
+    /// again (`mknodat`, or an empty file for a socket), as kaniko mode's
+    /// extraction and exporter leave them out (ADR-0041): kaniko mode
+    /// copying one stage directory into another (ADR-0059), and `COPY`
+    /// into a root a `RUN` enters without `nodev`, `Isolation::Direct`
+    /// (ADR-0060). What is left out is warned about once per copy.
     pub skip_special: bool,
 }
 
@@ -148,9 +150,11 @@ pub fn copy_filtered(
         links: HashMap::new(),
         stats: Stats::default(),
         skipped: meta::SkippedXattrs::default(),
+        special: SkippedSpecial::default(),
     };
     let r = c.run(src, from.as_ref(), to.as_ref());
     c.skipped.warn();
+    c.special.warn(from.as_ref());
     span.record("files", c.stats.files);
     span.record("dirs", c.stats.dirs);
     span.record("bytes", c.stats.bytes);
@@ -182,6 +186,38 @@ struct Copier<'r> {
     stats: Stats,
     /// Xattrs left out, warned about once at the end.
     skipped: meta::SkippedXattrs,
+    /// Special files [`CopyOpts::skip_special`] left out.
+    special: SkippedSpecial,
+}
+
+/// Device nodes, FIFOs and sockets a copy left out: how many and the first,
+/// warned about in one line at the end, never per entry.
+#[derive(Debug, Default)]
+struct SkippedSpecial {
+    count: u64,
+    first: Option<PathBuf>,
+}
+
+impl SkippedSpecial {
+    fn add(&mut self, path: &Path) {
+        self.count += 1;
+        if self.first.is_none() {
+            self.first = Some(path.to_owned());
+        }
+    }
+
+    fn warn(&self, from: &Path) {
+        if let Some(first) = &self.first {
+            tracing::warn!(
+                "rnk-rootfs: the copy of {} left out {} device node(s), FIFO(s) or socket(s), \
+                 first {}: kaniko mode makes none in a root a RUN enters without nodev \
+                 (ADR-0041, ADR-0060)",
+                from.display(),
+                self.count,
+                first.display()
+            );
+        }
+    }
 }
 
 /// One source directory being copied. One frame per level holds two fds,
@@ -217,7 +253,10 @@ impl Copier<'_> {
                 self.check_not_inside(&st, from)?;
                 self.walk(sfd, dfd, pending, from, &to)
             }
-            t if self.o.skip_special && special(t) => Ok(()),
+            t if self.o.skip_special && special(t) => {
+                self.special.add(from);
+                Ok(())
+            }
             _ => {
                 let (parent, name) = path::entry(&to)?;
                 let pfd = self.parents(&parent)?;
@@ -283,9 +322,11 @@ impl Copier<'_> {
                 Err(e) => return Err(on_mount(e, &from)),
             };
             let st = meta::statx_at(pin.as_fd(), OsStr::new(""), &from)?;
-            if !(self.keep)(&from, st.file_type() == FileType::Directory)
-                || (self.o.skip_special && special(st.file_type()))
-            {
+            if !(self.keep)(&from, st.file_type() == FileType::Directory) {
+                continue;
+            }
+            if self.o.skip_special && special(st.file_type()) {
+                self.special.add(&from);
                 continue;
             }
             match st.file_type() {

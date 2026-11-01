@@ -171,7 +171,7 @@ fn build_seeded(
     let context_files = ContextFiles::load(&context, matcher.as_ref()).unwrap();
     let state = dir.path().join("state");
     let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
-    let sandbox = Sandbox::start(None, &state.join("sandbox")).unwrap();
+    let sandbox = Sandbox::start_direct().unwrap();
     let time = BuildTime::reproducible(None).unwrap();
     let exporter = LayerExporter::new(
         store.build_dir(),

@@ -14,10 +14,9 @@ use rnk_sandbox::{Error, Isolation, RunSpec, Sandbox, Step};
 #[test]
 fn a_failed_run_records_setup_and_run() {
     let capture = Capture::new();
-    let dir = tempfile::tempdir().unwrap();
     let empty = tempfile::tempdir().unwrap();
     let missing = empty.path().canonicalize().unwrap().join("missing");
-    let sandbox = Sandbox::start(None, dir.path()).unwrap();
+    let sandbox = Sandbox::start_direct().unwrap();
     let mut spec = RunSpec::new("/", vec![missing.clone().into()]);
     spec.isolation = Isolation::Direct;
     spec.workdir = missing;

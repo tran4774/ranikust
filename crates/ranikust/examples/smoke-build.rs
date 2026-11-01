@@ -102,7 +102,7 @@ fn run() -> Result<(), BoxError> {
     let root = RootPath::open(&rootfs)?;
     extract(&root, &base, &blobs)?;
 
-    let sandbox = Sandbox::start(Some(caps), &sandbox_dir)?;
+    let sandbox = Sandbox::start(caps, &sandbox_dir)?;
     for cmd in &args.runs {
         run_one(&sandbox, &rootfs, &base, cmd)?;
     }

@@ -100,7 +100,7 @@ fn run_in(dockerfile: &str, need: Option<KeepNeed>, tars: bool) -> Outcome {
     if tars {
         kaniko.keep_in_anonymous_files(Arc::clone(&store)).unwrap();
     }
-    let sandbox = Sandbox::start(None, &top.join("sandbox")).unwrap();
+    let sandbox = Sandbox::start_direct().unwrap();
     let time = BuildTime::reproducible(None).unwrap();
     let options = EncodeOptions {
         compression: Compression::Gzip,

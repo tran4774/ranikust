@@ -489,6 +489,18 @@ fn skip_special_leaves_fifos_out_and_copies_the_rest() {
     );
 }
 
+/// What `skip_special` leaves out is counted for one warning per copy,
+/// naming the first entry, not one line per entry.
+#[test]
+fn left_out_special_files_are_counted_for_one_warning() {
+    let mut k = SkippedSpecial::default();
+    k.warn(Path::new("a")); // nothing left out: no line
+    k.add(Path::new("a/fifo"));
+    k.add(Path::new("a/dev/null"));
+    assert_eq!(k.count, 2);
+    assert_eq!(k.first.as_deref(), Some(Path::new("a/fifo")));
+}
+
 #[test]
 fn a_sparse_file_is_copied_without_filling_its_holes() {
     use std::io::{Seek as _, SeekFrom, Write as _};
