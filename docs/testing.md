@@ -347,7 +347,8 @@ nextjs-kaniko workloads (`e2e`) are for large benchmarks only.
 | `copy-from` | Red team of what kaniko mode keeps (ADR-0051): a hostile stage (links out of its root, to the state directory, `/ranikust`, `/` and `/proc`; a FIFO, a setuid file, a hardlink, a `0700` directory of uid 1000, a device node where root may make one) read with `COPY --from` and built `FROM` after another stage reused the root; in the image its metadata as it was; four builds whose sources reach the state directory, `/ranikust` or `/proc` through links or by name fail without an image |
 | `copy-from-root` | `COPY --from=<stage> / /all/`: the whole stage, without the state directory, `/ranikust` or `/proc`; in kaniko mode on the container's `/` the whole root is kept (a red-team finding, fixed) |
 | `copy-from-daemon` | A `setsid` process left by a `RUN` (kaniko#1697) changes the root while kaniko mode with `RUN` `Direct` walks, keeps, empties and copies it back: the build fails closed, or its image holds nothing of the state directory, `/ranikust` or the secret |
-| `run` | `RUN` in shell and exec form, a heredoc and a `#!` heredoc, a cache mount a second build sees, a secret as a file (`0400`, by its sha256) and as `env=`, `--network=none` seeing only `lo`, a `RUN` that changes nothing giving an empty layer |
+| `run` | `RUN` in shell and exec form, a heredoc and a `#!` heredoc, a cache mount a second build sees, a secret as a file (`0400`, by its sha256) and as `env=`, `--network=none` seeing only `lo`, a `RUN` that changes nothing adding no layer, only history (ADR-0058; no empty layer blob in the image) |
+| `hygiene` | Issue-mining fixes (ADR-0052, ADR-0058): a `RUN` sees the base's `/var/run -> /run` link and the image keeps it (D4); `COPY --chmod=0640` applies to the copied directories too (D3); `RUN true` twice and an existing `WORKDIR` twice add no layer, only `empty_layer` history. Kaniko mode: two builds in one container (`rnk_run_twice`), the second finds the marker and starts from an emptied `/` (D1) |
 | `hygiene-mounts` | Red team (ADR-0052 D1, D4; ADR-0058). Every mode: steps that only delete a file, replace a directory by an empty one, or change a mode or an mtime keep their layer, `RUN true` gets `empty_layer` only. Kaniko mode (`RANIKUST_CASE_MODE=kaniko`): two builds in one container holding volumes at `/run/vol` (reached through alpine's `/var/run -> /run`) and `/srv/vol`; the second finds the marker and empties `/`, both volumes keep exactly their files, and no layer of either image holds them, `/run/.containerenv`, `/.dockerenv` or `/ranikust` |
 | `reproducible` | `--reproducible`: one digest across builds a second apart and at `--jobs 1` and `2`, `created` at the epoch, another digest without the flag |
 
@@ -357,7 +358,7 @@ secret in the build log. `tests/smoke/cases.bash` runs them; a case is a
 its helpers (`build`, `run`, `expect`, `expect_config`, `config`, `out`).
 
 - `just smoke-case [name...]` (T1): the binary in rootless `podman run
-  --privileged`, podman loading and running the images. All ten take
+  --privileged`, podman loading and running the images. All twelve take
   about a minute once the binary is built. The shared state directory
   under `target/smoke/cases/.state`, mounted at `/var/lib/ranikust`, keeps
   the store between runs. `RANIKUST_SMOKE_REGISTRY=mirror.gcr.io` pulls

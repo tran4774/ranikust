@@ -613,13 +613,16 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             }
         };
         if self.input.demand.needed() {
-            let blob = self.cx.exporter.export(Box::new(DiffLayer(diff)))?;
-            if blob.diff_id.encoded() == EMPTY_LAYER_DIFF_ID {
+            let Some(blob) = self
+                .cx
+                .exporter
+                .export_unless_empty(Box::new(DiffLayer(diff)))?
+            else {
                 // A step that changed nothing adds no layer, only its
                 // history entry (`empty_layer: true`), as kaniko (ADR-0058).
                 self.history(created_by);
                 return Ok(());
-            }
+            };
             self.new_layers += 1;
             self.cx.exporter.exported(&blob, self.input.demand)?;
             self.config.push_layer(
@@ -963,11 +966,6 @@ fn copy_from<'i, R, L>(input: &'i StageInput<'i, R, L>, index: usize) -> Result<
 
 /// A closed layer as a [`LayerSource`]: an overlay upper or a kaniko-mode
 /// walk diff, exported.
-/// The diff ID of a layer without entries (1024 zero bytes): a step whose
-/// layer has it changed nothing and adds no layer (ADR-0058).
-const EMPTY_LAYER_DIFF_ID: &str =
-    "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef";
-
 struct DiffLayer<D>(D);
 
 impl<D: ExportLayer> LayerSource for DiffLayer<D> {

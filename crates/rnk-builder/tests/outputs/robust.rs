@@ -88,6 +88,31 @@ fn exporters_sharing_a_directory_do_not_collide() {
     assert_eq!(names(dir.path()).len(), 20, "20 blobs, no temporary file");
 }
 
+/// ADR-0058: a layer without entries is dropped before it gets a name;
+/// nothing is left in the directory.
+#[test]
+fn an_empty_layer_dropped_as_empty_leaves_no_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = LayerExporter::new(dir.path(), options(Compression::Gzip, 1), &time());
+    let empty = rnk_builder::EntriesLayer::new(
+        Vec::new(),
+        crate::support::Files(std::collections::BTreeMap::new()),
+    );
+    assert!(
+        exporter
+            .export_unless_empty(Box::new(empty))
+            .unwrap()
+            .is_none()
+    );
+    assert!(names(dir.path()).is_empty(), "{:?}", names(dir.path()));
+    let blob = exporter
+        .export_unless_empty(Box::new(layer(1, 1)))
+        .unwrap()
+        .unwrap();
+    assert_ne!(blob.diff_id.encoded(), rnk_builder::EMPTY_LAYER_DIFF_ID);
+    assert_eq!(names(dir.path()).len(), 1);
+}
+
 #[test]
 fn a_reproducible_exporter_clamps_mtimes_to_the_fixed_time() {
     let dir = tempfile::tempdir().unwrap();

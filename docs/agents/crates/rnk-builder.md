@@ -59,6 +59,8 @@ impl LayerExporter {
     pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self;  // dir: Store::build_dir(); mtime from time
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
+    pub fn export_unless_empty(&self, source: Box<dyn LayerSource>) -> Result<Option<BlobLayer>>;  // None for a layer
+                                                        // without entries, never named (ADR-0058); EMPTY_LAYER_DIFF_ID
     pub fn with_uploader(self, uploader: Uploader) -> Self;  // ADR-0055: pushed layers go to the destinations as exported
     pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand) -> Result<()>;  // hands a pushed layer to the uploader;
                                                         // Err once an upload failed: the stage stops at its next layer

@@ -135,12 +135,15 @@ settles them (Q-024):
   first base on `/` (under the hold and the lock of `/`, ADR-0050), before
   anything is extracted, `new_base` looks for `/ranikust/.built`: found,
   the first base empties `/` (the ignore list kept) as every later base
-  does, so a second build in the same CI container ships nothing the
+  does, credential files outside `/ranikust`, mounts and the ignore list
+  included (read at start-up, so that build still has them; a third build
+  does not), so a second build in the same CI container ships nothing the
   first left; missing, the first base goes over `/` as kaniko's, so the
   container's own tools stay. Either way the marker is made then: a build
   that stops before its first base (a typo, a failed pull) leaves none,
   one killed during the extraction leaves it. `/ranikust` is made, or
-  set, `0700`; it must be a directory on `/`'s own mount, so a symlink or
+  set, `0700` (a non-root process of the container loses access to it);
+  it must be a directory on `/`'s own mount, so a symlink or
   a volume there (which could outlive the container and empty a later
   one's `/`) is refused. It is opened once and checked against its name,
   and the marker is looked up and made (`O_CREAT|O_EXCL|O_NOFOLLOW`)
@@ -299,7 +302,13 @@ them, so a later build still detects its container. Unlike kaniko, `/var/run` is
 only where it, or something below it, is a mount point, as every mount
 point is, so an image's `/var/run -> /run` symlink (alpine 3.12 and later)
 is extracted and kept (ADR-0052, D4); kaniko's `--ignore-var-run` and
-`--whitelist-var-run` would change nothing and are refused (ADR-0049). Built in `rnk_snapshot::kaniko::ignore_list` on
+`--whitelist-var-run` would change nothing and are refused (ADR-0049).
+Where the container's `/var/run` is itself a link (`../run`), a base
+layer with `var/run/.wh..wh..opq` but no `var/run/` entry of its own now
+fails the build: the opaque marker's directory is a symlink, which live
+extraction never follows, so nothing under `/run` is emptied (fail closed;
+with the layer's own `var/run/` the link is replaced by its directory).
+Before D4 the whole `/var/run` was skipped. Built in `rnk_snapshot::kaniko::ignore_list` on
 `rnk_rootfs::IgnoreList`.
 
 Matching is kaniko's (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1261-1281`): a

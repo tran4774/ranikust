@@ -83,8 +83,20 @@ with the default security profile or in most Kubernetes pods.
   `/ranikust/.built`; without it the first base is unpacked over what the
   container holds, as kaniko does, so the container's own tools stay
   ([ADR-0052](https://github.com/tran4774/ranikust/blob/main/docs/adr/0052-push-input-aliases-and-issue-mining-fixes.md)).
+  The first build makes `/ranikust` (or sets it) mode `0700`: a non-root
+  process in that container loses access to it, a binary at
+  `/ranikust/bin` included. A later build empties `/` but `/ranikust`,
+  mounts and the ignore list, so a credential file elsewhere on `/` (a
+  `/root/.docker/config.json` in the image) is gone after it: ranikust
+  reads credentials at start-up, so that build still has them and nothing
+  leaks, but the build after it has none. Keep credentials under
+  `/ranikust`, on a mount, or pass them to each build.
   `/var/run` is kept out of layers only where it is a mount point, so an
-  image's `/var/run -> /run` link is kept. What a later stage reads
+  image's `/var/run -> /run` link is kept. Where the container's own
+  `/var/run` is such a link, a base layer that holds
+  `var/run/.wh..wh..opq` without its own `var/run/` entry is refused: the
+  opaque marker would act on a directory reached through a link, which
+  extraction never follows. What a later stage reads
   of an earlier one (`COPY --from`, `RUN --mount from=`, `FROM <stage>`)
   is copied aside first, into the build's directory under the state
   directory; for `COPY --from` only the paths it names, and an image read
