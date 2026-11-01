@@ -44,14 +44,14 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
-    pub fn start_direct() -> Result<Self>;                         // kaniko mode on / (ADR-0051): Direct on / only, no directory or journal, process made a child subreaper; after each RUN its process tree is killed through pidfds (parent and start time checked again; where seccomp refuses pidfd_open, a plain kill for ranikust's own children only, deeper ones on later rounds) and reaped by pid with WNOHANG; the child drops caps outside Docker's defaults from its bounding set (CAP_SETPCAP), or the RUN is refused (Error::RunReachesState) if any such cap would stay; ambient and inheritable cleared, permitted/effective cut to Docker's defaults; warns when Yama ptrace_scope is 0
+    pub fn start_direct() -> Result<Self>;                         // kaniko mode on / (ADR-0051): Direct on / only, no directory or journal, process made a child subreaper; after each RUN its process tree is killed through pidfds (parent and start time checked again; where seccomp refuses pidfd_open, a plain kill for ranikust's own children only, deeper ones on later rounds) and reaped by pid with WNOHANG; the child drops caps outside Docker's defaults from its bounding set (CAP_SETPCAP), or the RUN is refused (Error::RunReachesState) if any such cap would stay; ambient and inheritable cleared, permitted/effective cut to Docker's defaults; warns when Yama ptrace_scope is 0; refuses at start (Error::RunReachesState) where that drop is impossible (ADR-0057)
     pub fn start_with_root(caps, dir, shared_root: &Path, checked: &RootPath) -> Result<Self>; // the path must be `checked`'s directory; replays journals of that root, by identity; refuses the host's /, /etc, /dev; a later RUN on another path, or whose reopened root differs (dev, ino, mnt_id), is refused
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub fn forbid_core_dumps() -> rustix::io::Result<()>;  // first in main (ADR-0051): soft RLIMIT_CORE 0, hard kept; every later RUN gets the recorded soft limit back (Step::CoreLimit)
-pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation */ }  // #[non_exhaustive]; RunSpec::new
+pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation, script */ }  // #[non_exhaustive]; RunSpec::new; script: a #! heredoc body, Direct on / only: sealed memfd run with execveat (ADR-0057)
 pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache
 pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // RunSpec::secrets: written
     // by the child on its own tmpfs, bound read-only; Debug hides the bytes, as RunSpec's the env values
@@ -59,7 +59,7 @@ pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; BareChroot { fake_proc } [design], Phase 2
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
-pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, .. }
+pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), .. }  // Direct: a Direct RUN asked for a mount, a secret file, --network=none, or a script it cannot run (ADR-0057)
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve: no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
@@ -139,6 +139,27 @@ from `rnk-store`, secret file) and passes `--network`.
   journaled as a `swap` before the image's entry is renamed aside to
   `.ranikust-aside-<id>-<name>`; `Stdio::Null` is the host's `/dev/null`,
   opened by the parent. No `/proc` (`ADR-0043`).
+- `Direct` refuses mounts, secret files and `Network::None` (`Error::Direct`,
+  before any clone). A `RunSpec::script` (`Direct` on `/` only) is written
+  to a memfd (`MFD_EXEC` where known), sealed against writes, resizes and
+  more seals, passed numbered 3 or higher; the child clears close-on-exec
+  on it alone, after the close-on-exec pass, and runs
+  `execveat(fd, "", AT_EMPTY_PATH)`, so the interpreter reads
+  `/dev/fd/<n>`. Refused where `/dev/fd` is not a directory, where the
+  kernel refuses executable memfds, and on a `Direct` root other than `/`
+  (`ADR-0057`).
+- No `RUN` holds ranikust's stream descriptors (`relay.rs`): each of
+  stdout and stderr it would inherit becomes a pipe, `fchown`ed to the
+  `RUN`'s ids when not root (an id the process cannot give leaves it
+  root's), and one thread per `RUN` copies the pipes to ranikust's streams,
+  waiting with `poll` on a full one; its read ends are non-blocking and it
+  blocks only in `poll`, so a `RUN` reading its own pipe back
+  (`/proc/self/fd/1`) cannot park it in a `read`. Once the `RUN` is reaped and swept an
+  `eventfd` stops it: the pipes are read without blocking until empty, a
+  stream that refuses writes gets two seconds, the drain stops at that
+  deadline even while a writer keeps writing, and the thread is joined;
+  never waiting for a write end that outlived the `RUN` (kaniko#2928,
+  `ADR-0057`).
 - The journal places and undoes on the root's own mount only
   (`RootPath::stay_on_mount`): a parent below another mount does not
   resolve, and an entry that is a mount point or on another mount is left.
@@ -201,7 +222,14 @@ from `rnk-store`, secret file) and passes `--network`.
   `WORKDIR`, then `setgroups` or a missing program; on a temp workdir,
   `chroot` refused as a normal user with every placed file undone); mount sources
   (symlink and type refused); remount flags (`nodev`, read-only `/dev`
-  nodes); the probe's `EPERM`-only fallback and the mount-root check; the
+  nodes); `Direct` refusals (`Error::Direct`); the sealed heredoc memfd; the relay
+  (a surviving write end, a full stream); red team of the relay (T21,
+  ADR-0057): a `RUN` that reads its own stream back through
+  `/proc/self/fd/<n>` leaves the relay blocked in `read` after `poll`
+  said ready, so `finish_returns_when_the_run_steals_its_own_output`
+  (a write end kept after the `RUN`) and
+  `a_stolen_stderr_does_not_stall_stdout` fail: findings, open
+  (2026-11-01); the probe's `EPERM`-only fallback and the mount-root check; the
   spans (`tests/spans.rs`).
 - **T1** (rootless podman): `just smoke` (2026-10-30, kernel 7.0, podman
   5.7): probe → `pivot_root`; `apk add` through the sandbox's network and
@@ -211,6 +239,28 @@ from `rnk-store`, secret file) and passes `--network`.
   terminal, only stdio fds; no stub in the layer [measured]. To add: the
   fallbacks; `SIGKILL` during `RUN sleep 1000` leaves nothing.
 - **T2** (VM only): `probe_reaches_exec_as_root` (`#[ignore]`);
+  `a_direct_heredoc_runs_from_an_anonymous_file` (`$0` is `/dev/fd/<n>`,
+  as root and uid 65534, which also writes `/dev/stdout` and
+  `/dev/stderr`) and `a_direct_run_leaves_no_process_behind` (no process
+  of the `RUN`, alive or zombie, told by a `comm` of its own)
+  (`#[ignore]`, ADR-0057);
+  red team of the `Direct` `RUN` on `/` (`tests/direct_attacks.rs`, T7,
+  T11, T21, ADR-0057) [measured: VM, Ubuntu 24.04, kernel 6.8,
+  2026-11-01]: held: a `#!` script cannot append to, truncate or rewrite
+  its memfd (also through `/proc/self/fd/<n>`, as uid 65534), reads back
+  unchanged, re-executes itself, and `#!/dev/fd/3` or a missing
+  interpreter fails at once; a `RUN` holds only its pipes, `/dev/null`
+  and its script, never a descriptor the parent opened without
+  close-on-exec, and as uid 65534 owns and reopens its streams;
+  `O_NONBLOCK` on its streams, a 4 MiB flood relayed whole and streams
+  closed early leave ranikust's stdout flags as they were; a Python
+  fork-and-exit loop under `setsid` (6000 pid changes a second) was
+  caught by the sweep. Broken (findings, open):
+  `red_team_direct_run_stealing_its_output_cannot_hang_the_build` (the
+  build waits as long as a process outside the `RUN` keeps the stderr it
+  was handed over `SCM_RIGHTS`) and
+  `red_team_direct_run_reading_its_stderr_back_does_not_stall_its_stdout`
+  (stdout no longer copied once the relay waits on stderr);
   `direct_runs_in_a_chroot_with_placed_files_as_root` (`#[ignore]`: a
   shell copied into a temp root sees the placed files and nodes, no
   `/proc`, `ulimit -n` 777; the root is as before after) [measured: passed

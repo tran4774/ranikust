@@ -104,6 +104,9 @@ fn without_pidfds_only_ranikusts_own_children_get_a_plain_kill() {
     use super::{NoPidfd, without_pidfd};
     use rustix::io::Errno;
     assert_eq!(without_pidfd(Errno::SRCH, 7, 7), NoPidfd::Gone);
+    // The pid is another process's thread now (a fork loop recycling
+    // pids): the listed process is gone, and nothing is killed.
+    assert_eq!(without_pidfd(Errno::INVAL, 7, 7), NoPidfd::Gone);
     assert_eq!(without_pidfd(Errno::NOSYS, 7, 7), NoPidfd::Kill);
     assert_eq!(without_pidfd(Errno::PERM, 7, 7), NoPidfd::Kill);
     assert_eq!(without_pidfd(Errno::NOSYS, 8, 7), NoPidfd::Later);

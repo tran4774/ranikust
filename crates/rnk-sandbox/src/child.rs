@@ -164,6 +164,12 @@ pub(crate) struct ChildArgs {
     pub(crate) argv: Vec<CString>,
     pub(crate) envp: Vec<CString>,
     pub(crate) candidates: Vec<CString>,
+    /// A `#!` heredoc of a `Direct` `RUN` on `/`: a sealed memfd holding
+    /// the script, numbered 3 or higher, executed with `execveat` instead
+    /// of `candidates`. The kernel names it `/dev/fd/<n>` to the
+    /// interpreter, so it is the one descriptor besides stdio that crosses
+    /// `execve` (ADR-0057).
+    pub(crate) script: Option<RawFd>,
 }
 
 /// The `NULL`-terminated pointer arrays `execve` takes, pointing into a
@@ -1395,6 +1401,9 @@ pub(crate) fn parse_fd(name: &[u8]) -> Option<RawFd> {
 /// Tries each candidate path, as `execvp`: a missing one moves on, a
 /// permission error is remembered, any other error is final.
 fn exec(err: RawFd, args: &ChildArgs, ptrs: &ExecPtrs<'_>) -> ! {
+    if let Some(fd) = args.script {
+        exec_script(err, fd, ptrs);
+    }
     let mut denied = false;
     for candidate in &args.candidates {
         // SAFETY: `candidate` is NUL-terminated; `argv` and `envp` are
@@ -1413,6 +1422,31 @@ fn exec(err: RawFd, args: &ChildArgs, ptrs: &ExecPtrs<'_>) -> ! {
         Step::Exec,
         if denied { Errno::ACCESS } else { Errno::NOENT },
     )
+}
+
+/// Executes the `#!` script held by the memfd `fd` (ADR-0057). The
+/// interpreter opens the script again as `/dev/fd/<fd>`, which the kernel
+/// refuses for a close-on-exec descriptor: `fd` alone leaves the
+/// close-on-exec set [`reset_process_state`] put on every descriptor.
+fn exec_script(err: RawFd, fd: RawFd, ptrs: &ExecPtrs<'_>) -> ! {
+    // SAFETY: `F_SETFD` on a descriptor the parent kept open for the child.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } != 0 {
+        fail(err, Step::Exec, last_errno());
+    }
+    // SAFETY: the path is an empty NUL-terminated string, `argv` and `envp`
+    // are NULL-terminated arrays of pointers into a live `ChildArgs`;
+    // `execveat` returns only on failure.
+    unsafe {
+        libc::syscall(
+            libc::SYS_execveat,
+            fd,
+            c"".as_ptr(),
+            ptrs.argv.as_ptr(),
+            ptrs.envp.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        );
+    }
+    fail(err, Step::Exec, last_errno())
 }
 
 fn last_errno() -> Errno {
@@ -1540,6 +1574,7 @@ mod tests {
             argv: vec![c"sh".into(), c"-c".into()],
             envp: vec![c"A=1".into()],
             candidates: Vec::new(),
+            script: None,
         };
         let ptrs = ExecPtrs::new(&args);
         assert_eq!(ptrs.argv.len(), 3);

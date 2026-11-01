@@ -199,6 +199,14 @@ pub struct RunSpec {
     pub stderr: Stdio,
     /// Isolation.
     pub isolation: Isolation,
+    /// A `#!` heredoc to execute instead of searching `argv[0]` on `PATH`
+    /// ([`Isolation::Direct`] on `/` only, ADR-0057): the sandbox writes it
+    /// to a sealed memfd and executes that descriptor, so no file of it
+    /// is ever named in the root; the interpreter reads it as
+    /// `/dev/fd/<n>`. `argv[0]` is then only the name `ps` shows until the
+    /// kernel replaces it with the interpreter's. The full sandbox runs a
+    /// `#!` heredoc from a bound directory instead (`/dev/pipes`).
+    pub script: Option<std::sync::Arc<[u8]>>,
 }
 
 impl std::fmt::Debug for RunSpec {
@@ -218,6 +226,10 @@ impl std::fmt::Debug for RunSpec {
             .field("stdout", &self.stdout)
             .field("stderr", &self.stderr)
             .field("isolation", &self.isolation)
+            .field(
+                "script",
+                &self.script.as_ref().map(|s| format!("<{} bytes>", s.len())),
+            )
             .finish()
     }
 }
@@ -253,6 +265,7 @@ impl RunSpec {
             stdout: Stdio::Inherit,
             stderr: Stdio::Inherit,
             isolation: Isolation::Full,
+            script: None,
         }
     }
 
@@ -317,13 +330,32 @@ impl RunSpec {
                 )));
             }
         }
-        if self.isolation == Isolation::Direct
-            && (!self.mounts.is_empty()
-                || !self.secrets.is_empty()
-                || self.network == Network::None)
-        {
+        if self.isolation == Isolation::Direct {
+            // Without a mount or a namespace of its own, a `Direct` `RUN`
+            // has no way to give these; running without them would be
+            // silently wrong (ADR-0057).
+            if !self.mounts.is_empty() {
+                return Err(Error::Direct(
+                    "RUN --mount needs a bind mount, which this RUN cannot make".into(),
+                ));
+            }
+            if !self.secrets.is_empty() {
+                return Err(Error::Direct(
+                    "a secret file needs a tmpfs of the RUN's own, which this RUN cannot \
+                     mount; use RUN --mount=type=secret,env=NAME"
+                        .into(),
+                ));
+            }
+            if self.network == Network::None {
+                return Err(Error::Direct(
+                    "--network=none needs a network namespace, which this RUN cannot \
+                     create; it is refused rather than run on the container's network"
+                        .into(),
+                ));
+            }
+        } else if self.script.is_some() {
             return Err(Error::InvalidSpec(
-                "Isolation::Direct cannot mount or create a network namespace".into(),
+                "a script descriptor is for Isolation::Direct only".into(),
             ));
         }
         Ok(())
@@ -446,6 +478,39 @@ mod tests {
         let mut s = spec();
         s.hostname = "h".repeat(65);
         assert!(s.validate().is_err());
+    }
+
+    /// What a `Direct` `RUN` cannot give is refused with its reason, never
+    /// run without it; a script descriptor is `Direct`'s alone.
+    #[test]
+    fn direct_refuses_what_needs_a_mount_or_a_namespace() {
+        let mut s = spec();
+        s.isolation = Isolation::Direct;
+        s.root_dir = "/".into();
+        s.network = Network::None;
+        let e = s.validate().unwrap_err();
+        assert!(matches!(e, Error::Direct(_)) && e.ran_no_command(), "{e}");
+        assert!(e.to_string().contains("--network=none"), "{e}");
+        let mut s = spec();
+        s.isolation = Isolation::Direct;
+        s.secrets.push(SecretFile {
+            data: b"x".as_slice().into(),
+            target: "/run/secrets/t".into(),
+            uid: 0,
+            gid: 0,
+            mode: 0o400,
+        });
+        let e = s.validate().unwrap_err().to_string();
+        assert!(e.contains("env=NAME"), "{e}");
+        let mut s = spec();
+        s.script = Some(b"#!/bin/sh\n".as_slice().into());
+        assert!(matches!(s.validate(), Err(Error::InvalidSpec(_))));
+        s.isolation = Isolation::Direct;
+        assert!(s.validate().is_ok());
+        assert!(
+            !format!("{s:?}").contains("#!"),
+            "the body stays out of Debug"
+        );
     }
 
     #[test]

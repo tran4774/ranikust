@@ -35,6 +35,7 @@ use crate::error::{Error, Result, Step, io_err, sys_err};
 use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
+use crate::relay::Relay;
 use crate::seccomp;
 use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, SecretFile, Stdio};
 use crate::sweep;
@@ -118,8 +119,15 @@ impl Sandbox {
     ///
     /// # Errors
     ///
-    /// `prctl(PR_SET_CHILD_SUBREAPER)` failed, or the thread cannot start.
+    /// [`Error::RunReachesState`] where the container grants capabilities
+    /// beyond Docker's defaults and ranikust lacks `CAP_SETPCAP` to keep
+    /// them from a `RUN`; `prctl(PR_SET_CHILD_SUBREAPER)` failed, or the
+    /// thread cannot start.
     pub fn start_direct() -> Result<Self> {
+        // Checked again for each `RUN`; here so that a container granting
+        // capabilities ranikust cannot take from a `RUN` is refused before
+        // the build pulls anything.
+        direct_slash_drop()?;
         rustix::process::set_child_subreaper(Some(rustix::process::getpid()))
             .map_err(|e| sys_err("prctl(PR_SET_CHILD_SUBREAPER)", e))?;
         sweep::warn_ptrace_scope();
@@ -719,8 +727,24 @@ impl Runner {
         } else {
             Span::none()
         };
-        let (job, journal) = setup.in_scope(|| self.prepare(&mut spec, root_entry))?;
+        let (mut job, journal) = setup.in_scope(|| self.prepare(&mut spec, root_entry))?;
         setup.record("stubs", journal.as_ref().map_or(0, Journal::stub_count));
+        let relay = match Relay::start(
+            &mut job.args.stdio,
+            &mut job.fds,
+            job.args.uid,
+            job.args.gid,
+        ) {
+            Ok(relay) => relay,
+            Err(e) => {
+                if let Some(j) = journal
+                    && let Err(c) = j.finish()
+                {
+                    tracing::warn!("rnk-sandbox: stub clean-up failed: {c}");
+                }
+                return Err(e);
+            }
+        };
         drop(setup);
 
         let span = if traced {
@@ -751,6 +775,11 @@ impl Runner {
             }
         }
         drop(span);
+        // The RUN is reaped and swept (or failed): the relay copies what is
+        // left without waiting for a write end that outlived it.
+        if let Some(relay) = relay {
+            relay.finish();
+        }
 
         // Stubs go before the caller diffs the root, whatever happened.
         let cleanup = journal.map_or(Ok(0), Journal::finish);
@@ -798,7 +827,20 @@ impl Runner {
             let drop = direct_slash_drop()?;
             let mut job = self.job(spec, &user, Vec::new(), None, stdio, root_entry, None)?;
             job.args.direct_drop = drop;
+            if let Some(body) = &spec.script {
+                let fd = script_memfd(body)?;
+                job.args.script = Some(fd.as_raw_fd());
+                job.fds.push(fd);
+            }
             return Ok((job, None));
+        }
+        if direct && spec.script.is_some() {
+            // The interpreter reads the script as `/dev/fd/<n>`, which a
+            // `chroot` root without `/proc` lacks.
+            return Err(Error::Direct(format!(
+                "a #! heredoc runs from /dev/fd, which the root {} lacks",
+                spec.root_dir.display()
+            )));
         }
         if self.direct_only {
             return Err(Error::InvalidSpec(format!(
@@ -987,6 +1029,7 @@ impl Runner {
             argv: spec.argv.iter().map(cstring).collect::<Result<_>>()?,
             envp,
             candidates: candidates.iter().map(cstring).collect::<Result<_>>()?,
+            script: None,
         };
         Ok(Job {
             args,
@@ -1472,6 +1515,60 @@ fn direct_slash_drop() -> Result<bool> {
             caps: names.join(", "),
         }),
     }
+}
+
+/// A `#!` heredoc of a `Direct` `RUN` on `/` in a memfd (ADR-0057): sealed
+/// against any change, close-on-exec until the child clears it, numbered 3
+/// or higher. Executable memfds need `MFD_EXEC` where the kernel knows it
+/// (6.3+, else `EINVAL` and the default, executable, is asked for); where
+/// `vm.memfd_noexec` forbids them, the `RUN` is refused rather than given a
+/// named file in the root. The interpreter reads it as `/dev/fd/<n>`: the
+/// container's `/dev/fd` must lead to `/proc/self/fd`.
+fn script_memfd(body: &[u8]) -> Result<OwnedFd> {
+    use rustix::fs::{MemfdFlags, SealFlags};
+    let dev_fd = rustix::fs::statx(
+        rustix::fs::CWD,
+        "/dev/fd",
+        rustix::fs::AtFlags::empty(),
+        rustix::fs::StatxFlags::TYPE,
+    );
+    if !matches!(&dev_fd, Ok(st) if rustix::fs::FileType::from_raw_mode(st.stx_mode.into()) == rustix::fs::FileType::Directory)
+    {
+        return Err(Error::Direct(
+            "a #! heredoc runs from /dev/fd/<n>, and /dev/fd is not a directory here; the \
+             container needs /dev/fd -> /proc/self/fd, as Docker and Kubernetes set"
+                .into(),
+        ));
+    }
+    let flags = MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING;
+    let fd = match rustix::fs::memfd_create("ranikust-heredoc", flags | MemfdFlags::EXEC) {
+        Err(Errno::INVAL) => rustix::fs::memfd_create("ranikust-heredoc", flags),
+        r => r,
+    }
+    .map_err(|e| {
+        Error::Direct(format!(
+            "a #! heredoc runs from an executable memfd, which this kernel refuses ({e}; \
+             vm.memfd_noexec=2?)"
+        ))
+    })?;
+    let mut rest = body;
+    while !rest.is_empty() {
+        match rustix::io::write(&fd, rest) {
+            Ok(n) => rest = &rest[n..],
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(sys_err("write the heredoc script", e)),
+        }
+    }
+    rustix::fs::fcntl_add_seals(
+        &fd,
+        SealFlags::SEAL | SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE,
+    )
+    .map_err(|e| sys_err("seal the heredoc script", e))?;
+    if fd.as_raw_fd() < 3 {
+        return rustix::io::fcntl_dupfd_cloexec(&fd, 3)
+            .map_err(|e| sys_err("duplicate the heredoc script", e));
+    }
+    Ok(fd)
 }
 
 /// Kills what a `Direct` command left in its process group, as kaniko does,
@@ -2093,26 +2190,81 @@ mod tests {
     #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
     fn a_direct_run_leaves_no_process_behind() {
         let sandbox = Sandbox::start_direct().unwrap();
-        let script = "sleep 3001 & setsid sleep 3002 & (setsid sh -c 'sleep 3003 &' &); exit 0";
+        // `sleep` under a name of this test's own: its processes, alive or
+        // zombie, are told from those of tests running beside it by their
+        // `comm`, which a zombie keeps.
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let sleeper = dir.path().join("rnkzsleeper");
+        std::os::unix::fs::symlink("/bin/sleep", &sleeper).unwrap();
+        let script = format!(
+            "{s} 3001 & setsid {s} 3002 & (setsid sh -c '{s} 3003 &' &); exit 0",
+            s = sleeper.display()
+        );
         let mut spec = RunSpec::new("/", vec!["/bin/sh".into(), "-c".into(), script.into()]);
         spec.isolation = Isolation::Direct;
         spec.workdir = "/".into();
         let status = sandbox.run(spec).unwrap();
         assert!(status.success());
-        let mut alive = Vec::new();
+        // Neither alive nor zombies: the subreaper killed and reaped them
+        // (issue mining, buildkit#5763, kaniko#1697).
+        let mut left = Vec::new();
         for entry in fs::read_dir("/proc").unwrap().flatten() {
-            let Ok(cmd) = fs::read(entry.path().join("cmdline")) else {
+            let Ok(stat) = fs::read(entry.path().join("stat")) else {
                 continue;
             };
-            let cmd = String::from_utf8_lossy(&cmd).replace('\0', " ");
-            if ["3001", "3002", "3003"]
-                .iter()
-                .any(|n| cmd.trim_end() == format!("sleep {n}"))
-            {
-                alive.push(cmd);
+            if stat.windows(13).any(|w| w == b"(rnkzsleeper)") {
+                left.push(String::from_utf8_lossy(&stat).into_owned());
             }
         }
-        assert!(alive.is_empty(), "left alive: {alive:?}");
+        assert!(left.is_empty(), "left behind: {left:?}");
+    }
+
+    /// A `#!` heredoc of a `Direct` `RUN` on `/` runs from a sealed memfd
+    /// that the interpreter reads as `/dev/fd/<n>`; nothing is named in
+    /// the root (ADR-0057). Also as a `USER` other than root, which then
+    /// writes `/dev/stdout` and `/dev/stderr` through pipes of its own
+    /// (kaniko#2928). T2.
+    #[test]
+    #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+    fn a_direct_heredoc_runs_from_an_anonymous_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let sandbox = Sandbox::start_direct().unwrap();
+        // In `/tmp` itself: the test's `TMPDIR` may be closed to uid 65534.
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o777)).unwrap();
+        for user in ["", "65534:65534"] {
+            let out = dir.path().join(format!("out-{}", user.len()));
+            let body = format!(
+                "#!/bin/sh\necho \"$0\" > {out}\nid -u >> {out}\n\
+                 echo to-stdout > /dev/stdout\necho to-stderr > /dev/stderr\n",
+                out = out.display()
+            );
+            let mut spec = RunSpec::new("/", vec!["/dev/pipes/EOF".into()]);
+            spec.isolation = Isolation::Direct;
+            spec.workdir = "/".into();
+            spec.user = user.into();
+            spec.script = Some(body.into_bytes().into());
+            let status = sandbox.run(spec).unwrap();
+            assert!(status.success(), "{user:?}: {status:?}");
+            let got = fs::read_to_string(&out).unwrap();
+            let mut lines = got.lines();
+            assert!(lines.next().unwrap().starts_with("/dev/fd/"), "{got}");
+            let uid = if user.is_empty() { "0" } else { "65534" };
+            assert_eq!(lines.next(), Some(uid), "{got}");
+        }
+        // A non-root `USER` without a script writes the streams too.
+        let mut spec = RunSpec::new(
+            "/",
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "echo a > /dev/stdout && echo b > /dev/stderr".into(),
+            ],
+        );
+        spec.isolation = Isolation::Direct;
+        spec.workdir = "/".into();
+        spec.user = "65534:65534".into();
+        assert!(sandbox.run(spec).unwrap().success());
     }
 
     /// A `Direct` `RUN` on `/` never holds `CAP_SYS_PTRACE` (ADR-0051):
@@ -2133,6 +2285,26 @@ mod tests {
         let hex = line.split_whitespace().nth(1).unwrap();
         let bounding = u64::from_str_radix(hex, 16).unwrap();
         assert_eq!(bounding & !caps::docker_default_mask(), 0, "{line}");
+    }
+
+    /// The script of a `Direct` heredoc is sealed: nobody changes it once
+    /// written, the `RUN` included.
+    #[test]
+    fn heredoc_scripts_are_sealed_memfds() {
+        use rustix::fs::SealFlags;
+        let fd = script_memfd(b"#!/bin/sh\necho hi\n").unwrap();
+        assert!(fd.as_raw_fd() >= 3);
+        let mut buf = [0u8; 64];
+        let n = rustix::io::pread(&fd, &mut buf, 0).unwrap();
+        assert_eq!(&buf[..n], b"#!/bin/sh\necho hi\n");
+        let seals = rustix::fs::fcntl_get_seals(&fd).unwrap();
+        assert!(
+            seals
+                .contains(SealFlags::SEAL | SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE)
+        );
+        assert_eq!(rustix::io::pwrite(&fd, b"x", 0), Err(Errno::PERM));
+        let flags = rustix::io::fcntl_getfd(&fd).unwrap();
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
     }
 
     #[test]

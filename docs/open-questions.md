@@ -290,6 +290,13 @@ Entry format:
   and tag: designed with W2.
 - **Recommendation:** SHA-256 for `H`, "likely" on the
   [rnk-cache](agents/crates/rnk-cache.md#api-planned) card; none for the rest.
+- **Note (2026-11-01):** in kaniko mode on `/` a `RUN`'s cache mount is
+  left out (ADR-0057), so what the `RUN` writes at the cache target lands
+  in its layer, which it never does with the mount. The key must tell the
+  two apart: the mode (or "cache mounts dropped") is an input of a `RUN`
+  with cache mounts, so a layer built without the mount is never reused
+  where the mount is given, nor the other way round. `rnk-cache` has no
+  keys yet (Phase 4).
 - **Interim:** none
 - **Raised:** 2026-10-30
 
@@ -457,7 +464,49 @@ Entry format:
 - **Interim:** (a).
 - **Raised:** 2026-11-01
 
+### Q-383: How do `bind`, `tmpfs` and `from=` mounts work for a `Direct` `RUN` on `/`?
+
+- **Blocks:** Phase 5 (those mounts); **Area:** `rnk-builder`
+- **Context:** `RUN --mount=type=bind|tmpfs|ssh` and `from=` are refused
+  in every mode until Phase 5. In overlay mode and the full sandbox they
+  will be binds; on `/` (ADR-0057) nothing can be bound, and a bind from
+  a kept stage (`from=<stage>`) would need its tar extracted somewhere
+  the `RUN` reads.
+- **Options:** (a) refuse them on `/`, as Q-380 and Q-381; (b) copy the
+  source in, read-only by convention only, removed before the walk; (c)
+  `tmpfs` alone as an empty directory removed before the walk.
+- **Recommendation:** decide with Phase 5; (a) unless the copy cost and
+  the crash residue of (b) are acceptable for read-only sources.
+- **Interim:** refused in every mode (Phase 5).
+- **Raised:** 2026-11-01
+
 ## Answered
+
+### Q-380: How does a `Direct` `RUN` on `/` get a secret as a file?
+
+- **Answer (2026-11-01):** "Q380-382 làm theo đề xuất": option (a). A
+  secret as a file (no `env=`, or a `target=`) is refused in kaniko mode
+  on `/`, pointing to `env=` or overlay mode; a secret never touches the
+  image's filesystem. Options (b) a file on `/` removed before the walk,
+  (c) a symlink to ranikust's memfd and (d) an inherited memfd with its
+  `/dev/fd` path were not taken. Recorded in [ADR-0057](adr/0057-direct-run-heredoc-from-memfd-and-refusals.md).
+
+### Q-381: How does a `Direct` `RUN` on `/` get a cache mount?
+
+- **Answer (2026-11-01):** "Q380-382 làm theo đề xuất": option (c). A
+  cache mount of a `RUN` in kaniko mode on `/` is left out with a warning
+  and the `RUN` runs without the cache; the warning says that a
+  `sharing=locked` cache then serializes nothing. A cache with `from=`
+  stays refused (Phase 5). Option (b), copying the cache in and out, was
+  not taken. Recorded in [ADR-0057](adr/0057-direct-run-heredoc-from-memfd-and-refusals.md).
+
+### Q-382: What does `--network=none` do for a `Direct` `RUN` on `/`?
+
+- **Answer (2026-11-01):** "Q380-382 làm theo đề xuất": option (a). The
+  `--network=none` flag is refused at start-up, before the pull, and a
+  `RUN --network=none` at that `RUN`; a build that asked for no network
+  never gets the container's. Options (b) a seccomp filter and (c) a user
+  namespace remain possible later; (d) is never taken. Recorded in [ADR-0057](adr/0057-direct-run-heredoc-from-memfd-and-refusals.md).
 
 ### Q-385: Does a step that changes nothing still add an empty layer?
 

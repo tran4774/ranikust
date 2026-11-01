@@ -346,3 +346,193 @@ fn a_secret_mounted_twice_is_read_once() {
     assert_eq!(r.secrets.len(), 2);
     assert!(Arc::ptr_eq(&r.secrets[0].data, &r.secrets[1].data));
 }
+
+/// A `Direct` `RUN` keeps a secret as a variable only and runs without its
+/// cache mounts; a secret file is refused (ADR-0057, Q-380, Q-381).
+#[test]
+fn direct_runs_take_secrets_as_variables_and_drop_caches() {
+    let mut env = mount(MountType::Secret);
+    env.cache_id = "tok".into();
+    env.env = Some("TOK".into());
+    let mut cache = mount(MountType::Cache);
+    cache.target = "/cache".into();
+    cache.sharing = Some(Sharing::Locked);
+    let kept = direct_mounts(&[cache.clone(), env.clone()]).unwrap();
+    assert_eq!(kept, vec![env.clone()]);
+    let mut file = env.clone();
+    file.target = "/run/secrets/tok".into();
+    let e = direct_mounts(&[file]).unwrap_err().to_string();
+    assert!(e.contains("env=<NAME>"), "{e}");
+    let mut plain = env;
+    plain.env = None;
+    assert!(direct_mounts(&[plain]).is_err());
+    // A cache with `from=` is refused, not dropped.
+    cache.from = "stage".into();
+    assert!(direct_mounts(&[cache]).is_err());
+}
+
+/// An unsupported mount after a secret is refused before the secret is
+/// read, in every mode: here reading it would fail with another error.
+#[test]
+fn unsupported_mounts_are_refused_before_any_secret_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let secrets: BTreeMap<String, Secret> =
+        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    let mut env = mount(MountType::Secret);
+    env.cache_id = "tok".into();
+    env.env = Some("TOK".into());
+    let mut bind = mount(MountType::Bind);
+    bind.target = "/src".into();
+    let e = run_mounts(
+        &[env.clone(), bind.clone()],
+        Path::new("/"),
+        &store,
+        &secrets,
+        &never,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("type=bind"), "{e}");
+    let e = direct_mounts(&[env.clone(), bind]).unwrap_err().to_string();
+    assert!(e.contains("type=bind"), "{e}");
+    // Malformed mounts after it too: a bad `env=`, a secret without an id,
+    // a cache without a target.
+    let mut bad_env = env.clone();
+    bad_env.env = Some("A=B".into());
+    let mut no_id = mount(MountType::Secret);
+    no_id.env = Some("X".into());
+    let no_target = mount(MountType::Cache);
+    for (bad, msg) in [
+        (bad_env, "is not a variable name"),
+        (no_id, "needs an id"),
+        (no_target, "needs a target"),
+    ] {
+        let e = run_mounts(
+            &[env.clone(), bad],
+            Path::new("/"),
+            &store,
+            &secrets,
+            &never,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains(msg), "{e}");
+    }
+}
+
+/// `RUN --mount` values as written in a Dockerfile, parsed completely as
+/// the builder does before dispatch (no variable to expand).
+fn parsed(spec: &str) -> std::result::Result<Mount, String> {
+    let mut run = rnk_dockerfile::Run {
+        mount_specs: vec![spec.to_owned()],
+        ..rnk_dockerfile::Run::default()
+    };
+    run.parse_mounts(&mut |s| Ok(s.to_owned()))?;
+    Ok(run.mounts.remove(0))
+}
+
+/// Red team (T7, ADR-0057): option spellings of a secret mount under
+/// `Direct` (kaniko mode on `/`). Whatever the case, alias or order of the
+/// keys, a secret that would be a file is refused before anything is
+/// read, a variable is kept, and a kept mount never yields a file.
+#[test]
+fn red_team_direct_secret_mount_spellings() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    // Reading this secret fails with an I/O error: a refusal must come first.
+    let unreadable: BTreeMap<String, Secret> =
+        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    let refused = [
+        "type=secret,id=tok,env=TOK,dst=/x",
+        "type=secret,id=tok,env=TOK,destination=/x",
+        "type=secret,id=tok,env=TOK,target=/x",
+        "type=Secret,id=tok,env=TOK,Target=/x",
+        "TYPE=SECRET,ID=tok,ENV=TOK,DST=/x",
+        "type=secret,id=tok,env=TOK,env=",
+        "type=secret,id=tok,env=A=B",
+        "type=secret,id=tok,env=TOK,type=bind",
+        "type=secret,id=tok,env=TOK,type=tmpfs",
+        "type=cache,target=/c,type=secret,id=tok,env=TOK",
+        "type=secret,target=/run/secrets/tok,env=TOK",
+        "type=secret,id=tok",
+        "type=secret,src=tok,required=false",
+    ];
+    for spec in refused {
+        let m = parsed(spec).unwrap_or_else(|e| panic!("{spec}: {e}"));
+        let e = direct_mounts(&[m])
+            .err()
+            .unwrap_or_else(|| panic!("{spec}: accepted under Direct"));
+        let e = e.to_string();
+        assert!(
+            !e.contains("read the secret") && !e.contains("open the secret"),
+            "{spec}: {e}"
+        );
+    }
+    // A malformed mount never reaches `direct_mounts`: the parse refuses it.
+    for spec in ["type=secret,env=TOK", "type=secret,id=tok,src=tok,env=T"] {
+        assert!(parsed(spec).is_err(), "{spec}");
+    }
+    // Kept as a variable only.
+    let secrets: BTreeMap<String, Secret> = [(
+        "tok".to_owned(),
+        Secret::Env("RNK_RED_TEAM_UNSET_VARIABLE".into()),
+    )]
+    .into();
+    for spec in [
+        "type=secret,id=tok,env=TOK",
+        "type=Secret,id=tok,env=TOK",
+        "Type=SECRET,Id=tok,Env=TOK",
+        "type=secret,src=tok,env=TOK",
+        "type=secret,id=tok,env=TOK,target=/x,target=",
+        "type=secret,id=tok,env=TOK,required=true",
+        "type=secret,id=tok,env=TOK,mode=0777,uid=1,gid=1",
+    ] {
+        let m = parsed(spec).unwrap_or_else(|e| panic!("{spec}: {e}"));
+        let kept = direct_mounts(&[m]).unwrap_or_else(|e| panic!("{spec}: {e}"));
+        let r = run_mounts(&kept, Path::new("/"), &store, &secrets, &never).unwrap();
+        assert!(r.secrets.is_empty(), "{spec}: a secret file under Direct");
+        assert!(r.binds.is_empty(), "{spec}");
+        assert_eq!(r.env.len(), 1, "{spec}");
+        assert_eq!(r.env[0].0, "TOK", "{spec}");
+    }
+    // `required=false` and missing: left out, nothing read, no variable.
+    let m = parsed("type=secret,id=absent,env=TOK,required=false").unwrap();
+    let kept = direct_mounts(&[m]).unwrap();
+    let r = run_mounts(&kept, Path::new("/"), &store, &unreadable, &never).unwrap();
+    assert!(r.env.is_empty() && r.secrets.is_empty());
+    let m = parsed("type=secret,id=absent,env=TOK,required").unwrap();
+    let kept = direct_mounts(&[m]).unwrap();
+    assert!(run_mounts(&kept, Path::new("/"), &store, &unreadable, &never).is_err());
+    // A cache mount, whatever its spelling, is dropped before any lease.
+    for spec in [
+        "type=cache,target=/c",
+        "type=CACHE,dst=/c,sharing=locked",
+        "type=cache,destination=/c,id=../../x,uid=0,mode=4777",
+    ] {
+        let m = parsed(spec).unwrap_or_else(|e| panic!("{spec}: {e}"));
+        assert!(direct_mounts(&[m]).unwrap().is_empty(), "{spec}");
+    }
+}
+
+/// A required secret missing from `--secret` is refused before an earlier
+/// secret of the same `RUN` is read: reading that one would fail with
+/// another error.
+#[test]
+fn a_missing_required_secret_is_refused_before_any_secret_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let secrets: BTreeMap<String, Secret> =
+        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    let mut given = mount(MountType::Secret);
+    given.cache_id = "tok".into();
+    given.env = Some("TOK".into());
+    let mut absent = mount(MountType::Secret);
+    absent.cache_id = "other".into();
+    absent.env = Some("OTHER".into());
+    absent.required = true;
+    let e = run_mounts(&[given, absent], Path::new("/"), &store, &secrets, &never)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("\"other\" is required"), "{e}");
+}

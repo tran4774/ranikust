@@ -149,13 +149,24 @@ Every non-Windows config without `PATH` gets the default one (Q-185). `ranikust`
 Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
 or a local archive, `ADD --checksum/--keep-git-dir/--unpack`, `COPY
 --link/--parents/--exclude`, `RUN --mount` other than `cache` and
-`secret`, `RUN --security=insecure` and `--device`, `RUN --network=host`
+`secret` (before any of them is read or leased), `RUN --security=insecure` and `--device`, `RUN --network=host`
 under the operator's `--network=none` without `--allow network.host`
 (BuildKit's entitlement, ADR-0032), a heredoc name with
 `/`. A `#!` `RUN` heredoc runs as a script `/dev/pipes/<name>`: as
 BuildKit's, its directory (in the build directory, mode 0755) is bound
 read-only at `/dev/pipes`, which `rnk-sandbox` makes in the `/dev` tmpfs
-(the quick smoke case `run` covers it). A symlinked context source is followed
+(the quick smoke case `run` covers it). Under `Isolation::Direct` (kaniko
+mode on `/`) the body goes to `RunSpec::script` instead, which the sandbox
+runs from a sealed memfd, the argv kept only for the history; a cache
+mount is left out with a warning, and a secret as a file (no `env=`, or a
+`target=`) and `--network=none` are refused before any secret is read
+(`mounts::direct_mounts`, `refuse_direct_network`; ADR-0057). In every
+mode, `mounts::check_supported` refuses the mount types this phase lacks
+and malformed mounts, and `run_mounts` a `required` secret missing from
+`--secret`, before any secret is read or cache leased; a dropped
+cache's warning says the `RUN`'s writes there land in its layer. The quick smoke case `run`
+builds `direct.Dockerfile` there and checks the warning and each
+refusal. A symlinked context source is followed
 only through kept entries; a copy onto a symlink to a directory goes
 inside it, as BuildKit. A cache mount's `mode`, `uid` and `gid` are set
 through a descriptor of its directory.
@@ -207,6 +218,12 @@ through a descriptor of its directory.
   as the stage had it (modes, owners, mtimes, hardlinks, xattr, FIFO);
   overlapping sources in either order as when kept whole; a FIFO source
   copied without blocking.
+  Red team of `RUN --mount` under `Direct` (`src/mounts/tests.rs`
+  `red_team_direct_secret_mount_spellings`, ADR-0057): secret mounts
+  parsed from Dockerfile spellings (mixed-case keys and types, `dst=`,
+  `destination=`, a repeated `target=` or `env=`, `type=` given twice,
+  `required=false`) are refused as files before any read, or kept as one
+  variable and never a file; cache mounts of any spelling are dropped.
 - **T0:** each executor's config change (`ENV`, `LABEL`, `USER`, `WORKDIR`,
   `ENTRYPOINT`, `CMD`, `SHELL`, `EXPOSE`, `VOLUME`, `STOPSIGNAL`,
   `HEALTHCHECK`): the rules are `rnk_oci::ConfigEdit`'s, tested in

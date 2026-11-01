@@ -200,6 +200,18 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   base image in kaniko mode on `/`: the peak memory of a stage falls from
   about 160 to about 50 MiB.
 
+- Kaniko mode on a container's `/` runs a `#!` heredoc from a sealed
+  in-memory file, read by its interpreter as `/dev/fd/<n>`, so no file of
+  it is named in the container (ADR-0057). A secret given as a variable
+  (`RUN --mount=type=secret,id=…,env=NAME`) works there; a cache mount is
+  left out with a warning (the `RUN` runs without the cache, and what it
+  writes at the target stays in its layer); a secret as
+  a file and `--network=none` (the flag before anything is pulled, `RUN
+  --network=none` at that `RUN`) are refused with the reason, never run
+  without them. A container granting capabilities
+  beyond Docker's defaults without `CAP_SETPCAP` is refused before the
+  pull rather than at the first `RUN`.
+
 ### Changed
 
 - `COPY` and `ADD` refuse a source that expands to an empty string (it
@@ -287,6 +299,15 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - A `RUN` heredoc whose body starts with `#!` failed with "resolve a mount
   target in the root"; its script now runs from `/dev/pipes`, as in
   BuildKit.
+- A `RUN` under a `USER` other than root can write `/dev/stdout` and
+  `/dev/stderr` (kaniko#2928), and no `RUN` holds ranikust's own stdout
+  and stderr any more (a root `RUN` could truncate or rewrite a
+  `> build.log`): every `RUN` writes to pipes of its own, owned by its
+  user, which ranikust copies to its streams.
+- An unsupported or malformed `RUN --mount` (`bind`, `tmpfs`, `ssh`,
+  `cache,from=`, a cache without a target, a bad `env=`), or a `required`
+  secret not given with `--secret`, is refused before any secret of the
+  same `RUN` is read.
 - In kaniko mode, a file deleted and created again between the walk and
   the layer export could get its old inode number back and be written with
   content the walk never compared. The export now also checks size,
