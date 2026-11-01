@@ -28,6 +28,33 @@ case_run_direct() {
   refused secret 'RUN --mount=type=secret as a file' "RUN --mount=type=secret,id=tok true"
   refused network 'RUN --network=none' "RUN --network=none true"
   refused flag '--network=none' "RUN true" --network=none
+  case_run_direct_attacks
+}
+
+# Red team (T7, T11, T21, ADR-0057): direct-attack.Dockerfile's RUNs fail
+# the build when a defence gives way; then what must be refused is, and no
+# layer names the script.
+case_run_direct_attacks() {
+  local o blob
+  build attack --dockerfile "$IN/ctx/direct-attack.Dockerfile" >/dev/null
+  o="$(out attack)"
+  expect "$(run attack)" "chomped /dev/fd env first second closed " "attack output"
+  [ "$(grep -c rnk-flood "$o/build.log")" -ge 104000 ] || fail "the flood was not relayed whole"
+  for blob in "$o"/oci/blobs/sha256/*; do
+    if gzip -t "$blob" 2>/dev/null && tar -tzf "$blob" | grep -Eq '(^|/)(dev/pipes|EOF|memfd)'; then
+      fail "a layer names the heredoc script: $blob"
+    fi
+  done
+  # Option spellings that would make a secret a file, or run without a
+  # network namespace, are refused, never run without.
+  refused dst 'RUN --mount=type=secret as a file' "RUN --mount=type=secret,id=tok,env=TOK,dst=/x true"
+  refused destination 'RUN --mount=type=secret as a file' \
+    "RUN --mount=type=SECRET,id=tok,env=TOK,Destination=/x true"
+  refused emptyenv 'is not a variable name' $'ARG E=\nRUN --mount=type=secret,id=tok,env=$E true'
+  refused typebind 'type=bind' "RUN --mount=type=secret,id=tok,env=TOK,type=bind true"
+  refused argnet 'network' $'ARG N=none\nRUN --network=$N true'
+  refused uppernet 'network' "RUN --network=NONE true"
+  refused heredocnet '--network=none' $'RUN --network=none <<EOF\n#!/bin/sh\ntrue\nEOF'
 }
 
 # refused NAME MESSAGE INSTRUCTION [ARG...]: a build of FROM BASE and
