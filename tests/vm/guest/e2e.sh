@@ -60,6 +60,35 @@ CPUS=${RANIKUST_E2E_CPUS:-4}
 MEMORY=${RANIKUST_E2E_MEMORY:-8g}
 JOBS=(${RANIKUST_E2E_JOBS:-1 2 default})
 MIN_FREE_GB=${RANIKUST_E2E_MIN_FREE_GB:-10}
+# The options reach sudo command lines and arithmetic: whole numbers only
+# (MEMORY a number with an optional k, m or g; JOBS also `default`).
+bad_opt() { echo "error: RANIKUST_E2E_$1 must be $2 (got '$3')" >&2; exit 2; }
+for v in ROUNDS WARMUP CPUS MIN_FREE_GB; do
+  [[ "${!v}" =~ ^[0-9]+$ ]] || bad_opt "$v" "a whole number" "${!v}"
+done
+[ "$ROUNDS" -ge 1 ] && [ "$CPUS" -ge 1 ] || bad_opt "ROUNDS/CPUS" "at least 1" "$ROUNDS/$CPUS"
+[[ "$WARMUP" =~ ^[01]$ ]] || bad_opt WARMUP "0 or 1" "$WARMUP"
+[[ "$MEMORY" =~ ^[0-9]+[kKmMgG]?$ ]] || bad_opt MEMORY "a number with k, m or g" "$MEMORY"
+for j in "${JOBS[@]}"; do
+  [[ "$j" =~ ^([1-9][0-9]*|default)$ ]] || bad_opt JOBS "positive whole numbers or default" "$j"
+done
+for w in "${WORKLOADS[@]}"; do
+  case "$w" in w1 | w2 | w3) ;; *) bad_opt WORKLOADS "w1, w2 or w3" "$w" ;; esac
+done
+for b in "${BUILDERS[@]}"; do
+  case "$b" in kaniko | buildkit | ranikust | rk-kaniko | rk-kaniko-host) ;; *) bad_opt BUILDERS "known builders" "$b" ;; esac
+done
+
+# Empties a state directory of the VM's builds: never while anything is
+# mounted below it (a build cut short), and never across a filesystem.
+reset_state() {
+  local dir="$W/$1"
+  if grep -qF " $dir/" /proc/self/mountinfo || grep -qF " $dir " /proc/self/mountinfo; then
+    echo "error: mounts left under $dir; not deleting it" >&2
+    exit 1
+  fi
+  sudo rm -rf --one-file-system "$dir"
+}
 BASE="$(cat "$NK/bench/base-image.txt")"
 KANIKO_IMAGE=localhost/kaniko-bench:stream
 BK_IMAGE=rnk-e2e/buildkit:v0.33.1-rootless
@@ -129,6 +158,8 @@ wipe() {
   sudo docker stop nk-registry >/dev/null
   sudo "${PY[@]}" guest/e2e/prune-registry.py "$W/registry" >>"$OUT/prune.log"
   sudo docker start nk-registry >/dev/null
+  # Hands the freed blocks back to the host (the VM's disk has discard).
+  sudo fstrim / >/dev/null 2>&1 || true
   wait_up http://127.0.0.1:5000/v2/
   guard_disk
 }
@@ -142,7 +173,8 @@ guard_disk() {
   [ "$(free_gb)" -lt "$MIN_FREE_GB" ] || return 0
   sudo docker container prune -f >/dev/null
   sudo docker image prune -f >/dev/null
-  sudo rm -rf "$W/rnk-work" "$W/rnk-kwork"
+  reset_state rnk-work
+  reset_state rnk-kwork
   local f
   f=$(free_gb)
   [ "$f" -lt "$MIN_FREE_GB" ] || return 0
@@ -214,7 +246,7 @@ build() {
       local extra=()
       [ "$jobs" = - ] || [ "$jobs" = default ] || extra+=("--jobs=$jobs")
       [ "$jobs" = - ] || extra+=(--reproducible)
-      sudo rm -rf "$W/rnk-kwork" && sudo mkdir -m 700 -p "$W/rnk-kwork"
+      reset_state rnk-kwork && sudo mkdir -m 700 -p "$W/rnk-kwork"
       t0=$(now)
       set +e
       sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \
@@ -231,7 +263,7 @@ build() {
       local extra=()
       [ "$jobs" = - ] || [ "$jobs" = default ] || extra+=("--jobs=$jobs")
       [ "$jobs" = - ] || extra+=(--reproducible)
-      sudo rm -rf "$W/rnk-work" && sudo mkdir -p "$W/rnk-work"
+      reset_state rnk-work && sudo mkdir -m 700 -p "$W/rnk-work"
       t0=$(now)
       set +e
       sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \
@@ -269,9 +301,14 @@ PY
 check() {
   "${PY[@]}" guest/e2e/flatten.py 127.0.0.1:5000 "$2" latest "$1/listing.tsv.gz" "$1/config.json" | tee "$1/flatten.txt"
   # What the builders mount or keep (context, results, state) never reaches
-  # a ranikust layer.
+  # a ranikust layer; the runtime's and the harness's mounted files are
+  # judged against kaniko's image of the workload when it was built first
+  # (round 1 starts with the first builder, kaniko by default).
   if is_rnk "$4"; then
-    "${PY[@]}" guest/e2e/leaks.py "$1/listing.tsv.gz" /workspace /rnk-out /bench-out "$W" >"$1/leaks.txt" ||
+    local ref=() kref
+    kref="$(dirname "$1")/kaniko-r1/listing.tsv.gz"
+    [ ! -f "$kref" ] || ref=(--reference "$kref")
+    "${PY[@]}" guest/e2e/leaks.py "${ref[@]}" "$1/listing.tsv.gz" /workspace /rnk-out /bench-out "$W" >"$1/leaks.txt" ||
       { cat "$1/leaks.txt" >&2; echo "error: $2 holds files that must not be in a layer" >&2; return 1; }
   fi
   curl -fsI -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \

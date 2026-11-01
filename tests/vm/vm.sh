@@ -29,7 +29,8 @@
 #                        default 3600: one VM at a time on this machine
 #   RANIKUST_VM_CPUS     vCPUs, default 4
 #   RANIKUST_VM_MEM      memory in MiB, default 4096 (12288 with e2e)
-#   RANIKUST_VM_DISK     disk size, default 20G (80G with e2e)
+#   RANIKUST_VM_DISK     disk size in M, G or T, default 20G (80G with e2e);
+#                        the host needs that much free, less 4 GiB
 #   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout e2e reads, default
 #                        ../nextjs-kaniko next to the repository
 #   RANIKUST_E2E_*       options of the e2e suite (tests/vm/guest/e2e.sh)
@@ -73,6 +74,34 @@ done
 
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
+# The VM's disk: a qcow2 overlay over the cloud image that grows with what
+# the guest writes, up to $DISK. With discard the guest's freed blocks
+# return to the host (fstrim after each e2e build), but at its peak it can
+# hold nearly all of $DISK, so the host must have that much free where it
+# lives: $DISK less 4 GiB, which the cloud image (the backing file) and the
+# guest's own system use without writing to the overlay. Checked before
+# anything is written or locked.
+DISK="${RANIKUST_VM_DISK:-20G}"
+# Three builders of W1 (about 3 GB of rootfs each), their images in the
+# registry and the npm proxy's storage.
+wants e2e && DISK="${RANIKUST_VM_DISK:-80G}"
+disk_gib() {
+  case "$1" in
+    *[Tt]) echo $((${1%?} * 1024)) ;;
+    *[Gg]) echo "${1%?}" ;;
+    *[Mm]) echo $((${1%?} / 1024)) ;;
+    *) return 1 ;;
+  esac
+}
+need_gib=$(disk_gib "$DISK") && [[ "$need_gib" =~ ^[0-9]+$ ]] ||
+  die "RANIKUST_VM_DISK must be a whole number of M, G or T (got '$DISK')"
+need_gib=$((need_gib > 4 ? need_gib - 4 : 0))
+there="$TARGET"
+until [ -d "$there" ]; do there="$(dirname "$there")"; done
+host_free=$(($(df -Pk "$there" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
+[ "$host_free" -ge "$need_gib" ] ||
+  die "only ${host_free} GiB free under $TARGET for a VM disk of $DISK (needs ${need_gib} GiB); free space or set RANIKUST_VM_DISK"
+
 # One VM at a time on this machine, whichever checkout or worktree starts
 # it: the lock is held on fd 9 until this script exits, so it also guards
 # the cache while images are downloaded or saved into it.
@@ -83,12 +112,8 @@ if ! flock -n 9; then
   flock -w "${RANIKUST_VM_LOCK_WAIT:-3600}" 9 || die "another run's VM still holds $CACHE/.vm.lock"
 fi
 
-DISK="${RANIKUST_VM_DISK:-20G}"
 if wants e2e; then
-  # Three builders of W1 (about 3 GB of rootfs each), their images in the
-  # registry and the npm proxy's storage.
   MEM="${RANIKUST_VM_MEM:-12288}"
-  DISK="${RANIKUST_VM_DISK:-80G}"
   # A guest touches all of its memory (page cache), and QEMU keeps it: on a
   # host short of memory the VM then stalls for minutes while the host
   # swaps. Shrink the default to what the host can spare, never below 8 GiB.
@@ -100,13 +125,6 @@ if wants e2e; then
   fi
   [ "$MEM" -le $((avail - 2048)) ] ||
     log "warning: $MEM MiB for the VM leaves the host under 2 GiB of its ${avail} MiB available; the VM may stall (close memory-hungry programs, or set RANIKUST_VM_MEM)"
-  # The VM's disk is a qcow2 file that grows with what the guest writes (up
-  # to $DISK) and never shrinks; e2e.sh keeps the guest's use bounded, but
-  # a host filesystem short of space would stop the VM mid-run.
-  mkdir -p "$TARGET/vm"
-  host_free=$(($(df -Pk "$TARGET/vm" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
-  [ "$host_free" -ge 40 ] ||
-    die "only ${host_free} GiB free for the VM's disk under $TARGET/vm; e2e needs 40 GiB"
   # Next to the main checkout, also when this is a git worktree.
   NEXTJS="${RANIKUST_NEXTJS_KANIKO:-$(dirname "$MAIN")/nextjs-kaniko}"
   [ -f "$NEXTJS/bench/run-fair.sh" ] || die "no nextjs-kaniko checkout at $NEXTJS (set RANIKUST_NEXTJS_KANIKO)"
@@ -266,7 +284,7 @@ PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0))
 log "booting $RELEASE ($CPUS vCPUs, $MEM MiB), SSH on 127.0.0.1:$PORT"
 qemu-system-x86_64 \
   -name ranikust-vm -enable-kvm -cpu host -smp "$CPUS" -m "$MEM" -machine q35,accel=kvm \
-  -drive file="$RUN/disk.qcow2",if=virtio,format=qcow2 \
+  -drive file="$RUN/disk.qcow2",if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap \
   -drive file="$RUN/seed.iso",if=virtio,format=raw,readonly=on \
   -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$PORT"-:22 -device virtio-net-pci,netdev=n0 \
   -device virtio-balloon-pci,free-page-reporting=on \
@@ -321,7 +339,11 @@ while :; do
 done
 mkdir -p "$RESULTS"
 for i in 1 2 3 4 5; do
-  vssh 'tar -C rnk/out -cf - .' | tar -C "$RESULTS" -xf - && break
+  # The guest's results hold no symbolic link: a link there could point the
+  # host's tar outside $RESULTS. Links are deleted in the guest, and the
+  # host's tar refuses absolute names and `..` anyway.
+  vssh 'sudo find rnk/out -type l -delete && tar -C rnk/out -cf - .' |
+    tar -C "$RESULTS" --no-same-owner --no-same-permissions -xf - && break
   [ "$i" = 5 ] && log "could not copy the results out"
   sleep 10
 done

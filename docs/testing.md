@@ -185,7 +185,14 @@ host's `nextjs-kaniko` containers:
   deleted first (`guest/e2e/prune-registry.py`; the registry itself never
   frees them, and an earlier version of the suite filled the guest's
   80 GB disk after a few dozen W1 builds, which stopped sshd and lost the
-  VM). No build starts with less than `RANIKUST_E2E_MIN_FREE_GB` (10)
+  VM). The pruner runs as root on a directory the registry's container
+  can write, so it follows no symbolic link (every directory opened with
+  `O_NOFOLLOW`, blobs reached through their parent's descriptor and named
+  as the registry names them) and stops before deleting anything when a
+  repository cannot be read or no blob is linked at all. `fstrim /` then
+  hands the freed blocks back to the host (the VM's disk has
+  `discard=unmap`). A state directory is deleted only when nothing is
+  mounted below it, and never across a filesystem. No build starts with less than `RANIKUST_E2E_MIN_FREE_GB` (10)
   free on the guest's disk once leftovers are pruned: the suite fails
   instead. Time is taken as
   `run-fair.sh` takes it: start of the build container (or process) to its
@@ -209,8 +216,13 @@ host's `nextjs-kaniko` containers:
   compared with kaniko's and with overlay mode's (ADR-0012). Every
   `ranikust` image must hold nothing of `/ranikust`, `/var/lib/ranikust`,
   a `.ranikust-*` name, `/.dockerenv`, `/run/.containerenv`, the build
-  context's or results' mount points, or the VM's state directories
-  (`guest/e2e/leaks.py`; a leak fails the suite).
+  context's or results' mount points, or the VM's state directories, and
+  no `/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname` or file under
+  `/etc/ssl/certs` that kaniko's image of the workload lacks or holds with
+  other content (the runtime mounts the first three, the harness binds
+  the certificates; `guest/e2e/leaks.py`; a leak fails the suite). The
+  options are checked at start-up (whole numbers, known workloads and
+  builders); a wrong one stops the suite.
   kaniko's `metrics.json` and `ranikust`'s report are
   put side by side through the phase map of
   [metrics](design/metrics.md#comparing-with-kaniko)
@@ -228,7 +240,10 @@ for the acceptance timings), `_WARMUP`, `_CPUS`, `_MEMORY`, `_JOBS`,
 and the three `ranikust` builders, `--jobs` 1 and the default; the
 others still win). Phase 2 acceptance runs everything:
 `RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm e2e'`. vm.sh refuses to
-start e2e with less than 40 GiB free for the VM's disk on the host. The
+start any suite when the host has less free space where the VM's disk
+lives than the disk's size (`RANIKUST_VM_DISK`) less 4 GiB, which the
+cloud image and the guest's system use without writing to the overlay;
+it checks before it writes or locks anything. The
 VM gets 12 GiB and an 80 GB disk unless `RANIKUST_VM_MEM`/`_DISK` say
 otherwise; when the host has less than 12 GiB plus 3 GiB available, the
 default shrinks to fit (never below 8 GiB) and the run says so. A guest
