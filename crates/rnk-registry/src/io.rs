@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use futures_util::stream::{self, BoxStream, StreamExt as _};
+use futures_util::stream::{self, BoxStream, Stream, StreamExt as _};
 use oci_client::errors::OciDistributionError;
-use tokio::io::{AsyncSeekExt as _, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncSeekExt as _, AsyncWrite, AsyncWriteExt as _};
 
 /// Where a pulled blob is written: typically an `rnk-store` temporary file.
 ///
@@ -167,23 +167,9 @@ impl BlobBody {
                     .boxed();
                 Ok((body, len))
             }
-            Self::File(_) | Self::Opened(_) => {
-                let file = if let Self::File(path) = self {
-                    tokio::fs::File::open(path).await?
-                } else if let Self::Opened(handle) = self {
-                    tokio::fs::File::from_std(handle.open()?)
-                } else {
-                    return Err(io::Error::other("not a file body"));
-                };
-                let len = file.metadata().await?.len();
-                let body = tokio_util::io::ReaderStream::with_capacity(file, FILE_CHUNK)
-                    .map(move |r| {
-                        let chunk = r.map_err(OciDistributionError::IoError)?;
-                        count(&chunk);
-                        Ok(chunk)
-                    })
-                    .boxed();
-                Ok((body, len))
+            Self::File(path) => file_body(tokio::fs::File::open(path).await?, count).await,
+            Self::Opened(handle) => {
+                file_body(tokio::fs::File::from_std(handle.open()?), count).await
             }
             Self::Remote(remote) => {
                 let RemoteBlob { client, from, blob } = &**remote;
@@ -200,13 +186,10 @@ impl BlobBody {
                             .map(|e| Err(OciDistributionError::IoError(e)))
                     }
                 });
-                let bytes =
-                    tokio_util::io::ReaderStream::with_capacity(reader, FILE_CHUNK).map(move |r| {
-                        let chunk = r.map_err(OciDistributionError::IoError)?;
-                        count(&chunk);
-                        Ok(chunk)
-                    });
-                Ok((bytes.chain(pulled).boxed(), blob.size))
+                Ok((
+                    counted_chunks(reader, count).chain(pulled).boxed(),
+                    blob.size,
+                ))
             }
         }
     }
@@ -220,6 +203,29 @@ impl BlobBody {
             Self::Remote(r) => format!("{} from {}", r.blob.digest, r.from),
         }
     }
+}
+
+/// A file as a push body: its chunks, each counted by `count`, and its
+/// length.
+async fn file_body(
+    file: tokio::fs::File,
+    count: impl Fn(&Bytes) + Send + 'static,
+) -> io::Result<(PushStream, u64)> {
+    let len = file.metadata().await?.len();
+    Ok((counted_chunks(file, count).boxed(), len))
+}
+
+/// `reader` read in chunks of [`FILE_CHUNK`], each counted by `count` as
+/// it is yielded.
+fn counted_chunks<R: AsyncRead + Send + 'static>(
+    reader: R,
+    count: impl Fn(&Bytes) + Send + 'static,
+) -> impl Stream<Item = Result<Bytes, OciDistributionError>> + Send + 'static {
+    tokio_util::io::ReaderStream::with_capacity(reader, FILE_CHUNK).map(move |r| {
+        let chunk = r.map_err(OciDistributionError::IoError)?;
+        count(&chunk);
+        Ok(chunk)
+    })
 }
 
 /// The outcome of a pull into a pipe, as the reading end reports it.
