@@ -631,6 +631,9 @@ impl RootPath {
     ) -> Result<RootPath> {
         let (name, to_name) = (name.as_ref(), to_name.as_ref());
         let (from_os, to_os) = (plain_name(name)?, plain_name(to_name)?);
+        for r in [self, moved, to] {
+            refuse_own_root(r, name)?;
+        }
         let want = meta::statx_at(moved.fd(), OsStr::new(""), name)?;
         let refused = |path: &Path, reason| Error::InvalidPath {
             path: path.to_owned(),
@@ -936,6 +939,22 @@ pub(crate) fn open_name(
         },
         e => io_err("open", path, e),
     })
+}
+
+/// Refuses `root` when it is this process's own `/` (same device and
+/// inode): pruning or moving it would act on the machine itself, whatever
+/// the caller meant (ADR-0061; `rnk-sandbox` refuses system directories the
+/// same way).
+pub(crate) fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()> {
+    let own = meta::statx_at(rustix::fs::CWD, OsStr::new("/"), Path::new("/"))?;
+    let st = meta::statx_at(root.fd(), OsStr::new(""), path)?;
+    if (st.ino, st.dev_major, st.dev_minor) == (own.ino, own.dev_major, own.dev_minor) {
+        return Err(Error::InvalidPath {
+            path: path.to_owned(),
+            reason: "the machine's own root directory",
+        });
+    }
+    Ok(())
 }
 
 /// `p` as one plain name (no `/`, `.` or `..`), for the `*at` calls that

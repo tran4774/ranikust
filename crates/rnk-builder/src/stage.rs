@@ -12,7 +12,6 @@ use std::ffi::OsString;
 use std::io::{Read, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rnk_context::Context;
@@ -268,33 +267,12 @@ pub struct StageInput<'a, R, L> {
     /// the pushed stage only (`kaniko@44aa7ddc0 pkg/executor/build.go:190-191,
     /// 275-285`): empty for every other stage. ADR-0036.
     pub labels: &'a [(String, String)],
-    /// For `FROM <stage>`: how many readers of the base stage's root are
-    /// still to read it, this stage's `FROM` included (each `FROM` on it
-    /// counts one, each other stage reading it with `COPY --from` or `RUN
-    /// --mount from=` one more). This stage counts its `FROM` off once,
-    /// whatever happens, as soon as its own root is made; when it was the
-    /// last, its root takes the base's over (`Snapshotter::prepare_last`,
-    /// ADR-0061). `None`: always `Snapshotter::prepare`.
-    pub base_readers: Option<&'a AtomicUsize>,
-}
-
-/// Counts a stage's `FROM <stage>` off the base's readers once, on drop.
-struct BaseRead<'a>(Option<&'a AtomicUsize>);
-
-impl BaseRead<'_> {
-    /// Whether this stage is the last to read the base: nobody else counts
-    /// anymore, and nobody is added once the count is this low.
-    fn last(&self) -> bool {
-        self.0.is_some_and(|n| n.load(Ordering::SeqCst) == 1)
-    }
-}
-
-impl Drop for BaseRead<'_> {
-    fn drop(&mut self) {
-        if let Some(n) = self.0.take() {
-            n.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
+    /// For `FROM <stage>`: this stage is the only one that reads the base
+    /// stage's root after it is built (no other `FROM`, `COPY --from` or
+    /// `RUN --mount from=` on it, decided from the stage graph alone, so
+    /// never by scheduling, ADR-0062), so its root takes the base's over
+    /// (`Snapshotter::prepare_last`, ADR-0061) instead of copying it.
+    pub take_base: bool,
 }
 
 /// A built stage.
@@ -327,11 +305,6 @@ pub fn build_stage<S: Snapshotter>(
     cx: &BuildCx<'_, S>,
     input: StageInput<'_, S::Root, S::Layer>,
 ) -> Result<StageDone<S::Root>> {
-    // Counted off on every way out, a failure before the root included.
-    let base_read = BaseRead(match input.base {
-        StageBase::Stage(_) => input.base_readers,
-        StageBase::Scratch | StageBase::Image(_) => None,
-    });
     let node = &input.graph.stages[input.index];
     let span = info_span!(
         "rnk_builder.stage",
@@ -396,15 +369,14 @@ pub fn build_stage<S: Snapshotter>(
             let parent_root = guard
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("the base stage was released".to_owned()))?;
-            // Under the base's lock: a reader that is still to come keeps
-            // the count above one, so the hand-over never races a read.
-            let root = if base_read.last() {
+            // Under the base's lock: no reader of it can come after this
+            // stage when it takes the base over (ADR-0062).
+            let root = if input.take_base {
                 cx.snapshotter.prepare_last(parent_root)?
             } else {
                 cx.snapshotter.prepare(Base::Stage(parent_root))?
             };
             drop(guard);
-            drop(base_read);
             (
                 root,
                 parent.scope.clone(),

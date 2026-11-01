@@ -911,7 +911,7 @@ fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
     assert!(w4 < 32.0 * w1.max(0.01), "walk: {w1:.3} s -> {w4:.3} s");
 }
 
-// The hand-over to the last stage that reads a parent (ADR-0061).
+// The hand-over to the only stage that reads a parent (ADR-0061, ADR-0062).
 
 fn set_times(p: &Path, secs: i64) {
     let t = rustix::fs::Timespec {
@@ -937,7 +937,9 @@ type FullEntry = (PathBuf, u32, u32, u64, i64, i64, Vec<u8>, PathBuf);
 
 /// Every entry below `dir` as a layer takes it: type and mode, owner, size,
 /// modification time, content or link target, and the first path of its
-/// hardlink group; inode numbers, access and change times left out.
+/// hardlink group; inode numbers, access and change times left out, and a
+/// directory's size (a root handed over keeps its directories' sizes, a
+/// copy makes them compact: ADR-0062).
 fn full_listing(dir: &Path) -> Vec<FullEntry> {
     use std::os::unix::ffi::OsStringExt as _;
     let mut all = Vec::new();
@@ -973,7 +975,7 @@ fn full_listing(dir: &Path) -> Vec<FullEntry> {
                 rel,
                 md.mode(),
                 owner,
-                md.len(),
+                if md.is_dir() { 0 } else { md.len() },
                 md.mtime(),
                 md.mtime_nsec(),
                 body,
@@ -1058,7 +1060,7 @@ fn same_change(child: &mut KanikoStage) -> String {
     digests.diff_id.to_string()
 }
 
-/// ADR-0061: the last stage to read a parent takes its directory (the same
+/// ADR-0061: the only stage that reads a parent takes its directory (the same
 /// inode, no copy) and gets exactly what a copy gives: the same entries,
 /// contents, modes, owners, times, links and hardlinks, without the ignored
 /// paths and special files; the same change then gives the same layer.
@@ -1153,4 +1155,64 @@ fn a_swapped_parent_root_is_never_handed_over() {
     assert_eq!(fs::read(dir.join("away/f")).unwrap(), b"real");
     parent.release().unwrap();
     assert!(f.stage_dirs().is_empty());
+}
+
+thread_local! {
+    /// Makes the hand-over's move fail with `EINVAL` before anything moves,
+    /// as on a filesystem without `RENAME_NOREPLACE`.
+    pub(super) static FAIL_MOVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// ADR-0061: a move that fails before anything moved falls back to a copy
+/// of the pruned root (what a copy of the parent gives); the parent is
+/// then readable again.
+#[test]
+fn a_move_that_moved_nothing_falls_back_to_a_copy() {
+    let f = Fixture::new();
+    let (parent, _sock) = hostile_parent(&f);
+    let copied = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let ino = fs::metadata(parent.mount_point()).unwrap().ino();
+    FAIL_MOVE.with(|c| c.set(true));
+    let taken = f.stages.prepare_last(&parent);
+    FAIL_MOVE.with(|c| c.set(false));
+    let mut parent = parent;
+    let taken = taken.unwrap();
+    assert_ne!(
+        fs::metadata(taken.mount_point()).unwrap().ino(),
+        ino,
+        "a copy"
+    );
+    assert_eq!(
+        full_listing(copied.mount_point()),
+        full_listing(taken.mount_point())
+    );
+    parent.view().unwrap();
+    for s in [copied, taken, parent] {
+        s.release().unwrap();
+    }
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// ADR-0061 (host-safety): a parent holding a file hardlinked from outside
+/// its root is copied, never handed over, so the child's `RUN` cannot
+/// reach that inode.
+#[test]
+fn a_hardlink_from_outside_is_copied_never_handed_over() {
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside-file");
+    fs::write(&outside, b"outside").unwrap();
+    let parent = unwalked(&f, |p| fs::hard_link(&outside, p.join("linked")).unwrap());
+    let child = f.stages.prepare_last(&parent).unwrap();
+    let c = child.mount_point().join("linked");
+    assert_eq!(fs::read(&c).unwrap(), b"outside");
+    assert_ne!(
+        fs::metadata(&c).unwrap().ino(),
+        fs::metadata(&outside).unwrap().ino(),
+        "the outside inode reached the child"
+    );
+    let mut parent = parent;
+    parent.view().unwrap();
+    child.release().unwrap();
+    parent.release().unwrap();
+    assert_eq!(fs::read(&outside).unwrap(), b"outside");
 }

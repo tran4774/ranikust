@@ -19,7 +19,7 @@
 //!   to it (ADR-0017): nothing a `RUN` does reaches the parent or a
 //!   sibling. Device nodes, FIFOs and sockets are left out, as from every
 //!   kaniko-mode extraction (ADR-0041).
-//! - The last stage to read a parent takes its directory over instead
+//! - The only stage that reads a parent (ADR-0062) takes its directory over instead
 //!   ([`Snapshotter::prepare_last`], ADR-0061): the parent's root is pruned
 //!   of what the copy leaves out (`rnk_rootfs::prune`, the same filter, the
 //!   directories' times kept) and moved into the new stage directory
@@ -142,6 +142,65 @@ fn root_meta(root: &RootPath) -> Result<Meta> {
 fn overlay_own(name: &[u8]) -> bool {
     !name.starts_with(b"user.overlay.overlay.")
         && (name.starts_with(b"trusted.overlay.") || name.starts_with(b"user.overlay."))
+}
+
+/// Copies the stage root `from` into the empty root `into`, as `FROM
+/// <stage>` does: device nodes, FIFOs and sockets a parent's `RUN` made are
+/// left out, as from every kaniko-mode extraction and layer (ADR-0041):
+/// nothing is `mknod`ed outside a sandbox; so is what the ignore list
+/// covers. The hand-over (`KanikoStage::hand_over`) prunes the same. The
+/// root directory gets `from`'s owner, mode and times, and each of its
+/// xattrs the new root takes: one it refuses (`security.selinux` in a
+/// confined domain) is left out with a warning, as inside the copy.
+fn copy_stage(from: &RootPath, into: &RootPath, ignore: &IgnoreList) -> Result<()> {
+    let opts = CopyOpts {
+        skip_special: true,
+        ..CopyOpts::default()
+    };
+    copy_filtered(from, "", into, "", &opts, &|p, _| !ignore.covers(p))?;
+    let mut meta = root_meta(from)?;
+    let xattrs = std::mem::take(&mut meta.xattrs);
+    for x in xattrs {
+        let name = x.0.clone();
+        let one = Meta {
+            xattrs: vec![x],
+            ..Meta::default()
+        };
+        if let Err(e) = into.set_meta("", &one) {
+            tracing::warn!(
+                "the stage root's xattr {} is left out of its copy: {e}",
+                name.to_string_lossy()
+            );
+        }
+    }
+    // Times last: setting an xattr changes no time a layer holds, but the
+    // mode and owner come with them in one go.
+    into.set_meta("", &meta)?;
+    Ok(())
+}
+
+/// Whether a failed move left the root where it was: an error of the
+/// rename itself that moves nothing, and nothing at the destination.
+fn nothing_moved(e: &rnk_rootfs::Error, to: &RootPath) -> bool {
+    use rustix::io::Errno;
+    let refused = e
+        .raw_os_error()
+        .map(Errno::from_raw_os_error)
+        .is_some_and(|n| {
+            matches!(
+                n,
+                Errno::INVAL
+                    | Errno::BUSY
+                    | Errno::XDEV
+                    | Errno::NOSYS
+                    | Errno::PERM
+                    | Errno::OPNOTSUPP
+            )
+        });
+    refused
+        && to
+            .statx("rootfs")
+            .is_err_and(|e| e.raw_os_error() == Some(Errno::NOENT.raw_os_error()))
 }
 
 /// Device nodes, FIFOs and sockets: what a stage copy leaves out (ADR-0041).
@@ -284,7 +343,14 @@ impl KanikoStage {
 
     /// Hands the root to the stage directory `to` (ADR-0061): prunes it of
     /// what a stage copy leaves out and moves it there, returning it opened
-    /// in its new place. Called once, by the last stage to read this one.
+    /// in its new place. Called once, by the only stage that reads this one
+    /// (ADR-0062).
+    ///
+    /// Copies instead, from the pruned root (the same result), when an
+    /// inode in it has a hardlink the walk did not find inside it (moved,
+    /// it would reach outside the root) or when the move failed before
+    /// anything moved (a filesystem without `RENAME_NOREPLACE`, `EBUSY`);
+    /// this stage is then readable again.
     fn hand_over(&self, to: &RootPath) -> Result<RootPath> {
         if self.handed.swap(true, Ordering::SeqCst) {
             return Err(Error::State("the stage's root was handed over already"));
@@ -294,8 +360,41 @@ impl KanikoStage {
         let ignore = &self.shared.ignore;
         // The same filter as the copy in `fill`: what the ignore list
         // covers, and device nodes, FIFOs and sockets.
-        prune(&self.root, &|p, t| ignore.covers(p) || special(t))?;
-        Ok(self.dir.move_sub_root("rootfs", &self.root, to, "rootfs")?)
+        let pruned = prune(&self.root, &|p, t| ignore.covers(p) || special(t))?;
+        if pruned.linked_outside {
+            tracing::warn!(
+                "a stage root holds a file hardlinked from outside it: copied, not handed over"
+            );
+            return self.copy_instead(to);
+        }
+        match self.move_root(to) {
+            Ok(root) => Ok(root),
+            Err(e) if nothing_moved(&e, to) => {
+                tracing::warn!("handing a stage root over: {e}; copied instead");
+                self.copy_instead(to)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn move_root(&self, to: &RootPath) -> rnk_rootfs::Result<RootPath> {
+        #[cfg(test)]
+        if tests::FAIL_MOVE.with(std::cell::Cell::get) {
+            return Err(rnk_rootfs::Error::Io {
+                op: "rename",
+                path: PathBuf::from("rootfs"),
+                source: std::io::Error::from_raw_os_error(rustix::io::Errno::INVAL.raw_os_error()),
+            });
+        }
+        self.dir.move_sub_root("rootfs", &self.root, to, "rootfs")
+    }
+
+    /// The copy the hand-over falls back to, into a new `rootfs` in `to`.
+    fn copy_instead(&self, to: &RootPath) -> Result<RootPath> {
+        let root = to.create_sub_root("rootfs", 0o755)?;
+        copy_stage(&self.root, &root, &self.shared.ignore)?;
+        self.handed.store(false, Ordering::SeqCst);
+        Ok(root)
     }
 
     fn handed_over(&self) -> Result<()> {
@@ -323,16 +422,7 @@ impl KanikoStage {
             }
             Base::Stage(parent) => {
                 parent.handed_over()?;
-                // Device nodes, FIFOs and sockets a parent's `RUN` made are
-                // left out, as from every kaniko-mode extraction and layer
-                // (ADR-0041): nothing is `mknod`ed outside a sandbox. The
-                // hand-over (`KanikoStage::hand_over`) prunes the same.
-                let opts = CopyOpts {
-                    skip_special: true,
-                    ..CopyOpts::default()
-                };
-                copy_filtered(&parent.root, "", root, "", &opts, &|p, _| !ignore.covers(p))?;
-                root.set_meta("", &root_meta(&parent.root)?)?;
+                copy_stage(&parent.root, root, ignore)?;
             }
         }
         Ok(())

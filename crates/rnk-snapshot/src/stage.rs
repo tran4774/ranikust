@@ -198,9 +198,9 @@ pub trait Snapshotter {
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;
 
     /// A new stage root on the root `parent` ended with (`FROM <stage>`),
-    /// made by the last stage that reads `parent`: nothing reads that root
-    /// after this, so the snapshotter may take it over instead of copying
-    /// it (ADR-0061). What the new root holds is what
+    /// made by the only stage that reads `parent` (decided from the stage
+    /// graph, ADR-0062): nothing reads that root after this, so the
+    /// snapshotter may take it over instead of copying it (ADR-0061). What the new root holds is what
     /// [`Snapshotter::prepare`] with `Base::Stage(parent)` gives. Default:
     /// that.
     ///

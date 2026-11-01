@@ -1,15 +1,22 @@
 # --reproducible across --jobs with stages built FROM stages (ADR-0059:
-# each a copy of its parent in kaniko mode off /, or the parent's own
-# directory for the last stage to read it, ADR-0061), independent stages at
-# once, a hardlink, a symlink, a setuid file, a sparse file and a FIFO.
-# `p` has two children, `q` and `c`: whichever is made last takes `p`'s
-# directory over and the other copies it, in an order --jobs changes; the
-# digest must not show which.
+# each a copy of its parent in kaniko mode off /, or, for a parent read by
+# that one stage only, the parent's own directory, ADR-0061, ADR-0062),
+# independent stages at once, a hardlink, a symlink, a setuid file, a
+# sparse file and a FIFO.
+# `p` has two readers, `q` and `c`, finishing in an order --jobs changes:
+# both copy it whatever the order (ADR-0062). `p` leaves /app/big a large
+# directory emptied down to one entry (ext4 and xfs keep its size, a copy
+# makes it compact), and `c` adds an entry there with the directory's time
+# put back: were the choice made by whoever finishes first, the directory
+# would enter `c`'s layer on one path only and the digest would follow it.
+# `c` itself is read by the last stage only, which takes it over.
 ARG BASE=docker.io/library/alpine:3.20
 FROM ${BASE} AS p
-RUN mkdir -p /app/d && echo p >/app/d/f && ln /app/d/f /app/hl && ln -s d/f /app/sl \
+RUN mkdir -p /app/d /app/big && echo p >/app/d/f && ln /app/d/f /app/hl && ln -s d/f /app/sl \
  && chmod 4755 /app/d/f && dd if=/dev/null of=/app/sparse bs=1 seek=67108864 count=0 2>/dev/null \
- && mkfifo /app/fifo
+ && mkfifo /app/fifo \
+ && i=0 && while [ "$i" -lt 3000 ]; do : >"/app/big/entry-with-a-long-name-$i"; i=$((i + 1)); done \
+ && find /app/big -name 'entry-*' ! -name 'entry-with-a-long-name-0' -delete
 
 FROM p AS q
 RUN echo q >/app/q
@@ -21,7 +28,8 @@ FROM ${BASE} AS s2
 RUN echo s2 >/s2
 
 FROM p AS c
-RUN echo c >/app/new && chmod 0600 /app/new
+RUN echo c >/app/new && chmod 0600 /app/new \
+ && touch -r /app/big /tmp/ref && : >/app/big/added && touch -r /tmp/ref /app/big && rm /tmp/ref
 
 FROM c
 COPY --from=s1 /s1 /s1

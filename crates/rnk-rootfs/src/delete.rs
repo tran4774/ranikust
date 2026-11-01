@@ -76,12 +76,17 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
 /// id, or a mount root) is an error, as a copy refuses one: nothing would
 /// be deleted across it, so it would stay where the copy would not have it.
 ///
+/// It also reports ([`Pruned::linked_outside`]) whether an entry it keeps
+/// has more hardlinks than the names it saw for it in the root: a root
+/// handed over keeps its inodes, so such a link would reach outside it.
+///
 /// # Errors
 ///
-/// [`Error::InvalidPath`] for a mount below the root; [`Error::Changed`]
-/// when an entry changes or goes while it is walked; [`Error::Io`] on the
-/// first failing syscall. What was deleted until then stays deleted.
-pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<()> {
+/// [`Error::InvalidPath`] for this process's own `/` (nothing is walked)
+/// or a mount below the root; [`Error::Changed`] when an entry changes or
+/// goes while it is walked; [`Error::Io`] on the first failing syscall.
+/// What was deleted until then stays deleted.
+pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned> {
     let span = tracing::info_span!(
         "rnk_rootfs.prune",
         entries = tracing::field::Empty,
@@ -90,10 +95,46 @@ pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Resul
         kept = tracing::field::Empty,
     );
     let _entered = span.enter();
+    crate::root::refuse_own_root(root, Path::new(""))?;
     let mut counts = Counts::default();
-    let r = prune_walk(root, remove, &mut counts);
+    let mut links = Links::default();
+    let r = prune_walk(root, remove, &mut counts, &mut links);
     counts.record(&span);
-    r
+    r.map(|()| Pruned {
+        linked_outside: links.outside(),
+    })
+}
+
+/// What [`prune`] found besides what it deleted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pruned {
+    /// A non-directory had more hardlinks than names inside the root when
+    /// first seen: a link from outside the root, or (counted too, as it
+    /// may be) one in a directory `prune` deleted whole.
+    pub linked_outside: bool,
+}
+
+/// Per inode with several links: its link count when first seen, and the
+/// names seen for it.
+#[derive(Default)]
+struct Links(std::collections::HashMap<(u32, u32, u64), (u32, u32)>);
+
+impl Links {
+    fn saw(&mut self, st: &Stat) {
+        if st.file_type() != FileType::Directory && st.nlink > 1 {
+            let e = self
+                .0
+                .entry((st.dev_major, st.dev_minor, st.ino))
+                .or_insert((st.nlink, 0));
+            e.1 += 1;
+        }
+    }
+
+    /// Deleting names only lowers a link count, so the first count seen is
+    /// the largest.
+    fn outside(&self) -> bool {
+        self.0.values().any(|&(nlink, seen)| nlink > seen)
+    }
 }
 
 /// One directory [`prune`] walks.
@@ -112,6 +153,7 @@ fn prune_walk(
     root: &RootPath,
     remove: &dyn Fn(&Path, FileType) -> bool,
     counts: &mut Counts,
+    links: &mut Links,
 ) -> Result<()> {
     let start = open_dir(root, Path::new(""))?;
     let st = meta::statx_at(start.as_fd(), OsStr::new(""), Path::new(""))?;
@@ -158,6 +200,7 @@ fn prune_walk(
                 reason: "a mount below the root",
             });
         }
+        links.saw(&st);
         let file_type = st.file_type();
         let is_dir = file_type == FileType::Directory;
         if !remove(&child, file_type) {

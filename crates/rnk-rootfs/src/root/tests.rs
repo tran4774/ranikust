@@ -597,6 +597,21 @@ fn move_sub_root_refuses_a_swapped_name_and_never_replaces() {
     assert!(fs::symlink_metadata(f.host("p/away")).unwrap().is_dir());
 }
 
+/// ADR-0061: the machine's own `/` is never moved from, into or as the
+/// root to move; refused before any rename.
+#[test]
+fn move_sub_root_refuses_the_machines_own_root() {
+    let f = Fixture::new();
+    let a = f.root.create_sub_root("a", 0o700).unwrap();
+    let slash = RootPath::open("/").unwrap();
+    for (from, moved, to) in [(&a, &slash, &a), (&slash, &a, &a), (&a, &a, &slash)] {
+        let e = from
+            .move_sub_root("no-such-name", moved, to, "x")
+            .unwrap_err();
+        assert!(e.to_string().contains("own root"), "{e}");
+    }
+}
+
 #[test]
 fn create_sub_root_refuses_another_mount_without_following_it() {
     // The mount check, with the parent claiming another mount id.

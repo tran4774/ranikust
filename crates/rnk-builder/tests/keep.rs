@@ -161,7 +161,7 @@ fn run_in(dockerfile: &str, need: Option<KeepNeed>, tars: bool) -> Outcome {
                 ..LayerDemand::default()
             },
             labels: &[],
-            base_readers: None,
+            take_base: false,
         };
         let built = within_time(|| build_stage(&cx, input));
         match built {

@@ -4,7 +4,9 @@
 # starts; a stage built FROM a hostile one gets its links as links, its
 # setuid hardlink, its 15 TiB sparse file as a sparse file; --reproducible
 # gives one digest at --jobs 1 and 4 with stages built FROM stages (copied,
-# or handed to the last stage that reads them, ADR-0061). Kaniko
+# or handed over to the only stage that reads them, ADR-0061, ADR-0062),
+# also where a copy and a directory handed over differ in a directory's
+# size. Kaniko
 # mode off / (the VM's `quick` with RANIKUST_QUICK_MODE=kaniko): FIFOs and
 # device nodes are left out of the child, no stage directory outlives a
 # build, and builds that fill a small state directory (a RUN, a copy of a

@@ -284,7 +284,9 @@ fn mounts_inside_the_root_survive() {
 
 /// An entry as a layer takes it: mode, owner, size, modification time,
 /// link count, content or link target, and the first path of its hardlink
-/// group.
+/// group. A directory's size is left out: a copy builds compact
+/// directories, while one emptied in place keeps its size on ext4 and xfs,
+/// which is why the hand-over is decided from the stage graph (ADR-0062).
 type Entry = (u32, u32, u32, u64, (i64, i64), u64, Vec<u8>, PathBuf);
 
 fn listing(dir: &Path) -> BTreeMap<PathBuf, Entry> {
@@ -323,7 +325,7 @@ fn listing(dir: &Path) -> BTreeMap<PathBuf, Entry> {
                 md.mode(),
                 md.uid(),
                 md.gid(),
-                md.len(),
+                if md.is_dir() { 0 } else { md.len() },
                 mtime,
                 md.nlink(),
                 body,
@@ -481,6 +483,44 @@ fn prune_refuses_a_root_on_another_mount() {
     let e = prune(&root, &|_, _| true).unwrap_err();
     assert!(matches!(e, Error::Changed { .. }), "{e:?}");
     assert_eq!(tree(&f.host), BTreeSet::from([PathBuf::from("a")]));
+}
+
+/// ADR-0061: the machine's own `/` is refused before anything is walked
+/// (the filter would delete nothing anyway, should the guard fail).
+#[test]
+fn prune_refuses_the_machines_own_root() {
+    let slash = RootPath::open("/").unwrap();
+    let e = prune(&slash, &|_, _| false).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::InvalidPath {
+                reason: "the machine's own root directory",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+}
+
+/// ADR-0061: a kept file with a hardlink outside the root is reported, a
+/// hardlink pair inside it is not, nor is a link whose other name prune
+/// deleted after seeing both.
+#[test]
+fn prune_reports_a_hardlink_from_outside_the_root() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/a"), b"x").unwrap();
+    fs::hard_link(f.host("d/a"), f.host("d/b")).unwrap();
+    fs::write(f.host("gone"), b"y").unwrap();
+    fs::hard_link(f.host("gone"), f.host("d/kept")).unwrap();
+    let inside = prune(&f.root, &|p, _| p == Path::new("gone")).unwrap();
+    assert!(!inside.linked_outside, "{inside:?}");
+    let (out, _) = f.outside();
+    fs::hard_link(out.join("sentinel"), f.host("d/from-outside")).unwrap();
+    let outside = prune(&f.root, &|_, _| false).unwrap();
+    assert!(outside.linked_outside, "{outside:?}");
+    assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"x");
 }
 
 /// ADR-0061: a mount below the root is refused, never pruned across, and

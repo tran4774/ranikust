@@ -13,11 +13,11 @@
 //! no later unit needs, and runs `RUN` with `Isolation::Direct`
 //! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`); kaniko mode
 //! off `/` gives every stage a directory of its own and schedules them as
-//! overlay mode does (`#per-stage-directories`, ADR-0059). There, each
-//! stage counts the stages still to read it: the last `FROM <stage>` takes
-//! the directory over instead of copying it, and a directory nobody reads
-//! any more is released at once, on a thread of its own, the build's end
-//! waiting for it (ADR-0061).
+//! overlay mode does (`#per-stage-directories`, ADR-0059). There, a stage
+//! whose only reader is a stage built `FROM` it hands that stage its
+//! directory instead of a copy (decided from the stage graph, ADR-0062),
+//! and a directory nobody reads any more is released at once, on a thread
+//! of its own, the build's end waiting for it (ADR-0061).
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -105,6 +105,10 @@ struct Shared<S: Snapshotter> {
     /// Kaniko mode off `/` (ADR-0061): per stage, the readers of its root
     /// still to read it (`stage_readers`); empty in the other modes.
     readers: Vec<AtomicUsize>,
+    /// Kaniko mode off `/` (ADR-0062): per stage, whether the stage built
+    /// `FROM` it takes its directory over (`sole_readers`); empty
+    /// otherwise.
+    sole_reader: Vec<bool>,
     /// Kaniko mode off `/`: releases roots nobody reads any more while the
     /// build goes on; `None` in the other modes.
     releaser: Option<Releaser<S::Root>>,
@@ -178,17 +182,30 @@ fn release_root<R: StageRootfs>(what: &str, root: R) {
 /// Per stage, how many stages read its root after it is built (ADR-0061):
 /// one for each stage built `FROM` it, one more for each stage reading it
 /// with `COPY --from` or `RUN --mount from=`, among the stages built.
-fn stage_readers(graph: &StageGraph) -> Vec<AtomicUsize> {
+fn stage_readers(graph: &StageGraph) -> Vec<usize> {
     let mut n = vec![0usize; graph.stages.len()];
     for &s in &graph.needed {
-        if let rnk_dockerfile::Base::Stage(b) = graph.stages[s].base {
-            n[b] += 1;
-        }
-        for r in referenced_stages(graph, s) {
-            n[r] += 1;
+        let bases = match graph.stages.get(s).map(|node| &node.base) {
+            Some(rnk_dockerfile::Base::Stage(b)) => vec![*b],
+            _ => Vec::new(),
+        };
+        for r in bases.into_iter().chain(referenced_stages(graph, s)) {
+            if let Some(c) = n.get_mut(r) {
+                *c += 1;
+            }
         }
     }
-    n.into_iter().map(AtomicUsize::new).collect()
+    n
+}
+
+/// Per stage, whether a stage built `FROM` it may take its directory over
+/// (ADR-0062): it has exactly one reader, which is then that stage. From
+/// the stage graph only, so the same Dockerfile and targets always give
+/// the same choice, whatever the scheduling: a directory taken over is not
+/// byte for byte a copy (a directory's size stays as the parent left it),
+/// so the choice must never depend on which reader finishes first.
+fn sole_readers(counts: &[usize]) -> Vec<bool> {
+    counts.iter().map(|&n| n == 1).collect()
 }
 
 /// The stages `index` reads with `COPY --from` or `RUN --mount from=`,
@@ -509,6 +526,14 @@ where
         images: Mutex::new(Vec::new()),
         readers: if roots == Roots::StageDirs {
             stage_readers(&graph)
+                .into_iter()
+                .map(AtomicUsize::new)
+                .collect()
+        } else {
+            Vec::new()
+        },
+        sole_reader: if roots == Roots::StageDirs {
+            sole_readers(&stage_readers(&graph))
         } else {
             Vec::new()
         },
@@ -1362,9 +1387,9 @@ where
 }
 
 /// What a stage built with per-stage directories leaves for later: its
-/// `COPY --from` and `RUN --mount from=` reads counted off (its `FROM` was
-/// counted off when its root was made), then every root nobody reads any
-/// more released in the background, its own included (ADR-0061).
+/// `FROM`, `COPY --from` and `RUN --mount from=` reads counted off, then
+/// every root nobody reads any more released in the background, its own
+/// included (ADR-0061).
 fn after_stage<S: Snapshotter>(
     shared: &Shared<S>,
     releaser: &Releaser<S::Root>,
@@ -1374,7 +1399,14 @@ fn after_stage<S: Snapshotter>(
 ) where
     S::Root: Send + 'static,
 {
-    for r in referenced_stages(&shared.graph, index) {
+    let base = match shared.graph.stages.get(index).map(|n| &n.base) {
+        Some(rnk_dockerfile::Base::Stage(b)) => Some(*b),
+        _ => None,
+    };
+    for r in base
+        .into_iter()
+        .chain(referenced_stages(&shared.graph, index))
+    {
         if let Some(n) = shared.readers.get(r) {
             n.fetch_sub(1, Ordering::SeqCst);
         }
@@ -1459,11 +1491,13 @@ where
         } else {
             &[]
         },
-        // Per-stage directories: the base's readers, for the hand-over
-        // to the last of them (ADR-0061).
-        base_readers: match (&node.base, folded_base) {
-            (rnk_dockerfile::Base::Stage(b), None) => shared.readers.get(*b),
-            _ => None,
+        // Per-stage directories: whether this stage is its base's only
+        // reader, from the stage graph (ADR-0061, ADR-0062).
+        take_base: match (&node.base, folded_base) {
+            (rnk_dockerfile::Base::Stage(b), None) => {
+                shared.sole_reader.get(*b).copied().unwrap_or(false)
+            }
+            _ => false,
         },
     };
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
@@ -1710,14 +1744,56 @@ mod tests {
                     FROM d\n";
         let df = rnk_dockerfile::parse(text).unwrap();
         let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
-        let n: Vec<usize> = stage_readers(&graph)
-            .iter()
-            .map(|n| n.load(Ordering::SeqCst))
-            .collect();
+        let n = stage_readers(&graph);
         // a: FROM by b and c, COPY --from by b; b: read by d; c: FROM by d
         // (the unused stage is not built); d: FROM by the last stage.
         assert_eq!(n, [3, 1, 1, 1, 0, 0]);
         assert_eq!(referenced_stages(&graph, 3), [1]);
+    }
+
+    /// ADR-0062: which stages take their base's directory over follows from
+    /// the stage graph alone: a stage built `FROM` a stage nobody else reads
+    /// takes it; two children, a child and another stage's `COPY --from`,
+    /// or a child that also copies from its base, all copy, whichever
+    /// finishes first.
+    #[test]
+    fn the_hand_over_is_a_function_of_the_stage_graph() {
+        let takes = |text: &str| -> Vec<&'static str> {
+            let df = rnk_dockerfile::parse(text).unwrap();
+            let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+            let sole = sole_readers(&stage_readers(&graph));
+            graph
+                .needed
+                .iter()
+                .map(|&s| match graph.stages[s].base {
+                    rnk_dockerfile::Base::Stage(b) if sole[b] => "take",
+                    rnk_dockerfile::Base::Stage(_) => "copy",
+                    _ => "-",
+                })
+                .collect()
+        };
+        assert_eq!(
+            takes("FROM alpine AS p\nFROM p AS a\nFROM a\n"),
+            ["-", "take", "take"]
+        );
+        assert_eq!(
+            takes("FROM alpine AS p\nFROM p AS q\nFROM p AS c\nFROM c\nCOPY --from=q / /q\n"),
+            ["-", "copy", "copy", "take"]
+        );
+        assert_eq!(
+            takes(
+                "FROM alpine AS p\nFROM p AS c\nFROM alpine\nCOPY --from=p /x /x\nCOPY --from=c /y /y\n"
+            ),
+            ["-", "copy", "-"]
+        );
+        assert_eq!(
+            takes("FROM alpine AS p\nFROM p\nCOPY --from=p /x /y\n"),
+            ["-", "copy"]
+        );
+        assert_eq!(
+            takes("FROM alpine AS p\nFROM p AS c\nRUN --mount=from=p,target=/m true\n"),
+            ["-", "copy"]
+        );
     }
 
     #[test]
