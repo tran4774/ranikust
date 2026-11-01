@@ -8,10 +8,10 @@
 //! runs as root on that filesystem, so a name must never exist while a
 //! `RUN` process does. The fence holds the two apart:
 //!
-//! - [`Fence::enter_run`] waits for every name to be gone, then counts a
+//! - [`Store::enter_run`](crate::Store::enter_run) waits for every name to be gone, then counts a
 //!   `RUN` in until its guard drops, which the caller does once the `RUN`'s
 //!   process tree is gone (the sweep ends inside `Sandbox::run`).
-//! - [`Fence::named`] waits for every `RUN` to be gone, then counts a name
+//! - [`Store::named_window`](crate::Store::named_window) waits for every `RUN` to be gone, then counts a name
 //!   in until its guard drops, which the holder does once the name is
 //!   unlinked or the directory deleted.
 //!
@@ -144,7 +144,7 @@ fn lock(inner: &Inner) -> MutexGuard<'_, State> {
     inner.state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A `RUN` counted in by [`Fence::enter_run`]; dropping it counts it out.
+/// A `RUN` counted in by [`Store::enter_run`](crate::Store::enter_run); dropping it counts it out.
 #[derive(Debug)]
 #[must_use = "the RUN is counted out when the guard drops"]
 pub struct RunGuard {
@@ -168,7 +168,7 @@ impl Drop for RunGuard {
     }
 }
 
-/// A name counted in by [`Fence::named`]; drop it once the name is gone.
+/// A name counted in by [`Store::named_window`](crate::Store::named_window); drop it once the name is gone.
 #[derive(Debug)]
 #[must_use = "the name is counted out when the guard drops"]
 pub struct NamedGuard {
