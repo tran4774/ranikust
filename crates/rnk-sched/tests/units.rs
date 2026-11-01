@@ -219,6 +219,38 @@ fn units_out_of_order_are_refused() {
 }
 
 #[test]
+fn a_folded_stage_missing_from_the_graph_is_named_in_the_error() {
+    let g = graph("FROM alpine AS a\nFROM a AS b\n", &[]);
+    // The unit's own stage exists; the stage folded into it does not.
+    let units = vec![Unit {
+        stage: 1,
+        folded: vec![9],
+        placement: Placement::Shared,
+    }];
+    let e = rt()
+        .block_on(sched(1).run_units(&g, &units, &Rec::default(), &CancellationToken::new()))
+        .unwrap_err();
+    assert!(matches!(e, Error::Graph { stage: 9, .. }), "{e:?}");
+}
+
+#[test]
+fn a_dependency_shared_by_folded_stages_is_waited_for_once() {
+    let g = graph(
+        "FROM alpine AS src\nRUN make\n\
+         FROM alpine AS a\nCOPY --from=src /x /x\n\
+         FROM a AS b\nCOPY --from=src /y /y\n\
+         FROM b AS c\nRUN three\n",
+        &[],
+    );
+    let units = shared_root_units(&squash_for_shared_root(&g));
+    let rec = Rec::default();
+    rt().block_on(sched(4).run_units(&g, &units, &rec, &CancellationToken::new()))
+        .unwrap();
+    let jobs = rec.jobs.lock().unwrap().clone();
+    assert_eq!(jobs[&3], (vec![1, 2], Placement::Shared, vec![0]));
+}
+
+#[test]
 fn shared_order_is_the_same_on_a_multi_thread_runtime() {
     let g = graph(WIDE, &[]);
     let rt = tokio::runtime::Builder::new_multi_thread()
