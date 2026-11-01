@@ -546,3 +546,60 @@ fn a_file_holding_more_than_its_size_is_refused_never_cut_short() {
     let e = copy_data(src.as_fd(), out.as_fd(), Path::new("status")).unwrap_err();
     assert!(e.to_string().contains("changed while it was copied"), "{e}");
 }
+
+// Red team (T3, T15, ADR-0059): a source changed while `copy_data` copies
+// it, as a process left behind in a parent stage would change it.
+
+/// A sparse source of many data ranges, truncated to nothing while it is
+/// copied: the copy fails, or holds what the source held at one moment
+/// (all of it, or nothing). A copy of the old size with the ranges after
+/// the cut turned into zeros is a file cut short without an error.
+#[test]
+#[ignore = "red team finding: a source cut short between SEEK_DATA calls copies as zeros, no error"]
+fn red_team_a_source_truncated_while_copied_is_refused_never_zero_filled() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    const STEP: u64 = 1 << 20;
+    const RANGES: u64 = 256;
+    let s = Fixture::new();
+    let d = Fixture::new();
+    let mut silent = 0;
+    for attempt in 0..200_u64 {
+        let src_path = s.host("src");
+        {
+            let mut f = fs::File::create(&src_path).unwrap();
+            for i in 0..RANGES {
+                f.seek(SeekFrom::Start(i * STEP)).unwrap();
+                f.write_all(&[0xab; 4096]).unwrap();
+            }
+            f.set_len(RANGES * STEP).unwrap();
+        }
+        let src = fs::File::open(&src_path).unwrap();
+        let out_path = d.host("out");
+        let _ = fs::remove_file(&out_path);
+        let out = fs::File::create(&out_path).unwrap();
+        let cutter = fs::OpenOptions::new().write(true).open(&src_path).unwrap();
+        let r = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // A varying delay, so that the cut lands at a different
+                // range each attempt.
+                for _ in 0..(attempt * 997) % 50_000 {
+                    std::hint::spin_loop();
+                }
+                cutter.set_len(0).unwrap();
+            });
+            copy_data(src.as_fd(), out.as_fd(), Path::new("src"))
+        });
+        if let Ok(n) = r {
+            let got = fs::read(&out_path).unwrap();
+            assert_eq!(n, u64::try_from(got.len()).unwrap());
+            let present = (0..RANGES)
+                .filter(|i| got.get(usize::try_from(i * STEP).unwrap()) == Some(&0xab))
+                .count();
+            if n != 0 && present != usize::try_from(RANGES).unwrap() {
+                silent += 1;
+                eprintln!("attempt {attempt}: copied {n} bytes, {present} of {RANGES} ranges, Ok");
+            }
+        }
+    }
+    assert_eq!(silent, 0, "copies cut short without an error");
+}
