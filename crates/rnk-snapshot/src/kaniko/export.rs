@@ -25,12 +25,16 @@
 //! The root is live, so every entry is pinned once with `RootPath::pin`:
 //! its physical path resolved with no symlink in any component and without
 //! leaving the root's mount, the `O_PATH` descriptor's `statx` compared
-//! with the walk's record (type, device, inode). The link target, the
-//! xattrs and a file's content are read from that pin, the content through
-//! a reopen of exactly that inode. A FIFO or a device node is never opened,
-//! no symlink is followed, and an entry changed since the walk fails the
-//! export. Names the walk saw as one inode that disagree on what they are
-//! (an inode number reused during the walk) are not linked.
+//! with the walk's record (type, device, inode; a file's size and a file's
+//! or link's `mtime` and `ctime`). The link target, the xattrs and a file's
+//! content are read from that pin, the content through a reopen of exactly
+//! that inode. In `full` mode the target and the content written are
+//! hashed again and must match the walk's hashes: an inode number can come
+//! back at once for a new file, with the same size and times within one
+//! timestamp tick. A FIFO or a device node is never opened, no symlink is
+//! followed, and an entry changed since the walk fails the export. Names
+//! the walk saw as one inode that disagree on what they are (an inode
+//! number reused during the walk) are not linked.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
@@ -68,7 +72,9 @@ impl WalkDiff {
     /// # Errors
     ///
     /// [`Error::Export`] for an entry that changed since the walk (another
-    /// inode or type at its path) or of unknown type; [`Error::Layer`]
+    /// inode, type, size or time at its path, or in `full` mode a file's
+    /// content or a link's target other than the walk hashed) or of
+    /// unknown type; [`Error::Layer`]
     /// when encoding fails, a file's size changed since the walk included;
     /// [`Error::Rootfs`] when an entry cannot be read.
     pub fn export<W: Write>(
@@ -115,7 +121,7 @@ impl WalkDiff {
                 .collect(),
             bytes_read: 0,
         };
-        let digests = writer.finish(&mut source, out)?;
+        let digests = writer.finish(&mut source, out).map_err(surface_changed)?;
         span.record("bytes_read", source.bytes_read);
         Ok((digests, counts))
     }
@@ -138,7 +144,10 @@ impl WalkDiff {
     fn collect(&self, root: &RootPath) -> Result<(Vec<Entry>, DiffCounts)> {
         let mut counts = DiffCounts::default();
         let mut entries = Vec::with_capacity(self.deleted.len() + self.changed.len());
+        // The walk's content hash of each entry, by index.
+        let mut contents = Vec::with_capacity(entries.capacity());
         for p in &self.deleted {
+            contents.push(None);
             counts.whiteouts += 1;
             entries.push(Entry {
                 path: entry_path(p)?,
@@ -160,8 +169,9 @@ impl WalkDiff {
             }
             counts.files_added += 1;
             entries.push(e);
+            contents.push(c.meta.content);
         }
-        split_reused_inodes(&mut entries);
+        split_reused_inodes(&mut entries, &contents);
         Ok((entries, counts))
     }
 }
@@ -178,7 +188,16 @@ fn make_entry(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Option<Entr
     let kind = match meta.kind {
         FileType::Directory => EntryKind::Dir,
         FileType::Regular => EntryKind::File { size: meta.size },
-        FileType::Symlink => EntryKind::Symlink(pinned.read_link()?.into_os_string().into_vec()),
+        FileType::Symlink => {
+            let target = pinned.read_link()?.into_os_string().into_vec();
+            if meta
+                .content
+                .is_some_and(|h| h != xxhash_rust::xxh3::xxh3_128(&target))
+            {
+                return Err(changed(p));
+            }
+            EntryKind::Symlink(target)
+        }
         FileType::CharDevice => EntryKind::Char(meta.rdev.0, meta.rdev.1),
         FileType::BlockDevice => EntryKind::Block(meta.rdev.0, meta.rdev.1),
         FileType::Fifo => EntryKind::Fifo,
@@ -216,18 +235,29 @@ fn meta_dev(meta: &EntryMeta) -> u64 {
 }
 
 /// Clears the hardlink key of every entry whose inode group does not agree
-/// on type, size, mode, owner and mtime: names of one inode always agree,
-/// so a disagreement means the inode number was reused during the walk,
-/// and linking them would give one name the other's content.
-fn split_reused_inodes(entries: &mut [Entry]) {
+/// on type, size, mode, owner, mtime and the walk's content hash
+/// (`contents`, by index): names of one inode always agree, so a
+/// disagreement means the inode number was reused during the walk, and
+/// linking them would give one name the other's content.
+fn split_reused_inodes(entries: &mut [Entry], contents: &[Option<u128>]) {
     let mut first: HashMap<(u64, u64), usize> = HashMap::new();
     let mut bad = HashSet::new();
     for (i, e) in entries.iter().enumerate() {
         let Some(key) = e.inode else { continue };
-        match first.get(&key).and_then(|&j| entries.get(j)) {
-            Some(f) => {
-                if (&f.kind, f.mode, f.uid, f.gid, f.mtime)
-                    != (&e.kind, e.mode, e.uid, e.gid, e.mtime)
+        match first
+            .get(&key)
+            .and_then(|&j| Some((entries.get(j)?, contents.get(j)?)))
+        {
+            Some((f, f_content)) => {
+                if (&f.kind, f.mode, f.uid, f.gid, f.mtime, f_content)
+                    != (
+                        &e.kind,
+                        e.mode,
+                        e.uid,
+                        e.gid,
+                        e.mtime,
+                        &contents.get(i).copied().flatten(),
+                    )
                 {
                     bad.insert(key);
                 }
@@ -256,16 +286,42 @@ fn pin_same(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Pinned> {
 }
 
 /// The inode number alone is not enough: a file deleted and created again
-/// may get the freed number back at once (ext4 does), so the size and the
-/// times are compared too. Even they can match when both happen within one
-/// timestamp tick; [`Verified`] checks the content for that.
+/// may get the freed number back at once (ext4 does), so a file's size and
+/// a file's or link's times are compared too. Even they can match when
+/// both happen within one timestamp tick; [`Verified`] and the link target
+/// check of [`make_entry`] compare the content for that. A directory's
+/// times are not compared: its entry is written from the walk's record and
+/// its children are pinned one by one, so a name added or removed in it
+/// since the walk changes nothing in the layer.
 fn same_stat(st: &Stat, meta: &EntryMeta) -> bool {
-    st.file_type() == meta.kind
+    let kind = st.file_type();
+    kind == meta.kind
         && (st.dev_major, st.dev_minor) == meta.dev
         && st.ino == meta.ino
-        && (st.file_type() != FileType::Regular || st.size == meta.size)
-        && st.mtime == meta.mtime
-        && st.ctime == meta.ctime
+        && match kind {
+            FileType::Regular => {
+                st.size == meta.size && st.mtime == meta.mtime && st.ctime == meta.ctime
+            }
+            FileType::Symlink => st.mtime == meta.mtime && st.ctime == meta.ctime,
+            _ => true,
+        }
+}
+
+/// An error of the layer writer, with the exporter's own
+/// [`Error::Export`] brought back to the top when [`Verified`] raised it,
+/// so the reason is not hidden behind "reading layer entry failed".
+fn surface_changed(e: rnk_layer::Error) -> Error {
+    if let rnk_layer::Error::Source { source, .. } = &e
+        && let Some(Error::Export { path, reason }) = source
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<Error>())
+    {
+        return Error::Export {
+            path: path.clone(),
+            reason,
+        };
+    }
+    Error::from(e)
 }
 
 fn changed(p: &Path) -> Error {

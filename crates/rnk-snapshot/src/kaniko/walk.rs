@@ -123,8 +123,9 @@ pub struct EntryMeta {
     /// replaced since the walk from the one it saw, even when the inode
     /// number was reused at once.
     pub ctime: FileTime,
-    /// xxh3-128 of a regular file's content as the walk read it (`full`
-    /// mode only): the exporter checks the bytes it writes against it.
+    /// xxh3-128 of a regular file's content or a symlink's target as the
+    /// walk read it (`full` mode only): the exporter checks what it writes
+    /// against it.
     pub content: Option<u128>,
     /// Major and minor number of a device node.
     pub rdev: (u32, u32),
@@ -765,6 +766,7 @@ impl<'a> Ctx<'a> {
                     Err(errno) => return Err(walk_err("readlinkat", shown, errno)),
                 };
                 rec.content = xxhash_rust::xxh3::xxh3_128(target.as_bytes());
+                rec.meta.content = Some(rec.content);
             }
             FileType::Regular
             | FileType::Symlink
