@@ -356,6 +356,15 @@ when the VM stalled for over 45 s and its single SSH session dropped. A run of o
 the seed copy, the builds and flattening W1's images (before the flatten
 cache and its subtree whiteouts).
 
+First light runs (2026-11-01, noble, 12 vCPUs, base image cached): 23 s
+from start to teardown, 8 s of it the boot, the suite itself 7 s; every
+build under a second (W0 is small: kaniko 0.3 s, BuildKit 0.5 s, overlay
+mode 0.1 s); `ranikust`, `rk-kaniko` and `rk-kaniko-host` each match
+kaniko's image with no difference at all; BuildKit's differs in its five
+known ways (setgid on `/files` and `/out`, `/dev`, `/proc`, `/sys`); with
+`--reproducible`, overlay mode and `rk-kaniko-host` give the same digest
+at `--jobs 1` and the default, and each other's.
+
 First run with kaniko mode (2026-11-01, W1 and W3 of the ultra benchmark, noble,
 4 vCPUs, one round, so indicative only; 19 minutes with the VM's boot and
 the seed): W1 kaniko 24.3 s, overlay mode 20.5 s, `rk-kaniko` 22.9 s,
