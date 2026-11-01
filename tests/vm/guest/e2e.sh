@@ -299,9 +299,12 @@ take_results() {
   done
   sudo rm -rf -- "$1/mnt"
 }
+CPID=0
 container_limits() {
   local pid
   pid="$(sudo docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || echo 0)"
+  # For mem_watch_start: no second inspect while the build is timed.
+  CPID="${pid:-0}"
   # Read as root, written as rnk.
   # shellcheck disable=SC2024
   [ "${pid:-0}" = 0 ] || sudo bash "$LIMITS" pid "$pid" >"$2/limits.txt" 2>/dev/null || true
@@ -313,17 +316,16 @@ container_limits() {
 # mem_watch_start <container> <dir> / mem_watch_end <dir>: the container's
 # peak memory (its cgroup's memory.peak, page cache included), sampled every
 # 0.2 s while it runs (its cgroup goes with it), appended to <dir>/limits.txt;
-# the scope builders get theirs from limits.sh self. One cat per sample:
+# the scope builders get theirs from limits.sh self. Started in the
+# background with the pid container_limits read; one cat per sample:
 # nothing measurable next to a build.
 MEMW=
 mem_watch_start() {
-  local pid
   MEMW=
-  pid="$(sudo docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || echo 0)"
-  [ "${pid:-0}" != 0 ] || return 0
+  [[ $CPID =~ ^[1-9][0-9]*$ ]] || return 0
   # Read as root, written as rnk.
   # shellcheck disable=SC2024
-  sudo bash "$LIMITS" watch "$pid" >"$2/peak.txt" 2>/dev/null &
+  sudo bash "$LIMITS" watch "$CPID" >"$2/peak.txt" 2>/dev/null &
   MEMW=$!
 }
 mem_watch_end() {
