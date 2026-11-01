@@ -39,7 +39,7 @@ def main():
         rng = f"{min(ok):.2f}-{max(ok):.2f}" if ok else "-"
         peaks = [int(r["limits"]["memory.peak"]) for r in rs
                  if r["status"] == "ok" and str(r.get("limits", {}).get("memory.peak", "")).isdecimal()]
-        peak = f"{statistics.median(peaks) / 1048576:.0f}" if peaks else "-"
+        peak = f"{statistics.median(peaks) / 1048576:.0f}" if peaks else ("unknown" if ok else "-")
         print(f"| {w} | {b} | {len(rs)} | {med} | {rng} | {peak} | {status} |")
     pending = [r for r in runs if r["status"] == "pending"]
     if pending:

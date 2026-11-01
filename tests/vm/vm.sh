@@ -252,6 +252,8 @@ cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
 cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
 cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
 # Quoted: `RANIKUST_QUICK_CASES="run copy"` names two cases.
+[[ ${RANIKUST_QUICK_BENCH:-} =~ ^1?$ ]] || die "RANIKUST_QUICK_BENCH must be 1 or unset"
+[[ ${RANIKUST_QUICK_BENCH_ROUNDS:-1} =~ ^[1-9][0-9]?$ ]] || die "RANIKUST_QUICK_BENCH_ROUNDS must be 1-99"
 : >"$STAGE/quick.env"
 for v in RANIKUST_QUICK_CASES RANIKUST_QUICK_MODE RANIKUST_QUICK_BENCH RANIKUST_QUICK_BENCH_ROUNDS; do
   [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/quick.env"

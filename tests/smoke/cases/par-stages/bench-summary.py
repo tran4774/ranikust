@@ -35,14 +35,15 @@ def main():
             if r["round"] == "0" or r["rc"] != "0":
                 continue
             key = (r["mode"], r["cap"], r["work"], r["jobs"])
-            rows.setdefault(key, []).append((float(r["wall_s"]), int(r["peak_mib"])))
+            peak = int(r["peak_mib"]) if r["peak_mib"].isdecimal() else None
+            rows.setdefault(key, []).append((float(r["wall_s"]), peak))
 
     print("| mode | cap | work | --jobs | wall s, median (min–max) | vs chain | peak MiB, median |")
     print("|---|---|---|---|---|---|---|")
     for key in sorted(rows):
         mode, cap, work, jobs = key
         walls = [w for w, _ in rows[key]]
-        peaks = [p for _, p in rows[key]]
+        peaks = [p for _, p in rows[key] if p is not None]
         med = statistics.median(walls)
         base = rows.get((mode, cap, "chain", "default"))
         rel = "–"
@@ -50,7 +51,7 @@ def main():
             b = statistics.median(w for w, _ in base)
             rel = f"{(med - b) / b * 100:+.0f}%"
         print(f"| {mode} | {cap} | {work} | {jobs} | {med:.2f} ({min(walls):.2f}–{max(walls):.2f}) "
-              f"| {rel} | {statistics.median(peaks):.0f} |")
+              f"| {rel} | {f'{statistics.median(peaks):.0f}' if peaks else 'unknown'} |")
 
     print()
     print("Round 1, per phase: total (summed over stages) / wall (union of intervals), seconds.")

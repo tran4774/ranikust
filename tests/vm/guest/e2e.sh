@@ -327,7 +327,22 @@ mem_watch_start() {
   MEMW=$!
 }
 mem_watch_end() {
-  [ -z "$MEMW" ] || wait "$MEMW" || true
+  local i st
+  if [ -n "$MEMW" ]; then
+    # The container is gone; its cgroup goes within moments, ending the
+    # watcher. After about 1 s it is told to print what it has (a
+    # zombie, state Z, has already ended).
+    for i in 1 2 3 4 5; do
+      st="$(awk '{ print $3 }' "/proc/$MEMW/stat" 2>/dev/null || true)"
+      { [ -n "$st" ] && [ "$st" != Z ]; } || break
+      sleep 0.2
+    done
+    st="$(awk '{ print $3 }' "/proc/$MEMW/stat" 2>/dev/null || true)"
+    if [ -n "$st" ] && [ "$st" != Z ]; then
+      sudo kill -TERM "$MEMW" 2>/dev/null || true
+    fi
+    wait "$MEMW" 2>/dev/null || true
+  fi
   MEMW=
   [ ! -s "$1/peak.txt" ] || cat "$1/peak.txt" >>"$1/limits.txt"
   rm -f "$1/peak.txt"
