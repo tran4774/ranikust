@@ -266,40 +266,18 @@ impl<'a> Plan<'a> {
         units: &'a [Unit],
     ) -> Result<Self, Error<E>> {
         let n = units.len();
-        let pos = |s: usize| units.iter().position(|u| u.stage == s);
-        let bad = |stage: usize, reason: String| Error::Graph { stage, reason };
         let mut stages = Vec::with_capacity(n);
         let mut last_shared = None;
         for (k, unit) in units.iter().enumerate() {
             let stage = unit.stage;
-            if pos(stage) != Some(k) {
-                return Err(bad(stage, "listed twice in the units".to_owned()));
+            if position(units, stage) != Some(k) {
+                return Err(graph_error(stage, "listed twice in the units".to_owned()));
             }
             let node = graph
                 .stages
                 .get(stage)
-                .ok_or_else(|| bad(stage, "not in the graph".to_owned()))?;
-            let mut deps: Vec<(usize, usize)> = Vec::new();
-            for c in unit.chain() {
-                let member = graph
-                    .stages
-                    .get(c)
-                    .ok_or_else(|| bad(c, "not in the graph".to_owned()))?;
-                for d in member.dependencies() {
-                    if unit.chain().any(|x| x == d) || deps.iter().any(|&(x, _)| x == d) {
-                        continue;
-                    }
-                    // A dependency comes earlier in the units, so the plan
-                    // has no cycle and every wait ends.
-                    let p = pos(d).filter(|&p| p < k).ok_or_else(|| {
-                        bad(
-                            stage,
-                            format!("depends on stage {d}, which no earlier unit builds"),
-                        )
-                    })?;
-                    deps.push((d, p));
-                }
-            }
+                .ok_or_else(|| graph_error(stage, "not in the graph".to_owned()))?;
+            let deps = chain_deps(graph, units.split_at(k).0, unit)?;
             let after = match unit.placement {
                 Placement::Own => None,
                 Placement::Shared => last_shared.replace(k),
@@ -320,6 +298,49 @@ impl<'a> Plan<'a> {
         }
         Ok(Self { stages })
     }
+}
+
+/// The position of `stage`'s unit in `units`.
+fn position(units: &[Unit], stage: usize) -> Option<usize> {
+    units.iter().position(|u| u.stage == stage)
+}
+
+/// An [`Error::Graph`] for `stage`.
+fn graph_error<E: std::error::Error>(stage: usize, reason: String) -> Error<E> {
+    Error::Graph { stage, reason }
+}
+
+/// The dependencies of `unit`: those of every stage of its chain, base
+/// first, without the chain's own stages, each as `(stage, position of its
+/// unit in earlier)`. Only `earlier`, the units before it, may build them,
+/// so the plan has no cycle and every wait ends. `earlier` is
+/// `units[..k]`, so a position in it is one in `units` (and in
+/// `Plan::stages`, as `Planned::deps` expects).
+fn chain_deps<E: std::error::Error>(
+    graph: &StageGraph,
+    earlier: &[Unit],
+    unit: &Unit,
+) -> Result<Vec<(usize, usize)>, Error<E>> {
+    let mut deps: Vec<(usize, usize)> = Vec::new();
+    for c in unit.chain() {
+        let member = graph
+            .stages
+            .get(c)
+            .ok_or_else(|| graph_error(c, "not in the graph".to_owned()))?;
+        for d in member.dependencies() {
+            if unit.chain().any(|x| x == d) || deps.iter().any(|&(x, _)| x == d) {
+                continue;
+            }
+            let p = position(earlier, d).ok_or_else(|| {
+                graph_error(
+                    unit.stage,
+                    format!("depends on stage {d}, which no earlier unit builds"),
+                )
+            })?;
+            deps.push((d, p));
+        }
+    }
+    Ok(deps)
 }
 
 /// What every stage's future shares.
