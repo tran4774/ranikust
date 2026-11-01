@@ -205,6 +205,10 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   ranikust's shares the host's and could sniff `lo` or serve the port
   (threat model T11). Any other plain-HTTP registry, a loopback one or one
   a Dockerfile names under `--insecure-pull`, is accessed anonymously, and
-  a refusal names the flags. No `login` subcommand (ADR-0049).
+  a refusal names the flags. In kaniko mode on `/`
+  (`ClientOptions::verified_credentials_only`), only verified TLS carries
+  credentials: none over plain HTTP, even to a registry so named, nor to
+  one under `--skip-tls-verify*`, since a `RUN` may redirect its name
+  (ADR-0051); a refusal then says so. No `login` subcommand (ADR-0049).
   Only a loopback registry was measured
   ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).

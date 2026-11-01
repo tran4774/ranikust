@@ -87,7 +87,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--insecure-pull` | The registries of `FROM` and `COPY --from` images may be plain HTTP. They are reached anonymously over it: a Dockerfile names them, and ranikust sends credentials over plain HTTP only to registries you name (`--insecure-registry`, or destinations under `--insecure`). |
 | `--skip-tls-verify` | Do not verify the TLS certificates of destinations. |
 | `--skip-tls-verify-pull` | Do not verify the TLS certificates of the registries pulled from. |
-| `--skip-tls-verify-registry=REGISTRY` | Do not verify this registry's TLS certificate. Repeatable. These insecure and TLS settings apply per registry, so a registry both pushed to and pulled from gets both. |
+| `--skip-tls-verify-registry=REGISTRY` | Do not verify this registry's TLS certificate. Repeatable. These insecure and TLS settings apply per registry, so a registry both pushed to and pulled from gets both. In kaniko mode on `/`, credentials go only over verified TLS: never over plain HTTP, even to a registry you named, nor to one whose certificate is not verified, since a `RUN` could redirect its name. |
 | `--push-retry=N` | Start the whole push again up to N times after it failed, waiting 1 s, then twice as long each time, as kaniko. Each request keeps ranikust's own retries inside. |
 | `--image-download-retry=N` | The same for fetching a base image's manifest. |
 | `-v`, `--verbosity=LEVEL` | `trace`, `debug`, `info` (default), `warn` (or `warning`), `error`, in any case; `fatal` and `panic` log as `error`. Other programs' libraries log at `info` at most. Never changes the metrics report. |
