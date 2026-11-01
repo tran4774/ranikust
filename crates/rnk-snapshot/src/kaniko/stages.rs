@@ -346,11 +346,11 @@ impl KanikoStage {
     /// in its new place. Called once, by the only stage that reads this one
     /// (ADR-0062).
     ///
-    /// Copies instead, from the pruned root (the same result), when an
-    /// inode in it has a hardlink the walk did not find inside it (moved,
-    /// it would reach outside the root) or when the move failed before
-    /// anything moved (a filesystem without `RENAME_NOREPLACE`, `EBUSY`);
-    /// this stage is then readable again.
+    /// Copies instead, from the pruned root (the same result), when a file
+    /// it keeps has a hardlink outside it (moved, it would reach outside
+    /// the root) or when the move failed before anything moved (a
+    /// filesystem without `RENAME_NOREPLACE`, `EBUSY`). Either way this
+    /// stage, pruned, is read no more.
     fn hand_over(&self, to: &RootPath) -> Result<RootPath> {
         if self.handed.swap(true, Ordering::SeqCst) {
             return Err(Error::State("the stage's root was handed over already"));
@@ -390,10 +390,10 @@ impl KanikoStage {
     }
 
     /// The copy the hand-over falls back to, into a new `rootfs` in `to`.
+    /// This stage stays refused: its root was pruned for the hand-over.
     fn copy_instead(&self, to: &RootPath) -> Result<RootPath> {
         let root = to.create_sub_root("rootfs", 0o755)?;
         copy_stage(&self.root, &root, &self.shared.ignore)?;
-        self.handed.store(false, Ordering::SeqCst);
         Ok(root)
     }
 

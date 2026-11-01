@@ -108,32 +108,62 @@ pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Resul
 /// What [`prune`] found besides what it deleted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pruned {
-    /// A non-directory had more hardlinks than names inside the root when
-    /// first seen: a link from outside the root, or (counted too, as it
-    /// may be) one in a directory `prune` deleted whole.
+    /// A non-directory `prune` keeps has a hardlink outside the root: its
+    /// link count when first seen was more than the names `prune` found for
+    /// it in the root, kept or deleted, whatever order it walked them in.
     pub linked_outside: bool,
 }
 
-/// Per inode with several links: its link count when first seen, and the
-/// names seen for it.
+/// Per inode with several links when first seen: that link count, the
+/// names seen for it since in the root, and whether `prune` keeps one.
+///
+/// Exact: every name is seen before it is deleted (`prune`'s own entries
+/// and those `remove_below` deletes inside a directory removed whole), so
+/// at an inode's first sight every other name of it is still there, inside
+/// the root or outside; deleting names only lowers the count later. An
+/// inode whose names in the root are all deleted leaves nothing behind.
 #[derive(Default)]
-struct Links(std::collections::HashMap<(u32, u32, u64), (u32, u32)>);
+struct Links(std::collections::HashMap<(u32, u32, u64), LinkCount>);
+
+#[derive(Clone, Copy)]
+struct LinkCount {
+    nlink: u32,
+    seen: u32,
+    kept: bool,
+}
 
 impl Links {
+    fn key(st: &Stat) -> (u32, u32, u64) {
+        (st.dev_major, st.dev_minor, st.ino)
+    }
+
     fn saw(&mut self, st: &Stat) {
-        if st.file_type() != FileType::Directory && st.nlink > 1 {
-            let e = self
-                .0
-                .entry((st.dev_major, st.dev_minor, st.ino))
-                .or_insert((st.nlink, 0));
-            e.1 += 1;
+        if st.file_type() == FileType::Directory {
+            return;
+        }
+        if let Some(e) = self.0.get_mut(&Self::key(st)) {
+            e.seen += 1;
+        } else if st.nlink > 1 {
+            self.0.insert(
+                Self::key(st),
+                LinkCount {
+                    nlink: st.nlink,
+                    seen: 1,
+                    kept: false,
+                },
+            );
         }
     }
 
-    /// Deleting names only lowers a link count, so the first count seen is
-    /// the largest.
+    /// `st`, seen already, is a name `prune` keeps.
+    fn keep(&mut self, st: &Stat) {
+        if let Some(e) = self.0.get_mut(&Self::key(st)) {
+            e.kept = true;
+        }
+    }
+
     fn outside(&self) -> bool {
-        self.0.values().any(|&(nlink, seen)| nlink > seen)
+        self.0.values().any(|e| e.kept && e.nlink > e.seen)
     }
 }
 
@@ -215,6 +245,7 @@ fn prune_walk(
                     changed: false,
                 });
             } else {
+                links.keep(&st);
                 counts.kept += 1;
             }
             continue;
@@ -223,9 +254,10 @@ fn prune_walk(
         if is_dir {
             let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
             let mut all = |_: &Path, _: FileType| Keep::Remove;
+            let mut seen = |st: &Stat| links.saw(st);
             // Entries on another mount are kept by `remove_below`, which
             // then cannot remove the directory: refused below as a change.
-            remove_below(root, fd, &child, &mut all, counts)?;
+            remove_below_seen(root, fd, &child, &mut all, counts, &mut seen)?;
             match rustix::fs::unlinkat(&top.fd, &name, AtFlags::REMOVEDIR) {
                 Ok(()) => counts.dirs += 1,
                 Err(Errno::NOTDIR | Errno::NOTEMPTY | Errno::NOENT) => {
@@ -315,6 +347,20 @@ pub(crate) fn remove_below(
     decide: &mut dyn FnMut(&Path, FileType) -> Keep,
     counts: &mut Counts,
 ) -> Result<bool> {
+    remove_below_seen(root, fd, dir, decide, counts, &mut |_| {})
+}
+
+/// [`remove_below`], showing `seen` the `statx` of every entry below `dir`
+/// before anything is done with it ([`prune`] counts the names of each
+/// inode it deletes).
+fn remove_below_seen(
+    root: &RootPath,
+    fd: OwnedFd,
+    dir: &Path,
+    decide: &mut dyn FnMut(&Path, FileType) -> Keep,
+    counts: &mut Counts,
+    seen: &mut dyn FnMut(&Stat),
+) -> Result<bool> {
     let st = meta::statx_at(fd.as_fd(), OsStr::new(""), dir)?;
     if st.mnt_id != root.mnt_id() {
         counts.kept += 1;
@@ -365,6 +411,7 @@ pub(crate) fn remove_below(
             Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => continue,
             Err(e) => return Err(e),
         };
+        seen(&st);
         if st.mnt_id != root.mnt_id() || st.mount_root {
             top.kept = true;
             counts.kept += 1;

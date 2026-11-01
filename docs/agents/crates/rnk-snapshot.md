@@ -263,7 +263,7 @@ impl WalkDiff {
   directory; a parent root swapped for another directory is never handed
   over and the new stage directory goes; a move that moved nothing, and a
   parent holding a file hardlinked from outside its root, fall back to a
-  copy.
+  copy, the pruned parent refused after it too.
 - **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
   read after the root is reused, only the paths asked for, deleted on
   release, a second keep refused once the root was reused; a stage `FROM`

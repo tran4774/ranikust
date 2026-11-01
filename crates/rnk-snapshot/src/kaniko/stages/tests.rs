@@ -1164,8 +1164,8 @@ thread_local! {
 }
 
 /// ADR-0061: a move that fails before anything moved falls back to a copy
-/// of the pruned root (what a copy of the parent gives); the parent is
-/// then readable again.
+/// of the pruned root (what a copy of the parent gives); the parent, pruned,
+/// stays refused.
 #[test]
 fn a_move_that_moved_nothing_falls_back_to_a_copy() {
     let f = Fixture::new();
@@ -1186,7 +1186,10 @@ fn a_move_that_moved_nothing_falls_back_to_a_copy() {
         full_listing(copied.mount_point()),
         full_listing(taken.mount_point())
     );
-    parent.view().unwrap();
+    assert!(
+        parent.view().unwrap_err().to_string().contains("handed"),
+        "the pruned parent is read no more"
+    );
     for s in [copied, taken, parent] {
         s.release().unwrap();
     }
@@ -1211,7 +1214,10 @@ fn a_hardlink_from_outside_is_copied_never_handed_over() {
         "the outside inode reached the child"
     );
     let mut parent = parent;
-    parent.view().unwrap();
+    assert!(
+        parent.view().unwrap_err().to_string().contains("handed"),
+        "the pruned parent is read no more"
+    );
     child.release().unwrap();
     parent.release().unwrap();
     assert_eq!(fs::read(&outside).unwrap(), b"outside");

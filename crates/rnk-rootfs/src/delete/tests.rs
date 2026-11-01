@@ -503,23 +503,72 @@ fn prune_refuses_the_machines_own_root() {
     );
 }
 
-/// ADR-0061: a kept file with a hardlink outside the root is reported, a
-/// hardlink pair inside it is not, nor is a link whose other name prune
-/// deleted after seeing both.
-#[test]
-fn prune_reports_a_hardlink_from_outside_the_root() {
-    let f = Fixture::new();
+/// Links inside the root only: a pair, a kept name whose other name prune
+/// deletes (a file at the top, `gone`), and one whose other names are in a
+/// directory prune deletes whole (`ign/`). `top_first` creates the names
+/// at the top before the directory `d`, which tmpfs lists in creation
+/// order (ext4 in hash order), so the walk meets them in both orders.
+fn links_only_inside(f: &Fixture, top_first: bool) {
+    let top = |f: &Fixture| {
+        fs::write(f.host("gone"), b"y").unwrap();
+        fs::create_dir(f.host("ign")).unwrap();
+        fs::write(f.host("ign/z"), b"z").unwrap();
+    };
+    if top_first {
+        top(f);
+    }
     fs::create_dir(f.host("d")).unwrap();
     fs::write(f.host("d/a"), b"x").unwrap();
     fs::hard_link(f.host("d/a"), f.host("d/b")).unwrap();
-    fs::write(f.host("gone"), b"y").unwrap();
+    if !top_first {
+        top(f);
+    }
     fs::hard_link(f.host("gone"), f.host("d/kept")).unwrap();
-    let inside = prune(&f.root, &|p, _| p == Path::new("gone")).unwrap();
-    assert!(!inside.linked_outside, "{inside:?}");
+    fs::hard_link(f.host("ign/z"), f.host("d/kept-z")).unwrap();
+    fs::hard_link(f.host("ign/z"), f.host("ign/z2")).unwrap();
+}
+
+/// ADR-0061: a kept file with a hardlink outside the root is reported; links
+/// whose names are all inside it are not, whether prune keeps those names,
+/// deletes them itself or inside a directory it deletes whole, and in
+/// whatever order it meets them.
+#[test]
+fn prune_reports_a_hardlink_from_outside_the_root_in_any_order() {
+    for top_first in [true, false] {
+        let f = Fixture::new();
+        links_only_inside(&f, top_first);
+        let remove = |p: &Path, _: FileType| p == Path::new("gone") || p == Path::new("ign");
+        let inside = prune(&f.root, &remove).unwrap();
+        assert!(!inside.linked_outside, "top first {top_first}: {inside:?}");
+        assert_eq!(
+            tree(&f.host),
+            ["d", "d/a", "d/b", "d/kept", "d/kept-z"]
+                .map(PathBuf::from)
+                .into(),
+        );
+
+        let (out, _) = f.outside();
+        fs::hard_link(out.join("sentinel"), f.host("d/from-outside")).unwrap();
+        let outside = prune(&f.root, &|_, _| false).unwrap();
+        assert!(outside.linked_outside, "top first {top_first}: {outside:?}");
+        assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"x");
+    }
+}
+
+/// ADR-0061: a link to a file outside the root whose every name in the
+/// root prune deletes leaves nothing behind that reaches outside: not
+/// reported, in a directory deleted whole or at the top.
+#[test]
+fn prune_does_not_report_an_outside_link_it_deletes() {
+    let f = Fixture::new();
     let (out, _) = f.outside();
-    fs::hard_link(out.join("sentinel"), f.host("d/from-outside")).unwrap();
-    let outside = prune(&f.root, &|_, _| false).unwrap();
-    assert!(outside.linked_outside, "{outside:?}");
+    fs::create_dir(f.host("ign")).unwrap();
+    fs::hard_link(out.join("sentinel"), f.host("ign/outside")).unwrap();
+    fs::hard_link(out.join("sub/file"), f.host("top-outside")).unwrap();
+    let remove = |p: &Path, _: FileType| p == Path::new("ign") || p == Path::new("top-outside");
+    let r = prune(&f.root, &remove).unwrap();
+    assert!(!r.linked_outside, "{r:?}");
+    assert!(tree(&f.host).is_empty());
     assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"x");
 }
 

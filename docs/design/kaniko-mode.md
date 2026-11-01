@@ -514,8 +514,8 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   may differ. It falls back to a copy of the pruned root when a file there
   has a hardlink the prune did not find inside the root (moved, it would
   reach outside), or when the move failed before anything moved (`EINVAL`
-  without `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over the
-  parent is read no more: its view, root, a second child and a layer are
+  without `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over, and
+  after such a fallback (its root was pruned), the parent is read no more: its view, root, a second child and a layer are
   refused, and its release deletes an empty directory.
 - **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
   `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as
