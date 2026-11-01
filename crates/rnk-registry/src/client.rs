@@ -213,9 +213,9 @@ struct Host {
     challenge: Option<Challenge>,
     /// Mount tokens by (destination, source) repository.
     mount_tokens: Mutex<BTreeMap<(String, String), ScopeToken>>,
-    /// Credentials are configured but held back: plain HTTP to a registry
-    /// not in `ClientOptions::http_credentials`.
-    withheld: bool,
+    /// Why configured credentials are held back, if they are (see
+    /// [`withheld_because`]).
+    withheld: Option<&'static str>,
 }
 
 /// Why configured credentials are not sent, and how to send them.
@@ -888,7 +888,7 @@ impl Client {
     }
 
     /// Adds to an access refusal by a registry whose credentials were held
-    /// back over plain HTTP (see [`Client::connect`]) how to send them.
+    /// back (see [`Client::connect`]) why, and how to send them.
     async fn hint<T>(&self, registry: &str, r: Result<T, Error>) -> Result<T, Error> {
         let Err(e) = r else { return r };
         let withheld = self
@@ -896,11 +896,13 @@ impl Client {
             .lock()
             .await
             .get(registry)
-            .is_some_and(|h| h.withheld);
-        if withheld && is_refusal(&e) {
+            .and_then(|h| h.withheld);
+        if let Some(why) = withheld
+            && is_refusal(&e)
+        {
             return Err(Error::Auth {
                 host: registry.to_owned(),
-                reason: format!("{e}; {WITHHELD}"),
+                reason: format!("{e}; {why}"),
             });
         }
         Err(e)
@@ -1060,7 +1062,7 @@ impl Client {
             base_url: format!("{scheme}://{endpoint}"),
             challenge,
             mount_tokens: Mutex::new(BTreeMap::new()),
-            withheld: withheld.is_some(),
+            withheld,
         })
     }
 

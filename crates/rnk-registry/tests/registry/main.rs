@@ -237,6 +237,43 @@ async fn verified_credentials_only_withholds_them_from_plain_http() {
     assert_eq!(registry.count("GET /v2/app"), 0);
 }
 
+/// When kaniko mode on `/` held the credentials back, a later refusal says
+/// why: the plain-HTTP advice (`--insecure-registry`) would not send them.
+#[tokio::test]
+async fn a_refusal_after_credentials_held_back_for_kaniko_mode_says_why() {
+    let registry = FakeRegistry::start(Auth::Bearer {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+        refresh_token: "refresh".to_owned(),
+        anonymous_pull: true,
+    })
+    .await;
+    let image = add_image(&registry, "app", "v1", b"x".to_vec());
+    let mut opts = options(&registry);
+    assert!(opts.http_credentials.contains(&registry.host()));
+    opts.verified_credentials_only = true;
+    let client = Client::new(
+        opts,
+        TrustStore::load(),
+        support::credentials(&basic_auth_entry(&registry.host(), "builder", "s3cret")),
+    )
+    .unwrap();
+    client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap();
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let body = BlobBody::Bytes(Bytes::from(image.layer.clone()));
+    let err = client
+        .push_blob(&reference(&registry, "app:v2"), &blob, &body)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    assert!(err.to_string().contains("verified TLS"), "{err}");
+    assert!(!err.to_string().contains("--insecure-registry"), "{err}");
+    assert_eq!(registry.count("PUT "), 0, "nothing was pushed");
+}
+
 #[tokio::test]
 async fn an_unlisted_loopback_registry_asking_for_basic_auth_is_refused() {
     let registry = FakeRegistry::start(Auth::Basic {
