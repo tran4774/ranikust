@@ -27,7 +27,7 @@ use tracing::{Instrument as _, debug_span};
 
 use crate::error::{Error, Result};
 use crate::image::Image;
-use crate::layer::{BlobLayer, Content, Contents, LayerBytes};
+use crate::layer::{AnonBlob, BlobLayer, Content, Contents, LayerBytes};
 
 /// The tag kaniko gives a `--tar-path` image built without `--destination`
 /// (`kaniko@44aa7ddc0 pkg/executor/push.go:67`).
@@ -217,12 +217,9 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
             add(
                 name.clone(),
                 layer.blob.size,
-                match &kept(layer)?.bytes {
-                    LayerBytes::Anon(blob) => Content::Anon(blob.clone()),
-                    LayerBytes::File(path) => Content::File(path.clone()),
-                    LayerBytes::Registry(_) => {
-                        return Err(Error::Invalid("a streamed layer in a tar".to_owned()));
-                    }
+                match kept(layer)? {
+                    Kept::Anon(blob) => Content::Anon(blob.clone()),
+                    Kept::File(path) => Content::File(path.to_owned()),
                 },
             )?;
         }
@@ -353,11 +350,30 @@ async fn push_one(
     Ok(uploaded.iter().sum::<u64>() + image.manifest.size())
 }
 
-/// `layer`, if its bytes were kept: outputs written to files need them, so
-/// a build with such outputs keeps its base layers (ADR-0055).
-fn kept(layer: &BlobLayer) -> Result<&BlobLayer> {
-    match layer.bytes {
-        LayerBytes::File(_) | LayerBytes::Anon(_) => Ok(layer),
+/// A layer's bytes as an output written to a file reads them: kept, never
+/// streamed from a registry.
+enum Kept<'a> {
+    File(&'a Path),
+    Anon(&'a AnonBlob),
+}
+
+impl Kept<'_> {
+    /// A new descriptor of the bytes, read from their start.
+    fn open(&self) -> std::io::Result<File> {
+        match self {
+            Kept::File(path) => File::open(path),
+            Kept::Anon(blob) => blob.open(),
+        }
+    }
+}
+
+/// `layer`'s bytes, if they were kept: outputs written to files need them,
+/// so a build with such outputs keeps its base layers (ADR-0055). The one
+/// place a streamed layer is refused for a file output.
+fn kept(layer: &BlobLayer) -> Result<Kept<'_>> {
+    match &layer.bytes {
+        LayerBytes::File(path) => Ok(Kept::File(path)),
+        LayerBytes::Anon(blob) => Ok(Kept::Anon(blob)),
         LayerBytes::Registry(_) => Err(Error::Invalid(format!(
             "layer {} was streamed and not kept, but an output needs its bytes",
             layer.blob.digest
@@ -381,7 +397,7 @@ fn file_entry(path: EntryPath, size: u64) -> Entry {
 
 enum BlobFrom<'a> {
     Bytes(&'a [u8]),
-    Layer(&'a BlobLayer),
+    Layer(Kept<'a>),
 }
 
 /// Puts a blob into a layout's `blobs/` unless a regular file with exactly
@@ -401,11 +417,8 @@ fn put_blob(dir: &Path, digest: &Digest, from: BlobFrom<'_>) -> Result<u64> {
             .map_err(Error::io("write", &path))
             .map(|()| u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
         BlobFrom::Layer(layer) => {
-            let src = Path::new(layer.blob.digest.as_str());
-            let mut file = layer
-                .open()
-                .ok_or_else(|| Error::Invalid("a streamed layer in a layout".to_owned()))?
-                .map_err(Error::io("open", src))?;
+            let src = Path::new(digest.as_str());
+            let mut file = layer.open().map_err(Error::io("open", src))?;
             std::io::copy(&mut file, out).map_err(Error::io("copy", src))
         }
     })
