@@ -776,8 +776,10 @@ fn a_file_swapped_for_a_fifo_during_the_walk_neither_blocks_nor_is_made() {
     let host = s.host("t/swap");
     let (tx, rx) = std::sync::mpsc::channel();
     let d = Fixture::new();
-    let dhost = d.host.clone();
-    std::thread::spawn(move || {
+    // The copying thread hands `d` back when it ends: `Fixture` has a
+    // `Drop`, so the `move` closure owns all of it, and dropping it there
+    // would delete the outputs while they are still being checked here.
+    let worker = std::thread::spawn(move || {
         let swapped = AtomicBool::new(false);
         let keep = |p: &Path, _dir: bool| {
             if p.ends_with("swap") && !swapped.swap(true, Ordering::SeqCst) {
@@ -803,13 +805,18 @@ fn a_file_swapped_for_a_fifo_during_the_walk_neither_blocks_nor_is_made() {
                 .unwrap();
         }
         drop(s);
+        d
     });
-    for _ in 0..2 {
-        let (skip, r) = rx
-            .recv_timeout(std::time::Duration::from_secs(20))
-            .expect("the copy blocked on a FIFO swapped in during the walk");
+    let results: Vec<_> = (0..2)
+        .map(|_| {
+            rx.recv_timeout(std::time::Duration::from_secs(20))
+                .expect("the copy blocked on a FIFO swapped in during the walk")
+        })
+        .collect();
+    let d = worker.join().unwrap();
+    for (skip, r) in results {
         r.unwrap_or_else(|e| panic!("skip_special={skip}: {e}"));
-        let out = dhost.join(format!("out-{skip}/swap"));
+        let out = d.host.join(format!("out-{skip}/swap"));
         let t = fs::symlink_metadata(&out).unwrap().file_type();
         assert!(t.is_file(), "skip_special={skip}: {t:?}");
         assert_eq!(fs::read(&out).unwrap(), b"pinned");
