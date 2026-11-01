@@ -9,8 +9,9 @@
 # size. Kaniko
 # mode off / (the VM's `quick` with RANIKUST_QUICK_MODE=kaniko): FIFOs and
 # device nodes are left out of the child, no stage directory outlives a
-# build, and builds that fill a small state directory (a RUN, a copy of a
-# big parent) fail and leave nothing behind.
+# build, builds that fill a small state directory (a RUN, a copy of a
+# big parent) fail and leave nothing behind, and two SIGINTs during a
+# hand-over stop the build and leave nothing outside it.
 case_run() {
   local got per_stage=
   [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] && [ "$ENGINE" = "sudo docker" ] && per_stage=1
@@ -85,4 +86,58 @@ case_run_per_stage() {
     fail "a build after the full ones failed (log in $(out after))"
   sudo umount "$full"
   trap - EXIT
+  case_run_signal
+}
+
+# Red team (ADR-0061, T4): SIGINT twice while a stage takes its parent's
+# directory over. The build stops at once (130); nothing outside its
+# `builds/<id>` and `tmp/<id>` changes (the store a first build filled, a
+# sentinel beside the state directory); no mount or process is left; the
+# next build in the same state directory cleans what it left and works.
+case_run_signal() {
+  local s="$W/sigstate" o rc bg phase before after
+  o="$(out signal)"
+  rm -rf "$o" && mkdir -p "$o"
+  sudo mkdir -m 700 "$s" "$W/sentinel"
+  sudo sh -c "echo host >'$W/sentinel/file'"
+  sig_build() {
+    sudo "$RNK" --context "$SMOKE_CASES_DIR/$CASE" -f Dockerfile.signal --mode=kaniko \
+      --state-dir "$s" --no-push --build-arg "BASE=$BASE"
+  }
+  sig_build >"$o/warm.log" 2>&1 || fail "the first build failed (log in $o)" || return 1
+  before="$(sudo find "$s" \( -path "$s/builds" -o -path "$s/tmp" \) -prune -o -printf '%y %p\n' | sort)"
+  sig_build >"$o/build.log" 2>&1 &
+  bg=$!
+  # Root waits for the child's stage directory, made just before the
+  # hand-over (stages/1), signals twice, waits for the process to end and
+  # reports which stage directories hold a root then.
+  phase="$(sudo S="$s" sh -c '
+    n=0
+    until pgrep -x ranikust >/dev/null; do
+      n=$((n + 1)); [ "$n" -lt 100000 ] || { echo "no build started"; exit 0; }
+    done
+    while :; do
+      for d in "$S"/builds/*/stages/1; do [ -e "$d" ] && break 2; done
+      pgrep -x ranikust >/dev/null || { echo "build ended first"; exit 0; }
+    done
+    pid="$(pgrep -o -x ranikust)"
+    kill -INT "$pid"; sleep 0.02; kill -INT "$pid"
+    while kill -0 "$pid" 2>/dev/null; do :; done
+    echo "roots in stages:" $(cd "$S"/builds/*/stages 2>/dev/null && ls -d */rootfs 2>/dev/null)
+  ')"
+  rc=0
+  wait "$bg" || rc=$?
+  printf '%s\n' "$phase" >"$o/phase"
+  echo "  signal: $phase, exit $rc"
+  expect "$rc" 130 "exit status after two SIGINTs ($phase; log in $o)" || return 1
+  after="$(sudo find "$s" \( -path "$s/builds" -o -path "$s/tmp" \) -prune -o -printf '%y %p\n' | sort)"
+  expect "$after" "$before" "the state directory outside builds/ and tmp/" || return 1
+  expect "$(sudo cat "$W/sentinel/file")" host "the sentinel beside the state directory" || return 1
+  expect "$(sudo ls -A "$W/sentinel")" file "the sentinel directory" || return 1
+  ! grep -qF "$W/" /proc/self/mountinfo || fail "mounts left under $W" || return 1
+  ! pgrep -x ranikust >/dev/null || fail "ranikust processes left" || return 1
+  sig_build >"$o/after.log" 2>&1 || fail "the build after the killed one failed (log in $o)" || return 1
+  expect "$(sudo find "$s/builds" "$s/tmp" -mindepth 1 -maxdepth 1 2>/dev/null)" "" \
+    "what the killed build left, after the next one" || return 1
+  sudo rm -rf "$s" "$W/sentinel"
 }

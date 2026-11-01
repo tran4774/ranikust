@@ -1,0 +1,14 @@
+# SIGINT twice while `c` takes `p`'s directory over (ADR-0061, ADR-0062;
+# T4): `p`, read by `c` only, holds 300,000 files and a FIFO, so the prune
+# before the move takes long enough to be interrupted. Neither stage's
+# layers are needed (the image is the last stage), so nothing walks or
+# encodes them first.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS p
+RUN mkdir /many && cd /many && seq 1 300000 | xargs touch && mkfifo /many/fifo
+
+FROM p AS c
+RUN true
+
+FROM ${BASE}
+COPY --from=c /etc/os-release /x
