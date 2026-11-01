@@ -215,7 +215,49 @@ struct Host {
     mount_tokens: Mutex<BTreeMap<(String, String), ScopeToken>>,
     /// Why configured credentials are held back, if they are (see
     /// [`withheld_because`]).
-    withheld: Option<&'static str>,
+    withheld: Option<Withheld>,
+}
+
+/// How requests reach a registry, as far as sending credentials goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Transport {
+    /// Plain HTTP.
+    PlainHttp,
+    /// HTTPS whose certificate is not verified (`--skip-tls-verify*`).
+    UnverifiedTls,
+    /// HTTPS with a verified certificate.
+    VerifiedTls,
+}
+
+impl Transport {
+    fn new(scheme: &str, skip_verify: bool) -> Self {
+        if scheme == "http" {
+            Self::PlainHttp
+        } else if skip_verify {
+            Self::UnverifiedTls
+        } else {
+            Self::VerifiedTls
+        }
+    }
+}
+
+/// Why configured credentials are held back from a registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Withheld {
+    /// Plain HTTP to a registry the operator did not name for it (T11).
+    PlainHttp,
+    /// Kaniko mode on `/`: anything but verified TLS (ADR-0051).
+    UnverifiedTls,
+}
+
+impl Withheld {
+    /// The reason, and how to send them, for an error or a warning.
+    fn reason(self) -> &'static str {
+        match self {
+            Self::PlainHttp => WITHHELD,
+            Self::UnverifiedTls => WITHHELD_UNVERIFIED,
+        }
+    }
 }
 
 /// Why configured credentials are not sent, and how to send them.
@@ -229,9 +271,8 @@ const WITHHELD_UNVERIFIED: &str = "in kaniko mode on / its credentials go only o
     unverified certificate could carry them to a host of its choosing; use the registry \
     over HTTPS with a certificate ranikust trusts (--registry-certificate)";
 
-/// Why configured credentials must not be sent to `registry`, reached over
-/// `scheme`, with its certificate unverified if `skip_verify`; `None` when
-/// they may be.
+/// Why configured credentials must not be sent to `registry`, reached
+/// through `transport`; `None` when they may be.
 ///
 /// Unlike BuildKit's, a ranikust `RUN` shares the host's network namespace
 /// and may sniff `lo` or serve a loopback port: credentials go over plain
@@ -243,15 +284,17 @@ const WITHHELD_UNVERIFIED: &str = "in kaniko mode on / its credentials go only o
 fn withheld_because(
     options: &ClientOptions,
     registry: &str,
-    scheme: &str,
-    skip_verify: bool,
-) -> Option<&'static str> {
-    if options.verified_credentials_only && (scheme == "http" || skip_verify) {
-        Some(WITHHELD_UNVERIFIED)
-    } else if scheme == "http" && !options.http_credentials.contains(registry) {
-        Some(WITHHELD)
-    } else {
-        None
+    transport: Transport,
+) -> Option<Withheld> {
+    match transport {
+        Transport::VerifiedTls => None,
+        Transport::PlainHttp | Transport::UnverifiedTls if options.verified_credentials_only => {
+            Some(Withheld::UnverifiedTls)
+        }
+        Transport::PlainHttp if !options.http_credentials.contains(registry) => {
+            Some(Withheld::PlainHttp)
+        }
+        Transport::PlainHttp | Transport::UnverifiedTls => None,
     }
 }
 
@@ -902,7 +945,7 @@ impl Client {
         {
             return Err(Error::Auth {
                 host: registry.to_owned(),
-                reason: format!("{e}; {why}"),
+                reason: format!("{e}; {}", why.reason()),
             });
         }
         Err(e)
@@ -1019,7 +1062,7 @@ impl Client {
         let configured = self.credentials.get(registry);
         // Only configured credentials can be held back.
         let withheld = if configured.is_some() {
-            withheld_because(&self.options, registry, scheme, skip_verify)
+            withheld_because(&self.options, registry, Transport::new(scheme, skip_verify))
         } else {
             None
         };
@@ -1028,10 +1071,10 @@ impl Client {
             if matches!(ping, Ping::Basic) {
                 return Err(Error::Auth {
                     host: registry.to_owned(),
-                    reason: format!("it asks for basic authentication; {why}"),
+                    reason: format!("it asks for basic authentication; {}", why.reason()),
                 });
             }
-            tracing::warn!(registry, "{why}; accessing it anonymously");
+            tracing::warn!(registry, "{}; accessing it anonymously", why.reason());
         }
         if configured.is_none()
             && let Some(helper) = self.credentials.helper(registry)
@@ -1403,30 +1446,52 @@ mod tests {
         options.http_credentials.insert(named.to_owned());
         // Over verified TLS they always go; over plain HTTP only to a
         // registry named for it (T11).
-        assert_eq!(withheld_because(&options, other, "https", false), None);
-        assert_eq!(withheld_because(&options, named, "http", false), None);
         assert_eq!(
-            withheld_because(&options, other, "http", false),
-            Some(WITHHELD)
+            withheld_because(&options, other, Transport::VerifiedTls),
+            None
+        );
+        assert_eq!(
+            withheld_because(&options, named, Transport::PlainHttp),
+            None
+        );
+        assert_eq!(
+            withheld_because(&options, other, Transport::PlainHttp),
+            Some(Withheld::PlainHttp)
         );
         // An unverified certificate alone does not hold them back.
-        assert_eq!(withheld_because(&options, other, "https", true), None);
+        assert_eq!(
+            withheld_because(&options, other, Transport::UnverifiedTls),
+            None
+        );
         // Kaniko mode on `/`: only verified TLS, whatever the lists say
         // (ADR-0051).
         options.verified_credentials_only = true;
-        assert_eq!(withheld_because(&options, other, "https", false), None);
-        for (registry, scheme, skip_verify) in [
-            (named, "http", false),
-            (other, "http", false),
-            (other, "https", true),
-            (named, "https", true),
+        assert_eq!(
+            withheld_because(&options, other, Transport::VerifiedTls),
+            None
+        );
+        for (registry, transport) in [
+            (named, Transport::PlainHttp),
+            (other, Transport::PlainHttp),
+            (other, Transport::UnverifiedTls),
+            (named, Transport::UnverifiedTls),
         ] {
             assert_eq!(
-                withheld_because(&options, registry, scheme, skip_verify),
-                Some(WITHHELD_UNVERIFIED),
-                "{registry} {scheme} skip_verify={skip_verify}"
+                withheld_because(&options, registry, transport),
+                Some(Withheld::UnverifiedTls),
+                "{registry} {transport:?}"
             );
         }
+        assert_eq!(Withheld::PlainHttp.reason(), WITHHELD);
+        assert_eq!(Withheld::UnverifiedTls.reason(), WITHHELD_UNVERIFIED);
+    }
+
+    #[test]
+    fn transports_are_named_from_the_scheme_and_the_verification() {
+        assert_eq!(Transport::new("http", false), Transport::PlainHttp);
+        assert_eq!(Transport::new("http", true), Transport::PlainHttp);
+        assert_eq!(Transport::new("https", true), Transport::UnverifiedTls);
+        assert_eq!(Transport::new("https", false), Transport::VerifiedTls);
     }
 
     #[test]
