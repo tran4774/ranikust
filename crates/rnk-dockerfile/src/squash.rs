@@ -70,6 +70,7 @@ pub struct SquashedStage {
 pub fn squash_for_shared_root(graph: &StageGraph) -> Vec<SquashedStage> {
     let n = graph.stages.len();
     let base_of = |i: usize| graph.stages.get(i).map(|s| &s.base);
+    let refs_of = |i: usize| graph.stages.get(i).map_or(&[][..], |s| &s.references);
     // kaniko counts, per stage, the needed stages built on it
     // (`stagesDependencies`, with one extra for the pushed stage so it is
     // never folded) and the commands reading it (`copyDependencies`).
@@ -85,7 +86,7 @@ pub fn squash_for_shared_root(graph: &StageGraph) -> Vec<SquashedStage> {
         {
             *u += 1;
         }
-        for r in graph.stages.get(i).map_or(&[][..], |s| &s.references) {
+        for r in refs_of(i) {
             if let Source::Stage(s) = r.source
                 && let Some(c) = readers.get_mut(s)
             {
@@ -148,8 +149,7 @@ pub fn squash_for_shared_root(graph: &StageGraph) -> Vec<SquashedStage> {
             plan[u].save_image = true;
         }
         for c in chain {
-            let refs = graph.stages.get(c).map_or(&[][..], |s| &s.references);
-            for (ri, r) in refs.iter().enumerate() {
+            for (ri, r) in refs_of(c).iter().enumerate() {
                 if let Source::Stage(s) = r.source
                     && let Some(u) = unit_of(s)
                     && !plan[u].readers.contains(&(c, ri))
