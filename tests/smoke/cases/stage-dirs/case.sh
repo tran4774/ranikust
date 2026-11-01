@@ -10,8 +10,9 @@
 # mode off / (the VM's `quick` with RANIKUST_QUICK_MODE=kaniko): FIFOs and
 # device nodes are left out of the child, no stage directory outlives a
 # build, builds that fill a small state directory (a RUN, a copy of a
-# big parent) fail and leave nothing behind, and two SIGINTs during a
-# hand-over stop the build and leave nothing outside it.
+# big parent) fail and leave nothing behind, a late `COPY --from` reader
+# of a parent still finds it, and one or two SIGINTs during a hand-over
+# stop the build, leaving nothing outside it.
 case_run() {
   local got per_stage=
   [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] && [ "$ENGINE" = "sudo docker" ] && per_stage=1
@@ -86,6 +87,10 @@ case_run_per_stage() {
     fail "a build after the full ones failed (log in $(out after))"
   sudo umount "$full"
   trap - EXIT
+  # A stage reading a parent with `COPY --from` long after the parent's
+  # other reader ended still finds it (the background release counts it).
+  build release -f Dockerfile.release --jobs 4 >/dev/null || return 1
+  expect "$(run release)" "p c p " "the image of a late reader" || return 1
   case_run_signal
 }
 
@@ -94,6 +99,7 @@ case_run_per_stage() {
 # `builds/<id>` and `tmp/<id>` changes (the store a first build filled, a
 # sentinel beside the state directory); no mount or process is left; the
 # next build in the same state directory cleans what it left and works.
+# One SIGINT there cancels the build, which then leaves nothing.
 case_run_signal() {
   local s="$W/sigstate" o rc bg phase before after
   o="$(out signal)"
@@ -139,5 +145,30 @@ case_run_signal() {
   sig_build >"$o/after.log" 2>&1 || fail "the build after the killed one failed (log in $o)" || return 1
   expect "$(sudo find "$s/builds" "$s/tmp" -mindepth 1 -maxdepth 1 2>/dev/null)" "" \
     "what the killed build left, after the next one" || return 1
+  # One SIGINT at the same point cancels the build: it fails and releases
+  # every root, the one taken over included, before it ends.
+  sig_build >"$o/cancel.log" 2>&1 &
+  bg=$!
+  phase="$(sudo S="$s" sh -c '
+    n=0
+    until pgrep -x ranikust >/dev/null; do
+      n=$((n + 1)); [ "$n" -lt 100000 ] || { echo "no build started"; exit 0; }
+    done
+    while :; do
+      for d in "$S"/builds/*/stages/1; do [ -e "$d" ] && break 2; done
+      pgrep -x ranikust >/dev/null || { echo "build ended first"; exit 0; }
+    done
+    kill -INT "$(pgrep -o -x ranikust)"
+    echo "signalled"
+  ')"
+  rc=0
+  wait "$bg" || rc=$?
+  echo "  cancel: $phase, exit $rc"
+  [ "$phase" = signalled ] && [ "$rc" != 0 ] ||
+    fail "one SIGINT during the hand-over: $phase, exit $rc (log in $o)" || return 1
+  expect "$(sudo find "$s/builds" "$s/tmp" -mindepth 1 -maxdepth 1 2>/dev/null)" "" \
+    "what the cancelled build left" || return 1
+  ! grep -qF "$W/" /proc/self/mountinfo || fail "mounts left under $W after a cancel" || return 1
+  ! pgrep -x ranikust >/dev/null || fail "ranikust processes left after a cancel" || return 1
   sudo rm -rf "$s" "$W/sentinel"
 }
