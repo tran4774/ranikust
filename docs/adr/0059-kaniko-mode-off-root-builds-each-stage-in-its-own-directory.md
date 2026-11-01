@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-01
 decision-makers: Tran Nguyen (maintainer)
 ---
@@ -116,6 +116,9 @@ walk); the T2 quick suite with `RANIKUST_QUICK_MODE=kaniko` (kaniko mode
 outside a container, real root) and the T1 smoke cases on `/`.
 
 ## More Information
+
+- Accepted by the maintainer on 2026-11-01: "Chấp nhận adr 59" ("ADR-0059
+  accepted").
 
 - Option (a) was the state after task 6; it costs nothing in disk but
   serializes every stage and needs the keep area and the deletions between
