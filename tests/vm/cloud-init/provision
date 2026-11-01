@@ -25,8 +25,10 @@ runcmd:
   - [sh, -c, 'truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id']
   # Docker's per-machine state too: it made its engine ID (and maybe a key)
   # when it started here. (systemd's random seed is written again at
-  # power-off, so it stays in the image; every run's VM gets fresh entropy
-  # from virtio-rng and credits none from the seed.)
+  # power-off, so it stays in the image, shared by every run's VM, and
+  # systemd may credit it when it carries user.random-seed-creditable.
+  # Harmless: the kernel's pool is also seeded from RDRAND and from the
+  # host through virtio-rng, so a known seed does not make it predictable.)
   - [systemctl, stop, docker.service, docker.socket]
   - [rm, -f, /var/lib/docker/engine-id, /etc/docker/key.json]
   # The disk has discard: freed blocks (the removed keys among them) go, and

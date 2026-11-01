@@ -63,9 +63,12 @@ HERE="$REPO/tests/vm"
 RELEASE="${RANIKUST_VM_RELEASE:-noble}"
 # Absolute: they end up in QEMU's -drive options and in rm -rf paths.
 CACHE_GIVEN="${RANIKUST_VM_CACHE:-$MAIN/tests/e2e/_vm-image}"
-# Not a link (its last component): realpath would follow it, and the
-# permission checks below would then judge, and change, its target.
-[ ! -L "${CACHE_GIVEN%/}" ] || { echo "error: RANIKUST_VM_CACHE must not be a symbolic link (${CACHE_GIVEN%/})" >&2; exit 1; }
+# Not a link (its last component, every trailing slash stripped): realpath
+# would follow it, and the permission checks below would then judge, and
+# change, its target.
+cache_last="$CACHE_GIVEN"
+while [ "${cache_last%/}" != "$cache_last" ]; do cache_last="${cache_last%/}"; done
+[ ! -L "${cache_last:-/}" ] || { echo "error: RANIKUST_VM_CACHE must not be a symbolic link ($cache_last)" >&2; exit 1; }
 CACHE="$(realpath -m -- "$CACHE_GIVEN")"
 IMAGE_REGISTRY="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
 GOLDEN_ON="${RANIKUST_VM_GOLDEN:-1}"
@@ -356,9 +359,17 @@ qemu_alive() {
 
 # qemu_quit: asks this run's QEMU to stop, through its monitor.
 qemu_quit() {
+  # At most 5 s per step: a frozen QEMU must not hold teardown before kill -9.
   python3 -c '
 import socket, sys
-s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n"); s.recv(4096)
+try:
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(5)
+    s.connect(sys.argv[1])
+    s.sendall(b"quit\n")
+    s.recv(4096)
+except OSError:
+    pass
 ' "$MONITOR" 2>/dev/null
 }
 
