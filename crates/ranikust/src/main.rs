@@ -453,8 +453,8 @@ fn kaniko(
 
 /// What kaniko mode on a container's `/` refuses before anything is
 /// written, in this order, then the warnings for what ranikust cannot
-/// close itself. A `RUN` there runs directly as uid 0, so the container
-/// itself must keep it from the host.
+/// close itself. A `RUN` there runs directly, as root unless `USER` says
+/// otherwise, so the container itself must keep it from the host.
 fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Result<(), Failure> {
     if can_mount {
         // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
