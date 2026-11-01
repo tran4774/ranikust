@@ -269,7 +269,9 @@ impl WalkDiff {
   whiteout-like names, hardlinks into ignored paths, FIFOs and sockets
   nested and at the top, the child gets what a copy gets and the same
   change the same layer; a `rootfs` swapped for a symlink out is refused
-  with nothing outside pruned or moved; a directory exchanged with a link
+  with nothing outside pruned or moved; the child's directory name
+  planted as a link out refuses the hand-over before any prune, the next
+  name taking the parent whole; a directory exchanged with a link
   out during the hand-over never leaks; a chain deeper than `PATH_MAX` is
   handed over and released. Ignored reproducer of a finding
   (`red_team_a_hand_over_keeps_no_xattr_a_copy_leaves_out`): the

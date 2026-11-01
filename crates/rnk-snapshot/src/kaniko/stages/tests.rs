@@ -1554,6 +1554,42 @@ fn red_team_a_hand_over_never_follows_a_rootfs_swapped_for_a_symlink() {
     assert!(f.stage_dirs().is_empty());
 }
 
+/// T1, T4: the name the child's stage directory takes, planted as a link
+/// out: the hand-over is refused before the parent is pruned or moved,
+/// nothing is written outside, and the next free name takes the parent
+/// whole.
+#[test]
+fn red_team_a_name_planted_at_the_child_directory_is_never_followed_by_a_hand_over() {
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    let parent = unwalked(&f, |p| {
+        fs::write(p.join("f"), b"parent").unwrap();
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            p.join("fifo"),
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .unwrap();
+    });
+    std::os::unix::fs::symlink(&outside, f.stages.stages_dir().join("1")).unwrap();
+    let e = f.stages.prepare_last(&parent).unwrap_err();
+    assert!(e.to_string().contains("exists"), "{e}");
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    assert!(
+        fs::symlink_metadata(parent.mount_point().join("fifo")).is_ok(),
+        "the parent was pruned before the refusal"
+    );
+    let child = f.stages.prepare_last(&parent).unwrap();
+    assert!(child.mount_point().ends_with("stages/2/rootfs"));
+    assert_eq!(fs::read(child.mount_point().join("f")).unwrap(), b"parent");
+    assert!(fs::symlink_metadata(child.mount_point().join("fifo")).is_err());
+    child.release().unwrap();
+    parent.release().unwrap();
+    fs::remove_file(f.stages.stages_dir().join("1")).unwrap();
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
 /// T3: a thread swapping a directory of the parent with a symlink to a
 /// directory outside while the parent is handed over: whatever happens,
 /// nothing outside is pruned or moved (its FIFO stays), and a child that
