@@ -186,6 +186,32 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `@argfile`, non-UTF-8) and `tests/cli.rs`
   `parallel_stages_is_refused_before_any_work` (exit 2, no state
   directory, the value never echoed, no `RANIKUST_*` variable read).
+- Red team of criterion 8 (ADR-0064), T0: `tests/cli.rs`
+  `red_team_single_snapshot_and_materialize_have_no_bypass_spelling`
+  (every pflag boolean, repeats, a separate value, non-UTF-8, `--`,
+  `@argfile`, as another flag's value, behind `build`, every mode: exit 2,
+  no state directory, no variable read) and
+  `red_team_whole_root_ignore_paths_are_refused_in_every_spelling_before_any_io`
+  (`//`, `/.`, `/*/..`, `/./*`, `/**`, `/*?`, all-ASCII and non-UTF-8
+  classes, malformed patterns); `main.rs`
+  `red_team_accepted_ignore_paths_never_uncover_protected_paths_nor_fail_later`
+  (an accepted `--ignore-path` keeps the state directory, mount points and
+  fixed paths ignored on `/` and on a stage root, and is never refused
+  after the set-up); `setup/tests.rs`
+  `red_team_probe_failures_other_than_a_refused_mount_never_route` (an
+  unmount or write-through failure, an unsafe path, options too long, a
+  bare or doubly wrapped `Mount`, `ENFILE`: refused, never kaniko mode).
+  Ignored finding: `config/tests.rs`
+  `red_team_finding_ignore_paths_that_together_take_the_whole_root_pass_the_early_check`
+  (the check is per path: `/[a-m]*`, `/[n-z]*` and `/[^a-z]*` together,
+  or `/??*` alone, pass). T2 (`RANIKUST_QUICK_MODE=kaniko`, `quick.sh`
+  `rt_*`): `container=docker` on the VM never builds on `/`, `--mode=auto`
+  with `--ignore-path` refused after overlay mode's set-up leaves nothing
+  and the next build works, a ramfs state directory refused (not routed),
+  root without `CAP_SYS_ADMIN` with or without a container signal refused
+  before the state directory exists, and a `--privileged` container with
+  or without `/.dockerenv`
+  ([testing](../../testing.md#quick-smoke-cases)).
 - Kaniko-mode builds (Phase 2 tasks 6 and 8), measured 2026-10-31: T2
   `RANIKUST_QUICK_MODE=kaniko just test-vm quick` (VM root, full sandbox
   on a root in the state directory) builds all 7 cases, the multi-stage
