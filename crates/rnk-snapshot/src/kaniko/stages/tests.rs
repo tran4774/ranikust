@@ -910,3 +910,240 @@ fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
     assert!(c4 < 32.0 * c1.max(0.01), "copy: {c1:.3} s -> {c4:.3} s");
     assert!(w4 < 32.0 * w1.max(0.01), "walk: {w1:.3} s -> {w4:.3} s");
 }
+
+// The hand-over to the last stage that reads a parent (ADR-0061).
+
+fn set_times(p: &Path, secs: i64) {
+    let t = rustix::fs::Timespec {
+        tv_sec: secs,
+        tv_nsec: 3,
+    };
+    let times = rustix::fs::Timestamps {
+        last_access: t,
+        last_modification: t,
+    };
+    rustix::fs::utimensat(
+        rustix::fs::CWD,
+        p,
+        &times,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .unwrap();
+}
+
+/// Every entry below `dir` as a layer takes it: type and mode, owner, size,
+/// modification time, content or link target, and the first path of its
+/// hardlink group; inode numbers, access and change times left out.
+fn full_listing(dir: &Path) -> Vec<(PathBuf, u32, u32, u64, i64, i64, Vec<u8>, PathBuf)> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut all = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let md = fs::symlink_metadata(&p).unwrap();
+            if md.is_dir() {
+                stack.push(p.clone());
+            }
+            all.push((p, md));
+        }
+    }
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut groups = std::collections::BTreeMap::new();
+    all.into_iter()
+        .map(|(p, md)| {
+            let rel = p.strip_prefix(dir).unwrap().to_owned();
+            let body = if md.file_type().is_symlink() {
+                fs::read_link(&p).unwrap().into_os_string().into_vec()
+            } else if md.is_file() {
+                fs::read(&p).unwrap()
+            } else {
+                Vec::new()
+            };
+            let group = groups
+                .entry((md.dev(), md.ino()))
+                .or_insert_with(|| rel.clone())
+                .clone();
+            let owner = md.uid() ^ (md.gid() << 16);
+            (
+                rel,
+                md.mode(),
+                owner,
+                md.len(),
+                md.mtime(),
+                md.mtime_nsec(),
+                body,
+                group,
+            )
+        })
+        .collect()
+}
+
+/// A parent as a `RUN` leaves one: an image layer, then files, a setuid
+/// file and its hardlink, links out, an ignored path, a FIFO and a socket,
+/// every directory's times set last.
+fn hostile_parent(f: &Fixture) -> (KanikoStage, std::os::unix::net::UnixListener) {
+    let l = f.layer("l", &[("etc/os", b"base"), ("usr/bin/tool", b"bin")], false);
+    let mut parent = f.stages.prepare(Base::Image(&[l])).unwrap();
+    parent.begin_layer().unwrap();
+    let p = parent.mount_point().to_owned();
+    for d in ["proc/1", "var/cache/app", "run"] {
+        fs::create_dir_all(p.join(d)).unwrap();
+    }
+    fs::write(p.join("proc/1/status"), b"ignored").unwrap();
+    fs::write(p.join("var/cache/app/data"), b"cached").unwrap();
+    fs::write(p.join("usr/bin/su"), b"setuid").unwrap();
+    fs::set_permissions(p.join("usr/bin/su"), fs::Permissions::from_mode(0o4755)).unwrap();
+    fs::hard_link(p.join("usr/bin/su"), p.join("etc/su-link")).unwrap();
+    std::os::unix::fs::symlink("/", p.join("etc/to-slash")).unwrap();
+    std::os::unix::fs::symlink("../../..", p.join("run/up")).unwrap();
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        p.join("run/fifo"),
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )
+    .unwrap();
+    let sock = std::os::unix::net::UnixListener::bind(p.join("run/sock")).unwrap();
+    for (secs, d) in (2_000_000..).zip([
+        "proc/1",
+        "proc",
+        "var/cache/app",
+        "var/cache",
+        "var",
+        "run",
+        "usr/bin",
+        "usr",
+        "etc",
+        "",
+    ]) {
+        set_times(&p.join(d), secs);
+    }
+    parent.end_layer().unwrap();
+    parent.done();
+    (parent, sock)
+}
+
+/// Makes the same change in `child` at the same times and returns the
+/// layer's digest.
+fn same_change(child: &mut KanikoStage) -> String {
+    child.begin_layer().unwrap();
+    let c = child.mount_point().to_owned();
+    fs::write(c.join("etc/os"), b"child").unwrap();
+    fs::write(c.join("run/new"), b"new").unwrap();
+    fs::remove_file(c.join("etc/su-link")).unwrap();
+    for (secs, p) in [
+        (3_000_001, "etc/os"),
+        (3_000_002, "run/new"),
+        (3_000_003, "etc"),
+        (3_000_004, "run"),
+    ] {
+        set_times(&c.join(p), secs);
+    }
+    let d = child.end_layer().unwrap();
+    let (digests, _) = d
+        .export(
+            rnk_layer::EncodeOptions {
+                compression: rnk_layer::Compression::None,
+                level: 0,
+                threads: NonZeroUsize::MIN,
+                mtime: None,
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+    digests.diff_id.to_string()
+}
+
+/// ADR-0061: the last stage to read a parent takes its directory (the same
+/// inode, no copy) and gets exactly what a copy gives: the same entries,
+/// contents, modes, owners, times, links and hardlinks, without the ignored
+/// paths and special files; the same change then gives the same layer.
+#[test]
+fn the_last_reader_takes_the_parent_over_and_gets_what_a_copy_gets() {
+    let f = Fixture::new();
+    let (parent, _sock) = hostile_parent(&f);
+    let mut copied = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let ino = fs::metadata(parent.mount_point()).unwrap().ino();
+    let mut taken = f.stages.prepare_last(&parent).unwrap();
+
+    assert_eq!(
+        fs::metadata(taken.mount_point()).unwrap().ino(),
+        ino,
+        "moved, not copied"
+    );
+    assert!(fs::symlink_metadata(parent.mount_point()).is_err());
+    let (a, b) = (full_listing(copied.mount_point()), full_listing(taken.mount_point()));
+    assert_eq!(a, b);
+    for gone in ["proc", "run/fifo", "run/sock"] {
+        assert!(
+            !b.iter().any(|e| e.0 == Path::new(gone)),
+            "{gone} handed over"
+        );
+    }
+    let (rc, rt) = (
+        fs::metadata(copied.mount_point()).unwrap(),
+        fs::metadata(taken.mount_point()).unwrap(),
+    );
+    assert_eq!(
+        (rc.mode(), rc.uid(), rc.mtime(), rc.mtime_nsec()),
+        (rt.mode(), rt.uid(), rt.mtime(), rt.mtime_nsec()),
+        "the root directory"
+    );
+    assert_eq!(same_change(&mut copied), same_change(&mut taken));
+
+    copied.release().unwrap();
+    taken.release().unwrap();
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// ADR-0061: once handed over, the parent is read no more (no view, no
+/// second child, no layer) and its release deletes only its own directory.
+#[test]
+fn a_parent_handed_over_is_read_no_more() {
+    let f = Fixture::new();
+    let l = f.layer("l", &[("etc/os", b"base")], false);
+    let mut parent = f.stages.prepare(Base::Image(&[l])).unwrap();
+    parent.done();
+    let child = f.stages.prepare_last(&parent).unwrap();
+    assert_eq!(
+        fs::read(child.mount_point().join("etc/os")).unwrap(),
+        b"base"
+    );
+    let msg = |e: Error| e.to_string();
+    assert!(msg(parent.view().unwrap_err()).contains("handed"));
+    assert!(msg(f.stages.prepare(Base::Stage(&parent)).unwrap_err()).contains("handed"));
+    assert!(msg(f.stages.prepare_last(&parent).unwrap_err()).contains("handed"));
+    assert!(msg(parent.begin_layer().unwrap_err()).contains("handed"));
+    assert_eq!(
+        f.stage_dirs(),
+        ["0", "1"],
+        "nothing made for the refused ones"
+    );
+    parent.release().unwrap();
+    assert_eq!(f.stage_dirs(), ["1"]);
+    assert_eq!(
+        fs::read(child.mount_point().join("etc/os")).unwrap(),
+        b"base"
+    );
+    child.release().unwrap();
+    assert!(f.stage_dirs().is_empty());
+}
+
+/// ADR-0061: a parent root swapped for another directory before the hand-
+/// over is refused; the new stage directory goes, nothing is followed.
+#[test]
+fn a_swapped_parent_root_is_never_handed_over() {
+    let f = Fixture::new();
+    let parent = unwalked(&f, |p| fs::write(p.join("f"), b"real").unwrap());
+    let dir = parent.mount_point().parent().unwrap().to_owned();
+    fs::rename(dir.join("rootfs"), dir.join("away")).unwrap();
+    fs::create_dir(dir.join("rootfs")).unwrap();
+    fs::write(dir.join("rootfs/planted"), b"x").unwrap();
+    let e = f.stages.prepare_last(&parent).unwrap_err();
+    assert!(e.to_string().contains("no longer holds"), "{e}");
+    assert_eq!(f.stage_dirs(), ["0"], "the new stage directory is gone");
+    assert_eq!(fs::read(dir.join("away/f")).unwrap(), b"real");
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty());
+}

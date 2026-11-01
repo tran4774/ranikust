@@ -1,5 +1,6 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -275,6 +276,252 @@ fn mounts_inside_the_root_survive() {
         );
         assert!(fs::symlink_metadata(f.host("to-bind")).is_err());
         assert_eq!(snapshot(&out), before);
+        drop(guard);
+    })
+    .join()
+    .unwrap();
+}
+
+/// An entry as a layer takes it: mode, owner, size, modification time,
+/// link count, content or link target, and the first path of its hardlink
+/// group.
+type Entry = (u32, u32, u32, u64, (i64, i64), u64, Vec<u8>, PathBuf);
+
+fn listing(dir: &Path) -> BTreeMap<PathBuf, Entry> {
+    let mut all = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let md = fs::symlink_metadata(&p).unwrap();
+            if md.is_dir() {
+                stack.push(p.clone());
+            }
+            all.push((p, md));
+        }
+    }
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut groups: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
+    let mut out = BTreeMap::new();
+    for (p, md) in all {
+        let rel = p.strip_prefix(dir).unwrap().to_owned();
+        let body = if md.file_type().is_symlink() {
+            fs::read_link(&p).unwrap().into_os_string().into_vec()
+        } else if md.is_file() {
+            fs::read(&p).unwrap()
+        } else {
+            Vec::new()
+        };
+        let group = groups
+            .entry((md.dev(), md.ino()))
+            .or_insert_with(|| rel.clone())
+            .clone();
+        let mtime = (md.mtime(), md.mtime_nsec());
+        out.insert(
+            rel,
+            (
+                md.mode(),
+                md.uid(),
+                md.gid(),
+                md.len(),
+                mtime,
+                md.nlink(),
+                body,
+                group,
+            ),
+        );
+    }
+    out
+}
+
+fn set_times(p: &Path, secs: i64) {
+    let t = rustix::fs::Timespec {
+        tv_sec: secs,
+        tv_nsec: 7,
+    };
+    let times = rustix::fs::Timestamps {
+        last_access: t,
+        last_modification: t,
+    };
+    rustix::fs::utimensat(CWD, p, &times, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+}
+
+/// A tree mixing what kaniko mode leaves out of a stage copy (ignored
+/// paths, FIFOs, sockets) with what it keeps; every directory's times are
+/// set last, to known values. The listener keeps the socket bound.
+fn hand_over_tree(f: &Fixture) -> std::os::unix::net::UnixListener {
+    let (out, _) = f.outside();
+    for d in [
+        "etc/sub",
+        "var/run/app",
+        "proc",
+        "keep/deep/er",
+        "ign-dir/x",
+    ] {
+        fs::create_dir_all(f.host(d)).unwrap();
+    }
+    fs::write(f.host("etc/passwd"), b"root:x:0:0\n").unwrap();
+    fs::write(f.host("var/run/app/pid"), b"42").unwrap();
+    fs::write(f.host("proc/stale"), b"x").unwrap();
+    fs::write(f.host("ign-dir/x/f"), b"ignored").unwrap();
+    fs::write(f.host("keep/deep/er/f"), b"kept").unwrap();
+    fs::set_permissions(f.host("keep/deep/er/f"), fs::Permissions::from_mode(0o4755)).unwrap();
+    fs::hard_link(f.host("keep/deep/er/f"), f.host("etc/hl")).unwrap();
+    fs::hard_link(f.host("keep/deep/er/f"), f.host("ign-dir/hl")).unwrap();
+    symlink(&out, f.host("etc/out")).unwrap();
+    symlink("../../..", f.host("keep/up")).unwrap();
+    rustix::fs::mkfifoat(CWD, f.host("keep/fifo"), Mode::from_raw_mode(0o600)).unwrap();
+    rustix::fs::mkfifoat(CWD, f.host("fifo-top"), Mode::from_raw_mode(0o644)).unwrap();
+    let sock = std::os::unix::net::UnixListener::bind(f.host("etc/sub/sock")).unwrap();
+    let dirs = [
+        "etc/sub",
+        "etc",
+        "var/run/app",
+        "var/run",
+        "var",
+        "proc",
+        "keep/deep/er",
+        "keep/deep",
+        "keep",
+        "ign-dir/x",
+        "ign-dir",
+        "",
+    ];
+    for (secs, d) in (1_000_000..).zip(dirs) {
+        set_times(&f.host(d), secs);
+    }
+    sock
+}
+
+fn hand_over_ignore() -> IgnoreList {
+    let mut ignore = IgnoreList::new();
+    ignore.insert_below("/proc").unwrap();
+    ignore.insert("/var/run").unwrap();
+    ignore.insert("/ign-dir").unwrap();
+    ignore
+}
+
+fn special(t: FileType) -> bool {
+    matches!(
+        t,
+        FileType::Fifo | FileType::CharDevice | FileType::BlockDevice | FileType::Socket
+    )
+}
+
+/// ADR-0061: pruning a root of what a stage copy leaves out gives what the
+/// copy gives, entry for entry (contents, modes, owners, modification
+/// times, links, hardlinks between the names kept), and every directory it
+/// deleted from keeps its times, the root's included.
+#[test]
+fn prune_gives_what_a_filtered_copy_gives() {
+    let f = Fixture::new();
+    let _sock = hand_over_tree(&f);
+    let ignore = hand_over_ignore();
+    let copy = Fixture::new();
+    let opts = crate::CopyOpts {
+        skip_special: true,
+        ..crate::CopyOpts::default()
+    };
+    crate::copy_filtered(&f.root, "", &copy.root, "", &opts, &|p, _| {
+        !ignore.covers(p)
+    })
+    .unwrap();
+    let root_times = (
+        fs::metadata(&f.host).unwrap().mtime(),
+        fs::metadata(&f.host).unwrap().mtime_nsec(),
+    );
+
+    prune(&f.root, &|p, t| ignore.covers(p) || special(t)).unwrap();
+
+    let (pruned, copied) = (listing(&f.host), listing(&copy.host));
+    assert_eq!(pruned, copied);
+    assert!(
+        pruned.contains_key(Path::new("proc")),
+        "below-only keeps its directory"
+    );
+    for gone in [
+        "var/run",
+        "ign-dir",
+        "keep/fifo",
+        "fifo-top",
+        "etc/sub/sock",
+        "proc/stale",
+    ] {
+        assert!(!pruned.contains_key(Path::new(gone)), "{gone}");
+    }
+    assert_eq!(fs::metadata(f.host("etc/sub")).unwrap().mtime(), 1_000_000);
+    let now = fs::metadata(&f.host).unwrap();
+    assert_eq!((now.mtime(), now.mtime_nsec()), root_times);
+}
+
+#[test]
+fn prune_never_follows_a_link_out() {
+    let f = Fixture::new();
+    let (out, before) = f.outside();
+    symlink(&out, f.host("to-outside")).unwrap();
+    symlink("/", f.host("slash")).unwrap();
+    fs::create_dir(f.host("d")).unwrap();
+    symlink(out.join("sentinel"), f.host("d/sentinel")).unwrap();
+    prune(&f.root, &|p, _| {
+        p.starts_with("d") || p == Path::new("to-outside")
+    })
+    .unwrap();
+    assert_eq!(tree(&f.host), BTreeSet::from([PathBuf::from("slash")]));
+    assert_eq!(snapshot(&out), before);
+}
+
+#[test]
+fn prune_refuses_a_root_on_another_mount() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("a")).unwrap();
+    // The root now looks as if it were on another mount than it claims.
+    let root = RootPath::open(&f.host)
+        .unwrap()
+        .with_mnt_id(f.root.mnt_id() + 1);
+    let e = prune(&root, &|_, _| true).unwrap_err();
+    assert!(matches!(e, Error::Changed { .. }), "{e:?}");
+    assert_eq!(tree(&f.host), BTreeSet::from([PathBuf::from("a")]));
+}
+
+/// ADR-0061: a mount below the root is refused, never pruned across, and
+/// nothing on it is touched; a copy refuses one too.
+#[test]
+#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+fn prune_refuses_a_mount_below_the_root() {
+    std::thread::spawn(|| {
+        use rustix::mount::{MountPropagationFlags, mount_bind, mount_change};
+        use rustix::thread::UnshareFlags;
+        // SAFETY: this thread shares nothing that the unshared filesystem
+        // attributes or mount namespace would break; it ends with the test.
+        unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+            .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+        mount_change(
+            "/",
+            MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+        )
+        .expect("make every mount private");
+        let f = Fixture::new();
+        let source = f.host.parent().unwrap().join("bind-source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("keep"), b"bind").unwrap();
+        rustix::fs::mkfifoat(CWD, source.join("fifo"), Mode::from_raw_mode(0o600)).unwrap();
+        fs::create_dir_all(f.host("a/bind")).unwrap();
+        let mut guard = Detach(Vec::new());
+        mount_bind(&source, f.host("a/bind")).expect("bind mount");
+        guard.0.push(f.host("a/bind"));
+        let e = prune(&f.root, &|_, t| special(t)).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                Error::InvalidPath {
+                    reason: "a mount below the root",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        assert_eq!(fs::read(source.join("keep")).unwrap(), b"bind");
+        assert!(fs::symlink_metadata(source.join("fifo")).is_ok());
         drop(guard);
     })
     .join()

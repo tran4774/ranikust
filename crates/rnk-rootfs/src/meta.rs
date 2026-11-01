@@ -32,7 +32,7 @@ impl FileTime {
         Self { secs, nanos: 0 }
     }
 
-    fn to_timespec(self) -> rustix::fs::Timespec {
+    pub(crate) fn to_timespec(self) -> rustix::fs::Timespec {
         rustix::fs::Timespec {
             tv_sec: self.secs,
             tv_nsec: i64::from(self.nanos),

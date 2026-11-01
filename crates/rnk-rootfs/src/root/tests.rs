@@ -542,6 +542,61 @@ fn create_sub_root_opens_the_directory_it_made() {
     assert!(fs::read_dir(f.host("dir")).unwrap().next().is_none());
 }
 
+/// ADR-0061: the directory moves between two roots' descriptors and comes
+/// back as the same root, contents and inode unchanged.
+#[test]
+fn move_sub_root_moves_the_directory_it_was_given() {
+    let f = Fixture::new();
+    let from = f.root.create_sub_root("p", 0o700).unwrap();
+    let to = f.root.create_sub_root("c", 0o700).unwrap();
+    let moved = from.create_sub_root("rootfs", 0o755).unwrap();
+    fs::write(f.host("p/rootfs/f"), b"data").unwrap();
+    let ino = moved.statx("/").unwrap().ino;
+    let root = from.move_sub_root("rootfs", &moved, &to, "rootfs").unwrap();
+    assert_eq!(root.statx("/").unwrap().ino, ino);
+    assert_eq!(root.mnt_id(), to.mnt_id());
+    assert!(fs::symlink_metadata(f.host("p/rootfs")).is_err());
+    assert_eq!(fs::read(f.host("c/rootfs/f")).unwrap(), b"data");
+}
+
+/// ADR-0061: a name that no longer holds the root to move (swapped for
+/// another directory or a symlink) is refused and nothing moves; a name
+/// taken at the destination is never replaced; only plain names are taken.
+#[test]
+fn move_sub_root_refuses_a_swapped_name_and_never_replaces() {
+    let f = Fixture::new();
+    let from = f.root.create_sub_root("p", 0o700).unwrap();
+    let to = f.root.create_sub_root("c", 0o700).unwrap();
+    let moved = from.create_sub_root("rootfs", 0o755).unwrap();
+    fs::rename(f.host("p/rootfs"), f.host("p/away")).unwrap();
+    fs::create_dir(f.host("p/rootfs")).unwrap();
+    let e = from
+        .move_sub_root("rootfs", &moved, &to, "rootfs")
+        .unwrap_err();
+    assert!(e.to_string().contains("no longer holds"), "{e}");
+    fs::remove_dir(f.host("p/rootfs")).unwrap();
+    symlink("away", f.host("p/rootfs")).unwrap();
+    let e = from
+        .move_sub_root("rootfs", &moved, &to, "rootfs")
+        .unwrap_err();
+    assert!(e.to_string().contains("no longer holds"), "{e}");
+    assert!(fs::read_dir(f.host("c")).unwrap().next().is_none());
+
+    fs::write(f.host("c/taken"), b"keep").unwrap();
+    let e = from
+        .move_sub_root("away", &moved, &to, "taken")
+        .unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::EXIST), "{e}");
+    assert_eq!(fs::read(f.host("c/taken")).unwrap(), b"keep");
+    for bad in ["a/b", "..", ".", "/away", "", "away/"] {
+        let e = from.move_sub_root(bad, &moved, &to, "x").unwrap_err();
+        assert!(e.to_string().contains("single plain name"), "{bad}: {e}");
+        let e = from.move_sub_root("away", &moved, &to, bad).unwrap_err();
+        assert!(e.to_string().contains("single plain name"), "{bad}: {e}");
+    }
+    assert!(fs::symlink_metadata(f.host("p/away")).unwrap().is_dir());
+}
+
 #[test]
 fn create_sub_root_refuses_another_mount_without_following_it() {
     // The mount check, with the parent claiming another mount id.

@@ -40,7 +40,7 @@ mod test_util;
 mod user;
 
 pub use copy::{CopyOpts, copy, copy_filtered};
-pub use delete::delete_contents;
+pub use delete::{delete_contents, prune};
 pub use error::{Error, Result};
 pub use extract::{
     Extracted, Whiteouts, extract, extract_live, extract_live_literal, extract_overlay,

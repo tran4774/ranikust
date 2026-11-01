@@ -57,6 +57,150 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
     r.map(drop)
 }
 
+/// Deletes the entries of `root` that `remove` names, each with everything
+/// below it, and leaves the rest exactly as it is: every directory it
+/// deletes from gets its access and modification times back. `remove` gets
+/// each entry's cleaned path inside the root and its type; the root itself
+/// is never offered.
+///
+/// A copy of the root that leaves out what `remove` names
+/// ([`crate::copy_filtered`] with the same filter, which also leaves out
+/// `CopyOpts::skip_special`'s nodes when `remove` names them) gives the same
+/// entries, contents, owners, modes, modification times, links and
+/// hardlinks between kept names. Kaniko mode hands a stage's directory to
+/// the stage built on it this way instead of copying it (ADR-0061).
+///
+/// Walks and deletes as [`delete_contents`] does: by `(parent fd, name)`,
+/// never following a symlink, each directory checked against the `statx`
+/// taken before opening it. A mount anywhere below the root (another mount
+/// id, or a mount root) is an error, as a copy refuses one: nothing would
+/// be deleted across it, so it would stay where the copy would not have it.
+///
+/// # Errors
+///
+/// [`Error::InvalidPath`] for a mount below the root; [`Error::Changed`]
+/// when an entry changes or goes while it is walked; [`Error::Io`] on the
+/// first failing syscall. What was deleted until then stays deleted.
+pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<()> {
+    let span = tracing::info_span!(
+        "rnk_rootfs.prune",
+        entries = tracing::field::Empty,
+        files = tracing::field::Empty,
+        dirs = tracing::field::Empty,
+        kept = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    let mut counts = Counts::default();
+    let r = prune_walk(root, remove, &mut counts);
+    counts.record(&span);
+    r
+}
+
+/// One directory [`prune`] walks.
+struct PruneFrame {
+    /// `O_RDONLY | O_DIRECTORY` fd: `futimens` needs an open file.
+    fd: OwnedFd,
+    path: PathBuf,
+    /// Its `statx` before anything in it was deleted.
+    st: Stat,
+    names: Vec<OsString>,
+    /// Something in it was deleted: its times are set back when it is done.
+    changed: bool,
+}
+
+fn prune_walk(
+    root: &RootPath,
+    remove: &dyn Fn(&Path, FileType) -> bool,
+    counts: &mut Counts,
+) -> Result<()> {
+    let start = open_dir(root, Path::new(""))?;
+    let st = meta::statx_at(start.as_fd(), OsStr::new(""), Path::new(""))?;
+    if st.mnt_id != root.mnt_id() {
+        return Err(Error::Changed {
+            path: PathBuf::new(),
+        });
+    }
+    let names = read_names(start.as_fd(), Path::new(""))?;
+    let mut stack = vec![PruneFrame {
+        fd: start,
+        path: PathBuf::new(),
+        st,
+        names,
+        changed: false,
+    }];
+    while let Some(top) = stack.last_mut() {
+        let Some(name) = top.names.pop() else {
+            if let Some(done) = stack.pop()
+                && done.changed
+            {
+                let times = rustix::fs::Timestamps {
+                    last_access: done.st.atime.to_timespec(),
+                    last_modification: done.st.mtime.to_timespec(),
+                };
+                rustix::fs::futimens(&done.fd, &times)
+                    .map_err(|e| io_err("utimensat", &done.path, e))?;
+            }
+            continue;
+        };
+        let child = top.path.join(&name);
+        // Nothing else writes the root while it is pruned: an entry that
+        // goes meanwhile is a change, not something to skip.
+        let st = match meta::statx_at(top.fd.as_fd(), &name, &child) {
+            Ok(st) => st,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                return Err(Error::Changed { path: child });
+            }
+            Err(e) => return Err(e),
+        };
+        if st.mnt_id != root.mnt_id() || st.mount_root {
+            return Err(Error::InvalidPath {
+                path: child,
+                reason: "a mount below the root",
+            });
+        }
+        let file_type = st.file_type();
+        let is_dir = file_type == FileType::Directory;
+        if !remove(&child, file_type) {
+            if is_dir {
+                let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
+                let names = read_names(fd.as_fd(), &child)?;
+                stack.push(PruneFrame {
+                    fd,
+                    path: child,
+                    st,
+                    names,
+                    changed: false,
+                });
+            } else {
+                counts.kept += 1;
+            }
+            continue;
+        }
+        top.changed = true;
+        if is_dir {
+            let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
+            let mut all = |_: &Path, _: FileType| Keep::Remove;
+            // Entries on another mount are kept by `remove_below`, which
+            // then cannot remove the directory: refused below as a change.
+            remove_below(root, fd, &child, &mut all, counts)?;
+            match rustix::fs::unlinkat(&top.fd, &name, AtFlags::REMOVEDIR) {
+                Ok(()) => counts.dirs += 1,
+                Err(Errno::NOTDIR | Errno::NOTEMPTY | Errno::NOENT) => {
+                    return Err(Error::Changed { path: child });
+                }
+                Err(e) => return Err(io_err("rmdir", &child, e)),
+            }
+        } else {
+            match rustix::fs::unlinkat(&top.fd, &name, AtFlags::empty()) {
+                Ok(()) => counts.files += 1,
+                Err(Errno::NOENT | Errno::ISDIR) => return Err(Error::Changed { path: child }),
+                Err(e) => return Err(io_err("unlink", &child, e)),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Opens the directory `dir` inside `root` for a deletion walk: no final
 /// symlink followed, no mount entered on the way (`EXDEV`).
 pub(crate) fn open_dir(root: &RootPath, dir: &Path) -> Result<OwnedFd> {
