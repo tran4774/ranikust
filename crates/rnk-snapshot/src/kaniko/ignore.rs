@@ -5,15 +5,18 @@
 //! As kaniko (`kaniko@44aa7ddc0`): every mount point below the root from
 //! `/proc/self/mountinfo` but the root itself (`pkg/util/fs_util.go:630-665`),
 //! its default list (`:72-89`: the kaniko directory, `/etc/mtab`, and what is
-//! strictly below `/tmp/apt-key-gpghome`), `/var/run` while
-//! `--ignore-var-run` is true and each `--ignore-path` as a glob
-//! (`cmd/executor/cmd/root.go:155-170`). ranikust adds `/proc`, `/sys` and
-//! `/dev` whether mounted or not, all of `/ranikust` for kaniko's `/kaniko`,
-//! and the state directory when it lies inside the root.
+//! strictly below `/tmp/apt-key-gpghome`) and each `--ignore-path` as a
+//! glob (`cmd/executor/cmd/root.go:155-170`). ranikust adds `/proc`, `/sys`
+//! and `/dev` whether mounted or not, all of `/ranikust` for kaniko's
+//! `/kaniko`, and the state directory when it lies inside the root.
 //!
-//! Paths are physical, as kaniko compares them: with `/var/run -> /run`,
-//! `/var/run` ignores the symlink, not `/run`, which is ignored only when it
-//! is a mount point.
+//! Unlike kaniko, `/var/run` is not on the list by default: it is ignored
+//! only where it, or something below it, is a mount point, as every mount
+//! point is, so an image's `/var/run -> /run` symlink (alpine 3.12 and
+//! later) is extracted and kept (ADR-0052, D4; kaniko's `--ignore-var-run`
+//! is refused).
+//!
+//! Paths are physical, as kaniko compares them.
 
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
@@ -155,8 +158,6 @@ pub struct IgnoreSpec<'a> {
     pub state_dir: Option<&'a Path>,
     /// `--ignore-path`, paths in the image, each a glob per component.
     pub ignore_paths: &'a [PathBuf],
-    /// `--ignore-var-run` (kaniko's default: true).
-    pub ignore_var_run: bool,
 }
 
 /// Paths inside the root that kaniko mode always ignores, it and below.
@@ -197,9 +198,6 @@ pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<Ignore
         list.insert(p)?;
     }
     list.insert_below(BELOW_ONLY)?;
-    if spec.ignore_var_run {
-        list.insert("/var/run")?;
-    }
     for p in spec.ignore_paths {
         list.insert_glob(p)?;
     }

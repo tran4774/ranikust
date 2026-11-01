@@ -406,6 +406,17 @@ fn kaniko(
         &store,
         metrics_file,
     )?;
+    // Under the lock of `/`, before any base: a build that finds an earlier
+    // one's marker empties `/` first (ADR-0052, D1).
+    if snapshotter
+        .mark_root()
+        .map_err(|e| Failure::error(format!("marking / as built on: {e}")))?
+    {
+        tracing::info!(
+            "an earlier build ran on / in this container: / is emptied (the ignore list \
+             kept) before the first base, so nothing of it reaches the image"
+        );
+    }
     let built = build::run(
         config,
         store,
@@ -454,7 +465,6 @@ fn kaniko_snapshotter(
         root: root_path,
         state_dir,
         ignore_paths: &config.ignore_paths,
-        ignore_var_run: config.ignore_var_run,
     };
     let ignore = rnk_snapshot::kaniko::ignore_list(&spec, &mounts)
         .map_err(|e| fail("building the ignore list", &e))?;

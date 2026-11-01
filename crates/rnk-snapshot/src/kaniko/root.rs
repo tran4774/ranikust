@@ -51,6 +51,7 @@ use rnk_rootfs::{
     extract_live, extract_live_literal,
 };
 use rnk_store::{NamedGuard, Store};
+use rustix::io::Errno;
 
 use super::walk::{SnapshotMode, WalkDiff, WalkOptions, Walker};
 use crate::error::{Error, Result};
@@ -262,6 +263,77 @@ impl Kaniko {
         empty_root(&self.shared, &mut hold)?;
         hold.touched = false;
         Ok(true)
+    }
+}
+
+/// The directory of the marker of a build on `/`, on the ignore list
+/// (`kaniko::ignore`'s fixed entries): no deletion or extraction reaches it.
+const MARKER_DIR: &str = "ranikust";
+
+/// The marker a build on `/` leaves in [`MARKER_DIR`] (ADR-0052, D1).
+pub const BUILT_MARKER: &str = "ranikust/.built";
+
+impl Kaniko {
+    /// On `/`, marks the root as built on before any base changes it, and
+    /// returns whether an earlier build had marked it already (ADR-0052,
+    /// D1): then the first base empties `/` (the ignore list kept), as
+    /// every later base does, instead of going over what is there, so the
+    /// image never holds what a previous build in the same container left.
+    /// Without the marker the first base goes over `/`, as kaniko, and the
+    /// container's own tools stay. The marker is made before the first
+    /// base, so a build that fails or is killed half-way leaves it too.
+    ///
+    /// `/ranikust` is made (`0700`) when missing; anything there but a
+    /// directory, a symlink included, fails: the ignore list knows it by
+    /// path only. Anything under the marker's name counts as a marker.
+    /// A no-op returning `false` on a root other than `/`, which is
+    /// emptied before its first base anyway.
+    ///
+    /// Builds in one container trust one another: a `RUN` runs as root on
+    /// `/` and can delete the marker, as it can replace anything under
+    /// `/ranikust`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::State`] once a stage has prepared a base, or when
+    /// `/ranikust` is not a directory; [`Error::Rootfs`].
+    pub fn mark_root(&self) -> Result<bool> {
+        if !self.shared.is_slash() {
+            return Ok(false);
+        }
+        let mut hold = self.shared.hold();
+        if hold.holder.is_some() || hold.epoch != 0 {
+            return Err(Error::State("the root is marked before the first base"));
+        }
+        let root = &self.shared.root;
+        let missing = |e: &rnk_rootfs::Error| e.raw_os_error() == Some(Errno::NOENT.raw_os_error());
+        match root.statx(MARKER_DIR) {
+            Ok(st) if st.file_type() == FileType::Directory => {}
+            Ok(_) => {
+                return Err(Error::State(
+                    "/ranikust is not a directory: the marker of a build on / cannot go there",
+                ));
+            }
+            Err(e) if missing(&e) => root.create_dir(MARKER_DIR, 0o700)?,
+            Err(e) => return Err(e.into()),
+        }
+        let previous = match root.statx(BUILT_MARKER) {
+            Ok(_) => true,
+            Err(e) if missing(&e) => {
+                drop(root.open_at(
+                    BUILT_MARKER,
+                    &rnk_rootfs::OpenHow::write().create_new(0o600).no_follow(),
+                )?);
+                false
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if previous {
+            // As if a stage of this build had changed the root: the first
+            // base empties it.
+            hold.touched = true;
+        }
+        Ok(previous)
     }
 }
 

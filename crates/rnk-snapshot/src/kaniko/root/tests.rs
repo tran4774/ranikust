@@ -376,6 +376,71 @@ fn on_slash_the_first_base_goes_over_the_root_and_the_end_leaves_it() {
     assert_eq!(f.names(), ["a", "state"]);
 }
 
+/// ADR-0052, D1: a build on `/` marks it under `/ranikust`; the next build
+/// in the same container finds the marker and empties `/` (the ignore list
+/// kept) before its first base, so nothing of the first build is inherited.
+#[test]
+fn a_second_build_on_slash_does_not_inherit_the_first() {
+    // The ignore list of `/` holds `/ranikust`, as `kaniko::ignore` does.
+    let at_slash = |f: &Fixture| {
+        let mut ignore = IgnoreList::new();
+        ignore.insert("/state").unwrap();
+        ignore.insert("/ranikust").unwrap();
+        let kept = f.host.with_file_name("kept");
+        Kaniko::new(
+            RootPath::open(&f.host).unwrap(),
+            PathBuf::from("/"),
+            ignore,
+            WalkOptions {
+                workers: NonZeroUsize::new(2).unwrap(),
+                mode: SnapshotMode::Full,
+            },
+            RootPath::open(kept).unwrap(),
+        )
+    };
+    let f = Fixture::at(Some("/"));
+    fs::write(f.host.join("tool"), b"the container's own").unwrap();
+    let first = at_slash(&f);
+    assert!(!first.mark_root().unwrap(), "no earlier build");
+    assert!(f.host.join(BUILT_MARKER).is_file());
+    let base = f.layer("l1", &[("a", b"a")]);
+    let root = first
+        .prepare(Base::Image(std::slice::from_ref(&base)))
+        .unwrap();
+    fs::write(f.host.join("left-by-run"), b"secret").unwrap();
+    root.release().unwrap();
+    assert!(!first.finish().unwrap());
+    assert!(f.host.join("left-by-run").exists(), "/ is left as it is");
+
+    let second = at_slash(&f);
+    assert!(second.mark_root().unwrap(), "the marker is found");
+    let root = second.prepare(Base::Image(&[base])).unwrap();
+    assert_eq!(f.names(), ["a", "ranikust", "state"]);
+    assert!(f.host.join(BUILT_MARKER).is_file(), "the marker stays");
+    root.release().unwrap();
+    // Too late once a base is prepared.
+    assert!(matches!(second.mark_root(), Err(Error::State(_))));
+}
+
+#[test]
+fn the_marker_needs_a_real_directory_and_only_slash_is_marked() {
+    let f = Fixture::new();
+    assert!(!f.kaniko.mark_root().unwrap(), "not /: nothing to mark");
+    assert!(!f.host.join("ranikust").exists());
+
+    let f = Fixture::at(Some("/"));
+    fs::create_dir(f.host.join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink("elsewhere", f.host.join("ranikust")).unwrap();
+    assert!(matches!(f.kaniko.mark_root(), Err(Error::State(_))));
+    assert_eq!(fs::read_dir(f.host.join("elsewhere")).unwrap().count(), 0);
+
+    // A symlink at the marker's name counts as a marker and is not followed.
+    let f = Fixture::at(Some("/"));
+    fs::create_dir(f.host.join("ranikust")).unwrap();
+    std::os::unix::fs::symlink("/nowhere", f.host.join(BUILT_MARKER)).unwrap();
+    assert!(f.kaniko.mark_root().unwrap());
+}
+
 fn read(view: &RootPath, p: &str) -> String {
     let mut s = String::new();
     std::io::Read::read_to_string(&mut File::from(view.open_regular(p).unwrap()), &mut s).unwrap();

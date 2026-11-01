@@ -320,14 +320,12 @@ fn secrets_are_absolute_and_ids_unique() {
 fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
     let plain = config(&["--no-push"]).expect("plain");
     assert!(plain.ignore_paths.is_empty());
-    assert!(plain.ignore_var_run);
     assert!(!plain.single_snapshot && !plain.materialize);
     assert_eq!(plain.snapshot_workers.get(), 8);
     let set = config(&[
         "--no-push",
         "--ignore-path=/var//cache/./x/../y/",
         "--ignore-path=/..",
-        "--ignore-var-run=false",
         "--snapshot-workers=2",
     ])
     .expect("set");
@@ -335,7 +333,6 @@ fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
         set.ignore_paths,
         [PathBuf::from("/var/cache/y"), PathBuf::from("/")]
     );
-    assert!(!set.ignore_var_run);
     assert_eq!(set.snapshot_workers.get(), 2);
     let err = config(&["--no-push", "--ignore-path=var/cache"]).expect_err("relative");
     assert!(err.0.contains("absolute path"), "{}", err.0);
@@ -345,11 +342,7 @@ fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
 /// refused (ADR-0049); the others are warned about.
 #[test]
 fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
-    for flag in [
-        "--ignore-path=/x",
-        "--single-snapshot",
-        "--ignore-var-run=false",
-    ] {
+    for flag in ["--ignore-path=/x", "--single-snapshot"] {
         let err = overlay_mode_flags(&args(&["--no-push", flag])).expect_err(flag);
         assert!(err.0.contains("kaniko mode only"), "{flag}: {}", err.0);
     }
@@ -358,10 +351,9 @@ fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
         "--snapshot-mode=redo",
         "--snapshot-workers=4",
         "--materialize",
-        "--ignore-var-run",
     ]))
     .expect("warnings only");
-    assert_eq!(warnings.len(), 4, "{warnings:?}");
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
     assert!(
         overlay_mode_flags(&args(&["--no-push"]))
             .unwrap()

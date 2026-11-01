@@ -350,19 +350,6 @@ pub(crate) struct BuildArgs {
     #[arg(long = "ignore-path", value_name = "PATH", help_heading = "Snapshots")]
     pub(crate) ignore_paths: Vec<PathBuf>,
 
-    /// Keep `/var/run` out of kaniko-mode snapshots, as in kaniko
-    /// [default: true]; `false` is refused in overlay mode (ADR-0049).
-    #[arg(
-        long,
-        value_name = "BOOL",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        value_parser = parse_bool,
-        help_heading = "Snapshots"
-    )]
-    pub(crate) ignore_var_run: Option<bool>,
-
     /// Take one snapshot at the end of the build, as in kaniko; refused in
     /// overlay mode (ADR-0049).
     #[arg(
@@ -454,6 +441,9 @@ enum Refusal {
 }
 
 const PHASE_4: &str = "the layer cache comes in Phase 4 (Q-021)";
+const VAR_RUN: &str = "kaniko mode keeps /var/run out of layers only where it is a mount \
+     point, as every mount point, so an image's /var/run -> /run symlink is kept (ADR-0052); \
+     drop the flag";
 const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential helpers (Q-047)";
 
 /// kaniko executor flags that ranikust recognises but does not accept
@@ -467,10 +457,10 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("snapshotMode", Refusal::Renamed("use --snapshot-mode")),
     ("customPlatform", Refusal::Renamed("use --platform")),
     ("custom-platform", Refusal::Renamed("use --platform")),
-    (
-        "whitelist-var-run",
-        Refusal::Renamed("use --ignore-var-run"),
-    ),
+    // `/var/run` is ignored only where it is a mount point, as every
+    // mount point is (ADR-0052, D4): the flag has nothing left to switch.
+    ("ignore-var-run", Refusal::Unneeded(VAR_RUN)),
+    ("whitelist-var-run", Refusal::Unneeded(VAR_RUN)),
     (
         "force",
         Refusal::Unneeded(

@@ -172,8 +172,6 @@ pub(crate) struct BuildConfig {
     pub(crate) snapshot_mode: SnapshotMode,
     /// `--ignore-path`s, absolute and cleaned as kaniko's `filepath.Clean`.
     pub(crate) ignore_paths: Vec<PathBuf>,
-    /// `--ignore-var-run`, kaniko's default `true`.
-    pub(crate) ignore_var_run: bool,
     /// `--single-snapshot`.
     pub(crate) single_snapshot: bool,
     /// `--materialize`; no effect without a layer cache (Phase 4).
@@ -408,7 +406,6 @@ impl BuildConfig {
                 .collect(),
             snapshot_mode: args.snapshot_mode.unwrap_or_default(),
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
-            ignore_var_run: args.ignore_var_run.unwrap_or(true),
             single_snapshot: args.single_snapshot,
             materialize: args.materialize,
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
@@ -477,15 +474,13 @@ impl BuildConfig {
 
 /// What overlay mode makes of the kaniko-mode flags given in `args`
 /// (ADR-0040): the warnings for those that change nothing there
-/// (`--snapshot-mode`, `--snapshot-workers`, `--materialize`,
-/// `--ignore-var-run=true`).
+/// (`--snapshot-mode`, `--snapshot-workers`, `--materialize`).
 ///
 /// # Errors
 ///
-/// [`Invalid`] for those that would change the image: `--ignore-path`,
-/// `--single-snapshot` and `--ignore-var-run=false` take effect in kaniko
-/// mode only (ADR-0049): overlay mode's layers never hold mounts or
-/// `/var/run`, and squashing them costs a re-encode.
+/// [`Invalid`] for those that would change the image: `--ignore-path` and
+/// `--single-snapshot` take effect in kaniko mode only (ADR-0049): overlay
+/// mode's layers never hold mounts, and squashing them costs a re-encode.
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
     let mut changes = Vec::new();
     if !args.ignore_paths.is_empty() {
@@ -493,9 +488,6 @@ pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invali
     }
     if args.single_snapshot {
         changes.push("--single-snapshot");
-    }
-    if args.ignore_var_run == Some(false) {
-        changes.push("--ignore-var-run=false");
     }
     if !changes.is_empty() {
         return Err(Invalid(format!(
@@ -511,7 +503,6 @@ pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invali
     for (given, flag) in [
         (args.snapshot_workers.is_some(), "--snapshot-workers"),
         (args.materialize, "--materialize"),
-        (args.ignore_var_run == Some(true), "--ignore-var-run"),
     ] {
         if given {
             warnings.push(format!(
