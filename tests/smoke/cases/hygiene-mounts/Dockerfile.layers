@@ -1,0 +1,11 @@
+# Red team (ADR-0058), every mode: steps that only delete, replace a
+# directory by an empty one, or change a mode or an mtime keep their layer;
+# only a step that changes nothing loses it.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE}
+RUN mkdir -p /d && touch /d/a /d/b /m
+RUN rm -f /etc/motd
+RUN rm -rf /d && mkdir /d
+RUN chmod 600 /m
+RUN touch -d '1970-01-02 00:00:00' /m
+RUN true
