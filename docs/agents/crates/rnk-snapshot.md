@@ -263,7 +263,21 @@ impl WalkDiff {
   directory; a parent root swapped for another directory is never handed
   over and the new stage directory goes; a move that moved nothing, and a
   parent holding a file hardlinked from outside its root, fall back to a
-  copy, the pruned parent refused after it too.
+  copy, the pruned parent refused after it too. Red team of the hand-over
+  (ADR-0061, ADR-0062): with the ignore list `ranikust` gives a stage
+  root (fixed paths, below-only, an `--ignore-path` glob and a literal),
+  whiteout-like names, hardlinks into ignored paths, FIFOs and sockets
+  nested and at the top, the child gets what a copy gets and the same
+  change the same layer; a `rootfs` swapped for a symlink out is refused
+  with nothing outside pruned or moved; a directory exchanged with a link
+  out during the hand-over never leaks; a chain deeper than `PATH_MAX` is
+  handed over and released. Ignored reproducer of a finding
+  (`red_team_a_hand_over_keeps_no_xattr_a_copy_leaves_out`): the
+  hand-over keeps the `user.overlay.*` xattrs a copy leaves out, on
+  files, directories and the root. T2 (`just test-vm unit`): device
+  nodes (one with two names), FIFOs and sockets never handed over; a
+  mount below the parent's root fails the hand-over, nothing on it
+  pruned, the parent's release not crossing it either.
 - **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
   read after the root is reused, only the paths asked for, deleted on
   release, a second keep refused once the root was reused; a stage `FROM`
