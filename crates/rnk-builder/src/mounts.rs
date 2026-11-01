@@ -151,11 +151,6 @@ pub(crate) fn run_mounts(
     for m in mounts {
         match m.kind {
             MountType::Cache => {
-                if m.target.is_empty() {
-                    return Err(Error::Invalid(
-                        "RUN --mount=type=cache needs a target".to_owned(),
-                    ));
-                }
                 caches.push((cache_key(m), m));
             }
             MountType::Secret => secret_mount(m, workdir, secrets, &mut read, &mut out)?,
@@ -197,9 +192,11 @@ pub(crate) fn run_mounts(
     Ok(out)
 }
 
-/// Refuses the `RUN --mount` types and options this phase lacks, in every
-/// mode, before any secret is read or cache leased: `bind`, `tmpfs` and
-/// `ssh` (Phase 5) [open: Q-383], and `cache,from=`.
+/// Refuses the `RUN --mount` types and options this phase lacks, and the
+/// malformed ones, in every mode, before any secret is read or cache
+/// leased: `bind`, `tmpfs` and `ssh` (Phase 5) [open: Q-383],
+/// `cache,from=`, a cache without a target, a secret without an id, an
+/// `env=` that names no variable.
 pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {
     for m in mounts {
         match m.kind {
@@ -208,7 +205,26 @@ pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {
                     "RUN --mount=type=cache,from= is not supported yet (Phase 5)".to_owned(),
                 ));
             }
-            MountType::Cache | MountType::Secret => {}
+            MountType::Cache if m.target.is_empty() => {
+                return Err(Error::Invalid(
+                    "RUN --mount=type=cache needs a target".to_owned(),
+                ));
+            }
+            MountType::Cache => {}
+            MountType::Secret => {
+                if secret_id(m).is_empty() {
+                    return Err(Error::Invalid(
+                        "RUN --mount=type=secret needs an id, a source or a target".to_owned(),
+                    ));
+                }
+                if let Some(name) = &m.env
+                    && (name.is_empty() || name.contains(['=', '\0']))
+                {
+                    return Err(Error::Invalid(format!(
+                        "RUN --mount=type=secret,env={name:?} is not a variable name"
+                    )));
+                }
+            }
             MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
                 return Err(Error::Invalid(format!(
                     "RUN --mount=type={} is not supported yet (Phase 5)",
@@ -234,7 +250,9 @@ pub(crate) fn direct_mounts(mounts: &[Mount]) -> Result<Vec<Mount>> {
             MountType::Cache => {
                 tracing::warn!(
                     "RUN --mount=type=cache,target={}: ignored: kaniko mode on / runs RUN \
-                     directly, where nothing can be mounted, so this RUN runs without the cache{}",
+                     directly, where nothing can be mounted, so this RUN runs without the \
+                     cache, and what it writes there lands in its layer (a tool's cache may \
+                     hold tokens: clean it in the same RUN){}",
                     m.target,
                     if m.sharing == Some(Sharing::Locked) {
                         "; sharing=locked does not serialize it with other RUNs either"
@@ -305,6 +323,21 @@ fn cache_owner(m: &Mount) -> Option<CacheOwner> {
     })
 }
 
+/// A secret mount's id: `id=`, else `source=`, else the target's last
+/// name, as BuildKit; empty when none is given.
+fn secret_id(m: &Mount) -> String {
+    if !m.source.is_empty() {
+        m.source.clone()
+    } else if !m.cache_id.is_empty() {
+        m.cache_id.clone()
+    } else {
+        Path::new(&m.target)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
 /// A `RUN --mount=type=secret`, as BuildKit's `dispatchSecret` and secret
 /// mount (`convert_secrets.go`, `secretmount_unix.go`):
 ///
@@ -323,21 +356,8 @@ fn secret_mount(
     read: &mut BTreeMap<String, Arc<[u8]>>,
     out: &mut RunMounts,
 ) -> Result<()> {
-    let id = if !m.source.is_empty() {
-        m.source.clone()
-    } else if !m.cache_id.is_empty() {
-        m.cache_id.clone()
-    } else {
-        Path::new(&m.target)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    };
-    if id.is_empty() {
-        return Err(Error::Invalid(
-            "RUN --mount=type=secret needs an id, a source or a target".to_owned(),
-        ));
-    }
+    // Never empty: `check_supported` refused that.
+    let id = secret_id(m);
     let Some(secret) = secrets.get(&id) else {
         if m.required {
             return Err(Error::Invalid(format!(
@@ -354,12 +374,8 @@ fn secret_mount(
             data
         }
     };
+    // A variable name: `check_supported` refused any other.
     if let Some(name) = &m.env {
-        if name.is_empty() || name.contains(['=', '\0']) {
-            return Err(Error::Invalid(format!(
-                "RUN --mount=type=secret,env={name:?} is not a variable name"
-            )));
-        }
         // Never the value in a message: only the id.
         if data.contains(&0) {
             return Err(Error::Invalid(format!(

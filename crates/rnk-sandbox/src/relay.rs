@@ -54,6 +54,18 @@ impl Relay {
         uid: Uid,
         gid: Gid,
     ) -> Result<Option<Self>> {
+        // ranikust's own stdout and stderr.
+        Self::start_into(stdio, keep, uid, gid, [0, 1, 2])
+    }
+
+    /// [`Relay::start`], copying slot `i` to the descriptor `out[i]`.
+    fn start_into(
+        stdio: &mut [ChildStdio; 3],
+        keep: &mut Vec<OwnedFd>,
+        uid: Uid,
+        gid: Gid,
+        out: [RawFd; 3],
+    ) -> Result<Option<Self>> {
         let mut streams = Vec::new();
         for slot in [1usize, 2] {
             if stdio[slot] != ChildStdio::Inherit {
@@ -72,8 +84,7 @@ impl Relay {
             keep.push(write);
             streams.push(Stream {
                 from: read,
-                // ranikust's stdout or stderr.
-                to: RawFd::try_from(slot).unwrap_or(1),
+                to: out[slot],
                 open: true,
             });
         }
@@ -153,7 +164,12 @@ fn relay(mut streams: Vec<Stream>, stop: &OwnedFd) {
                 copy_once(s, &mut buf, stop, None)
             });
         } else {
-            // Draining: everything left, never blocking on a pipe.
+            // Draining: what is left, never blocking on a pipe, and never
+            // past the deadline: a writer that outlived the `RUN` (the sweep
+            // gave up) may keep filling the pipe forever.
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return;
+            }
             streams.retain_mut(|s| copy_once(s, &mut buf, stop, deadline));
         }
     }
@@ -261,6 +277,42 @@ mod tests {
         relay.finish();
         assert!(start.elapsed() < DRAIN_TIME + Duration::from_secs(5));
         drop(survivor);
+    }
+
+    /// A writer that outlived the `RUN` and keeps writing (a fork loop the
+    /// sweep could not end) never keeps the relay draining: `finish`
+    /// returns after the drain time.
+    #[test]
+    fn finish_returns_while_a_survivor_keeps_writing() {
+        let null = rustix::fs::open(
+            "/dev/null",
+            OFlags::WRONLY | OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let n = std::os::fd::AsRawFd::as_raw_fd(&null);
+        let mut stdio = [ChildStdio::Null, ChildStdio::Inherit, ChildStdio::Null];
+        let mut keep = Vec::new();
+        let relay = Relay::start_into(&mut stdio, &mut keep, Uid::ROOT, Gid::ROOT, [n, n, n])
+            .unwrap()
+            .unwrap();
+        let survivor = keep.pop().unwrap();
+        // Writes until the pipe's read end is gone (EPIPE: Rust ignores
+        // SIGPIPE).
+        let writer = std::thread::spawn(move || {
+            let chunk = [b'y'; 4096];
+            while rustix::io::write(&survivor, &chunk).is_ok() {}
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let start = Instant::now();
+        relay.finish();
+        assert!(
+            start.elapsed() < DRAIN_TIME + Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        writer.join().unwrap();
+        drop(null);
     }
 
     /// A stream that stays full gives up after the drain time.

@@ -204,7 +204,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   in-memory file, read by its interpreter as `/dev/fd/<n>`, so no file of
   it is named in the container (ADR-0057). A secret given as a variable
   (`RUN --mount=type=secret,id=…,env=NAME`) works there; a cache mount is
-  left out with a warning (the `RUN` runs without the cache); a secret as
+  left out with a warning (the `RUN` runs without the cache, and what it
+  writes at the target stays in its layer); a secret as
   a file and `--network=none` (the flag before anything is pulled, `RUN
   --network=none` at that `RUN`) are refused with the reason, never run
   without them. A container granting capabilities

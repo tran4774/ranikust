@@ -70,13 +70,18 @@ and no `RUN` in any mode holds ranikust's own stream descriptors.
 - **Secret as a file** (no `env=`, or a `target=`): refused, pointing to
   `env=` (Q-380). A secret as a variable works: it needs no file.
 - **Cache mount**: left out with a warning naming its target; the `RUN`
-  runs without the cache, and the warning says a `sharing=locked` cache
-  then serializes nothing (Q-381). `cache,from=` stays refused.
+  runs without the cache (Q-381). Unlike BuildKit and overlay mode, what
+  the `RUN` writes at the target then lands in its layer (a tool's cache
+  may hold tokens), which the warning says; a `sharing=locked` cache
+  serializes nothing. A future cache key (Phase 4, Q-041) must tell a
+  `RUN` whose cache mount was dropped from one that had it. `cache,from=`
+  stays refused.
 - **`--network=none`**: refused, the flag at start-up before the pull and
   a `RUN --network=none` at that `RUN` (Q-382).
 - **Order.** In every mode the mount types this phase lacks (`bind`,
-  `tmpfs`, `ssh`, `cache,from=`) are refused before any secret is read or
-  cache leased; under `Direct` the secret-file refusal and the cache
+  `tmpfs`, `ssh`, `cache,from=`) and malformed mounts (a cache without a
+  target, a secret without an id, an `env=` naming no variable) are
+  refused before any secret is read or cache leased; under `Direct` the secret-file refusal and the cache
   drop come before that too. `Error::Direct` in the sandbox backs the
   builder's checks. `bind`, `tmpfs`, `ssh` and `from=` on `/` wait for
   Phase 5 [open: Q-383].
@@ -85,7 +90,8 @@ and no `RUN` in any mode holds ranikust's own stream descriptors.
   ranikust cannot give leaves it root's), copied by one thread per `RUN`
   to ranikust's stream. Once the `RUN` is reaped and swept, an `eventfd`
   stops the thread: it reads what is left without blocking and gives a
-  stream that does not take writes two seconds, so a write end that
+  stream that does not take writes two seconds, and stops at that
+  deadline even while a writer keeps writing, so a write end that
   outlived the `RUN` (over a Unix socket, or reopened through
   `/proc/<pid>/fd` by a process of the same user) never holds the build.
   A full stream (`EAGAIN`) is waited for with `poll`, not dropped.
@@ -108,7 +114,8 @@ and no `RUN` in any mode holds ranikust's own stream descriptors.
 - Bad, because secret files and `--network=none` do not work in kaniko
   mode on `/`; such builds need overlay mode (a container that may
   mount). A `sharing=locked` cache used as a lock serializes nothing
-  there.
+  there, and what a `RUN` writes to a dropped cache's target ships in the
+  image unless the `RUN` removes it.
 - Bad, because every `RUN`'s output goes through a pipe and a thread: one
   copy per byte, small next to the command's own work; output a stream
   still refuses two seconds after the `RUN` ended is dropped.
@@ -128,7 +135,8 @@ and no `RUN` in any mode holds ranikust's own stream descriptors.
   `direct_runs_take_secrets_as_variables_and_drop_caches`,
   `unsupported_mounts_are_refused_before_any_secret_is_read`,
   `direct_runs_refuse_network_none`, the relay's
-  `finish_does_not_wait_for_a_surviving_writer` and
+  `finish_does_not_wait_for_a_surviving_writer`,
+  `finish_returns_while_a_survivor_keeps_writing` and
   `a_blocked_stream_is_given_up_after_the_drain_time`. T2:
   `a_direct_heredoc_runs_from_an_anonymous_file` (root and uid 65534),
   `a_direct_run_leaves_no_process_behind` (alive or zombie).

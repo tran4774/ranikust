@@ -182,7 +182,7 @@ settles them (Q-024):
   `Sandbox::start_with_root` checked (device, inode, mount id). On `/` a
   `#!` heredoc runs from a sealed memfd (`RunSpec::script`), a secret as
   a variable works, a cache mount is left out with a warning (the `RUN`
-  runs without it), and a secret as a file and `--network=none` are
+  runs without it, and what it writes at the target lands in its layer), and a secret as a file and `--network=none` are
   refused before any secret is read
   ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)).
 - **What later units read is kept** before the root is reused, in the

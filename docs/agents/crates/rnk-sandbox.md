@@ -154,7 +154,8 @@ from `rnk-store`, secret file) and passes `--network`.
   root's), and one thread per `RUN` copies the pipes to ranikust's streams,
   waiting with `poll` on a full one. Once the `RUN` is reaped and swept an
   `eventfd` stops it: the pipes are read without blocking until empty, a
-  stream that refuses writes gets two seconds, and the thread is joined;
+  stream that refuses writes gets two seconds, the drain stops at that
+  deadline even while a writer keeps writing, and the thread is joined;
   never waiting for a write end that outlived the `RUN` (kaniko#2928,
   `ADR-0057`).
 - The journal places and undoes on the root's own mount only

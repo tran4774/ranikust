@@ -394,6 +394,29 @@ fn unsupported_mounts_are_refused_before_any_secret_is_read() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("type=bind"), "{e}");
-    let e = direct_mounts(&[env, bind]).unwrap_err().to_string();
+    let e = direct_mounts(&[env.clone(), bind]).unwrap_err().to_string();
     assert!(e.contains("type=bind"), "{e}");
+    // Malformed mounts after it too: a bad `env=`, a secret without an id,
+    // a cache without a target.
+    let mut bad_env = env.clone();
+    bad_env.env = Some("A=B".into());
+    let mut no_id = mount(MountType::Secret);
+    no_id.env = Some("X".into());
+    let no_target = mount(MountType::Cache);
+    for (bad, msg) in [
+        (bad_env, "is not a variable name"),
+        (no_id, "needs an id"),
+        (no_target, "needs a target"),
+    ] {
+        let e = run_mounts(
+            &[env.clone(), bad],
+            Path::new("/"),
+            &store,
+            &secrets,
+            &never,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains(msg), "{e}");
+    }
 }

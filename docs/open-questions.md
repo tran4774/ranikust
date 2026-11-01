@@ -290,6 +290,13 @@ Entry format:
   and tag: designed with W2.
 - **Recommendation:** SHA-256 for `H`, "likely" on the
   [rnk-cache](agents/crates/rnk-cache.md#api-planned) card; none for the rest.
+- **Note (2026-11-01):** in kaniko mode on `/` a `RUN`'s cache mount is
+  left out (ADR-0057), so what the `RUN` writes at the cache target lands
+  in its layer, which it never does with the mount. The key must tell the
+  two apart: the mode (or "cache mounts dropped") is an input of a `RUN`
+  with cache mounts, so a layer built without the mount is never reused
+  where the mount is given, nor the other way round. `rnk-cache` has no
+  keys yet (Phase 4).
 - **Interim:** none
 - **Raised:** 2026-10-30
 
