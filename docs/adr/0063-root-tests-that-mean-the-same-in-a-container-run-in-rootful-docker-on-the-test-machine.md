@@ -74,18 +74,21 @@ VM.
 - **Where:** only on the disposable test machine. `tests/container/lane.sh`
   first requires a marker only that machine carries,
   `/etc/ranikust/throwaway-test-host` (a regular file owned by root in a
-  root-owned directory, neither writable by group or others, naming the
-  host; made once by the machine's owner, `docs/testing.md`), then
-  `RANIKUST_CONTAINER_LANE=1`, and refuses rootless Docker and Podman;
-  `just test-container` (via `tests/container/remote.sh`) sends the
-  committed branch there through the lane helper. Nothing privileged runs
-  on a developer's machine. One lane run at a time per machine (a lock);
-  every container and image is labelled `org.ranikust.lane=t2c` and
-  removed at the end of a run, or at the start of the next one if a run
-  was interrupted.
+  root-owned directory, neither writable by group or others, holding the
+  machine's `uname -n`, which is compared; made once by the machine's
+  owner, `docs/testing.md`), then `RANIKUST_CONTAINER_LANE=1`, and refuses
+  rootless Docker and Podman; `just test-container` (via
+  `tests/container/remote.sh`) sends the committed branch there through
+  the lane helper. Nothing privileged runs on a developer's machine. One
+  lane run at a time per machine (a read-only lock on the marker itself,
+  not inherited by build or container children); every container and
+  image is labelled `org.ranikust.lane=t2c` and removed at the end of a
+  run, or at the start of the next one if a run was interrupted.
 - **Exact selection:** tests are run by full path with libtest's
   `--exact`, both in the lane and in the VM's `unit` suite, so a name that
-  contains a listed one never runs where it should not.
+  contains a listed one never runs where it should not; the lane refuses
+  to start when a test name is in two of its lists (VM-only and the three
+  profiles).
 
 ### Consequences
 

@@ -38,6 +38,9 @@ for f in "${MARKER%/*}" "$MARKER"; do
 done
 host_name="$(head -c 256 "$MARKER" | tr -cd '[:alnum:]._-')"
 [ -n "$host_name" ] || refuse "empty"
+# It names this machine: a marker copied from the test machine onto another
+# one (in a backup, an image) does not make that one throwaway.
+[ "$host_name" = "$(uname -n)" ] || refuse "names $host_name, but this machine is $(uname -n)"
 
 [ "${RANIKUST_CONTAINER_LANE:-}" = 1 ] ||
   die "the T2c lane runs only on a disposable test machine with rootful Docker (ADR-0063); set RANIKUST_CONTAINER_LANE=1 there, never on your own machine"
@@ -67,10 +70,12 @@ MUSL=x86_64-unknown-linux-musl
 PROFILES=(default sysadmin netadmin)
 
 log "throwaway test host: $host_name"
-# One lane run at a time on this machine: the clean-up below removes every
-# labelled container. The lock is in the user's own runtime directory.
+# One lane run at a time on this machine, whoever runs it: the clean-up
+# below removes every labelled container. The lock is the marker itself,
+# opened read-only; no child that may outlive a step (a build server) gets
+# its descriptor (`8<&-` below).
 command -v flock >/dev/null || die "flock is missing"
-exec 8>>"${XDG_RUNTIME_DIR:-$HOME}/.ranikust-t2c.lock"
+exec 8<"$MARKER"
 flock -w 3600 8 || die "another T2c lane run held the lock for an hour"
 # Leftovers of an interrupted run (every container and image of the lane is
 # labelled), so none outlives the run that made it.
@@ -81,18 +86,32 @@ docker image ls -q --filter "label=$LABEL" | sort -u | xargs -r docker image rm 
 rm -rf "$STAGE" "$RESULTS"
 mkdir -p "$STAGE/bin" "$RESULTS"
 
-# The tests of each profile: the fn under each marker.
+# The tests of each profile, and the VM-only ones: the fn under each marker.
+fns() {
+  (cd "$REPO" && grep -rn --include='*.rs' -A3 "$1" crates || true) |
+    sed -nE 's/^.*fn ([A-Za-z0-9_]+).*$/\1/p' | sort -u
+}
 for p in "${PROFILES[@]}"; do
-  (cd "$REPO" && grep -rn --include='*.rs' -A3 "#\[ignore = \"T2c: $p:" crates || true) |
-    sed -nE 's/^.*fn ([A-Za-z0-9_]+).*$/\1/p' | sort -u >"$STAGE/$p.txt"
+  fns "#\[ignore = \"T2c: $p:" >"$STAGE/$p.txt"
+done
+fns '#\[ignore = "T2:' >"$STAGE/t2-only.txt"
+# A name in two lists would run a test where it does not belong (selection
+# is by fn name): every pair must be disjoint.
+lists=(t2-only "${PROFILES[@]}")
+for ((i = 0; i < ${#lists[@]}; i++)); do
+  for ((j = i + 1; j < ${#lists[@]}; j++)); do
+    both="$(comm -12 "$STAGE/${lists[$i]}.txt" "$STAGE/${lists[$j]}.txt")"
+    [ -z "$both" ] || die "test names in both ${lists[$i]} and ${lists[$j]}: $(echo "$both" | paste -sd' ' -)"
+  done
 done
 mapfile -t crates < <(cd "$REPO" && grep -rl --include='*.rs' '#\[ignore = "T2c: ' crates | cut -d/ -f2 | sort -u)
 [ "${#crates[@]}" -gt 0 ] || die "no T2c tests found"
-total=$(cat "$STAGE"/*.txt | wc -l)
+total=0
+for p in "${PROFILES[@]}"; do total=$((total + $(wc -l <"$STAGE/$p.txt"))); done
 log "building the test binaries of ${crates[*]} ($total T2c tests)"
 pkgs=(); for c in "${crates[@]}"; do pkgs+=(-p "$c"); done
 (cd "$REPO" && CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-  cargo-zigbuild test --no-run --locked --target "$MUSL" --message-format=json "${pkgs[@]}") |
+  cargo-zigbuild test --no-run --locked --target "$MUSL" --message-format=json "${pkgs[@]}" 8<&-) |
   jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
   while read -r exe; do cp "$exe" "$STAGE/bin/"; done
 [ -n "$(ls -A "$STAGE/bin")" ] || die "no test binary was built"
@@ -102,7 +121,7 @@ tag="rnk-t2c:$(cd "$STAGE" && find . -type f -print0 | sort -z | xargs -0 sha256
 log "building $tag"
 # The trap before the build: an interrupted build leaves no image either.
 trap 'docker ps -aq --filter "label=$LABEL" | xargs -r docker rm -f >/dev/null 2>&1; docker image rm -f "$tag" >/dev/null 2>&1 || true' EXIT
-docker build -q --label "$LABEL" -t "$tag" "$STAGE" >/dev/null
+docker build -q --label "$LABEL" -t "$tag" "$STAGE" >/dev/null 8<&-
 
 status=0
 for p in "${PROFILES[@]}"; do
@@ -120,7 +139,7 @@ for p in "${PROFILES[@]}"; do
     --tmpfs /work:rw,exec,suid,dev,mode=1777,size=4g \
     --tmpfs /var/tmp:rw,exec,suid,dev,mode=1777,size=4g \
     --memory 6g --pids-limit 8192 --ulimit nofile=65536:65536 \
-    "${flags[@]}" "$tag" /t2c/run-profile.sh "$p" >"$RESULTS/$p.log" 2>&1 || rc=$?
+    "${flags[@]}" "$tag" /t2c/run-profile.sh "$p" >"$RESULTS/$p.log" 2>&1 8<&- || rc=$?
   grep -E '^(control:|T2c |error)' "$RESULTS/$p.log" || true
   log "profile $p: exit $rc after $(($(date +%s) - t0)) s"
   if [ "$rc" != 0 ]; then

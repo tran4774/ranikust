@@ -474,10 +474,14 @@ status is the command's) and runs `tests/container/lane.sh` there, which:
 1. refuses, before anything else, unless the machine carries the marker
    `/etc/ranikust/throwaway-test-host`: a regular file (not a link) owned
    by root in a root-owned directory, neither writable by group or others,
-   naming the host; then unless `RANIKUST_CONTAINER_LANE=1` (set by
-   `remote.sh`), when run as root, and with rootless Docker or Podman; it
-   takes a lock (one lane run per machine) and removes the labelled
+   holding this machine's `uname -n` (compared); then unless
+   `RANIKUST_CONTAINER_LANE=1` (set by `remote.sh`), when run as root, and
+   with rootless Docker or Podman; it locks the marker itself, read-only
+   (one lane run per machine, whoever starts it; build and container
+   children do not inherit the lock), and removes the labelled
    (`org.ranikust.lane=t2c`) containers and images an interrupted run left;
+   it refuses when a test name is in two of the lists (VM-only, `default`,
+   `sysadmin`, `netadmin`), since tests are selected by name;
 2. lists the tests of each profile from the markers and builds the test
    binaries of their crates as static musl binaries (`cargo-zigbuild test
    --no-run`);
@@ -524,7 +528,7 @@ disposable machine, never on a developer's machine):
 
 ```sh
 sudo install -d -m 0755 /etc/ranikust
-echo <host name> | sudo tee /etc/ranikust/throwaway-test-host >/dev/null
+uname -n | sudo tee /etc/ranikust/throwaway-test-host >/dev/null
 sudo chmod 0644 /etc/ranikust/throwaway-test-host
 ```
 
