@@ -357,8 +357,13 @@ fn overlay_built(config: &BuildConfig, setup: setup::Setup) -> Result<(), Failur
         build::Snapshots::Overlay(overlay),
     )
     .map_err(Failure::error)?;
+    report_built(&built)
+}
+
+/// Logs the built image and prints its digest. The digest is the build's
+/// result: failing to print it fails the run.
+fn report_built(built: &build::Built) -> Result<(), Failure> {
     tracing::info!("built image {}", built.digest);
-    // The digest is the build's result: failing to print it fails the run.
     writeln!(std::io::stdout(), "{}", built.digest)
         .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
 }
@@ -482,9 +487,7 @@ fn kaniko(
     let built = build::run(config, store, sandbox, snapshots).map_err(Failure::error)?;
     // The lock of `/` is held to the end of the build.
     drop(root_lock);
-    tracing::info!("built image {}", built.digest);
-    writeln!(std::io::stdout(), "{}", built.digest)
-        .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
+    report_built(&built)
 }
 
 /// Kaniko mode's snapshotter on `/` in a container, opened once by the
