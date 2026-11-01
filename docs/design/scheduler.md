@@ -143,4 +143,4 @@ instruction run it once (BuildKit deduplicates such vertices).
 ## Open questions
 
 - [Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds) What are the memory-limit algorithm and thresholds?
-- [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
+- [Q-421](../open-questions.md#q-421-which-performance-conditions-does-phase-6-measure) Which performance conditions does Phase 6 measure? (Q-033's leftovers)

@@ -722,7 +722,7 @@ them. The scheduler's memory limit counts page cache
 
 ## Open questions
 
-- [Q-033](../open-questions.md#q-033-which-performance-conditions-are-still-unmeasured) Which performance conditions are still unmeasured?
+- [Q-421](../open-questions.md#q-421-which-performance-conditions-does-phase-6-measure) Which performance conditions does Phase 6 measure? (Q-033's leftovers)
 
 ## References
 

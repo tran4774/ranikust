@@ -227,26 +227,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-033: Which performance conditions are still unmeasured?
-
-- **Blocks:** Phase 1 task 13; Phase 2; **Area:** performance
-- **Context:** not measured: sha256 of large layers with `sha2` against
-  `ring::digest`, which the TLS provider already brings in (Q-012 kept
-  `sha2`; the switch stays inside `rnk_layer::Sha256Digest`); real network
-  registries, where overlapping
-  pulls may matter more than CPU
-  ([scheduler](design/scheduler.md#open-questions));
-  export on memory-starved runners, where one layer took 1.8–6.6 s
-  ([overlay-snapshot](design/overlay-snapshot.md#open-questions)); cold page
-  cache, slow disks and deletion of very large roots in kaniko mode
-  ([kaniko-mode](design/kaniko-mode.md#open-questions)); `--snapshot-mode=redo`
-  and `time` against `full`, which decides whether they stay (ADR-0023,
-  [ADR-0049](adr/0049-security-and-performance-over-kaniko-compatibility.md)).
-- **Options:** none listed.
-- **Recommendation:** none
-- **Interim:** none
-- **Raised:** 2026-10-30
-
 ### Q-039: Which environments must the probe be tested in?
 
 - **Blocks:** Phase 3; **Area:** `ranikust`, `rnk-sandbox`, `rnk-snapshot`
@@ -442,7 +422,67 @@ Entry format:
 - **Interim:** refused in every mode (Phase 5).
 - **Raised:** 2026-11-01
 
+### Q-421: Which performance conditions does Phase 6 measure?
+
+- **Blocks:** Phase 6; **Area:** performance
+- **Context:** what Q-033 left unmeasured after Phases 1 and 2 (see its
+  answer). Measured once by the ultra benchmark that closes Phase 2
+  (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`, criteria 1–6):
+  W2 cold and full rounds of W1–W3 against kaniko and BuildKit. Left for
+  Phase 6: sha256 of large layers with `sha2` against `ring::digest`
+  (ADR-0030); real network registries, where overlapping pulls may matter
+  more than CPU ([scheduler](design/scheduler.md#open-questions)); export
+  on memory-starved runners
+  ([overlay-snapshot](design/overlay-snapshot.md#open-questions)); cold
+  page cache, slow or network disks (NFS, FUSE state directories) and the
+  deletion of very large roots in kaniko mode
+  ([kaniko-mode](design/kaniko-mode.md#open-questions), ADR-0039's worker
+  cap); `--snapshot-mode=redo` and `time` against `full` on real builds
+  (ADR-0023, ADR-0049); cgroup v1 hosts (only experiment 16's
+  correctness runs); real aarch64 hardware ([testing](testing.md)); W3 with
+  more than 4 CPUs per builder (`RANIKUST_E2E_CPUS`), against experiment
+  12's 32-CPU numbers.
+- **Options:** none listed.
+- **Recommendation:** measure with `bench-runner` in Phase 6, the VM only,
+  no other VM running.
+- **Interim:** none
+- **Raised:** 2026-11-01
+
 ## Answered
+
+### Q-033: Which performance conditions are still unmeasured?
+
+- **Answer (2026-11-01):** "5. theo ý bạn": closed with what Phases 1
+  and 2 measured; what is left moves to Phase 6 as
+  [Q-421](#q-421-which-performance-conditions-does-phase-6-measure).
+  Measured:
+  - walk and hash against kaniko: kaniko's `snapshot.walk` 3.18 s and
+    `resolve` 2.48 s on W1
+    ([experiment 07](research/experiments/07-kaniko-vs-overlay.md));
+    ranikust's ten W1 walks 3.3 s in the VM (ADR-0061's run);
+  - parallel stages: W3 −41 to −44 % at 32 CPUs, −21 % at `--cpus=4`
+    ([experiment 12](research/experiments/12-kaniko-mode-parallel.md));
+    the `par-stages` bench (four independent stages against the same work
+    chained, VM, 4-CPU cap and uncapped): per-stage kaniko mode −43 to
+    −45 %, overlay mode −38 to −40 %, peak memory about 550–650 MiB
+    ([testing](testing.md), criterion 7);
+  - the shortened VM e2e runs of 2026-11-01 (one round each, builders
+    capped at 4 CPUs and 8 GiB, quiet host): W1 kaniko 23.4–26.2 s,
+    overlay 20.5–21.2 s, kaniko mode on a container's `/` 21.8–22.9 s,
+    per-stage kaniko mode 29.5–31.6 s before and 22.1 s after ADR-0061's
+    hand-over (Q-410); W3 kaniko 28.9–30.3 s, overlay 14.1–16.0 s, kaniko
+    mode on `/` 20.5–21.5 s, per-stage 14.5–17.2 s; every build's peak
+    memory now recorded per builder;
+  - `--single-snapshot`: 0.61 s saved at 80 000 files and 1.16 s at
+    250 000 files over 10 steps (Q-420, ADR-0065);
+  - the e2e harness itself: flatten 23.4 s → 3.9 s (1.1 s from its cache)
+    on a 220 000-path image; the light W0 suite in about 25 s, VM boot
+    included.
+- **Context (as asked):** not measured then: `sha2` against
+  `ring::digest`, real network registries, export on memory-starved
+  runners, cold page cache, slow disks and deletion of very large roots,
+  `--snapshot-mode=redo` and `time` against `full`. All carried into
+  Q-421.
 
 ### Q-360: What does kaniko mode on `/` do after an earlier build in the container was cut short?
 
