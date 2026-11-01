@@ -320,40 +320,60 @@ fn secrets_are_absolute_and_ids_unique() {
 fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
     let plain = config(&["--no-push"]).expect("plain");
     assert!(plain.ignore_paths.is_empty());
-    assert!(!plain.single_snapshot && !plain.materialize);
+    assert!(!plain.single_snapshot);
     assert_eq!(plain.snapshot_workers.get(), 8);
     let set = config(&[
         "--no-push",
         "--ignore-path=/var//cache/./x/../y/",
-        "--ignore-path=/..",
+        "--ignore-path=/var/cache/*",
         "--snapshot-workers=2",
     ])
     .expect("set");
     assert_eq!(
         set.ignore_paths,
-        [PathBuf::from("/var/cache/y"), PathBuf::from("/")]
+        [PathBuf::from("/var/cache/y"), PathBuf::from("/var/cache/*")]
     );
     assert_eq!(set.snapshot_workers.get(), 2);
     let err = config(&["--no-push", "--ignore-path=var/cache"]).expect_err("relative");
     assert!(err.0.contains("absolute path"), "{}", err.0);
 }
 
+/// An `--ignore-path` that cleans to `/` or holds a malformed pattern is
+/// refused when the flags are read (exit 2), before any set-up (criterion
+/// 8, review finding #7).
+#[test]
+fn an_ignore_path_of_the_whole_root_or_a_bad_glob_is_refused_early() {
+    for root in [
+        "--ignore-path=/",
+        "--ignore-path=/..",
+        "--ignore-path=/a/../",
+    ] {
+        let err = config(&["--no-push", root]).expect_err(root);
+        assert!(err.0.contains("whole root"), "{root}: {}", err.0);
+    }
+    let err = config(&["--no-push", "--ignore-path=/x/[a"]).expect_err("bad glob");
+    assert!(err.0.contains("malformed glob"), "{}", err.0);
+}
+
 /// In overlay mode, the kaniko-mode flags that would change the image are
 /// refused (ADR-0049); the others are warned about.
 #[test]
 fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
-    for flag in ["--ignore-path=/x", "--single-snapshot"] {
-        let err = overlay_mode_flags(&args(&["--no-push", flag])).expect_err(flag);
-        assert!(err.0.contains("kaniko mode only"), "{flag}: {}", err.0);
-    }
+    let err = overlay_mode_flags(&args(&["--no-push", "--ignore-path=/x"])).expect_err("ignore");
+    assert!(err.0.contains("kaniko mode only"), "{}", err.0);
+    // `--single-snapshot` is offered in no mode yet, and its refusal no
+    // longer sends the user to `--mode=kaniko`, which refuses it too
+    // (criterion 8, review finding #1).
+    let err = overlay_mode_flags(&args(&["--no-push", "--single-snapshot"])).expect_err("single");
+    assert!(err.0.contains("Q-420"), "{}", err.0);
+    assert!(!err.0.contains("--mode=kaniko"), "{}", err.0);
     let warnings = overlay_mode_flags(&args(&[
         "--no-push",
         "--snapshot-mode=redo",
         "--snapshot-workers=4",
-        "--materialize",
     ]))
     .expect("warnings only");
-    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
     assert!(
         overlay_mode_flags(&args(&["--no-push"]))
             .unwrap()

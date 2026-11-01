@@ -69,6 +69,15 @@ impl Refusal {
     pub(crate) fn needs_kaniko_mode(&self) -> bool {
         self.guidance == NEEDS_KANIKO_MODE
     }
+
+    /// Whether root may mount but overlayfs refused the state directory
+    /// (its probe's mount, or a state directory on overlayfs): outside a
+    /// container `--mode=auto` builds in kaniko mode with a directory per
+    /// stage there (ADR-0059). Not a failed sandbox step: kaniko mode off
+    /// `/` needs that sandbox too.
+    pub(crate) fn overlay_unusable(&self) -> bool {
+        self.guidance == OVERLAY_UNUSABLE || self.guidance == ON_OVERLAYFS
+    }
 }
 
 impl fmt::Display for Refusal {
@@ -87,10 +96,22 @@ const NEEDS_ROOT: &str = "ranikust builds as root only for now (rootless overlay
      Phase 3, kaniko mode in Phase 2): run it with sudo, or in a container started with \
      --privileged";
 
-/// Guidance where root cannot use the sandbox or overlay: the outcome that
-/// would run here is kaniko mode.
-const NEEDS_KANIKO_MODE: &str = "this environment needs kaniko mode: use --mode=kaniko or \
-     --mode=auto; a container started with --privileged can build in overlay mode";
+/// Guidance where root may not mount: the outcome that would run here is
+/// kaniko mode. Shown only with a forced `--mode=overlay`: `--mode=auto`
+/// turns this refusal into kaniko mode.
+const NEEDS_KANIKO_MODE: &str = "this environment needs kaniko mode: drop --mode=overlay (the \
+     default --mode=auto picks kaniko mode here) or use --mode=kaniko; a container started \
+     with --privileged can build in overlay mode";
+
+/// Guidance where root may mount but overlayfs refuses the state directory.
+const OVERLAY_UNUSABLE: &str = "mount another filesystem (a volume) at the state directory; \
+     outside a container, the default --mode=auto (or --mode=kaniko) builds in kaniko mode with \
+     a directory per stage instead";
+
+/// Guidance where a step of the `RUN` sandbox is refused although root may
+/// mount (an LSM such as AppArmor's `docker-default` blocking mounts).
+const SANDBOX_BLOCKED: &str = "the RUN sandbox cannot mount here: start the container with \
+     --privileged for overlay mode, or without CAP_SYS_ADMIN for kaniko mode on its /";
 
 /// A build environment, set up: what the build hands to the libraries.
 pub(crate) struct Setup {
@@ -178,7 +199,8 @@ pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Re
 
 /// Guidance where overlay mode's state directory is on overlayfs.
 const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
-     `-v ranikust-state:/var/lib/ranikust`, or pass --state-dir on one; or use --mode=kaniko";
+     `-v ranikust-state:/var/lib/ranikust`, or pass --state-dir on one; outside a container \
+     the default --mode=auto builds in kaniko mode there instead";
 
 /// Opens the store in `state_dir` for a build whose root is `root`.
 fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
@@ -389,10 +411,10 @@ fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
     ) || matches!(e, SnapshotError::ProbeCheck(_));
     Refusal {
         reason: format!("overlay mode cannot run here: {e}"),
-        guidance: if refused_mount {
-            privilege_guidance(euid)
-        } else {
-            ""
+        guidance: match (refused_mount, euid) {
+            (true, 0) => OVERLAY_UNUSABLE,
+            (true, _) => NEEDS_ROOT,
+            (false, _) => "",
         },
     }
 }
@@ -441,7 +463,7 @@ fn pick<C>(
     let sandbox = sandbox.map_err(|e| Refusal {
         guidance: match e {
             SandboxError::Privilege(_) => privilege_guidance(euid),
-            SandboxError::Setup { .. } => NEEDS_KANIKO_MODE,
+            SandboxError::Setup { .. } => SANDBOX_BLOCKED,
             _ => "",
         },
         reason: format!("the RUN sandbox cannot run here: {e}"),

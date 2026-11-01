@@ -266,7 +266,9 @@ pub(crate) struct BuildArgs {
     )]
     pub(crate) skip_push_permission_check: bool,
 
-    /// Accepted: overlay mode never touches the context.
+    /// Accepted: ranikust never changes or deletes the context. In kaniko
+    /// mode on a container's `/` a context inside the root is refused
+    /// unless the ignore list keeps it (a volume, `/ranikust`).
     #[arg(
         long,
         value_name = "BOOL",
@@ -350,8 +352,8 @@ pub(crate) struct BuildArgs {
     #[arg(long = "ignore-path", value_name = "PATH", help_heading = "Snapshots")]
     pub(crate) ignore_paths: Vec<PathBuf>,
 
-    /// Take one snapshot at the end of the build, as in kaniko; refused in
-    /// overlay mode (ADR-0049).
+    /// kaniko's one snapshot at the end of the build. Not offered yet: refused
+    /// in both modes until a measurement settles it (Q-420).
     #[arg(
         long,
         value_name = "BOOL",
@@ -363,20 +365,6 @@ pub(crate) struct BuildArgs {
         help_heading = "Snapshots"
     )]
     pub(crate) single_snapshot: bool,
-
-    /// Make the final filesystem match the target even on full cache hits,
-    /// as in kaniko; without a layer cache (Phase 4) it changes nothing.
-    #[arg(
-        long,
-        value_name = "BOOL",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        default_value = "false",
-        value_parser = parse_bool,
-        help_heading = "Snapshots"
-    )]
-    pub(crate) materialize: bool,
 
     /// Workers of the kaniko-mode walk (ADR-0039); ignored in overlay mode
     /// [default: 8].
@@ -393,11 +381,15 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_name = "DIR", help_heading = "ranikust")]
     pub(crate) state_dir: Option<PathBuf>,
 
-    /// Stages run at once [default: the number of CPUs available].
+    /// Stages run at once, and blobs uploaded at once [default: the number
+    /// of CPUs available]. In kaniko mode on a container's `/` the stages
+    /// run one at a time and only the uploads follow it.
     #[arg(long, value_name = "N", help_heading = "ranikust")]
     pub(crate) jobs: Option<NonZeroUsize>,
 
-    /// Network of `RUN`: the host's, or none.
+    /// Network of `RUN`: the host's, or none. `none` is refused in kaniko
+    /// mode on a container's `/`, where `RUN` gets no network namespace
+    /// (ADR-0057).
     #[arg(long, value_enum, default_value_t = Network::Host, help_heading = "ranikust")]
     pub(crate) network: Network,
 
@@ -438,6 +430,8 @@ enum Refusal {
     /// The flag changes nothing in ranikust; it is refused rather than
     /// ignored (ADR-0049).
     Unneeded(&'static str),
+    /// A decision refuses the flag for good, whatever the phase.
+    Refused(&'static str),
 }
 
 const PHASE_4: &str = "the layer cache comes in Phase 4 (Q-021)";
@@ -480,8 +474,11 @@ const REFUSED: &[(&str, Refusal)] = &[
         ),
     ),
     // ranikust's own flag of ADR-0014, refused by ADR-0060 (Q-400: a).
-    ("parallel-stages", Refusal::NotYet(PARALLEL_STAGES)),
+    ("parallel-stages", Refusal::Refused(PARALLEL_STAGES)),
     ("cache", Refusal::NotYet(PHASE_4)),
+    // Accepted to change nothing until Phase 4's cache: refused instead
+    // (ADR-0064, ADR-0049).
+    ("materialize", Refusal::NotYet(PHASE_4)),
     ("cache-repo", Refusal::NotYet(PHASE_4)),
     ("cache-ttl", Refusal::NotYet(PHASE_4)),
     ("cache-copy-layers", Refusal::NotYet(PHASE_4)),
@@ -651,9 +648,10 @@ fn prepass(all: &[OsString]) -> Prepass {
         if let Some((name, refusal)) = REFUSED.iter().find(|(n, _)| *n == name) {
             let reason = match refusal {
                 Refusal::Renamed(why) => format!("renamed in ranikust: {why}"),
-                Refusal::NotYet(why) | Refusal::OutOfScope(why) | Refusal::Unneeded(why) => {
-                    (*why).to_owned()
-                }
+                Refusal::NotYet(why)
+                | Refusal::OutOfScope(why)
+                | Refusal::Unneeded(why)
+                | Refusal::Refused(why) => (*why).to_owned(),
             };
             out.refused
                 .push(format!("kaniko's --{name} is not supported: {reason}"));

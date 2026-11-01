@@ -174,8 +174,6 @@ pub(crate) struct BuildConfig {
     pub(crate) ignore_paths: Vec<PathBuf>,
     /// `--single-snapshot`.
     pub(crate) single_snapshot: bool,
-    /// `--materialize`; no effect without a layer cache (Phase 4).
-    pub(crate) materialize: bool,
     /// Workers of the kaniko-mode walk (ADR-0039).
     pub(crate) snapshot_workers: NonZeroUsize,
     /// The requested mode.
@@ -382,6 +380,21 @@ impl BuildConfig {
                 path.display()
             )));
         }
+        // Said here, before any set-up: a path that cleans to `/` would keep
+        // the whole root out of every layer, and a malformed pattern would
+        // otherwise surface only once the ignore list is built.
+        for path in &args.ignore_paths {
+            if clean(path) == Path::new("/") {
+                return Err(Invalid(format!(
+                    "--ignore-path={}: it is the whole root, which would leave every layer \
+                     empty; name a directory or file in the image",
+                    path.display()
+                )));
+            }
+            if let Err(e) = rnk_rootfs::IgnoreList::new().insert_glob(path) {
+                return Err(Invalid(format!("--ignore-path={}: {e}", path.display())));
+            }
+        }
         Ok(Self {
             context: absolute(&context_with_sub_path(args)?),
             dockerfile: args.dockerfile.clone(),
@@ -407,7 +420,6 @@ impl BuildConfig {
             snapshot_mode: args.snapshot_mode.unwrap_or_default(),
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
             single_snapshot: args.single_snapshot,
-            materialize: args.materialize,
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
             mode: args.mode,
             state_dir: args
@@ -474,44 +486,43 @@ impl BuildConfig {
 
 /// What overlay mode makes of the kaniko-mode flags given in `args`
 /// (ADR-0040): the warnings for those that change nothing there
-/// (`--snapshot-mode`, `--snapshot-workers`, `--materialize`).
+/// (`--snapshot-mode`, `--snapshot-workers`).
 ///
 /// # Errors
 ///
-/// [`Invalid`] for those that would change the image: `--ignore-path` and
-/// `--single-snapshot` take effect in kaniko mode only (ADR-0049): overlay
-/// mode's layers never hold mounts, and squashing them costs a re-encode.
+/// [`Invalid`] for those that would change the image: `--ignore-path` takes
+/// effect in kaniko mode only (ADR-0049): overlay mode's layers never hold
+/// mounts. `--single-snapshot` is offered in no mode until Q-420 is
+/// answered.
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
-    let mut changes = Vec::new();
-    if !args.ignore_paths.is_empty() {
-        changes.push("--ignore-path");
-    }
     if args.single_snapshot {
-        changes.push("--single-snapshot");
+        return Err(Invalid(SINGLE_SNAPSHOT.to_owned()));
     }
-    if !changes.is_empty() {
-        return Err(Invalid(format!(
-            "{} take effect in kaniko mode only (ADR-0049); overlay mode would build a \
-             different image: drop them, or use --mode=kaniko",
-            changes.join(", ")
-        )));
+    if !args.ignore_paths.is_empty() {
+        return Err(Invalid(
+            "--ignore-path takes effect in kaniko mode only (ADR-0049); overlay mode would \
+             build a different image: drop it, or use --mode=kaniko outside a container"
+                .to_owned(),
+        ));
     }
     let mut warnings = Vec::new();
     if args.snapshot_mode.is_some() {
         warnings.push("--snapshot-mode is ignored in overlay mode (ADR-0023)".to_owned());
     }
-    for (given, flag) in [
-        (args.snapshot_workers.is_some(), "--snapshot-workers"),
-        (args.materialize, "--materialize"),
-    ] {
-        if given {
-            warnings.push(format!(
-                "{flag} is ignored in overlay mode, where it changes nothing"
-            ));
-        }
+    if args.snapshot_workers.is_some() {
+        warnings.push(
+            "--snapshot-workers is ignored in overlay mode, where it changes nothing".to_owned(),
+        );
     }
     Ok(warnings)
 }
+
+/// The refusal of `--single-snapshot`, in every mode, until a measurement
+/// settles whether one walk at the end of the build is worth the per-step
+/// layers it gives up [open: Q-420].
+pub(crate) const SINGLE_SNAPSHOT: &str = "--single-snapshot is not offered yet: whether one \
+     snapshot at the end beats a snapshot per step is still being measured (Q-420); drop the \
+     flag";
 
 /// A value enum's command-line name.
 pub(crate) fn name<T: ValueEnum>(value: T) -> String {

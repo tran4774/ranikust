@@ -27,7 +27,7 @@ fn both_probes_succeeding_pick_overlay_as_root() {
 }
 
 #[test]
-fn a_refused_overlay_mount_needs_kaniko_mode_as_root_but_a_host_error_does_not() {
+fn a_refused_overlay_mount_routes_root_to_kaniko_stages_but_a_host_error_does_not() {
     let mount = SnapshotError::Probe {
         step: "mount",
         source: Box::new(SnapshotError::Mount {
@@ -40,7 +40,8 @@ fn a_refused_overlay_mount_needs_kaniko_mode_as_root_but_a_host_error_does_not()
         }),
     };
     let r = overlay_refusal(&mount, 0);
-    assert_eq!(r.guidance, NEEDS_KANIKO_MODE);
+    assert_eq!(r.guidance, OVERLAY_UNUSABLE);
+    assert!(r.overlay_unusable() && !r.needs_kaniko_mode());
     assert!(
         r.reason.contains("EINVAL") || r.reason.contains("Invalid"),
         "{r}"
@@ -53,6 +54,34 @@ fn a_refused_overlay_mount_needs_kaniko_mode_as_root_but_a_host_error_does_not()
         source: io::Error::from_raw_os_error(EACCES),
     };
     assert_eq!(overlay_refusal(&host, 0).guidance, "");
+    assert!(!overlay_refusal(&host, 0).overlay_unusable());
+}
+
+#[test]
+fn a_failed_sandbox_step_never_routes_to_kaniko_stages() {
+    // Kaniko mode off `/` needs the same sandbox: `--mode=auto` must not
+    // turn a blocked sandbox step into a kaniko-mode build.
+    let r = pick::<()>(
+        Err(SandboxError::Setup {
+            step: Step::MountProc,
+            source: io::Error::from_raw_os_error(EACCES),
+        }),
+        overlay_ok(),
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(r.guidance, SANDBOX_BLOCKED);
+    assert!(!r.overlay_unusable() && !r.needs_kaniko_mode());
+}
+
+#[test]
+fn no_guidance_sends_a_user_back_to_the_mode_they_used() {
+    // The refusals `--mode=auto` can show never tell its user to use
+    // `--mode=auto` (Phase 2 criterion 8, review finding #2).
+    for text in [OVERLAY_UNUSABLE, ON_OVERLAYFS, SANDBOX_BLOCKED] {
+        assert!(!text.contains("use --mode=auto"), "{text}");
+    }
+    assert!(NEEDS_KANIKO_MODE.contains("drop --mode=overlay"));
 }
 
 #[test]

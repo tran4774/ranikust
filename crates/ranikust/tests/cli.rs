@@ -142,12 +142,23 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
         &[],
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("Phase 2"), "{}", stderr(&out));
-    // In overlay mode they would change the image: refused before the
-    // set-up (ADR-0049).
+    // Offered in no mode until Q-420 is answered.
+    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    // Nor in overlay mode, whose refusal no longer sends the user to
+    // `--mode=kaniko` (criterion 8, review finding #1).
     let out = ranikust(
         tmp.path(),
         &["--no-push", "--mode=overlay", "--single-snapshot"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("--mode=kaniko"), "{}", stderr(&out));
+    // `--ignore-path` would change an overlay-mode image: refused before
+    // the set-up (ADR-0049).
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--mode=overlay", "--ignore-path=/x"],
         &[],
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
@@ -156,6 +167,30 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
         "{}",
         stderr(&out)
     );
+    // The whole root or a malformed pattern: refused while the flags are
+    // read, exit 2, nothing created (review finding #7).
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    for bad in ["--ignore-path=/..", "--ignore-path=/x/[a"] {
+        let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko", &arg, bad], &[]);
+        assert_eq!(out.status.code(), Some(2), "{bad}: {}", stderr(&out));
+        assert!(!state.exists(), "{bad}: nothing is created");
+    }
+}
+
+/// `--materialize` changes nothing until Phase 4's cache: refused rather than
+/// accepted to be ignored (ADR-0064), before any work.
+#[test]
+fn materialize_is_refused_before_any_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    for flag in ["--materialize", "--materialize=true", "--materialize=false"] {
+        let out = ranikust(tmp.path(), &["--no-push", &arg, flag], &[]);
+        assert_eq!(out.status.code(), Some(2), "{flag}: {}", stderr(&out));
+        assert!(stderr(&out).contains("Phase 4"), "{flag}: {}", stderr(&out));
+        assert!(!state.exists(), "{flag}: nothing is created");
+    }
 }
 
 #[test]
