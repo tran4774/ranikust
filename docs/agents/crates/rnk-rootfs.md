@@ -139,7 +139,14 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   deleted whole) nor an outside link whose names it all deletes;
   `move_sub_root` refuses `/` too, moves between two
   roots' descriptors, refuses a swapped name (a directory or a symlink),
-  never replaces a name taken and takes only plain names.
+  never replaces a name taken and takes only plain names. Red team of
+  `prune` (`red_team_prune_*`): an inode with a kept name, a deleted one
+  and one outside is reported in every walk order (the deleted name at
+  the top or in a directory deleted whole), a symlink hardlinked from
+  outside too, a FIFO hardlinked from outside and pruned everywhere not;
+  a thread exchanging a walked directory with a symlink out never gets
+  anything outside deleted or retimed; a directory of 100,000 entries
+  pruned to what a filtered copy gives, its times kept.
 - **T1** (written, `#[ignore]`): foreign owners and setuid in `extract`.
 - **T2** (VM only, `just test-vm unit`): exp-09's D2,
   `mounts_inside_the_root_survive`: a bind mount of a directory on the
