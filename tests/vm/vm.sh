@@ -29,7 +29,7 @@
 #                        default 3600: one VM at a time on this machine
 #   RANIKUST_VM_CPUS     vCPUs, default 4
 #   RANIKUST_VM_MEM      memory in MiB, default 4096 (12288 with e2e)
-#   RANIKUST_VM_DISK     disk size in M, G or T, default 20G (80G with e2e);
+#   RANIKUST_VM_DISK     disk size in M, G or T, default 20G (40G with e2e);
 #                        the host needs that much free, less 4 GiB
 #   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout e2e reads, default
 #                        ../nextjs-kaniko next to the repository
@@ -82,9 +82,11 @@ wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done
 # guest's own system use without writing to the overlay. Checked before
 # anything is written or locked.
 DISK="${RANIKUST_VM_DISK:-20G}"
-# Three builders of W1 (about 3 GB of rootfs each), their images in the
-# registry and the npm proxy's storage.
-wants e2e && DISK="${RANIKUST_VM_DISK:-80G}"
+# e2e: the reference images, the npm proxy's storage, one build's root and
+# image at a time (the registry is pruned between builds): the guest
+# peaked at 6.3 GB on W1 and W3 (2026-11-01), so 40G leaves room for W2
+# and many rounds.
+wants e2e && DISK="${RANIKUST_VM_DISK:-40G}"
 disk_gib() {
   case "$1" in
     *[Tt]) echo $((${1%?} * 1024)) ;;

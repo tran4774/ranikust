@@ -244,7 +244,8 @@ start any suite when the host has less free space where the VM's disk
 lives than the disk's size (`RANIKUST_VM_DISK`) less 4 GiB, which the
 cloud image and the guest's system use without writing to the overlay;
 it checks before it writes or locks anything. The
-VM gets 12 GiB and an 80 GB disk unless `RANIKUST_VM_MEM`/`_DISK` say
+VM gets 12 GiB and a 40 GB disk (it peaked at 6.3 GB on W1 and W3 with
+the registry pruned; it was 80 GB before) unless `RANIKUST_VM_MEM`/`_DISK` say
 otherwise; when the host has less than 12 GiB plus 3 GiB available, the
 default shrinks to fit (never below 8 GiB) and the run says so. A guest
 fills its memory with page cache, which QEMU keeps: on a host short of
