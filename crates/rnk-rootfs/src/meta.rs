@@ -373,7 +373,7 @@ pub(crate) fn read_xattrs(
 /// An xattr overlayfs itself keeps on a layer's entries (`trusted.overlay.*`,
 /// `user.overlay.*`), as opposed to the escaped content xattrs
 /// `user.overlay.overlay.*` (`ADR-0016`): what a layer and a copy leave out
-/// ([`Xattrs::Layer`], [`Xattrs::Copy`]) and [`crate::prune`] removes.
+/// (`Xattrs::Layer`, `Xattrs::Copy`) and [`crate::prune`] removes.
 #[must_use]
 pub fn is_overlay_own(name: &[u8]) -> bool {
     if name.starts_with(b"user.overlay.overlay.") {
