@@ -1623,7 +1623,7 @@ fn red_team_a_swap_in_the_parent_during_the_hand_over_never_leaves_it() {
         });
         let base = parent.mount_point().join("a");
         let stop = std::sync::atomic::AtomicBool::new(false);
-        std::thread::scope(|s| {
+        let taken = std::thread::scope(|s| {
             s.spawn(|| {
                 let (real, parked, link) = (base.join("b"), base.join("b.p"), base.join("b.l"));
                 if symlink(&outside, &link).is_err() {
@@ -1640,19 +1640,23 @@ fn red_team_a_swap_in_the_parent_during_the_hand_over_never_leaves_it() {
                     }
                 }
             });
-            match f.stages.prepare_last(&parent) {
-                Ok(c) => {
-                    ok += 1;
-                    stop.store(true, Ordering::Relaxed);
-                    for (p, _) in listing(c.mount_point()) {
-                        assert_ne!(p.file_name().unwrap(), "sentinel", "{p:?}");
-                    }
-                    c.release().unwrap();
-                }
-                Err(_) => failed += 1,
-            }
+            let r = f.stages.prepare_last(&parent);
             stop.store(true, Ordering::Relaxed);
+            r
         });
+        // Listed once the swapper is gone: a rename whose path walk passed
+        // the parent's root before the move lands in the moved tree after
+        // it (seen on ext4), as any writer left running would.
+        match taken {
+            Ok(c) => {
+                ok += 1;
+                for (p, _) in listing(c.mount_point()) {
+                    assert_ne!(p.file_name().unwrap(), "sentinel", "{p:?}");
+                }
+                c.release().unwrap();
+            }
+            Err(_) => failed += 1,
+        }
         parent.release().unwrap();
         assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"host");
         assert!(fs::symlink_metadata(outside.join("fifo")).is_ok());
