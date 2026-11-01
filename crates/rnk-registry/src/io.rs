@@ -137,8 +137,9 @@ pub struct RemoteBlob {
 /// in memory at a time.
 pub const PIPE_BYTES: usize = 256 * 1024;
 
-/// Bytes read per chunk from a file body.
-const FILE_CHUNK: usize = 256 * 1024;
+/// Bytes read per chunk of a push body: from a file, or from the pipe a
+/// pulled blob streams through.
+const READ_CHUNK: usize = 256 * 1024;
 
 /// A push body as `oci-client` takes it.
 pub(crate) type PushStream = BoxStream<'static, Result<Bytes, OciDistributionError>>;
@@ -215,13 +216,13 @@ async fn file_body(
     Ok((counted_chunks(file, count).boxed(), len))
 }
 
-/// `reader` read in chunks of [`FILE_CHUNK`], each counted by `count` as
+/// `reader` read in chunks of [`READ_CHUNK`], each counted by `count` as
 /// it is yielded.
 fn counted_chunks<R: AsyncRead + Send + 'static>(
     reader: R,
     count: impl Fn(&Bytes) + Send + 'static,
 ) -> impl Stream<Item = Result<Bytes, OciDistributionError>> + Send + 'static {
-    tokio_util::io::ReaderStream::with_capacity(reader, FILE_CHUNK).map(move |r| {
+    tokio_util::io::ReaderStream::with_capacity(reader, READ_CHUNK).map(move |r| {
         let chunk = r.map_err(OciDistributionError::IoError)?;
         count(&chunk);
         Ok(chunk)
