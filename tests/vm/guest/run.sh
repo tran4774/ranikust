@@ -19,6 +19,12 @@ mkdir -p out
   echo "cpus: $(nproc)"
   echo "memory: $(awk '/^MemTotal/ { printf "%d MiB", $2 / 1024 }' /proc/meminfo); swap: $(awk '/^SwapTotal/ { printf "%d MiB", $2 / 1024 }' /proc/meminfo)"
   echo "vm: ${RANIKUST_VM_SIZE:-unknown}"
+  # What must be this run's own, never the base image's: one login user with
+  # one key (this run's), host keys made at this boot, a machine ID of its own.
+  echo "users: $(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 { printf "%s ", $1 }')"
+  echo "authorized keys: $(wc -l <"$HOME/.ssh/authorized_keys")"
+  echo "ssh host key: $(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2), made $(stat -c %y /etc/ssh/ssh_host_ed25519_key.pub | cut -d. -f1), booted $(uptime -s)"
+  echo "machine id: $(cat /etc/machine-id)"
 } | tee out/env.txt
 
 status=0

@@ -23,6 +23,9 @@ runcmd:
   - [apt-get, clean]
   - [sh, -c, 'rm -f /etc/ssh/ssh_host_*']
   - [sh, -c, 'truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id']
+  # The disk has discard: freed blocks (the removed keys among them) go, and
+  # the flattened image is smaller.
+  - [fstrim, --all]
   # Read by vm.sh from the serial log: the image is complete.
   - [sh, -c, 'command -v docker && command -v zstd && systemctl is-enabled docker && echo ranikust-golden-ready >/dev/ttyS0']
 
