@@ -185,11 +185,8 @@ fn release_root<R: StageRootfs>(what: &str, root: R) {
 fn stage_readers(graph: &StageGraph) -> Vec<usize> {
     let mut n = vec![0usize; graph.stages.len()];
     for &s in &graph.needed {
-        let bases = match graph.stages.get(s).map(|node| &node.base) {
-            Some(rnk_dockerfile::Base::Stage(b)) => vec![*b],
-            _ => Vec::new(),
-        };
-        for r in bases.into_iter().chain(referenced_stages(graph, s)) {
+        let base = graph.stages.get(s).and_then(|node| base_stage(&node.base));
+        for r in base.into_iter().chain(referenced_stages(graph, s)) {
             if let Some(c) = n.get_mut(r) {
                 *c += 1;
             }
@@ -206,6 +203,14 @@ fn stage_readers(graph: &StageGraph) -> Vec<usize> {
 /// so the choice must never depend on which reader finishes first.
 fn sole_readers(counts: &[usize]) -> Vec<bool> {
     counts.iter().map(|&n| n == 1).collect()
+}
+
+/// The stage a stage is built `FROM`, when it is built on one.
+fn base_stage(base: &rnk_dockerfile::Base) -> Option<usize> {
+    match base {
+        rnk_dockerfile::Base::Stage(b) => Some(*b),
+        rnk_dockerfile::Base::Scratch | rnk_dockerfile::Base::Image(_) => None,
+    }
 }
 
 /// The stages `index` reads with `COPY --from` or `RUN --mount from=`,
@@ -1398,10 +1403,11 @@ fn after_stage<S: Snapshotter>(
 ) where
     S::Root: Send + 'static,
 {
-    let base = match shared.graph.stages.get(index).map(|n| &n.base) {
-        Some(rnk_dockerfile::Base::Stage(b)) => Some(*b),
-        _ => None,
-    };
+    let base = shared
+        .graph
+        .stages
+        .get(index)
+        .and_then(|n| base_stage(&n.base));
     for r in base
         .into_iter()
         .chain(referenced_stages(&shared.graph, index))
@@ -1492,11 +1498,9 @@ where
         },
         // Per-stage directories: whether this stage is its base's only
         // reader, from the stage graph (ADR-0061, ADR-0062).
-        take_base: match (&node.base, folded_base) {
-            (rnk_dockerfile::Base::Stage(b), None) => {
-                shared.sole_reader.get(*b).copied().unwrap_or(false)
-            }
-            _ => false,
+        take_base: match (base_stage(&node.base), folded_base) {
+            (Some(b), None) => shared.sole_reader.get(b).copied().unwrap_or(false),
+            (None, _) | (Some(_), Some(_)) => false,
         },
     };
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
