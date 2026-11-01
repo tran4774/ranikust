@@ -656,10 +656,10 @@ fn foreign_owners_are_kept_raw() {
     assert_eq!((st.uid, st.gid, st.permissions()), (1000, 1000, 0o700));
 }
 
-/// Run by the T2 harness in the VM: device nodes need `CAP_MKNOD` in the
+/// T2c (the VM or a default rootful Docker run): device nodes need `CAP_MKNOD` in the
 /// initial user namespace.
 #[test]
-#[ignore = "T2: mknod of a real device needs CAP_MKNOD"]
+#[ignore = "T2c: default: mknod of real devices needs CAP_MKNOD"]
 fn device_nodes_are_created() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);

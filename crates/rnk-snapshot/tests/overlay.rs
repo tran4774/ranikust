@@ -172,7 +172,7 @@ fn assert_no_mounts_under(dir: &Path) {
 }
 
 #[test]
-#[ignore = "T2: mounts overlays; run as root in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts overlays"]
 fn overlay_probe_mounts_and_writes_through() {
     let dir = tempfile::Builder::new()
         .prefix("rnk-probe")
@@ -189,7 +189,7 @@ fn overlay_probe_mounts_and_writes_through() {
 }
 
 #[test]
-#[ignore = "T2: mounts overlays; run as root in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts overlays"]
 fn a_stage_root_gets_one_layer_per_instruction_with_the_probed_api() {
     let dir = tempfile::Builder::new()
         .prefix("rnk-probe")
@@ -200,13 +200,13 @@ fn a_stage_root_gets_one_layer_per_instruction_with_the_probed_api() {
 }
 
 #[test]
-#[ignore = "T2: mounts overlays; run as root in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts overlays"]
 fn a_stage_root_gets_one_layer_per_instruction_with_mount2() {
     layers_per_instruction(MountApi::Mount2);
 }
 
 #[test]
-#[ignore = "T2: mounts overlays; run as root in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts overlays"]
 fn mount2_takes_many_lowers_from_a_deep_state_directory() {
     // With absolute paths, about 90 lowers fit one page; with relative
     // names from a thread of its own (containerd's way, Q-151) the stack is
@@ -267,7 +267,7 @@ fn mount2_takes_many_lowers_from_a_deep_state_directory() {
 }
 
 #[test]
-#[ignore = "T2: mounts overlays; run as root in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts overlays"]
 fn a_scratch_stage_mounts_over_an_empty_lower() {
     let b = build(MountApi::Mount2);
     let mut stage = b.overlay.prepare(Base::Scratch).unwrap();

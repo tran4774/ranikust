@@ -13,16 +13,28 @@ than a regular user never run on a developer's machine.
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
 | T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit`, `smoke`, `e2e` and `push` suites |
+| T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)) | `unit-c` |
 | T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, aarch64 T0 under qemu-user, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
 
 ### Rules
 
 - T0 tests need no privileges and no network, and write only below a fresh
   temporary directory, which they remove on failure too.
-- A test that needs more than T0 is marked `#[ignore = "T1: <reason>"]` or
-  `#[ignore = "T2: <reason>"]`. Its harness runs it with
-  `cargo test -- --ignored` inside the right environment. Never remove the
-  `ignore` to run it by hand, and never run a T2 test on the host.
+- A test that needs more than T0 is marked `#[ignore = "T1: <reason>"]`,
+  `#[ignore = "T2c: <profile>: <reason>"]` or `#[ignore = "T2: <reason>"]`.
+  Its harness runs it with `cargo test -- --ignored` inside the right
+  environment. Never remove the `ignore` to run it by hand, and never run a
+  T2 or T2c test on the host.
+- A root test is T2c (profile `default`, `sysadmin` or `netadmin`: the
+  smallest it needs) unless one of these keeps it T2, in the VM only
+  ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)):
+  (1) a failure could harm the machine running it; (2) it asserts something
+  is blocked that a container's own guards (device cgroup, Docker's seccomp
+  profile and capability set, AppArmor) would block anyway, so it would pass
+  without proving anything (`nodev`, the bounding set, a refused device);
+  (3) it needs the host's own root (the `pivot_root` path, overlay as root
+  on a host, `CAP_SYS_RESOURCE`, cgroup v1); (4) it is an acceptance run or
+  a benchmark.
 - Running the `ranikust` binary in kaniko mode in a container builds on and
   empties that container's `/`; outside a container it builds in its state
   directory (ADR-0050). Outside the VM, run kaniko mode as root only in a
@@ -37,6 +49,7 @@ than a regular user never run on a developer's machine.
 | Purpose | Run | Where | Time |
 |---|---|---|---|
 | A branch's correctness | `just check`; T1 smoke cases in both modes (`rnk-vps-lane run <branch> 'RANIKUST_SMOKE_REGISTRY=mirror.gcr.io just smoke-case'`, and with `RANIKUST_CASE_MODE=kaniko`); VM `unit` and `quick` (`sg kvm -c 'just test-vm unit quick'`, `RANIKUST_QUICK_MODE=kaniko` for kaniko mode) | host or the VPS lane; the local VM | minutes |
+| The root tests of a branch that touches no VM-only path, or while the VM is busy | `just test-container unit-c` (T2c, three Docker profiles); the VM's `unit` still runs them too and is the reference before a merge that touches `rnk-sandbox`, `rnk-snapshot` mounts or `rnk-rootfs` deletion | the VPS lane (rootful Docker) | minutes |
 | A change to the e2e harness or to how builders are compared | the light e2e: `sg kvm -c 'just test-vm e2e'` (W0, every builder) | the local VM | a few minutes |
 | Performance numbers | the ultra benchmark: `sg kvm -c 'just test-vm ultra'` (nextjs-kaniko's W1–W3), only when the maintainer asks | the local VM, nothing else running on the host | tens of minutes per round |
 | Acceptance of a phase | the ultra benchmark with rounds: `RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`, only when the maintainer asks | the same | an hour or more |
@@ -86,7 +99,7 @@ root in a disposable QEMU/KVM VM, following
 runs as root on the host:
 
 1. **Build** on the host, as the user: the static musl test binaries of the
-   crates that hold `#[ignore = "T2: ..."]` tests (`unit`) and the
+   crates that hold `#[ignore = "T2: ..."]` and `"T2c: ..."` tests (`unit`) and the
    `smoke-build` example (`smoke`), with `cargo zigbuild`.
 2. **Fetch** the Ubuntu cloud image of `RANIKUST_VM_RELEASE` (`noble`,
    kernel 6.8, by default; `jammy`, kernel 5.15) and check its SHA-256
@@ -172,7 +185,7 @@ runs as root on the host:
 
 | Suite | What it runs |
 |---|---|
-| `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass. Among them experiment 09's deletion case D2 (`rnk-rootfs` `mounts_inside_the_root_survive`: a same-filesystem bind mount and a tmpfs inside a root survive its emptying, in a private mount namespace); D1 (emptying a container's `/` keeps its volumes and runtime files) is the `hygiene-mounts` smoke case in kaniko mode, and D3 is `ranikust`'s state-directory tests (`/`, the system directories, an unmarked non-empty directory, other users) and `rnk-store`'s lock of the state directory, since ADR-0050 replaced the workdir |
+| `unit` | Every test marked `#[ignore = "T2: ..."]` or `#[ignore = "T2c: ..."]` (the VM runs the container lane's tests too: it is the reference), found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass. Among them experiment 09's deletion case D2 (`rnk-rootfs` `mounts_inside_the_root_survive`: a same-filesystem bind mount and a tmpfs inside a root survive its emptying, in a private mount namespace); D1 (emptying a container's `/` keeps its volumes and runtime files) is the `hygiene-mounts` smoke case in kaniko mode, and D3 is `ranikust`'s state-directory tests (`/`, the system directories, an unmarked non-empty directory, other users) and `rnk-store`'s lock of the state directory, since ADR-0050 replaced the workdir |
 | `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image. The `ranikust` binary then builds `tests/smoke/e2e` in the same environment (the workdir a volume in Docker, since overlay refuses an upper directory on the container's own overlay root; the `SYS_ADMIN` variant has no `NET_ADMIN`, so it passes `--allow network.none-userns`, [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md), and the build checks `lo` is up). In the `SYS_ADMIN` variant a `RUN --network=none` without that flag must be refused naming it, and with it, after `modprobe ip_tables ip6_tables af_key` in the VM, `tests/smoke/netns-check.py` must find, as root in the `RUN`, loopback up and working; `EPERM` for `setns` into the user namespace owning the network namespace (`NS_GET_USERNS`), `unshare(CLONE_NEWUSER)`, `IPT_SO_SET_REPLACE`, `IPT_SO_GET_INFO`, `IP6T_SO_GET_INFO`, `TCP_REPAIR` and `socket(AF_KEY)`; `EPROTONOSUPPORT` for `NETLINK_NETFILTER` and `NETLINK_XFRM`; rtnetlink and audit netlink open; and a later `RUN --network=none useradd` must succeed: it must reach overlay mode as root with the same root entry and a real overlay probe (either mount API) and print a digest; no stub or secret may reach a blob, and Docker loads the tar and runs the image as user `app`. In every variant the e2e Dockerfile checks that a `RUN --network=none` sees only `lo` (in `/sys/class/net` and `/proc/net/dev`) and reaches nothing outside, and compares the secret by its sha256, so the value appears in no instruction. On the VM itself (Phase 1 acceptance): `--reproducible` must give one digest with `--jobs 1`, the default, 2 s later and with `--metrics-file`; the secret must be in no build log and no metrics report (`smoke_check_no_secret_in`); a cache mount written by one build must be read by the next with the same state directory, and not by a fresh one. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
 | `quick` | The quick smoke cases ([below](#quick-smoke-cases)) built by the `ranikust` binary as real root on the VM, Docker loading and running each image; `RANIKUST_QUICK_CASES` picks cases. A minute or two: the suite for a smoke test or a proof of concept that needs real root. Not part of the default `just test-vm` |
 | `e2e` | The light workload W0 ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust` in overlay mode, in kaniko mode on the `/` of a default `docker run` (`rk-kaniko`) and in kaniko mode as root on the VM (`rk-kaniko-host`, one directory per stage); times, image comparison, leaks, metrics. A few minutes with the VM's boot: the check of a change to the harness. Not part of the default `just test-vm` |
@@ -447,6 +460,98 @@ hosted runners have no reliable KVM) and an aarch64 guest.
 
 Also TODO: `just test-rootless` for tier T1, with the same rule that tests
 write only below a temporary directory.
+
+## The container lane (tier T2c)
+
+`just test-container [unit-c]` ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md))
+runs the `#[ignore = "T2c: <profile>: ..."]` tests as root in throwaway
+rootful Docker containers on the disposable test machine (the VPS), beside
+the VM. `tests/container/remote.sh` sends the current branch **as
+committed** through the lane helper (`RANIKUST_LANE`, default
+`rnk-vps-lane`: `sync <ref>`, then `run <ref> '<command>'`, whose exit
+status is the command's) and runs `tests/container/lane.sh` there, which:
+
+1. refuses, before anything else, unless the machine carries the marker
+   `/etc/ranikust/throwaway-test-host`: a regular file (not a link) owned
+   by root in a root-owned directory, neither writable by group or others,
+   holding this machine's `uname -n` (compared); then unless
+   `RANIKUST_CONTAINER_LANE=1` (set by `remote.sh`), when run as root, and
+   with rootless Docker or Podman; it locks the marker itself, read-only
+   (one lane run per machine, whoever starts it; build and container
+   children do not inherit the lock), and removes the labelled
+   (`org.ranikust.lane=t2c`) containers and images an interrupted run left;
+   it refuses when a test name is in two of the lists (VM-only, `default`,
+   `sysadmin`, `netadmin`), since tests are selected by name;
+2. lists the tests of each profile from the markers and builds the test
+   binaries of their crates as static musl binaries (`cargo-zigbuild test
+   --no-run`);
+3. builds an image (`tests/container/Dockerfile`: Ubuntu 24.04 by digest,
+   `iproute2`, `python3` for the Direct `RUN` attack tests) with the
+   binaries, the lists and
+   `tests/container/run-profile.sh` copied in; no volume ever;
+4. runs one container per profile, `--rm --network none`, tmpfs mounts
+   with device nodes allowed at `/work` (`TMPDIR`) and `/var/tmp` (the
+   overlay tests keep their state there; an overlay upper directory cannot
+   sit on the container's own overlay root), `--memory 6g --pids-limit
+   8192 --ulimit nofile=65536`, never `--privileged`:
+
+   | Profile | `docker run` options | Tests |
+   |---|---|---|
+   | `default` | none (Docker's default capabilities, seccomp, AppArmor) | Direct `RUN` on the container's `/`, `mknod` of real device nodes, `chown` to other users |
+   | `sysadmin` | `--cap-add SYS_ADMIN --security-opt apparmor=unconfined` | overlay mounts, mounts in a private mount namespace |
+   | `netadmin` | `sysadmin` plus `--cap-add NET_ADMIN` | user and network namespaces with loopback up |
+
+5. in each container, runs the profile's **control checks** first: root;
+   a 1:5 device node in `TMPDIR` opens (Docker's `--tmpfs` is `nodev` by
+   default, which would let a device test pass without opening anything);
+   block nodes can be made; `chown`; `setgroups`; for `default`, exactly
+   Docker's default bounding set (`00000000a80425fb`) and no mount
+   namespace; for `sysadmin`/`netadmin`, a private mount namespace with a
+   tmpfs, an overlay mount in `/work` and in `/var/tmp`, a user namespace;
+   for `netadmin`, loopback up
+   in a new network namespace, and for `sysadmin` no `NET_ADMIN`. A failed
+   check fails the run (exit 3): nothing is skipped;
+6. then runs every test of the profile with `--ignored --exact
+   --test-threads=1`, by full path (each ignored test of a binary whose
+   last path component is listed, so a VM-only test whose name contains a
+   listed one never runs here; the VM's `unit` suite selects the same
+   way), every binary even after one fails; each test must run exactly
+   once and pass (`T2c <profile> tests: N passed of N listed`).
+
+The results are each container's output, written by the shell on the test
+machine to `target/container/results/<profile>.log` there; locally the
+whole run is in `target/container/last.log`. The image and any container
+left are removed when the run ends, interrupted or not.
+
+**One-time setup of a test machine** (by its owner, as root, only on a
+disposable machine, never on a developer's machine):
+
+```sh
+sudo install -d -m 0755 /etc/ranikust
+uname -n | sudo tee /etc/ranikust/throwaway-test-host >/dev/null
+sudo chmod 0644 /etc/ranikust/throwaway-test-host
+```
+
+plus rootful Docker with the user in the `docker` group, `jq`, `flock`
+and the toolchain of the VPS lane (Rust, `cargo-zigbuild`, zig).
+
+**Accepted residual risk:** the `sysadmin` and `netadmin` profiles
+(`SYS_ADMIN`, AppArmor unconfined, `NET_ADMIN`; Docker's default seccomp
+profile kept) are as good as root on the test machine's kernel (for
+example, a test or a bug could remount `/proc/sys` read-write and set
+`kernel.core_pattern`). The machine's disposability is what makes that
+acceptable, so the marker check is load-bearing: never create the marker
+anywhere else, and treat a machine that carries it as one to rebuild, not
+to trust.
+
+Tests that stay T2 (the VM only), and why:
+
+| Test | Crate | Why not in a container |
+|---|---|---|
+| `a_direct_run_on_slash_keeps_only_dockers_capabilities` | `rnk-sandbox` | (2) a default container already has only Docker's set: it would pass without proving the drop |
+| `a_mount_below_the_root_is_nodev_in_the_run`, `red_team_no_mount_of_the_root_tree_lets_a_device_node_open` | `rnk-sandbox` | (2)/(3) the full sandbox takes Docker's no-`pivot_root` fallback there, and the device cgroup also refuses most nodes, so `nodev` is not what is proven |
+| `probe_reaches_exec_as_root`, `a_run_joins_a_held_network_namespace` | `rnk-sandbox` | (3) both require `RootEntry::PivotRoot`, which Docker's seccomp profile refuses |
+| `direct_runs_in_a_chroot_with_placed_files_as_root` | `rnk-sandbox` | (3) raises the `RLIMIT_CORE` hard limit, which needs `CAP_SYS_RESOURCE` |
 
 ## aarch64 under qemu-user
 

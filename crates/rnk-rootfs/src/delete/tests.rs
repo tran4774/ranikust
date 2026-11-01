@@ -217,14 +217,14 @@ impl Drop for Detach {
     }
 }
 
-/// D2 of experiment 09, T2 (root, the VM only): emptying a root keeps a
+/// D2 of experiment 09, T2c (root, the VM or a rootful Docker run with SYS_ADMIN): emptying a root keeps a
 /// bind mount of a directory on the **same filesystem** (same `st_dev`,
 /// so only the mount id tells it apart) and a tmpfs, with what they hold,
 /// and a symlink and a hardlink pointing at them change nothing. The test
 /// runs on a thread of its own in a new mount namespace, every mount
 /// private there, so nothing it mounts reaches another namespace.
 #[test]
-#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts in a private mount namespace"]
 fn mounts_inside_the_root_survive() {
     std::thread::spawn(|| {
         use rustix::mount::{MountFlags, MountPropagationFlags, mount, mount_bind, mount_change};
@@ -640,7 +640,7 @@ fn prune_does_not_report_an_outside_link_it_deletes() {
 /// ADR-0061: a mount below the root is refused, never pruned across, and
 /// nothing on it is touched; a copy refuses one too.
 #[test]
-#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts in a private mount namespace"]
 fn prune_refuses_a_mount_below_the_root() {
     std::thread::spawn(|| {
         use rustix::mount::{MountPropagationFlags, mount_bind, mount_change};

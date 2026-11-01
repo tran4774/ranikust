@@ -272,9 +272,13 @@ smoke-case *names:
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust --bin ranikust
     tests/smoke/run-cases.sh "${CARGO_TARGET_DIR:-$PWD/target}/{{ musl_target }}/release/ranikust" {{ names }}
 
-# Tier T2 suites (`unit`: the `#[ignore = "T2: ..."]` tests; `smoke`: smoke-build as real root and in rootful Docker; `quick`: the quick smoke cases as real root; `e2e`, only when named, a large benchmark: the nextjs-kaniko workloads against kaniko and BuildKit; `push`, only when named: pushes to a loopback and the host's test registries, needs `just registry-up`) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
+# Tier T2 suites (`unit`: every `#[ignore = "T2: ..."]` and `"T2c: ..."` test; `smoke`: smoke-build as real root and in rootful Docker; `quick`: the quick smoke cases as real root; `e2e`, only when named: the light W0 workload against kaniko and BuildKit; `ultra`, only when named and asked for: the W1-W3 benchmark; `push`, only when named: pushes to a loopback and the host's test registries, needs `just registry-up`) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
 test-vm *suites:
     tests/vm/vm.sh {{ suites }}
+
+# Tier T2c (ADR-0063): the `#[ignore = "T2c: <profile>: ..."]` tests as root in throwaway rootful Docker containers (default, +SYS_ADMIN, +NET_ADMIN; never --privileged, no host volume) on the disposable test machine, through the lane helper (RANIKUST_LANE, default rnk-vps-lane). Sends the current branch as committed. Suites: `unit-c`.
+test-container *suites:
+    bash tests/container/remote.sh {{ suites }}
 
 # Start the test registries (tests/registry/compose.yaml): plain HTTP on 127.0.0.1:5000 and HTTPS with a self-signed CA and basic auth on 127.0.0.1:5443, data in tests/registry/_data; then push and read back an image in each. Requires podman (compose), openssl, python3-bcrypt, skopeo.
 registry-up:

@@ -223,6 +223,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   checked on the first round only (`RANIKUST_E2E_CHECK_ALL=1` for every
   round), and flattening an image is much faster (whiteouts applied to a
   whole subtree at once, each layer read once per run).
+- A container test lane (tier T2c, ADR-0063): the 25 root tests that mean
+  the same in a container are marked `#[ignore = "T2c: <profile>: ..."]` and
+  `just test-container unit-c` runs them as root in throwaway rootful Docker
+  containers on the test machine (profiles `default`, `sysadmin`,
+  `netadmin`; never `--privileged`, no host volume, no network), each
+  profile after control checks that the container allows what its tests
+  exercise and no more. The VM's `unit` suite still runs them too.
 
 ### Changed
 

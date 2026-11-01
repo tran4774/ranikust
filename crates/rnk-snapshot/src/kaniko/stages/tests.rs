@@ -347,13 +347,13 @@ impl Drop for Detach {
     }
 }
 
-/// T2 (root, the VM only): a mount below a stage root is never crossed by
+/// T2c (root, the VM or a rootful Docker run with SYS_ADMIN): a mount below a stage root is never crossed by
 /// the release, which reports it instead of deleting what the mount
 /// shows. The whole test runs on a thread of its own in a new mount
 /// namespace, all mounts private there, so nothing it mounts can reach
 /// another namespace; the stage is made and released in that namespace.
 #[test]
-#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts in a private mount namespace"]
 fn release_never_crosses_a_mount_below_a_stage_root() {
     std::thread::spawn(|| {
         use rustix::thread::UnshareFlags;
@@ -388,11 +388,11 @@ fn release_never_crosses_a_mount_below_a_stage_root() {
     .unwrap();
 }
 
-/// T2 (root, the VM only): device nodes, FIFOs and sockets a parent's `RUN`
+/// T2c (root, the VM or a default rootful Docker run): device nodes, FIFOs and sockets a parent's `RUN`
 /// made are not made again in a child built `FROM` it (ADR-0041, ADR-0059);
 /// its files still are.
 #[test]
-#[ignore = "T2: mknod as real root; run in the test VM only"]
+#[ignore = "T2c: default: mknod of real devices needs CAP_MKNOD"]
 fn a_child_never_gets_the_device_nodes_a_parent_made() {
     let f = Fixture::new();
     let mut parent = f.stages.prepare(Base::Scratch).unwrap();
@@ -1712,11 +1712,11 @@ fn red_team_a_tree_deeper_than_path_max_is_handed_over_and_released() {
     assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
 }
 
-/// T2 (root, the VM only): device nodes a parent made, one with two names,
+/// T2c (root, the VM or a default rootful Docker run): device nodes a parent made, one with two names,
 /// nested or at the top, are not handed over, nor its FIFOs and sockets
 /// (ADR-0041, ADR-0061); its files are.
 #[test]
-#[ignore = "T2: mknod as real root; run in the test VM only"]
+#[ignore = "T2c: default: mknod of real devices needs CAP_MKNOD"]
 fn red_team_a_hand_over_never_gives_the_child_device_nodes() {
     let f = Fixture::new();
     let mut parent = f.stages.prepare(Base::Scratch).unwrap();
@@ -1768,13 +1768,13 @@ fn red_team_a_hand_over_never_gives_the_child_device_nodes() {
     assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
 }
 
-/// T2 (root, the VM only): a mount below the parent's root (a volume with
+/// T2c (root, the VM or a rootful Docker run with SYS_ADMIN): a mount below the parent's root (a volume with
 /// a FIFO and a file) makes the hand-over fail: nothing is pruned across
 /// it, nothing on it moves, the new stage directory goes, and the parent's
 /// release does not cross it either. On a thread of its own in a new mount
 /// namespace, every mount private there.
 #[test]
-#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+#[ignore = "T2c: sysadmin: mounts in a private mount namespace"]
 fn red_team_a_hand_over_refuses_a_mount_below_the_parent_and_crosses_nothing() {
     std::thread::spawn(|| {
         use rustix::thread::UnshareFlags;

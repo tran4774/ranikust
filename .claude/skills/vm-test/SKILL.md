@@ -13,7 +13,7 @@ description is in `docs/testing.md#the-vm-harness-tier-t2`.
 
 ```sh
 just test-vm              # unit and smoke, Ubuntu 24.04 (kernel 6.8)
-just test-vm unit         # only the #[ignore = "T2: ..."] tests
+just test-vm unit         # only the #[ignore = "T2: ..."] and "T2c: ..." tests
 just test-vm quick        # the quick smoke cases (tests/smoke/cases) as real root
 RANIKUST_QUICK_CASES="run copy" just test-vm quick   # some of them
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
@@ -78,10 +78,15 @@ failing lines in your report; a run that did not happen is "not run", not
 
 ## Add to it
 
-- **A Rust test that needs root:** mark it `#[ignore = "T2: <why>"]` in a
-  crate's tests. The `unit` suite finds it by the `fn` name under the
-  attribute and fails unless every listed test runs exactly once, so keep
-  T2 test names unique across the workspace.
+- **A Rust test that needs root:** mark it `#[ignore = "T2c: <profile>:
+  <why>"]` when it means the same in a throwaway rootful Docker container
+  (profile `default`, `sysadmin` or `netadmin`; `just test-container
+  unit-c` runs it on the VPS, ADR-0063), else `#[ignore = "T2: <why>"]`
+  (VM only: a failure could harm the machine, a container's guards would
+  make it pass vacuously, or it needs the host's own root; the rules are in
+  `docs/testing.md`). The `unit` suite runs both, finds each by the `fn`
+  name under the attribute and fails unless every listed test runs exactly
+  once, so keep root test names unique across the workspace.
 - **A Dockerfile feature to check end to end:** a case in
   `tests/smoke/cases/<name>/` (`Dockerfile`, a tiny context, `case.sh`);
   it runs at T1 (`just smoke-case <name>`) and T2 (`quick`) alike.

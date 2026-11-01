@@ -361,10 +361,10 @@ fn concurrent_swaps_never_leave_either_root() {
     }
 }
 
-/// Run by the T2 harness in the VM: device nodes need `CAP_MKNOD`, foreign
+/// T2c (the VM or a default rootful Docker run): device nodes need `CAP_MKNOD`, foreign
 /// owners root.
 #[test]
-#[ignore = "T2: mknod of a real device and chown to other users need root"]
+#[ignore = "T2c: default: mknod of real devices and chown to other users need root"]
 fn device_nodes_and_foreign_owners_are_copied() {
     let s = Fixture::new();
     fs::create_dir(s.host("a")).unwrap();

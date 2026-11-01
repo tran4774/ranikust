@@ -257,7 +257,8 @@ done
 zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}" 9>&-; }
 
 if wants unit; then
-  # T2 tests: every `#[ignore = "T2: ..."]` and the name of the fn under it.
+  # Root tests: every `#[ignore = "T2: ..."]` and `"T2c: ..."` (the VM is the
+  # reference for the container lane too, ADR-0063) and the fn under it.
   (cd "$REPO" && grep -rn --include='*.rs' -A3 '#\[ignore = "T2' crates) |
     sed -nE 's/^.*fn ([A-Za-z0-9_]+).*$/\1/p' | sort -u >"$STAGE/t2-tests.txt"
   # The crates holding them.
