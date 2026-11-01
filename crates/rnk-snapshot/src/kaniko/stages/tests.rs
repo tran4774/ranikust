@@ -931,10 +931,14 @@ fn set_times(p: &Path, secs: i64) {
     .unwrap();
 }
 
+/// Path, mode, owner, size, mtime (seconds, nanoseconds), content or link
+/// target, and hardlink group.
+type FullEntry = (PathBuf, u32, u32, u64, i64, i64, Vec<u8>, PathBuf);
+
 /// Every entry below `dir` as a layer takes it: type and mode, owner, size,
 /// modification time, content or link target, and the first path of its
 /// hardlink group; inode numbers, access and change times left out.
-fn full_listing(dir: &Path) -> Vec<(PathBuf, u32, u32, u64, i64, i64, Vec<u8>, PathBuf)> {
+fn full_listing(dir: &Path) -> Vec<FullEntry> {
     use std::os::unix::ffi::OsStringExt as _;
     let mut all = Vec::new();
     let mut stack = vec![dir.to_owned()];
@@ -1072,7 +1076,10 @@ fn the_last_reader_takes_the_parent_over_and_gets_what_a_copy_gets() {
         "moved, not copied"
     );
     assert!(fs::symlink_metadata(parent.mount_point()).is_err());
-    let (a, b) = (full_listing(copied.mount_point()), full_listing(taken.mount_point()));
+    let (a, b) = (
+        full_listing(copied.mount_point()),
+        full_listing(taken.mount_point()),
+    );
     assert_eq!(a, b);
     for gone in ["proc", "run/fifo", "run/sock"] {
         assert!(

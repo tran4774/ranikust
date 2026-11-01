@@ -286,6 +286,7 @@ fn build_in(
             } else {
                 &[]
             },
+            base_readers: None,
         };
         match build_stage(&cx, input) {
             Ok(d) => {

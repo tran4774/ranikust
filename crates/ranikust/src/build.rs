@@ -13,13 +13,17 @@
 //! no later unit needs, and runs `RUN` with `Isolation::Direct`
 //! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`); kaniko mode
 //! off `/` gives every stage a directory of its own and schedules them as
-//! overlay mode does (`#per-stage-directories`, ADR-0059).
+//! overlay mode does (`#per-stage-directories`, ADR-0059). There, each
+//! stage counts the stages still to read it: the last `FROM <stage>` takes
+//! the directory over instead of copying it, and a directory nobody reads
+//! any more is released at once, on a thread of its own, the build's end
+//! waiting for it (ADR-0061).
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
@@ -38,7 +42,7 @@ use rnk_sched::{
     CancellationToken, PrepareJob, Scheduler, StageJob, StageRunner, Unit, own_root_units,
     shared_root_units,
 };
-use rnk_snapshot::{Kaniko, KanikoStages, Overlay, Snapshotter};
+use rnk_snapshot::{Kaniko, KanikoStages, Overlay, Snapshotter, StageRootfs};
 use rnk_store::Store;
 
 use crate::config::{self, BuildConfig};
@@ -98,6 +102,109 @@ struct Shared<S: Snapshotter> {
     /// Every root made, for the release at the end.
     stages: Mutex<Vec<(usize, Arc<Stage<S>>)>>,
     images: Mutex<Vec<Arc<ImageRoot<S>>>>,
+    /// Kaniko mode off `/` (ADR-0061): per stage, the readers of its root
+    /// still to read it (`stage_readers`); empty in the other modes.
+    readers: Vec<AtomicUsize>,
+    /// Kaniko mode off `/`: releases roots nobody reads any more while the
+    /// build goes on; `None` in the other modes.
+    releaser: Option<Releaser<S::Root>>,
+}
+
+/// Releases stage roots on one thread of its own, so that deleting a
+/// directory nobody reads any more is off the stages' way (ADR-0061). The
+/// build's end waits for it ([`Releaser::finish`]) before the store closes.
+struct Releaser<R> {
+    queue: Mutex<Option<std::sync::mpsc::Sender<(String, R)>>>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl<R: StageRootfs + Send + 'static> Releaser<R> {
+    fn start() -> Result<Self, String> {
+        let (queue, roots) = std::sync::mpsc::channel::<(String, R)>();
+        let worker = std::thread::Builder::new()
+            .name("release".to_owned())
+            .spawn(move || {
+                for (what, root) in roots {
+                    release_root(&what, root);
+                }
+            })
+            .map_err(|e| format!("starting the release thread: {e}"))?;
+        Ok(Self {
+            queue: Mutex::new(Some(queue)),
+            worker: Mutex::new(Some(worker)),
+        })
+    }
+
+    /// Queues `root` for release; released here when the thread is gone.
+    fn release(&self, what: String, root: R) {
+        let queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        let back = match queue.as_ref() {
+            Some(q) => q.send((what, root)).err().map(|e| e.0),
+            None => Some((what, root)),
+        };
+        drop(queue);
+        if let Some((what, root)) = back {
+            release_root(&what, root);
+        }
+    }
+
+    /// Waits for every root queued so far to be released.
+    fn finish(&self) {
+        drop(
+            self.queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+        let worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(w) = worker
+            && w.join().is_err()
+        {
+            tracing::warn!("the release thread panicked; the next build cleans up");
+        }
+    }
+}
+
+fn release_root<R: StageRootfs>(what: &str, root: R) {
+    if let Err(e) = root.release() {
+        tracing::warn!("releasing {what}: {e}");
+    }
+}
+
+/// Per stage, how many stages read its root after it is built (ADR-0061):
+/// one for each stage built `FROM` it, one more for each stage reading it
+/// with `COPY --from` or `RUN --mount from=`, among the stages built.
+fn stage_readers(graph: &StageGraph) -> Vec<AtomicUsize> {
+    let mut n = vec![0usize; graph.stages.len()];
+    for &s in &graph.needed {
+        if let rnk_dockerfile::Base::Stage(b) = graph.stages[s].base {
+            n[b] += 1;
+        }
+        for r in referenced_stages(graph, s) {
+            n[r] += 1;
+        }
+    }
+    n.into_iter().map(AtomicUsize::new).collect()
+}
+
+/// The stages `index` reads with `COPY --from` or `RUN --mount from=`,
+/// each once.
+fn referenced_stages(graph: &StageGraph, index: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = graph.stages[index]
+        .references
+        .iter()
+        .filter_map(|r| match r.source {
+            rnk_dockerfile::Source::Stage(s) => Some(s),
+            rnk_dockerfile::Source::Image(_) => None,
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// What a build reports on success.
@@ -129,7 +236,7 @@ pub(crate) fn run(
                 sandbox,
                 overlay,
                 Isolation::Full,
-                false,
+                Roots::Own,
                 &|| {},
             )
         }
@@ -153,7 +260,7 @@ pub(crate) fn run(
                 sandbox,
                 Arc::clone(&snapshotter),
                 isolation,
-                true,
+                Roots::Shared,
                 &finish,
             )
         }
@@ -165,10 +272,23 @@ pub(crate) fn run(
             sandbox,
             Arc::new(stages),
             Isolation::Full,
-            false,
+            Roots::StageDirs,
             &|| {},
         ),
     }
+}
+
+/// Where the stages' roots are, as the set-up picked the snapshots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Roots {
+    /// Overlay mode: a root per stage, each released at the end, children
+    /// first.
+    Own,
+    /// Kaniko mode on `/`: kaniko's squashed units on the shared root.
+    Shared,
+    /// Kaniko mode off `/`: a directory per stage, handed to the last stage
+    /// built on it and released once nobody reads it (ADR-0059, ADR-0061).
+    StageDirs,
 }
 
 fn run_with<S: Snapshotter + Send + Sync + 'static>(
@@ -177,7 +297,7 @@ fn run_with<S: Snapshotter + Send + Sync + 'static>(
     sandbox: Sandbox,
     snapshotter: Arc<S>,
     isolation: Isolation,
-    shared_root: bool,
+    roots: Roots,
     before_close: &dyn Fn(),
 ) -> Result<Built, String>
 where
@@ -192,7 +312,7 @@ where
         Arc::clone(&store),
         sandbox,
         snapshotter,
-        (isolation, shared_root),
+        (isolation, roots),
         runtime.handle(),
     );
     let shared = match prepared {
@@ -242,9 +362,12 @@ fn prepare<S: Snapshotter>(
     store: Arc<Store>,
     sandbox: Sandbox,
     snapshotter: Arc<S>,
-    (isolation, shared_root): (Isolation, bool),
+    (isolation, roots): (Isolation, Roots),
     runtime: &tokio::runtime::Handle,
-) -> Result<Shared<S>, String> {
+) -> Result<Shared<S>, String>
+where
+    S::Root: Send + 'static,
+{
     let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
         .map_err(|e| format!("opening the build context: {e}"))?;
     let source = dockerfile_source(&config.dockerfile);
@@ -341,7 +464,7 @@ fn prepare<S: Snapshotter>(
     } else {
         exporter
     };
-    let (units, layers_needed, keep) = if shared_root {
+    let (units, layers_needed, keep) = if roots == Roots::Shared {
         let (units, needed, keep) = kaniko_units(&graph, &dockerfile);
         (units, Some(needed), keep)
     } else {
@@ -379,12 +502,22 @@ fn prepare<S: Snapshotter>(
         platform: Platform::new(os, arch),
         client,
         dockerfile,
-        graph,
         outputs,
         in_target,
         labels: config.labels.clone(),
         stages: Mutex::new(Vec::new()),
         images: Mutex::new(Vec::new()),
+        readers: if roots == Roots::StageDirs {
+            stage_readers(&graph)
+        } else {
+            Vec::new()
+        },
+        releaser: if roots == Roots::StageDirs {
+            Some(Releaser::start()?)
+        } else {
+            None
+        },
+        graph,
     })
 }
 
@@ -858,7 +991,30 @@ async fn cancel_on_signals(cancel: CancellationToken) {
 
 /// Releases every root, children before parents: later stages first, the
 /// roots of `COPY --from` images last.
-fn release_all<S: Snapshotter>(shared: &Shared<S>) {
+fn release_all<S: Snapshotter>(shared: &Shared<S>)
+where
+    S::Root: Send + 'static,
+{
+    if let Some(releaser) = &shared.releaser {
+        // Per-stage directories share nothing (ADR-0059): any order does.
+        // What the build released early is gone from its holder already.
+        let stages =
+            std::mem::take(&mut *shared.stages.lock().unwrap_or_else(PoisonError::into_inner));
+        for (i, stage) in stages {
+            if let Some(root) = stage.root.take() {
+                releaser.release(format!("stage {i}"), root);
+            }
+        }
+        let images =
+            std::mem::take(&mut *shared.images.lock().unwrap_or_else(PoisonError::into_inner));
+        for image in images {
+            if let Some(root) = image.root.take() {
+                releaser.release(format!("the root of {}", image.image.reference), root);
+            }
+        }
+        releaser.finish();
+        return;
+    }
     let mut stages =
         std::mem::take(&mut *shared.stages.lock().unwrap_or_else(PoisonError::into_inner));
     stages.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
@@ -1141,7 +1297,10 @@ fn run_unit<S: Snapshotter>(
     prepared: &Prepared<S::Layer>,
     gate: &ChannelGate,
     cancelled: &AtomicBool,
-) -> Result<Arc<Stage<S>>, Error> {
+) -> Result<Arc<Stage<S>>, Error>
+where
+    S::Root: Send + 'static,
+{
     let mut previous: Option<Arc<Stage<S>>> = None;
     for &stage in folded.iter().chain([&index]) {
         let done = run_stage(
@@ -1180,7 +1339,9 @@ fn run_unit<S: Snapshotter>(
 }
 
 /// Builds stage `index` on the calling thread, on `folded_base` when it is
-/// folded onto the stage before it in its unit.
+/// folded onto the stage before it in its unit. With per-stage directories
+/// it then counts its reads off and releases what nobody reads any more
+/// (ADR-0061).
 fn run_stage<S: Snapshotter>(
     shared: &Shared<S>,
     index: usize,
@@ -1189,7 +1350,68 @@ fn run_stage<S: Snapshotter>(
     prepared: &Prepared<S::Layer>,
     gate: &ChannelGate,
     cancelled: &AtomicBool,
-) -> Result<Arc<Stage<S>>, Error> {
+) -> Result<Arc<Stage<S>>, Error>
+where
+    S::Root: Send + 'static,
+{
+    let done = build_one(shared, index, folded_base, deps, prepared, gate, cancelled);
+    if let Some(releaser) = &shared.releaser {
+        after_stage(shared, releaser, index, deps, done.as_ref().ok());
+    }
+    done
+}
+
+/// What a stage built with per-stage directories leaves for later: its
+/// `COPY --from` and `RUN --mount from=` reads counted off (its `FROM` was
+/// counted off when its root was made), then every root nobody reads any
+/// more released in the background, its own included (ADR-0061).
+fn after_stage<S: Snapshotter>(
+    shared: &Shared<S>,
+    releaser: &Releaser<S::Root>,
+    index: usize,
+    deps: &[(usize, Arc<Stage<S>>)],
+    done: Option<&Arc<Stage<S>>>,
+) where
+    S::Root: Send + 'static,
+{
+    for r in referenced_stages(&shared.graph, index) {
+        if let Some(n) = shared.readers.get(r) {
+            n.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    let unread = |i: usize| {
+        shared
+            .readers
+            .get(i)
+            .is_some_and(|n| n.load(Ordering::SeqCst) == 0)
+    };
+    for (d, stage) in deps {
+        if unread(*d)
+            && let Some(root) = stage.root.take()
+        {
+            releaser.release(format!("stage {d}"), root);
+        }
+    }
+    if let Some(done) = done
+        && unread(index)
+        && let Some(root) = done.root.take()
+    {
+        releaser.release(format!("stage {index}"), root);
+    }
+}
+
+fn build_one<S: Snapshotter>(
+    shared: &Shared<S>,
+    index: usize,
+    folded_base: Option<&Stage<S>>,
+    deps: &[(usize, Arc<Stage<S>>)],
+    prepared: &Prepared<S::Layer>,
+    gate: &ChannelGate,
+    cancelled: &AtomicBool,
+) -> Result<Arc<Stage<S>>, Error>
+where
+    S::Root: Send + 'static,
+{
     let node = &shared.graph.stages[index];
     let base = match (&node.base, folded_base) {
         (rnk_dockerfile::Base::Stage(_), Some(parent)) => StageBase::Stage(parent),
@@ -1237,6 +1459,12 @@ fn run_stage<S: Snapshotter>(
         } else {
             &[]
         },
+        // Per-stage directories: the base's readers, for the hand-over
+        // to the last of them (ADR-0061).
+        base_readers: match (&node.base, folded_base) {
+            (rnk_dockerfile::Base::Stage(b), None) => shared.readers.get(*b),
+            _ => None,
+        },
     };
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
     let cx = BuildCx {
@@ -1255,7 +1483,16 @@ fn run_stage<S: Snapshotter>(
         run_gate: gate,
         cancelled: &is_cancelled,
     };
-    let done = Arc::new(build_stage(&cx, input)?);
+    let built = build_stage(&cx, input);
+    // The roots of the images this stage read are read by nobody else.
+    if let Some(releaser) = &shared.releaser {
+        for (r, source) in &sources {
+            if let Some(root) = source.root.take() {
+                releaser.release(format!("the root of {r}"), root);
+            }
+        }
+    }
+    let done = Arc::new(built?);
     shared
         .stages
         .lock()
@@ -1451,6 +1688,36 @@ mod tests {
                 Err(_) => panic!("{text:?}: panicked"),
             }
         }
+    }
+
+    /// ADR-0061: each stage built `FROM` a stage counts one reader of it,
+    /// each stage reading it with `COPY --from` or `RUN --mount from=` one
+    /// more however often it does, a stage doing both counts twice (so it
+    /// never takes over a root it still reads), and stages the targets do
+    /// not need count nothing.
+    #[test]
+    fn stage_readers_count_every_later_read() {
+        let text = "FROM alpine AS a\n\
+                    FROM a AS b\n\
+                    COPY --from=a /x /x\n\
+                    FROM a AS c\n\
+                    FROM c AS d\n\
+                    COPY --from=b /1 /1\n\
+                    COPY --from=b /2 /2\n\
+                    RUN --mount=from=b,target=/m true\n\
+                    FROM alpine AS unused\n\
+                    COPY --from=c /u /u\n\
+                    FROM d\n";
+        let df = rnk_dockerfile::parse(text).unwrap();
+        let graph = rnk_dockerfile::stage_graph(&df, &GraphOptions::default()).unwrap();
+        let n: Vec<usize> = stage_readers(&graph)
+            .iter()
+            .map(|n| n.load(Ordering::SeqCst))
+            .collect();
+        // a: FROM by b and c, COPY --from by b; b: read by d; c: FROM by d
+        // (the unused stage is not built); d: FROM by the last stage.
+        assert_eq!(n, [3, 1, 1, 1, 0, 0]);
+        assert_eq!(referenced_stages(&graph, 3), [1]);
     }
 
     #[test]
