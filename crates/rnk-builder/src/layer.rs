@@ -193,10 +193,34 @@ impl BlobLayer {
     /// A new descriptor of the blob's file, read from its start, if the
     /// blob was kept; an error once an anonymous file was released.
     pub fn open(&self) -> Option<io::Result<File>> {
+        self.kept().map(|kept| kept.open())
+    }
+
+    /// The blob's bytes, if they were kept here rather than left in the
+    /// registry they came from.
+    pub(crate) fn kept(&self) -> Option<Kept<'_>> {
         match &self.bytes {
-            LayerBytes::File(path) => Some(File::open(path)),
-            LayerBytes::Anon(blob) => Some(blob.open()),
+            LayerBytes::File(path) => Some(Kept::File(path)),
+            LayerBytes::Anon(blob) => Some(Kept::Anon(blob)),
             LayerBytes::Registry(_) => None,
+        }
+    }
+}
+
+/// A kept layer's bytes, as an output written to a file reads them: a file
+/// or an anonymous file, never a registry stream.
+pub(crate) enum Kept<'a> {
+    File(&'a Path),
+    Anon(&'a AnonBlob),
+}
+
+impl Kept<'_> {
+    /// A new descriptor of the bytes, read from their start; an error once
+    /// an anonymous file was released.
+    pub(crate) fn open(&self) -> io::Result<File> {
+        match self {
+            Kept::File(path) => File::open(path),
+            Kept::Anon(blob) => blob.open(),
         }
     }
 }
