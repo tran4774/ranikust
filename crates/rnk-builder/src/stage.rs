@@ -393,7 +393,10 @@ pub fn build_stage<S: Snapshotter>(
     span.record("layers", b.new_layers);
     match result {
         Ok(()) => Ok(StageDone {
-            root: SourceRoot::new(b.root),
+            root: SourceRoot::new({
+                b.root.done();
+                b.root
+            }),
             scope: b.scope,
             config: b.config,
             layers: b.layers,

@@ -141,6 +141,13 @@ pub trait StageRootfs {
         Ok(())
     }
 
+    /// The stage ran its last instruction: from now its root is only read
+    /// ([`StageRootfs::view`], `Base::Stage`) or released. What served
+    /// only its own layers may go; kaniko mode's per-stage directories
+    /// drop the walker and its record of the root (ADR-0059). Default:
+    /// nothing.
+    fn done(&mut self) {}
+
     /// Unmounts and deletes the stage's directories, diffs included: every
     /// [`LayerDiff`] of the stage must be exported, and every stage built
     /// on it done, before.
