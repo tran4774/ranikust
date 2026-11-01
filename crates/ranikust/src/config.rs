@@ -369,13 +369,13 @@ impl BuildConfig {
                 args.targets.join(", ")
             )));
         }
-        // kaniko keeps a relative `--ignore-path`, which then never matches
-        // the absolute paths of its walk; ranikust says so instead.
         // Refused in every mode while the flags are read, before any I/O
         // [open: Q-420].
         if args.single_snapshot {
             return Err(Invalid(SINGLE_SNAPSHOT.to_owned()));
         }
+        // kaniko keeps a relative `--ignore-path`, which then never matches
+        // the absolute paths of its walk; ranikust says so instead.
         if let Some(path) = args.ignore_paths.iter().find(|p| !p.is_absolute()) {
             return Err(Invalid(format!(
                 "--ignore-path={}: give an absolute path in the image; kaniko would never \

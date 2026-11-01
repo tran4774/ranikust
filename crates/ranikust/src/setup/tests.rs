@@ -83,6 +83,9 @@ fn a_mount_thread_that_could_not_start_is_not_an_unusable_overlay() {
         ("mount", Errno::AGAIN),
         ("mount", Errno::NOMEM),
         ("mount", Errno::MFILE),
+        ("mount", Errno::NOSPC),
+        ("mount", Errno::DQUOT),
+        ("mount", Errno::IO),
     ] {
         let r = overlay_refusal(&probe(step, errno), 0);
         assert_eq!(r.kind, Kind::Other, "{step} {errno:?}");
@@ -163,14 +166,43 @@ fn a_sandbox_without_privileges_needs_root_unless_already_root() {
     .unwrap_err();
     assert_eq!(refusal.guidance, NEEDS_ROOT);
     assert!(refusal.reason.contains("RUN sandbox"), "{refusal}");
-    // Root without the privileges: Docker's defaults, kaniko mode's place.
+    // Root that entered the build's mount namespace but whose sandbox
+    // lacks a privilege: kaniko mode off `/` would need it too, so the
+    // guidance is its own and never sends an auto user back to auto
+    // (host-safety re-check of round 1, item 4).
     let refusal = pick::<()>(
         Err(SandboxError::Privilege("the RUN sandbox")),
         overlay_ok(),
         0,
     )
     .unwrap_err();
-    assert_eq!(refusal.guidance, NEEDS_KANIKO_MODE);
+    assert_eq!(refusal.guidance, SANDBOX_NO_PRIVILEGE);
+    assert_eq!(refusal.kind, Kind::SandboxBlocked);
+    assert_eq!(route(&refusal, false), Route::Refuse);
+    assert!(!refusal.to_string().contains("--mode=auto"), "{refusal}");
+}
+
+/// A blocked sandbox step wins over an unusable overlay: `pick` reports
+/// the sandbox, and `--mode=auto` does not route to kaniko mode off `/`,
+/// which needs that sandbox (host-safety re-check of round 1, item 2).
+#[test]
+fn a_blocked_sandbox_wins_over_an_unusable_overlay() {
+    let overlay = Refusal {
+        kind: Kind::OverlayUnusable,
+        reason: "overlay: EINVAL".to_owned(),
+        guidance: OVERLAY_UNUSABLE,
+    };
+    let r = pick::<()>(
+        Err(SandboxError::Setup {
+            step: Step::MountProc,
+            source: io::Error::from_raw_os_error(EACCES),
+        }),
+        Err(overlay),
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(r.kind, Kind::SandboxBlocked);
+    assert_eq!(route(&r, false), Route::Refuse);
 }
 
 #[test]

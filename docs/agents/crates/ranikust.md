@@ -361,8 +361,8 @@ error, a refused kaniko flag, an invalid combination, and for now every
   (`setup::route`, a pure function of the refusal's `Kind` and whether
   ranikust runs in a container, read once; a failed sandbox step, or a
   probe mount that never reached the kernel, never routes there); overlay
-  mode's flags are checked before its set-up and count only if overlay
-  mode is picked (the store is closed on that refusal);
+  mode's flags are evaluated before its set-up and refused after it, only
+  if overlay mode is picked (the store is closed on that refusal);
   in a container where root may mount the overlay refusal stands (ADR-0054).
 - `--parallel-stages` refused with exit 2 (ADR-0060). Deferred: `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push`

@@ -145,6 +145,12 @@ const OVERLAY_UNUSABLE: &str = "mount another filesystem (a volume) at the state
      outside a container, the default --mode=auto (or --mode=kaniko) builds in kaniko mode with \
      a directory per stage instead";
 
+/// Guidance where root may mount yet the `RUN` sandbox lacks a privilege
+/// for one of its steps: neither overlay mode nor kaniko mode off `/` can run.
+const SANDBOX_NO_PRIVILEGE: &str = "the RUN sandbox lacks a privilege here although root may \
+     mount: run ranikust in a VM, or in a container started with --privileged for overlay \
+     mode, or without CAP_SYS_ADMIN for kaniko mode on its /";
+
 /// Guidance where a step of the `RUN` sandbox is refused although root may
 /// mount (an LSM such as AppArmor's `docker-default` blocking mounts).
 const SANDBOX_BLOCKED: &str = "the RUN sandbox cannot mount here: start the container with \
@@ -471,13 +477,23 @@ fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
 
 /// Whether the kernel refused the probe's overlay mount: a `Mount` error
 /// from the mount itself, not from starting its thread or running out of
-/// memory, descriptors or processes, which say nothing about overlayfs.
+/// memory, descriptors, processes or disk, or an I/O error, which say
+/// nothing about overlayfs.
 fn kernel_refused_mount(e: &SnapshotError) -> bool {
     use rustix::io::Errno;
     match e {
         SnapshotError::Mount { step, errno, .. } => {
             !step.starts_with("start the mount thread")
-                && ![Errno::AGAIN, Errno::NOMEM, Errno::MFILE, Errno::NFILE].contains(errno)
+                && ![
+                    Errno::AGAIN,
+                    Errno::NOMEM,
+                    Errno::MFILE,
+                    Errno::NFILE,
+                    Errno::NOSPC,
+                    Errno::DQUOT,
+                    Errno::IO,
+                ]
+                .contains(errno)
         }
         _ => false,
     }
@@ -519,7 +535,10 @@ fn pick<C>(
 ) -> Result<(C, OverlayCaps), Refusal> {
     let sandbox = sandbox.map_err(|e| {
         let (kind, guidance) = match (&e, euid) {
-            (SandboxError::Privilege(_), 0) => (Kind::NoMountPrivilege, NEEDS_KANIKO_MODE),
+            // Root entered the build's mount namespace, yet a step of the
+            // sandbox lacks a privilege: kaniko mode off `/` would need it
+            // too, so neither mode is the way here.
+            (SandboxError::Privilege(_), 0) => (Kind::SandboxBlocked, SANDBOX_NO_PRIVILEGE),
             (SandboxError::Privilege(_), _) => (Kind::Other, NEEDS_ROOT),
             (SandboxError::Setup { .. }, _) => (Kind::SandboxBlocked, SANDBOX_BLOCKED),
             _ => (Kind::Other, ""),
