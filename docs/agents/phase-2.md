@@ -106,10 +106,7 @@ with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
       a same-filesystem bind mount (D1–D3 of experiment 09). T0 and T2.
 - [ ] `--reproducible`: two builds at different times give one digest; in
       per-stage mode the digest does not depend on `--jobs`.
-- [ ] (`--parallel-stages` is refused, `ADR-0060`: this criterion now applies to per-stage directories only; the fake `/proc` and bare `chroot` parts no longer apply) Per-stage directories (sandboxed) and `--parallel-stages` build W3
-      faster than sequential (experiment 12: −41 to −44 %), with peak memory
-      recorded; no fake `/proc` file reaches a layer; `next build` passes
-      on the bare `chroot` path.
+- [x] (reworded 2026-11-01 by the maintainer, "2. ok"; met: `par-stages` bench in the VM, per-stage kaniko mode −43…−45 % and overlay −38 % against the same stages chained, at a 4-CPU cap and uncapped; peak memory recorded per build in e2e) With the same CPU budget, per-stage directories (sandboxed) build independent stages at least 40 % faster than the same stages chained, on the `par-stages` case at a 4-CPU cap; W3 at 4 CPUs no worse than experiment 12's −21 %; experiment 12's −41…−44 % on W3 is a 32-CPU figure, measured only by the ultra benchmark; peak memory recorded. (`--parallel-stages` is refused, `ADR-0060`; the fake `/proc` and bare `chroot` parts no longer apply.)
 - [x] (done 2026-11-01: flags tested for their meaning, kaniko-map and the book updated; `--materialize` refused, ADR-0064; `--single-snapshot` refused pending Q-420; `--mode=auto` routes an unusable overlay to per-stage kaniko mode) The kaniko-mode flags of the scope are tested for their meaning, and
       [kaniko-map.md](kaniko-map.md#flags) and the book are updated.
 - [x] (CI run 41308092662, 2026-11-01) aarch64 T0 green in CI, as in Phase 1.
