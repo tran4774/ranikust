@@ -51,7 +51,6 @@ fn spec<'a>(root: &'a str, state: Option<&'a str>, paths: &'a [PathBuf]) -> Igno
         root: Path::new(root),
         state_dir: state.map(Path::new),
         ignore_paths: paths,
-        ignore_var_run: true,
     }
 }
 
@@ -69,9 +68,10 @@ fn in_a_container_mounts_and_kanikos_defaults_are_ignored() {
         "/etc/hosts",
         "/etc/mtab",
         "/data/my vol\tx/f",
-        "/var/run",
         "/var/run/docker.sock",
         "/ranikust/executor",
+        "/.dockerenv",
+        "/run/.containerenv",
         "/ranikust/state/blobs",
         "/tmp/apt-key-gpghome/k",
         "/var/cache/apt",
@@ -93,15 +93,23 @@ fn in_a_container_mounts_and_kanikos_defaults_are_ignored() {
     }
 }
 
+/// ADR-0052, D4: `/var/run` is kept (an image's `/var/run -> /run`
+/// symlink survives) unless it is a mount point; what is mounted below it
+/// is ignored as any mount point.
 #[test]
-fn without_ignore_var_run_var_run_is_kept_but_its_mounts_are_not() {
+fn var_run_is_ignored_only_as_a_mount_point() {
     let mounts = parse_mountinfo(CONTAINER.as_bytes()).unwrap();
-    let mut s = spec("/", None, &[]);
-    s.ignore_var_run = false;
-    let list = ignore_list(&s, &mounts).unwrap();
+    let list = ignore_list(&spec("/", None, &[]), &mounts).unwrap();
     assert!(!list.covers("/var/run"));
     assert!(!list.covers("/var/run/lock"));
     assert!(list.covers("/var/run/docker.sock"));
+    let mounted = parse_mountinfo(
+        format!("{CONTAINER}99 1 0:50 / /var/run rw - tmpfs tmpfs rw\n").as_bytes(),
+    )
+    .unwrap();
+    let list = ignore_list(&spec("/", None, &[]), &mounted).unwrap();
+    assert!(list.covers("/var/run"));
+    assert!(list.covers("/var/run/lock"));
 }
 
 #[test]

@@ -68,8 +68,8 @@ impl Cli {
 /// own flags are in their own group.
 #[derive(Clone, Debug, Default, Args)]
 pub(crate) struct BuildArgs {
-    /// Build context: a local directory, with or without `dir://` (git, tar
-    /// and HTTPS contexts come in Phase 5).
+    /// Build context: a local directory, as a plain path (git, tar and
+    /// HTTPS contexts come in Phase 5; kaniko's `dir://` form is refused).
     #[arg(
         short = 'c',
         long,
@@ -79,8 +79,9 @@ pub(crate) struct BuildArgs {
     )]
     pub(crate) context: String,
 
-    /// A sub-directory of a `dir://` context to build from, as kaniko;
-    /// ignored, with a warning, for a plain path, which kaniko ignores too.
+    /// A sub-directory of a fetched context (git, tar, HTTPS: Phase 5) to
+    /// build from; refused with a local directory: pass the sub-directory
+    /// itself as `--context`.
     #[arg(long, value_name = "DIR", help_heading = "Input")]
     pub(crate) context_sub_path: Option<String>,
 
@@ -349,19 +350,6 @@ pub(crate) struct BuildArgs {
     #[arg(long = "ignore-path", value_name = "PATH", help_heading = "Snapshots")]
     pub(crate) ignore_paths: Vec<PathBuf>,
 
-    /// Keep `/var/run` out of kaniko-mode snapshots, as in kaniko
-    /// [default: true]; `false` is refused in overlay mode (ADR-0049).
-    #[arg(
-        long,
-        value_name = "BOOL",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        value_parser = parse_bool,
-        help_heading = "Snapshots"
-    )]
-    pub(crate) ignore_var_run: Option<bool>,
-
     /// Take one snapshot at the end of the build, as in kaniko; refused in
     /// overlay mode (ADR-0049).
     #[arg(
@@ -453,6 +441,9 @@ enum Refusal {
 }
 
 const PHASE_4: &str = "the layer cache comes in Phase 4 (Q-021)";
+const VAR_RUN: &str = "kaniko mode keeps /var/run out of layers only where it is a mount \
+     point, as every mount point, so an image's /var/run -> /run symlink is kept (ADR-0052); \
+     drop the flag";
 const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential helpers (Q-047)";
 
 /// kaniko executor flags that ranikust recognises but does not accept
@@ -466,10 +457,10 @@ const REFUSED: &[(&str, Refusal)] = &[
     ("snapshotMode", Refusal::Renamed("use --snapshot-mode")),
     ("customPlatform", Refusal::Renamed("use --platform")),
     ("custom-platform", Refusal::Renamed("use --platform")),
-    (
-        "whitelist-var-run",
-        Refusal::Renamed("use --ignore-var-run"),
-    ),
+    // `/var/run` is ignored only where it is a mount point, as every
+    // mount point is (ADR-0052, D4): the flag has nothing left to switch.
+    ("ignore-var-run", Refusal::Unneeded(VAR_RUN)),
+    ("whitelist-var-run", Refusal::Unneeded(VAR_RUN)),
     (
         "force",
         Refusal::Unneeded(

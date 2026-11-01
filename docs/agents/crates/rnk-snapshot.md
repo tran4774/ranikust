@@ -63,9 +63,12 @@ impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk
 //   where a reader's view is unpacked inside a fence window and deleted at the end of the
 //   instruction that read it.
     pub fn finish(&self) -> Result<bool>; }        // end of build: empties a root off `/` a stage changed; never /
+pub const BUILT_MARKER: &str = "ranikust/.built";  // relative to the root, under the ignored /ranikust
 // Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
 // prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /
-//   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641); a root off `/` 0755;
+//   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641) unless /ranikust/.built is
+//   there (ADR-0052 D1: looked up and made at that first base, /ranikust 0700 on /'s own
+//   mount, else refused); a root off `/` 0755;
 //   extracts each blob with extract_live, diff ID checked; on `/` a streamed layer's compressed blob is
 //   first spooled (scratch_file) while its diff ID is computed, verified, then decompressed again into the
 //   root (ADR-0055). prepare(Stage(p)): takes the root over
@@ -94,7 +97,7 @@ pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
 pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused beyond, no merging yet
 // kaniko mode (Phase 2), module `kaniko`:
 // MountInfo also carries `device` (major:minor) and `fs_root` (field 4), for ranikust's state-dir check
-pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf], pub ignore_var_run: bool }
+pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf] } // /var/run only as a mount point (ADR-0052 D4); /.dockerenv, /run/.containerenv always
 pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>; // mounts below the root, kaniko's defaults, /proc /sys /dev /ranikust, the state dir, a host workdir's marker; root and state_dir physical and normalized
 pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // octal escapes, optional fields; a malformed line is an error
 
@@ -228,7 +231,21 @@ impl WalkDiff {
   the `/` layout, keep area inside the root under an ignored `state/`
   (left out of `Keep::All`; not ignored, the copy is refused as a
   destination inside its source, never a recursion); a keep-area name
-  taken by a link never followed.
+  taken by a link never followed. Red team of the marker of a build on
+  `/` (ADR-0052 D1): `/ranikust` planted as a file, a FIFO, a socket, a
+  dangling link, a link out of the root, to the state directory, to `/`
+  or to itself refused before `/` changes, nothing opened or written; a
+  `.built` planted as a FIFO, a socket, a directory, a link out, a
+  dangling link or a hardlink to a file outside counts as a marker and is
+  never opened; `/ranikust` swapped with links (into `/` and out of the
+  root) while `mark_slash` runs never marks or chmods their targets; two
+  builds on hostile bases with the real ignore list (mountinfo of a
+  container): the second empties `/` but never `/.dockerenv`,
+  `/run/.containerenv`, a secret below `/run` reached through `/var/run`,
+  a volume, `/etc/resolv.conf`, the state directory or the marker. ADR-0058:
+  steps that only delete, replace a directory by an empty one, or change a
+  mode or an mtime never encode to the empty tar's diff ID; a step that
+  changes nothing, or undoes what it did, does.
 - **T0** red team of the keep area (`tests/keep.rs`), a host file beside
   the root and an ignored `state/` in it, neither touched nor copied:
   `COPY --from` image layers with `..` and absolute names, files,
@@ -266,8 +283,8 @@ impl WalkDiff {
   followed or opened, a file or FIFO swapped in since the walk refused, 1
   against 8 walk workers the same digest, and the property `apply(base
   layer, diff layer) == tree` on random trees (proptest, 48 cases; 3,000
-  passed once); `tests/spans.rs` its spans. To do: an unchanged `RUN`
-  giving an empty layer in a build (task 6); a benchmark of
+  passed once); `tests/spans.rs` its spans. An unchanged step adds no
+  layer (ADR-0058, `rnk-builder` `tests/keep.rs`). To do: a benchmark of
   `--snapshot-mode=redo|time` against `full` on W1–W3: they skip content
   reads and can miss a change, so they stay only if significantly faster
   (ADR-0023 kept, ADR-0049).
@@ -362,8 +379,7 @@ impl WalkDiff {
   lookups, extraction and spans; T2 (`tests/overlay.rs`) for real mounts.
 - Left: the builder's use (task 11): lazy export, `RUN` in
   `mount_point`, `COPY` through `root`; `blocks_read` on
-  `rnk_snapshot.export`; the "unchanged `RUN` gives an empty layer" rule
-  against kaniko; T1 mounting in a user namespace (Phase 3).
+  `rnk_snapshot.export`; T1 mounting in a user namespace (Phase 3).
 - Deferred: the kaniko implementation, per-stage directories and lazy
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
 - The signature: ADR-0046 (Q-024). (Q-026, ADR-0032) Merging

@@ -137,7 +137,6 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
             "--mode=kaniko",
             "--ignore-path=/var/cache",
             "--single-snapshot",
-            "--ignore-var-run=false",
             "--snapshot-workers=4",
         ],
         &[],
@@ -215,6 +214,38 @@ fn refused_kaniko_flags_exit_two_with_reasons() {
     let err = stderr(&out);
     assert!(err.contains("kaniko's --cache is not supported"), "{err}");
     assert!(err.contains("use --state-dir"), "{err}");
+    // ADR-0052, D4: `/var/run` is ignored only as a mount point; the flag
+    // that switched it has nothing left to do.
+    for flag in [
+        "--ignore-var-run=false",
+        "--ignore-var-run",
+        "--whitelist-var-run",
+    ] {
+        let out = ranikust(tmp.path(), &["--no-push", flag], &[]);
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        assert!(stderr(&out).contains("mount point"), "{}", stderr(&out));
+    }
+}
+
+/// ADR-0053, ADR-0054: `dir://` and a local `--context-sub-path` exit 2,
+/// naming what to pass instead.
+#[test]
+fn dir_scheme_and_local_sub_path_exit_two() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(tmp.path(), &["--no-push", "--context=dir:///ctx"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--context=/ctx"), "{}", stderr(&out));
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context=/ctx", "--context-sub-path=app"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--context=/ctx/app"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

@@ -117,6 +117,30 @@ fn xattr(p: &Path, name: &str) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// A `security.capability` that cannot be set (no `CAP_SETFCAP`, as here
+/// unprivileged; a filesystem without xattrs) fails the extraction, naming
+/// the file, instead of leaving a binary without its capability
+/// (kaniko#738, kaniko#2201): the image's layer keeps it either way, but a
+/// `RUN` would run the binary without it.
+#[test]
+fn a_file_capability_that_cannot_be_set_fails_the_extraction() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("skipped: root may set security.capability");
+        return;
+    }
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    // VFS_CAP_REVISION_2, cap_net_raw (13) permitted and effective.
+    let cap: [u8; 20] = [
+        0x01, 0x00, 0x00, 0x02, 0x00, 0x20, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    t.pax(&[("SCHILY.xattr.security.capability", &cap)])
+        .file("ping", 0o755, b"elf");
+    let e = extract(&f.root, t.bytes().as_slice(), Whiteouts::Overlay).unwrap_err();
+    let text = e.to_string();
+    assert!(text.contains("setxattr") && text.contains("ping"), "{text}");
+}
+
 #[test]
 fn regular_layer_keeps_raw_modes_times_and_links() {
     let f = Fixture::new();
@@ -1141,4 +1165,107 @@ fn a_literal_extraction_keeps_whiteout_names_as_files() {
     extract_live_literal(&g.root, t.bytes().as_slice(), &IgnoreList::new()).unwrap();
     assert_eq!(fs::read(g.host("x")).unwrap(), b"kept");
     assert!(g.host(".wh.x").is_file());
+}
+
+/// Red team, ADR-0052 D4 (T1, T4): `/var/run` is no longer ignored, so a
+/// layer's `var/run/...` entries are extracted. In a container whose
+/// `/var/run -> ../run`, with a secret mounted at `/run/secrets` and the
+/// runtime's `/run/.containerenv` (both on the list, as `kaniko::ignore`
+/// puts them), entries, hardlinks, whiteouts and an opaque marker aimed at
+/// them through `var/run` are skipped at their physical path; links that
+/// climb above the root stay in it; a link into `/proc` leads nowhere.
+#[test]
+fn live_extraction_through_var_run_never_reaches_what_run_keeps() {
+    let f = Fixture::new();
+    let (outside, before) = f.outside();
+    fs::create_dir_all(f.host("run/secrets")).unwrap();
+    fs::write(f.host("run/secrets/token"), b"SECRET").unwrap();
+    fs::write(f.host("run/.containerenv"), b"engine").unwrap();
+    fs::write(f.host("run/old"), b"").unwrap();
+    fs::create_dir_all(f.host("var")).unwrap();
+    symlink("../run", f.host("var/run")).unwrap();
+    fs::create_dir_all(f.host("etc")).unwrap();
+    fs::create_dir_all(f.host("proc/self")).unwrap();
+    let mut keep = IgnoreList::new();
+    keep.insert("/proc").unwrap();
+    keep.insert("/run/secrets").unwrap();
+    keep.insert("/run/.containerenv").unwrap();
+    let mut t = Tar::new(&f);
+    t.file("var/run/secrets/token", 0o644, b"EVIL")
+        .file("var/run/secrets/new", 0o644, b"EVIL")
+        .file("var/run/.containerenv", 0o644, b"EVIL")
+        .hardlink("var/run/linked", "var/run/secrets/token")
+        .symlink("var/run/secrets2", "secrets")
+        .file("var/run/secrets2/via-link", 0o644, b"EVIL")
+        .file("var/run/secrets/.wh.token", 0o644, b"")
+        .file("var/run/.wh.secrets", 0o644, b"")
+        .file("var/run/.wh..containerenv", 0o644, b"")
+        .file("var/run/lock", 0o644, b"ok")
+        .symlink("var/up", "../../../../../../etc")
+        .file("var/up/climbed", 0o644, b"in-root")
+        .symlink("var/p", "/proc/self")
+        .file("var/p/environ", 0o644, b"EVIL");
+    extract_live(&f.root, t.bytes().as_slice(), &keep).unwrap();
+    assert_eq!(fs::read(f.host("run/secrets/token")).unwrap(), b"SECRET");
+    assert_eq!(
+        fs::read_dir(f.host("run/secrets")).unwrap().count(),
+        1,
+        "nothing added to the mounted secret"
+    );
+    assert_eq!(fs::read(f.host("run/.containerenv")).unwrap(), b"engine");
+    assert!(fs::symlink_metadata(f.host("run/linked")).is_err());
+    assert!(f.host("run/old").exists());
+    assert_eq!(fs::read(f.host("run/lock")).unwrap(), b"ok");
+    assert_eq!(fs::read(f.host("etc/climbed")).unwrap(), b"in-root");
+    assert!(!f.host("proc/self/environ").exists());
+    assert_eq!(
+        snapshot(&outside),
+        before,
+        "nothing outside the root changed"
+    );
+
+    // A link climbing to a name the root lacks (the host's `outside` is a
+    // sibling of the root) leads nowhere: the extraction fails, and
+    // nothing is written outside.
+    let mut t = Tar::new(&f);
+    t.symlink("var/up2", "../../../../../../outside")
+        .file("var/up2/sentinel", 0o644, b"EVIL");
+    assert!(extract_live(&f.root, t.bytes().as_slice(), &keep).is_err());
+    assert_eq!(
+        snapshot(&outside),
+        before,
+        "nothing outside the root changed"
+    );
+}
+
+/// Red team, ADR-0052 D4: an opaque marker below `var/run` while
+/// `/var/run -> ../run`. Without the layer's own `var/run/` entry the
+/// marker's directory is a symlink, which is never followed: the
+/// extraction fails and `/run` is left as it was. With it, the symlink is
+/// replaced by the layer's directory and `/run` is not touched either.
+#[test]
+fn an_opaque_marker_below_a_var_run_link_never_empties_run() {
+    for with_dir in [false, true] {
+        let f = Fixture::new();
+        fs::create_dir_all(f.host("run/secrets")).unwrap();
+        fs::write(f.host("run/secrets/token"), b"SECRET").unwrap();
+        fs::write(f.host("run/old"), b"o").unwrap();
+        fs::create_dir_all(f.host("var")).unwrap();
+        symlink("../run", f.host("var/run")).unwrap();
+        let mut keep = IgnoreList::new();
+        keep.insert("/run/secrets").unwrap();
+        let mut t = Tar::new(&f);
+        if with_dir {
+            t.dir("var/run/", 0o755);
+        }
+        t.file("var/run/.wh..wh..opq", 0o644, b"")
+            .file("var/run/new", 0o644, b"n");
+        let r = extract_live(&f.root, t.bytes().as_slice(), &keep);
+        assert_eq!(r.is_ok(), with_dir, "{r:?}");
+        assert_eq!(fs::read(f.host("run/old")).unwrap(), b"o");
+        assert_eq!(fs::read(f.host("run/secrets/token")).unwrap(), b"SECRET");
+        assert!(!f.host("run/new").exists());
+        let var_run = fs::symlink_metadata(f.host("var/run")).unwrap();
+        assert_eq!(var_run.is_dir(), with_dir);
+    }
 }

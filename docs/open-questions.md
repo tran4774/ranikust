@@ -459,6 +459,15 @@ Entry format:
 
 ## Answered
 
+### Q-385: Does a step that changes nothing still add an empty layer?
+
+- **Answer (2026-11-01):** "Q385 làm như kaniko": option (b). A step
+  whose layer is empty adds no layer, only its history entry with
+  `empty_layer: true`, in both modes; this changes Q-131's answer for
+  such steps. Raised from the issue mining (moby/buildkit#6543: repeated
+  empty layers refused by containerd). Recorded in
+  [ADR-0058](adr/0058-a-step-that-changes-nothing-adds-no-layer.md).
+
 ### Q-011: Who owns the workdir checks, and what counts as empty?
 
 - **Answer (2026-10-30):** options (b) and (d): `ranikust` runs the workdir
@@ -985,6 +994,10 @@ Entry format:
   [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
 
 ### Q-131: Which instructions get a history entry, with which fields?
+
+- **Changed (2026-11-01):** a step that changes nothing adds no layer,
+  only its history entry with `empty_layer: true`
+  ([ADR-0058](adr/0058-a-step-that-changes-nothing-adds-no-layer.md), Q-385).
 
 - **Answer (2026-10-30):** BuildKit's: one entry per instruction,
   `empty_layer: true` for metadata instructions, a layer for `RUN`, `COPY`,

@@ -250,14 +250,12 @@ fn flags_that_change_nothing_are_refused() {
 fn kaniko_mode_flags_parse_with_kanikos_defaults() {
     let args = build(&["--no-push"]);
     assert!(args.ignore_paths.is_empty());
-    assert_eq!(args.ignore_var_run, None);
     assert!(!args.single_snapshot && !args.materialize);
     assert_eq!(args.snapshot_workers, None);
     let args = build(&[
         "--ignore-path=/a",
         "--ignore-path",
         "/b/../c",
-        "--ignore-var-run=false",
         "--single-snapshot",
         "--materialize=true",
         "--snapshot-workers=3",
@@ -267,7 +265,6 @@ fn kaniko_mode_flags_parse_with_kanikos_defaults() {
         args.ignore_paths,
         [PathBuf::from("/a"), PathBuf::from("/b/../c")]
     );
-    assert_eq!(args.ignore_var_run, Some(false));
     assert!(args.single_snapshot && args.materialize);
     assert_eq!(args.snapshot_workers.map(NonZeroUsize::get), Some(3));
     assert_eq!(
@@ -286,7 +283,8 @@ fn old_spellings_and_force_are_refused() {
         ("--snapshotMode=redo", "use --snapshot-mode"),
         ("--customPlatform=linux/amd64", "use --platform"),
         ("--custom-platform=linux/amd64", "use --platform"),
-        ("--whitelist-var-run=false", "use --ignore-var-run"),
+        ("--whitelist-var-run=false", "only where it is a mount"),
+        ("--ignore-var-run", "only where it is a mount"),
         ("--force", "never builds on this machine's /"),
     ];
     for (arg, reason) in cases {

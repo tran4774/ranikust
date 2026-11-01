@@ -45,6 +45,9 @@ struct Outcome {
     out: Option<Vec<(String, Entry)>>,
     /// The first stage's `app` as planted, before it was kept.
     app: Vec<(String, Entry)>,
+    /// The last stage's diff IDs and, per history entry, its text and
+    /// whether it is an empty layer.
+    image: (Vec<String>, Vec<(String, bool)>),
 }
 
 /// Builds the needed stages of `dockerfile` in order on one shared root,
@@ -204,6 +207,26 @@ fn run_in(dockerfile: &str, need: Option<KeepNeed>, tars: bool) -> Outcome {
         .symlink_metadata()
         .is_ok()
         .then(|| tree(&root.join("out")));
+    let image = done.last().map_or_else(Default::default, |d| {
+        let history = d.config.history.as_deref().unwrap_or_default();
+        (
+            d.config
+                .rootfs
+                .diff_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            history
+                .iter()
+                .map(|h| {
+                    (
+                        h.created_by.clone().unwrap_or_default(),
+                        h.empty_layer == Some(true),
+                    )
+                })
+                .collect(),
+        )
+    });
     for d in done.into_iter().rev() {
         d.root.release().unwrap();
     }
@@ -217,7 +240,12 @@ fn run_in(dockerfile: &str, need: Option<KeepNeed>, tars: bool) -> Outcome {
         0,
         "a kept copy outlived its stage"
     );
-    Outcome { result, out, app }
+    Outcome {
+        result,
+        out,
+        app,
+        image,
+    }
 }
 
 /// The names in the state directory but the anonymous store's marker of a
@@ -578,4 +606,33 @@ fn as_tars_on_slash_copy_from_reads_what_the_stage_had_and_never_the_state() {
             assert!(o.result.is_err(), "{source} ({need:?})");
         }
     }
+}
+
+/// ADR-0058 (Q-385): on the kaniko-mode walk, a step that changes nothing
+/// (a `WORKDIR` of an existing directory, a `COPY` matching nothing) adds
+/// no layer, only its history entry with `empty_layer: true`, as kaniko;
+/// the image is the same from one build to the next.
+#[test]
+fn a_step_that_changes_nothing_adds_no_layer() {
+    let dockerfile = "FROM scratch\n\
+         WORKDIR /app\n\
+         WORKDIR /app\n\
+         COPY *.nomatch /app/\n\
+         WORKDIR /out\n\
+         WORKDIR /app\n";
+    let build = || {
+        let o = run(dockerfile, None);
+        o.result.unwrap();
+        o.image
+    };
+    let (diff_ids, history) = build();
+    assert_eq!(
+        diff_ids.len(),
+        2,
+        "WORKDIR /app and WORKDIR /out: {history:#?}"
+    );
+    let empty: Vec<bool> = history.iter().map(|h| h.1).collect();
+    assert_eq!(empty, [false, true, true, false, true], "{history:#?}");
+    assert_eq!(history[1].0, "WORKDIR /app");
+    assert_eq!(build(), (diff_ids, history), "the same image again");
 }

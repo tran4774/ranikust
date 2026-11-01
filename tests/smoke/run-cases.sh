@@ -63,12 +63,34 @@ rnk_run() {
     --secret "id=tok,src=$IN/secret" "$@"
 }
 
+# rnk_run_twice CTX OUT ARGS...: kaniko mode only, two builds one after the
+# other in one container, as two CI steps would run (ADR-0052, D1); the
+# outputs go to OUT/1 and OUT/2; prints both logs. A case may set the
+# array RNK_TWICE_PODMAN_ARGS to more `podman run` arguments (volumes).
+if [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; then
+  rnk_run_twice() {
+    local ctx="$1" o="$2"
+    shift 2
+    mkdir -p "$o/1" "$o/2"
+    podman run --rm ${RNK_TWICE_PODMAN_ARGS[@]+"${RNK_TWICE_PODMAN_ARGS[@]}"} \
+      -v "$RNK:$IN/bin/ranikust:ro" -v "$ctx:$IN/ctx:ro" \
+      -v "$WORK:/var/lib/ranikust" -v "$o:$IN/out" -v "$SECRET:$IN/secret:ro" \
+      --entrypoint /bin/sh "$BASE" -c '
+        set -e
+        for i in 1 2; do
+          "$0" "$@" --oci-layout-path "/ranikust/out/$i/oci" --tar-path "/ranikust/out/$i/image.tar"
+        done' "$IN/bin/ranikust" --context "$IN/ctx" "${MODE_ARGS[@]}" --no-push \
+      --secret "id=tok,src=$IN/secret" "$@"
+  }
+fi
+
 # Not `smoke_cases || rc=$?`: that would turn errexit off inside every case.
 set +e
 smoke_cases "$@"
 rc=$?
 set -e
-# The images the cases loaded; their outputs stay under $CASES_OUT.
-podman images --format '{{.Repository}}:{{.Tag}}' | grep '^localhost/rnk-case:' |
+# The images the cases loaded; their outputs stay under $CASES_OUT. None
+# is fine: a case may load nothing (grep's 1 would fail the run).
+podman images --format '{{.Repository}}:{{.Tag}}' | { grep '^localhost/rnk-case:' || true; } |
   xargs -r podman rmi -f >/dev/null
 exit "$rc"

@@ -41,7 +41,8 @@ pub use image::{
     HISTORY_COMMENT, Image, assemble, assemble_annotated, image_format, instruction_history,
 };
 pub use layer::{
-    AnonBlob, BlobLayer, EntriesLayer, LayerBytes, LayerDemand, LayerExporter, LayerSource,
+    AnonBlob, BlobLayer, EMPTY_LAYER_DIFF_ID, EntriesLayer, LayerBytes, LayerDemand, LayerExporter,
+    LayerSource,
 };
 pub use mounts::{MAX_SECRET_SIZE, Secret};
 pub use output::{Outputs, UNSET_DESTINATION, push, write_docker_tar, write_oci_layout};

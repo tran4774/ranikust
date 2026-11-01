@@ -1,0 +1,5 @@
+# Built twice in one container (kaniko mode): the second build must not
+# find what the first left on / (ADR-0052, D1).
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE}
+RUN [ ! -e /left-by-an-earlier-build ] && touch /left-by-an-earlier-build

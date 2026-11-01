@@ -256,14 +256,25 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   - times clamped to `SOURCE_DATE_EPOCH`.
 
   These land in the releases that follow; the decisions are recorded now.
-- Decided, not yet in the code (ADR-0053; it lands with the Phase 2 task 7
-  integration branch): a local build context is a plain path and kaniko's
-  `dir://` form is dropped; `--context-sub-path` applies only to fetched
-  contexts (git, tar, HTTPS). `--context=dir://...` is refused with a message
-  to use a plain path, and `--context-sub-path` with a local context is
-  refused (exit 2) with a message to pass the sub-directory as `--context`
-  (ADR-0054). Until then `dir://` is still accepted and the sub-path is
-  ignored with a warning for a plain path.
+- A local build context is a plain path and kaniko's `dir://` form is
+  dropped (ADR-0053); `--context-sub-path` applies only to fetched contexts
+  (git, tar, HTTPS). `--context=dir://...` is refused (exit 2) with a
+  message naming the plain path, and `--context-sub-path` with a local
+  context is refused (exit 2) with a message naming the sub-directory to
+  pass as `--context` (ADR-0054).
+- Fixes from mining kaniko's, BuildKit's and buildah's issues (ADR-0052):
+  - a kaniko-mode build on a container's `/` that follows an earlier one
+    in the same container empties `/` before its first base, so its image
+    never holds what the earlier build left (a marker,
+    `/ranikust/.built`, tells them apart);
+  - kaniko mode keeps `/var/run` out of layers only where it is a mount
+    point, so an image's `/var/run -> /run` link (alpine 3.12 and later)
+    is kept; `--ignore-var-run` and `--whitelist-var-run` now change
+    nothing and are refused (exit 2);
+  - a step that changes nothing (`RUN true`, a `WORKDIR` that exists, a
+    `COPY` whose wildcard matches nothing) adds no layer, only its history
+    entry, as kaniko; BuildKit adds an empty layer, which repeated gave
+    images containerd refused (ADR-0058).
 
 ### Removed
 

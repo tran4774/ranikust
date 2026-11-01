@@ -102,35 +102,28 @@ fn image_format_labels_annotations_and_digest_files() {
     assert!(config(&["--no-push", "--tar-path=/t", "--image-format=oci"]).is_ok());
 }
 
-/// kaniko's `--context-sub-path`: joined onto a `dir://` context, inside
-/// it; ignored for a plain path, as kaniko returns before the join
-/// (`root.go:599-631`).
+/// ADR-0053, ADR-0054: `--context-sub-path` applies only to fetched
+/// contexts, so with a local directory it is refused, naming the
+/// directory to pass instead; `dir://` is refused, naming the plain path.
 #[test]
-fn context_sub_path_applies_to_dir_contexts() {
-    let c = config(&[
-        "--no-push",
-        "--context=dir:///ctx",
-        "--context-sub-path=app/x",
-    ])
-    .expect("valid");
-    assert_eq!(c.context, Path::new("/ctx/app/x"));
-    for bad in ["../up", "/abs", "a/../../b"] {
-        let flag = format!("--context-sub-path={bad}");
-        let err = config(&["--no-push", "--context=dir:///ctx", &flag]).expect_err(bad);
-        assert!(err.0.contains("inside the context"), "{bad}: {}", err.0);
+fn context_sub_path_and_dir_scheme_are_refused() {
+    let err = config(&["--no-push", "--context=/ctx", "--context-sub-path=app/x"])
+        .expect_err("local sub-path");
+    assert!(err.0.contains("--context=/ctx/app/x"), "{}", err.0);
+    assert!(err.0.contains("fetched contexts"), "{}", err.0);
+    for context in ["dir:///ctx", "dir://rel/dir"] {
+        let flag = format!("--context={context}");
+        let err = config(&["--no-push", &flag]).expect_err(context);
+        let plain = context.trim_start_matches("dir://");
+        assert!(err.0.contains(&format!("--context={plain} ")), "{}", err.0);
     }
-    let a = args(&["--no-push", "--context=/ctx", "--context-sub-path=app"]);
-    assert_eq!(
-        BuildConfig::from_args(&a).unwrap().context,
-        Path::new("/ctx")
-    );
-    assert!(context_sub_path_ignored(&a));
-    let a = args(&[
+    let err = config(&[
         "--no-push",
         "--context=dir:///ctx",
         "--context-sub-path=app",
-    ]);
-    assert!(!context_sub_path_ignored(&a));
+    ])
+    .expect_err("dir:// with a sub-path");
+    assert!(err.0.contains("dir://"), "{}", err.0);
 }
 
 #[test]
@@ -160,7 +153,7 @@ fn only_linux_amd64() {
 
 #[test]
 fn contexts_are_local_directories() {
-    let ok = config(&["--no-push", "--context=dir:///src"]).expect("dir://");
+    let ok = config(&["--no-push", "--context=/src"]).expect("a plain path");
     assert_eq!(ok.context, Path::new("/src"));
     for (context, why) in [
         ("git://github.com/a/b", "Phase 5"),
@@ -327,14 +320,12 @@ fn secrets_are_absolute_and_ids_unique() {
 fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
     let plain = config(&["--no-push"]).expect("plain");
     assert!(plain.ignore_paths.is_empty());
-    assert!(plain.ignore_var_run);
     assert!(!plain.single_snapshot && !plain.materialize);
     assert_eq!(plain.snapshot_workers.get(), 8);
     let set = config(&[
         "--no-push",
         "--ignore-path=/var//cache/./x/../y/",
         "--ignore-path=/..",
-        "--ignore-var-run=false",
         "--snapshot-workers=2",
     ])
     .expect("set");
@@ -342,7 +333,6 @@ fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
         set.ignore_paths,
         [PathBuf::from("/var/cache/y"), PathBuf::from("/")]
     );
-    assert!(!set.ignore_var_run);
     assert_eq!(set.snapshot_workers.get(), 2);
     let err = config(&["--no-push", "--ignore-path=var/cache"]).expect_err("relative");
     assert!(err.0.contains("absolute path"), "{}", err.0);
@@ -352,11 +342,7 @@ fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
 /// refused (ADR-0049); the others are warned about.
 #[test]
 fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
-    for flag in [
-        "--ignore-path=/x",
-        "--single-snapshot",
-        "--ignore-var-run=false",
-    ] {
+    for flag in ["--ignore-path=/x", "--single-snapshot"] {
         let err = overlay_mode_flags(&args(&["--no-push", flag])).expect_err(flag);
         assert!(err.0.contains("kaniko mode only"), "{flag}: {}", err.0);
     }
@@ -365,10 +351,9 @@ fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
         "--snapshot-mode=redo",
         "--snapshot-workers=4",
         "--materialize",
-        "--ignore-var-run",
     ]))
     .expect("warnings only");
-    assert_eq!(warnings.len(), 4, "{warnings:?}");
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
     assert!(
         overlay_mode_flags(&args(&["--no-push"]))
             .unwrap()

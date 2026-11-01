@@ -51,6 +51,7 @@ use rnk_rootfs::{
     extract_live, extract_live_literal,
 };
 use rnk_store::{NamedGuard, Store};
+use rustix::io::Errno;
 
 use super::walk::{SnapshotMode, WalkDiff, WalkOptions, Walker};
 use crate::error::{Error, Result};
@@ -263,6 +264,105 @@ impl Kaniko {
         hold.touched = false;
         Ok(true)
     }
+}
+
+/// The directory of the marker of a build on `/`, on the ignore list
+/// (`kaniko::ignore`'s fixed entries): no deletion or extraction reaches it.
+const MARKER_DIR: &str = "ranikust";
+
+/// The marker's name in `/ranikust`.
+const MARKER_NAME: &str = ".built";
+
+/// The marker a build on `/` leaves in `/ranikust` (ADR-0052, D1), relative
+/// to the root.
+pub const BUILT_MARKER: &str = "ranikust/.built";
+
+/// On `/`, at the first base, under the hold and `/`'s lock: marks `/` as
+/// built on and returns whether an earlier build had marked it already
+/// (ADR-0052, D1); then the first base empties `/` (the ignore list kept),
+/// as every later base does, so the image never holds what an earlier build
+/// in the same container left. Made only once a base is about to change
+/// `/`, so a build that stops before (a typo, a failed pull) leaves no
+/// marker, and before the first extraction, so one killed half-way does.
+///
+/// `/ranikust` is made (`0700`) when missing and set to `0700` otherwise.
+/// It must be a directory on `/`'s own mount: a symlink or another mount (a
+/// volume that could outlive the container and empty a later one's `/`) is
+/// refused. The directory is opened once and checked against the name; the
+/// marker is looked up and made relative to that descriptor, without
+/// following a symlink and without leaving its mount. Anything under the
+/// marker's name counts as a marker, and so does one that appears between
+/// the look-up and the creation.
+fn mark_slash(root: &RootPath) -> Result<bool> {
+    let missing = |e: &rnk_rootfs::Error| e.raw_os_error() == Some(Errno::NOENT.raw_os_error());
+    let made = match root.statx(MARKER_DIR) {
+        Err(e) if missing(&e) => {
+            root.create_dir(MARKER_DIR, 0o700)?;
+            root.statx(MARKER_DIR)?
+        }
+        r => r?,
+    };
+    check_marker_dir_name(&made, root.mnt_id())?;
+    let dir = root.sub_root(MARKER_DIR)?.stay_on_mount();
+    check_marker_dir_opened(&made, &dir.statx("/")?, root.mnt_id(), dir.mnt_id())?;
+    dir.set_meta(
+        "",
+        &rnk_rootfs::Meta {
+            mode: Some(0o700),
+            ..rnk_rootfs::Meta::default()
+        },
+    )?;
+    match dir.statx(MARKER_NAME) {
+        Ok(_) => Ok(true),
+        Err(e) if missing(&e) => {
+            let how = rnk_rootfs::OpenHow::write().create_new(0o600).no_follow();
+            match dir.open_at(MARKER_NAME, &how) {
+                Ok(fd) => {
+                    drop(fd);
+                    Ok(false)
+                }
+                Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => Ok(true),
+                Err(e) => Err(e.into()),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `/ranikust` as its name shows it (`statx`, not following it): a
+/// directory on `/`'s own mount, not a mount point.
+fn check_marker_dir_name(made: &rnk_rootfs::Stat, root_mnt: u64) -> Result<()> {
+    if made.file_type() != FileType::Directory {
+        return Err(Error::State(
+            "/ranikust is not a directory (a symlink included): the marker of a build on / \
+             cannot go there",
+        ));
+    }
+    if made.mount_root || made.mnt_id != root_mnt {
+        return Err(Error::State(
+            "/ranikust is another mount (a volume): the marker of a build on / must stay with \
+             the container's own /; mount volumes below /ranikust, not on it",
+        ));
+    }
+    Ok(())
+}
+
+/// The directory opened is the one the name showed, on `/`'s own mount.
+fn check_marker_dir_opened(
+    made: &rnk_rootfs::Stat,
+    opened: &rnk_rootfs::Stat,
+    root_mnt: u64,
+    opened_mnt: u64,
+) -> Result<()> {
+    if opened_mnt != root_mnt
+        || (made.dev_major, made.dev_minor, made.ino)
+            != (opened.dev_major, opened.dev_minor, opened.ino)
+    {
+        return Err(Error::State(
+            "/ranikust changed between its look-up and its opening",
+        ));
+    }
+    Ok(())
 }
 
 impl Kaniko {
@@ -527,6 +627,15 @@ impl Snapshotter for Kaniko {
 /// overlay mode's stage roots do: `0755` and the epoch, unless a layer sets
 /// `./`; on `/` the container's root stays as it is, as under kaniko.
 fn new_base(shared: &Shared, hold: &mut Hold) -> Result<()> {
+    // The first base on `/`: an earlier build's marker makes it empty `/`
+    // first (ADR-0052, D1).
+    if shared.is_slash() && hold.epoch == 0 && !hold.touched && mark_slash(&shared.root)? {
+        tracing::info!(
+            "an earlier build ran on / in this container: / is emptied (the ignore list \
+             kept) before the first base, so nothing of it reaches the image"
+        );
+        hold.touched = true;
+    }
     if hold.touched || !shared.is_slash() {
         empty_root(shared, hold)?;
     } else {

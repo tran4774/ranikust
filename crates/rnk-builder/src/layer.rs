@@ -378,8 +378,25 @@ impl LayerExporter {
     /// [`Error::Layer`] when encoding fails, [`Error::Io`] when the file
     /// cannot be written or renamed; the temporary file is removed.
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer> {
+        self.encode(source, false)?
+            .ok_or_else(|| Error::Invalid("a layer was dropped as empty".to_owned()))
+    }
+
+    /// [`LayerExporter::export`], but a layer without entries (diff ID
+    /// [`EMPTY_LAYER_DIFF_ID`]) is dropped before it gets a name: `None`,
+    /// and nothing is left in the directory (ADR-0058).
+    ///
+    /// # Errors
+    ///
+    /// As [`LayerExporter::export`].
+    pub fn export_unless_empty(&self, source: Box<dyn LayerSource>) -> Result<Option<BlobLayer>> {
+        self.encode(source, true)
+    }
+
+    fn encode(&self, source: Box<dyn LayerSource>, drop_empty: bool) -> Result<Option<BlobLayer>> {
         let span = debug_span!("rnk_builder.layer", skipped = false);
         let _entered = span.enter();
+        let empty = |d: &LayerDigests| drop_empty && d.diff_id.hex() == EMPTY_LAYER_DIFF_ID;
         if let Some(store) = &self.anon {
             // No name at all: nothing to rename, nothing a RUN can open. A
             // failed encoding drops the file, and its bytes with it.
@@ -389,7 +406,10 @@ impl LayerExporter {
             let file = out.into_inner().map_err(|e| {
                 Error::io("write", Path::new("an anonymous layer file"))(e.into_error())
             })?;
-            return blob_layer(&digests, LayerBytes::Anon(AnonBlob::new(file)));
+            if empty(&digests) {
+                return Ok(None);
+            }
+            return blob_layer(&digests, LayerBytes::Anon(AnonBlob::new(file))).map(Some);
         }
         let tmp = tempfile::Builder::new()
             .prefix(".layer-")
@@ -401,15 +421,24 @@ impl LayerExporter {
         let tmp = out
             .into_inner()
             .map_err(|e| Error::io("write", &tmp_path)(e.into_error()))?;
+        if empty(&digests) {
+            // Never named: dropping the temporary file removes it.
+            return Ok(None);
+        }
         let digest = Digest::from_sha256_bytes(digests.digest.as_bytes());
         let path = self.dir.join(digest.encoded());
         // On failure the temporary file comes back inside the error and is
         // removed when it is dropped.
         tmp.persist(&path)
             .map_err(|e| Error::io("rename", &tmp_path)(e.error))?;
-        blob_layer(&digests, LayerBytes::File(path))
+        blob_layer(&digests, LayerBytes::File(path)).map(Some)
     }
 }
+
+/// The diff ID (hex) of a layer without entries, 1024 zero bytes: a step
+/// whose layer has it changed nothing and adds no layer (ADR-0058).
+pub const EMPTY_LAYER_DIFF_ID: &str =
+    "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef";
 
 /// The [`BlobLayer`] of an encoded layer whose bytes are `bytes`.
 fn blob_layer(digests: &LayerDigests, bytes: LayerBytes) -> Result<BlobLayer> {

@@ -20,6 +20,6 @@ RUN --mount=type=secret,id=tok test "$(sha256sum < /run/secrets/tok | cut -d' ' 
 RUN --mount=type=secret,id=tok,env=TOK test "${#TOK}" = 12 && test ! -e /run/secrets/tok
 RUN test -z "${TOK:-}"
 RUN --network=none test "$(ls /sys/class/net)" = lo
-# Changes nothing: still a layer, an empty one.
+# Changes nothing: no layer, only its history entry (ADR-0058).
 RUN true
 CMD ["sh", "-c", "cat /shell /exec /heredoc /shebang | tr '\\n' ' '"]

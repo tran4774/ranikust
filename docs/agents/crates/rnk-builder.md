@@ -59,6 +59,8 @@ impl LayerExporter {
     pub fn new(dir: impl Into<PathBuf>, options: EncodeOptions, time: &BuildTime) -> Self;  // dir: Store::build_dir(); mtime from time
     pub fn export_if_needed(&self, source: Box<dyn LayerSource>, demand: LayerDemand) -> Result<Option<BlobLayer>>;
     pub fn export(&self, source: Box<dyn LayerSource>) -> Result<BlobLayer>;
+    pub fn export_unless_empty(&self, source: Box<dyn LayerSource>) -> Result<Option<BlobLayer>>;  // None for a layer
+                                                        // without entries, never named (ADR-0058); EMPTY_LAYER_DIFF_ID
     pub fn with_uploader(self, uploader: Uploader) -> Self;  // ADR-0055: pushed layers go to the destinations as exported
     pub fn exported(&self, layer: &BlobLayer, demand: LayerDemand) -> Result<()>;  // hands a pushed layer to the uploader;
                                                         // Err once an upload failed: the stage stops at its next layer
@@ -131,14 +133,17 @@ pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, p
 
 `RUN`, `COPY`, `ADD` and a `WORKDIR` other than `/` each run in a layer
 of their own (`WORKDIR` makes its directory with `mkdir -p`, owned by the
-active user, and gives an empty layer when it exists, as BuildKit); the
+active user); a step whose layer is empty (a `WORKDIR` that exists, a
+`RUN` that changes nothing) adds no layer, only its history entry with
+`empty_layer: true`, as kaniko (ADR-0058, `EMPTY_LAYER_DIFF_ID`); the
 other instructions edit the config through `rnk_oci::ConfigEdit` and
 mount nothing. A closed layer is encoded at once when the stage's
 `LayerDemand` needs it. Every instruction but `ONBUILD` adds a history
 entry as BuildKit writes it (Q-131, `ADR-0032`): `created_by` in
 BuildKit's text (`history.rs`: Go's `%q`/`%v`/`%+v`, `RUN` prefixed with
 the stage's `ARG`s as `|N k=v`, ` # buildkit` after `RUN`, `COPY`, `ADD`),
-`empty_layer` for the others, no author, comment `buildkit.dockerfile.v0`.
+`empty_layer` for the others and for an empty step (ADR-0058), no
+author, comment `buildkit.dockerfile.v0`.
 Every non-Windows config without `PATH` gets the default one (Q-185). `ranikust` implements `rnk-sched`'s
 `StageRunner` on top: this crate does not depend on `rnk-sched`.
 Refused with a message: `ONBUILD` triggers, `ADD` of a URL, a repository
@@ -172,7 +177,8 @@ through a descriptor of its directory.
 - A failed `RUN` fails the stage with its exit status and is never retried.
   (An `EXDEV` hint towards `--mode=kaniko` is not built: the failing
   program reports `EXDEV` itself, which the builder cannot see.)
-- A `RUN` that changes nothing gives an empty layer, with a test. Stage
+- A step that changes nothing adds no layer, only history (ADR-0058),
+  with a test (`tests/keep.rs`). Stage
   squashing exists only in sequential kaniko mode.
 
 ## Refs

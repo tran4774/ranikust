@@ -172,8 +172,6 @@ pub(crate) struct BuildConfig {
     pub(crate) snapshot_mode: SnapshotMode,
     /// `--ignore-path`s, absolute and cleaned as kaniko's `filepath.Clean`.
     pub(crate) ignore_paths: Vec<PathBuf>,
-    /// `--ignore-var-run`, kaniko's default `true`.
-    pub(crate) ignore_var_run: bool,
     /// `--single-snapshot`.
     pub(crate) single_snapshot: bool,
     /// `--materialize`; no effect without a layer cache (Phase 4).
@@ -408,7 +406,6 @@ impl BuildConfig {
                 .collect(),
             snapshot_mode: args.snapshot_mode.unwrap_or_default(),
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
-            ignore_var_run: args.ignore_var_run.unwrap_or(true),
             single_snapshot: args.single_snapshot,
             materialize: args.materialize,
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
@@ -477,15 +474,13 @@ impl BuildConfig {
 
 /// What overlay mode makes of the kaniko-mode flags given in `args`
 /// (ADR-0040): the warnings for those that change nothing there
-/// (`--snapshot-mode`, `--snapshot-workers`, `--materialize`,
-/// `--ignore-var-run=true`).
+/// (`--snapshot-mode`, `--snapshot-workers`, `--materialize`).
 ///
 /// # Errors
 ///
-/// [`Invalid`] for those that would change the image: `--ignore-path`,
-/// `--single-snapshot` and `--ignore-var-run=false` take effect in kaniko
-/// mode only (ADR-0049): overlay mode's layers never hold mounts or
-/// `/var/run`, and squashing them costs a re-encode.
+/// [`Invalid`] for those that would change the image: `--ignore-path` and
+/// `--single-snapshot` take effect in kaniko mode only (ADR-0049): overlay
+/// mode's layers never hold mounts, and squashing them costs a re-encode.
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
     let mut changes = Vec::new();
     if !args.ignore_paths.is_empty() {
@@ -493,9 +488,6 @@ pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invali
     }
     if args.single_snapshot {
         changes.push("--single-snapshot");
-    }
-    if args.ignore_var_run == Some(false) {
-        changes.push("--ignore-var-run=false");
     }
     if !changes.is_empty() {
         return Err(Invalid(format!(
@@ -511,7 +503,6 @@ pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invali
     for (given, flag) in [
         (args.snapshot_workers.is_some(), "--snapshot-workers"),
         (args.materialize, "--materialize"),
-        (args.ignore_var_run == Some(true), "--ignore-var-run"),
     ] {
         if given {
             warnings.push(format!(
@@ -530,49 +521,34 @@ pub(crate) fn name<T: ValueEnum>(value: T) -> String {
         .unwrap_or_default()
 }
 
-/// The local directory of `--context`: `dir://` stripped; other schemes are
-/// refused with the phase that brings them.
-/// The context directory with kaniko's `--context-sub-path` applied: joined
-/// onto a `dir://` context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:599-631`,
-/// `pkg/buildcontext/dir.go:25`), staying inside it, so an absolute path
-/// or `..` is refused. kaniko returns before the join for a plain path, so
-/// there it is ignored ([`context_sub_path_ignored`]); other schemes are
-/// refused with their phase by [`context_dir`].
+/// The local context directory. `--context-sub-path` applies only to
+/// fetched contexts (git, tar, HTTPS: Phase 5), as in BuildKit
+/// (`frontend/dockerui/context.go:169-173`), so with a local directory it
+/// is refused rather than ignored (ADR-0053, ADR-0054).
 fn context_with_sub_path(args: &BuildArgs) -> Result<PathBuf, Invalid> {
     let dir = context_dir(&args.context)?;
-    let Some(sub) = args.context_sub_path.as_deref() else {
-        return Ok(dir);
-    };
-    if !args.context.starts_with("dir://") {
-        return Ok(dir);
-    }
-    let sub_path = Path::new(sub);
-    let inside = sub_path.components().all(|c| {
-        matches!(
-            c,
-            std::path::Component::Normal(_) | std::path::Component::CurDir
-        )
-    });
-    if !inside {
+    if let Some(sub) = args.context_sub_path.as_deref() {
         return Err(Invalid(format!(
-            "--context-sub-path={sub}: must be a relative path inside the context, without .."
+            "--context-sub-path={sub}: applies only to fetched contexts (git, tar, HTTPS), \
+             not to a local directory; pass the sub-directory itself as --context={} \
+             (ADR-0054)",
+            dir.join(sub).display()
         )));
     }
-    Ok(dir.join(sub_path))
-}
-
-/// Whether `--context-sub-path` is given for a plain local path, where
-/// kaniko ignores it: the caller warns.
-pub(crate) fn context_sub_path_ignored(args: &BuildArgs) -> bool {
-    args.context_sub_path.is_some() && !args.context.contains("://")
+    Ok(dir)
 }
 
 fn context_dir(context: &str) -> Result<PathBuf, Invalid> {
     if context.is_empty() {
         return Err(Invalid("--context is empty".to_owned()));
     }
+    // kaniko's `dir://` form is dropped: a local context is a plain path
+    // (ADR-0053, ADR-0054).
     if let Some(dir) = context.strip_prefix("dir://") {
-        return Ok(PathBuf::from(dir));
+        return Err(Invalid(format!(
+            "--context={context}: the dir:// form is not supported; pass the plain path \
+             --context={dir} (ADR-0053)"
+        )));
     }
     for (scheme, why) in [
         ("git://", "git contexts come in Phase 5"),

@@ -612,9 +612,18 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 return Err(e);
             }
         };
-        self.new_layers += 1;
         if self.input.demand.needed() {
-            let blob = self.cx.exporter.export(Box::new(DiffLayer(diff)))?;
+            let Some(blob) = self
+                .cx
+                .exporter
+                .export_unless_empty(Box::new(DiffLayer(diff)))?
+            else {
+                // A step that changed nothing adds no layer, only its
+                // history entry (`empty_layer: true`), as kaniko (ADR-0058).
+                self.history(created_by);
+                return Ok(());
+            };
+            self.new_layers += 1;
             self.cx.exporter.exported(&blob, self.input.demand)?;
             self.config.push_layer(
                 blob.diff_id.clone(),
@@ -622,6 +631,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             );
             self.layers.push(blob);
         } else {
+            self.new_layers += 1;
             let _span = debug_span!("rnk_builder.layer", skipped = true).entered();
             drop(diff);
         }
@@ -630,9 +640,10 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
 
     /// `WORKDIR`, as BuildKit's `dispatchWorkdir` (`buildkit@cd8ee244
     /// frontend/dockerfile/dockerfile2llb/convert.go:1513-1570`): a directory
-    /// other than `/` is made with `mkdir -p` in a layer of its own, even
-    /// when it exists (an empty layer then), the directories it creates
-    /// owned by the active user, mode `0755`.
+    /// other than `/` is made with `mkdir -p` in a layer of its own, the
+    /// directories it creates owned by the active user, mode `0755`; when
+    /// it exists already the layer is empty and left out, only its history
+    /// entry stays (ADR-0058).
     fn workdir(&mut self, dir: String) -> Result<()> {
         ConfigEdit::Workdir(dir).apply(&mut self.config)?;
         let wd = self.working_dir();

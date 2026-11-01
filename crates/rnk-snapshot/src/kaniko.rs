@@ -12,7 +12,7 @@ mod tree;
 mod walk;
 
 pub use ignore::{IgnoreSpec, MountInfo, ignore_list, parse_mountinfo, read_mountinfo};
-pub use root::{Kaniko, KanikoDiff, KanikoLayer, KanikoRoot};
+pub use root::{BUILT_MARKER, Kaniko, KanikoDiff, KanikoLayer, KanikoRoot};
 pub use walk::{
     Change, Changed, DEFAULT_WALK_WORKERS, EntryMeta, SnapshotMode, WalkDiff, WalkOptions,
     WalkStats, Walker,
