@@ -292,6 +292,11 @@ fn old_spellings_and_force_are_refused() {
         assert_eq!(lines.len(), 1, "{arg}: {lines:?}");
         assert!(lines[0].contains(reason), "{arg}: {}", lines[0]);
     }
+    // `--parallel-stages` waits on Q-400, whatever the environment.
+    let lines = refused(&["--parallel-stages", "--no-push"]);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("Q-400"), "{}", lines[0]);
+    assert!(lines[0].contains("ADR-0051"), "{}", lines[0]);
     // `--workdir` is gone: ranikust picks the root (ADR-0050).
     assert_eq!(clap_error(&["--workdir=/w", "--no-push"]).exit_code(), 2);
 }

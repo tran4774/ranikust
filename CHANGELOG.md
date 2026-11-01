@@ -214,6 +214,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
+- `--parallel-stages` is recognised and refused with exit 2 and its reason
+  until open question Q-400 is answered (ADR-0060): outside a container
+  kaniko mode already builds stages in parallel, and on a container's `/`
+  a bare `chroot` per stage would let a `RUN` reach the state directory,
+  the credentials and the other stages.
+- In kaniko mode on `/`, `COPY` leaves device nodes, FIFOs and sockets out,
+  as extraction does there (ADR-0060); overlay mode and the full sandbox
+  keep them, as BuildKit.
 - Kaniko mode outside a container builds each stage in a directory of its
   own, `<state>/builds/<id>/stages/<n>/rootfs`, and runs independent
   stages in parallel (`--jobs`), as overlay mode does, instead of one

@@ -70,8 +70,9 @@ privileged container, or as a regular user who may create user namespaces.
 Used when ranikust runs as root but may not mount, as in a Docker container
 with the default security profile or in most Kubernetes pods.
 
-> Built so far: sequential builds, multi-stage included. Not yet:
-> `--parallel-stages` and per-stage directories.
+> Built so far: sequential builds on a container's `/`, multi-stage
+> included, and per-stage directories elsewhere. Not offered:
+> `--parallel-stages`.
 
 - On `/` in a container nothing can be mounted, so a `RUN` gets only what
   needs no mount
@@ -150,11 +151,14 @@ with the default security profile or in most Kubernetes pods.
   Devices you give the container with `--device` stay reachable by a `RUN`
   in kaniko mode: ranikust cannot tell them from the container's own, so
   pass only what the build needs.
-- Stages build one after another. The `--parallel-stages` option builds
-  independent stages in parallel, each in its own directory, at a cost:
-  `RUN` commands then have no `/proc`, and some tools fail or quietly
-  misbehave without it
-  ([ADR-0014](https://github.com/tran4774/ranikust/blob/main/docs/adr/0014-kaniko-mode-sequential-by-default.md)).
+- Stages build one after another. `--parallel-stages` is refused: a bare
+  `chroot` per stage, the only way to give stages their own root without
+  mounting, would let a `RUN` reach the other stages, the state directory
+  and the credentials again. Allow mounts to get overlay mode's parallel
+  stages
+  ([ADR-0060](https://github.com/tran4774/ranikust/blob/main/docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
+- In kaniko mode on `/`, `COPY` leaves device nodes, FIFOs and sockets out,
+  as base layers are extracted there (ADR-0060).
 - If ranikust can mount but overlayfs is unusable (for example, a state
   directory on NFS), kaniko mode keeps one directory per stage and the full
   `RUN` sandbox of overlay mode.

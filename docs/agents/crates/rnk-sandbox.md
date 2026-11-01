@@ -19,8 +19,9 @@ where mounting is possible; no `RUN` process outlives the build.
   `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`; and
   `Isolation::Direct`: sequential kaniko-mode `RUN` on `/`, or in a
   `chroot` of a root other than `/` (a root in the state directory, ADR-0050) with journaled placed files (`ADR-0043`).
-- The no-mount `--parallel-stages` path: bare `chroot`, `mknod` `/dev`
-  nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`.
+- The no-mount `--parallel-stages` path (bare `chroot`, `mknod` `/dev`
+  nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`): not built, the flag
+  is refused until Q-400 is answered (ADR-0060).
 
 ## Must not
 

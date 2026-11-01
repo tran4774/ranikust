@@ -133,6 +133,8 @@ pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, p
     pub blobs: Vec<BlobLayer>, pub layers: Vec<L> }
 ```
 
+With `Isolation::Direct` (no `nodev` on the root) `COPY` leaves device
+nodes, FIFOs and sockets out (`CopyOpts::skip_special`, ADR-0060).
 `RUN`, `COPY`, `ADD` and a `WORKDIR` other than `/` each run in a layer
 of their own (`WORKDIR` makes its directory with `mkdir -p`, owned by the
 active user); a step whose layer is empty (a `WORKDIR` that exists, a
