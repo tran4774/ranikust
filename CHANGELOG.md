@@ -270,10 +270,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   - kaniko mode keeps `/var/run` out of layers only where it is a mount
     point, so an image's `/var/run -> /run` link (alpine 3.12 and later)
     is kept; `--ignore-var-run` and `--whitelist-var-run` now change
-    nothing and are refused (exit 2);
-  - `COPY --from=<name>` where `<name>` is no stage and a bare word (a
-    mistyped stage name) is refused instead of pulled from Docker Hub;
-    name an image with a tag, a digest or a registry.
+    nothing and are refused (exit 2).
 
 ### Removed
 

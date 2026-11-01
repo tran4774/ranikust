@@ -108,8 +108,8 @@ pub fn layers_needed(g: &StageGraph) -> Vec<usize>;                     // [done
 - `FROM` matches only earlier stage names, exactly (lower-case), the last
   definition winning; `scratch` can be shadowed by a stage of that name.
   `COPY --from` takes an index or a name in any case; `--mount from=` names
-  only. A `COPY --from` bare word (no `:`, `@` or `/`) that names no stage
-  is refused, not taken as an image (ADR-0052 D2; BuildKit pulls it). A stage may read only stages defined before it. `FROM <stage>`
+  only. A `COPY --from` bare word that names no stage stays an image here;
+  `ranikust` refuses it (`build::refuse_bare_copy_from`, ADR-0052 D2). A stage may read only stages defined before it. `FROM <stage>`
   matches exactly, as BuildKit does (Q-051).
 - Not expanded at all: `RUN`/`CMD`/`ENTRYPOINT` commands, `SHELL`,
   `HEALTHCHECK`, `COPY --from`, `--exclude`. `ARG` without a default takes

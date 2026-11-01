@@ -270,7 +270,7 @@ impl Kaniko {
 /// (`kaniko::ignore`'s fixed entries): no deletion or extraction reaches it.
 const MARKER_DIR: &str = "ranikust";
 
-/// The marker a build on `/` leaves in [`MARKER_DIR`] (ADR-0052, D1).
+/// The marker a build on `/` leaves in `/ranikust` (ADR-0052, D1).
 pub const BUILT_MARKER: &str = "ranikust/.built";
 
 impl Kaniko {
