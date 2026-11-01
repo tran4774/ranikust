@@ -293,6 +293,12 @@ pub enum Error {
         /// The capabilities, comma-separated.
         caps: String,
     },
+    /// A `Direct` `RUN` on `/` (kaniko mode where nothing can be mounted)
+    /// was asked for what needs a mount or a namespace: a `RUN --mount`, a
+    /// secret file, `--network=none`, or a `#!` heredoc where no anonymous
+    /// script can run. Refused rather than run without it (ADR-0057).
+    #[error("RUN directly on / (kaniko mode, where nothing can be mounted): {0}")]
+    Direct(String),
     /// The `RUN` left processes that kept appearing after every kill: a
     /// fork loop faster than the sweep (ADR-0051).
     #[error("RUN left processes that could not all be killed ({left} still alive)")]
@@ -357,6 +363,7 @@ impl Error {
                 | Self::NoLoopback { .. }
                 | Self::NoLoopbackUserns { .. }
                 | Self::RunReachesState { .. }
+                | Self::Direct(_)
         )
     }
 }
