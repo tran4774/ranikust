@@ -239,6 +239,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   stage takes its directory over instead of copying it, pruned of what
   the copy leaves out and moved with `renameat2(RENAME_NOREPLACE)`, with
   the same result as the copy; a stage directory nobody reads any more is
+- Kaniko mode off `/` (a directory per stage): a stage read by one stage
+  only, built `FROM` it, hands that stage its directory instead of a
+  copy, pruned of what the copy leaves out and moved with
+  `renameat2(RENAME_NOREPLACE)`, with the copy's contents (ADR-0061; the
+  choice made from the stage graph, never by scheduling, ADR-0062); a stage directory nobody reads any more is
   released at once on a release thread, which the build's end waits for
   (ADR-0061, Q-410). A chain of stages copies nothing, and the peak disk
   use drops. A `FROM <stage>` copy now also keeps the parent root's own

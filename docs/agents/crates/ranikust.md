@@ -316,10 +316,10 @@ error, a refused kaniko flag, an invalid combination, and for now every
   kaniko's order (OCI layout, Docker tar, push) and the digest on stdout.
   Roots are released children first, then the store closed, on success
   and failure alike. Kaniko mode off `/` (ADR-0061): `stage_readers`
-  counts each stage's readers from the stage graph, `build_stage` gets
-  the base's count (`base_readers`) for the hand-over to the last reader,
-  each stage counts its `COPY --from` and `RUN --mount from=` reads off
-  when it ends, and a root nobody reads any more (and a `COPY --from`
+  counts each stage's readers from the stage graph; a stage built `FROM`
+  a stage with exactly one reader gets `take_base` (ADR-0062: from the
+  graph, never from scheduling); each stage counts its `FROM`, `COPY
+  --from` and `RUN --mount from=` reads off when it ends, and a root nobody reads any more (and a `COPY --from`
   image's root once its stage is done) goes at once to one release
   thread (`Releaser`); `release_all` hands it the rest and waits for it
   before the store closes. `--secret` takes buildctl's and kaniko's syntax

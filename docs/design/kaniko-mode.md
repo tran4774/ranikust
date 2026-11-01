@@ -490,26 +490,33 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   root's owner, mode, times and xattrs (overlay's own left out); never a
   hardlink to it (ADR-0017). Device nodes, FIFOs and sockets a parent's
   `RUN` made are left out (`CopyOpts::skip_special`, ADR-0041).
-- **Hand-over to the last reader** ([ADR-0061](../adr/0061-per-stage-directories-hand-over-to-the-last-reader-and-release-early.md)):
-  the build counts, per stage, the stages that read its root after it is
-  built (each `FROM` it one, each other stage reading it with `COPY
-  --from` or `RUN --mount from=` one; a stage doing both counts twice). A
-  stage built `FROM` another counts its read off once its own root is
-  made; any other reader when it ends. When a stage built `FROM <stage>`
-  finds only its own read left, decided under the parent's lock, it takes
-  the parent's directory over (`Snapshotter::prepare_last`) instead of
-  copying it: `rnk_rootfs::prune` deletes in place what the copy leaves
+- **Hand-over to the only reader** ([ADR-0061](../adr/0061-per-stage-directories-hand-over-to-the-last-reader-and-release-early.md),
+  [ADR-0062](../adr/0062-stage-directory-hand-over-decided-from-the-stage-graph.md)):
+  the build counts, per stage, from the stage graph, the stages that read
+  its root after it is built (each `FROM` it one, each stage reading it
+  with `COPY --from` or `RUN --mount from=` one; a stage doing both counts
+  twice). A stage built `FROM` a stage whose count is exactly one, so
+  read by it alone, takes that stage's directory over
+  (`Snapshotter::prepare_last`, `take_base` in `rnk-builder`) instead of
+  copying it; every other `FROM <stage>` copies. The choice never
+  depends on scheduling, because a directory taken over is not byte for
+  byte the copy: ext4 and xfs keep the size of a directory emptied in
+  place, a copy makes it compact, and the walk compares directory sizes.
+  The hand-over: `rnk_rootfs::prune` deletes in place what the copy leaves
   out (the ignore list, device nodes, FIFOs, sockets; through descriptors,
-  a mount below the root refused) and sets each directory's times back,
-  then `RootPath::move_sub_root` moves `stages/<p>/rootfs` to
-  `stages/<c>/rootfs` (`renameat2(RENAME_NOREPLACE)` between the stage
-  directories' descriptors, device, inode and mount checked before and
-  after). The result equals the copy entry for entry (contents, owners,
-  modes, modification times, links, hardlinks), so the layers do not
-  depend on which path a stage took; only access and change times and
-  overlay's own xattrs, which no layer holds, differ. The parent is read
-  no more: its view, root, a second child and a layer are refused, and its
-  release deletes an empty directory.
+  the machine's own `/` and a mount below the root refused) and sets each
+  directory's times back, then `RootPath::move_sub_root` moves
+  `stages/<p>/rootfs` to `stages/<c>/rootfs` (`renameat2(RENAME_NOREPLACE)`
+  between the stage directories' descriptors, device, inode and mount
+  checked before and after). The result has the copy's entries, contents,
+  owners, modes, modification times, links and hardlinks; directory sizes,
+  access and change times and overlay's own xattrs, which no layer holds,
+  may differ. It falls back to a copy of the pruned root when a file there
+  has a hardlink the prune did not find inside the root (moved, it would
+  reach outside), or when the move failed before anything moved (`EINVAL`
+  without `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over the
+  parent is read no more: its view, root, a second child and a layer are
+  refused, and its release deletes an empty directory.
 - **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
   `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as
   BuildKit, because every `RUN` enters the root `nodev` (the full
@@ -540,7 +547,7 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   left and waits for it before the store closes. A second signal exits at
   once and leaves the rest to the next build's clean-up.
 - **Cost**: one copy of the base per stage built `FROM` a stage, except
-  for the last reader of each parent, which takes the directory over (a
+  where it is that stage's only reader and takes the directory over (a
   chain of stages copies nothing); its data on ext4 and tmpfs, a reflink
   on xfs and btrfs. The peak is the roots read at the same time plus the
   copies being made, not every stage's root: a directory goes once nobody

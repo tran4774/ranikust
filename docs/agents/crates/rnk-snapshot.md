@@ -53,7 +53,7 @@ pub trait Snapshotter {                            // ADR-0046
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<Self::Layer>; // ADR-0055: kaniko Some, overlay None
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;  // Scratch | Image(&[Layer]) | Stage(&Root)
     fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root>;  // COPY --from=<image>; default prepare(Image)
-    fn prepare_last(&self, parent: &Self::Root) -> Result<Self::Root>;     // FROM <stage> by its last reader: may take the root over (ADR-0061); default prepare(Stage)
+    fn prepare_last(&self, parent: &Self::Root) -> Result<Self::Root>;     // FROM <stage> by its only reader: may take the root over (ADR-0061, ADR-0062); default prepare(Stage)
 }
 pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction (rnk-builder: from the registry)
 impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
@@ -255,13 +255,15 @@ impl WalkDiff {
   copy never leaks or leaves a directory; a chain deeper than `PATH_MAX`;
   64 KiB xattrs. Ignored reproducer of a finding: the copy and the walk
   cost the cube of a chain's depth (`IgnoreList::covers` per entry).
-  Hand-over (ADR-0061): the last reader takes the parent's directory (the
-  same inode) and gets, entry for entry, what a copy of the same parent
-  gives (a FIFO, a socket, an ignored path, a setuid hardlink, links out,
+  Hand-over (ADR-0061): the only reader takes the parent's directory (the
+  same inode) and gets, entry for entry (directory sizes aside), what a
+  copy of the same parent gives (a FIFO, a socket, an ignored path, a setuid hardlink, links out,
   directory times), and the same change gives the same layer digest; a
   parent handed over is refused for any read and releases only its
   directory; a parent root swapped for another directory is never handed
-  over and the new stage directory goes.
+  over and the new stage directory goes; a move that moved nothing, and a
+  parent holding a file hardlinked from outside its root, fall back to a
+  copy.
 - **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
   read after the root is reused, only the paths asked for, deleted on
   release, a second keep refused once the root was reused; a stage `FROM`

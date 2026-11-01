@@ -174,9 +174,9 @@ with the default security profile or in most Kubernetes pods.
   parallel (`--jobs`) as overlay mode does, and removes each directory as
   soon as no later stage reads it. A stage built `FROM` another gets a
   copy of it (a reflink on xfs and btrfs, a copy of its data on ext4;
-  holes stay holes), except the last stage that reads it, which takes the
-  directory itself over, with the same result: a chain of stages copies
-  nothing. Plan for the roots read at the same time plus the copies being
+  holes stay holes), except when it is the only stage that reads it,
+  which then takes the directory itself over with the same contents: a
+  chain of stages copies nothing. Plan for the roots read at the same time plus the copies being
   made. Device nodes, FIFOs and sockets a `RUN` made in the parent do not
   reach the stage built on it (ADR-0061). `RUN` there gets the full sandbox, so ranikust needs mount
   privileges there and refuses to build without them (run it in a

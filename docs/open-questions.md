@@ -490,7 +490,10 @@ Entry format:
   out, then moved with `renameat2(RENAME_NOREPLACE)`), and a stage
   directory nobody reads any more is released at once on a release
   thread, the build's end waiting for it. Recorded in
-  [ADR-0061](adr/0061-per-stage-directories-hand-over-to-the-last-reader-and-release-early.md).
+  [ADR-0061](adr/0061-per-stage-directories-hand-over-to-the-last-reader-and-release-early.md);
+  which reader takes the directory is decided from the stage graph (its
+  only reader), never by scheduling:
+  [ADR-0062](adr/0062-stage-directory-hand-over-decided-from-the-stage-graph.md).
 - **Context (as asked):** the first VM `e2e` run with kaniko mode took
   31.3 s on W1 as root on the VM with a directory per stage, against
   kaniko's 23.7 s: `FROM <stage>` copies 7.2 s (ext4, no reflink), the
