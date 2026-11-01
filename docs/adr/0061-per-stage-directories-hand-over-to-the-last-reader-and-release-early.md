@@ -95,8 +95,12 @@ once, on a thread of its own.
 - Q-410 (2026-11-01, noble VM, 4 vCPUs, one round): W1 per-stage 31.3 s
   against kaniko's 23.7 s; `rnk_rootfs.copy` 7.2 s, `rnk_rootfs.delete`
   4.2 s.
-- The shortened `e2e` run on this change: see `docs/testing.md` and the
-  branch report (W1 and W3 per builder).
+- The shortened `e2e` run on this change (same VM, one round, so
+  indicative only): W1 `rk-kaniko-host` 22.1 s against kaniko's 26.2 s
+  (31.4 s before); `rnk_rootfs.copy` 0.07 s (`COPY` only), one hand-over
+  0.40 s (`rnk_rootfs.prune` over 250,349 entries), `rnk_rootfs.delete`
+  2.95 s, 2.82 s of it the last tree at the end; W3 15.6/15.8 s against
+  30.3 s ([testing.md](../testing.md#end-to-end-workloads-e2e)).
 
 ## More Information
 

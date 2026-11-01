@@ -396,6 +396,17 @@ kaniko's with no `other` difference, no leak, and W3's content did not
 depend on `--jobs` in either mode (raw digests differ only by the `du`
 files). The guest ended with 6.3 GB of its disk used.
 
+After the hand-over to the last reader and the early release (ADR-0061;
+2026-11-01, `RANIKUST_E2E_QUICK=1`, same VM, one round): W1 kaniko
+26.2 s, overlay mode 20.8 s, `rk-kaniko` 22.3 s, `rk-kaniko-host` 22.1 s
+(31.4 s before); W3 kaniko 30.3 s, overlay mode 15.3/15.3 s,
+`rk-kaniko` 21.5 s, `rk-kaniko-host` 15.6/15.8 s. On W1 the
+`FROM <stage>` copy is gone (`rnk_rootfs.copy` 0.07 s, `COPY` only,
+against 7.2 s), one hand-over took 0.40 s (`rnk_rootfs.prune` over
+250,349 entries), and `rnk_rootfs.delete` 2.95 s over five deletions,
+2.82 s of it the last tree at the end. Every comparison as before (no
+`other`, `hardlink` or `config` difference, no leak).
+
 First run (2026-10-30, noble, 4 vCPUs, one round, so indicative only):
 kaniko W1 22.4 s, W2 16.3 s, W3 29.7 s; BuildKit W1 48.4 s, W2 13.2 s,
 W3 15.3 s; every `ranikust` build pending on `--insecure-registry`
