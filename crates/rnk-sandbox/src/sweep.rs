@@ -178,10 +178,13 @@ enum NoPidfd {
 
 /// [`NoPidfd`] for a process whose parent is `ppid`; `me` is ranikust.
 /// `ENOSYS` and `EPERM` are what a seccomp filter returns for a system call
-/// it does not know.
+/// it does not know. `EINVAL` (for a valid pid and no flags) says the pid
+/// now names a thread other than a thread-group leader: the process listed
+/// is gone and its pid was taken by another process's thread, which must
+/// not be touched.
 fn without_pidfd(errno: Errno, ppid: i32, me: i32) -> NoPidfd {
     match errno {
-        Errno::SRCH => NoPidfd::Gone,
+        Errno::SRCH | Errno::INVAL => NoPidfd::Gone,
         Errno::NOSYS | Errno::PERM if ppid == me => NoPidfd::Kill,
         Errno::NOSYS | Errno::PERM => NoPidfd::Later,
         _ => NoPidfd::Fail,
