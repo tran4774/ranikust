@@ -248,15 +248,25 @@ enum Withheld {
     PlainHttp,
     /// Kaniko mode on `/`: only verified TLS carries them, so neither plain
     /// HTTP nor an unverified certificate does (ADR-0051).
-    VerifiedTlsOnly,
+    VerifiedTlsOnly {
+        /// The registry is a loopback one not listed under `--insecure*`,
+        /// reached over plain HTTP with HTTPS never tried (ADR-0032).
+        https_untried: bool,
+    },
 }
 
-impl Withheld {
-    /// The reason, and how to send them, for an error or a warning.
-    fn reason(self) -> &'static str {
+/// The reason, and how to send them, for an error or a warning.
+impl fmt::Display for Withheld {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PlainHttp => WITHHELD,
-            Self::VerifiedTlsOnly => WITHHELD_UNVERIFIED,
+            Self::PlainHttp => f.write_str(WITHHELD),
+            Self::VerifiedTlsOnly { https_untried } => {
+                f.write_str(WITHHELD_UNVERIFIED)?;
+                if *https_untried {
+                    f.write_str(HTTPS_UNTRIED)?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -272,6 +282,11 @@ const WITHHELD_UNVERIFIED: &str = "in kaniko mode on / its credentials go only o
     unverified certificate could carry them to a host of its choosing; use the registry \
     over HTTPS with a certificate ranikust trusts (--registry-certificate) and do not \
     list it under --skip-tls-verify*";
+
+/// Added to [`WITHHELD_UNVERIFIED`] for a loopback registry not listed
+/// under `--insecure*`, which ranikust reaches over plain HTTP only.
+const HTTPS_UNTRIED: &str =
+    " (for a loopback registry, list it with --insecure-registry so HTTPS is tried)";
 
 /// Why configured credentials must not be sent to `registry`, reached
 /// through `transport`; `None` when they may be.
@@ -291,7 +306,11 @@ fn withheld_because(
     match transport {
         Transport::VerifiedTls => None,
         Transport::PlainHttp | Transport::UnverifiedTls if options.verified_credentials_only => {
-            Some(Withheld::VerifiedTlsOnly)
+            Some(Withheld::VerifiedTlsOnly {
+                https_untried: transport == Transport::PlainHttp
+                    && is_loopback(registry)
+                    && !options.insecure.contains(registry),
+            })
         }
         Transport::PlainHttp if !options.http_credentials.contains(registry) => {
             Some(Withheld::PlainHttp)
@@ -953,7 +972,7 @@ impl Client {
         {
             return Err(Error::Auth {
                 host: registry.to_owned(),
-                reason: format!("{e}; {}", why.reason()),
+                reason: format!("{e}; {why}"),
             });
         }
         Err(e)
@@ -1079,10 +1098,10 @@ impl Client {
             if matches!(ping, Ping::Basic) {
                 return Err(Error::Auth {
                     host: registry.to_owned(),
-                    reason: format!("it asks for basic authentication; {}", why.reason()),
+                    reason: format!("it asks for basic authentication; {why}"),
                 });
             }
-            tracing::warn!(registry, "{}; accessing it anonymously", why.reason());
+            tracing::warn!(registry, "{why}; accessing it anonymously");
         }
         if configured.is_none()
             && let Some(helper) = self.credentials.helper(registry)
@@ -1486,17 +1505,59 @@ mod tests {
         ] {
             assert_eq!(
                 withheld_because(&options, registry, transport),
-                Some(Withheld::VerifiedTlsOnly),
+                Some(Withheld::VerifiedTlsOnly {
+                    https_untried: false
+                }),
                 "{registry} {transport:?}"
             );
         }
-        assert_eq!(Withheld::PlainHttp.reason(), WITHHELD);
-        assert_eq!(Withheld::VerifiedTlsOnly.reason(), WITHHELD_UNVERIFIED);
+        assert_eq!(Withheld::PlainHttp.to_string(), WITHHELD);
+        let advice = Withheld::VerifiedTlsOnly {
+            https_untried: false,
+        }
+        .to_string();
+        assert_eq!(advice, WITHHELD_UNVERIFIED);
         // The advice must work for both halves: plain HTTP and a registry
         // listed under `--skip-tls-verify*`.
-        let advice = Withheld::VerifiedTlsOnly.reason();
         assert!(advice.contains("over HTTPS"), "{advice}");
         assert!(advice.contains("--skip-tls-verify"), "{advice}");
+    }
+
+    /// A loopback registry not listed under `--insecure*` is plain HTTP
+    /// only (ADR-0032): the advice says how to get HTTPS tried. A listed one
+    /// already tries HTTPS first, and a remote one is not loopback.
+    #[test]
+    fn the_verified_tls_advice_says_how_to_get_https_tried_on_loopback() {
+        let mut options = ClientOptions {
+            verified_credentials_only: true,
+            ..ClientOptions::default()
+        };
+        let unlisted = withheld_because(&options, "localhost:5000", Transport::PlainHttp);
+        assert_eq!(
+            unlisted,
+            Some(Withheld::VerifiedTlsOnly {
+                https_untried: true
+            })
+        );
+        let advice = unlisted.map(|w| w.to_string()).unwrap_or_default();
+        assert!(
+            advice.ends_with("list it with --insecure-registry so HTTPS is tried)"),
+            "{advice}"
+        );
+        options.insecure.insert("localhost:5000".to_owned());
+        for (registry, transport) in [
+            ("localhost:5000", Transport::PlainHttp),
+            ("registry.example", Transport::PlainHttp),
+            ("127.0.0.1:5000", Transport::UnverifiedTls),
+        ] {
+            assert_eq!(
+                withheld_because(&options, registry, transport),
+                Some(Withheld::VerifiedTlsOnly {
+                    https_untried: false
+                }),
+                "{registry} {transport:?}"
+            );
+        }
     }
 
     #[test]

@@ -237,6 +237,40 @@ async fn verified_credentials_only_withholds_them_from_plain_http() {
     assert_eq!(registry.count("GET /v2/app"), 0);
 }
 
+/// A loopback registry not listed under `--insecure*` is plain HTTP only,
+/// HTTPS not even tried (ADR-0032): in kaniko mode on `/` the advice to use
+/// it over HTTPS says how to get HTTPS tried.
+#[tokio::test]
+async fn verified_credentials_only_tells_how_to_reach_an_unlisted_loopback_over_https() {
+    let registry = FakeRegistry::start(Auth::Basic {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+    })
+    .await;
+    add_image(&registry, "app", "v1", b"x".to_vec());
+    let mut opts = options(&registry);
+    opts.insecure.clear();
+    opts.verified_credentials_only = true;
+    let client = Client::new(
+        opts,
+        TrustStore::load(),
+        support::credentials(&basic_auth_entry(&registry.host(), "builder", "s3cret")),
+    )
+    .unwrap();
+    let err = client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("verified TLS"), "{text}");
+    assert!(
+        text.contains("list it with --insecure-registry so HTTPS is tried"),
+        "{text}"
+    );
+    assert_eq!(registry.count("GET /v2/app"), 0);
+}
+
 /// When kaniko mode on `/` held the credentials back, a later refusal says
 /// why: the plain-HTTP advice (`--insecure-registry`) would not send them.
 #[tokio::test]

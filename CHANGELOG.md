@@ -394,7 +394,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   that they go only over verified TLS there, instead of advising
   `--insecure-registry`, which would not send them; and the advice says
   not to list the registry under `--skip-tls-verify*`, which also keeps
-  them back.
+  them back. For a loopback registry not listed under `--insecure*`,
+  which is reached over plain HTTP only, it adds how to get HTTPS tried.
 - The ignore list's glob matcher (`--ignore-path` patterns) no longer
   takes time exponential in the number of `*`: a few stars against a
   long name an image brings could stall a build for seconds to minutes.
