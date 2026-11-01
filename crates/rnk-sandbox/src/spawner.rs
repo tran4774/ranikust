@@ -118,8 +118,15 @@ impl Sandbox {
     ///
     /// # Errors
     ///
-    /// `prctl(PR_SET_CHILD_SUBREAPER)` failed, or the thread cannot start.
+    /// [`Error::RunReachesState`] where the container grants capabilities
+    /// beyond Docker's defaults and ranikust lacks `CAP_SETPCAP` to keep
+    /// them from a `RUN`; `prctl(PR_SET_CHILD_SUBREAPER)` failed, or the
+    /// thread cannot start.
     pub fn start_direct() -> Result<Self> {
+        // Checked again for each `RUN`; here so that a container granting
+        // capabilities ranikust cannot take from a `RUN` is refused before
+        // the build pulls anything.
+        direct_slash_drop()?;
         rustix::process::set_child_subreaper(Some(rustix::process::getpid()))
             .map_err(|e| sys_err("prctl(PR_SET_CHILD_SUBREAPER)", e))?;
         sweep::warn_ptrace_scope();

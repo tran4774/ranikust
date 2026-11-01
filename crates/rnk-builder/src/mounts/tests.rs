@@ -346,3 +346,24 @@ fn a_secret_mounted_twice_is_read_once() {
     assert_eq!(r.secrets.len(), 2);
     assert!(Arc::ptr_eq(&r.secrets[0].data, &r.secrets[1].data));
 }
+
+/// A `Direct` `RUN` keeps a secret as a variable only; a secret file and a
+/// cache mount are refused (ADR-0057).
+#[test]
+fn direct_runs_take_secrets_as_variables_only() {
+    let mut env = mount(MountType::Secret);
+    env.cache_id = "tok".into();
+    env.env = Some("TOK".into());
+    assert!(refuse_direct_mounts(std::slice::from_ref(&env)).is_ok());
+    let mut file = env.clone();
+    file.target = "/run/secrets/tok".into();
+    let e = refuse_direct_mounts(&[file]).unwrap_err().to_string();
+    assert!(e.contains("env=<NAME>"), "{e}");
+    let mut plain = env.clone();
+    plain.env = None;
+    assert!(refuse_direct_mounts(&[plain]).is_err());
+    let mut cache = mount(MountType::Cache);
+    cache.target = "/cache".into();
+    let e = refuse_direct_mounts(&[env, cache]).unwrap_err().to_string();
+    assert!(e.contains("type=cache"), "{e}");
+}

@@ -205,6 +205,36 @@ pub(crate) fn run_mounts(
     Ok(out)
 }
 
+/// Refuses the `RUN --mount`s a `Direct` `RUN` (kaniko mode on `/`, where
+/// nothing can be mounted) cannot give, before any cache is leased or
+/// secret read (ADR-0057): a secret becomes a variable only (`env=`
+/// without `target=`); a secret file needs the `RUN`'s own tmpfs
+/// [open: Q-380] and a cache mount a bind [open: Q-381]. `bind`, `tmpfs`
+/// and `ssh` are refused in every mode until Phase 5 ([`run_mounts`])
+/// [open: Q-383].
+pub(crate) fn refuse_direct_mounts(mounts: &[Mount]) -> Result<()> {
+    const WHY: &str = "kaniko mode on / runs RUN directly, where nothing can be mounted";
+    for m in mounts {
+        match m.kind {
+            MountType::Cache => {
+                return Err(Error::Invalid(format!(
+                    "RUN --mount=type=cache: {WHY}; build in overlay mode (a container \
+                     where ranikust may mount), or drop the cache mount"
+                )));
+            }
+            MountType::Secret if m.env.is_none() || !m.target.is_empty() => {
+                return Err(Error::Invalid(format!(
+                    "RUN --mount=type=secret as a file: {WHY}, and a secret is never written \
+                     to the image's files; pass it as a variable with \
+                     --mount=type=secret,id=<id>,env=<NAME> (no target=)"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// A `RUN --mount` target inside the root: absolute, or relative to the
 /// working directory; cleaned, never above `/`.
 pub(crate) fn mount_target(t: &str, workdir: &Path) -> PathBuf {

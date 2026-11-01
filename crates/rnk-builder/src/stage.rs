@@ -667,6 +667,12 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             .unwrap_or_else(|| rnk_oci::DEFAULT_SHELL.map(str::to_owned).to_vec());
         let workdir = self.working_dir();
         let network = run_network(run.network, self.cx.network, self.cx.allow_network_host)?;
+        let direct = self.cx.isolation == Isolation::Direct;
+        if direct {
+            // Refused before a cache is leased or a secret read (ADR-0057).
+            refuse_direct_network(network)?;
+            mounts::refuse_direct_mounts(&run.mounts)?;
+        }
         let mut mounts = mounts::run_mounts(
             &run.mounts,
             &workdir,
@@ -674,8 +680,17 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             self.cx.secrets,
             self.cx.cancelled,
         )?;
+        let mut script = None;
         let argv = match run_argv(&run.cmd, &shell)? {
             Argv::Plain(argv) => argv,
+            // `Direct` on `/` cannot bind a directory: the sandbox runs the
+            // body from a sealed memfd, and no file of it is named
+            // (ADR-0057). The argv, kept as BuildKit's, only names it in
+            // the history.
+            Argv::Script { name, body } if direct => {
+                script = Some(body.into_bytes().into());
+                vec![format!("{DEV_PIPES}/{name}")]
+            }
             Argv::Script { name, body } => {
                 // BuildKit writes a `#!` heredoc to a file and runs it from
                 // a directory bound read-only at /dev/pipes; the directory
@@ -712,6 +727,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 argv.into_iter().map(OsString::from).collect(),
             );
             spec.isolation = b.cx.isolation;
+            spec.script = script;
             spec.env = env;
             spec.user = user;
             spec.workdir = workdir;
@@ -1104,6 +1120,22 @@ fn run_network(asked: DfNetwork, build: Network, allow_host: bool) -> Result<Net
     }
 }
 
+/// A `Direct` `RUN` (kaniko mode on `/`) cannot make a network namespace:
+/// `--network=none` is refused, never run on the container's network in
+/// its place (ADR-0057) [open: Q-382].
+fn refuse_direct_network(network: Network) -> Result<()> {
+    if network == Network::None {
+        return Err(Error::Invalid(
+            "RUN --network=none: kaniko mode on / runs RUN directly, where no network \
+             namespace can be made, and a RUN is never given the container's network in its \
+             place; build in overlay mode (a container where ranikust may create \
+             namespaces)"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// `--chmod`: octal or symbolic, as BuildKit (Q-120).
 fn parse_chmod(s: &str) -> Result<Option<Chmod>> {
     if s.is_empty() {
@@ -1239,6 +1271,17 @@ mod tests {
     use rnk_dockerfile::InlineFile;
 
     use super::*;
+
+    /// `--network=none` under `Direct` is refused, never turned into the
+    /// container's network (ADR-0057).
+    #[test]
+    fn direct_runs_refuse_network_none() {
+        let e = refuse_direct_network(Network::None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("--network=none"), "{e}");
+        assert!(refuse_direct_network(Network::Host).is_ok());
+    }
 
     /// A kaniko-mode snapshotter on a temp root, its keep area beside it.
     fn kaniko() -> (tempfile::TempDir, PathBuf, rnk_snapshot::Kaniko) {

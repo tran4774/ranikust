@@ -359,6 +359,14 @@ fn kaniko(
              (--mode=overlay or --mode=auto), with a volume at the state directory"
         )));
     }
+    if on_slash && config.network == config::Network::None {
+        // Every `RUN` would be refused (ADR-0057): said before the pull.
+        return Err(Failure::error(format!(
+            "{how}: --network=none: kaniko mode on / runs RUN directly, where no network \
+             namespace can be made, and RUN is never given the container's network in its \
+             place; use overlay mode (a container that may mount) for a build without network"
+        )));
+    }
     if on_slash {
         // A writable /proc/sys hands a uid 0 `RUN` the host's root through
         // kernel/core_pattern without any capability (ADR-0051, ADR-0054).
