@@ -241,7 +241,16 @@ impl WalkDiff {
   reaching it, a parent with a layer open refused, a layer that fails its
   diff ID check leaves no directory, an unneeded stage never walked, a
   done stage drops its walk and stays readable, stages side by side, an
-  anonymous store refused.
+  anonymous store refused. Red team (`red_team_*`): a base layer climbing
+  out of `rootfs/` (`..`, a sibling's root, a hardlink to a sibling's
+  file, writes through links to `/` and the sibling, `./` at `0777`)
+  changes nothing outside it; a parent's hardlink to an outside setuid
+  file is copied, never linked or chmodded; newline and raw-byte names; a
+  16 TiB sparse file copied at the cost of its data; six children copied
+  at once share no inode; a directory swapped for a link out during the
+  copy never leaks or leaves a directory; a chain deeper than `PATH_MAX`;
+  64 KiB xattrs. Ignored reproducer of a finding: the copy and the walk
+  cost the cube of a chain's depth (`IgnoreList::covers` per entry).
 - **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
   read after the root is reused, only the paths asked for, deleted on
   release, a second keep refused once the root was reused; a stage `FROM`

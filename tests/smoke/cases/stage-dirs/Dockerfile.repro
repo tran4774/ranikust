@@ -1,0 +1,22 @@
+# --reproducible across --jobs with stages built FROM stages (ADR-0059:
+# each a copy of its parent in kaniko mode off /), independent stages at
+# once, a hardlink, a symlink, a setuid file and a sparse file.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS p
+RUN mkdir -p /app/d && echo p >/app/d/f && ln /app/d/f /app/hl && ln -s d/f /app/sl \
+ && chmod 4755 /app/d/f && dd if=/dev/null of=/app/sparse bs=1 seek=67108864 count=0 2>/dev/null
+
+FROM ${BASE} AS s1
+RUN echo s1 >/s1
+
+FROM ${BASE} AS s2
+RUN echo s2 >/s2
+
+FROM p AS c
+RUN echo c >/app/new && chmod 0600 /app/new
+
+FROM c
+COPY --from=s1 /s1 /s1
+COPY --from=s2 /s2 /s2
+RUN rm /app/sl
+CMD ["sh", "-c", "cat /app/d/f /app/new /s1 /s2 | tr '\\n' ' '"]

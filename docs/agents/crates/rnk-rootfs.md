@@ -119,7 +119,11 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   physical path, a link climbing above the root kept in it, one into
   `/proc` leading nowhere; an opaque marker below the `var/run` link fails
   the extraction (never followed) unless the layer's own `var/run/`
-  replaces the link first. Still to do: `cargo fuzz` on `extract`.
+  replaces the link first. `copy_data` (ADR-0059): sparse, empty and
+  dense files, a source holding more than its size refused; ignored
+  reproducer of a red-team finding: a source cut short between
+  `SEEK_DATA` calls is copied at its old size with zeros, without an
+  error. Still to do: `cargo fuzz` on `extract`.
 - **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
   survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
   and setuid in `extract`.
