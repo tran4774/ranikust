@@ -183,6 +183,14 @@ pub fn squash_for_shared_root(graph: &StageGraph) -> Vec<SquashedStage> {
 /// in file order. The result needs its layers, and so does every stage a
 /// stage that needs its layers builds `FROM`. A stage only read through
 /// `COPY --from` or `RUN --mount from=` is not walked.
+///
+/// These are exactly the stages whose layers the result's image inherits,
+/// and `ranikust` pushes and writes out only these (its `in_target`, in
+/// every mode). Widening this set therefore widens what reaches a
+/// destination: a stage the target only `COPY --from`s, such as one holding
+/// secrets, would be pushed. A further reason to snapshot a stage (the
+/// layer cache of `--cache`, Phase 4) belongs in `rnk-builder`'s
+/// `LayerDemand`, not here.
 #[must_use]
 pub fn layers_needed(graph: &StageGraph) -> Vec<usize> {
     let mut needed = vec![false; graph.stages.len()];

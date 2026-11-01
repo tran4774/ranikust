@@ -874,9 +874,10 @@ fn refuse_bare_copy_from(graph: &StageGraph) -> Result<(), String> {
     Ok(())
 }
 
-/// Per stage: whether the target's image inherits its layers, through
-/// `FROM <stage>` from the primary target ([`rnk_dockerfile::layers_needed`],
-/// the graph's rule).
+/// Per stage: whether the target's image inherits its layers, that is
+/// whether it is one of the stages [`rnk_dockerfile::layers_needed`]
+/// returns: the primary target and its `FROM <stage>` ancestors, in every
+/// mode.
 fn in_target(graph: &StageGraph) -> Vec<bool> {
     let mut out = vec![false; graph.stages.len()];
     for s in rnk_dockerfile::layers_needed(graph) {

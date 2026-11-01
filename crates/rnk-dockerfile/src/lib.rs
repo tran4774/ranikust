@@ -19,7 +19,8 @@
 //!    stages into their only child as kaniko does, and says which units are
 //!    walked for layers and what later units read from each;
 //!    [`layers_needed`] is the same layer rule where stages have their own
-//!    roots.
+//!    roots: exactly the stages whose layers the result's image inherits,
+//!    the only ones pushed or written out.
 //! 4. For each needed stage, in order, the builder starts a [`StageScope`]
 //!    from the base image's `Env` (or clones the base stage's final scope)
 //!    and passes every instruction through [`StageScope::apply`], which
