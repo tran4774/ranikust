@@ -17,7 +17,8 @@ just test-vm unit         # only the #[ignore = "T2: ..."] tests
 just test-vm quick        # the quick smoke cases (tests/smoke/cases) as real root
 RANIKUST_QUICK_CASES="run copy" just test-vm quick   # some of them
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
-just test-vm e2e          # large benchmark only: nextjs-kaniko W1-W3
+just test-vm e2e          # light e2e: W0 by every builder, a few minutes
+just test-vm ultra        # ultra benchmark (W1-W3): only when the maintainer asks
 just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
 just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker (ADR-0051)
 ```
@@ -25,20 +26,23 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 - **Smoke test or proof of concept as real root: `quick`**, the small
   Dockerfiles of `tests/smoke/cases` (a few seconds each; a new concern is
   a new case there, see the `test` skill). Not `e2e`.
-- **`e2e` only for a large benchmark or an acceptance measurement**:
-  45–60 minutes or more for 3 rounds of every builder. Prefer
-  `RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1` unless official
-  numbers are needed.
+- **`e2e` for a change to the e2e harness or to how builders are
+  compared**: the light workload W0, every builder, a few minutes.
+- **`ultra` only when the maintainer asks** for performance numbers or an
+  acceptance run (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`):
+  nextjs-kaniko's W1–W3, tens of minutes per round. Never on a fork's own
+  initiative (docs/testing.md#which-test-for-what).
 
 - `secrets` runs only when named: a few minutes; a change to kaniko mode
   on `/`, the store's anonymous mode or `Isolation::Direct` reruns it.
 - `push` runs only when named and needs the host's test registries
   (`just registry-up`, docs/testing.md#test-registries), which the VM
   reaches as `10.0.2.2`.
-- `e2e` runs only when named: 15–25 minutes per round and 2.8 GB copied in,
-  read from the `nextjs-kaniko` checkout next to the main checkout and
-  from the host's podman images (docs/testing.md#end-to-end-workloads-e2e).
-  Its `report.md` holds the times, `compare-*.txt` the flattened-image
+- `e2e` and `ultra` run only when named. `e2e` copies in only the
+  reference images from the host's podman; `ultra` also reads the
+  `nextjs-kaniko` checkout next to the main checkout (2.8 GB copied in,
+  docs/testing.md#end-to-end-workloads-e2e). Their `report.md` holds the
+  times (and the time of each step), `compare-*.txt` the flattened-image
   comparison (`result: other=0` is what Phase 1 acceptance needs), and a
   `ranikust` build that hits an unbuilt part is `pending`, not a failure.
 

@@ -216,8 +216,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   root on the VM with a directory per stage (`rk-kaniko-host`, `--jobs`
   compared on W3), next to kaniko, BuildKit and overlay mode; every
   ranikust image is checked for state, runtime markers and mount points
-  that must not reach a layer. `RANIKUST_E2E_QUICK=1` runs a short check
-  of the suite.
+  that must not reach a layer. `just test-vm e2e` is now a light check of
+  the whole pipeline (W0: a few small Dockerfiles on a busybox base made in
+  the VM, every builder, a few minutes); the W1–W3 workloads are the ultra
+  benchmark, `just test-vm ultra`, run only when asked for. Images are
+  checked on the first round only (`RANIKUST_E2E_CHECK_ALL=1` for every
+  round), and flattening an image is much faster (whiteouts applied to a
+  whole subtree at once, each layer read once per run).
 
 ### Changed
 

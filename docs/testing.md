@@ -32,6 +32,18 @@ than a regular user never run on a developer's machine.
 - `just test <filter>` passes a name filter to `cargo test`; for one crate,
   use `cargo test -p <crate> <filter>`.
 
+## Which test for what
+
+| Purpose | Run | Where | Time |
+|---|---|---|---|
+| A branch's correctness | `just check`; T1 smoke cases in both modes (`rnk-vps-lane run <branch> 'RANIKUST_SMOKE_REGISTRY=mirror.gcr.io just smoke-case'`, and with `RANIKUST_CASE_MODE=kaniko`); VM `unit` and `quick` (`sg kvm -c 'just test-vm unit quick'`, `RANIKUST_QUICK_MODE=kaniko` for kaniko mode) | host or the VPS lane; the local VM | minutes |
+| A change to the e2e harness or to how builders are compared | the light e2e: `sg kvm -c 'just test-vm e2e'` (W0, every builder) | the local VM | a few minutes |
+| Performance numbers | the ultra benchmark: `sg kvm -c 'just test-vm ultra'` (nextjs-kaniko's W1–W3), only when the maintainer asks | the local VM, nothing else running on the host | tens of minutes per round |
+| Acceptance of a phase | the ultra benchmark with rounds: `RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`, only when the maintainer asks | the same | an hour or more |
+
+Nothing heavy runs by default: `just test-vm` alone runs `unit` and
+`smoke`, and `e2e` is the light workload.
+
 ## Planned test suites
 
 From the verification plan of
@@ -149,7 +161,8 @@ runs as root on the host:
 | `unit` | Every test marked `#[ignore = "T2: ..."]`, found by name in `crates/`, as root with `--ignored`; each must run exactly once and pass. Among them experiment 09's deletion case D2 (`rnk-rootfs` `mounts_inside_the_root_survive`: a same-filesystem bind mount and a tmpfs inside a root survive its emptying, in a private mount namespace); D1 (emptying a container's `/` keeps its volumes and runtime files) is the `hygiene-mounts` smoke case in kaniko mode, and D3 is `ranikust`'s state-directory tests (`/`, the system directories, an unmarked non-empty directory, other users) and `rnk-store`'s lock of the state directory, since ADR-0050 replaced the workdir |
 | `smoke` | `smoke-build` on `python:3.13-alpine` as real root on the VM, in `docker run --privileged` and in `docker run --cap-add SYS_ADMIN --security-opt apparmor=unconfined` (Docker's seccomp profile, no `pivot_root`). Each checks the probe's root entry, runs `just smoke`'s checks (`tests/smoke/lib.bash`) plus real-root ones: a write to `/proc/sys` fails (T17), a device node the `RUN` makes does not open (T18), and no escape of [Q-077](open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) reaches a marker outside the stage root: `chroot` into a subdirectory then `..`, the same from a descriptor of `/` opened before (`fchdir`), two `chroot`s deep, and `/proc/1/root`. Docker then runs each image. The `ranikust` binary then builds `tests/smoke/e2e` in the same environment (the workdir a volume in Docker, since overlay refuses an upper directory on the container's own overlay root; the `SYS_ADMIN` variant has no `NET_ADMIN`, so it passes `--allow network.none-userns`, [ADR-0033](adr/0033-network-none-loopback-through-a-user-namespace.md), and the build checks `lo` is up). In the `SYS_ADMIN` variant a `RUN --network=none` without that flag must be refused naming it, and with it, after `modprobe ip_tables ip6_tables af_key` in the VM, `tests/smoke/netns-check.py` must find, as root in the `RUN`, loopback up and working; `EPERM` for `setns` into the user namespace owning the network namespace (`NS_GET_USERNS`), `unshare(CLONE_NEWUSER)`, `IPT_SO_SET_REPLACE`, `IPT_SO_GET_INFO`, `IP6T_SO_GET_INFO`, `TCP_REPAIR` and `socket(AF_KEY)`; `EPROTONOSUPPORT` for `NETLINK_NETFILTER` and `NETLINK_XFRM`; rtnetlink and audit netlink open; and a later `RUN --network=none useradd` must succeed: it must reach overlay mode as root with the same root entry and a real overlay probe (either mount API) and print a digest; no stub or secret may reach a blob, and Docker loads the tar and runs the image as user `app`. In every variant the e2e Dockerfile checks that a `RUN --network=none` sees only `lo` (in `/sys/class/net` and `/proc/net/dev`) and reaches nothing outside, and compares the secret by its sha256, so the value appears in no instruction. On the VM itself (Phase 1 acceptance): `--reproducible` must give one digest with `--jobs 1`, the default, 2 s later and with `--metrics-file`; the secret must be in no build log and no metrics report (`smoke_check_no_secret_in`); a cache mount written by one build must be read by the next with the same state directory, and not by a fresh one. A plain `chroot` into the same root is the escapes' control: there each must succeed. Then `smoke-build` and `ranikust` run inside a plain `chroot` in both Docker variants, where `/` is not a mount root: each must refuse before any `RUN`, with `rnk-sandbox`'s message that it runs inside a plain chroot. Afterwards the VM's `domainname` is unchanged and no mount or `smoke-build` process is left |
 | `quick` | The quick smoke cases ([below](#quick-smoke-cases)) built by the `ranikust` binary as real root on the VM, Docker loading and running each image; `RANIKUST_QUICK_CASES` picks cases. A minute or two: the suite for a smoke test or a proof of concept that needs real root. Not part of the default `just test-vm` |
-| `e2e` | The workloads of `nextjs-kaniko` ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust` in overlay mode, in kaniko mode on the `/` of a default `docker run` (`rk-kaniko`) and in kaniko mode as root on the VM (`rk-kaniko-host`, one directory per stage); times, image comparison, leaks, metrics. A 12 GiB VM and 45–60 minutes or more for 3 rounds: only for an acceptance measurement. `RANIKUST_E2E_QUICK=1` checks that the suite works (W1 and W3, one round, no warm-up). Not part of the default `just test-vm` |
+| `e2e` | The light workload W0 ([below](#end-to-end-workloads-e2e)) built by kaniko and BuildKit as references and by `ranikust` in overlay mode, in kaniko mode on the `/` of a default `docker run` (`rk-kaniko`) and in kaniko mode as root on the VM (`rk-kaniko-host`, one directory per stage); times, image comparison, leaks, metrics. A few minutes with the VM's boot: the check of a change to the harness. Not part of the default `just test-vm` |
+| `ultra` | The ultra benchmark: the same on `nextjs-kaniko`'s W1–W3 ([below](#end-to-end-workloads-e2e)), with its npm proxy; tens of minutes per round and a 40 GB disk. Only when the maintainer asks for performance numbers or an acceptance run. Not part of the default `just test-vm` |
 | `push` | One `ranikust build` as real root pushing to three registries and writing `--tar-path` and `--oci-layout-path` ([below](#test-registries)): a `registry:2` on the VM's loopback (plain HTTP, anonymous, unasked), the host's HTTP test registry as `10.0.2.2:5000` with `--insecure-registry`, and the host's HTTPS one as `10.0.2.2:5443` with `--registry-certificate` and credentials from a `config.json`. Each manifest read back must hash to the printed digest, the HTTPS one must refuse an anonymous read, Docker pulls and runs the loopback image and loads and runs the tarball and the layout, and every layout blob must hash to its name. Needs `just registry-up`; not part of the default `just test-vm` |
 | `secrets` | ADR-0051: kaniko mode on the `/` of default Docker containers (`ubuntu:24.04`, no `--privileged`), with `RUN` steps that attack ranikust (`tests/vm/guest/secrets/attack.sh`): the state directory, `/proc/*/fd`, ranikust's `environ` and `mem`, the `RUN`'s own environment, processes left alive, the same from `unshare -Ur`, `cmdline`, and another process's `environ`. The state directory may hold only the store's marker of a build in progress, `.ranikust-building`, holding the PID namespace and boot id. Three scenarios: ranikust as PID 1, the same with `--cap-add SYS_PTRACE`, and started from `sh -c`; every vector blocked but the two ranikust only warns about (a `--build-arg` value in `cmdline`; the shell's `environ`), whose warnings must appear. Also records whether the container's overlayfs takes `O_TMPFILE` and how ranikust made its state files; then `memlimit` (ADR-0056): a 512 MiB layer built under `--memory 256m --memory-swap 256m` must succeed, its state on disk, never in `memfd`. Not part of the default `just test-vm` |
 
@@ -179,10 +192,34 @@ host whose AppArmor restricts unprivileged user namespaces, only podman
 
 ### End-to-end workloads (`e2e`)
 
-`just test-vm e2e` (`tests/vm/guest/e2e.sh`) runs the acceptance
-workloads of [Phase 1](agents/phase-1.md#acceptance-criteria) in the VM, the
-way `nextjs-kaniko/bench/run-fair.sh` runs them, without touching the
-host's `nextjs-kaniko` containers:
+`tests/vm/guest/e2e.sh` builds container images with every builder in the
+VM, the way `nextjs-kaniko/bench/run-fair.sh` runs them, times each build,
+and compares and checks the images. It has two profiles:
+
+- **Light** (`just test-vm e2e`, the default): W0, the Dockerfile and files
+  in `tests/vm/guest/e2e/w0`, on a base image the suite makes and pushes to
+  its registry (`guest/e2e/base-w0.py`: the VM's static busybox, a file
+  with an extended attribute, two names of one inode, a setuid file, a
+  symlink, a sticky `/tmp`, files to delete; the same bytes every run).
+  Its stages exercise what the comparison and kaniko mode's stage
+  directories need: a `RUN` making a hardlink, a symlink and a setuid file
+  and deleting a file and a directory of the base (whiteouts); three
+  children of one stage and a grandchild (`FROM <stage>`, ADR-0059,
+  Q-410), two of them independent (`--jobs`); `COPY --from` two stages;
+  `COPY` from the context and a `RUN` deleting a copied file. `ranikust`
+  and `rk-kaniko-host` build it with `--reproducible` at `--jobs 1` and the
+  default, whose contents must match. Every builder, one round, no
+  warm-up: a few minutes with the VM's boot, nothing pulled from a
+  network. Only the reference images go in (kaniko, BuildKit, `registry:2`);
+  no `nextjs-kaniko` checkout is needed.
+- **Ultra** (`just test-vm ultra`, `guest/ultra.sh`): the acceptance
+  workloads of [Phase 1](agents/phase-1.md#acceptance-criteria), W1–W3 of
+  `nextjs-kaniko`, without touching the host's `nextjs-kaniko`
+  containers; tens of minutes per round. Only when the maintainer asks
+  for performance numbers or an acceptance run
+  ([which test for what](#which-test-for-what)). The rest of this section
+  describes it; the light profile shares everything but the seed, the
+  npm proxy, the warm-up and the blob check (nextjs-kaniko's script).
 
 - **Seed.** `tests/vm/e2e-seed.py` streams in, read-only from the
   `nextjs-kaniko` checkout next to the main checkout
@@ -234,9 +271,19 @@ host's `nextjs-kaniko` containers:
   `run-fair.sh` takes it: start of the build container (or process) to its
   exit. One discarded kaniko build per workload warms the page cache and
   verdaccio first.
-- **Checks** on the first round: each image is flattened from the registry
+- **Checks** on the first round only (later rounds are timed only;
+  `RANIKUST_E2E_CHECK_ALL=1` checks every round), each after its build has
+  been timed and before the next starts, never beside a timed build: each
+  image is flattened from the registry
   (`guest/e2e/flatten.py`: path, type, mode, owner, size, sha256, link
-  target, hardlink, xattrs; whiteouts applied; gzip and zstd) and
+  target, hardlink, xattrs; whiteouts applied; gzip and zstd; each layer
+  read once per run into a cache under its blob digest, so a base layer
+  every builder's image shares is read once, the others side by side on
+  the vCPUs the builds are not pinned to, through `pigz`; whiteouts hide
+  a whole subtree at once, where the first version scanned every path for
+  each and took over three minutes per W1 image; `flatten_v1.py` is kept
+  as the reference its listing is checked against, byte for byte, by
+  `python3 -I -m unittest discover -s tests/vm/guest/e2e -p 'test_*.py'`) and
   compared pairwise (`guest/e2e/compare.py`), with experiment 07's
   non-deterministic W1 files counted as noise and hardlinked entries apart
   (ADR-0012); configs are compared field by field. `check-blobs.py` checks
@@ -263,21 +310,25 @@ host's `nextjs-kaniko` containers:
   put side by side through the phase map of
   [metrics](design/metrics.md#comparing-with-kaniko)
   (`guest/e2e/metrics.py`).
-- **Results** in `target/vm/results/<release>/e2e/`: `report.md`, and per
-  workload and build `run.json`, `build.log`, metrics, the listing and
+- **Results** in `target/vm/results/<release>/e2e/` (`ultra/` for the
+  ultra benchmark): `report.md`, with the time of each step summed over
+  the builds (wipe, build, flatten, leaks, blobs, compare) and the suite's
+  wall time; `phases.tsv` with each build's steps; and per workload and
+  build `run.json`, `build.log`, `limits.txt`, metrics, the listing and
   config, `compare-*.txt`.
 
 A `ranikust` build that stops because a part is not built yet (`not
 implemented`, a flag refused until a later phase) is recorded as
 `pending` and does not fail the suite; any other failure does. Options:
-`RANIKUST_E2E_WORKLOADS`, `_BUILDERS`, `_ROUNDS` (default 1; use 3 or more
-for the acceptance timings), `_WARMUP`, `_CPUS`, `_MEMORY`, `_CPUSET`
-(the vCPUs every builder is pinned to: by default the VM's last `_CPUS`
-when it has at least `_CPUS` + 2; `none` for the quota alone), `_JOBS`,
-`_MIN_FREE_GB`, and `_QUICK=1` (W1 and W3, one round, no warm-up, kaniko
-and the three `ranikust` builders, `--jobs` 1 and the default; the
-others still win). Phase 2 acceptance runs everything:
-`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm e2e'`. vm.sh refuses to
+`RANIKUST_E2E_WORKLOADS` (light `w0`; ultra `w1 w2 w3`, a subset such as
+`w1 w3` for a shorter ultra run), `_BUILDERS`, `_ROUNDS` (default 1; use 3
+or more for the acceptance timings), `_WARMUP` (light 0, ultra 1), `_CPUS`,
+`_MEMORY`, `_CPUSET` (the vCPUs every builder is pinned to: by default the
+VM's last `_CPUS` when it has at least `_CPUS` + 2; `none` for the quota
+alone), `_JOBS` (light `1 default`, ultra `1 2 default`), `_CHECK_ALL`
+and `_MIN_FREE_GB`. Phase 2 acceptance runs everything, when the
+maintainer asks: `RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`.
+vm.sh refuses to
 start any suite when the host has less free space where the VM's disk
 lives than the disk's size (`RANIKUST_VM_DISK`, a whole number of M, G or
 T) less 2 GiB, about the cloud image's own content, which stays in the
@@ -288,8 +339,8 @@ bounds the disk is the guest: e2e stops before its free space falls under
 host. The guest's results reach the host as regular files and
 directories only (anything else is deleted on both sides), after any
 builder container left behind is removed. The
-VM gets 12 vCPUs, 16 GiB and a 40 GB disk (it peaked at 6.3 GB on W1 and
-W3 with the registry pruned; it was 80 GB before) unless
+VM gets 12 vCPUs, 16 GiB and a 20 GB disk, 40 GB for ultra (it peaked at
+6.3 GB on W1 and W3 with the registry pruned; it was 80 GB before) unless
 `RANIKUST_VM_CPUS`/`_MEM`/`_DISK` say otherwise; when the host has less
 than 16 GiB plus 3 GiB available, the default shrinks to fit (never below
 8 GiB) and the run says so. The builders' limits do not grow with the VM:
@@ -302,9 +353,10 @@ vCPUs, so their times are not comparable with later ones. A guest
 fills its memory with page cache, which QEMU keeps: on a host short of
 memory, with swap full, an earlier version of the harness lost whole runs
 when the VM stalled for over 45 s and its single SSH session dropped. A run of one round took about 15 minutes on noble, most of it
-the seed copy, the builds and flattening W1's images.
+the seed copy, the builds and flattening W1's images (before the flatten
+cache and its subtree whiteouts).
 
-First run with kaniko mode (2026-11-01, `RANIKUST_E2E_QUICK=1`, noble,
+First run with kaniko mode (2026-11-01, W1 and W3 of the ultra benchmark, noble,
 4 vCPUs, one round, so indicative only; 19 minutes with the VM's boot and
 the seed): W1 kaniko 24.3 s, overlay mode 20.5 s, `rk-kaniko` 22.9 s,
 `rk-kaniko-host` 31.4 s

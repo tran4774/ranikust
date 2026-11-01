@@ -3,11 +3,14 @@
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
 #   tests/vm/vm.sh [suite]...     suites: unit, smoke, quick, e2e, push,
-#                                 secrets; default unit smoke
+#                                 secrets, ultra; default unit smoke
 #
 # `quick` (the small Dockerfiles of tests/smoke/cases, a minute or two) is
 # for smoke tests and proofs of concept that need real root; `e2e` (the
-# nextjs-kaniko workloads, 12 GiB, tens of minutes) for large benchmarks.
+# light workload W0 built by every builder, a few minutes) for a change to
+# the e2e harness or the builders' comparison; `ultra` (nextjs-kaniko's
+# W1-W3, tens of minutes per round) only when the maintainer asks for
+# performance numbers or an acceptance run (docs/testing.md#which-test-for-what).
 # `secrets` runs kaniko mode on `/` in default Docker containers with
 # attacker `RUN`s that try to read ranikust's state and credentials
 # (ADR-0051).
@@ -39,9 +42,9 @@
 #                        install the packages, as every run did before
 #   RANIKUST_VM_DISK     disk size in M, G or T, default 20G (40G with e2e);
 #                        the host needs that much free, less 2 GiB
-#   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout e2e reads, default
+#   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout ultra reads, default
 #                        ../nextjs-kaniko next to the repository
-#   RANIKUST_E2E_*       options of the e2e suite (tests/vm/guest/e2e.sh)
+#   RANIKUST_E2E_*       options of the e2e and ultra suites (tests/vm/guest/e2e.sh)
 #   RANIKUST_QUICK_CASES the cases `quick` runs, space-separated; default all
 #   RANIKUST_QUICK_MODE  `kaniko` builds the `quick` cases in kaniko mode on
 #                        the workdir (default: the probed mode, overlay)
@@ -65,7 +68,7 @@ MUSL=x86_64-unknown-linux-musl
 VM_USER=rnk
 # What cloud-init installs: into the base image once (cloud-init/provision),
 # or at every boot with RANIKUST_VM_GOLDEN=0. Part of the base image's key.
-PACKAGES=(docker.io zstd pigz)
+PACKAGES=(docker.io zstd pigz busybox-static)
 
 # Seconds since the start on every line, for the timings of a run.
 log() { printf '[vm +%ss] %s\n' "$SECONDS" "$*" >&2; }
@@ -74,7 +77,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 SUITES=("$@")
 [ ${#SUITES[@]} -gt 0 ] || SUITES=(unit smoke)
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke | quick | e2e | push | secrets) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets)" ;; esac
+  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets, ultra)" ;; esac
 done
 case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 case "$GOLDEN_ON" in 0 | 1) ;; *) die "RANIKUST_VM_GOLDEN must be 0 or 1" ;; esac
@@ -104,7 +107,7 @@ DISK="${RANIKUST_VM_DISK:-20G}"
 # image at a time (the registry is pruned between builds): the guest
 # peaked at 6.3 GB on W1 and W3 (2026-11-01), so 40G leaves room for W2
 # and many rounds.
-wants e2e && DISK="${RANIKUST_VM_DISK:-40G}"
+wants ultra && DISK="${RANIKUST_VM_DISK:-40G}"
 # Validated before any arithmetic: no octal, no expansion of raw input.
 [[ "$DISK" =~ ^[1-9][0-9]*[MmGgTt]$ ]] ||
   die "RANIKUST_VM_DISK must be a whole number of M, G or T without a leading zero (got '$DISK')"
@@ -159,7 +162,7 @@ fi
 # e2e, whose builders are each limited to 8 GiB (RANIKUST_E2E_MEMORY).
 avail=$(($(sed -n 's/^MemAvailable: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024))
 mem_floor=4096
-wants e2e && mem_floor=8192
+{ wants e2e || wants ultra; } && mem_floor=8192
 if [ -n "${RANIKUST_VM_MEM:-}" ]; then
   MEM=$RANIKUST_VM_MEM mem_how=set
 else
@@ -175,10 +178,12 @@ fi
   log "warning: $MEM MiB for the VM leaves the host under 2 GiB of its ${avail} MiB available; the VM may stall (close memory-hungry programs, or set RANIKUST_VM_MEM)"
 VM_SIZE="cpus=$CPUS ($cpus_how) mem=${MEM}MiB ($mem_how) disk=$DISK base=$([ "$GOLDEN_ON" = 1 ] && echo provisioned || echo cloud-image)"
 
-if wants e2e; then
+if wants ultra; then
   # Next to the main checkout, also when this is a git worktree.
   NEXTJS="${RANIKUST_NEXTJS_KANIKO:-$(dirname "$MAIN")/nextjs-kaniko}"
   [ -f "$NEXTJS/bench/run-fair.sh" ] || die "no nextjs-kaniko checkout at $NEXTJS (set RANIKUST_NEXTJS_KANIKO)"
+fi
+if wants e2e || wants ultra; then
   command -v podman >/dev/null || die "missing podman (e2e saves the reference images from it)"
 fi
 if wants push; then
@@ -227,18 +232,23 @@ if wants unit; then
     jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
-if wants smoke || wants quick || wants e2e || wants push || wants secrets; then
+if wants smoke || wants quick || wants e2e || wants ultra || wants push || wants secrets; then
   log "building the smoke-build example and the ranikust binary"
   (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
   cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
 fi
 
-if wants e2e; then
+if wants e2e || wants ultra; then
   # The reference images, saved once from the host's podman (where
-  # nextjs-kaniko's harness built or pulled them) and kept in the cache.
-  E2E_IMAGES=(localhost/kaniko-bench:stream docker.io/library/registry:2 docker.io/verdaccio/verdaccio:6.1.6
+  # nextjs-kaniko's harness built or pulled them) and kept in the cache;
+  # the npm proxy only for ultra.
+  E2E_IMAGES=(localhost/kaniko-bench:stream docker.io/library/registry:2
     docker.io/moby/buildkit@sha256:f8a833b2de9d68e27f0815e4a737abdfaf8a2e4c615650557df11025101557b4)
-  E2E_NAMES=(localhost/kaniko-bench:stream registry:2 verdaccio/verdaccio:6.1.6 rnk-e2e/buildkit:v0.33.1-rootless)
+  E2E_NAMES=(localhost/kaniko-bench:stream registry:2 rnk-e2e/buildkit:v0.33.1-rootless)
+  if wants ultra; then
+    E2E_IMAGES+=(docker.io/verdaccio/verdaccio:6.1.6)
+    E2E_NAMES+=(verdaccio/verdaccio:6.1.6)
+  fi
   # One archive per image: Docker with the containerd store gives a loaded
   # image another ID, so the guest tags what each `docker load` reports.
   mkdir -p "$CACHE/e2e"
@@ -255,7 +265,8 @@ if wants e2e; then
   done
   # Quoted: `RANIKUST_E2E_BUILDERS="kaniko rk-kaniko"` names two builders.
   : >"$STAGE/e2e.env"
-  for v in $(compgen -e | grep '^RANIKUST_E2E_' || true); do
+  # Not the profile: each suite sets its own (guest/ultra.sh).
+  for v in $(compgen -e | grep '^RANIKUST_E2E_' | grep -vx RANIKUST_E2E_PROFILE || true); do
     printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/e2e.env"
   done
 fi
@@ -484,9 +495,13 @@ log "cloud-init done $((T_READY - T_BOOT)) s after boot"
 
 log "copying in $(du -sh "$STAGE" | cut -f1)"
 tar -C "$STAGE" -cf - . | vssh 'mkdir rnk && tar -C rnk -xf -'
-if wants e2e; then
-  log "copying in the e2e seed (images, registry, npm proxy storage, workloads)"
+if wants ultra; then
+  log "copying in the ultra seed (images, registry, npm proxy storage, workloads)"
   python3 -I "$HERE/e2e-seed.py" "$NEXTJS" "$CACHE/e2e" "$STAGE/e2e-images.txt" |
+    vssh 'mkdir -p rnk/e2e && tar -C rnk/e2e -xf -'
+elif wants e2e; then
+  log "copying in the e2e seed (the reference images)"
+  python3 -I "$HERE/e2e-seed.py" --images-only "$CACHE/e2e" "$STAGE/e2e-images.txt" |
     vssh 'mkdir -p rnk/e2e && tar -C rnk/e2e -xf -'
 fi
 

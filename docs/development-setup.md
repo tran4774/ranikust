@@ -92,20 +92,25 @@ just test-vm unit                 # first run downloads the Ubuntu cloud image
 - The verified cloud images are cached in `tests/e2e/_vm-image/` of the main
   checkout (gitignored) and shared by every git worktree; only one VM runs
   at a time, a second run waits for the first.
-- A VM takes 4 GiB (`unit`, `smoke`, `push`); `e2e` takes up to 12 GiB and
-  shrinks to what the host has free. On a machine with less than about
-  16 GiB free, avoid `e2e`.
+- A VM takes 12 vCPUs and 16 GiB (`RANIKUST_VM_CPUS`/`_MEM`), shrunk to
+  what the host can spare (at least 4 GiB, 8 GiB for `e2e` and `ultra`);
+  the first run after a new cloud image builds a base image with Docker
+  installed, a few minutes, once.
 - Day to day, VM smoke tests and proofs of concept use the small cases in
   `tests/smoke/cases`; the large nextjs-kaniko workloads (`just test-vm
-  e2e`) are only for benchmarks and acceptance measurements.
+  ultra`) are only for benchmarks and acceptance measurements the
+  maintainer asks for (docs/testing.md#which-test-for-what).
 
 ## 5. End-to-end benchmarks (optional)
 
-`just test-vm e2e` also needs a
+`just test-vm e2e`, the light e2e, needs only the kaniko
+(`kaniko-bench:stream`), BuildKit and `registry:2` images in your podman.
+`just test-vm ultra`, the ultra benchmark (only when the maintainer asks for
+it), also needs a
 [`nextjs-kaniko`](testing.md#end-to-end-workloads-e2e) checkout next to the
 repository (or `RANIKUST_NEXTJS_KANIKO=<path>`), its registry and npm-proxy
-storage filled, and its kaniko, BuildKit, `registry:2` and verdaccio images
-in your podman. About 3 GB is copied into the VM per run.
+storage filled, and its verdaccio image in your podman. About 3 GB is
+copied into the VM per ultra run.
 
 ## Check the setup
 

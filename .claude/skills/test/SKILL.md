@@ -28,11 +28,11 @@ test-vm quick` (`RANIKUST_QUICK_CASES="<name> ..."`) as real root. Add a
 case there rather than reaching for a big project; one concern per case,
 its checks in `case.sh` (helpers in `tests/smoke/cases.bash`).
 
-The nextjs-kaniko workloads (`just test-vm e2e`: W1–W3 with kaniko,
-BuildKit and ranikust, a 12 GiB VM, 45–60 minutes for 3 rounds) are only
-for a large benchmark or an acceptance measurement. Even then start with
-`RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1`; run all builders
-and 3 rounds only when official numbers are needed.
+`just test-vm e2e` is the light e2e (W0 by every builder, a few
+minutes): the check of a change to the e2e harness. The nextjs-kaniko
+workloads (`just test-vm ultra`: W1–W3, tens of minutes per round) are
+the ultra benchmark, run only when the maintainer asks for performance
+numbers or an acceptance run (docs/testing.md#which-test-for-what).
 
 ## Write tests the way large Rust CLIs do
 
