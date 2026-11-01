@@ -268,6 +268,70 @@ fn an_anonymous_exporter_writes_the_same_bytes_and_names_nothing() {
     assert!(named.is_empty(), "{named:?}");
 }
 
+/// Every file below `dir`, by its path from `dir`, with its bytes.
+fn tree(dir: &Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn walk(top: &Path, at: &Path, out: &mut BTreeMap<std::path::PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(at).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(top, &path, out);
+            } else {
+                let name = path.strip_prefix(top).unwrap().to_owned();
+                out.insert(name, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+/// Outputs written to files read an anonymous layer (kaniko mode on `/`,
+/// ADR-0051) through its handle: a Docker tar and an OCI layout get the
+/// same bytes as from the same layer stored as a file.
+#[test]
+fn file_outputs_write_an_anonymous_layer_as_its_file_twin() {
+    let time = time();
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
+    let named = image(dir.path(), &base, &time, Compression::Gzip);
+    let state = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(rnk_store::Store::open_anonymous(state.path()).unwrap());
+    let built = LayerExporter::anonymous(store, options(Compression::Gzip, 4), &time)
+        .export(Box::new(layer(1, 20)))
+        .unwrap();
+    assert_eq!(built.path(), None, "reached through its handle alone");
+    let mut config = base.config.clone();
+    config.push_layer(
+        built.diff_id.clone(),
+        rnk_builder::instruction_history("RUN make # buildkit", &time),
+    );
+    let anon = assemble(
+        config,
+        vec![base.layer.clone(), built],
+        image_format(),
+        &time,
+    )
+    .unwrap();
+    assert_eq!(anon.manifest.bytes(), named.manifest.bytes());
+
+    let out = tempfile::tempdir().unwrap();
+    let tags = ["r.example/app:1".to_owned()];
+    for (name, image) in [("named", &named), ("anon", &anon)] {
+        rnk_builder::write_docker_tar(image, &tags, &out.path().join(format!("{name}.tar")))
+            .unwrap();
+        rnk_builder::write_oci_layout(image, &out.path().join(name)).unwrap();
+    }
+    assert_eq!(
+        std::fs::read(out.path().join("anon.tar")).unwrap(),
+        std::fs::read(out.path().join("named.tar")).unwrap()
+    );
+    assert_eq!(
+        tree(&out.path().join("anon")),
+        tree(&out.path().join("named"))
+    );
+}
+
 #[test]
 fn a_layer_nothing_needs_is_not_encoded() {
     let dir = tempfile::tempdir().unwrap();
