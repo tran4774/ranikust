@@ -330,6 +330,23 @@ fn a_child_copies_links_as_links_hardlinks_and_modes_and_leaves_nodes_out() {
     assert_eq!(fs::read(outside.join("secret")).unwrap(), b"host");
 }
 
+/// A mount a T2 test made below its temporary directory, detached on drop
+/// (panics included) before the directory is removed. If it cannot be
+/// detached the process aborts, so nothing is removed through it.
+struct Detach(PathBuf);
+
+impl Drop for Detach {
+    fn drop(&mut self) {
+        if let Err(e) = rustix::mount::unmount(&self.0, rustix::mount::UnmountFlags::DETACH) {
+            eprintln!(
+                "cannot detach {}: {e}; aborting to remove nothing",
+                self.0.display()
+            );
+            std::process::abort();
+        }
+    }
+}
+
 /// T2 (root, the VM only): a mount below a stage root is never crossed by
 /// the release, which reports it instead of deleting what the mount
 /// shows. The whole test runs on a thread of its own in a new mount
@@ -358,9 +375,12 @@ fn release_never_crosses_a_mount_below_a_stage_root() {
         fs::create_dir(&source).unwrap();
         fs::write(source.join("keep"), b"kept").unwrap();
         rustix::mount::mount_bind(&source, &target).expect("bind mount");
+        // Dropped before `f`: the bind is detached before the directory is
+        // removed, on a panic too.
+        let bind = Detach(target);
         let r = s.release();
         let still = fs::read(source.join("keep"));
-        let _ = rustix::mount::unmount(&target, rustix::mount::UnmountFlags::DETACH);
+        drop(bind);
         assert_eq!(still.unwrap(), b"kept", "the volume's file stays");
         assert!(r.is_err(), "a mount below the root is reported");
     })

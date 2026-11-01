@@ -898,6 +898,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         // rule: each source is copied in turn, a later file over an earlier
         // one when the destination is not a directory (Q-080, `ADR-0032`).
         let from_context = matches!(source, CopySource::Context);
+        let skip_special = copy_skips_special(self.cx.isolation);
         let chown = c.chown.clone();
         let files = cx.context_files;
         let contents = c.contents;
@@ -912,7 +913,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             let opts = CopyOpts {
                 owner,
                 chmod: chmod.clone(),
-                skip_special: false,
+                skip_special,
             };
             // An existing directory, or a symlink to one inside the root, as
             // BuildKit follows it: the copy goes inside.
@@ -1145,6 +1146,16 @@ fn run_network(asked: DfNetwork, build: Network, allow_host: bool) -> Result<Net
     }
 }
 
+/// Whether `COPY` leaves device nodes, FIFOs and sockets out
+/// ([`CopyOpts::skip_special`]): wherever a `RUN` enters the root without
+/// `nodev`, which only the full sandbox's bind of the root has. Elsewhere
+/// (`Direct`, kaniko mode on `/`) a copied device node would be usable by
+/// the next `RUN`; kaniko mode leaves them out of extracted layers already
+/// (ADR-0041), and `COPY` follows (ADR-0060).
+fn copy_skips_special(isolation: Isolation) -> bool {
+    isolation != Isolation::Full
+}
+
 /// A `Direct` `RUN` (kaniko mode on `/`) cannot make a network namespace:
 /// `--network=none` is refused, never run on the container's network in
 /// its place (ADR-0057, Q-382).
@@ -1306,6 +1317,14 @@ mod tests {
             .to_string();
         assert!(e.contains("--network=none"), "{e}");
         assert!(refuse_direct_network(Network::Host).is_ok());
+    }
+
+    /// `COPY` keeps device nodes and FIFOs only where the `RUN` that may
+    /// open them enters the root `nodev` (ADR-0060).
+    #[test]
+    fn copy_leaves_special_files_out_unless_the_root_is_entered_nodev() {
+        assert!(!copy_skips_special(Isolation::Full));
+        assert!(copy_skips_special(Isolation::Direct));
     }
 
     /// A kaniko-mode snapshotter on a temp root, its keep area beside it.

@@ -206,8 +206,8 @@ settles them (Q-024):
   `/` in a container (ADR-0043); `RLIMIT_NOFILE` as ranikust
   started (`NofileLimit::current()` before the raise,
   `Sandbox::set_nofile_limit`). The sandbox reopens the root by path for
-  each `RUN` and refuses it when it is no longer the directory
-  `Sandbox::start_with_root` checked (device, inode, mount id). On `/` a
+  each `RUN` and refuses it when it is no longer the directory the caller
+  checked (device, inode, mount id; `RunSpec::root_id`). On `/` a
   `#!` heredoc runs from a sealed memfd (`RunSpec::script`), a secret as
   a variable works, a cache mount is left out with a warning (the `RUN`
   runs without it, and what it writes at the target lands in its layer), and a secret as a file and `--network=none` are
@@ -254,8 +254,8 @@ settles them (Q-024):
   exists. With `--parallel-stages` (task 10), a view would keep the fence
   closed to other stages' `RUN`s, which wait at most a minute: to design
   there.
-- **Refused:** kaniko mode without root, and `--parallel-stages` (task
-  10), each with its reason. Off `/` the stages do not share a root: see
+- **Refused:** kaniko mode without root, and `--parallel-stages`
+  (ADR-0060, Q-400: a), each with its reason. Off `/` the stages do not share a root: see
   [Per-stage directories](#per-stage-directories).
 
 `Kaniko` also takes a root other than `/` (a directory, its keep area
@@ -490,6 +490,14 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   root's owner, mode and times; never a hardlink to it (ADR-0017). Device
   nodes, FIFOs and sockets a parent's `RUN` made are left out
   (`CopyOpts::skip_special`, ADR-0041).
+- **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
+  `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as
+  BuildKit, because every `RUN` enters the root `nodev` (the full
+  sandbox). So an image built off `/` can hold a device node that came
+  from the context or another stage by `COPY`; ADR-0060's "the image never
+  holds a device node a `RUN` did not make in its own layer" holds for
+  kaniko mode on `/` (`Isolation::Direct`) only. Base layers and
+  `FROM <stage>` copies leave them out in both.
 - **Scheduling**: as overlay mode's stages: the stage graph and `--jobs`,
   no squashing, nothing kept or emptied between stages; a `COPY --from`
   reads the finished stage's directory as it is. A stage the target does
@@ -521,6 +529,13 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   never rewritten.
 
 ## The `--parallel-stages` path (bare `chroot`)
+
+> Not built: the flag is refused (ADR-0060, Q-400: a). A
+> `RUN` that escapes a bare `chroot` reaches what ADR-0051 keeps out of
+> its reach; Q-400's option (b), a hardened variant (capabilities dropped
+> after the `chroot`, no procfs), may be reconsidered after a VM
+> measurement. The text below is the plan of
+> ADR-0014.
 
 Used only on request where mounting is impossible. `RUN` needs
 `CAP_SYS_CHROOT`, which Docker grants by default. At build start ranikust logs

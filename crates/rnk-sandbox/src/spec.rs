@@ -301,6 +301,7 @@ impl RunSpec {
     /// Checks everything that can be checked without touching the root.
     pub(crate) fn validate(&self) -> Result<()> {
         absolute_clean("root_dir", &self.root_dir)?;
+        plain_form("root_dir", &self.root_dir)?;
         absolute_clean("workdir", &self.workdir)?;
         let Some(program) = self.argv.first() else {
             return Err(Error::InvalidSpec("argv is empty".into()));
@@ -391,6 +392,24 @@ fn no_nul(what: &str, s: &OsStr) -> Result<()> {
     Ok(())
 }
 
+/// Requires `p` spelled as the kernel prints it (`/proc/*/mountinfo`): no
+/// `//`, no `.` component, no trailing `/` but for `/` itself, which
+/// [`Path::components`] would otherwise hide. The root is compared with
+/// mount points byte for byte.
+fn plain_form(what: &str, p: &Path) -> Result<()> {
+    let b = p.as_os_str().as_bytes();
+    let bad = b.windows(2).any(|w| w == b"//")
+        || b.windows(3).any(|w| w == b"/./")
+        || b.ends_with(b"/.")
+        || (b.len() > 1 && b.ends_with(b"/"));
+    if bad {
+        return Err(Error::InvalidSpec(format!(
+            "{what} must be spelled plainly, without //, /./ or a trailing /: {p:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// Requires an absolute path with no `.`, `..` or NUL byte.
 fn absolute_clean(what: &str, p: &Path) -> Result<()> {
     if !p.is_absolute() {
@@ -411,6 +430,18 @@ fn absolute_clean(what: &str, p: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The root is compared with mountinfo byte for byte: forms that
+    /// [`Path::components`] hides are refused.
+    #[test]
+    fn a_root_is_spelled_plainly() {
+        for bad in ["/a//b", "/a/./b", "/a/b/", "/a/.", "//a"] {
+            assert!(plain_form("root_dir", Path::new(bad)).is_err(), "{bad}");
+        }
+        for good in ["/", "/a/b", "/a/.b", "/a/b."] {
+            assert!(plain_form("root_dir", Path::new(good)).is_ok(), "{good}");
+        }
+    }
 
     fn spec() -> RunSpec {
         RunSpec::new(

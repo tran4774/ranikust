@@ -119,6 +119,11 @@ pub(crate) struct ChildArgs {
     pub(crate) root_dir: CString,
     /// Flags of the remount of the root's bind: `nodev`, the rest kept.
     pub(crate) root_remount: MountFlags,
+    /// Make every mount of the root's recursive bind `nodev`, submounts
+    /// included, with `mount_setattr(AT_RECURSIVE)` (kernel 5.12). `false`
+    /// where the kernel lacks it: the parent then refused any root with a
+    /// mount below it ([`crate::spawner`]), so the top remount covers all.
+    pub(crate) root_nodev_rec: bool,
     pub(crate) mounts: Vec<ChildMount>,
     /// `None` without secrets.
     pub(crate) secrets: Option<ChildSecrets>,
@@ -300,6 +305,45 @@ impl FdPath {
     }
 }
 
+/// `MOUNT_ATTR_NODEV` of `<linux/mount.h>`.
+pub(crate) const MOUNT_ATTR_NODEV: u64 = 0x0000_0004;
+
+/// `struct mount_attr` of `<linux/mount.h>` (`MOUNT_ATTR_SIZE_VER0`).
+#[repr(C)]
+pub(crate) struct MountAttr {
+    pub(crate) attr_set: u64,
+    pub(crate) attr_clr: u64,
+    pub(crate) propagation: u64,
+    pub(crate) userns_fd: u64,
+}
+
+/// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {attr_set: NODEV})`: 0, or
+/// -1 with `errno` set. Allocates nothing, so the child may call it.
+///
+/// # Safety
+///
+/// `path` must stay valid for the call.
+pub(crate) unsafe fn set_nodev_recursive(path: &std::ffi::CStr) -> libc::c_long {
+    let attr = MountAttr {
+        attr_set: MOUNT_ATTR_NODEV,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    // SAFETY: as the caller guarantees for `path`; `attr` lives on this
+    // stack frame for the call and its size is passed.
+    unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            libc::AT_RECURSIVE as libc::c_uint,
+            &raw const attr,
+            std::mem::size_of::<MountAttr>(),
+        )
+    }
+}
+
 /// The child: performs the sequence of `design/sandbox.md` and executes the
 /// command, or reports the failing step and exits.
 ///
@@ -343,6 +387,15 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         Step::Remount,
         rustix::mount::mount_remount(root_dir, args.root_remount, c""),
     );
+    // The remount reaches the top mount only; a mount below the root keeps
+    // its own flags unless made `nodev` too.
+    if args.root_nodev_rec {
+        // SAFETY: a NUL-terminated path and a `mount_attr` of the size
+        // passed, both alive for the call.
+        if unsafe { set_nodev_recursive(root_dir) } != 0 {
+            fail(err, Step::Remount, last_errno());
+        }
+    }
     check(err, Step::EnterRoot, rustix::process::chdir(root_dir));
     // Opened after the bind, so it is the bind's root: targets resolved from
     // it are inside the mount `pivot_root` enters.
@@ -1570,6 +1623,7 @@ mod tests {
         let args = ChildArgs {
             root_dir: c"/r".into(),
             root_remount: MountFlags::BIND,
+            root_nodev_rec: false,
             mounts: Vec::new(),
             secrets: None,
             dev_remount: [MountFlags::BIND; DEV_NODES.len()],

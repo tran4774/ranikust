@@ -40,8 +40,8 @@ Real Kubernetes clusters have not been tested yet.
 - **Fastest builds:** an environment that gets overlay mode, root or
   rootless.
 - **Locked-down CI:** kaniko mode works where kaniko works. Builds there are
-  sequential unless you opt in to `--parallel-stages`, with the limits
-  described in [How ranikust builds](how-it-builds.md#kaniko-mode).
+  sequential on a container's `/`; `--parallel-stages` is not offered yet
+  (see [How ranikust builds](how-it-builds.md#kaniko-mode)).
 - **Untrusted Dockerfiles:** prefer a disposable VM, or a container made for
   that one build. In kaniko mode the container is the only boundary between
   `RUN` and everything else in it.

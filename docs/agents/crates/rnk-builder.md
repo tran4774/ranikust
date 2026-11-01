@@ -133,6 +133,8 @@ pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, p
     pub blobs: Vec<BlobLayer>, pub layers: Vec<L> }
 ```
 
+With `Isolation::Direct` (no `nodev` on the root) `COPY` leaves device
+nodes, FIFOs and sockets out (`CopyOpts::skip_special`, ADR-0060).
 `RUN`, `COPY`, `ADD` and a `WORKDIR` other than `/` each run in a layer
 of their own (`WORKDIR` makes its directory with `mkdir -p`, owned by the
 active user); a step whose layer is empty (a `WORKDIR` that exists, a
@@ -240,6 +242,10 @@ through a descriptor of its directory.
   `--reproducible` scrubbing; the OCI layout and Docker tar file by file
   and through `skopeo inspect` when installed; push with mounts against
   `rnk-registry`'s fake registry) and `tests/spans.rs`.
+  Red team of ADR-0060 (`tests/stage.rs`): with `Isolation::Direct`,
+  `COPY` from the context and `COPY --from` a stage holding FIFOs,
+  sockets and device nodes leaves them all out (kept with the full
+  sandbox); `ADD` of one fails without blocking in either isolation.
 - **T1/T2:** W1 and W3 end to end; flattened content against kaniko
   (`nextjs-kaniko/digest-check/`) and between modes (ADR-0012 list);
   `--jobs 1` and the default give one digest. Phase 6: kaniko's 201

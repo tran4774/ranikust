@@ -11,11 +11,10 @@
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
 //! picks the mode.
 //!
-//! When nothing can be mounted, `--parallel-stages` runs `RUN` with a bare
-//! `chroot` into a per-stage directory instead: `/dev` nodes via `mknod` when
-//! permitted, the static fake `/proc` and `/sys` files, and the
-//! `JAVA_TOOL_OPTIONS` limits of ADR-0019. A bare `chroot` is never used when
-//! mounting is possible.
+//! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
+//! nothing can be mounted; it is not built, and the flag is refused
+//! (ADR-0060). A bare `chroot` is never used when mounting
+//! is possible.
 //!
 //! # Use
 //!

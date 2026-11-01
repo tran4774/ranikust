@@ -444,6 +444,17 @@ const PHASE_4: &str = "the layer cache comes in Phase 4 (Q-021)";
 const VAR_RUN: &str = "kaniko mode keeps /var/run out of layers only where it is a mount \
      point, as every mount point, so an image's /var/run -> /run symlink is kept (ADR-0052); \
      drop the flag";
+/// `--parallel-stages` (ADR-0014, ADR-0038 Q-019): refused (ADR-0060,
+/// Q-400: a). Outside a container, kaniko mode already builds independent
+/// stages in parallel, each in its own directory with the full sandbox
+/// (ADR-0059); on a container's `/`, where nothing can be mounted, the bare
+/// `chroot` of ADR-0014 cannot keep the state directory, credentials and the
+/// other stages out of a `RUN`'s reach (ADR-0051).
+const PARALLEL_STAGES: &str = "not offered (ADR-0060, Q-400): outside a container kaniko mode \
+     already builds independent stages in parallel, each in its own directory (ADR-0059); on a \
+     container's /, a bare chroot per stage cannot keep the state directory, credentials and \
+     the other stages out of RUN's reach (ADR-0051); allow mounts to get overlay mode's \
+     parallel stages, or drop the flag";
 const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential helpers (Q-047)";
 
 /// kaniko executor flags that ranikust recognises but does not accept
@@ -468,6 +479,8 @@ const REFUSED: &[(&str, Refusal)] = &[
              in a directory of the state directory (ADR-0050); drop the flag",
         ),
     ),
+    // ranikust's own flag of ADR-0014, refused by ADR-0060 (Q-400: a).
+    ("parallel-stages", Refusal::NotYet(PARALLEL_STAGES)),
     ("cache", Refusal::NotYet(PHASE_4)),
     ("cache-repo", Refusal::NotYet(PHASE_4)),
     ("cache-ttl", Refusal::NotYet(PHASE_4)),

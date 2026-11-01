@@ -482,6 +482,21 @@ Entry format:
 
 ## Answered
 
+### Q-400: How does `--parallel-stages` run stages at once on a container's `/` without mounts?
+
+- **Answer (2026-11-01):** "Ok làm theo đề xuất của bạn": option (a).
+  `--parallel-stages` stays refused with exit 2 and guidance, whatever
+  the environment: outside a container stages already run in parallel
+  with the full sandbox (ADR-0059), and on a container's `/` a bare
+  `chroot` per stage lets a `RUN` escape to what ADR-0051 and ADR-0056
+  keep out of its reach. Option (b), a hardened bare `chroot`
+  (capabilities dropped after the `chroot`, static fake `/proc`, no
+  procfs), may be reconsidered only after `poc-runner` measures its escape
+  vectors in the VM (rootful Docker, Kubernetes' default profile,
+  `ptrace_scope` 0 and 1); option (c), ADR-0014 as written, never.
+  Recorded in
+  [ADR-0060](adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md).
+
 ### Q-380: How does a `Direct` `RUN` on `/` get a secret as a file?
 
 - **Answer (2026-11-01):** "Q380-382 làm theo đề xuất": option (a). A

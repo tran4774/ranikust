@@ -108,7 +108,7 @@ not read and not warned about (ADR-0049).
 ranikust-only flags: `--state-dir`,
 `--mode=auto|overlay|kaniko` (new, `ADR-0023`), `--jobs`, `--network`,
 `--metrics-file` and `--platform`, all parsed; `--parallel-stages`
-(Phase 2, `ADR-0038`), `--seccomp`, `--userns` (Phase 3) not yet.
+recognised and refused (`ADR-0060`); `--seccomp`, `--userns` (Phase 3) not yet.
 Subcommands: `build` (the default) and `version` exist; `push` and `prune`
 do not yet (Q-048, Phase 5); `login` never will (ADR-0049).
 

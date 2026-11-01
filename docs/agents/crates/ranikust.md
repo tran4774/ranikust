@@ -173,6 +173,12 @@ error, a refused kaniko flag, an invalid combination, and for now every
 
 ## Tests
 
+- Red team of ADR-0060: `cli/tests.rs`
+  `parallel_stages_cannot_be_turned_on_by_any_spelling` (values,
+  repeats, after `build` or a value flag, prefixes, case, `--`,
+  `@argfile`, non-UTF-8) and `tests/cli.rs`
+  `parallel_stages_is_refused_before_any_work` (exit 2, no state
+  directory, the value never echoed, no `RANIKUST_*` variable read).
 - Kaniko-mode builds (Phase 2 tasks 6 and 8), measured 2026-10-31: T2
   `RANIKUST_QUICK_MODE=kaniko just test-vm quick` (VM root, full sandbox
   on a root in the state directory) builds all 7 cases, the multi-stage
@@ -325,6 +331,6 @@ error, a refused kaniko flag, an invalid combination, and for now every
   the kaniko-mode workdir lock (`ADR-0038`, Q-011), built in Phase 2 task
   1, then replaced by ranikust picking the root (ADR-0050).
 - Rootful overlay only: elsewhere, fail with the probe's diagnosis.
-- Deferred: `--parallel-stages`, `--ignore-path` (phase 2); `--seccomp`,
+- `--parallel-stages` refused with exit 2 (ADR-0060). Deferred: `--ignore-path` (phase 2); `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push`
   (an OCI layout only, ADR-0052); no `login` (ADR-0049).

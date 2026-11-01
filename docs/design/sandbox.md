@@ -83,10 +83,20 @@ rtnetlink first; the ADR lists them as residual risk.
    `setgroups`; otherwise `USER _apt` (used by apt-get) fails with
    `setgroups: EPERM`.
 3. Mounts, in this order:
-   1. Bind the root onto itself (required by `pivot_root`) and remount the
-      bind `nodev`: Docker blocks device nodes with its device cgroup, which
-      ranikust does not have, so no node in the root opens, neither one a
-      `RUN` creates with `mknod` nor one from a layer.
+   1. Bind the root onto itself, recursively (required by `pivot_root`),
+      and remount the bind `nodev`: Docker blocks device nodes with its
+      device cgroup, which ranikust does not have, so no node in the root
+      opens, neither one a `RUN` creates with `mknod` nor one from a layer.
+      The remount reaches the top mount only, so every mount of the bind,
+      submounts below the root included, is then made `nodev` with
+      `mount_setattr(AT_RECURSIVE)` (Linux 5.12); on an older kernel a root
+      with any mount below it (`/proc/thread-self/mountinfo`, the root given
+      as the kernel names it) is refused before the clone. Because of this
+      `nodev`, `COPY` into such a root keeps device nodes, FIFOs and sockets
+      (as BuildKit); only where a `RUN` enters the root without it
+      (`Isolation::Direct`, kaniko mode on `/`) does `COPY` leave them out
+      (ADR-0060). An image built with the full sandbox can therefore hold a
+      device node copied in; it opens in no `RUN`.
    2. A new `proc`. If `/proc` is masked and a new user namespace was created,
       the kernel refuses (`EPERM`); fall back to an rbind of the existing
       `/proc`.
@@ -199,7 +209,8 @@ image's entry is renamed to in the same directory; after the `RUN` the
 entry is renamed back, or the placed one removed, and the parent's times
 restored as for stubs. Placing and undoing never resolve through another
 mount below the root. A replay accepts only those paths and aside names,
-and a root below the state directory or the shared root given to
+and a root below the state directory or, in tests only since ADR-0060
+(the binary never runs `Direct` off `/`), the shared root given to
 `Sandbox::start_with_root`, opened once and matched by device, inode and
 mount. A root that is the host's `/`, `/etc` or `/dev` by device and inode
 is refused before anything is placed, and a `Direct` `RUN` off `/` is
@@ -220,7 +231,7 @@ own for the kaniko-mode walk; the child sets it right before `execve`.
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root: the old root stays mounted underneath, and `..` stops at the moved root only then [inferred] ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)) |
 | Rootless (user namespace) | Multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail |
 | kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own session, whose process group is killed once the command exits ([kaniko-mode](kaniko-mode.md)). `Sandbox::start_direct` starts this variant: no directory, no journal (nothing is placed on `/`), and the process a child subreaper, so every process the `RUN` leaves, `setsid` ones included, becomes ranikust's child and is killed and reaped by pid once the command exits; the child drops every capability outside Docker's defaults from its bounding set, and a `RUN` that would keep `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` (no `CAP_SETPCAP` to drop them) is refused ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)). On a root other than `/` (a host `--workdir`, only where the full sandbox cannot run) the child `chroot`s into it with Docker's default capabilities, with ranikust's `resolv.conf`, `hosts`, `hostname` and `/dev` nodes swapped in for the `RUN` and journaled, no `/proc` ([ADR-0043](../adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)). `Direct` refuses mounts, secret files and `--network=none` (`Error::Direct`; `rnk-builder` leaves cache mounts out first, with a warning); a `#!` heredoc on `/` runs from a sealed memfd with `execveat`, read by its interpreter as `/dev/fd/<n>`; a container granting capabilities ranikust cannot drop is refused at `start_direct` ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)) |
-| `--parallel-stages` | Bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
+| `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
 ## Differences from Docker
 

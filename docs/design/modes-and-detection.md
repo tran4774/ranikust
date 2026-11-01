@@ -18,7 +18,7 @@ The probe ends in exactly one of these outcomes:
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
 | **overlay, rootless** | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind if a new `proc` is refused | parallel |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
-| **kaniko, cannot mount** | walk + hash | `/` in a container, else a root in the state directory | directly, like kaniko (`Isolation::Direct`) | sequential; `--parallel-stages` → one directory per stage, bare `chroot` |
+| **kaniko, cannot mount** | walk + hash | `/` in a container, else a root in the state directory | directly, like kaniko (`Isolation::Direct`) | sequential on `/`; `--parallel-stages` refused (ADR-0060) |
 | **refuse** | — | — | — | exit with guidance |
 
 "kaniko, can mount" covers root where overlay is unusable: state directory on NFS or

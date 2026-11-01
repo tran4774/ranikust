@@ -159,7 +159,7 @@ the root through `rnk-rootfs`, exec. Also the probes of its own
 capabilities, each tried for real: namespaces, the uid map, `proc`,
 `pivot_root`/`MS_MOVE`, `sysfs`. In sequential kaniko mode it runs `RUN`
 directly on `/`, like kaniko (`Isolation::Direct`). When nothing can be
-mounted, `--parallel-stages` uses a bare `chroot` into a per-stage directory
+mounted, `--parallel-stages` was to use (it is held back: refused with exit 2 (ADR-0060)) a bare `chroot` into a per-stage directory
 with `mknod` `/dev` nodes, the static fake `/proc` and `/sys`, and the
 `JAVA_TOOL_OPTIONS` limits of
 [ADR-0019](docs/adr/0019-java-tool-options-on-parallel-path.md); a bare
@@ -331,7 +331,7 @@ in I/O.
 |---|---|---|
 | Needs | mount privileges (root, or a usable user namespace) | root |
 | State directory | `/var/lib/ranikust` by default; a volume in a container | `/var/lib/ranikust` by default, on the ignore list when inside the root |
-| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container; else one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059); `--parallel-stages` (task 10) |
+| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container; else one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059); `--parallel-stages` refused (ADR-0060, Q-400) |
 | Root lock | none: builds share the state directory | `/` is `flock`ed, one build per container |
 | Diff | the upper directory, plus a walk of the diff only | parallel walk and hash with a stat cache |
 | Stages | parallel (DAG) | sequential by default |

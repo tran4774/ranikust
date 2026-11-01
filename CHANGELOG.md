@@ -214,6 +214,21 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
+- `--parallel-stages` is recognised and refused with exit 2 and its reason
+  (ADR-0060, Q-400): outside a container
+  kaniko mode already builds stages in parallel, and on a container's `/`
+  a bare `chroot` per stage would let a `RUN` reach the state directory,
+  the credentials and the other stages.
+- In kaniko mode on `/`, `COPY` leaves device nodes, FIFOs and sockets out,
+  as extraction does there (ADR-0060); overlay mode and the full sandbox
+  keep them, as BuildKit. A copy that leaves any out warns once, naming
+  the first.
+- The full sandbox makes every mount below a `RUN`'s root `nodev` too, not
+  only the root's own mount (`mount_setattr`, Linux 5.12); on older kernels
+  a root with a mount below it is refused.
+- `rnk_sandbox::Sandbox::start` takes `Caps`: the library no longer offers
+  a sandbox that runs `Isolation::Direct` in a bare `chroot` off `/`
+  (ADR-0060); kaniko mode on `/` uses `Sandbox::start_direct`.
 - Kaniko mode outside a container builds each stage in a directory of its
   own, `<state>/builds/<id>/stages/<n>/rootfs`, and runs independent
   stages in parallel (`--jobs`), as overlay mode does, instead of one

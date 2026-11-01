@@ -58,9 +58,31 @@ fn plant(dir: &Path, entries: &[(&str, &[u8])]) {
             Some(target) => {
                 std::os::unix::fs::symlink(std::str::from_utf8(target).unwrap(), &p).unwrap()
             }
+            None if plant_special(&p, content) => {}
             None => fs::write(p, content).unwrap(),
         }
     }
+}
+
+/// Red team (ADR-0060): content `|fifo`, `|sock` or `|chr` makes a FIFO,
+/// a Unix socket or a character device node an unprivileged process may
+/// make (`0:0`, Linux 5.8) at `p`; `false` for any other content.
+fn plant_special(p: &Path, content: &[u8]) -> bool {
+    use rustix::fs::{CWD, FileType, Mode, makedev, mknodat};
+    match content {
+        b"|fifo" => mknodat(CWD, p, FileType::Fifo, Mode::from_raw_mode(0o666), 0).unwrap(),
+        b"|sock" => drop(std::os::unix::net::UnixListener::bind(p).unwrap()),
+        b"|chr" => mknodat(
+            CWD,
+            p,
+            FileType::CharacterDevice,
+            Mode::from_raw_mode(0o666),
+            makedev(0, 0),
+        )
+        .unwrap(),
+        _ => return false,
+    }
+    true
 }
 
 impl Snapshotter for FakeSnapshotter {
@@ -158,6 +180,24 @@ fn build_seeded(
     seed: &[(&str, &str)],
     labels: &[(String, String)],
 ) -> (Build, Result<(), Error>) {
+    build_in(
+        rnk_sandbox::Isolation::Full,
+        dockerfile,
+        files,
+        seed,
+        labels,
+    )
+}
+
+/// [`build_seeded`] with the `RUN` isolation the build would use:
+/// `Direct` for kaniko mode on a container's `/`.
+fn build_in(
+    isolation: rnk_sandbox::Isolation,
+    dockerfile: &str,
+    files: &[(&str, &[u8])],
+    seed: &[(&str, &str)],
+    labels: &[(String, String)],
+) -> (Build, Result<(), Error>) {
     let dir = tempfile::tempdir().unwrap();
     let ctx = dir.path().join("ctx");
     fs::create_dir_all(&ctx).unwrap();
@@ -171,7 +211,7 @@ fn build_seeded(
     let context_files = ContextFiles::load(&context, matcher.as_ref()).unwrap();
     let state = dir.path().join("state");
     let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
-    let sandbox = Sandbox::start(None, &state.join("sandbox")).unwrap();
+    let sandbox = Sandbox::start_direct().unwrap();
     let time = BuildTime::reproducible(None).unwrap();
     let exporter = LayerExporter::new(
         store.build_dir(),
@@ -199,7 +239,7 @@ fn build_seeded(
     let secrets = BTreeMap::new();
     let never = || false;
     let cx = BuildCx {
-        isolation: rnk_sandbox::Isolation::Full,
+        isolation,
         snapshotter: &snapshotter,
         sandbox: &sandbox,
         store: &store,
@@ -569,4 +609,157 @@ fn a_copy_onto_a_symlink_to_a_directory_goes_inside_it() {
         fs::read_link(root.join("link")).unwrap(),
         PathBuf::from("real")
     );
+}
+
+/// Every entry below `dir` that is a FIFO, a socket or a device node,
+/// relative to `dir`.
+fn specials_below(dir: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::FileTypeExt as _;
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let t = fs::symlink_metadata(&p).unwrap().file_type();
+            if t.is_dir() {
+                todo.push(p);
+            } else if t.is_fifo() || t.is_socket() || t.is_char_device() || t.is_block_device() {
+                out.push(p.strip_prefix(dir).unwrap().to_owned());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A context with a FIFO, a socket and a device node at the top, nested,
+/// hardlinked and behind a symlinked directory, next to regular files.
+const HOSTILE_CONTEXT: &[(&str, &[u8])] = &[
+    ("keep.txt", b"keep"),
+    ("fifo", b"|fifo"),
+    ("sock", b"|sock"),
+    ("chr", b"|chr"),
+    ("d/e/keep", b"deep"),
+    ("d/e/fifo", b"|fifo"),
+    ("d/e/sock", b"|sock"),
+    ("d/e/chr", b"|chr"),
+    ("real/chr", b"|chr"),
+    ("via", b"->real"),
+    ("to-chr", b"->d/e/chr"),
+];
+
+/// Special files every `FROM scratch` root of the fake starts with: what a
+/// stage's `RUN mkfifo` or `RUN mknod` would leave in it.
+const SEEDED_SPECIALS: &[(&str, &str)] = &[
+    ("seeded/keep", "k"),
+    ("seeded/fifo", "|fifo"),
+    ("seeded/sock", "|sock"),
+    ("seeded/chr", "|chr"),
+    ("seeded/d/chr", "|chr"),
+];
+
+/// [`specials_below`] the root, but for the seeded ones.
+fn specials_copied(root: &Path) -> Vec<PathBuf> {
+    specials_below(root)
+        .into_iter()
+        .filter(|p| !p.starts_with("seeded"))
+        .collect()
+}
+
+/// Red team (ADR-0060, T18): with `Isolation::Direct` (kaniko mode on a
+/// container's `/`), `COPY` from the context, whole or one source at a
+/// time, through a symlinked directory or a symlink, and `COPY --from` a
+/// stage holding special files, whole or one at a time, leaves every
+/// FIFO, socket and device node out and copies the rest; with the full
+/// sandbox they are kept, as BuildKit.
+#[test]
+fn direct_copy_leaves_special_files_out_from_the_context_and_a_stage() {
+    let _capture = Capture::new();
+    let df = "FROM scratch AS a\n\
+              COPY --chown={ID} . /ctx/\n\
+              COPY --chown={ID} fifo sock chr /lone/\n\
+              COPY --chown={ID} d/e/chr /one-chr\n\
+              COPY --chown={ID} via/ /via/\n\
+              COPY --chown={ID} to-chr /link-to-chr\n\
+              FROM scratch\n\
+              COPY --from=a /ctx /from-stage/\n\
+              COPY --from=a /seeded /from-seed/\n\
+              COPY --from=a /seeded/fifo /lone-fifo-from-stage\n\
+              COPY --from=a /seeded/chr /lone-chr-from-stage\n\
+              COPY --from=a /seeded/sock /seeded/d /several/\n";
+    let (full, r) = build_in(
+        rnk_sandbox::Isolation::Full,
+        df,
+        HOSTILE_CONTEXT,
+        SEEDED_SPECIALS,
+        &[],
+    );
+    r.unwrap();
+    let kept = specials_copied(&root_of(&full, 1));
+    for p in [
+        "from-stage/d/e/chr",
+        "from-seed/fifo",
+        "lone-chr-from-stage",
+    ] {
+        assert!(
+            kept.contains(&PathBuf::from(p)),
+            "the full sandbox keeps {p}: {kept:?}"
+        );
+    }
+    let (b, r) = build_in(
+        rnk_sandbox::Isolation::Direct,
+        df,
+        HOSTILE_CONTEXT,
+        SEEDED_SPECIALS,
+        &[],
+    );
+    r.unwrap();
+    for n in 0..2 {
+        let root = root_of(&b, n);
+        assert_eq!(specials_copied(&root), Vec::<PathBuf>::new(), "stage {n}");
+    }
+    let a = root_of(&b, 0);
+    assert_eq!(fs::read(a.join("ctx/keep.txt")).unwrap(), b"keep");
+    assert_eq!(fs::read(a.join("ctx/d/e/keep")).unwrap(), b"deep");
+    let last = root_of(&b, 1);
+    assert_eq!(fs::read(last.join("from-stage/d/e/keep")).unwrap(), b"deep");
+    assert_eq!(fs::read(last.join("from-seed/keep")).unwrap(), b"k");
+    for p in ["lone-fifo-from-stage", "lone-chr-from-stage"] {
+        assert!(fs::symlink_metadata(last.join(p)).is_err(), "{p}");
+    }
+}
+
+/// Red team (ADR-0060, T18): `ADD` of a FIFO or a device node from the
+/// context fails with a reason in either isolation instead of opening it
+/// (a FIFO would block the build) or making it.
+#[test]
+fn add_of_a_special_file_fails_without_blocking() {
+    let _capture = Capture::new();
+    for isolation in [rnk_sandbox::Isolation::Full, rnk_sandbox::Isolation::Direct] {
+        for src in ["fifo", "chr", "sock"] {
+            let df = format!("FROM scratch\nADD --chown={{ID}} {src} /x\n");
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let (b, r) = build_in(isolation, &df, HOSTILE_CONTEXT, &[], &[]);
+                // A failed stage's root is released.
+                let root = root_of(&b, 0);
+                let made = if root.exists() {
+                    specials_below(&root)
+                } else {
+                    Vec::new()
+                };
+                tx.send((r.map_err(|e| e.to_string()), made)).unwrap();
+            });
+            let (r, made) = rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("ADD {src} ({isolation:?}) blocked"));
+            assert_eq!(made, Vec::<PathBuf>::new(), "ADD {src} ({isolation:?})");
+            if isolation == rnk_sandbox::Isolation::Direct {
+                assert!(
+                    r.is_err() || made.is_empty(),
+                    "ADD {src} ({isolation:?}): {r:?}"
+                );
+            }
+        }
+    }
 }

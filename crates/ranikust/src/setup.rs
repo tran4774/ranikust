@@ -161,7 +161,7 @@ pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Re
     };
     tracing::info!("ranikust: {outcome}");
     let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
-    let mut sandbox = Sandbox::start(Some(caps), &sandbox_dir).map_err(|e| Refusal {
+    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| Refusal {
         reason: e.to_string(),
         guidance: "",
     })?;
@@ -283,14 +283,14 @@ pub(crate) fn set_up_kaniko(
     } else {
         rnk_sandbox::Isolation::Direct
     };
-    let started = if on_slash {
-        // `Direct` on `/` places nothing: no journal, no directory; the
-        // process becomes the subreaper of what a `RUN` leaves (ADR-0051).
-        Sandbox::start_direct()
-    } else {
+    let started = match caps {
         // Stage directories in the state directory, as overlay mode's
         // mount points: the full sandbox enters each (ADR-0059).
-        Sandbox::start(caps, &sandbox_dir)
+        Some(caps) => Sandbox::start(caps, &sandbox_dir),
+        // On `/` (no caps): `Direct` places nothing, no journal, no
+        // directory; the process becomes the subreaper of what a `RUN`
+        // leaves (ADR-0051).
+        None => Sandbox::start_direct(),
     };
     let mut sandbox = started.map_err(|e| Refusal {
         reason: e.to_string(),

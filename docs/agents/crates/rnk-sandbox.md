@@ -19,8 +19,9 @@ where mounting is possible; no `RUN` process outlives the build.
   `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`; and
   `Isolation::Direct`: sequential kaniko-mode `RUN` on `/`, or in a
   `chroot` of a root other than `/` (a root in the state directory, ADR-0050) with journaled placed files (`ADR-0043`).
-- The no-mount `--parallel-stages` path: bare `chroot`, `mknod` `/dev`
-  nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`.
+- The no-mount `--parallel-stages` path (bare `chroot`, `mknod` `/dev`
+  nodes, fake `/proc` and `/sys`, `JAVA_TOOL_OPTIONS`): not built, the flag
+  is refused (ADR-0060).
 
 ## Must not
 
@@ -43,9 +44,9 @@ pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]; what the p
 pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
-    pub fn start(caps: Option<Caps>, dir: &Path) -> Result<Self>; // replays journals; None: Direct only
+    pub fn start(caps: Caps, dir: &Path) -> Result<Self>;         // replays journals; Full on any root, Direct on / only (no bare chroot off /, ADR-0060)
     pub fn start_direct() -> Result<Self>;                         // kaniko mode on / (ADR-0051): Direct on / only, no directory or journal, process made a child subreaper; after each RUN its process tree is killed through pidfds (parent and start time checked again; where seccomp refuses pidfd_open, a plain kill for ranikust's own children only, deeper ones on later rounds) and reaped by pid with WNOHANG; the child drops caps outside Docker's defaults from its bounding set (CAP_SETPCAP), or the RUN is refused (Error::RunReachesState) if any such cap would stay; ambient and inheritable cleared, permitted/effective cut to Docker's defaults; warns when Yama ptrace_scope is 0; refuses at start (Error::RunReachesState) where that drop is impossible (ADR-0057)
-    pub fn start_with_root(caps, dir, shared_root: &Path, checked: &RootPath) -> Result<Self>; // the path must be `checked`'s directory; replays journals of that root, by identity; refuses the host's /, /etc, /dev; a later RUN on another path, or whose reopened root differs (dev, ino, mnt_id), is refused
+    #[cfg(test)] pub(crate) fn start_with_root(caps: Option<Caps>, dir, shared_root: &Path, checked: &RootPath) -> Result<Self>; // test-only since ADR-0060 (the Direct chroot off /); the path must be `checked`'s directory; replays journals of that root, by identity; refuses the host's /, /etc, /dev; a later RUN on another path, or whose reopened root differs (dev, ino, mnt_id), is refused
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);       // every later RUN starts with it (ranikust's limit before its raise)
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
@@ -231,6 +232,14 @@ from `rnk-store`, secret file) and passes `--network`.
   `a_stolen_stderr_does_not_stall_stdout` fail: findings, open
   (2026-11-01); the probe's `EPERM`-only fallback and the mount-root check; the
   spans (`tests/spans.rs`).
+  Red team of ADR-0060: `tests/direct_only.rs` (a `start_direct`
+  sandbox refuses `Direct` off `/`, through a symlink to `/`, the full
+  sandbox, and `//`, `/.`, trailing-`/` and `..` roots, placing nothing);
+  the submount fallback on the real mountinfo and hostile mount point
+  names (`red_team_hostile_mount_point_names_are_matched_exactly`); T2
+  `red_team_no_mount_of_the_root_tree_lets_a_device_node_open` (nested
+  tmpfs, a read-only host bind, a `RUN --mount` bind and nodes a `RUN`
+  makes there, all `nodev`).
 - **T1** (rootless podman): `just smoke` (2026-10-30, kernel 7.0, podman
   5.7): probe → `pivot_root`; `apk add` through the sandbox's network and
   `/etc` copies; checked inside: PID 1, host name, CapBnd/Prm/Eff

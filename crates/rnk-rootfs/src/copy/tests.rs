@@ -489,6 +489,18 @@ fn skip_special_leaves_fifos_out_and_copies_the_rest() {
     );
 }
 
+/// What `skip_special` leaves out is counted for one warning per copy,
+/// naming the first entry, not one line per entry.
+#[test]
+fn left_out_special_files_are_counted_for_one_warning() {
+    let mut k = SkippedSpecial::default();
+    k.warn(Path::new("a")); // nothing left out: no line
+    k.add(Path::new("a/fifo"));
+    k.add(Path::new("a/dev/null"));
+    assert_eq!(k.count, 2);
+    assert_eq!(k.first.as_deref(), Some(Path::new("a/fifo")));
+}
+
 #[test]
 fn a_sparse_file_is_copied_without_filling_its_holes() {
     use std::io::{Seek as _, SeekFrom, Write as _};
@@ -601,4 +613,205 @@ fn red_team_a_source_truncated_while_copied_is_refused_never_zero_filled() {
         }
     }
     assert_eq!(silent, 0, "copies cut short without an error");
+}
+
+/// Red team helpers (ADR-0060): a FIFO, a Unix socket and a character
+/// device node an unprivileged process can make (`0:0`, the whiteout
+/// device, Linux 5.8), at `p`.
+fn mkfifo(p: &Path) {
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        p,
+        RawFileType::Fifo,
+        Mode::from_raw_mode(0o666),
+        0,
+    )
+    .unwrap();
+}
+
+fn mksock(p: &Path) {
+    drop(std::os::unix::net::UnixListener::bind(p).unwrap());
+}
+
+fn mkchr(p: &Path) {
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        p,
+        RawFileType::CharacterDevice,
+        Mode::from_raw_mode(0o666),
+        rustix::fs::makedev(0, 0),
+    )
+    .unwrap();
+}
+
+/// Every entry below `dir` (host path) that is a FIFO, a socket or a
+/// device node.
+fn specials_below(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let t = fs::symlink_metadata(&p).unwrap().file_type();
+            if t.is_dir() {
+                todo.push(p);
+            } else if t.is_fifo() || t.is_socket() || t.is_char_device() || t.is_block_device() {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A tree with special files of every kind an unprivileged process can
+/// make, at the top and nested, hardlinked to each other, behind a
+/// symlinked directory and next to regular files.
+fn hostile_special_tree() -> Fixture {
+    let s = Fixture::new();
+    fs::create_dir_all(s.host("t/d/e")).unwrap();
+    fs::create_dir_all(s.host("t/real")).unwrap();
+    fs::write(s.host("t/top.txt"), b"top").unwrap();
+    fs::write(s.host("t/d/e/keep"), b"keep").unwrap();
+    mkfifo(&s.host("t/fifo"));
+    mksock(&s.host("t/sock"));
+    mkchr(&s.host("t/chr"));
+    mkfifo(&s.host("t/d/e/fifo"));
+    mksock(&s.host("t/d/e/sock"));
+    mkchr(&s.host("t/d/e/chr"));
+    // Two names of one FIFO inode, and of one device inode.
+    fs::hard_link(s.host("t/d/e/fifo"), s.host("t/d/fifo-link")).unwrap();
+    fs::hard_link(s.host("t/d/e/chr"), s.host("t/d/chr-link")).unwrap();
+    mkfifo(&s.host("t/real/fifo"));
+    mkchr(&s.host("t/real/chr"));
+    symlink("real", s.host("t/via")).unwrap();
+    symlink("d/e/chr", s.host("t/to-chr")).unwrap();
+    s
+}
+
+/// Red team (ADR-0060, T18): with `skip_special` no FIFO, socket or device
+/// node reaches the destination from any depth, hardlinked or not, while
+/// the regular files and the symlinks (as symlinks) are copied.
+#[test]
+fn skip_special_leaves_every_kind_out_at_every_depth() {
+    let s = hostile_special_tree();
+    let d = Fixture::new();
+    let o = CopyOpts {
+        skip_special: true,
+        ..CopyOpts::default()
+    };
+    copy(&s.root, "t", &d.root, "out", &o).unwrap();
+    assert_eq!(specials_below(&d.host), Vec::<PathBuf>::new());
+    assert_eq!(fs::read(d.host("out/top.txt")).unwrap(), b"top");
+    assert_eq!(fs::read(d.host("out/d/e/keep")).unwrap(), b"keep");
+    assert!(
+        fs::symlink_metadata(d.host("out/via"))
+            .unwrap()
+            .is_symlink()
+    );
+    assert!(
+        fs::symlink_metadata(d.host("out/to-chr"))
+            .unwrap()
+            .is_symlink()
+    );
+    // The same through the filter `COPY` from the context uses.
+    let f = Fixture::new();
+    copy_filtered(&s.root, "t", &f.root, "out", &o, &|_, _| true).unwrap();
+    assert_eq!(specials_below(&f.host), Vec::<PathBuf>::new());
+    // Without the switch the device node is made again: the fixture holds
+    // real special files.
+    let c = Fixture::new();
+    copy(&s.root, "t", &c.root, "out", &CopyOpts::default()).unwrap();
+    assert!(
+        fs::symlink_metadata(c.host("out/d/e/chr"))
+            .unwrap()
+            .file_type()
+            .is_char_device()
+    );
+}
+
+/// Red team (ADR-0060, T18): a special file named as the source itself,
+/// directly, behind a symlinked directory, or as a symlink to it (the
+/// source resolved in the root, as `COPY` resolves it), is left out.
+#[test]
+fn skip_special_leaves_out_a_special_file_named_as_the_source() {
+    let s = hostile_special_tree();
+    let d = Fixture::new();
+    let o = CopyOpts {
+        skip_special: true,
+        ..CopyOpts::default()
+    };
+    for (i, src) in [
+        "t/fifo",
+        "t/sock",
+        "t/chr",
+        "t/d/fifo-link",
+        "t/d/chr-link",
+        "t/via/fifo",
+        "t/via/chr",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let to = format!("lone{i}");
+        copy(&s.root, src, &d.root, &to, &o).unwrap();
+        assert!(
+            fs::symlink_metadata(d.host(&to)).is_err(),
+            "{src} made {to}"
+        );
+    }
+    copy(&s.root, "t/via", &d.root, "via-dir", &o).unwrap();
+    assert_eq!(specials_below(&d.host), Vec::<PathBuf>::new());
+}
+
+/// Red team (ADR-0060, T18): a regular file swapped for a FIFO after the
+/// walk pinned it (from the filter, which runs after the pin) is copied
+/// from the pinned inode: the copy neither blocks on the FIFO nor makes
+/// one. Run on a thread with a deadline, so a regression fails instead of
+/// hanging.
+#[test]
+fn a_file_swapped_for_a_fifo_during_the_walk_neither_blocks_nor_is_made() {
+    let s = Fixture::new();
+    fs::create_dir(s.host("t")).unwrap();
+    fs::write(s.host("t/swap"), b"pinned").unwrap();
+    let host = s.host("t/swap");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let d = Fixture::new();
+    let dhost = d.host.clone();
+    std::thread::spawn(move || {
+        let swapped = AtomicBool::new(false);
+        let keep = |p: &Path, _dir: bool| {
+            if p.ends_with("swap") && !swapped.swap(true, Ordering::SeqCst) {
+                fs::remove_file(&host).unwrap();
+                mkfifo(&host);
+            }
+            true
+        };
+        for skip_special in [true, false] {
+            let o = CopyOpts {
+                skip_special,
+                ..CopyOpts::default()
+            };
+            swapped.store(false, Ordering::SeqCst);
+            let to = format!("out-{skip_special}");
+            let r = copy_filtered(&s.root, "t", &d.root, &to, &o, &keep);
+            if r.is_ok() {
+                // Put a regular file back for the next round.
+                fs::remove_file(&host).unwrap();
+                fs::write(&host, b"pinned").unwrap();
+            }
+            tx.send((skip_special, r.map_err(|e| e.to_string())))
+                .unwrap();
+        }
+        drop(s);
+    });
+    for _ in 0..2 {
+        let (skip, r) = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the copy blocked on a FIFO swapped in during the walk");
+        r.unwrap_or_else(|e| panic!("skip_special={skip}: {e}"));
+        let out = dhost.join(format!("out-{skip}/swap"));
+        let t = fs::symlink_metadata(&out).unwrap().file_type();
+        assert!(t.is_file(), "skip_special={skip}: {t:?}");
+        assert_eq!(fs::read(&out).unwrap(), b"pinned");
+    }
 }
