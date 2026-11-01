@@ -111,8 +111,14 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   `delete_contents` and `copy` (both roots); `extract_overlay` against
   whiteouts, opaque directories and symlinks in the lowers;
   `tests/model.rs` checks `open_at` against a model resolver on 150 random
-  trees; `tests/spans.rs` the metrics. Still to do: `cargo fuzz` on
-  `extract`.
+  trees; `tests/spans.rs` the metrics. Red team of `/var/run` no longer
+  ignored (ADR-0052 D4, `src/extract/tests.rs`): through a container's
+  `/var/run -> ../run`, files, a hardlink, links, whiteouts aimed at an
+  ignored `/run/secrets` and `/run/.containerenv` skipped at their
+  physical path, a link climbing above the root kept in it, one into
+  `/proc` leading nowhere; an opaque marker below the `var/run` link fails
+  the extraction (never followed) unless the layer's own `var/run/`
+  replaces the link first. Still to do: `cargo fuzz` on `extract`.
 - **T1** (written, `#[ignore]`): a bind mount and a tmpfs in the root
   survive `delete_contents` (harness sets `RNK_T1_ROOT`); foreign owners
   and setuid in `extract`.
