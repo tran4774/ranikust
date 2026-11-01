@@ -471,8 +471,13 @@ committed** through the lane helper (`RANIKUST_LANE`, default
 `rnk-vps-lane`: `sync <ref>`, then `run <ref> '<command>'`, whose exit
 status is the command's) and runs `tests/container/lane.sh` there, which:
 
-1. refuses unless `RANIKUST_CONTAINER_LANE=1` (set only on the test
-   machine), when run as root, and with rootless Docker or Podman;
+1. refuses, before anything else, unless the machine carries the marker
+   `/etc/ranikust/throwaway-test-host`: a regular file (not a link) owned
+   by root in a root-owned directory, neither writable by group or others,
+   naming the host; then unless `RANIKUST_CONTAINER_LANE=1` (set by
+   `remote.sh`), when run as root, and with rootless Docker or Podman; it
+   takes a lock (one lane run per machine) and removes the labelled
+   (`org.ranikust.lane=t2c`) containers and images an interrupted run left;
 2. lists the tests of each profile from the markers and builds the test
    binaries of their crates as static musl binaries (`cargo-zigbuild test
    --no-run`);
@@ -502,14 +507,38 @@ status is the command's) and runs `tests/container/lane.sh` there, which:
    for `netadmin`, loopback up
    in a new network namespace, and for `sysadmin` no `NET_ADMIN`. A failed
    check fails the run (exit 3): nothing is skipped;
-6. then runs every test of the profile with `--ignored --test-threads=1`,
-   every binary even after one fails; each test must run exactly once and
-   pass (`T2c <profile> tests: N passed of N listed`).
+6. then runs every test of the profile with `--ignored --exact
+   --test-threads=1`, by full path (each ignored test of a binary whose
+   last path component is listed, so a VM-only test whose name contains a
+   listed one never runs here; the VM's `unit` suite selects the same
+   way), every binary even after one fails; each test must run exactly
+   once and pass (`T2c <profile> tests: N passed of N listed`).
 
 The results are each container's output, written by the shell on the test
 machine to `target/container/results/<profile>.log` there; locally the
-whole run is in `target/container/last.log`. The image is removed after
-the run.
+whole run is in `target/container/last.log`. The image and any container
+left are removed when the run ends, interrupted or not.
+
+**One-time setup of a test machine** (by its owner, as root, only on a
+disposable machine, never on a developer's machine):
+
+```sh
+sudo install -d -m 0755 /etc/ranikust
+echo <host name> | sudo tee /etc/ranikust/throwaway-test-host >/dev/null
+sudo chmod 0644 /etc/ranikust/throwaway-test-host
+```
+
+plus rootful Docker with the user in the `docker` group, `jq`, `flock`
+and the toolchain of the VPS lane (Rust, `cargo-zigbuild`, zig).
+
+**Accepted residual risk:** the `sysadmin` and `netadmin` profiles
+(`SYS_ADMIN`, AppArmor unconfined, `NET_ADMIN`; Docker's default seccomp
+profile kept) are as good as root on the test machine's kernel (for
+example, a test or a bug could remount `/proc/sys` read-write and set
+`kernel.core_pattern`). The machine's disposability is what makes that
+acceptable, so the marker check is load-bearing: never create the marker
+anywhere else, and treat a machine that carries it as one to rebuild, not
+to trust.
 
 Tests that stay T2 (the VM only), and why:
 

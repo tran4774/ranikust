@@ -71,11 +71,21 @@ VM.
   mounted with device nodes allowed; `--rm`; memory, process and
   descriptor limits. The results
   are the containers' output, written by the shell on the test machine.
-- **Where:** only on the disposable test machine:
-  `tests/container/lane.sh` refuses unless `RANIKUST_CONTAINER_LANE=1` and
-  refuses rootless Docker and Podman; `just test-container` (via
-  `tests/container/remote.sh`) sends the committed branch there through
-  the lane helper. Nothing privileged runs on a developer's machine.
+- **Where:** only on the disposable test machine. `tests/container/lane.sh`
+  first requires a marker only that machine carries,
+  `/etc/ranikust/throwaway-test-host` (a regular file owned by root in a
+  root-owned directory, neither writable by group or others, naming the
+  host; made once by the machine's owner, `docs/testing.md`), then
+  `RANIKUST_CONTAINER_LANE=1`, and refuses rootless Docker and Podman;
+  `just test-container` (via `tests/container/remote.sh`) sends the
+  committed branch there through the lane helper. Nothing privileged runs
+  on a developer's machine. One lane run at a time per machine (a lock);
+  every container and image is labelled `org.ranikust.lane=t2c` and
+  removed at the end of a run, or at the start of the next one if a run
+  was interrupted.
+- **Exact selection:** tests are run by full path with libtest's
+  `--exact`, both in the lane and in the VM's `unit` suite, so a name that
+  contains a listed one never runs where it should not.
 
 ### Consequences
 
@@ -90,6 +100,12 @@ VM.
 - Bad, because the `default` control check pins Docker's default bounding
   set (`00000000a80425fb`), so a Docker release that changes it fails the
   lane until the check is updated.
+- Bad (accepted), because the `sysadmin` and `netadmin` profiles
+  (`SYS_ADMIN`, AppArmor unconfined, `NET_ADMIN`, with Docker's default
+  seccomp profile kept) are as good as root on the test machine's kernel:
+  a test or a bug could, for example, remount `/proc/sys` read-write and
+  set `kernel.core_pattern`. The machine's disposability carries this, so
+  the marker check is load-bearing and the marker must exist nowhere else.
 - Neutral, because the rootful Docker daemon is root-equivalent for the
   `docker` group on the test machine; that machine is the maintainer's
   disposable test host, not a developer's machine.

@@ -54,13 +54,22 @@ esac
 
 mapfile -t names <"/t2c/$prof.txt"
 [ "${#names[@]}" -gt 0 ] || { echo "T2c $prof tests: none listed"; exit 0; }
+declare -A want=()
+for n in "${names[@]}"; do want[$n]=1; done
 ran=0
 failed=0
 # Every binary runs, even after one fails, so one run shows every failure.
 for bin in /t2c/bin/*; do
-  # libtest takes several filters; --ignored runs only the ignored tests.
+  # Exact names only: each ignored test of the binary whose last path
+  # component is listed, run with --exact, so no other test (a VM-only one
+  # whose name contains a listed one) can run here.
+  sel=()
+  while IFS= read -r t; do
+    [ -n "${want[${t##*::}]:-}" ] && sel+=("$t")
+  done < <("$bin" --list --ignored 2>/dev/null | sed -n 's/: test$//p')
+  [ "${#sel[@]}" -gt 0 ] || continue
   rc=0
-  out="$("$bin" --ignored --test-threads=1 "${names[@]}" 2>&1)" || rc=$?
+  out="$("$bin" --ignored --exact --test-threads=1 "${sel[@]}" 2>&1)" || rc=$?
   n="$(sed -nE 's/^test result: [a-zA-Z]+\. ([0-9]+) passed.*/\1/p' <<<"$out" | awk '{ s += $1 } END { print s + 0 }')"
   if [ "$rc" != 0 ]; then
     echo "$out"
