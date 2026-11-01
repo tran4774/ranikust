@@ -49,10 +49,14 @@ case "${1:-}" in
     # can be read after it. Job control gives it a process group of its
     # own, so that INT and QUIT are not ignored as for a plain `&` (an
     # ignored signal cannot be restored, measured in the VM 2026-11-01).
-    # A terminal's INT or HUP then reaches this shell only, which passes
-    # the first one on: ranikust reads a second signal as "stop at once".
-    # TERM is not passed on: a scope's TERM (systemd stopping it) already
-    # reaches every process in it, ranikust included.
+    # A terminal's INT, QUIT or HUP then reaches this shell only, which
+    # passes the first one on: ranikust reads a second signal as "stop at
+    # once". TERM is not passed on: a scope's TERM (systemd stopping it)
+    # already reaches every process in it, ranikust included. What that
+    # leaves: a TERM sent to this shell's process group, or to this shell
+    # alone, never reaches ranikust (this shell keeps waiting for it); and
+    # `systemctl kill -s INT` on the scope delivers INT twice (directly and
+    # passed on), so ranikust stops at once.
     child='' pending='' passed='' signalled=''
     # Called from the traps below.
     # shellcheck disable=SC2329
@@ -64,13 +68,16 @@ case "${1:-}" in
       kill -"$1" "$child" 2>/dev/null || true
     }
     trap 'pass INT' INT
+    trap 'pass QUIT' QUIT
     trap 'pass HUP' HUP
     trap 'signalled=1' TERM
     set -m
     "$@" &
     child=$!
     set +m
-    if [ -n "$pending" ]; then
+    # A signal held before the child was known, unless one has been passed
+    # on since.
+    if [ -n "$pending" ] && [ -z "$passed" ]; then
       passed=1
       kill -"$pending" "$child" 2>/dev/null || true
     fi
