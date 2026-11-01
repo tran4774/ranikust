@@ -534,3 +534,15 @@ fn an_empty_file_and_a_dense_file_copy_exactly() {
     assert_eq!(fs::read(d.host("e")).unwrap(), b"");
     assert_eq!(fs::read(d.host("d")).unwrap(), dense);
 }
+
+#[test]
+fn a_file_holding_more_than_its_size_is_refused_never_cut_short() {
+    // procfs shows size 0 for a file with content: the case of a source
+    // whose size understates it, or one appended to while copied.
+    let src = fs::File::open("/proc/self/status").unwrap();
+    assert_eq!(src.metadata().unwrap().len(), 0);
+    let d = Fixture::new();
+    let out = fs::File::create(d.host("out")).unwrap();
+    let e = copy_data(src.as_fd(), out.as_fd(), Path::new("status")).unwrap_err();
+    assert!(e.to_string().contains("changed while it was copied"), "{e}");
+}

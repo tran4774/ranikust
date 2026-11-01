@@ -330,30 +330,78 @@ fn a_child_copies_links_as_links_hardlinks_and_modes_and_leaves_nodes_out() {
     assert_eq!(fs::read(outside.join("secret")).unwrap(), b"host");
 }
 
-/// T2 (root, the VM): a mount below a stage root, made in this namespace
-/// after the stage, is never crossed by the release, which fails instead
-/// of deleting what the mount shows.
+/// T2 (root, the VM only): a mount below a stage root is never crossed by
+/// the release, which reports it instead of deleting what the mount
+/// shows. The whole test runs on a thread of its own in a new mount
+/// namespace, all mounts private there, so nothing it mounts can reach
+/// another namespace; the stage is made and released in that namespace.
 #[test]
+#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
 fn release_never_crosses_a_mount_below_a_stage_root() {
-    if !rustix::process::geteuid().is_root() {
-        eprintln!("skipped: needs root (T2)");
-        return;
-    }
+    std::thread::spawn(|| {
+        use rustix::thread::UnshareFlags;
+        // SAFETY: this thread shares nothing that the unshared filesystem
+        // attributes or mount namespace would break; it ends with the test.
+        unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+            .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+        rustix::mount::mount_change(
+            "/",
+            rustix::mount::MountPropagationFlags::PRIVATE
+                | rustix::mount::MountPropagationFlags::REC,
+        )
+        .expect("make every mount private");
+        let f = Fixture::new();
+        let s = f.stages.prepare(Base::Scratch).unwrap();
+        let target = s.mount_point().join("mnt");
+        fs::create_dir(&target).unwrap();
+        let source = f.tmp.path().join("volume");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("keep"), b"kept").unwrap();
+        rustix::mount::mount_bind(&source, &target).expect("bind mount");
+        let r = s.release();
+        let still = fs::read(source.join("keep"));
+        let _ = rustix::mount::unmount(&target, rustix::mount::UnmountFlags::DETACH);
+        assert_eq!(still.unwrap(), b"kept", "the volume's file stays");
+        assert!(r.is_err(), "a mount below the root is reported");
+    })
+    .join()
+    .unwrap();
+}
+
+/// T2 (root, the VM only): device nodes, FIFOs and sockets a parent's `RUN`
+/// made are not made again in a child built `FROM` it (ADR-0041, ADR-0059);
+/// its files still are.
+#[test]
+#[ignore = "T2: mknod as real root; run in the test VM only"]
+fn a_child_never_gets_the_device_nodes_a_parent_made() {
     let f = Fixture::new();
-    let s = f.stages.prepare(Base::Scratch).unwrap();
-    let target = s.mount_point().join("mnt");
-    fs::create_dir(&target).unwrap();
-    let source = f.tmp.path().join("volume");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("keep"), b"kept").unwrap();
-    if rustix::mount::mount_bind(&source, &target).is_err() {
-        eprintln!("skipped: bind mount refused here");
-        return;
+    let mut parent = f.stages.prepare(Base::Scratch).unwrap();
+    parent.begin_layer().unwrap();
+    let p = parent.mount_point().to_owned();
+    for (name, kind, dev) in [
+        ("null", rustix::fs::FileType::CharacterDevice, (1, 3)),
+        ("sda", rustix::fs::FileType::BlockDevice, (8, 0)),
+        ("fifo", rustix::fs::FileType::Fifo, (0, 0)),
+    ] {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            p.join(name),
+            kind,
+            rustix::fs::Mode::from_raw_mode(0o666),
+            rustix::fs::makedev(dev.0, dev.1),
+        )
+        .expect("mknod as root");
     }
-    let r = s.release();
-    let still = fs::read(source.join("keep"));
-    let _ = rustix::mount::unmount(&target, rustix::mount::UnmountFlags::DETACH);
-    assert_eq!(still.unwrap(), b"kept", "the volume's file stays");
-    // The mount point keeps its directory: the release reports it.
-    assert!(r.is_err(), "a mount below the root is reported");
+    let _sock = std::os::unix::net::UnixListener::bind(p.join("sock")).unwrap();
+    put(&parent, "file", b"kept", 0o644);
+    parent.end_layer().unwrap();
+    parent.done();
+    let child = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let c = child.mount_point();
+    for node in ["null", "sda", "fifo", "sock"] {
+        assert!(fs::symlink_metadata(c.join(node)).is_err(), "{node} made");
+    }
+    assert_eq!(fs::read(c.join("file")).unwrap(), b"kept");
+    child.release().unwrap();
+    parent.release().unwrap();
 }

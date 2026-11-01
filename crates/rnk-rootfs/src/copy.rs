@@ -681,39 +681,70 @@ pub(crate) fn copy_node(
 /// else only the data ranges (`SEEK_DATA`/`SEEK_HOLE`), each with
 /// `copy_file_range` or reads and writes, the holes left as holes and the
 /// size set at the end. A sparse file costs its data, never its size.
+/// Without `SEEK_DATA` everything up to the size is data.
+///
+/// The size is read once, first. A file holding more than that afterwards
+/// (one appended to while copied, or a filesystem whose size understates
+/// its content) is refused, never cut short: as the walk and the exporter
+/// refuse a file that changes under them.
 fn copy_data(src: BorrowedFd<'_>, out: BorrowedFd<'_>, path: &Path) -> Result<u64> {
     let err = |op| move |e: Errno| io_err(op, path, e);
     let size = rustix::fs::fstat(src).map_err(err("stat"))?.st_size;
     let size = u64::try_from(size).unwrap_or(0);
-    if size == 0 {
-        return Ok(0);
-    }
-    if rustix::fs::ioctl_ficlone(out, src).is_ok() {
-        return Ok(size);
+    if size > 0 && rustix::fs::ioctl_ficlone(out, src).is_ok() {
+        // The clone takes the whole file as it is now.
+        let cloned = rustix::fs::fstat(out).map_err(err("stat"))?.st_size;
+        return Ok(u64::try_from(cloned).unwrap_or(0));
     }
     let mut at = 0_u64;
+    let mut seek = true;
     while at < size {
-        let data = match rustix::fs::seek(src, rustix::fs::SeekFrom::Data(at)) {
-            Ok(d) => d,
-            // No data after `at`: the rest is a hole.
-            Err(Errno::NXIO) => break,
-            // A filesystem without `SEEK_DATA`: all of it is data.
-            Err(Errno::INVAL | Errno::OPNOTSUPP) => at,
-            Err(e) => return Err(io_err("seek", path, e)),
+        let data = if seek {
+            match rustix::fs::seek(src, rustix::fs::SeekFrom::Data(at)) {
+                Ok(d) => d,
+                // No data after `at`: the rest is a hole.
+                Err(Errno::NXIO) => break,
+                // A filesystem without `SEEK_DATA`: the rest is data.
+                Err(Errno::INVAL | Errno::OPNOTSUPP) => {
+                    seek = false;
+                    at
+                }
+                Err(e) => return Err(io_err("seek", path, e)),
+            }
+        } else {
+            at
         };
         if data >= size {
             break;
         }
-        let hole = match rustix::fs::seek(src, rustix::fs::SeekFrom::Hole(data)) {
-            Ok(h) => h.min(size),
-            Err(Errno::INVAL | Errno::OPNOTSUPP) => size,
-            Err(e) => return Err(io_err("seek", path, e)),
+        let hole = if seek {
+            match rustix::fs::seek(src, rustix::fs::SeekFrom::Hole(data)) {
+                Ok(h) if h > data => h.min(size),
+                // No progress, or no `SEEK_HOLE`: the rest is data.
+                Ok(_) | Err(Errno::INVAL | Errno::OPNOTSUPP) => size,
+                Err(e) => return Err(io_err("seek", path, e)),
+            }
+        } else {
+            size
         };
         copy_range(src, out, data, hole, path)?;
         at = hole;
     }
     rustix::fs::ftruncate(out, size).map_err(err("truncate"))?;
-    Ok(size)
+    let mut byte = [0_u8; 1];
+    loop {
+        match rustix::io::pread(src, &mut byte, size) {
+            Ok(0) => return Ok(size),
+            Ok(_) => {
+                return Err(Error::InvalidPath {
+                    path: path.to_owned(),
+                    reason: "the file changed while it was copied: it holds more than its size",
+                });
+            }
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(io_err("read", path, e)),
+        }
+    }
 }
 
 /// Copies bytes `from..to` of `src` to the same offsets of `out`.

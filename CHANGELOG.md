@@ -225,7 +225,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - Copying a file (`COPY`, `ADD`, `COPY --from`, a stage built `FROM`
   another off `/`) clones it where the filesystem shares extents and
   otherwise copies only its data: a sparse file keeps its holes instead
-  of being written out at its full size.
+  of being written out at its full size. A file that holds more than its
+  size once copied (appended to meanwhile) fails the copy instead of
+  being cut short.
 - `COPY` and `ADD` refuse a source that expands to an empty string (it
   copied the whole context or stage), and `COPY --from=<name>` where
   `<name>` is no stage and has no tag, digest, registry or path (a
