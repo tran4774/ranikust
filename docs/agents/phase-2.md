@@ -110,9 +110,9 @@ with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
       faster than sequential (experiment 12: −41 to −44 %), with peak memory
       recorded; no fake `/proc` file reaches a layer; `next build` passes
       on the bare `chroot` path.
-- [ ] The kaniko-mode flags of the scope are tested for their meaning, and
+- [x] (done 2026-11-01: flags tested for their meaning, kaniko-map and the book updated; `--materialize` refused, ADR-0064; `--single-snapshot` refused pending Q-420; `--mode=auto` routes an unusable overlay to per-stage kaniko mode) The kaniko-mode flags of the scope are tested for their meaning, and
       [kaniko-map.md](kaniko-map.md#flags) and the book are updated.
-- [ ] aarch64 T0 green in CI, as in Phase 1.
+- [x] (CI run 41308092662, 2026-11-01) aarch64 T0 green in CI, as in Phase 1.
 
 ## Carried over from Phase 1
 
