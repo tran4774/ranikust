@@ -65,7 +65,7 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 ## Read the results
 
 `target/vm/results/<release>/`: `summary.txt` (one line per suite),
-`env.txt` (kernel, Docker, cgroup, CPUs, memory, the VM's size),
+`env.txt` (kernel, Docker, cgroup, CPUs, memory, the VM's size, the run's own user, key, host key and machine ID),
 `<suite>.log`, `suite-times.txt`, `timings.txt` (boot, SSH, cloud-init,
 suites), `serial.log` (boot and cloud-init, for a VM that never answered
 SSH; `base-image-serial.log` when the run built the base image). Quote the summary and the

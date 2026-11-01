@@ -133,7 +133,9 @@ runs as root on the host:
    over SSH every 5 s, reconnecting for up to 15 minutes, so a VM that
    stalls while the host swaps loses neither the run nor its results;
    **copy out** `target/vm/results/<release>/` (retried):
-   `env.txt` (kernel, Docker, cgroup, CPUs, memory, the VM's size), one
+   `env.txt` (kernel, Docker, cgroup, CPUs, memory, the VM's size, and
+   what must be the run's own: its one user with one key, the SSH host key
+   made at this boot, its machine ID), one
    log per suite, `summary.txt`, `suite-times.txt` (each suite's wall time),
    `timings.txt` and the VM's serial log (`base-image-serial.log` too when
    this run built the base image).
