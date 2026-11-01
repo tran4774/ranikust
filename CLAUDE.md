@@ -58,8 +58,10 @@ Full list in [`docs/agents/rules.md`](docs/agents/rules.md); the ones that can
 damage the machine or the design:
 
 - Never run kaniko mode with rootfs `/` on the host, never use `sudo`,
-  `pkexec`, `mount`, `unshare` or `nsenter`; privileged (T2) tests run only in
-  a disposable VM. If a task needs root, stop and say so.
+  `pkexec`, `mount`, `unshare` or `nsenter`; privileged tests run only in a
+  disposable VM (T2) or, marked T2c, in throwaway rootful Docker containers on
+  the test machine with the ADR-0063 marker. If a task needs root, stop and say
+  so.
 - Every path from an image, context or Dockerfile is untrusted: reach it only
   through `rnk_rootfs::RootPath`, never `std::fs` or `Path::join` on a host
   path.

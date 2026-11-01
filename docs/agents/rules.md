@@ -14,7 +14,10 @@ digests. If a rule blocks the task, stop and ask.
   use a fresh temp `--state-dir` or the VM tier.
 - Never use `sudo`, `pkexec`, `su`, `doas`, `mount`, `umount`, `unshare` or
   `nsenter`. If a task needs root, stop and say so.
-- Privileged tests (tier T2) run only in a disposable VM, never on the host.
+- Privileged tests run only in a disposable VM (tier T2), or, for the ones
+  marked T2c, in throwaway rootful Docker containers on the test machine that
+  carries `/etc/ranikust/throwaway-test-host` (ADR-0063: never `--privileged`,
+  no host volume); never on the host.
 - Every path from an image, a build context or a Dockerfile is untrusted:
   reach it only through `rnk_rootfs::RootPath`, never `std::fs` or
   `Path::join` onto a host path.
