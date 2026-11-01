@@ -232,6 +232,31 @@ fn a_file_swapped_since_the_walk_is_refused() {
     assert!(e.to_string().contains("changed between the walk"), "{e}");
 }
 
+/// The inode number of a swapped file can come back at once and its size
+/// and times can match within one timestamp tick (CI's aarch64 runner did
+/// this): the content the walk hashed is checked as the layer is written.
+#[test]
+fn content_other_than_the_walk_hashed_is_refused() {
+    let f = Fixture::new();
+    let mut d = diff_after(&f, |f| f.write("f", b"one"));
+    let entry = d
+        .changed
+        .iter_mut()
+        .find(|c| c.path == Path::new("f"))
+        .expect("f in the diff");
+    assert!(entry.meta.content.is_some(), "full mode hashes the content");
+    // Same inode, size and times: only the bytes differ from the walk's.
+    entry.meta.content = entry.meta.content.map(|h| !h);
+    let e = d.export(&f.root, options(), Vec::new()).unwrap_err();
+    let mut chain = e.to_string();
+    let mut source = std::error::Error::source(&e);
+    while let Some(s) = source {
+        chain = format!("{chain}: {s}");
+        source = s.source();
+    }
+    assert!(chain.contains("f: it changed between the walk"), "{chain}");
+}
+
 #[test]
 fn a_fifo_swapped_in_for_a_file_is_never_opened() {
     let f = Fixture::new();

@@ -276,5 +276,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - A `RUN` heredoc whose body starts with `#!` failed with "resolve a mount
   target in the root"; its script now runs from `/dev/pipes`, as in
   BuildKit.
+- In kaniko mode, a file deleted and created again between the walk and
+  the layer export could get its old inode number back and be written with
+  content the walk never compared. The export now also checks size,
+  `mtime` and `ctime`, and in `full` snapshot mode hashes the content it
+  writes against the walk's hash.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main

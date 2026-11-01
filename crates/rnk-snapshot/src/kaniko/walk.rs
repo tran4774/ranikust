@@ -119,6 +119,13 @@ pub struct EntryMeta {
     pub size: u64,
     /// Last modification.
     pub mtime: FileTime,
+    /// Last change of the inode: with [`EntryMeta::ino`], tells a file
+    /// replaced since the walk from the one it saw, even when the inode
+    /// number was reused at once.
+    pub ctime: FileTime,
+    /// xxh3-128 of a regular file's content as the walk read it (`full`
+    /// mode only): the exporter checks the bytes it writes against it.
+    pub content: Option<u128>,
     /// Major and minor number of a device node.
     pub rdev: (u32, u32),
     /// Major and minor number of the device holding the entry: with
@@ -198,7 +205,6 @@ pub struct WalkDiff {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Record {
     meta: EntryMeta,
-    ctime: FileTime,
     /// xxh3-128 of a regular file's content or a symlink's target; 0
     /// otherwise, and when the mode reads no content.
     content: u128,
@@ -224,7 +230,7 @@ impl Record {
             && a.ino == b.ino
             && a.size == b.size
             && a.mtime == b.mtime
-            && self.ctime == other.ctime
+            && a.ctime == b.ctime
             && a.mode == b.mode
             && a.uid == b.uid
             && a.gid == b.gid
@@ -553,16 +559,16 @@ impl<'a> Ctx<'a> {
             gid: st.stx_gid,
             size: st.stx_size,
             mtime: t(st.stx_mtime),
+            ctime: t(st.stx_ctime),
+            content: None,
             rdev: (st.stx_rdev_major, st.stx_rdev_minor),
             dev: (st.stx_dev_major, st.stx_dev_minor),
             ino: st.stx_ino,
             nlink: st.stx_nlink,
         };
-        let ctime = t(st.stx_ctime);
         Record {
-            cacheable: meta.mtime < self.racy_limit && ctime < self.racy_limit,
+            cacheable: meta.mtime < self.racy_limit && meta.ctime < self.racy_limit,
             meta,
-            ctime,
             content: 0,
             xattrs: 0,
         }
@@ -737,6 +743,7 @@ impl<'a> Ctx<'a> {
                 match old.filter(|o| o.cacheable && o.meta.kind == FileType::Regular) {
                     Some(o) if o.same_key(&rec) => {
                         rec.content = o.content;
+                        rec.meta.content = Some(o.content);
                         rec.xattrs = o.xattrs;
                         self.cache_hits.fetch_add(1, Ordering::Relaxed);
                     }
@@ -744,6 +751,7 @@ impl<'a> Ctx<'a> {
                         let fd = self.open_file(dir, name, &st, shown)?;
                         let (hash, read) = hash_content(fd.as_fd(), st.stx_size, shown)?;
                         rec.content = hash;
+                        rec.meta.content = Some(hash);
                         rec.xattrs = xattr_hash(fd.as_fd(), shown)?;
                         self.files_hashed.fetch_add(1, Ordering::Relaxed);
                         self.bytes_hashed.fetch_add(read, Ordering::Relaxed);

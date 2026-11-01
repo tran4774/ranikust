@@ -37,12 +37,13 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rnk_layer::{
     EncodeOptions, Entry, EntryKind, EntryPath, EntrySource, LayerDigests, LayerWriter,
 };
 use rnk_rootfs::{FileType, Pinned, RootPath, Stat};
+use xxhash_rust::xxh3::Xxh3;
 
 use super::walk::{EntryMeta, WalkDiff};
 use crate::error::{Error, Result};
@@ -244,7 +245,7 @@ fn split_reused_inodes(entries: &mut [Entry]) {
 }
 
 /// Pins `p` ([`RootPath::pin`]) and fails unless it is still the entry the
-/// walk saw: the same type, device and inode.
+/// walk saw: the same type, device, inode, size, `mtime` and `ctime`.
 fn pin_same(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Pinned> {
     let pinned = root.pin(p)?;
     if same_stat(pinned.stat(), meta) {
@@ -254,8 +255,17 @@ fn pin_same(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Pinned> {
     }
 }
 
+/// The inode number alone is not enough: a file deleted and created again
+/// may get the freed number back at once (ext4 does), so the size and the
+/// times are compared too. Even they can match when both happen within one
+/// timestamp tick; [`Verified`] checks the content for that.
 fn same_stat(st: &Stat, meta: &EntryMeta) -> bool {
-    st.file_type() == meta.kind && (st.dev_major, st.dev_minor) == meta.dev && st.ino == meta.ino
+    st.file_type() == meta.kind
+        && (st.dev_major, st.dev_minor) == meta.dev
+        && st.ino == meta.ino
+        && (st.file_type() != FileType::Regular || st.size == meta.size)
+        && st.mtime == meta.mtime
+        && st.ctime == meta.ctime
 }
 
 fn changed(p: &Path) -> Error {
@@ -290,7 +300,16 @@ impl EntrySource for Source<'_> {
         if let EntryKind::File { size } = entry.kind {
             self.bytes_read += size;
         }
-        Ok(Box::new(File::from(fd)))
+        let file = File::from(fd);
+        Ok(match meta.content {
+            Some(content) => Box::new(Verified {
+                file,
+                hash: Xxh3::new(),
+                content,
+                path: p.to_owned(),
+            }),
+            None => Box::new(file),
+        })
     }
 
     fn parent(&mut self, path: &EntryPath) -> io::Result<Option<Entry>> {
@@ -314,6 +333,31 @@ impl EntrySource for Source<'_> {
                 .collect(),
             inode: None,
         }))
+    }
+}
+
+/// A regular file's content, checked at its end against the hash the walk
+/// read: a layer never carries other bytes than the walk compared, even if
+/// a file with the same inode, size and times was swapped in between.
+struct Verified {
+    file: File,
+    hash: Xxh3,
+    /// The walk's xxh3-128 of the content.
+    content: u128,
+    path: PathBuf,
+}
+
+impl Read for Verified {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.file.read(buf)?;
+        if n == 0 {
+            if self.hash.digest128() != self.content {
+                return Err(io::Error::other(changed(&self.path)));
+            }
+        } else {
+            self.hash.update(buf.get(..n).unwrap_or_default());
+        }
+        Ok(n)
     }
 }
 
