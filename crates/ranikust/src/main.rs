@@ -406,47 +406,8 @@ fn kaniko(
             false
         }
     };
-    if on_slash && can_mount {
-        // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
-        // also gives a `Direct` `RUN` on `/` the host's devices and a
-        // writable /proc/sys: refused (ADR-0054). Overlay mode runs there
-        // instead.
-        return Err(Failure::error(format!(
-            "{how}: kaniko mode on / in a container where root may mount would run RUN with \
-             the host's devices and a writable /proc/sys; use overlay mode there \
-             (--mode=overlay or --mode=auto), with a volume at the state directory"
-        )));
-    }
-    if on_slash && config.network == config::Network::None {
-        // Every `RUN` would be refused (ADR-0057): said before the pull.
-        return Err(Failure::error(format!(
-            "{how}: --network=none: kaniko mode on / runs RUN directly, where no network \
-             namespace can be made, and RUN is never given the container's network in its \
-             place; use overlay mode (a container that may mount) for a build without network"
-        )));
-    }
     if on_slash {
-        // A writable /proc/sys hands a uid 0 `RUN` the host's root through
-        // kernel/core_pattern without any capability (ADR-0051, ADR-0054).
-        match exposure::proc_sys_read_only(Path::new("/proc/sys")) {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(Failure::error(format!(
-                    "{how}: kaniko mode on / with a writable /proc/sys would let RUN write \
-                     kernel/core_pattern and run a program as the host's root; keep the \
-                     container's default read-only /proc/sys, or use overlay mode"
-                )));
-            }
-            Err(e) => {
-                return Err(Failure::error(format!(
-                    "{how}: cannot tell whether /proc/sys is read-only ({e}); kaniko mode on / \
-                     refuses to build without knowing"
-                )));
-            }
-        }
-        // What ranikust cannot close itself (ADR-0051, B4 and B5).
-        exposure::warn_build_args(&config.build_args);
-        exposure::warn_credential_holders(&exposure::secret_variables(config));
+        refuse_unsafe_slash(config, how, can_mount)?;
     }
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
@@ -488,6 +449,54 @@ fn kaniko(
     // The lock of `/` is held to the end of the build.
     drop(root_lock);
     report_built(&built)
+}
+
+/// What kaniko mode on a container's `/` refuses before anything is
+/// written, in this order, then the warnings for what ranikust cannot
+/// close itself. A `RUN` there runs directly as uid 0, so the container
+/// itself must keep it from the host.
+fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Result<(), Failure> {
+    if can_mount {
+        // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
+        // also gives a `Direct` `RUN` on `/` the host's devices and a
+        // writable /proc/sys: refused (ADR-0054). Overlay mode runs there
+        // instead.
+        return Err(Failure::error(format!(
+            "{how}: kaniko mode on / in a container where root may mount would run RUN with \
+             the host's devices and a writable /proc/sys; use overlay mode there \
+             (--mode=overlay or --mode=auto), with a volume at the state directory"
+        )));
+    }
+    if config.network == config::Network::None {
+        // Every `RUN` would be refused (ADR-0057): said before the pull.
+        return Err(Failure::error(format!(
+            "{how}: --network=none: kaniko mode on / runs RUN directly, where no network \
+             namespace can be made, and RUN is never given the container's network in its \
+             place; use overlay mode (a container that may mount) for a build without network"
+        )));
+    }
+    // A writable /proc/sys hands a uid 0 `RUN` the host's root through
+    // kernel/core_pattern without any capability (ADR-0051, ADR-0054).
+    match exposure::proc_sys_read_only(Path::new("/proc/sys")) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(Failure::error(format!(
+                "{how}: kaniko mode on / with a writable /proc/sys would let RUN write \
+                 kernel/core_pattern and run a program as the host's root; keep the \
+                 container's default read-only /proc/sys, or use overlay mode"
+            )));
+        }
+        Err(e) => {
+            return Err(Failure::error(format!(
+                "{how}: cannot tell whether /proc/sys is read-only ({e}); kaniko mode on / \
+                 refuses to build without knowing"
+            )));
+        }
+    }
+    // What ranikust cannot close itself (ADR-0051, B4 and B5).
+    exposure::warn_build_args(&config.build_args);
+    exposure::warn_credential_holders(&exposure::secret_variables(config));
+    Ok(())
 }
 
 /// Kaniko mode's snapshotter on `/` in a container, opened once by the
