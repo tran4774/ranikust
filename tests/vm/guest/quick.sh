@@ -65,6 +65,28 @@ adr0054_refusals() {
   done
 }
 
+# Criterion 8 (C): outside a container where root may mount but overlayfs
+# refuses the state directory (here: one on overlayfs), `--mode=auto`
+# builds in kaniko mode with a directory per stage instead of refusing.
+# The overlay is detached on every exit path.
+auto_routes_to_stages() {
+  local ov="$W/ov" ctx="$W/auto-ctx" o="$W/auto-out" log rc=0
+  sudo mkdir -p "$ov/l" "$ov/u" "$ov/w" "$ov/m" "$ctx" "$o"
+  printf 'FROM scratch\nCOPY f /f\n' | sudo tee "$ctx/Dockerfile" >/dev/null
+  echo routed | sudo tee "$ctx/f" >/dev/null
+  sudo mount -t overlay overlay -o "lowerdir=$ov/l,upperdir=$ov/u,workdir=$ov/w" "$ov/m" || return 1
+  log="$(sudo "$RNK" --context "$ctx" --state-dir "$ov/m/state" --no-push \
+    --oci-layout-path "$o/oci" 2>&1)" || rc=$?
+  sudo umount -l "$ov/m" || rc=1
+  if [ "$rc" != 0 ] ||
+    ! grep -q 'kaniko mode with a directory per stage, because overlay mode cannot run here' <<<"$log"; then
+    echo "error: --mode=auto with a state directory on overlayfs: exit $rc" >&2
+    echo "$log" >&2
+    return 1
+  fi
+  echo "auto: a state directory on overlayfs built in kaniko mode with a directory per stage"
+}
+
 # A plain command: under `||` errexit would be off inside the cases.
 set +e
 # shellcheck disable=SC2086
@@ -73,6 +95,7 @@ rc=$?
 if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
   [[ -z "${RANIKUST_QUICK_CASES:-}" || " ${RANIKUST_QUICK_CASES} " == *" kaniko-flags "* ]]; then
   adr0054_refusals || rc=1
+  auto_routes_to_stages || rc=1
 fi
 set -e
 
