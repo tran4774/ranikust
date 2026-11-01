@@ -27,7 +27,7 @@ runcmd:
   # the flattened image is smaller.
   - [fstrim, --all]
   # Read by vm.sh from the serial log: the image is complete.
-  - [sh, -c, 'command -v docker && command -v zstd && systemctl is-enabled docker && echo ranikust-golden-ready >/dev/ttyS0']
+  - [sh, -c, 'command -v docker && command -v zstd && command -v pigz && systemctl is-enabled docker && echo ranikust-golden-ready >/dev/ttyS0']
 
 power_state:
   mode: poweroff

@@ -87,7 +87,7 @@ runs as root on the host:
    another 16 GiB VM beside it.
 3. **Provision** the base image once: the verified cloud image booted with
    `tests/vm/cloud-init/provision`, which installs the packages (Docker
-   from the Ubuntu archive, `zstd`), disables the background apt timers,
+   from the Ubuntu archive, `zstd`, `pigz`), disables the background apt timers,
    removes what is per machine (SSH host keys, machine ID; no user, no
    key, no password is created) and powers the VM off. The disk is
    flattened into one qcow2, checked, made read-only, and kept in the cache

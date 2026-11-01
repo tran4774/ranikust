@@ -65,7 +65,7 @@ MUSL=x86_64-unknown-linux-musl
 VM_USER=rnk
 # What cloud-init installs: into the base image once (cloud-init/provision),
 # or at every boot with RANIKUST_VM_GOLDEN=0. Part of the base image's key.
-PACKAGES=(docker.io zstd)
+PACKAGES=(docker.io zstd pigz)
 
 # Seconds since the start on every line, for the timings of a run.
 log() { printf '[vm +%ss] %s\n' "$SECONDS" "$*" >&2; }

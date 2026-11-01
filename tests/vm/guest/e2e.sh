@@ -104,6 +104,8 @@ elif [[ "$CPUSET" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then
 else
   bad_opt CPUSET "a cpuset list such as 8-11, or none" "$CPUSET"
 fi
+# The analysis between builds reads layers on the vCPUs a build would not get.
+export RANIKUST_FLATTEN_JOBS=$((NVCPU > CPUS ? NVCPU - CPUS : 1))
 DOCKER_LIMITS=(--cpus="$CPUS" --memory="$MEMORY" ${CPUSET:+--cpuset-cpus="$CPUSET"})
 SCOPE_LIMITS=(-p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -p MemorySwapMax="${MEMORY^^}" ${CPUSET:+-p AllowedCPUs="$CPUSET"})
 SVC_LIMITS=(${SVC_CPUSET:+--cpuset-cpus="$SVC_CPUSET"})
@@ -129,7 +131,20 @@ declare -A CTX=([w1]=app [w2]=app-cache [w3]=app-par)
 
 log() { printf '[e2e] %s\n' "$*"; }
 now() { date +%s.%N; }
+since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 mkdir -p "$OUT"
+
+# The analysis of an image (flatten, leaks, blob check) runs after its build
+# has been timed and before the next build starts, never beside one. It
+# reads each layer once per run into a cache (a base layer every builder's
+# image shares is read once), on the vCPUs the builds are not pinned to.
+export RANIKUST_FLATTEN_CACHE="$HOME/rnk/flatten-cache"
+rm -rf "$RANIKUST_FLATTEN_CACHE"
+# How long each step took, per build: workload, build, step, seconds.
+PHASES="$OUT/phases.tsv"
+printf 'workload\tbuild\tstep\tseconds\n' >"$PHASES"
+phase() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >>"$PHASES"; }
+T_SUITE=$(now)
 
 # --- Services: the images, a registry and verdaccio, as docker-compose.yml ----
 
@@ -352,9 +367,13 @@ PY
   [ "$status" != failed ] || { tail -20 "$d/build.log" >&2; return 1; }
 }
 
-# check <dir> <repository> <gzip|zstd> <builder>: flatten the image and check its blobs
+# check <dir> <repository> <gzip|zstd> <builder> <workload> <build>: flatten
+# the image and check its blobs, each step timed into phases.tsv
 check() {
+  local t times=()
+  t=$(now)
   "${PY[@]}" guest/e2e/flatten.py 127.0.0.1:5000 "$2" latest "$1/listing.tsv.gz" "$1/config.json" | tee "$1/flatten.txt"
+  times+=("flatten $(since "$t")")
   # What the builders mount or keep (context, results, state) never reaches
   # a ranikust layer; the runtime's and the harness's mounted files are
   # judged against kaniko's image of the workload when it was built first
@@ -363,16 +382,23 @@ check() {
     local ref=() kref
     kref="$(dirname "$1")/kaniko-r1/listing.tsv.gz"
     [ ! -f "$kref" ] || ref=(--reference "$kref")
+    t=$(now)
     "${PY[@]}" guest/e2e/leaks.py "${ref[@]}" "$1/listing.tsv.gz" /workspace /rnk-out /bench-out "$W" >"$1/leaks.txt" ||
       { cat "$1/leaks.txt" >&2; echo "error: $2 holds files that must not be in a layer" >&2; return 1; }
+    times+=("leaks $(since "$t")")
   fi
   curl -fsI -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
     "http://127.0.0.1:5000/v2/$2/manifests/latest" | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p' >"$1/digest"
   # nextjs-kaniko's digest-check: every layer blob describes itself (gzip only).
   if [ "$3" = gzip ]; then
+    t=$(now)
     "${PY[@]}" "$NK/bench/digest-check/check-blobs.py" registry 127.0.0.1:5000 "$2" latest >"$1/check-blobs.txt" 2>&1 ||
       { cat "$1/check-blobs.txt" >&2; echo "error: blob check failed for $2" >&2; return 1; }
+    times+=("blobs $(since "$t")")
   fi
+  local x
+  for x in "${times[@]}"; do phase "$5" "$6" ${x}; done
+  log "  analysis: $(printf '%s s, ' "${times[@]}" | sed 's/, $//')"
 }
 
 # --- The runs -----------------------------------------------------------------
@@ -395,12 +421,15 @@ for r in $(seq 1 "$ROUNDS"); do
       for j in "${variants[@]}"; do
         tag="$b"; [ "$j" = - ] || tag="$b-j$j"
         d="$OUT/$w/$tag-r$r"
+        t=$(now)
         wipe
+        phase "$w" "$tag-r$r" wipe "$(since "$t")"
         if ! build "$w" "$b" "$j" "$d" "e2e/$w-$tag"; then failed=1; continue; fi
         status=$("${PY[@]}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$d/run.json")
+        phase "$w" "$tag-r$r" build "$("${PY[@]}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["wall_secs"])' "$d/run.json")"
         if [ "$r" = 1 ] && [ "$status" = ok ]; then
           comp=gzip; [ "$b" = buildkit ] && comp=zstd
-          check "$d" "e2e/$w-$tag" "$comp" "$b" || failed=1
+          check "$d" "e2e/$w-$tag" "$comp" "$b" "$w" "$tag-r$r" || failed=1
         fi
       done
     done
