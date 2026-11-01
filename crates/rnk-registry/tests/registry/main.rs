@@ -237,6 +237,77 @@ async fn verified_credentials_only_withholds_them_from_plain_http() {
     assert_eq!(registry.count("GET /v2/app"), 0);
 }
 
+/// A loopback registry not listed under `--insecure*` is plain HTTP only,
+/// HTTPS not even tried (ADR-0032): in kaniko mode on `/` the advice to use
+/// it over HTTPS says how to get HTTPS tried.
+#[tokio::test]
+async fn verified_credentials_only_tells_how_to_reach_an_unlisted_loopback_over_https() {
+    let registry = FakeRegistry::start(Auth::Basic {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+    })
+    .await;
+    add_image(&registry, "app", "v1", b"x".to_vec());
+    let mut opts = options(&registry);
+    opts.insecure.clear();
+    opts.verified_credentials_only = true;
+    let client = Client::new(
+        opts,
+        TrustStore::load(),
+        support::credentials(&basic_auth_entry(&registry.host(), "builder", "s3cret")),
+    )
+    .unwrap();
+    let err = client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("verified TLS"), "{text}");
+    assert!(
+        text.contains("list it with --insecure-registry so HTTPS is tried"),
+        "{text}"
+    );
+    assert_eq!(registry.count("GET /v2/app"), 0);
+}
+
+/// When kaniko mode on `/` held the credentials back, a later refusal says
+/// why: the plain-HTTP advice (`--insecure-registry`) would not send them.
+#[tokio::test]
+async fn a_refusal_after_credentials_held_back_for_kaniko_mode_says_why() {
+    let registry = FakeRegistry::start(Auth::Bearer {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+        refresh_token: "refresh".to_owned(),
+        anonymous_pull: true,
+    })
+    .await;
+    let image = add_image(&registry, "app", "v1", b"x".to_vec());
+    let mut opts = options(&registry);
+    assert!(opts.http_credentials.contains(&registry.host()));
+    opts.verified_credentials_only = true;
+    let client = Client::new(
+        opts,
+        TrustStore::load(),
+        support::credentials(&basic_auth_entry(&registry.host(), "builder", "s3cret")),
+    )
+    .unwrap();
+    client
+        .pull_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap();
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let body = BlobBody::Bytes(Bytes::from(image.layer.clone()));
+    let err = client
+        .push_blob(&reference(&registry, "app:v2"), &blob, &body)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { .. }), "{err}");
+    assert!(err.to_string().contains("verified TLS"), "{err}");
+    assert!(!err.to_string().contains("--insecure-registry"), "{err}");
+    assert_eq!(registry.count("PUT "), 0, "nothing was pushed");
+}
+
 #[tokio::test]
 async fn an_unlisted_loopback_registry_asking_for_basic_auth_is_refused() {
     let registry = FakeRegistry::start(Auth::Basic {
@@ -475,6 +546,59 @@ async fn manifest_retries_wrap_the_default_policy() {
         .await
         .unwrap();
     assert_eq!(registry.count("GET /v2/app/manifests/"), before + 2);
+}
+
+/// A file reopened through its handle for each attempt (ADR-0055): a
+/// failed upload is retried from a new descriptor, the whole file is sent,
+/// and a handle that cannot reopen it fails the push.
+#[tokio::test]
+async fn an_opened_file_body_is_reopened_for_each_attempt() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct Reopen(std::path::PathBuf, Arc<AtomicUsize>);
+    impl rnk_registry::BlobFile for Reopen {
+        fn open(&self) -> std::io::Result<std::fs::File> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            std::fs::File::open(&self.0)
+        }
+    }
+    let registry = FakeRegistry::start(Auth::Open).await;
+    registry.state().faults.push(Fault {
+        method: Method::PUT,
+        path_contains: "/blobs/uploads/".to_owned(),
+        status: 503,
+        remaining: 1,
+    });
+    let client = client(&registry, Credentials::none());
+    let target = reference(&registry, "out:latest");
+    let dir = tempfile::tempdir().unwrap();
+    let layer = vec![7u8; 300 * 1024];
+    let path = dir.path().join("layer");
+    std::fs::write(&path, &layer).unwrap();
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &layer);
+    let opens = Arc::new(AtomicUsize::new(0));
+    let body = BlobBody::Opened(Arc::new(Reopen(path.clone(), Arc::clone(&opens))));
+    assert_eq!(
+        client.push_blob(&target, &blob, &body).await.unwrap(),
+        PushOutcome::Uploaded
+    );
+    assert_eq!(
+        opens.load(Ordering::SeqCst),
+        2,
+        "one descriptor per attempt"
+    );
+    assert_eq!(registry.count("PUT /v2/out/blobs/uploads/"), 2);
+    assert_eq!(
+        registry.state().blobs[blob.digest.as_str()].as_ref(),
+        layer.as_slice()
+    );
+
+    let other = vec![8u8; 1024];
+    let gone = descriptor(MediaType::OCI_LAYER_GZIP, &other);
+    let body = BlobBody::Opened(Arc::new(Reopen(dir.path().join("gone"), opens)));
+    let err = client.push_blob(&target, &gone, &body).await.unwrap_err();
+    assert!(matches!(err, Error::Io { .. }), "{err}");
 }
 
 #[tokio::test]
