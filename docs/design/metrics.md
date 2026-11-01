@@ -209,10 +209,10 @@ attempts.
 | `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs` (always 0 since ADR-0034), `bytes`, `unchanged`, `bytes_compared` | Record: one instruction's diff; kaniko's `snapshot.command`. `exp-06`: 0.51–0.58 s overlay against 2.3–3.7 s walk for five steps. |
 | `rnk_snapshot.baseline` | `entries` | Record, Phase 2 (built, `Walker::baseline`): the walk a kaniko-mode stage starts from; kaniko's `snapshot.init` (0.36 s on W1, `exp-07`). |
 | `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | Phase 2 (built, `Walker`): one walk with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (3.18 s, `exp-07`). |
-| `rnk_snapshot.resolve` | `paths` | Phase 2: path resolution; kaniko's `snapshot.resolve` (2.48 s, `exp-07`). |
-| `rnk_snapshot.syncfs` | | Phase 2: kaniko's `snapshot.syncfs` (0.48 s, `exp-07`). |
+| `rnk_snapshot.resolve` | | Not recorded, no such step: kaniko's `snapshot.resolve` (2.48 s, `exp-07`) adds the targets and parents of changed symlinks, which the kaniko-mode exporter does not write (`ADR-0045`); its parents come from the layer writer, inside `rnk_snapshot.export`. |
+| `rnk_snapshot.syncfs` | | Not recorded, no such step: kaniko calls `syncfs` before each walk (`snapshot.syncfs`, 0.48 s, `exp-07`); ranikust's walk reads through the page cache, where a finished `RUN`'s writes already are, and never syncs. |
 | `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`: an overlay upper directory (`LayerDiff::export`) or a kaniko walk diff (`WalkDiff::export`, `rnk_snapshot.diff` inside it as in overlay mode). `blocks_read` is the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread: the disk re-reads `exp-07` and `exp-08` found under memory pressure (183–538 MB per layer). Omitted if reads fan out to a pool. Not recorded yet: both exporters record `entries` and `bytes_read`. |
-| `rnk_snapshot.release` | `entries` | Deleting diff directories or a stage root; kaniko's `fs.delete`. |
+| `rnk_snapshot.release` | `entries` | Deleting diff directories or a stage root (overlay mode), or a kaniko-mode stage directory (`KanikoStages`, `rnk_rootfs.delete` inside); kaniko's `fs.delete`. |
 | `rnk_snapshot.probe` | `ok`, `api` | One overlay mount attempt of the probe: `api` is `LowerdirPlus` or `Mount2`, tried in that order. |
 
 ### `rnk-layer`
@@ -300,7 +300,7 @@ needs only a map of phase names and named fields in place of `bytes` and
 | `run.child` | `rnk_sandbox.run` | ranikust's includes the sandbox set-up in the child |
 | `snapshot.command` (bytes, items) | `rnk_snapshot.diff` (`bytes`, `files_added` + `whiteouts`) | kaniko's bytes are the tar size |
 | `snapshot.scan_full`, `snapshot.walk`, `snapshot.hash` | `rnk_snapshot.walk` (`entries`, `files_hashed`, `bytes_hashed`) | one span: hashing happens inside the walk |
-| `snapshot.resolve`, `snapshot.syncfs` | `rnk_snapshot.resolve`, `rnk_snapshot.syncfs` | |
+| `snapshot.resolve`, `snapshot.syncfs` | none | no such step in ranikust ([rows](#rnk-snapshot)); count them on kaniko's side only |
 | `snapshot.tar` | inside `rnk_layer.encode` | tar and compression stream into each other |
 | `command.layer` | `rnk_builder.layer` | |
 | `layer.compress` (bytes) | `rnk_layer.encode` (`bytes_out`) | |

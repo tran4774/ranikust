@@ -17,15 +17,34 @@
 # their original digests), verdaccio/ (the npm proxy's storage) and nk/ (the
 # workloads and the files of nextjs-kaniko/bench it needs).
 #
+# Builders: the references `kaniko` and `buildkit`; `ranikust` in overlay
+# mode as root on the VM; `rk-kaniko`, ranikust in kaniko mode on the `/` of
+# a default `docker run` (root, Docker's default capabilities, no option:
+# the shared root, ADR-0048); `rk-kaniko-host`, ranikust in kaniko mode as
+# root on the VM itself, one directory per stage in its state directory
+# (ADR-0059). The ranikust builders' images are also checked for what must
+# never reach a layer (guest/e2e/leaks.py).
+#
 # Options (RANIKUST_E2E_* on the host, written to ~/rnk/e2e.env):
-#   WORKLOADS  default "w1 w2 w3"         BUILDERS  default "kaniko buildkit ranikust"
+#   WORKLOADS  default "w1 w2 w3"
+#   BUILDERS   default "kaniko buildkit ranikust rk-kaniko rk-kaniko-host"
 #   ROUNDS     default 1                  WARMUP    default 1 (one discarded kaniko build per workload)
 #   CPUS       default 4                  MEMORY    default 8g (as run-fair.sh)
-#   JOBS       default "1 2 default"      ranikust's --jobs values on W3 (with --reproducible)
+#   JOBS       default "1 2 default"      --jobs values on W3 (with --reproducible) of
+#                                         `ranikust` and `rk-kaniko-host`
+#   QUICK      1: defaults for a check that the suite works (W1 and W3, no
+#              warm-up, one round, kaniko and every ranikust builder, --jobs
+#              1 and the default); the variables above still win
+#   MIN_FREE_GB  default 10: the guest's free disk below which no build
+#              starts (after pruning the suite fails instead of filling it)
 set -euo pipefail
 cd "$HOME/rnk"
 # shellcheck disable=SC1091
 [ -f e2e.env ] && source e2e.env
+if [ "${RANIKUST_E2E_QUICK:-0}" = 1 ]; then
+  : "${RANIKUST_E2E_WORKLOADS:=w1 w3}" "${RANIKUST_E2E_BUILDERS:=kaniko ranikust rk-kaniko rk-kaniko-host}"
+  : "${RANIKUST_E2E_WARMUP:=0}" "${RANIKUST_E2E_ROUNDS:=1}" "${RANIKUST_E2E_JOBS:=1 default}"
+fi
 
 E="$HOME/rnk/e2e"
 NK="$E/nk"
@@ -34,15 +53,18 @@ W=/var/lib/rnk-e2e
 BIN="$HOME/rnk/bin/ranikust"
 PY=(python3 -I)
 WORKLOADS=(${RANIKUST_E2E_WORKLOADS:-w1 w2 w3})
-BUILDERS=(${RANIKUST_E2E_BUILDERS:-kaniko buildkit ranikust})
+BUILDERS=(${RANIKUST_E2E_BUILDERS:-kaniko buildkit ranikust rk-kaniko rk-kaniko-host})
 ROUNDS=${RANIKUST_E2E_ROUNDS:-1}
 WARMUP=${RANIKUST_E2E_WARMUP:-1}
 CPUS=${RANIKUST_E2E_CPUS:-4}
 MEMORY=${RANIKUST_E2E_MEMORY:-8g}
 JOBS=(${RANIKUST_E2E_JOBS:-1 2 default})
+MIN_FREE_GB=${RANIKUST_E2E_MIN_FREE_GB:-10}
 BASE="$(cat "$NK/bench/base-image.txt")"
 KANIKO_IMAGE=localhost/kaniko-bench:stream
 BK_IMAGE=rnk-e2e/buildkit:v0.33.1-rootless
+# An empty image for rk-kaniko: ranikust is static and builds over its `/`.
+EMPTY_IMAGE=rnk-e2e/empty:latest
 REPOS="$W/registry/docker/registry/v2/repositories"
 
 declare -A CTX=([w1]=app [w2]=app-cache [w3]=app-par)
@@ -60,6 +82,7 @@ while read -r id name; do
   [ -n "$loaded" ] || { echo "error: docker load of $name gave no image" >&2; exit 1; }
   sudo docker tag "$loaded" "$name"
 done <"$E/images.txt"
+tar -cf - -T /dev/null | sudo docker import - "$EMPTY_IMAGE" >/dev/null
 
 sudo rm -rf "$W" && sudo mkdir -p "$W"
 sudo mv "$E/registry" "$W/registry"
@@ -88,7 +111,8 @@ chmod 644 "$TOML"
   echo "base image: $BASE"
   echo "kaniko: $KANIKO_IMAGE ($(sudo docker image inspect -f '{{.Id}}' "$KANIKO_IMAGE")), cfg-final-opt.env + FF_KANIKO_STREAM_TAR_COMPRESS=1"
   echo "buildkit: $BK_IMAGE ($(sudo docker image inspect -f '{{.Id}}' "$BK_IMAGE")), zstd"
-  echo "ranikust: $("$BIN" version 2>/dev/null | head -1)"
+  echo "ranikust: $("$BIN" version 2>/dev/null | head -1) (sha256 $(sha256sum "$BIN" | cut -d' ' -f1))"
+  echo "kernel: $(uname -r); cpus: $(nproc); mem: $(awk '/MemTotal/ {print $2}' /proc/meminfo) kB; disk free: $(df -Ph / | awk 'NR == 2 { print $4 }')"
   echo "limits: --cpus=$CPUS --memory=$MEMORY (ranikust: a systemd scope with the same CPUQuota and MemoryMax)"
   echo "workloads: ${WORKLOADS[*]}; builders: ${BUILDERS[*]}; rounds: $ROUNDS; warm-up: $WARMUP; W3 jobs: ${JOBS[*]}"
 } | tee "$OUT/env.txt"
@@ -97,11 +121,40 @@ chmod 644 "$TOML"
 
 # Every build starts from an empty e2e/ namespace in a restarted registry, as
 # run-fair.sh wipes its repositories, so nothing is "already there".
+# The registry frees no blob when a repository goes, so the blobs nothing
+# links any more are deleted while it is stopped (guest/e2e/prune-registry.py):
+# without that every build's layers stayed and filled the guest's disk.
 wipe() {
   sudo rm -rf "$REPOS/e2e"
-  sudo docker restart nk-registry >/dev/null
+  sudo docker stop nk-registry >/dev/null
+  sudo "${PY[@]}" guest/e2e/prune-registry.py "$W/registry" >>"$OUT/prune.log"
+  sudo docker start nk-registry >/dev/null
   wait_up http://127.0.0.1:5000/v2/
+  guard_disk
 }
+
+free_gb() { df -Pk / | awk 'NR == 2 { print int($4 / 1048576) }'; }
+
+# Fails the suite, rather than letting the guest's disk fill (a full disk
+# stops sshd and the host loses the VM), when less than MIN_FREE_GB is
+# left after dropping what earlier builds left behind.
+guard_disk() {
+  [ "$(free_gb)" -lt "$MIN_FREE_GB" ] || return 0
+  sudo docker container prune -f >/dev/null
+  sudo docker image prune -f >/dev/null
+  sudo rm -rf "$W/rnk-work" "$W/rnk-kwork"
+  local f
+  f=$(free_gb)
+  [ "$f" -lt "$MIN_FREE_GB" ] || return 0
+  echo "error: only $f GiB free in the VM (RANIKUST_E2E_MIN_FREE_GB=$MIN_FREE_GB): stopping before the disk fills" >&2
+  df -h / >&2
+  sudo du -sh "$W"/* /var/lib/docker >&2 2>/dev/null || true
+  exit 1
+}
+
+is_rnk() { case "$1" in ranikust | rk-*) return 0 ;; *) return 1 ;; esac; }
+# The builders that take --jobs on W3 (their stages may run side by side).
+has_jobs() { case "$1" in ranikust | rk-kaniko-host) return 0 ;; *) return 1 ;; esac; }
 
 # build <workload> <builder> <jobs|-> <dir> <repository>; writes <dir>/run.json
 build() {
@@ -114,9 +167,9 @@ build() {
       t0=$(now)
       sudo docker run -d --name "$name" --network nk-internal --cpus="$CPUS" --memory="$MEMORY" \
         $(cat "$NK/bench/cfg-final-opt.env") -e FF_KANIKO_STREAM_TAR_COMPRESS=1 \
-        -v "$ctx:/workspace:ro" -v "$d:/out" -e KANIKO_METRICS_FILE=/out/metrics.json "$KANIKO_IMAGE" \
+        -v "$ctx:/workspace:ro" -v "$d:/bench-out" -e KANIKO_METRICS_FILE=/bench-out/metrics.json "$KANIKO_IMAGE" \
         --dockerfile=/workspace/Dockerfile --context=dir:///workspace --destination="registry:5000/$repo:latest" \
-        --insecure-registry=registry:5000 --build-arg "BASE_IMAGE=$BASE" --digest-file=/out/digest.txt \
+        --insecure-registry=registry:5000 --build-arg "BASE_IMAGE=$BASE" --digest-file=/bench-out/digest.txt \
         --verbosity=info --log-timestamp=true >/dev/null
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
@@ -138,6 +191,43 @@ build() {
       sudo docker rm -f "$name" >/dev/null
       sudo docker volume rm -f "$vol" >/dev/null
       ;;
+    rk-kaniko)
+      # A default `docker run`: root, Docker's capabilities, no option. The
+      # results go to /rnk-out, not /out, which W3's Dockerfile writes: a
+      # mount point is never part of a layer in kaniko mode, as in kaniko.
+      local extra=()
+      [ "$jobs" = - ] || extra+=(--reproducible)
+      t0=$(now)
+      sudo docker run -d --name "$name" --network nk-internal --cpus="$CPUS" --memory="$MEMORY" \
+        -v "$BIN:/ranikust/bin/ranikust:ro" -v "$ctx:/workspace:ro" -v "$d:/rnk-out" \
+        -v /etc/ssl/certs:/etc/ssl/certs:ro "$EMPTY_IMAGE" \
+        /ranikust/bin/ranikust build --mode=kaniko --context=/workspace --dockerfile=/workspace/Dockerfile \
+        --destination="registry:5000/$repo:latest" --insecure-registry=registry:5000 \
+        --build-arg="BASE_IMAGE=$BASE" --metrics-file=/rnk-out/metrics.json --digest-file=/rnk-out/digest.txt \
+        "${extra[@]}" >/dev/null
+      rc=$(sudo docker wait "$name"); t1=$(now)
+      sudo docker logs "$name" >"$d/build.log" 2>&1 || true
+      sudo docker rm -f "$name" >/dev/null
+      sudo chown -R "$(id -u):$(id -g)" "$d"
+      ;;
+    rk-kaniko-host)
+      local extra=()
+      [ "$jobs" = - ] || [ "$jobs" = default ] || extra+=("--jobs=$jobs")
+      [ "$jobs" = - ] || extra+=(--reproducible)
+      sudo rm -rf "$W/rnk-kwork" && sudo mkdir -m 700 -p "$W/rnk-kwork"
+      t0=$(now)
+      set +e
+      sudo systemd-run --quiet --scope -p CPUQuota="${CPUS}00%" -p MemoryMax="${MEMORY^^}" -- \
+        "$BIN" build --mode=kaniko --context="$ctx" --dockerfile="$ctx/Dockerfile" \
+        --destination="registry:5000/$repo:latest" --insecure-registry=registry:5000 \
+        --build-arg="BASE_IMAGE=$BASE" --state-dir="$W/rnk-kwork" \
+        --metrics-file="$d/metrics.json" "${extra[@]}" >"$d/build.log" 2>&1
+      rc=$?
+      set -e
+      t1=$(now)
+      sudo chown -R "$(id -u):$(id -g)" "$d"
+      ;;
+    *) echo "error: unknown builder $b" >&2; return 1 ;;
     ranikust)
       local extra=()
       [ "$jobs" = - ] || [ "$jobs" = default ] || extra+=("--jobs=$jobs")
@@ -158,7 +248,7 @@ build() {
   status=ok
   if [ "$rc" != 0 ]; then
     status=failed
-    if [ "$b" = ranikust ] && grep -Eiq 'not implemented|not yet|comes in Phase|\[open: Q-|\(Q-[0-9]+\)' "$d/build.log"; then
+    if is_rnk "$b" && grep -Eiq 'not implemented|not yet|comes in Phase|\[open: Q-|\(Q-[0-9]+\)' "$d/build.log"; then
       status=pending
       reason="$(grep -Ei -m1 'not implemented|not yet|comes in Phase|Q-[0-9]+' "$d/build.log" | cut -c1-200)"
     fi
@@ -175,9 +265,15 @@ PY
   [ "$status" != failed ] || { tail -20 "$d/build.log" >&2; return 1; }
 }
 
-# check <dir> <repository> <gzip|zstd>: flatten the image and check its blobs
+# check <dir> <repository> <gzip|zstd> <builder>: flatten the image and check its blobs
 check() {
   "${PY[@]}" guest/e2e/flatten.py 127.0.0.1:5000 "$2" latest "$1/listing.tsv.gz" "$1/config.json" | tee "$1/flatten.txt"
+  # What the builders mount or keep (context, results, state) never reaches
+  # a ranikust layer.
+  if is_rnk "$4"; then
+    "${PY[@]}" guest/e2e/leaks.py "$1/listing.tsv.gz" /workspace /rnk-out /bench-out "$W" >"$1/leaks.txt" ||
+      { cat "$1/leaks.txt" >&2; echo "error: $2 holds files that must not be in a layer" >&2; return 1; }
+  fi
   curl -fsI -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
     "http://127.0.0.1:5000/v2/$2/manifests/latest" | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p' >"$1/digest"
   # nextjs-kaniko's digest-check: every layer blob describes itself (gzip only).
@@ -203,7 +299,7 @@ for r in $(seq 1 "$ROUNDS"); do
     for k in $(seq 0 $((n - 1))); do
       b=${BUILDERS[$(((k + r - 1) % n))]}
       variants=(-)
-      [ "$b" = ranikust ] && [ "$w" = w3 ] && variants=("${JOBS[@]}")
+      has_jobs "$b" && [ "$w" = w3 ] && variants=("${JOBS[@]}")
       for j in "${variants[@]}"; do
         tag="$b"; [ "$j" = - ] || tag="$b-j$j"
         d="$OUT/$w/$tag-r$r"
@@ -212,7 +308,7 @@ for r in $(seq 1 "$ROUNDS"); do
         status=$("${PY[@]}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$d/run.json")
         if [ "$r" = 1 ] && [ "$status" = ok ]; then
           comp=gzip; [ "$b" = buildkit ] && comp=zstd
-          check "$d" "e2e/$w-$tag" "$comp" || failed=1
+          check "$d" "e2e/$w-$tag" "$comp" "$b" || failed=1
         fi
       done
     done
@@ -221,52 +317,69 @@ done
 
 # --- Comparisons of round 1 -----------------------------------------------------
 
+# A builder's round-1 directory: on W3 the ones taking --jobs have one per
+# value, and the default is compared.
+first_dir() {
+  if has_jobs "$2" && [ "$1" = w3 ]; then echo "$OUT/$1/$2-jdefault-r1"; else echo "$OUT/$1/$2-r1"; fi
+}
+
 for w in "${WORKLOADS[@]}"; do
   wd="$OUT/$w"
   [ -d "$wd" ] || continue
-  rnk="$wd/ranikust-r1"; [ "$w" = w3 ] && rnk="$wd/ranikust-jdefault-r1"
+  rnk="$(first_dir "$w" ranikust)"
   pairs=("kaniko $wd/kaniko-r1 buildkit $wd/buildkit-r1" "ranikust $rnk kaniko $wd/kaniko-r1" "ranikust $rnk buildkit $wd/buildkit-r1")
+  # kaniko mode against kaniko, and against overlay mode (ADR-0012).
+  for k in rk-kaniko rk-kaniko-host; do
+    pairs+=("$k $(first_dir "$w" "$k") kaniko $wd/kaniko-r1" "$k $(first_dir "$w" "$k") ranikust $rnk")
+  done
   for p in "${pairs[@]}"; do
     read -r na da nb db <<<"$p"
     [ -f "$da/listing.tsv.gz" ] && [ -f "$db/listing.tsv.gz" ] || continue
     "${PY[@]}" guest/e2e/compare.py "$na" "$da" "$nb" "$db" >"$wd/compare-$na-$nb.txt"
     log "$w $na vs $nb: $(tail -1 "$wd/compare-$na-$nb.txt")"
   done
-  if [ -f "$wd/kaniko-r1/metrics.json" ] && [ -f "$rnk/metrics.json" ] && [ -f "$rnk/digest" ]; then
-    "${PY[@]}" guest/e2e/metrics.py "$wd/kaniko-r1/metrics.json" "$rnk/metrics.json" >"$wd/metrics-kaniko-ranikust.md"
-  fi
+  for b in ranikust rk-kaniko rk-kaniko-host; do
+    rd="$(first_dir "$w" "$b")"
+    if [ -f "$wd/kaniko-r1/metrics.json" ] && [ -f "$rd/metrics.json" ] && [ -f "$rd/digest" ]; then
+      "${PY[@]}" guest/e2e/metrics.py "$wd/kaniko-r1/metrics.json" "$rd/metrics.json" >"$wd/metrics-kaniko-$b.md"
+    fi
+  done
   # W3 with --reproducible across --jobs (Q-187): the raw digests are
   # reported, and the images are compared by flattened content against the
   # first --jobs value. W3's stages write `du -sk node_modules` into
   # /out/{a,b,c}.txt, and /out/all.txt concatenates them: those depend on
   # disk block allocation, not on ranikust, so they are noise here. Any
   # other difference fails the suite.
+  # Each builder that takes --jobs is checked on its own: overlay mode and
+  # kaniko mode's per-stage directories (ADR-0059).
   if [ "$w" = w3 ]; then
-    : >"$wd/digests.txt"
-    for j in "${JOBS[@]}"; do
-      [ -f "$wd/ranikust-j$j-r1/digest" ] && echo "jobs=$j $(cat "$wd/ranikust-j$j-r1/digest")" >>"$wd/digests.txt"
-    done
-    if [ -s "$wd/digests.txt" ]; then
-      if [ "$(cut -d' ' -f2 "$wd/digests.txt" | sort -u | wc -l)" = 1 ]; then
-        echo "raw digests: the same at every --jobs value" >>"$wd/digests.txt"
+    for b in ranikust rk-kaniko-host; do
+      dg="$wd/digests-$b.txt"
+      : >"$dg"
+      for j in "${JOBS[@]}"; do
+        [ -f "$wd/$b-j$j-r1/digest" ] && echo "jobs=$j $(cat "$wd/$b-j$j-r1/digest")" >>"$dg"
+      done
+      [ -s "$dg" ] || { rm -f "$dg"; continue; }
+      if [ "$(cut -d' ' -f2 "$dg" | sort -u | wc -l)" = 1 ]; then
+        echo "raw digests: the same at every --jobs value" >>"$dg"
       else
-        echo "raw digests: differ across --jobs (compared by content below)" >>"$wd/digests.txt"
+        echo "raw digests: differ across --jobs (compared by content below)" >>"$dg"
       fi
       du_noise=(--noise /out/a.txt --noise /out/b.txt --noise /out/c.txt --noise /out/all.txt)
       first="${JOBS[0]}"
       for j in "${JOBS[@]:1}"; do
-        da="$wd/ranikust-j$first-r1" db="$wd/ranikust-j$j-r1"
+        da="$wd/$b-j$first-r1" db="$wd/$b-j$j-r1"
         [ -f "$da/listing.tsv.gz" ] && [ -f "$db/listing.tsv.gz" ] || continue
         "${PY[@]}" guest/e2e/compare.py "${du_noise[@]}" "jobs=$first" "$da" "jobs=$j" "$db" \
-          >"$wd/compare-jobs$first-jobs$j.txt"
-        result="$(tail -1 "$wd/compare-jobs$first-jobs$j.txt")"
-        echo "content jobs=$first vs jobs=$j: $result" >>"$wd/digests.txt"
+          >"$wd/compare-$b-jobs$first-jobs$j.txt"
+        result="$(tail -1 "$wd/compare-$b-jobs$first-jobs$j.txt")"
+        echo "content jobs=$first vs jobs=$j: $result" >>"$dg"
         if [[ "$result" != *"other=0 hardlink=0 "*"config=0" ]]; then
-          echo "error: W3's content depends on --jobs ($j)" | tee -a "$wd/digests.txt" >&2
+          echo "error: W3's content from $b depends on --jobs ($j)" | tee -a "$dg" >&2
           failed=1
         fi
       done
-    fi
+    done
   fi
 done
 
@@ -276,7 +389,11 @@ cat "$OUT/report.md"
 # --- Leftovers ------------------------------------------------------------------
 
 sudo docker rm -f nk-registry nk-verdaccio >/dev/null
-! grep -q "$W/rnk-work" /proc/self/mountinfo || { echo "error: mounts left under $W/rnk-work" >&2; failed=1; }
+for s in rnk-work rnk-kwork; do
+  ! grep -q "$W/$s" /proc/self/mountinfo || { echo "error: mounts left under $W/$s" >&2; failed=1; }
+done
 ! pgrep -x ranikust >/dev/null || { echo "error: ranikust processes left" >&2; failed=1; }
+[ -z "$(sudo docker ps -aq --filter name=rnk-e2e-)" ] || { echo "error: builder containers left" >&2; failed=1; }
+echo "guest disk at the end: $(df -Ph / | awk 'NR == 2 { print $3 " used, " $4 " free" }')"
 [ "$failed" = 0 ] && echo "e2e: ok"
 exit "$failed"

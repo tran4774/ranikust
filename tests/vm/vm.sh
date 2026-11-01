@@ -100,6 +100,13 @@ if wants e2e; then
   fi
   [ "$MEM" -le $((avail - 2048)) ] ||
     log "warning: $MEM MiB for the VM leaves the host under 2 GiB of its ${avail} MiB available; the VM may stall (close memory-hungry programs, or set RANIKUST_VM_MEM)"
+  # The VM's disk is a qcow2 file that grows with what the guest writes (up
+  # to $DISK) and never shrinks; e2e.sh keeps the guest's use bounded, but
+  # a host filesystem short of space would stop the VM mid-run.
+  mkdir -p "$TARGET/vm"
+  host_free=$(($(df -Pk "$TARGET/vm" | awk 'NR == 2 { print $4 }') / 1024 / 1024))
+  [ "$host_free" -ge 40 ] ||
+    die "only ${host_free} GiB free for the VM's disk under $TARGET/vm; e2e needs 40 GiB"
   # Next to the main checkout, also when this is a git worktree.
   NEXTJS="${RANIKUST_NEXTJS_KANIKO:-$(dirname "$MAIN")/nextjs-kaniko}"
   [ -f "$NEXTJS/bench/run-fair.sh" ] || die "no nextjs-kaniko checkout at $NEXTJS (set RANIKUST_NEXTJS_KANIKO)"
@@ -177,7 +184,11 @@ if wants e2e; then
     fi
     echo "$id ${E2E_NAMES[$i]}" >>"$STAGE/e2e-images.txt"
   done
-  env | grep '^RANIKUST_E2E_' | sed 's/^/export /' >"$STAGE/e2e.env" || true
+  # Quoted: `RANIKUST_E2E_BUILDERS="kaniko rk-kaniko"` names two builders.
+  : >"$STAGE/e2e.env"
+  for v in $(compgen -e | grep '^RANIKUST_E2E_' || true); do
+    printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/e2e.env"
+  done
 fi
 if wants push; then
   mkdir -p "$STAGE/registry"
