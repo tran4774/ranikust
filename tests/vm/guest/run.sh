@@ -27,6 +27,16 @@ mkdir -p out
   echo "machine id: $(cat /etc/machine-id)"
 } | tee out/env.txt
 
+# The base image must not have brought its own: no user but rnk, and host
+# keys made at this boot. Otherwise no suite runs.
+users="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 { print $1 }' | paste -sd' ')"
+boot=$(awk '/^btime / { print $2 }' /proc/stat)
+key_made=$(stat -c %Y /etc/ssh/ssh_host_ed25519_key.pub)
+if [ "$users" != rnk ] || [ "$key_made" -lt "$boot" ]; then
+  echo "error: this VM is not the run's own (users: '$users'; host key made $key_made, booted $boot)" | tee out/summary.txt
+  exit 1
+fi
+
 status=0
 : >out/summary.txt
 : >out/suite-times.txt

@@ -130,10 +130,16 @@ runs as root on the host:
    2) and 16 GiB (`RANIKUST_VM_MEM`). The memory is measured once the
    previous run's VM has gone: when the host has less than 16 GiB plus
    3 GiB available, the default shrinks to fit, never below 4 GiB (8 GiB
-   for `e2e`), and the run says so; a value set in the variables is used as
-   is, with a warning if it leaves the host under 2 GiB. The disk is 20 GB
-   (`RANIKUST_VM_DISK`, 40 GB for `e2e`, at least 10 GB over the base
-   image). All devices are virtio: the disk on its own I/O thread with
+   for `e2e` and `ultra`), and the run says so; when even that would leave
+   the host under 2 GiB, the run stops before booting and says what to
+   close. A value set in the variables is used as is, with a warning if it
+   leaves the host under 2 GiB. The disk is 20 GB (`RANIKUST_VM_DISK`,
+   40 GB for `ultra`, at least 10 GB over the base image). The cache
+   directory must be yours and writable by no one else (one of yours that
+   others may write is made 0700), the base image a self-contained qcow2
+   (no backing or data file, checked with `qemu-img info` before each
+   use), and the cache and target paths absolute without a comma (QEMU's
+   option separator). All devices are virtio: the disk on its own I/O thread with
    `cache=unsafe` (the disk is thrown away) and `aio=io_uring` where QEMU
    and the kernel allow it (else the thread pool), an entropy source, and
    a balloon with free-page reporting that hands memory the guest frees
@@ -150,7 +156,12 @@ runs as root on the host:
    made at this boot, its machine ID), one
    log per suite, `summary.txt`, `suite-times.txt` (each suite's wall time),
    `timings.txt` and the VM's serial log (`base-image-serial.log` too when
-   this run built the base image).
+   building the base image failed). The results are extracted into a new
+   directory of the run, cleared of anything that is not a regular file or
+   a directory, and only then put in place; teardown clears them the same
+   way before it writes the serial log and `timings.txt`, through new
+   files renamed into place. The guest refuses to run any suite when it
+   holds a user other than `rnk` or a host key older than its boot.
 7. **Tear down** on every exit path, Ctrl-C included: QEMU is stopped
    through its monitor (then `SIGKILL`), the shared SSH connection is
    closed, and the overlay, seed and key are deleted (the base image stays
@@ -253,7 +264,12 @@ and compares and checks the images. It has two profiles:
   mount point never reaches a layer in kaniko mode, kaniko's or
   ranikust's. W2 is built cold, without a cache. On W3 `ranikust` and
   `rk-kaniko-host` run once per `--jobs` value (`1 2 default`) with
-  `--reproducible`. Every build starts from an empty `e2e/` namespace in
+  `--reproducible`. A builder container writes only its own directory
+  (`<build>/mnt`, mounted as `/bench-out` or `/rnk-out`), whose
+  `metrics.json` and `digest.txt` are copied out if they are regular files
+  once the container is gone; everything the harness writes (`build.log`,
+  `limits.txt`, `run.json`, the listing) goes to the build's directory,
+  which no container reaches. Every build starts from an empty `e2e/` namespace in
   a restarted registry, whose blobs no repository links any more are
   deleted first (`guest/e2e/prune-registry.py`; the registry itself never
   frees them, and an earlier version of the suite filled the guest's
@@ -343,7 +359,8 @@ VM gets 12 vCPUs, 16 GiB and a 20 GB disk, 40 GB for ultra (it peaked at
 6.3 GB on W1 and W3 with the registry pruned; it was 80 GB before) unless
 `RANIKUST_VM_CPUS`/`_MEM`/`_DISK` say otherwise; when the host has less
 than 16 GiB plus 3 GiB available, the default shrinks to fit (never below
-8 GiB) and the run says so. The builders' limits do not grow with the VM:
+8 GiB for `e2e` and `ultra`, 4 GiB for the other suites) and the run says
+so, or stops when even that would leave the host under 2 GiB. The builders' limits do not grow with the VM:
 each build's own, read from its cgroup while it runs (`cpu.max`,
 `cpuset.cpus.effective`, `memory.max`, `memory.swap.max`), are in its
 `limits.txt` and `run.json`, and in the log after its time. Runs before

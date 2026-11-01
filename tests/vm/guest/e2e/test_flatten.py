@@ -151,6 +151,15 @@ class FlattenTest(unittest.TestCase):
                 "layers": layers}).encode()
 
         image("latest", image_layers())
+        # A blob served under a digest that is not its own.
+        good = tar_layer(image_layers()[0])
+        wrong = "sha256:" + hashlib.sha256(b"not the blob").hexdigest()
+        cls.reg.blobs[wrong] = good
+        cls.reg.manifests["wrong-digest"] = json.dumps({
+            "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config},
+            "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": wrong,
+                        "size": len(good)}]}).encode()
         edge = edge_layers()
         image("edge", edge[:2])
         image("edge-wipe", edge)
@@ -164,9 +173,12 @@ class FlattenTest(unittest.TestCase):
 
     def flatten(self, script, name, env=None, tag="latest"):
         listing = os.path.join(self.tmp, f"{name}.tsv.gz")
+        # Only what this run sets: no cache or job count from the caller's
+        # environment.
+        base = {k: v for k, v in os.environ.items() if not k.startswith("RANIKUST_FLATTEN_")}
         subprocess.run([sys.executable, "-I", os.path.join(HERE, script), self.host, "img", tag, listing,
                         os.path.join(self.tmp, f"{name}.json")], check=True, stdout=subprocess.DEVNULL,
-                       env={**os.environ, **(env or {})})
+                       env={**base, **(env or {})})
         with gzip.open(listing, "rb") as f:
             return f.read()
 
@@ -196,6 +208,13 @@ class FlattenTest(unittest.TestCase):
             with self.subTest(what):
                 self.assertEqual(self.flatten("flatten.py", f"v2-{i}", env), want)
         self.assertEqual(len([n for n in os.listdir(cache) if n.endswith(".json")]), 3)
+
+    def test_a_blob_that_is_not_its_digest_is_refused(self):
+        cache = os.path.join(self.tmp, "cache-wrong")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.flatten("flatten.py", "wrong", {"RANIKUST_FLATTEN_CACHE": cache}, tag="wrong-digest")
+        # Nothing was cached from it.
+        self.assertEqual([n for n in os.listdir(cache) if n.endswith(".json")] if os.path.isdir(cache) else [], [])
 
     def test_gzip_without_pigz(self):
         want = self.flatten("flatten_v1.py", "v1-np")

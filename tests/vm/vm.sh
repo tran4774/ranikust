@@ -35,12 +35,13 @@
 #   RANIKUST_VM_CPUS     vCPUs, default 12, at most the host's CPUs less 2
 #   RANIKUST_VM_MEM      memory in MiB, default 16384, less when the host
 #                        has under that plus 3 GiB available (never under
-#                        4096, 8192 with e2e); a value set here is used as
-#                        is, with a warning if it leaves the host short
+#                        4096, 8192 with e2e or ultra; the run stops when
+#                        even that would leave the host under 2 GiB); a
+#                        value set here is used as is, with a warning
 #   RANIKUST_VM_GOLDEN   1 (default) boots the cached provisioned base image;
 #                        0 boots the plain cloud image and lets cloud-init
 #                        install the packages, as every run did before
-#   RANIKUST_VM_DISK     disk size in M, G or T, default 20G (40G with e2e);
+#   RANIKUST_VM_DISK     disk size in M, G or T, default 20G (40G with ultra);
 #                        the host needs that much free, less 2 GiB
 #   RANIKUST_NEXTJS_KANIKO  the nextjs-kaniko checkout ultra reads, default
 #                        ../nextjs-kaniko next to the repository
@@ -60,10 +61,11 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
 HERE="$REPO/tests/vm"
 RELEASE="${RANIKUST_VM_RELEASE:-noble}"
-CACHE="${RANIKUST_VM_CACHE:-$MAIN/tests/e2e/_vm-image}"
+# Absolute: they end up in QEMU's -drive options and in rm -rf paths.
+CACHE="$(realpath -m -- "${RANIKUST_VM_CACHE:-$MAIN/tests/e2e/_vm-image}")"
 IMAGE_REGISTRY="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
 GOLDEN_ON="${RANIKUST_VM_GOLDEN:-1}"
-TARGET="${CARGO_TARGET_DIR:-$REPO/target}"
+TARGET="$(realpath -m -- "${CARGO_TARGET_DIR:-$REPO/target}")"
 MUSL=x86_64-unknown-linux-musl
 VM_USER=rnk
 # What cloud-init installs: into the base image once (cloud-init/provision),
@@ -81,6 +83,13 @@ for s in "${SUITES[@]}"; do
 done
 case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 case "$GOLDEN_ON" in 0 | 1) ;; *) die "RANIKUST_VM_GOLDEN must be 0 or 1" ;; esac
+# QEMU splits -drive options on commas.
+for v in TARGET CACHE; do
+  [[ "${!v}" != *,* ]] || die "no comma allowed in $v (${!v})"
+done
+# A host name with an optional port: it goes into the guest's seed.
+[[ "$IMAGE_REGISTRY" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$ ]] ||
+  die "RANIKUST_VM_IMAGE_REGISTRY must be a host name with an optional port (got '$IMAGE_REGISTRY')"
 # They reach QEMU's command line and arithmetic: whole numbers only.
 for v in RANIKUST_VM_CPUS RANIKUST_VM_MEM; do
   [ -z "${!v:-}" ] || [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || die "$v must be a whole number (got '${!v}')"
@@ -103,7 +112,7 @@ wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done
 # here, before anything is written or locked, and again right before the
 # disk is created.
 DISK="${RANIKUST_VM_DISK:-20G}"
-# e2e: the reference images, the npm proxy's storage, one build's root and
+# ultra: the reference images, the npm proxy's storage, one build's root and
 # image at a time (the registry is pruned between builds): the guest
 # peaked at 6.3 GB on W1 and W3 (2026-11-01), so 40G leaves room for W2
 # and many rounds.
@@ -135,8 +144,19 @@ check_host_free
 # One VM at a time on this machine, whichever checkout or worktree starts
 # it: the lock is held on fd 9 until this script exits, so it also guards
 # the cache while images are downloaded or saved into it.
-mkdir -p "$CACHE"
-exec 9>"$CACHE/.vm.lock"
+#
+# The cache holds the images every run boots: only this user may write it.
+# A cache this user owns but others may write is tightened (older versions
+# made it 0775); one owned by someone else is refused.
+mkdir -p -- "$(dirname -- "$CACHE")"
+[ -e "$CACHE" ] || mkdir -m 0700 -- "$CACHE"
+[ -O "$CACHE" ] && [ -d "$CACHE" ] && [ ! -L "$CACHE" ] || die "$CACHE must be a directory owned by you"
+if [ -n "$(find "$CACHE" -maxdepth 0 -perm /022)" ]; then
+  log "$CACHE is writable by group or others: making it 0700"
+  chmod 0700 "$CACHE"
+fi
+# Appended to, never truncated: the lock file is only a lock.
+exec 9>>"$CACHE/.vm.lock"
 if ! flock -n 9; then
   log "another run's VM is up; waiting for it (at most ${RANIKUST_VM_LOCK_WAIT:-3600} s)"
   flock -w "${RANIKUST_VM_LOCK_WAIT:-3600}" 9 || die "another run's VM still holds $CACHE/.vm.lock"
@@ -173,9 +193,12 @@ else
     mem_how="capped: the host had $avail MiB available"
     log "the host has ${avail} MiB available: the VM gets $MEM MiB"
   fi
+  # Even the least these suites need would leave the host short: stop.
+  [ "$MEM" -le $((avail - 2048)) ] ||
+    die "the host has only $avail MiB available; these suites need a VM of at least $mem_floor MiB and the host 2 GiB more: close memory-hungry programs (or set RANIKUST_VM_MEM to run anyway)"
 fi
 [ "$MEM" -le $((avail - 2048)) ] ||
-  log "warning: $MEM MiB for the VM leaves the host under 2 GiB of its ${avail} MiB available; the VM may stall (close memory-hungry programs, or set RANIKUST_VM_MEM)"
+  log "warning: $MEM MiB for the VM leaves the host under 2 GiB of its ${avail} MiB available; the VM may stall (close memory-hungry programs, or set RANIKUST_VM_MEM lower)"
 VM_SIZE="cpus=$CPUS ($cpus_how) mem=${MEM}MiB ($mem_how) disk=$DISK base=$([ "$GOLDEN_ON" = 1 ] && echo provisioned || echo cloud-image)"
 
 if wants ultra; then
@@ -216,7 +239,9 @@ cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
 for v in RANIKUST_QUICK_CASES RANIKUST_QUICK_MODE; do
   [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/quick.env"
 done
-zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}"; }
+# Without the lock's descriptor: a build server or podman's pause process
+# left running must not hold the one-VM lock after this script.
+zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}" 9>&-; }
 
 if wants unit; then
   # T2 tests: every `#[ignore = "T2: ..."]` and the name of the fn under it.
@@ -254,11 +279,11 @@ if wants e2e || wants ultra; then
   mkdir -p "$CACHE/e2e"
   : >"$STAGE/e2e-images.txt"
   for i in "${!E2E_IMAGES[@]}"; do
-    id="$(SUPPRESS_BOLTDB_WARNING=1 podman image inspect -f '{{.Id}}' "${E2E_IMAGES[$i]}" 2>/dev/null)" ||
+    id="$(SUPPRESS_BOLTDB_WARNING=1 podman image inspect -f '{{.Id}}' "${E2E_IMAGES[$i]}" 2>/dev/null 9>&-)" ||
       die "podman has no ${E2E_IMAGES[$i]} (nextjs-kaniko's harness uses it)"
     if [ ! -f "$CACHE/e2e/$id.tar" ]; then
       log "saving ${E2E_IMAGES[$i]} to $CACHE/e2e/"
-      SUPPRESS_BOLTDB_WARNING=1 podman save -q --format docker-archive -o "$CACHE/e2e/$id.tar.part" "$id"
+      SUPPRESS_BOLTDB_WARNING=1 podman save -q --format docker-archive -o "$CACHE/e2e/$id.tar.part" "$id" 9>&-
       mv "$CACHE/e2e/$id.tar.part" "$CACHE/e2e/$id.tar"
     fi
     echo "$id ${E2E_NAMES[$i]}" >>"$STAGE/e2e-images.txt"
@@ -303,30 +328,53 @@ SOCKDIR=
 RESULTS="$TARGET/vm/results/$RELEASE"
 rm -rf "$RESULTS"
 QEMU_PID=
+QEMU_PIDFILE=
 MONITOR=
 # Seconds since the start at each step, written to the results' timings.txt.
 T_BOOT='' T_SSH='' T_READY='' T_SUITES=''
+
+# qemu_alive: QEMU_PID is still this run's QEMU, never a recycled pid: its
+# executable is QEMU's and its command line names this run's pidfile.
+qemu_alive() {
+  [ -n "$QEMU_PID" ] && [ -n "$QEMU_PIDFILE" ] || return 1
+  [ "$(basename "$(readlink "/proc/$QEMU_PID/exe" 2>/dev/null)")" = qemu-system-x86_64 ] || return 1
+  tr '\0' '\n' <"/proc/$QEMU_PID/cmdline" 2>/dev/null | grep -qxF -- "$QEMU_PIDFILE"
+}
+
+# put <source> <name>: copies a file into $RESULTS through a new temporary
+# file renamed over <name>, so nothing the guest left there is written
+# through.
+put() {
+  local tmp
+  tmp="$(mktemp "$RESULTS/.put.XXXXXX")" && cat -- "$1" >"$tmp" && mv -fT -- "$tmp" "$RESULTS/$2" ||
+    rm -f -- "${tmp:-}"
+}
 
 teardown() {
   local status=$?
   set +e
   # The shared SSH connection, if one was opened.
   [ -z "$SOCKDIR" ] || [ ! -S "$SOCKDIR/ssh" ] || ssh -S "$SOCKDIR/ssh" -O exit rnk-vm >/dev/null 2>&1
-  if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
+  if qemu_alive; then
     log "stopping the VM"
     python3 -c '
 import socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n"); s.recv(4096)
 ' "$MONITOR" 2>/dev/null
-    for _ in $(seq 20); do kill -0 "$QEMU_PID" 2>/dev/null || break; sleep 0.5; done
-    kill -9 "$QEMU_PID" 2>/dev/null
+    for _ in $(seq 20); do qemu_alive || break; sleep 0.5; done
+    ! qemu_alive || kill -9 "$QEMU_PID" 2>/dev/null
   fi
-  mkdir -p "$RESULTS" && cp "$RUN/serial.log" "$RESULTS/serial.log" 2>/dev/null
-  cp "$RUN/golden/serial.log" "$RESULTS/base-image-serial.log" 2>/dev/null
+  # Whatever reached the results, links and special files go before
+  # anything is written there.
+  mkdir -p "$RESULTS" && find "$RESULTS" ! -type f ! -type d -delete
+  [ ! -f "$RUN/serial.log" ] || put "$RUN/serial.log" serial.log
+  # Kept only when building the base image failed.
+  [ ! -f "$RUN/golden/serial.log" ] || put "$RUN/golden/serial.log" base-image-serial.log
   printf 'size: %s\nbase image: %s\naio: %s\nboot started: %s s\nSSH up: %s s\ncloud-init done: %s s\nsuites done: %s s\ntotal: %s s\n' \
-    "$VM_SIZE" "${BASE_IMG:-}" "${QEMU_AIO:-}" "$T_BOOT" "$T_SSH" "$T_READY" "$T_SUITES" "$SECONDS" >"$RESULTS/timings.txt"
+    "$VM_SIZE" "${BASE_IMG:-}" "${QEMU_AIO:-}" "$T_BOOT" "$T_SSH" "$T_READY" "$T_SUITES" "$SECONDS" >"$RUN/timings.txt" &&
+    put "$RUN/timings.txt" timings.txt
   rm -rf "$RUN" ${SOCKDIR:+"$SOCKDIR"}
-  if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
+  if qemu_alive; then
     echo "error: QEMU (pid $QEMU_PID) is still running" >&2
     status=1
   fi
@@ -360,7 +408,8 @@ start_qemu() {
       -device virtio-balloon-pci,free-page-reporting=on \
       -display none -serial file:"$serial" -monitor unix:"$mon",server,nowait \
       "$@" -pidfile "$pidf" -daemonize 2>"$RUN/qemu.err"; then
-      MONITOR=$mon QEMU_PID="$(cat "$pidf")" QEMU_AIO=$aio
+      MONITOR=$mon QEMU_PID="$(cat "$pidf")" QEMU_AIO=$aio QEMU_PIDFILE=$pidf
+      qemu_alive || die "the pid in $pidf is not this run's QEMU"
       return 0
     fi
     [ "$aio" = threads ] || log "QEMU did not start with aio=io_uring ($(head -c 300 "$RUN/qemu.err")); trying aio=threads"
@@ -369,11 +418,25 @@ start_qemu() {
   return 1
 }
 
-# A seed's user-data: @PACKAGES@ becomes cloud-init's package list, or
-# nothing when the base image already holds the packages.
+# A seed's user-data: the line @PACKAGES@ becomes cloud-init's package
+# list, or nothing when the base image already holds the packages;
+# @SSH_KEY@ and @REGISTRY_MIRRORS@ are replaced as plain text (no sed, whose
+# replacement text would be interpreted).
 packages_yaml() { printf 'package_update: true\npackages:\n'; printf '  - %s\n' "${PACKAGES[@]}"; }
-render() { # <template> <file holding what replaces @PACKAGES@>
-  awk -v f="$2" '$0 == "@PACKAGES@" { while ((getline l < f) > 0) print l; close(f); next } { print }' "$1"
+render() { # <template> <packages file> [<SSH public key file> <mirrors>]
+  python3 -I -c '
+import sys
+tpl, pkgs = sys.argv[1], open(sys.argv[2]).read()
+key = open(sys.argv[3]).read().strip() if len(sys.argv) > 3 else ""
+mirrors = sys.argv[4] if len(sys.argv) > 4 else ""
+out = []
+for line in open(tpl).read().splitlines(keepends=True):
+    if line.rstrip("\n") == "@PACKAGES@":
+        out.append(pkgs)
+        continue
+    out.append(line.replace("@SSH_KEY@", key).replace("@REGISTRY_MIRRORS@", mirrors))
+sys.stdout.write("".join(out))
+' "$@"
 }
 
 check_free_gib() { # <dir> <GiB>
@@ -415,7 +478,7 @@ if [ "$GOLDEN_ON" = 1 ]; then
       -netdev user,id=n0 -device virtio-net-pci,netdev=n0 || die "QEMU did not start"
     # The VM powers itself off once cloud-init is done (power_state).
     local deadline=$((SECONDS + 1200))
-    while kill -0 "$QEMU_PID" 2>/dev/null; do
+    while qemu_alive; do
       [ "$SECONDS" -lt "$deadline" ] || die "provisioning the base image took over 20 minutes (serial log: $RESULTS/base-image-serial.log)"
       sleep 2
     done
@@ -444,6 +507,11 @@ if [ "$GOLDEN_ON" = 1 ]; then
     rm -f "$GOLDEN" "$GOLDEN.sha256"
     build_golden
   fi
+  # A qcow2 can name other files QEMU would open (a backing file, an
+  # external data file): this one must be self-contained.
+  qemu-img info --output=json -U "$GOLDEN" |
+    jq -e '.format == "qcow2" and (has("backing-filename") | not) and (."format-specific".data["data-file"] == null)' >/dev/null ||
+    die "$GOLDEN is not a self-contained qcow2 (format, backing file or data file); delete it to build it again"
   log "base image $(basename "$GOLDEN") sha256 $(cat "$GOLDEN.sha256") (verified)"
   BASE_IMG=$GOLDEN
 fi
@@ -455,8 +523,7 @@ mkdir "$RUN/seed"
 # The guest's Docker pulls docker.io images through the same mirror.
 if [ "$IMAGE_REGISTRY" = docker.io ]; then MIRRORS='[]'; else MIRRORS="[\"https://$IMAGE_REGISTRY\"]"; fi
 if [ "$GOLDEN_ON" = 1 ]; then : >"$RUN/packages.yaml"; else packages_yaml >"$RUN/packages.yaml"; fi
-render "$HERE/cloud-init/user-data" "$RUN/packages.yaml" |
-  sed -e "s|@SSH_KEY@|$(cat "$RUN/key.pub")|" -e "s|@REGISTRY_MIRRORS@|$MIRRORS|" >"$RUN/seed/user-data"
+render "$HERE/cloud-init/user-data" "$RUN/packages.yaml" "$RUN/key.pub" "$MIRRORS" >"$RUN/seed/user-data"
 printf 'instance-id: ranikust-vm-%s\nlocal-hostname: ranikust-vm\n' "$(basename "$RUN")" >"$RUN/seed/meta-data"
 xorriso -as mkisofs -quiet -output "$RUN/seed.iso" -volid cidata -joliet -rock \
   "$RUN/seed/user-data" "$RUN/seed/meta-data"
@@ -530,22 +597,27 @@ while :; do
 done
 T_SUITES=$SECONDS
 log "suites done $((T_SUITES - T_READY)) s after cloud-init"
-mkdir -p "$RESULTS"
 for i in 1 2 3 4 5; do
   # The guest's results hold only regular files and directories: a link
   # could point the host's tar outside $RESULTS, a device or FIFO has no
   # business there. A builder container left running could still write, so
-  # those go first. The guest deletes everything else, and the host again
-  # after every attempt, failed or not (tar still creates the links it
-  # delayed after an error); the host's tar refuses absolute names and `..`.
+  # those go first. The guest deletes everything else; the host extracts
+  # into a new directory of the run, deletes everything else there too
+  # (tar still creates the links it delayed after an error, or when this
+  # script is interrupted), and only then puts it in place as $RESULTS. The
+  # host's tar refuses absolute names and `..`.
   copied=0
+  rm -rf "$RUN/out" && mkdir "$RUN/out"
   if vssh 'c=$(sudo docker ps -aq --filter name=rnk-e2e- 2>/dev/null); [ -z "$c" ] || sudo docker rm -f $c >/dev/null
     sudo find rnk/out ! -type f ! -type d -delete && tar -C rnk/out -cf - .' |
-    tar -C "$RESULTS" --no-same-owner --no-same-permissions -xf -; then
+    tar -C "$RUN/out" --no-same-owner --no-same-permissions -xf -; then
     copied=1
   fi
-  find "$RESULTS" ! -type f ! -type d -delete
-  [ "$copied" = 1 ] && break
+  find "$RUN/out" ! -type f ! -type d -delete
+  if [ "$copied" = 1 ]; then
+    rm -rf "$RESULTS" && mv -T "$RUN/out" "$RESULTS"
+    break
+  fi
   [ "$i" = 5 ] && log "could not copy the results out"
   sleep 10
 done

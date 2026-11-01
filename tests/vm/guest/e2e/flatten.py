@@ -81,25 +81,34 @@ def manifest(base, ref):
 class Decompressed:
     """A readable stream of a layer blob's uncompressed bytes: an external
     decompressor (pigz, else gzip; zstd) fed by a thread, so that
-    decompression runs beside the parsing and needs no Python per byte."""
+    decompression runs beside the parsing and needs no Python per byte. The
+    blob's bytes are hashed as they are read and checked against its digest
+    at close: a cached record is never made from a blob that is not what the
+    manifest names."""
 
-    def __init__(self, resp, media_type):
-        self.resp, self.proc = resp, None
+    def __init__(self, resp, media_type, digest):
+        self.resp, self.proc, self.digest, self.h = resp, None, digest, hashlib.sha256()
         if "zstd" in media_type:
             cmd = ["zstd", "-dcq"]
         elif "gzip" in media_type or media_type.endswith("tar.gzip"):
             cmd = ["pigz", "-dc"] if shutil.which("pigz") else ["gzip", "-dc"]
         else:
-            self.read = resp.read
+            self.read = self._read_hashed
             return
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=1 << 20)
         self.feeder = threading.Thread(target=self._feed, daemon=True)
         self.feeder.start()
         self.read = self.proc.stdout.read
 
+    def _read_hashed(self, n=-1):
+        data = self.resp.read(n)
+        self.h.update(data)
+        return data
+
     def _feed(self):
         try:
             while chunk := self.resp.read(1 << 20):
+                self.h.update(chunk)
                 self.proc.stdin.write(chunk)
         except BrokenPipeError:
             pass
@@ -118,6 +127,12 @@ class Decompressed:
             self.feeder.join()
             if self.proc.wait() != 0:
                 sys.exit(f"{self.proc.args[0]} failed to decompress a layer")
+        else:
+            # What tar did not read, for the hash.
+            while self._read_hashed(1 << 20):
+                pass
+        if "sha256:" + self.h.hexdigest() != self.digest:
+            sys.exit(f"layer blob {self.digest} does not match its digest")
 
 
 def norm(name):
@@ -201,7 +216,7 @@ def layer_records(base, layer, cache):
         with open(path, encoding="ascii") as f:
             return json.load(f)
     resp = get(f"{base}/blobs/{digest}")
-    stream = Decompressed(resp, layer["mediaType"])
+    stream = Decompressed(resp, layer["mediaType"], digest)
     try:
         rec = read_layer(stream)
     finally:

@@ -79,10 +79,10 @@ MIN_FREE_GB=${RANIKUST_E2E_MIN_FREE_GB:-10}
 # The options reach sudo command lines and arithmetic: whole numbers only
 # (MEMORY a number with an optional k, m or g; JOBS also `default`).
 bad_opt() { echo "error: RANIKUST_E2E_$1 must be $2 (got '$3')" >&2; exit 2; }
-for v in ROUNDS WARMUP CPUS MIN_FREE_GB; do
-  [[ "${!v}" =~ ^[0-9]+$ ]] || bad_opt "$v" "a whole number" "${!v}"
+# (No leading zero: bash would read it as octal.)
+for v in ROUNDS CPUS MIN_FREE_GB; do
+  [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || bad_opt "$v" "a whole number of at least 1" "${!v}"
 done
-[ "$ROUNDS" -ge 1 ] && [ "$CPUS" -ge 1 ] || bad_opt "ROUNDS/CPUS" "at least 1" "$ROUNDS/$CPUS"
 [[ "$WARMUP" =~ ^[01]$ ]] || bad_opt WARMUP "0 or 1" "$WARMUP"
 [[ "$MEMORY" =~ ^[0-9]+[kKmMgG]?$ ]] || bad_opt MEMORY "a number with k, m or g" "$MEMORY"
 for j in "${JOBS[@]}"; do
@@ -276,10 +276,29 @@ guard_disk() {
 LIMITS="$HOME/rnk/guest/e2e/limits.sh"
 # container_limits <container> <dir>: the limits a container's build runs
 # under, from its cgroup while it runs (Docker's settings if it has ended).
+# mount_dir <dir>: the only directory of <dir> a builder container may
+# write (its results, as /bench-out or /rnk-out); everything the harness
+# writes goes to <dir> itself, which no container reaches.
+mount_dir() { mkdir -p "$1/mnt" && echo "$1/mnt"; }
+# take_results <dir>: after the container is gone, copies its known result
+# files out of <dir>/mnt if they are regular files, then drops the rest.
+take_results() {
+  local f
+  for f in metrics.json digest.txt; do
+    if sudo test -f "$1/mnt/$f" && ! sudo test -L "$1/mnt/$f"; then
+      # Read as root, written as rnk into a directory no container reaches.
+      # shellcheck disable=SC2024
+      sudo cat -- "$1/mnt/$f" >"$1/$f"
+    fi
+  done
+  sudo rm -rf -- "$1/mnt"
+}
 container_limits() {
   local pid
   pid="$(sudo docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || echo 0)"
-  [ "${pid:-0}" = 0 ] || sudo bash "$LIMITS" pid "$pid" "$2/limits.txt" 2>/dev/null || true
+  # Read as root, written as rnk.
+  # shellcheck disable=SC2024
+  [ "${pid:-0}" = 0 ] || sudo bash "$LIMITS" pid "$pid" >"$2/limits.txt" 2>/dev/null || true
   [ -s "$2/limits.txt" ] ||
     sudo docker inspect -f 'docker.cpus={{.HostConfig.NanoCpus}} docker.cpuset={{.HostConfig.CpusetCpus}} docker.memory={{.HostConfig.Memory}} docker.memory_swap={{.HostConfig.MemorySwap}}' "$1" |
     tr ' ' '\n' >"$2/limits.txt" 2>/dev/null || true
@@ -300,7 +319,7 @@ build() {
       t0=$(now)
       sudo docker run -d --name "$name" --network nk-internal "${DOCKER_LIMITS[@]}" \
         "${KANIKO_OPTS[@]}" -e FF_KANIKO_STREAM_TAR_COMPRESS=1 \
-        -v "$ctx:/workspace:ro" -v "$d:/bench-out" -e KANIKO_METRICS_FILE=/bench-out/metrics.json "$KANIKO_IMAGE" \
+        -v "$ctx:/workspace:ro" -v "$(mount_dir "$d"):/bench-out" -e KANIKO_METRICS_FILE=/bench-out/metrics.json "$KANIKO_IMAGE" \
         --dockerfile=/workspace/Dockerfile --context=dir:///workspace --destination="registry:5000/$repo:latest" \
         --insecure-registry=registry:5000 --build-arg "BASE_IMAGE=$base" --digest-file=/bench-out/digest.txt \
         --verbosity=info --log-timestamp=true >/dev/null
@@ -308,6 +327,7 @@ build() {
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
+      take_results "$d"
       ;;
     buildkit)
       vol="rnk-e2e-bk-$RANDOM"; sudo docker volume create "$vol" >/dev/null
@@ -334,7 +354,7 @@ build() {
       [ "$jobs" = - ] || extra+=(--reproducible)
       t0=$(now)
       sudo docker run -d --name "$name" --network nk-internal "${DOCKER_LIMITS[@]}" \
-        -v "$BIN:/ranikust/bin/ranikust:ro" -v "$ctx:/workspace:ro" -v "$d:/rnk-out" \
+        -v "$BIN:/ranikust/bin/ranikust:ro" -v "$ctx:/workspace:ro" -v "$(mount_dir "$d"):/rnk-out" \
         -v /etc/ssl/certs:/etc/ssl/certs:ro "$EMPTY_IMAGE" \
         /ranikust/bin/ranikust build --mode=kaniko --context=/workspace --dockerfile=/workspace/Dockerfile \
         --destination="registry:5000/$repo:latest" --insecure-registry=registry:5000 \
@@ -344,7 +364,7 @@ build() {
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
-      sudo chown -R "$(id -u):$(id -g)" "$d"
+      take_results "$d"
       ;;
     rk-kaniko-host)
       local extra=()
