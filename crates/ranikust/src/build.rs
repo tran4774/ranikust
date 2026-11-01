@@ -503,6 +503,16 @@ where
             .map_err(|e| format!("--secret id={id}: {e}"))?;
         secrets.insert(id.clone(), source.clone());
     }
+    // Per-stage directories only: who reads each stage's root, and the
+    // thread that releases a root once nobody does (ADR-0061, ADR-0062).
+    let (readers, sole_reader, releaser) = if roots == Roots::StageDirs {
+        let counts = stage_readers(&graph);
+        let sole = sole_readers(&counts);
+        let readers = counts.into_iter().map(AtomicUsize::new).collect();
+        (readers, sole, Some(Releaser::start()?))
+    } else {
+        (Vec::new(), Vec::new(), None)
+    };
     Ok(Shared {
         snapshotter,
         sandbox,
@@ -529,24 +539,9 @@ where
         labels: config.labels.clone(),
         stages: Mutex::new(Vec::new()),
         images: Mutex::new(Vec::new()),
-        readers: if roots == Roots::StageDirs {
-            stage_readers(&graph)
-                .into_iter()
-                .map(AtomicUsize::new)
-                .collect()
-        } else {
-            Vec::new()
-        },
-        sole_reader: if roots == Roots::StageDirs {
-            sole_readers(&stage_readers(&graph))
-        } else {
-            Vec::new()
-        },
-        releaser: if roots == Roots::StageDirs {
-            Some(Releaser::start()?)
-        } else {
-            None
-        },
+        readers,
+        sole_reader,
+        releaser,
         graph,
     })
 }
