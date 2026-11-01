@@ -181,7 +181,8 @@ settles them (Q-024):
   `end_layer` walks and diffs, and the diff, held with the root, is the
   layer source; `rnk-builder` encodes it before the next instruction, into
   a temporary blob that is dropped on error (`LayerExporter::export`). An
-  unchanged `RUN` gives an empty layer. A stage whose layers are not needed
+  unchanged `RUN` gives an empty tar, which the builder drops: the step
+  adds only its history entry (ADR-0058). A stage whose layers are not needed
   is never walked: `end_layer` returns an empty diff that is never encoded.
   `begin_layer` and `view` do nothing but hand out the root.
 - **Release** gives the root up; emptying (`rnk_rootfs::delete_contents`
@@ -435,8 +436,9 @@ kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
   disagree on type, size, mode, owner, mtime or content hash (an inode
   number reused during the walk) are written as separate files, not
   linked. Nothing may write the root between walk and export.
-- A `RUN` that changes nothing produces an empty layer, an empty tar as
-  kaniko's `TakeSnapshotFS` writes; `WalkDiff::is_empty` tells the caller.
+- A `RUN` that changes nothing produces an empty tar; the builder adds no
+  layer for it, only its history entry with `empty_layer: true`, as kaniko
+  (ADR-0058).
 - Applying the base layer and a diff's layer rebuilds the walked tree:
   a property test on random trees, which compares content, modes and
   mtimes but not hardlink structure across layers (`ADR-0012`).

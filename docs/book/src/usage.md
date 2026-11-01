@@ -26,6 +26,11 @@ stops instead of guessing
   root can enter them. Use a symbolic mode (`--chmod=go+rX`) to keep
   directories traversable.
 
+A step that changes nothing (`RUN true`, a `WORKDIR` that exists, a
+`COPY` whose wildcard matches nothing) adds no layer, only its history
+entry, as kaniko; BuildKit adds an empty layer
+([ADR-0058](../adr/0058-a-step-that-changes-nothing-adds-no-layer.md)).
+
 ## Running it
 
 Without a subcommand, ranikust builds, as kaniko's `executor` does, so the

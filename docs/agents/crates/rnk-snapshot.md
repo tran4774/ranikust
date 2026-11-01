@@ -269,8 +269,8 @@ impl WalkDiff {
   followed or opened, a file or FIFO swapped in since the walk refused, 1
   against 8 walk workers the same digest, and the property `apply(base
   layer, diff layer) == tree` on random trees (proptest, 48 cases; 3,000
-  passed once); `tests/spans.rs` its spans. To do: an unchanged `RUN`
-  giving an empty layer in a build (task 6); a benchmark of
+  passed once); `tests/spans.rs` its spans. An unchanged step adds no
+  layer (ADR-0058, `rnk-builder` `tests/keep.rs`). To do: a benchmark of
   `--snapshot-mode=redo|time` against `full` on W1–W3: they skip content
   reads and can miss a change, so they stay only if significantly faster
   (ADR-0023 kept, ADR-0049).
@@ -365,8 +365,7 @@ impl WalkDiff {
   lookups, extraction and spans; T2 (`tests/overlay.rs`) for real mounts.
 - Left: the builder's use (task 11): lazy export, `RUN` in
   `mount_point`, `COPY` through `root`; `blocks_read` on
-  `rnk_snapshot.export`; the "unchanged `RUN` gives an empty layer" rule
-  against kaniko; T1 mounting in a user namespace (Phase 3).
+  `rnk_snapshot.export`; T1 mounting in a user namespace (Phase 3).
 - Deferred: the kaniko implementation, per-stage directories and lazy
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
 - The signature: ADR-0046 (Q-024). (Q-026, ADR-0032) Merging

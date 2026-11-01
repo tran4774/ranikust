@@ -1,12 +1,16 @@
 case_run() {
   build img >/dev/null
   expect "$(run img)" "ok" "checks inside the image"
-  # RUN true, RUN true, WORKDIR /tmp, WORKDIR /tmp: four layers, each the
-  # same empty one (Q-131) [open: Q-385].
+  # RUN true, RUN true, WORKDIR /tmp, WORKDIR /tmp change nothing: no layer,
+  # only their history entries with empty_layer (ADR-0058); every other
+  # entry has its layer.
   expect "$(config img | python3 -I -c '
 import json, sys
-d = json.load(sys.stdin)["rootfs"]["diff_ids"]
-print(len(d[-5:-1]), len(set(d[-5:-1])), d[-5] != d[-1])')" "4 1 True" "the no-op steps' layers"
+c = json.load(sys.stdin)
+h, d = c["history"], c["rootfs"]["diff_ids"]
+print([e.get("empty_layer", False) for e in h[-6:-2]],
+      sum(not e.get("empty_layer", False) for e in h) == len(d))')" \
+    "[True, True, True, True] True" "the no-op steps' history and layers"
   # Kaniko mode: a second build in the same container starts from an
   # emptied / (ADR-0052, D1).
   if declare -F rnk_run_twice >/dev/null; then

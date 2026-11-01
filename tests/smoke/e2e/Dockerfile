@@ -48,7 +48,7 @@ ENV APP_HOME=/srv/app
 WORKDIR $APP_HOME
 COPY --from=build /out/ ./
 COPY --from=other /other ./
-# Changes nothing: an empty layer (`smoke_check_empty_layer`).
+# Changes nothing: no layer, only history (`smoke_check_no_empty_layer`, ADR-0058).
 RUN true
 COPY --chmod=755 <<EOF /usr/local/bin/show
 #!/bin/sh

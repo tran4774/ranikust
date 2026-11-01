@@ -1,7 +1,7 @@
 case_run() {
   build first >/dev/null
   expect "$(run first)" "shell exec heredoc shebang " "output"
-  smoke_check_empty_layer "$(out first)/oci"
+  smoke_check_no_empty_layer "$(out first)/oci"
   # The second build sees what the first left in the cache mount; the
   # first saw at most marks of earlier runs on the same workdir.
   local before after

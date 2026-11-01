@@ -200,7 +200,9 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   - A new `ENTRYPOINT` clears an inherited `CMD`; `EXPOSE` takes `sctp`
     and expands ranges; `HEALTHCHECK --start-interval` is kept (Q-130).
   - One history entry per instruction, `empty_layer` for metadata, no
-    author (kaniko: one per layer, author `kaniko`; Q-131).
+    author (kaniko: one per layer, author `kaniko`; Q-131). A step that
+    changes nothing adds no layer, as kaniko, not BuildKit's empty one
+    (ADR-0058).
   - Empty values and non-spec fields of the base config are dropped
     (kaniko keeps the go-containerregistry fields; Q-132).
   - Loopback registries are reached over plain HTTP without a flag (Q-065).

@@ -270,7 +270,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   - kaniko mode keeps `/var/run` out of layers only where it is a mount
     point, so an image's `/var/run -> /run` link (alpine 3.12 and later)
     is kept; `--ignore-var-run` and `--whitelist-var-run` now change
-    nothing and are refused (exit 2).
+    nothing and are refused (exit 2);
+  - a step that changes nothing (`RUN true`, a `WORKDIR` that exists, a
+    `COPY` whose wildcard matches nothing) adds no layer, only its history
+    entry, as kaniko; BuildKit adds an empty layer, which repeated gave
+    images containerd refused (ADR-0058).
 
 ### Removed
 

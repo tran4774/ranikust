@@ -457,31 +457,16 @@ Entry format:
 - **Interim:** (a).
 - **Raised:** 2026-11-01
 
+## Answered
+
 ### Q-385: Does a step that changes nothing still add an empty layer?
 
-- **Blocks:** nothing; **Area:** `rnk-builder`, image history
-- **Context:** Q-131 (ADR-0032) follows BuildKit: `RUN`, `COPY`, `ADD` and
-  a `WORKDIR` other than `/` each add a layer, so a `RUN` or `WORKDIR` that
-  changes nothing adds an empty one, and two of them give the same digest
-  and diff ID twice. BuildKit does this too; containerd then refused such an
-  image on GKE ("conflicting lowerdir path", moby/buildkit#6543, open).
-  kaniko adds no layer for a step that changed no file ("No files were
-  changed, appending empty layer to config"). Found by the issue mining;
-  the quick smoke case `hygiene` pins today's behaviour.
-- **Options:** (a) keep BuildKit's empty layers; (b) a step whose diff is
-  empty adds no layer, only a history entry with `empty_layer: true`, as
-  kaniko: one lower directory and one blob reference fewer per such step,
-  and no repeated diff IDs, but images differ from BuildKit's for such
-  steps; (c) keep a step's first empty layer, drop only adjacent repeats.
-- **Recommendation:** (b): neutral for security; fewer layers for every
-  runtime that mounts the image (overlay's lower-directory limit included),
-  and it removes the repeated-diff-ID case entirely. It changes Q-131's
-  answer, so it needs the maintainer.
-- **Interim:** (a), as Q-131 says; the case `hygiene` asserts it
-  `[open: Q-385]`.
-- **Raised:** 2026-11-01
-
-## Answered
+- **Answer (2026-11-01):** "Q385 làm như kaniko": option (b). A step
+  whose layer is empty adds no layer, only its history entry with
+  `empty_layer: true`, in both modes; this changes Q-131's answer for
+  such steps. Raised from the issue mining (moby/buildkit#6543: repeated
+  empty layers refused by containerd). Recorded in
+  [ADR-0058](adr/0058-a-step-that-changes-nothing-adds-no-layer.md).
 
 ### Q-011: Who owns the workdir checks, and what counts as empty?
 
@@ -1009,6 +994,10 @@ Entry format:
   [ADR-0032](adr/0032-observable-behaviour-follows-buildkit.md).
 
 ### Q-131: Which instructions get a history entry, with which fields?
+
+- **Changed (2026-11-01):** a step that changes nothing adds no layer,
+  only its history entry with `empty_layer: true`
+  ([ADR-0058](adr/0058-a-step-that-changes-nothing-adds-no-layer.md), Q-385).
 
 - **Answer (2026-10-30):** BuildKit's: one entry per instruction,
   `empty_layer: true` for metadata instructions, a layer for `RUN`, `COPY`,
