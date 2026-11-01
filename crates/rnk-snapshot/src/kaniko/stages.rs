@@ -14,9 +14,11 @@
 //!   as for every kaniko-mode extraction (ADR-0041).
 //! - A stage built `FROM <stage>` copies the parent's directory into its
 //!   own (`rnk_rootfs::copy_filtered`, owners, modes, times, xattrs and
-//!   hardlinks kept; `copy_file_range`, which reflinks where the filesystem
-//!   can), never hardlinks to it (ADR-0017): nothing a `RUN` does reaches
-//!   the parent or a sibling.
+//!   hardlinks inside the tree kept; a reflink where the filesystem has
+//!   them, else only the data ranges, so holes stay holes), never hardlinks
+//!   to it (ADR-0017): nothing a `RUN` does reaches the parent or a
+//!   sibling. Device nodes, FIFOs and sockets are left out, as from every
+//!   kaniko-mode extraction (ADR-0041).
 //! - Nothing is kept or emptied between stages: a stage's directory stays
 //!   until it is released, and a `COPY --from` reads it as it is.
 //! - The walk and its record live with the stage and go when it is done
@@ -31,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rnk_layer::LayerDigests;
 use rnk_oci::Digest;
-use rnk_rootfs::{CopyOpts, FileType, IgnoreList, Meta, RootPath, copy_filtered, delete_contents};
+use rnk_rootfs::{CopyOpts, IgnoreList, Meta, RootPath, copy_filtered, delete_contents};
 use rnk_store::Store;
 
 use super::root::{KanikoLayer, extract_blob};
@@ -52,14 +54,10 @@ pub struct KanikoStages {
 
 #[derive(Debug)]
 struct StagesShared {
-    /// The state directory, opened once.
-    state: RootPath,
-    /// `builds/<id>/stages`, relative to the state directory.
-    stages: PathBuf,
-    /// Its host path.
+    /// `builds/<id>/stages`, made and opened once, staying on its mount.
+    stages: RootPath,
+    /// Its host path, for the sandbox.
     stages_path: PathBuf,
-    /// The state directory's host path.
-    state_path: PathBuf,
     /// What every stage root leaves out of extraction, the walk and the
     /// copies: the fixed paths and `--ignore-path` (`kaniko::ignore_list`
     /// on the stages directory, where nothing is mounted).
@@ -85,13 +83,14 @@ impl KanikoStages {
                  builds on the shared root",
             ));
         }
-        let state = RootPath::open(store.state_dir())?.stay_on_mount();
-        let stages = Path::new("builds").join(store.build_id()).join("stages");
+        let build = Path::new("builds").join(store.build_id());
+        let stages = RootPath::open(store.state_dir())?
+            .stay_on_mount()
+            .sub_root(&build)?
+            .create_sub_root("stages", PRIVATE)?;
         Ok(Self {
             shared: Arc::new(StagesShared {
-                stages_path: store.state_dir().join(&stages),
-                state_path: store.state_dir().to_owned(),
-                state,
+                stages_path: store.state_dir().join(build).join("stages"),
                 stages,
                 ignore,
                 walk,
@@ -102,30 +101,10 @@ impl KanikoStages {
 
     /// The host path of the directory every stage directory is made in,
     /// `<state>/builds/<id>/stages`.
-    #[must_use]
-    pub fn stages_dir(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn stages_dir(&self) -> &Path {
         &self.shared.stages_path
     }
-}
-
-/// `name` in `parent`, just made: opened without leaving `parent`'s mount
-/// and checked to be the directory its name shows (type, device, inode,
-/// mount), not a link or a mount put there in between.
-fn open_made(parent: &RootPath, name: &Path) -> Result<RootPath> {
-    let made = parent.statx(name)?;
-    let root = parent.sub_root(name)?.stay_on_mount();
-    let opened = root.statx("/")?;
-    if made.file_type() != FileType::Directory
-        || made.mount_root
-        || (made.dev_major, made.dev_minor, made.ino)
-            != (opened.dev_major, opened.dev_minor, opened.ino)
-        || root.mnt_id() != parent.mnt_id()
-    {
-        return Err(Error::State(
-            "a stage directory changed between its creation and its opening",
-        ));
-    }
-    Ok(root)
 }
 
 /// The owner, mode and times of `root`'s own directory.
@@ -171,34 +150,21 @@ impl Snapshotter for KanikoStages {
         };
         let span = tracing::info_span!("rnk_snapshot.prepare", layers);
         let _entered = span.enter();
-        let n = shared.next.fetch_add(1, Ordering::Relaxed);
-        let rel = shared.stages.join(n.to_string());
-        shared.state.create_dir_all(&shared.stages, PRIVATE)?;
-        shared.state.create_dir(&rel, PRIVATE)?;
-        let dir = match open_made(&shared.state, &rel) {
-            Ok(dir) => dir,
-            Err(e) => {
-                if let Err(r) = shared.state.remove_dir(&rel) {
-                    tracing::warn!("removing the stage directory {}: {r}", rel.display());
-                }
-                return Err(e);
-            }
-        };
-        let made = dir
-            .create_dir("rootfs", 0o755)
-            .map_err(Error::from)
-            .and_then(|()| open_made(&dir, Path::new("rootfs")));
-        let root = match made {
+        let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
+        // Made and opened on the same parent descriptor, checked empty and
+        // ours: a name swapped in between is refused, never followed.
+        let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+        let root = match dir.create_sub_root("rootfs", 0o755) {
             Ok(root) => root,
             Err(e) => {
-                remove_stage_dir(shared, &rel, &dir);
-                return Err(e);
+                remove_stage_dir(shared, &name, &dir);
+                return Err(e.into());
             }
         };
         let stage = KanikoStage {
             shared: Arc::clone(shared),
-            path: shared.state_path.join(&rel).join("rootfs"),
-            rel,
+            path: shared.stages_path.join(&name).join("rootfs"),
+            name,
             dir,
             root: Arc::new(root),
             needed: true,
@@ -217,12 +183,12 @@ impl Snapshotter for KanikoStages {
 }
 
 /// Deletes a stage directory whose root could not be made.
-fn remove_stage_dir(shared: &StagesShared, rel: &Path, dir: &RootPath) {
+fn remove_stage_dir(shared: &StagesShared, name: &str, dir: &RootPath) {
     let r = delete_contents(dir, &IgnoreList::new())
         .map_err(Error::from)
-        .and_then(|()| shared.state.remove_dir(rel).map_err(Error::from));
+        .and_then(|()| shared.stages.remove_dir(name).map_err(Error::from));
     if let Err(r) = r {
-        tracing::warn!("removing the stage directory {}: {r}", rel.display());
+        tracing::warn!("removing the stage directory {name}: {r}");
     }
 }
 
@@ -230,8 +196,8 @@ fn remove_stage_dir(shared: &StagesShared, rel: &Path, dir: &RootPath) {
 #[derive(Debug)]
 pub struct KanikoStage {
     shared: Arc<StagesShared>,
-    /// The stage directory, relative to the state directory.
-    rel: PathBuf,
+    /// The stage directory's name in `builds/<id>/stages`.
+    name: String,
     /// The stage directory, opened once.
     dir: RootPath,
     /// Its `rootfs/`, opened once; shared with the diffs, which read it.
@@ -263,9 +229,14 @@ impl KanikoStage {
                 }
             }
             Base::Stage(parent) => {
-                copy_filtered(&parent.root, "", root, "", &CopyOpts::default(), &|p, _| {
-                    !ignore.covers(p)
-                })?;
+                // Device nodes, FIFOs and sockets a parent's `RUN` made are
+                // left out, as from every kaniko-mode extraction and layer
+                // (ADR-0041): nothing is `mknod`ed outside a sandbox.
+                let opts = CopyOpts {
+                    skip_special: true,
+                    ..CopyOpts::default()
+                };
+                copy_filtered(&parent.root, "", root, "", &opts, &|p, _| !ignore.covers(p))?;
                 root.set_meta("", &root_meta(&parent.root)?)?;
             }
         }
@@ -277,7 +248,7 @@ impl KanikoStage {
         let span = tracing::info_span!("rnk_snapshot.release");
         let _entered = span.enter();
         delete_contents(&self.dir, &IgnoreList::new())?;
-        self.shared.state.remove_dir(&self.rel)?;
+        self.shared.stages.remove_dir(&self.name)?;
         Ok(())
     }
 

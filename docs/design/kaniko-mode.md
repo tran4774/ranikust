@@ -475,23 +475,30 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
 - **Location**: `<state>/builds/<build-id>/stages/<n>/rootfs`, in the
   build's private area of the state directory (the stage directory `0700`,
   its parents checked by the set-up, ADR-0050), never on the machine's own
-  root. Each directory is made, then opened once and checked to be the one
-  made (device, inode, mount) without leaving the state directory's mount.
+  root. Each directory is made with `mkdirat` and opened with
+  `openat(O_PATH | O_DIRECTORY | O_NOFOLLOW)` on the same parent
+  descriptor (`RootPath::create_sub_root`): it must be empty, owned by the
+  effective uid and on the parent's mount, else it is refused.
 - **Creation**: a stage on an image extracts its base layers into its
   directory (a blob of the store, or streamed and checked at its end,
   ADR-0055; a failure deletes the directory; device nodes and FIFOs left
   out, ADR-0041); `FROM scratch` and an image start at `0755` and the epoch
   unless a layer sets `./`. `FROM <stage>` copies the parent's directory
   (`rnk_rootfs::copy_filtered`: owners, modes, times, xattrs, hardlinks
-  inside the tree; `copy_file_range`, a reflink where the filesystem has
-  them) with the parent root's owner, mode and times; never a hardlink to
-  it (ADR-0017).
+  inside the tree; a file cloned with `FICLONE` where the filesystem
+  shares extents, else only its data ranges, holes kept) with the parent
+  root's owner, mode and times; never a hardlink to it (ADR-0017). Device
+  nodes, FIFOs and sockets a parent's `RUN` made are left out
+  (`CopyOpts::skip_special`, ADR-0041).
 - **Scheduling**: as overlay mode's stages: the stage graph and `--jobs`,
   no squashing, nothing kept or emptied between stages; a `COPY --from`
   reads the finished stage's directory as it is. A stage the target does
   not inherit (only read by `COPY --from`) is never walked (ADR-0038).
 - **`RUN`**: the full sandbox ([sandbox](sandbox.md)), started with
-  `Sandbox::start` as for overlay mode's mount points.
+  `Sandbox::start` as for overlay mode's mount points. The stage root is
+  reopened by path for each `RUN`, and must still be the directory the
+  stage holds (`RunSpec::expect_root`): checked in the parent after the
+  reopening and in the child after the bind.
 - **Walk**: each stage has its own walker, made at its first walk and
   dropped when the stage ran its last instruction (`StageRootfs::done`):
   its record of the root and its thread pool do not outlive the stage's
@@ -499,10 +506,12 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   `--ignore-path`; nothing is mounted in a directory ranikust made.
 - **Release**: safe deletion of the stage directory, through descriptors,
   crossing no mount; the rest goes with the build directory.
-- **Cost**: one copy of the base per stage (a full copy on ext4 and tmpfs,
+- **Cost**: one copy of the base per stage (its data on ext4 and tmpfs,
   a reflink on xfs and btrfs), all stage directories held to the end of
-  the build; experiment 12 measured W3 at 3.28 GB against 2.13 GB for
-  overlay mode.
+  the build, so the peak is about the sum of the stages' roots;
+  experiment 12 measured W3 at 3.28 GB against 2.13 GB for overlay mode.
+  Releasing a stage's directory once no later stage reads it is not done
+  yet.
 - **Placed files**: `hosts`, `resolv.conf`, stub mount points and `/dev`
   nodes change the mtime of their parent, so `/etc` would enter every layer.
   The full sandbox records the parent's mtime before placing (m0) and after

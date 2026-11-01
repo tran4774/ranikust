@@ -219,8 +219,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   stages in parallel (`--jobs`), as overlay mode does, instead of one
   stage at a time on one root (ADR-0059). A stage built `FROM` another
   gets a copy of it (a reflink where the filesystem has them, never a
-  hardlink), so each stage costs disk until the build ends. Kaniko mode
-  on `/` in a container is unchanged.
+  hardlink; device nodes, FIFOs and sockets left out), so each stage
+  costs disk until the build ends. Kaniko mode on `/` in a container is
+  unchanged.
+- Copying a file (`COPY`, `ADD`, `COPY --from`, a stage built `FROM`
+  another off `/`) clones it where the filesystem shares extents and
+  otherwise copies only its data: a sparse file keeps its holes instead
+  of being written out at its full size.
 - `COPY` and `ADD` refuse a source that expands to an empty string (it
   copied the whole context or stage), and `COPY --from=<name>` where
   `<name>` is no stage and has no tag, digest, registry or path (a

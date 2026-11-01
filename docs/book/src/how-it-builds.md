@@ -169,8 +169,10 @@ with the default security profile or in most Kubernetes pods.
   `<state>/builds/<id>/stages/<n>/rootfs`, builds independent stages in
   parallel (`--jobs`) as overlay mode does, and removes the directories
   with the build. A stage built `FROM` another gets a copy of it (a
-  reflink on xfs and btrfs, a full copy on ext4), so each stage costs
-  disk. `RUN` there gets the full sandbox, so ranikust needs mount
+  reflink on xfs and btrfs, a copy of its data on ext4; holes stay holes),
+  so each stage costs disk, and every stage's directory stays until the
+  build ends: plan for about the sum of the stages' roots. Device nodes,
+  FIFOs and sockets a `RUN` made in the parent are not copied. `RUN` there gets the full sandbox, so ranikust needs mount
   privileges there and refuses to build without them (run it in a
   container instead). The context, the outputs and secret files must not
   be inside the state directory's build area.

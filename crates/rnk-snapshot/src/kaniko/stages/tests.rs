@@ -249,3 +249,111 @@ fn an_anonymous_store_is_refused() {
     let e = KanikoStages::new(&store, IgnoreList::new(), walk).unwrap_err();
     assert!(e.to_string().contains("shared root"), "{e}");
 }
+
+#[test]
+fn a_name_planted_at_the_next_stage_directory_is_refused_never_followed() {
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    // `stages/0`, the next stage's name, as a link out and as a directory.
+    std::os::unix::fs::symlink(&outside, f.stages.stages_dir().join("0")).unwrap();
+    let e = f.stages.prepare(Base::Scratch).unwrap_err();
+    assert!(e.to_string().contains("exists"), "{e}");
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    fs::create_dir(f.stages.stages_dir().join("1")).unwrap();
+    assert!(f.stages.prepare(Base::Scratch).is_err());
+    // The next free name works.
+    let s = f.stages.prepare(Base::Scratch).unwrap();
+    assert!(s.mount_point().ends_with("stages/2/rootfs"));
+}
+
+#[test]
+fn a_child_copies_links_as_links_hardlinks_and_modes_and_leaves_nodes_out() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("secret"), b"host").unwrap();
+    let mut parent = f.stages.prepare(Base::Scratch).unwrap();
+    parent.begin_layer().unwrap();
+    let p = parent.mount_point().to_owned();
+    symlink("/", p.join("etc")).unwrap();
+    symlink("../../..", p.join("x")).unwrap();
+    symlink(&outside, p.join("abs")).unwrap();
+    put(&parent, "suid", b"s", 0o4755);
+    fs::hard_link(p.join("suid"), p.join("suid2")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        p.join("fifo"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o644),
+        0,
+    )
+    .unwrap();
+    let _sock = std::os::unix::net::UnixListener::bind(p.join("sock")).unwrap();
+    // A device node where this process may make one (root, the VM).
+    let dev = rustix::fs::mknodat(
+        rustix::fs::CWD,
+        p.join("null"),
+        rustix::fs::FileType::CharacterDevice,
+        rustix::fs::Mode::from_raw_mode(0o666),
+        rustix::fs::makedev(1, 3),
+    )
+    .is_ok();
+    parent.end_layer().unwrap();
+    parent.done();
+
+    let child = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let c = child.mount_point();
+    for (link, target) in [("etc", "/"), ("x", "../../..")] {
+        assert_eq!(fs::read_link(c.join(link)).unwrap(), Path::new(target));
+    }
+    assert_eq!(fs::read_link(c.join("abs")).unwrap(), outside);
+    assert_eq!(
+        fs::read(outside.join("secret")).unwrap(),
+        b"host",
+        "nothing written through a link"
+    );
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+    let m = fs::metadata(c.join("suid")).unwrap();
+    assert_eq!(m.permissions().mode() & 0o7777, 0o4755);
+    assert_eq!(m.ino(), fs::metadata(c.join("suid2")).unwrap().ino());
+    assert_ne!(m.ino(), fs::metadata(p.join("suid")).unwrap().ino());
+    for node in ["fifo", "sock", "null"] {
+        assert!(
+            fs::symlink_metadata(c.join(node)).is_err(),
+            "{node} left out (device made: {dev})"
+        );
+    }
+    child.release().unwrap();
+    parent.release().unwrap();
+    assert_eq!(fs::read(outside.join("secret")).unwrap(), b"host");
+}
+
+/// T2 (root, the VM): a mount below a stage root, made in this namespace
+/// after the stage, is never crossed by the release, which fails instead
+/// of deleting what the mount shows.
+#[test]
+fn release_never_crosses_a_mount_below_a_stage_root() {
+    if !rustix::process::geteuid().is_root() {
+        eprintln!("skipped: needs root (T2)");
+        return;
+    }
+    let f = Fixture::new();
+    let s = f.stages.prepare(Base::Scratch).unwrap();
+    let target = s.mount_point().join("mnt");
+    fs::create_dir(&target).unwrap();
+    let source = f.tmp.path().join("volume");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("keep"), b"kept").unwrap();
+    if rustix::mount::mount_bind(&source, &target).is_err() {
+        eprintln!("skipped: bind mount refused here");
+        return;
+    }
+    let r = s.release();
+    let still = fs::read(source.join("keep"));
+    let _ = rustix::mount::unmount(&target, rustix::mount::UnmountFlags::DETACH);
+    assert_eq!(still.unwrap(), b"kept", "the volume's file stays");
+    // The mount point keeps its directory: the release reports it.
+    assert!(r.is_err(), "a mount below the root is reported");
+}

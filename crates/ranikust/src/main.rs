@@ -11,15 +11,16 @@
 //! `version` → logs and the opt-in metrics of `rnk-metrics`, which start no
 //! thread, the report asked for with `--metrics-file` only (ADR-0037) → flag
 //! validation into a `BuildConfig` → the process set-up of `setup`: a
-//! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`
-//! (the latter a seam until task 9), the outcome, the spawner thread →
-//! hand-off. `--mode=auto` picks kaniko mode where root may not mount
-//! (ADR-0040). Kaniko mode: root required; the container check of
-//! `container` picks the root, `/` in a container, else a directory made in
-//! the state directory (ADR-0050); the state directory's checks of
-//! `statedir`; the store, the sandbox, the ignore list; then the build on
-//! the shared root
-//! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`).
+//! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`,
+//! the outcome, the spawner thread → hand-off. `--mode=auto` picks kaniko
+//! mode where root may not mount (ADR-0040). Kaniko mode: root required;
+//! the container check of `container` decides where it builds: on the
+//! shared root `/` in a container
+//! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`), else in a
+//! directory per stage made in the state directory, the stages scheduled as
+//! overlay mode's (`#per-stage-directories`, ADR-0050, ADR-0059); the state
+//! directory's checks of `statedir`; the store, the sandbox, the ignore
+//! list; then the build.
 //!
 //! The metrics report is written on every way out.
 //!
@@ -412,7 +413,7 @@ fn kaniko(
                 config,
                 root,
                 &root_path,
-                Some(state_dir.as_path()),
+                &state_dir,
                 &store,
                 metrics_file,
             )?,
@@ -428,69 +429,54 @@ fn kaniko(
         .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
 }
 
-/// Kaniko mode's snapshotter on `root`, opened once by the set-up (`/` in
-/// a container), with the ignore list from
-/// mountinfo, the flags and the state directory, and the walk's options.
-/// `state_dir` is given when it lies inside the root (`/` in a container):
-/// it goes on the ignore list. The paths given to the ignore list are
-/// physical: `/`, or the build root the set-up made, and the state
+/// Kaniko mode's snapshotter on `/` in a container, opened once by the
+/// set-up, with the ignore list from mountinfo, the flags and the state
+/// directory (inside `/`, so on the list), and the walk's options. The
+/// paths given to the ignore list are physical: `/` and the state
 /// directory, canonical and opened without following a symlink. What later
-/// stages read of earlier ones is kept in `<build_dir>/kept`, made here,
-/// private to the build; on `/` (an anonymous store) as tars in the
-/// store's anonymous files, unpacked only for a reader in the state
-/// directory (ADR-0056).
+/// stages read of earlier ones is kept as tars in the anonymous store's
+/// files, unpacked only for a reader in the state directory (ADR-0056).
 fn kaniko_snapshotter(
     config: &BuildConfig,
     root: rnk_rootfs::RootPath,
     root_path: &Path,
-    state_dir: Option<&Path>,
+    state_dir: &Path,
     store: &std::sync::Arc<rnk_store::Store>,
     metrics_file: Option<&Path>,
 ) -> Result<rnk_snapshot::Kaniko, Failure> {
     let fail = |what: &str, e: &dyn std::fmt::Display| Failure::error(format!("{what}: {e}"));
+    if !store.is_anonymous() {
+        return Err(Failure::error(
+            "kaniko mode on / keeps its state in anonymous files only (ADR-0051)",
+        ));
+    }
     let mounts =
         rnk_snapshot::kaniko::read_mountinfo().map_err(|e| fail("reading mountinfo", &e))?;
-    if let Some(state) = state_dir {
-        let state_root = rnk_rootfs::RootPath::open(state)
-            .map_err(|e| fail(&format!("opening {}", state.display()), &e))?;
-        same_mount_only_inside(&root, root_path, &state_root, state, &mounts)?;
-    }
+    let state_root = rnk_rootfs::RootPath::open(state_dir)
+        .map_err(|e| fail(&format!("opening {}", state_dir.display()), &e))?;
+    same_mount_only_inside(&root, root_path, &state_root, state_dir, &mounts)?;
     let spec = rnk_snapshot::kaniko::IgnoreSpec {
         root: root_path,
-        state_dir,
+        state_dir: Some(state_dir),
         ignore_paths: &config.ignore_paths,
     };
     let ignore = rnk_snapshot::kaniko::ignore_list(&spec, &mounts)
         .map_err(|e| fail("building the ignore list", &e))?;
     paths_outside_the_root(config, metrics_file, root_path, &ignore)?;
-    let walk = walk_options(config);
-    if store.is_anonymous() {
-        // Nothing is kept by name: the keep area is the state directory,
-        // on the ignore list, for the directories a `COPY --from` reads
-        // from while no RUN runs (ADR-0056).
-        let state = store.state_dir();
-        let kept = rnk_rootfs::RootPath::open(state)
-            .map_err(|e| fail(&format!("opening {}", state.display()), &e))?;
-        let kaniko = rnk_snapshot::Kaniko::new(root, root_path.to_owned(), ignore, walk, kept);
-        kaniko
-            .keep_in_anonymous_files(std::sync::Arc::clone(store))
-            .map_err(|e| fail("keeping stages as anonymous files", &e))?;
-        return Ok(kaniko);
-    }
-    let build_dir = store.build_dir();
-    let build = rnk_rootfs::RootPath::open(build_dir)
-        .map_err(|e| fail(&format!("opening {}", build_dir.display()), &e))?;
-    let kept = build
-        .create_dir("kept", 0o700)
-        .and_then(|()| build.sub_root("kept"))
-        .map_err(|e| fail(&format!("making {}/kept", build_dir.display()), &e))?;
-    Ok(rnk_snapshot::Kaniko::new(
+    // Nothing is kept by name: the keep area is the state directory, on
+    // the ignore list, for the directories a `COPY --from` reads from while
+    // no RUN runs (ADR-0056).
+    let kaniko = rnk_snapshot::Kaniko::new(
         root,
         root_path.to_owned(),
         ignore,
-        walk,
-        kept,
-    ))
+        walk_options(config),
+        state_root,
+    );
+    kaniko
+        .keep_in_anonymous_files(std::sync::Arc::clone(store))
+        .map_err(|e| fail("keeping stages as anonymous files", &e))?;
+    Ok(kaniko)
 }
 
 /// Kaniko mode's snapshotter off `/` (ADR-0059): a directory per stage in

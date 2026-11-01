@@ -207,6 +207,12 @@ pub struct RunSpec {
     /// kernel replaces it with the interpreter's. The full sandbox runs a
     /// `#!` heredoc from a bound directory instead (`/dev/pipes`).
     pub script: Option<std::sync::Arc<[u8]>>,
+    /// The root's identity as the caller holds it open (device, inode,
+    /// mount id; [`RunSpec::expect_root`]): `root_dir` is reopened by path
+    /// for the `RUN`, and refused when it no longer leads to that
+    /// directory, in the parent and again in the child after its bind
+    /// (device and inode). `None` checks nothing.
+    pub root_id: Option<(u32, u32, u64, u64)>,
 }
 
 impl std::fmt::Debug for RunSpec {
@@ -230,6 +236,7 @@ impl std::fmt::Debug for RunSpec {
                 "script",
                 &self.script.as_ref().map(|s| format!("<{} bytes>", s.len())),
             )
+            .field("root_id", &self.root_id)
             .finish()
     }
 }
@@ -266,7 +273,20 @@ impl RunSpec {
             stderr: Stdio::Inherit,
             isolation: Isolation::Full,
             script: None,
+            root_id: None,
         }
+    }
+
+    /// Records `root`, the caller's descriptor of the directory `root_dir`
+    /// names, as the one the `RUN` must enter ([`RunSpec::root_id`]).
+    ///
+    /// # Errors
+    ///
+    /// When `root` cannot be stat'ed.
+    pub fn expect_root(&mut self, root: &rnk_rootfs::RootPath) -> crate::Result<()> {
+        let st = root.statx("/")?;
+        self.root_id = Some((st.dev_major, st.dev_minor, st.ino, st.mnt_id));
+        Ok(())
     }
 
     /// The `USER` value to resolve: `0` when empty.

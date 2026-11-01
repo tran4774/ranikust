@@ -522,3 +522,34 @@ fn sub_root_is_its_own_root() {
     let e = f.root.sub_root("etc/passwd").unwrap_err();
     assert_eq!(errno(&e), Some(Errno::NOTDIR));
 }
+
+#[test]
+fn create_sub_root_opens_the_directory_it_made() {
+    let f = Fixture::new();
+    let sub = f.root.create_sub_root("new", 0o700).unwrap();
+    let st = sub.statx("/").unwrap();
+    assert_eq!(st.ino, fs::metadata(f.host("new")).unwrap().ino());
+    assert_eq!(st.mode & 0o777, 0o700);
+    // It refuses any name already taken: a directory, a symlink to one,
+    // a file; nothing is followed or opened.
+    fs::create_dir(f.host("dir")).unwrap();
+    symlink("dir", f.host("link")).unwrap();
+    fs::write(f.host("file"), b"").unwrap();
+    for name in ["dir", "link", "file", "new"] {
+        let e = f.root.create_sub_root(name, 0o700).unwrap_err();
+        assert_eq!(errno(&e), Some(rustix::io::Errno::EXIST), "{name}: {e}");
+    }
+    assert!(fs::read_dir(f.host("dir")).unwrap().next().is_none());
+}
+
+#[test]
+fn create_sub_root_refuses_another_mount_without_following_it() {
+    // The mount check, with the parent claiming another mount id.
+    let f = Fixture::new();
+    let other = RootPath::open(f.host(""))
+        .unwrap()
+        .stay_on_mount()
+        .with_mnt_id(u64::MAX);
+    let e = other.create_sub_root("x", 0o700).unwrap_err();
+    assert!(e.to_string().contains("another mount"), "{e}");
+}

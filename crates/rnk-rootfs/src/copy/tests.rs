@@ -97,6 +97,7 @@ fn chown_and_chmod_apply_to_every_entry_but_symlink_modes() {
     let o = CopyOpts {
         owner: Some(Owner { uid, gid }),
         chmod: Some(Chmod::Octal(0o750)),
+        skip_special: false,
     };
     copy(&s.root, "a", &d.root, "deep/er/app", &o).unwrap();
     for p in ["deep/er/app/f", "deep/er/app/ro", "deep/er/app/fifo"] {
@@ -393,6 +394,7 @@ fn device_nodes_and_foreign_owners_are_copied() {
     let o = CopyOpts {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
+        skip_special: false,
     };
     copy(&s.root, "a", &d.root, "root", &o).unwrap();
     let owned = d.root.statx("root/owned").unwrap();
@@ -410,6 +412,7 @@ fn foreign_owners_fail_cleanly_unprivileged() {
     let o = CopyOpts {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
+        skip_special: false,
     };
     let e = copy(&s.root, "a/f", &d.root, "f", &o).unwrap_err();
     assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
@@ -452,4 +455,82 @@ fn a_filter_leaves_out_refused_entries_and_whole_directories() {
     assert!(fs::symlink_metadata(d.host("app/hl")).is_err());
     assert!(fs::symlink_metadata(d.host("app/ro")).is_err());
     assert!(fs::symlink_metadata(d.host("app/fifo")).is_ok());
+}
+
+#[test]
+fn skip_special_leaves_fifos_out_and_copies_the_rest() {
+    let s = source();
+    let d = Fixture::new();
+    let o = CopyOpts {
+        skip_special: true,
+        ..CopyOpts::default()
+    };
+    copy_filtered(&s.root, "a", &d.root, "out", &o, &|_, _| true).unwrap();
+    assert!(
+        fs::symlink_metadata(d.host("out/fifo")).is_err(),
+        "no FIFO made"
+    );
+    assert_eq!(fs::read(d.host("out/f")).unwrap(), b"content");
+    assert_eq!(
+        fs::metadata(d.host("out/f")).unwrap().ino(),
+        fs::metadata(d.host("out/hl")).unwrap().ino(),
+        "hardlinks inside the tree kept"
+    );
+    // A FIFO named as the source itself is left out too.
+    copy(&s.root, "a/fifo", &d.root, "lone", &o).unwrap();
+    assert!(fs::symlink_metadata(d.host("lone")).is_err());
+    // Without the switch it is made again, never opened.
+    copy(&s.root, "a/fifo", &d.root, "made", &CopyOpts::default()).unwrap();
+    assert!(
+        fs::symlink_metadata(d.host("made"))
+            .unwrap()
+            .file_type()
+            .is_fifo()
+    );
+}
+
+#[test]
+fn a_sparse_file_is_copied_without_filling_its_holes() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    let s = Fixture::new();
+    let d = Fixture::new();
+    let big = 1_u64 << 33; // 8 GiB, nearly all holes
+    {
+        let mut f = fs::File::create(s.host("sparse")).unwrap();
+        f.write_all(b"head").unwrap();
+        f.seek(SeekFrom::Start(big / 2)).unwrap();
+        f.write_all(b"middle").unwrap();
+        f.set_len(big).unwrap();
+    }
+    copy(&s.root, "sparse", &d.root, "copy", &CopyOpts::default()).unwrap();
+    let m = fs::metadata(d.host("copy")).unwrap();
+    assert_eq!(m.len(), big, "the size kept");
+    assert!(
+        m.blocks() * 512 < 64 << 20,
+        "holes stay holes: {} bytes allocated",
+        m.blocks() * 512
+    );
+    let f = fs::File::open(d.host("copy")).unwrap();
+    let mut buf = [0_u8; 6];
+    rustix::io::pread(&f, &mut buf[..4], 0).unwrap();
+    assert_eq!(&buf[..4], b"head");
+    rustix::io::pread(&f, &mut buf, big / 2).unwrap();
+    assert_eq!(&buf, b"middle");
+    rustix::io::pread(&f, &mut buf[..4], big - 4).unwrap();
+    assert_eq!(&buf[..4], &[0; 4]);
+}
+
+#[test]
+fn an_empty_file_and_a_dense_file_copy_exactly() {
+    let s = Fixture::new();
+    let d = Fixture::new();
+    fs::write(s.host("empty"), b"").unwrap();
+    let dense: Vec<u8> = (0..300_000_u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    fs::write(s.host("dense"), &dense).unwrap();
+    copy(&s.root, "empty", &d.root, "e", &CopyOpts::default()).unwrap();
+    copy(&s.root, "dense", &d.root, "d", &CopyOpts::default()).unwrap();
+    assert_eq!(fs::read(d.host("e")).unwrap(), b"");
+    assert_eq!(fs::read(d.host("d")).unwrap(), dense);
 }

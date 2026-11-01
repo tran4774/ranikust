@@ -434,6 +434,62 @@ impl RootPath {
         .map_err(|e| io_err("mkdir", p, e))
     }
 
+    /// Creates the directory `p` (its parent must exist) and opens it as a
+    /// root: `mkdirat`, then `openat(O_PATH | O_DIRECTORY | O_NOFOLLOW)` of
+    /// the same name on the same parent descriptor, so a name swapped in
+    /// between for a symlink is never followed. The directory opened must be
+    /// empty, owned by the effective uid and on the parent's mount, not a
+    /// mount point: anything else is refused, and left where it is. The new
+    /// root stays on its mount when this one does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] with `EEXIST` when anything already has the name, or
+    /// another error of `mkdirat` or `openat`; [`Error::InvalidPath`] when
+    /// the directory opened is not one this process just made.
+    pub fn create_sub_root(&self, p: impl AsRef<Path>, mode: u32) -> Result<RootPath> {
+        let p = p.as_ref();
+        let (pfd, name) = self.parent(p)?;
+        rustix::fs::mkdirat(
+            &pfd,
+            name,
+            Mode::from_raw_mode(mode & meta::PERMISSION_BITS),
+        )
+        .map_err(|e| io_err("mkdir", p, e))?;
+        let fd = rustix::fs::openat(
+            &pfd,
+            name,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| io_err("open", p, e))?;
+        let parent = meta::statx_at(pfd.as_fd(), OsStr::new(""), p)?;
+        let st = meta::statx_at(fd.as_fd(), OsStr::new(""), p)?;
+        let refused = |reason| Error::InvalidPath {
+            path: p.to_owned(),
+            reason,
+        };
+        if st.mount_root || st.mnt_id != parent.mnt_id || (self.stay && st.mnt_id != self.mnt_id) {
+            return Err(refused("the directory just made is another mount"));
+        }
+        if st.uid != rustix::process::geteuid().as_raw() {
+            return Err(refused("the directory just made is not this process's"));
+        }
+        let readable = rustix::fs::openat(
+            &fd,
+            c".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| io_err("open", p, e))?;
+        if !crate::delete::read_names(readable.as_fd(), p)?.is_empty() {
+            return Err(refused("the directory just made is not empty"));
+        }
+        let mut sub = Self::from_dir_fd(fd, p)?;
+        sub.stay = self.stay;
+        Ok(sub)
+    }
+
     /// Creates `p` and its missing parents with `mode & !umask`, like
     /// `mkdir -p`. Existing symlinks in `p` are followed inside the root.
     ///

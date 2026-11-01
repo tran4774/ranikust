@@ -38,25 +38,38 @@ Chosen: (b). Off `/`, `rnk_snapshot::KanikoStages` gives every stage
 `<state>/builds/<id>/stages/<n>/rootfs`:
 
 - **Made** in the build's private area of the state directory (stage
-  directory `0700`, its parents checked by the set-up, ADR-0050), each
-  opened once and checked to be the directory just made (device, inode,
-  mount) without leaving the state directory's mount. A stage on an image
+  directory `0700`, its parents checked by the set-up, ADR-0050): each
+  directory is made with `mkdirat` and opened with
+  `openat(O_PATH | O_DIRECTORY | O_NOFOLLOW)` on the same parent
+  descriptor (`RootPath::create_sub_root`), and must be empty, owned by
+  the effective uid and on the parent's mount; a name taken in between is
+  refused, never followed. A stage on an image
   extracts its base layers into it (a blob, or streamed and checked at its
   end, ADR-0055; a failure deletes the directory; device nodes and FIFOs
   left out, ADR-0041); `FROM scratch` and a stage on an image start at
   `0755` and the epoch unless a layer sets `./`, as overlay mode's roots.
 - **`FROM <stage>`** copies the parent's directory (`copy_filtered`:
-  owners, modes, times, xattrs and hardlinks inside the tree kept;
-  `copy_file_range`, a reflink where the filesystem has them), never a
-  hardlink to it (ADR-0017), and gives the copy the parent root's owner,
-  mode and times. Nothing a `RUN` does reaches the parent or a sibling.
+  owners, modes, times, xattrs and hardlinks inside the tree kept), never
+  a hardlink to it (ADR-0017), and gives the copy the parent root's owner,
+  mode and times. A file is cloned (`FICLONE`) where the filesystem shares
+  extents, else only its data ranges are copied (`SEEK_DATA`/`SEEK_HOLE`),
+  so a sparse file costs its data, not its size. Device nodes, FIFOs and
+  sockets a parent's `RUN` made are left out (`CopyOpts::skip_special`),
+  as from every kaniko-mode extraction and layer (ADR-0041): nothing is
+  `mknod`ed outside a sandbox. Nothing a `RUN` does reaches the parent or
+  a sibling.
 - **Scheduled** as overlay mode's stages: the stage graph, `--jobs`, no
   squashing, nothing kept or emptied between stages; a `COPY --from` reads
   the finished stage's directory as it is. The lazy-snapshot rule is the
   one of overlay mode's demand (ADR-0038): a stage the target does not
   inherit is never walked.
 - **`RUN`** gets the full sandbox (`Sandbox::start`, as overlay mode's
-  mount points in the state directory).
+  mount points in the state directory). The sandbox reopens the stage
+  root by path; the builder passes the root it holds
+  (`RunSpec::expect_root`: device, inode, mount id), checked after the
+  reopening in the parent and again in the child after the root's bind
+  (device and inode), so a path swapped for another directory fails the
+  `RUN`. Overlay mode passes it too.
 - **The walk** belongs to the stage: its walker (and thread pool) is made
   at the first walk and dropped when the stage ran its last instruction
   (`StageRootfs::done`, a new default no-op method of ADR-0046's trait,
@@ -83,9 +96,11 @@ directories meet the fence is task 10's.
   mistake to delete the wrong thing.
 - Good, because a stage's walk record and thread pool go when it is done.
 - Bad, because each stage costs a copy of its base (ADR-0017's cost: on
-  ext4 and tmpfs a full copy, on xfs and btrfs a reflink), and the stages'
-  directories stay until the build ends, so peak disk grows with the
-  number of stages; the shared root held one root at a time.
+  ext4 and tmpfs a copy of its data, on xfs and btrfs a reflink), and the
+  stages' directories stay until the build ends, so peak disk is about
+  the sum of the stages' roots; the shared root held one root at a time.
+  Releasing a stage's directory once no later stage reads it is left for
+  later.
 - Bad, because parallel stages each walk with their own pool: CPU and
   memory scale with `--jobs`.
 - Neutral, because `Kaniko` (the shared root) is now used only on `/`; its

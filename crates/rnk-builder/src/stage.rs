@@ -739,11 +739,17 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             "{} # buildkit",
             history::run(&argv, self.scope.args(), self.scope.env())
         );
-        self.layer(&text, move |b, _root| {
+        self.layer(&text, move |b, root| {
             let mut spec = RunSpec::new(
                 b.root.mount_point(),
                 argv.into_iter().map(OsString::from).collect(),
             );
+            // The path is reopened by the sandbox: it must still be the
+            // root this stage holds.
+            if let Err(e) = spec.expect_root(root) {
+                mounts.finish();
+                return Err(e.into());
+            }
             spec.isolation = b.cx.isolation;
             spec.script = script;
             spec.env = env;
@@ -906,6 +912,7 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
             let opts = CopyOpts {
                 owner,
                 chmod: chmod.clone(),
+                skip_special: false,
             };
             // An existing directory, or a symlink to one inside the root, as
             // BuildKit follows it: the copy goes inside.
