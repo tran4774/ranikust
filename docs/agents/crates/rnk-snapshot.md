@@ -231,7 +231,21 @@ impl WalkDiff {
   the `/` layout, keep area inside the root under an ignored `state/`
   (left out of `Keep::All`; not ignored, the copy is refused as a
   destination inside its source, never a recursion); a keep-area name
-  taken by a link never followed.
+  taken by a link never followed. Red team of the marker of a build on
+  `/` (ADR-0052 D1): `/ranikust` planted as a file, a FIFO, a socket, a
+  dangling link, a link out of the root, to the state directory, to `/`
+  or to itself refused before `/` changes, nothing opened or written; a
+  `.built` planted as a FIFO, a socket, a directory, a link out, a
+  dangling link or a hardlink to a file outside counts as a marker and is
+  never opened; `/ranikust` swapped with links (into `/` and out of the
+  root) while `mark_slash` runs never marks or chmods their targets; two
+  builds on hostile bases with the real ignore list (mountinfo of a
+  container): the second empties `/` but never `/.dockerenv`,
+  `/run/.containerenv`, a secret below `/run` reached through `/var/run`,
+  a volume, `/etc/resolv.conf`, the state directory or the marker. ADR-0058:
+  steps that only delete, replace a directory by an empty one, or change a
+  mode or an mtime never encode to the empty tar's diff ID; a step that
+  changes nothing, or undoes what it did, does.
 - **T0** red team of the keep area (`tests/keep.rs`), a host file beside
   the root and an ignored `state/` in it, neither touched nor copied:
   `COPY --from` image layers with `..` and absolute names, files,
