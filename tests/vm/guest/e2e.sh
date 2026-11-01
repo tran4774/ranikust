@@ -353,22 +353,28 @@ build() {
       sudo docker volume rm -f "$vol" >/dev/null
       ;;
     rk-kaniko)
-      # A default `docker run`: root, Docker's capabilities, no option. The
-      # results go to /rnk-out, not /out, which W3's Dockerfile writes: a
-      # mount point is never part of a layer in kaniko mode, as in kaniko.
+      # A default `docker run`: root, Docker's capabilities, no option, and
+      # no `--mode`: `--mode=auto` must pick kaniko mode there, as kaniko's
+      # users run it (criterion 8). The results go to /rnk-out, not /out,
+      # which W3's Dockerfile writes: a mount point is never part of a
+      # layer in kaniko mode, as in kaniko.
       local extra=()
       [ "$jobs" = - ] || extra+=(--reproducible)
       t0=$(now)
       sudo docker run -d --name "$name" --network nk-internal "${DOCKER_LIMITS[@]}" \
         -v "$BIN:/ranikust/bin/ranikust:ro" -v "$ctx:/workspace:ro" -v "$(mount_dir "$d"):/rnk-out" \
         -v /etc/ssl/certs:/etc/ssl/certs:ro "$EMPTY_IMAGE" \
-        /ranikust/bin/ranikust build --mode=kaniko --context=/workspace --dockerfile=/workspace/Dockerfile \
+        /ranikust/bin/ranikust build --context=/workspace --dockerfile=/workspace/Dockerfile \
         --destination="registry:5000/$repo:latest" --insecure-registry=registry:5000 \
         --build-arg="BASE_IMAGE=$base" --metrics-file=/rnk-out/metrics.json --digest-file=/rnk-out/digest.txt \
         "${extra[@]}" >/dev/null
       container_limits "$name" "$d"
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
+      if [ "$rc" = 0 ] && ! grep -q 'kaniko mode, because root may not mount here' "$d/build.log"; then
+        echo "error: rk-kaniko: --mode=auto did not pick kaniko mode in a default docker run" >&2
+        rc=1
+      fi
       sudo docker rm -f "$name" >/dev/null
       take_results "$d" "$name"
       ;;

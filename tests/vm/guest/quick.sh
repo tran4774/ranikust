@@ -43,11 +43,37 @@ rnk_run() {
   return "$rc"
 }
 
+# ADR-0054: kaniko mode refuses a container's `/` where root may mount
+# (`--privileged`) or where /proc/sys is writable
+# (`systempaths=unconfined`), before anything is pulled. Run with the
+# kaniko-mode suite, unless the cases named leave kaniko-flags out.
+adr0054_refusals() {
+  local ctx="$W/adr0054" out
+  sudo mkdir -p "$ctx" && printf 'FROM scratch\n' | sudo tee "$ctx/Dockerfile" >/dev/null
+  for opt in "--privileged:where root may mount" \
+    "--security-opt=systempaths=unconfined:writable /proc/sys"; do
+    local flag="${opt%%:*}" want="${opt#*:}" rc=0
+    out="$(sudo docker run --rm "$flag" -v "$RNK:/ranikust/bin/ranikust:ro" \
+      -v "$ctx:/ranikust/ctx:ro" "$BASE" /ranikust/bin/ranikust --mode=kaniko \
+      --context /ranikust/ctx --no-push 2>&1)" || rc=$?
+    if [ "$rc" != 1 ] || ! grep -q -- "$want" <<<"$out"; then
+      echo "error: kaniko mode in a docker run $flag: exit $rc, want 1 and \"$want\"" >&2
+      echo "$out" >&2
+      return 1
+    fi
+    echo "adr-0054: docker run $flag refused (exit 1)"
+  done
+}
+
 # A plain command: under `||` errexit would be off inside the cases.
 set +e
 # shellcheck disable=SC2086
 smoke_cases ${RANIKUST_QUICK_CASES:-}
 rc=$?
+if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
+  [[ -z "${RANIKUST_QUICK_CASES:-}" || " ${RANIKUST_QUICK_CASES} " == *" kaniko-flags "* ]]; then
+  adr0054_refusals || rc=1
+fi
 set -e
 
 sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep '^localhost/rnk-case:' |
