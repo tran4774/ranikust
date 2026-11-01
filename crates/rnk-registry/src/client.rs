@@ -309,7 +309,13 @@ fn is_refusal(e: &Error) -> bool {
                 || message.contains("Unauthorized")
                 || message.contains("Denied")
         }
-        _ => false,
+        Error::Tls(_)
+        | Error::Credentials { .. }
+        | Error::Reference { .. }
+        | Error::DigestMismatch { .. }
+        | Error::SizeMismatch { .. }
+        | Error::Manifest { .. }
+        | Error::Io { .. } => false,
     }
 }
 
