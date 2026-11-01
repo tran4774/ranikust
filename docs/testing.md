@@ -397,7 +397,7 @@ depend on `--jobs` in either mode (raw digests differ only by the `du`
 files). The guest ended with 6.3 GB of its disk used.
 
 After the hand-over and the early release (ADR-0061;
-2026-11-01, `RANIKUST_E2E_QUICK=1`, same VM, one round): W1 kaniko
+2026-11-01, W1 and W3 of the ultra benchmark, same VM, one round): W1 kaniko
 26.2 s, overlay mode 20.8 s, `rk-kaniko` 22.3 s, `rk-kaniko-host` 22.1 s
 (31.4 s before); W3 kaniko 30.3 s, overlay mode 15.3/15.3 s,
 `rk-kaniko` 21.5 s, `rk-kaniko-host` 15.6/15.8 s. On W1 the
