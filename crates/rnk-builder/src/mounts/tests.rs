@@ -464,7 +464,10 @@ fn red_team_direct_secret_mount_spellings() {
             .err()
             .unwrap_or_else(|| panic!("{spec}: accepted under Direct"));
         let e = e.to_string();
-        assert!(!e.contains("read the secret") && !e.contains("open the secret"), "{spec}: {e}");
+        assert!(
+            !e.contains("read the secret") && !e.contains("open the secret"),
+            "{spec}: {e}"
+        );
     }
     // A malformed mount never reaches `direct_mounts`: the parse refuses it.
     for spec in ["type=secret,env=TOK", "type=secret,id=tok,src=tok,env=T"] {
