@@ -53,10 +53,18 @@ pub enum Error {
     #[error("the build context is empty")]
     EmptySpec,
     /// `--context` has a prefix kaniko does not know either.
-    #[error("unknown build context prefix {prefix:?}; use dir://, tar://, git:// or https://")]
+    #[error(
+        "unknown build context prefix {prefix:?}; use a plain path, tar://, git:// or https://"
+    )]
     UnknownPrefix {
         /// The prefix, with `://`.
         prefix: String,
+    },
+    /// kaniko's `dir://` form, which ranikust dropped (ADR-0053).
+    #[error("the dir:// context form is not supported; pass the plain path {path:?}")]
+    DirScheme {
+        /// The path after `dir://`.
+        path: String,
     },
     /// A context kind ranikust does not support (yet).
     #[error("{kind} build contexts are not supported: {reason}")]

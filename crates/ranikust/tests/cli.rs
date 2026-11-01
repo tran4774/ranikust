@@ -217,6 +217,27 @@ fn refused_kaniko_flags_exit_two_with_reasons() {
     assert!(err.contains("use --state-dir"), "{err}");
 }
 
+/// ADR-0053, ADR-0054: `dir://` and a local `--context-sub-path` exit 2,
+/// naming what to pass instead.
+#[test]
+fn dir_scheme_and_local_sub_path_exit_two() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(tmp.path(), &["--no-push", "--context=dir:///ctx"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--context=/ctx"), "{}", stderr(&out));
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context=/ctx", "--context-sub-path=app"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--context=/ctx/app"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 #[test]
 fn unknown_flags_are_clap_errors() {
     let tmp = tempfile::tempdir().expect("tempdir");

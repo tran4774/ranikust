@@ -12,7 +12,8 @@ use crate::{Error, Result};
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ContextSpec {
-    /// A local directory: a bare path or `dir://<path>`.
+    /// A local directory, given as a plain path (kaniko's `dir://<path>`
+    /// is refused, ADR-0053).
     Dir(PathBuf),
     /// `tar://<path>` or `tar://stdin`: a gzip-compressed tar. Phase 5.
     Tar(String),
@@ -24,13 +25,15 @@ pub enum ContextSpec {
 
 /// Parses `--context`.
 ///
-/// Recognizes kaniko's prefixes. Cloud object stores (`gs://`, `s3://`)
+/// Recognizes kaniko's prefixes except `dir://`, which is dropped: a local
+/// directory is a plain path (ADR-0053). Cloud object stores (`gs://`, `s3://`)
 /// are out of scope (ADR-0008), and an Azure Blob URL is an ordinary
 /// `https://` context here.
 ///
 /// # Errors
 ///
-/// [`Error::EmptySpec`] for an empty argument, [`Error::Unsupported`] for
+/// [`Error::EmptySpec`] for an empty argument, [`Error::DirScheme`] for
+/// `dir://`, [`Error::Unsupported`] for
 /// `gs://` and `s3://`, [`Error::UnknownPrefix`] for any other prefix.
 pub fn parse_spec(arg: &str) -> Result<ContextSpec> {
     if arg.is_empty() {
@@ -40,7 +43,9 @@ pub fn parse_spec(arg: &str) -> Result<ContextSpec> {
         return Ok(ContextSpec::Dir(PathBuf::from(arg)));
     };
     match prefix {
-        "dir" => Ok(ContextSpec::Dir(PathBuf::from(rest))),
+        "dir" => Err(Error::DirScheme {
+            path: rest.to_owned(),
+        }),
         "tar" => Ok(ContextSpec::Tar(rest.to_owned())),
         "git" => Ok(ContextSpec::Git(rest.to_owned())),
         // kaniko keeps the scheme in the URL it fetches.
@@ -68,8 +73,6 @@ mod tests {
         let dir = |p: &str| ContextSpec::Dir(PathBuf::from(p));
         assert_eq!(parsed("."), dir("."));
         assert_eq!(parsed("/workspace/app"), dir("/workspace/app"));
-        assert_eq!(parsed("dir:///workspace"), dir("/workspace"));
-        assert_eq!(parsed("dir://rel/dir"), dir("rel/dir"));
         assert_eq!(parsed("tar://stdin"), ContextSpec::Tar("stdin".into()));
         assert_eq!(
             parsed("git://github.com/o/r.git#refs/heads/main"),
@@ -84,6 +87,12 @@ mod tests {
     #[test]
     fn refused_prefixes() {
         assert!(matches!(parse_spec(""), Err(Error::EmptySpec)));
+        match parse_spec("dir:///workspace") {
+            Err(e @ Error::DirScheme { .. }) => {
+                assert!(e.to_string().contains("/workspace"), "{e}");
+            }
+            other => panic!("{other:?}"),
+        }
         assert!(matches!(
             parse_spec("gs://bucket/ctx.tar.gz"),
             Err(Error::Unsupported { .. })

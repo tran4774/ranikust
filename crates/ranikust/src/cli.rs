@@ -68,8 +68,8 @@ impl Cli {
 /// own flags are in their own group.
 #[derive(Clone, Debug, Default, Args)]
 pub(crate) struct BuildArgs {
-    /// Build context: a local directory, with or without `dir://` (git, tar
-    /// and HTTPS contexts come in Phase 5).
+    /// Build context: a local directory, as a plain path (git, tar and
+    /// HTTPS contexts come in Phase 5; kaniko's `dir://` form is refused).
     #[arg(
         short = 'c',
         long,
@@ -79,8 +79,9 @@ pub(crate) struct BuildArgs {
     )]
     pub(crate) context: String,
 
-    /// A sub-directory of a `dir://` context to build from, as kaniko;
-    /// ignored, with a warning, for a plain path, which kaniko ignores too.
+    /// A sub-directory of a fetched context (git, tar, HTTPS: Phase 5) to
+    /// build from; refused with a local directory: pass the sub-directory
+    /// itself as `--context`.
     #[arg(long, value_name = "DIR", help_heading = "Input")]
     pub(crate) context_sub_path: Option<String>,
 

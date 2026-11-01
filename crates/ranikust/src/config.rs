@@ -530,49 +530,34 @@ pub(crate) fn name<T: ValueEnum>(value: T) -> String {
         .unwrap_or_default()
 }
 
-/// The local directory of `--context`: `dir://` stripped; other schemes are
-/// refused with the phase that brings them.
-/// The context directory with kaniko's `--context-sub-path` applied: joined
-/// onto a `dir://` context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go:599-631`,
-/// `pkg/buildcontext/dir.go:25`), staying inside it, so an absolute path
-/// or `..` is refused. kaniko returns before the join for a plain path, so
-/// there it is ignored ([`context_sub_path_ignored`]); other schemes are
-/// refused with their phase by [`context_dir`].
+/// The local context directory. `--context-sub-path` applies only to
+/// fetched contexts (git, tar, HTTPS: Phase 5), as in BuildKit
+/// (`frontend/dockerui/context.go:169-173`), so with a local directory it
+/// is refused rather than ignored (ADR-0053, ADR-0054).
 fn context_with_sub_path(args: &BuildArgs) -> Result<PathBuf, Invalid> {
     let dir = context_dir(&args.context)?;
-    let Some(sub) = args.context_sub_path.as_deref() else {
-        return Ok(dir);
-    };
-    if !args.context.starts_with("dir://") {
-        return Ok(dir);
-    }
-    let sub_path = Path::new(sub);
-    let inside = sub_path.components().all(|c| {
-        matches!(
-            c,
-            std::path::Component::Normal(_) | std::path::Component::CurDir
-        )
-    });
-    if !inside {
+    if let Some(sub) = args.context_sub_path.as_deref() {
         return Err(Invalid(format!(
-            "--context-sub-path={sub}: must be a relative path inside the context, without .."
+            "--context-sub-path={sub}: applies only to fetched contexts (git, tar, HTTPS), \
+             not to a local directory; pass the sub-directory itself as --context={} \
+             (ADR-0054)",
+            dir.join(sub).display()
         )));
     }
-    Ok(dir.join(sub_path))
-}
-
-/// Whether `--context-sub-path` is given for a plain local path, where
-/// kaniko ignores it: the caller warns.
-pub(crate) fn context_sub_path_ignored(args: &BuildArgs) -> bool {
-    args.context_sub_path.is_some() && !args.context.contains("://")
+    Ok(dir)
 }
 
 fn context_dir(context: &str) -> Result<PathBuf, Invalid> {
     if context.is_empty() {
         return Err(Invalid("--context is empty".to_owned()));
     }
+    // kaniko's `dir://` form is dropped: a local context is a plain path
+    // (ADR-0053, ADR-0054).
     if let Some(dir) = context.strip_prefix("dir://") {
-        return Ok(PathBuf::from(dir));
+        return Err(Invalid(format!(
+            "--context={context}: the dir:// form is not supported; pass the plain path \
+             --context={dir} (ADR-0053)"
+        )));
     }
     for (scheme, why) in [
         ("git://", "git contexts come in Phase 5"),

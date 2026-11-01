@@ -32,7 +32,7 @@ Phase 1 (`[design]` unless marked):
 
 ```rust
 pub enum ContextSpec { Dir(PathBuf), Tar(String), Git(String), Https(String) }  // kaniko prefixes; #[non_exhaustive]
-pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // tar://, git://, https://; bare path = dir; gs://, s3:// refused; `dir://` dropped and refused (ADR-0053, ADR-0054, code pending: task 7 branch)
+pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // tar://, git://, https://; bare path = dir; gs://, s3:// refused; `dir://` refused with Error::DirScheme, naming the plain path (ADR-0053, ADR-0054)
 pub trait ContextSource {                             // [decided] open trait, ADR-0008
     fn open(&self) -> Result<Context>;                // sync for now [open: Q-027]
 }
