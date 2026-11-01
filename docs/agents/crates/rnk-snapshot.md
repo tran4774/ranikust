@@ -16,7 +16,8 @@ metadata on the upper root, whiteouts before hardlinks; delete via `rnk-rootfs`.
   `layers/` (`rnk-layer` decoder → `rnk-rootfs::extract`), the exporter that
   feeds `rnk-layer`'s writer, and the overlay and `lowerdir+` probes.
 - kaniko: parallel walk and hash with a stat cache, `LayeredMap`, path
-  resolution, filesystem deletion (what and when), per-stage directories.
+  resolution, filesystem deletion (what and when), the shared root
+  (`Kaniko`) and per-stage directories (`KanikoStages`, ADR-0059).
 
 ## Must not
 
@@ -40,6 +41,7 @@ pub trait StageRootfs {                            // ADR-0046
     fn end_layer(&mut self) -> Result<Self::Diff>; // overlay: unmount, diff-k the top lower; kaniko: walk + diff
     fn view(&mut self) -> Result<&RootPath>;       // read-only between layers (USER lookup, COPY --from)
     fn keep(&mut self, what: &Keep) -> Result<()> { Ok(()) } // kaniko: copy out what later stages read, give the root up
+    fn done(&mut self) {}                          // last instruction ran; KanikoStage drops its walker (ADR-0059)
     fn release(self) -> Result<()>;                // unmount, delete the stage directory, diffs included
 }
 pub enum Keep { All, Paths(Vec<PathBuf>) }         // Paths: physical (no link before the last name, no ..),
@@ -55,7 +57,17 @@ pub trait Snapshotter {                            // ADR-0046
 pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction (rnk-builder: from the registry)
 impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
+// kaniko mode off `/` (task 9, src/kaniko/stages.rs, ADR-0059): a directory per stage
+impl KanikoStages { pub fn new(store: &Store, ignore: IgnoreList, walk: WalkOptions) -> Result<Self>; // refuses an anonymous store
+    pub fn stages_dir(&self) -> &Path; }           // <state>/builds/<id>/stages
+// Snapshotter<Root = KanikoStage, Layer = KanikoLayer>: prepare makes stages/<n>/rootfs (stage dir 0700),
+//   each opened once and checked to be the one made (dev, ino, mount); Image: extract_blob each layer
+//   (a failure deletes the directory); Stage(p): copy_filtered p's root (copy_file_range, never
+//   hardlinks, ADR-0017) with p's root owner, mode and times; walks only when layers are needed; the
+//   walker dropped at done(); view = the root; release deletes the stage directory.
+// KanikoStageDiff: the walk's diff with the stage root, ExportLayer.
 // kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
+// (the binary uses it on `/` only since ADR-0059)
 impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions,
         kept: RootPath) -> Self;                   // kept: <state>/builds/<id>/kept, the keep area
 // Kaniko::keep_in_anonymous_files(&self, store: Arc<Store>) -> Result<()>: on `/` (ADR-0056)
@@ -223,6 +235,13 @@ impl WalkDiff {
 
 ## Tests
 
+- **T0:** kaniko per-stage directories (`src/kaniko/stages/tests.rs`,
+  ADR-0059): a private directory per stage (`0700`, the root `0755`),
+  `FROM <stage>` copied with no inode shared with the parent and no change
+  reaching it, a parent with a layer open refused, a layer that fails its
+  diff ID check leaves no directory, an unneeded stage never walked, a
+  done stage drops its walk and stays readable, stages side by side, an
+  anonymous store refused.
 - **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
   read after the root is reused, only the paths asked for, deleted on
   release, a second keep refused once the root was reused; a stage `FROM`

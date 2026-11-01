@@ -16,7 +16,7 @@ log writer) before `unshare`, the probes and the state directory's checks.
   when permitted, check the state directory (`statedir`, ADR-0050), run
   the probes of `rnk-sandbox` and `rnk-snapshot` in order and pick the
   outcome; in kaniko mode pick the root (`/` in a container, `flock`ed;
-  else `<state>/builds/<id>/rootfs`); then hand off to the libraries. `prune` calls `rnk-store`.
+  else a directory per stage, `rnk_snapshot::KanikoStages`, ADR-0059); then hand off to the libraries. `prune` calls `rnk-store`.
 - `BuildConfig`, the validated settings of a build: in the binary
   (`src/config.rs`) until a design assigns it to a library.
 
@@ -71,7 +71,7 @@ enum Outcome { OverlayRoot { sandbox: rnk_sandbox::Caps, overlay: OverlayCaps } 
 struct Refusal { reason: String, guidance: &'static str }        // what failed, what to do
 struct Setup { outcome: Outcome, state_dir: PathBuf, store: Arc<rnk_store::Store>, sandbox: rnk_sandbox::Sandbox }  // the hand-off
 fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Refusal>;  // state dir (refused on overlayfs) → store → probes → outcome → spawner
-fn set_up_kaniko(state_dir, on_slash, can_mount, nofile) -> Result<KanikoSetup, Refusal>; // root required; store; `/` locked, or builds/<id>/rootfs made; sandbox
+fn set_up_kaniko(state_dir, on_slash, can_mount, nofile) -> Result<KanikoSetup, Refusal>; // root required; store; `/` locked (KanikoSetup::root), or no root: stage directories (ADR-0059); sandbox
 fn statedir::prepare(state_dir: &Path) -> Result<(), Refused>; // ADR-0050: parents by descriptor, created/made 0700, owner euid, no g/o write
 fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal>; // rnk_snapshot::probe in builds/<id>/overlay-probe
 struct PushArgs { path: PathBuf, destination: Vec<String> } // an OCI layout only (ADR-0052)
@@ -101,11 +101,11 @@ sets the soft `RLIMIT_CORE` to 0 first of all; credentials then go only
 over verified TLS, `verified_credentials_only`; where root may mount, or
 `/proc/sys` is writable (`exposure::proc_sys_read_only`), `/` is refused,
 ADR-0054), on `/` a `flock` on `/` itself (one build per container,
-taken first), else, where root may mount (refused otherwise, Q-330),
-`builds/<id>/rootfs` made through the state directory's
-`RootPath`; on that root where the namespace could be entered, the
-sandbox probe and `RUN` in the full sandbox, else `Isolation::Direct`
-(`Sandbox::start_with_root` with the root's descriptor); then the ignore
+taken first), else, where root may mount (refused otherwise, Q-330), no
+root: a directory per stage made by `rnk_snapshot::KanikoStages`
+(ADR-0059), the sandbox probe and `RUN` in the full sandbox
+(`Sandbox::start`, as overlay mode), `--jobs` honoured; on `/`,
+`Isolation::Direct` (`Sandbox::start_direct`); then the ignore
 list built (`kaniko_snapshotter`: mountinfo, the
 flags, the state directory when inside the root (`/`), physical paths; a
 state directory that is a directory of `/` reached through another mount

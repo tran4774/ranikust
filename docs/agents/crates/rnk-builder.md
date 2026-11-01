@@ -113,7 +113,8 @@ pub const MAX_SECRET_SIZE: u64;                          // 500 KiB, as BuildKit
 pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
 pub struct StageInput<'a, R, L> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R, L>,
     pub stages: BTreeMap<usize, &StageDone<R>>, pub images: BTreeMap<String, &ImageSource<R, L>>, pub demand: LayerDemand }
-// build_stage calls root.set_layers_needed(demand.needed()) once after prepare (ADR-0046)
+// build_stage calls root.set_layers_needed(demand.needed()) once after prepare (ADR-0046),
+// and root.done() after the last instruction, before the root goes into StageDone (ADR-0059)
 pub enum StageBase<'a, R, L> { Scratch, Image(&'a PulledImage<L>), Stage(&'a StageDone<R>) }
 pub struct StageDone<R> { pub root: SourceRoot<R>, pub scope: StageScope, pub config: ImageConfig,
     pub layers: Vec<BlobLayer>, pub complete: bool, pub base_format: Option<ImageFormat> }

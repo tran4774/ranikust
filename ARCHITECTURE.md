@@ -294,8 +294,8 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
    rootless, kaniko, or refuse; `--mode=overlay|kaniko` skips the choice but
    not the checks ([modes-and-detection](docs/design/modes-and-detection.md)).
    In kaniko mode, pick the root: `/` in a container (`flock` on `/`
-   itself), else `<state>/builds/<id>/rootfs`, where root must be able to
-   mount (Q-330).
+   itself), else a directory per stage, `<state>/builds/<id>/stages/<n>/rootfs`
+   (ADR-0059), where root must be able to mount (Q-330).
 3. **Front end**: read the context and `.dockerignore` (`rnk-context`,
    `rnk-ignore`); parse the Dockerfile into a stage graph and expand
    build arguments (`rnk-dockerfile`).
@@ -331,7 +331,7 @@ in I/O.
 |---|---|---|
 | Needs | mount privileges (root, or a usable user namespace) | root |
 | State directory | `/var/lib/ranikust` by default; a volume in a container | `/var/lib/ranikust` by default, on the ignore list when inside the root |
-| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container, else `<state>/builds/<id>/rootfs`; per-stage directories when it can mount, or with `--parallel-stages` |
+| Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container; else one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059); `--parallel-stages` (task 10) |
 | Root lock | none: builds share the state directory | `/` is `flock`ed, one build per container |
 | Diff | the upper directory, plus a walk of the diff only | parallel walk and hash with a stat cache |
 | Stages | parallel (DAG) | sequential by default |
