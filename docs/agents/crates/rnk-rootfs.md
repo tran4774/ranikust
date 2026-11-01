@@ -63,7 +63,7 @@ pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) 
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<Chmod>, pub skip_special: bool } // built: None keeps the source's; skip_special leaves devices, FIFOs, sockets out (ADR-0059)
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built
 pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // built: deletes what `remove` names (each with what is below), every touched directory's times set back: copy_filtered's entries (directory sizes aside); overlay's own xattrs (pub fn is_overlay_own, the copy's predicate) removed from every kept entry and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root (exact: every name counted before it is deleted, in any walk order)
-pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component); covers (looks only at prefixes as long as the longest literal entry: a path's length, not its depth times its length), has_below, contains (exact literal)
+pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, matched in O(tokens × characters) by the iterative wildcard algorithm: never exponential in the stars); covers (looks only at prefixes as long as the longest literal entry: a path's length, not its depth times its length), has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
 pub fn probe_support() -> Result<(), Unsupported>;             // built: start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
@@ -149,13 +149,14 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   a thread exchanging a walked directory with a symlink out never gets
   anything outside deleted or retimed; a directory of 100,000 entries
   pruned to what a filtered copy gives, its times kept.
-  Ignored red-team finding (criterion 8, resources):
+  Red-team finding fixed (criterion 8, resources):
   `red_team_finding_a_glob_with_stars_against_a_long_name_takes_linear_time`:
-  the ignore list's glob matcher backtracks over every split of a name
-  among the stars, so `/var/cache/*a*a*a*a*b` against one 255-character
-  name takes 14 s on a release build (Go's `filepath.Match` never
-  backtracks across stars); the walk, extraction and deletion call it on
-  every name an image brings.
+  the glob matcher backtracked over every split of a name among the stars
+  (`/var/cache/*a*a*a*a*b` against one 255-character name: 14 s on a
+  release build); it now widens only the last star, 100 rounds of 4 and
+  10 stars against 255 characters well under 0.5 s in a debug build.
+  `the_linear_matcher_agrees_with_every_split` (proptest, 4000 cases)
+  checks it against the old matcher, kept as the oracle.
 - **T1** (written, `#[ignore]`): foreign owners and setuid in `extract`.
 - **T2** (VM only, `just test-vm unit`): exp-09's D2,
   `mounts_inside_the_root_survive`: a bind mount of a directory on the

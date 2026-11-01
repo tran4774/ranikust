@@ -416,7 +416,6 @@ fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
 /// no host path is touched, so this is a gap in the best-effort refusal,
 /// not in host safety.
 #[test]
-#[ignore = "red team finding: --ignore-path whole-root check is per path and probes short names; a union of paths or /??* passes"]
 fn red_team_finding_ignore_paths_that_together_take_the_whole_root_pass_the_early_check() {
     // Together: every name starting with a-m, n-z, or anything else.
     let union = config(&[

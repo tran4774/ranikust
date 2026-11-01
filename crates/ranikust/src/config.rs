@@ -388,25 +388,28 @@ impl BuildConfig {
         // top-level entry (`/*`, `/?*`, Go's `/[^.]*`), would keep the whole root
         // out of every layer; a malformed pattern would otherwise surface
         // only once the ignore list is built.
+        let mut list = rnk_rootfs::IgnoreList::new();
         for path in &args.ignore_paths {
             let cleaned = clean(path);
-            let whole_root = |why: &str| {
-                Invalid(format!(
-                    "--ignore-path={}: {why}, which would leave every layer empty; name a \
-                     directory or file in the image",
-                    path.display()
-                ))
-            };
             if cleaned == Path::new("/") {
-                return Err(whole_root("it is the whole root"));
+                return Err(Invalid(format!(
+                    "--ignore-path={}: it is the whole root, which would leave every layer \
+                     empty; name a directory or file in the image",
+                    path.display()
+                )));
             }
-            let mut list = rnk_rootfs::IgnoreList::new();
             if let Err(e) = list.insert_glob(&cleaned) {
                 return Err(Invalid(format!("--ignore-path={}: {e}", path.display())));
             }
-            if TOP_LEVEL_PROBES.iter().all(|name| list.covers(name)) {
-                return Err(whole_root("it takes every top-level entry of the root"));
-            }
+        }
+        // All of them together, best effort: several patterns can share the
+        // top level out between them.
+        if !args.ignore_paths.is_empty() && TOP_LEVEL_PROBES.iter().all(|name| list.covers(name)) {
+            return Err(Invalid(
+                "--ignore-path: together these take every top-level entry of the root, which \
+                 would leave every layer empty; name directories or files in the image"
+                    .to_owned(),
+            ));
         }
         Ok(Self {
             context: absolute(&context_with_sub_path(args)?),
@@ -525,12 +528,29 @@ pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invali
     Ok(warnings)
 }
 
-/// Names an `--ignore-path` pattern is tried against: one that covers all of
-/// them takes every top-level entry of a root (`/*`, `/?*`, Go's `/[^.]*`) and
-/// is refused as `/` is. Common top-level directories, and names starting
-/// with a digit, an underscore, a capital and a single letter.
-const TOP_LEVEL_PROBES: [&str; 10] = [
-    "bin", "etc", "usr", "var", "opt", "root", "a", "Z", "_x", "0",
+/// Names the `--ignore-path`s together are tried against: covering all of
+/// them takes every top-level entry of a real image (`/*`, `/?*`, `/??*`,
+/// Go's `/[^.]*`, or `/[a-m]*` with `/[n-z]*` and `/[^a-z]*`), which is
+/// refused as `/` is. A best-effort guard against typos, not a proof: the
+/// names a real image's top level holds, of two characters or more and
+/// without a leading dot, in several shapes (common directories, a digit
+/// or a capital first, `-` and `_`, a long name, a non-ASCII one). A pattern
+/// taking only some of them, such as `/[a-z]*`, passes: it only widens what
+/// is kept out of the layers.
+const TOP_LEVEL_PROBES: [&str; 13] = [
+    "bin",
+    "etc",
+    "usr",
+    "var",
+    "lib64",
+    "home",
+    "root",
+    "x-y_z",
+    "Zz",
+    "0a",
+    "_x",
+    "a-long-top-level-directory-name-of-sixty-characters-or-so-xx",
+    "données",
 ];
 
 /// The refusal of `--single-snapshot`, in every mode, until a measurement
