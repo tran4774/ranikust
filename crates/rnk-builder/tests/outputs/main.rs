@@ -636,6 +636,22 @@ async fn a_base_layer_never_kept_is_pushed_from_its_source_registry() {
     assert!(err.to_string().contains("not kept"), "{err}");
 }
 
+/// A Docker tar needs every layer's bytes as a layout does: a base layer
+/// streamed from its registry and never kept is refused, and no tar is
+/// left (ADR-0055).
+#[test]
+fn a_docker_tar_refuses_a_layer_that_was_never_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = Reference::parse("r.example/base:1").unwrap();
+    let base = base(dir.path(), from.clone());
+    let mut image = image(dir.path(), &base, &time(), Compression::Gzip);
+    image.layers[0].bytes = rnk_builder::LayerBytes::Registry(from);
+    let path = dir.path().join("image.tar");
+    let err = rnk_builder::write_docker_tar(&image, &[], &path).unwrap_err();
+    assert!(err.to_string().contains("not kept"), "{err}");
+    assert!(!path.exists());
+}
+
 #[tokio::test]
 async fn push_mounts_base_layers_uploads_the_rest_and_tags_the_manifest() {
     let registry = FakeRegistry::start(Auth::Open).await;
