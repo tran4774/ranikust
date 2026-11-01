@@ -1394,6 +1394,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn credentials_are_withheld_from_plain_http_and_unverified_tls_as_configured() {
+        let named = "named.example";
+        let other = "other.example";
+        let mut options = ClientOptions::default();
+        options.http_credentials.insert(named.to_owned());
+        // Over verified TLS they always go; over plain HTTP only to a
+        // registry named for it (T11).
+        assert_eq!(withheld_because(&options, other, "https", false), None);
+        assert_eq!(withheld_because(&options, named, "http", false), None);
+        assert_eq!(
+            withheld_because(&options, other, "http", false),
+            Some(WITHHELD)
+        );
+        // An unverified certificate alone does not hold them back.
+        assert_eq!(withheld_because(&options, other, "https", true), None);
+        // Kaniko mode on `/`: only verified TLS, whatever the lists say
+        // (ADR-0051).
+        options.verified_credentials_only = true;
+        assert_eq!(withheld_because(&options, other, "https", false), None);
+        for (registry, scheme, skip_verify) in [
+            (named, "http", false),
+            (other, "http", false),
+            (other, "https", true),
+            (named, "https", true),
+        ] {
+            assert_eq!(
+                withheld_because(&options, registry, scheme, skip_verify),
+                Some(WITHHELD_UNVERIFIED),
+                "{registry} {scheme} skip_verify={skip_verify}"
+            );
+        }
+    }
+
+    #[test]
     fn loopback_registries_are_matched_as_containerd_does() {
         for host in [
             "localhost",
