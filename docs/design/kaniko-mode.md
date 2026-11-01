@@ -400,16 +400,22 @@ kaniko's `writeToTar` (`kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:341-391`):
   physical path resolved with no symlink in any component and without
   leaving the root's mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`,
   `O_PATH | O_NOFOLLOW`), and the pin's `statx` checked against the walk's
-  record (type, device, inode). The link target, the xattrs and the
+  record (type, device, inode; a regular file's size and a file's or
+  symlink's `mtime` and `ctime`, not a directory's, whose entry is written
+  from the walk's record): the inode number alone is not enough, since a
+  file deleted and created again can get the freed number back at once
+  (ext4 on CI's aarch64 runner did). The link target, the xattrs and the
   content are read from that pin, the content through a reopen of exactly
   that inode, so a parent swapped for a symlink or a mount, or a FIFO or
-  device swapped in, is never opened. An entry changed since the walk
-  fails the export. Names of one inode in the walk that disagree on type,
-  size, mode, owner or mtime (an inode number reused during the walk) are
-  written as separate files, not linked. Not caught, as in kaniko: a file rewritten in
-  place between walk and export with the same inode and size is written
-  with its new content and the walked metadata; nothing may write the root
-  between the two.
+  device swapped in, is never opened. In `full` mode the content written
+  and the link target are hashed again (xxh3-128) and must match the
+  walk's hashes, which also catches a swap within one timestamp tick and
+  a file rewritten in place (unlike kaniko); `time` and `redo` read no
+  content in the walk, so there the `statx` check is all. An entry changed
+  since the walk fails the export. Names of one inode in the walk that
+  disagree on type, size, mode, owner, mtime or content hash (an inode
+  number reused during the walk) are written as separate files, not
+  linked. Nothing may write the root between walk and export.
 - A `RUN` that changes nothing produces an empty layer, an empty tar as
   kaniko's `TakeSnapshotFS` writes; `WalkDiff::is_empty` tells the caller.
 - Applying the base layer and a diff's layer rebuilds the walked tree:

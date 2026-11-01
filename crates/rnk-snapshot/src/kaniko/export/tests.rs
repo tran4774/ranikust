@@ -232,6 +232,30 @@ fn a_file_swapped_since_the_walk_is_refused() {
     assert!(e.to_string().contains("changed between the walk"), "{e}");
 }
 
+/// The inode number of a swapped file can come back at once and its size
+/// and times can match within one timestamp tick (CI's aarch64 runner did
+/// this): the content the walk hashed is checked as the layer is written.
+#[test]
+fn content_other_than_the_walk_hashed_is_refused() {
+    let f = Fixture::new();
+    let mut d = diff_after(&f, |f| f.write("f", b"one"));
+    let entry = d
+        .changed
+        .iter_mut()
+        .find(|c| c.path == Path::new("f"))
+        .expect("f in the diff");
+    assert!(entry.meta.content.is_some(), "full mode hashes the content");
+    // Same inode, size and times: only the bytes differ from the walk's.
+    entry.meta.content = entry.meta.content.map(|h| !h);
+    // Raised while the bytes are written, and still the export's own error.
+    let e = d.export(&f.root, options(), Vec::new()).unwrap_err();
+    assert!(
+        matches!(&e, Error::Export { path, .. } if path == Path::new("f")),
+        "{e}"
+    );
+    assert!(e.to_string().contains("changed between the walk"), "{e}");
+}
+
 #[test]
 fn a_fifo_swapped_in_for_a_file_is_never_opened() {
     let f = Fixture::new();
@@ -286,11 +310,34 @@ fn names_of_a_reused_inode_are_not_linked() {
         inode: Some((1, 7)),
     };
     let mut same = vec![entry(b"a", 3), entry(b"b", 3)];
-    split_reused_inodes(&mut same);
+    split_reused_inodes(&mut same, &[Some(5), Some(5)]);
     assert!(same.iter().all(|e| e.inode == Some((1, 7))));
     let mut reused = vec![entry(b"a", 3), entry(b"b", 4), entry(b"c", 3)];
-    split_reused_inodes(&mut reused);
+    split_reused_inodes(&mut reused, &[None, None, None]);
     assert!(reused.iter().all(|e| e.inode.is_none()));
+    // Same size, mode, owner and second, other content: not one inode.
+    let mut other_content = vec![entry(b"a", 3), entry(b"b", 3)];
+    split_reused_inodes(&mut other_content, &[Some(5), Some(6)]);
+    assert!(other_content.iter().all(|e| e.inode.is_none()));
+}
+
+#[test]
+fn a_link_target_other_than_the_walk_hashed_is_refused() {
+    let f = Fixture::new();
+    let mut d = diff_after(&f, |f| symlink("a", f.p("l")).unwrap());
+    let entry = d
+        .changed
+        .iter_mut()
+        .find(|c| c.path == Path::new("l"))
+        .expect("l in the diff");
+    assert!(entry.meta.content.is_some(), "full mode hashes the target");
+    entry.meta.content = entry.meta.content.map(|h| !h);
+    for e in [
+        d.export(&f.root, options(), Vec::new()).unwrap_err(),
+        d.entries(&f.root).unwrap_err(),
+    ] {
+        assert!(e.to_string().contains("changed between the walk"), "{e}");
+    }
 }
 
 #[test]

@@ -289,5 +289,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - A `RUN` under a `USER` other than root can write `/dev/stdout` and
   `/dev/stderr` (kaniko#2928): its inherited streams become pipes owned by
   that user, copied to ranikust's.
+- In kaniko mode, a file deleted and created again between the walk and
+  the layer export could get its old inode number back and be written with
+  content the walk never compared. The export now also checks size,
+  `mtime` and `ctime`, and in `full` snapshot mode hashes the content it
+  writes against the walk's hash.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main
