@@ -10,8 +10,8 @@ digests. If a rule blocks the task, stop and ask.
   in kaniko mode inside a container whose `/` is the host's (or anything the
   container heuristic could mistake for one): there the root is `/` and it
   is extracted over and emptied (ADR-0048, ADR-0050). On a host, kaniko mode
-  builds in `<state>/builds/<id>/rootfs`; use a fresh temp `--state-dir`
-  or the VM tier.
+  builds each stage in `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059);
+  use a fresh temp `--state-dir` or the VM tier.
 - Never use `sudo`, `pkexec`, `su`, `doas`, `mount`, `umount`, `unshare` or
   `nsenter`. If a task needs root, stop and say so.
 - Privileged tests (tier T2) run only in a disposable VM, never on the host.
@@ -31,7 +31,9 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   point (mount id, never `st_dev` alone; T4).
 - No user-supplied build root (`ADR-0050`): `/` only in a container
   (`ADR-0048`), locked, with the state directory on the ignore list;
-  otherwise `<state>/builds/<id>/rootfs`. The state directory is checked by
+  otherwise one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs`,
+  copied from its parent stage, never hardlinked (`ADR-0059`, `ADR-0017`).
+  The state directory is checked by
   descriptor: owned by the running user, `0700`, its ancestors not writable
   by group or others (root-owned sticky directories excepted).
 - `RUN` enters via `pivot_root` (`MS_MOVE` + `chroot` if seccomp blocks it);
