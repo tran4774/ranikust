@@ -73,9 +73,10 @@ check-aarch64:
 # which RootPath needs), and these are skipped, with the reason:
 # - `open_gives_cloexec_path_fd_and_mount_id`: qemu-user's statx leaves
 #   `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id it asserts is not seen;
-# - `without_root_the_set_up_refuses_before_touching_the_workdir`: qemu-user
-#   runs a thread of its own, so the set-up stops at its single-thread check
-#   before the privilege refusal the test expects;
+# - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
+#   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`:
+#   qemu-user runs a thread of its own, so the set-up stops at its
+#   single-thread check before the privilege refusal the tests expect;
 # - `the_filter_refuses_what_it_should_and_nothing_else`: a seccomp filter
 #   written for aarch64 syscall numbers cannot be installed in the x86_64
 #   host kernel through qemu-user;
@@ -159,7 +160,9 @@ test-aarch64 *args:
     static_check
     "$qemu" "$BIN" version
     skip=(--skip root::tests::open_gives_cloexec_path_fd_and_mount_id
-      --skip without_root_the_set_up_refuses_before_touching_the_workdir
+      --skip without_root_the_set_up_refuses_before_touching_the_state_dir
+      --skip kaniko_variables_are_not_read
+      --skip logging_flags_change_what_is_written
       --skip seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else)
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
       cargo-zigbuild test --workspace --locked --target $target {{ args }} -- "${skip[@]}"
