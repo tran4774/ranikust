@@ -14,7 +14,11 @@ case_run() {
   expect "$d4" "$d1" "digest at --jobs 4 and --jobs 1"
   expect "$dc" "$d1" "digest of the chained stages and the independent ones"
   got="$(run par4)"
-  [[ $got =~ ^([0-9a-f]{16})\ \1\ \1\ \1\ $ ]] || fail "the image printed $(printf %q "$got")"
+  local sums=()
+  read -r -a sums <<<"$got"
+  [ "${#sums[@]}" = 4 ] && [[ ${sums[0]} =~ ^[0-9a-f]{16}$ ]] &&
+    [ "${sums[1]}" = "${sums[0]}" ] && [ "${sums[2]}" = "${sums[0]}" ] && [ "${sums[3]}" = "${sums[0]}" ] ||
+    fail "the image printed $(printf %q "$got")"
   if [ "${RANIKUST_QUICK_BENCH:-}" = 1 ] && [ "$ENGINE" = "sudo docker" ]; then
     case_bench
   fi
