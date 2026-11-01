@@ -211,6 +211,12 @@ through a descriptor of its directory.
   as the stage had it (modes, owners, mtimes, hardlinks, xattr, FIFO);
   overlapping sources in either order as when kept whole; a FIFO source
   copied without blocking.
+  Red team of `RUN --mount` under `Direct` (`src/mounts/tests.rs`
+  `red_team_direct_secret_mount_spellings`, ADR-0057): secret mounts
+  parsed from Dockerfile spellings (mixed-case keys and types, `dst=`,
+  `destination=`, a repeated `target=` or `env=`, `type=` given twice,
+  `required=false`) are refused as files before any read, or kept as one
+  variable and never a file; cache mounts of any spelling are dropped.
 - **T0:** each executor's config change (`ENV`, `LABEL`, `USER`, `WORKDIR`,
   `ENTRYPOINT`, `CMD`, `SHELL`, `EXPOSE`, `VOLUME`, `STOPSIGNAL`,
   `HEALTHCHECK`): the rules are `rnk_oci::ConfigEdit`'s, tested in
