@@ -10,10 +10,6 @@ use rnk_dockerfile::{
     Base, GraphOptions, Instruction, Platform, Source, StageScope, parse, stage_graph,
 };
 
-/// Files ranikust refuses on purpose: `COPY --from=<bare word>` naming no
-/// stage is refused instead of pulled from Docker Hub (ADR-0052, D2).
-const REFUSED_ON_PURPOSE: [&str; 2] = ["Dockerfile_test_issue_2594", "Dockerfile_test_issue_mz444"];
-
 fn options() -> GraphOptions {
     GraphOptions {
         build_args: BTreeMap::new(),
@@ -101,20 +97,10 @@ fn kaniko_dockerfiles_build_graphs() {
     names.sort();
     assert_eq!(names.len(), 200);
     let mut failures = Vec::new();
-    let (mut stages, mut instructions, mut refused) = (0, 0, 0);
+    let (mut stages, mut instructions) = (0, 0);
     for path in &names {
         let src = fs::read_to_string(path).expect("read");
-        let name = file_name(path);
-        match walk(&src, &options_for(&name)) {
-            Err(e) if REFUSED_ON_PURPOSE.contains(&name.as_str()) => {
-                assert!(e.contains("no stage is named"), "{name}: {e}");
-                refused += 1;
-            }
-            Ok(_) if REFUSED_ON_PURPOSE.contains(&name.as_str()) => {
-                failures.push(format!(
-                    "{name}: accepted, but ranikust refuses it on purpose"
-                ));
-            }
+        match walk(&src, &options_for(&file_name(path))) {
             Ok((s, i)) => {
                 stages += s;
                 instructions += i;
@@ -123,9 +109,8 @@ fn kaniko_dockerfiles_build_graphs() {
         }
     }
     eprintln!(
-        "graphs: {} of 200 files ({refused} refused on purpose), {stages} needed stages, \
-         {instructions} instructions expanded",
-        200 - failures.len() - refused
+        "graphs: {} of 200 files, {stages} needed stages, {instructions} instructions expanded",
+        200 - failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -168,9 +153,6 @@ fn copy_from_index_and_name_in_kaniko_files() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kaniko");
     for e in fs::read_dir(dir).expect("fixtures") {
         let path = e.expect("entry").path();
-        if REFUSED_ON_PURPOSE.contains(&file_name(&path).as_str()) {
-            continue;
-        }
         let src = fs::read_to_string(&path).expect("read");
         let df = parse(&src).unwrap();
         let g = stage_graph(&df, &options_for(&file_name(&path))).unwrap();

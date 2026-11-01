@@ -25,36 +25,6 @@ fn err(src: &str) -> Error {
     graph(src, &opts(&[], &[])).expect_err(src)
 }
 
-/// ADR-0052, D2: a bare word naming no stage is refused instead of pulled
-/// as an image (moby/buildkit#7091); with a tag, digest, registry or path
-/// it is an image.
-#[test]
-fn copy_from_a_bare_word_that_names_no_stage_is_refused() {
-    for name in ["buildr", "busybox", "scratch"] {
-        let e = err(&format!(
-            "FROM alpine AS builder\nCOPY --from={name} /a /a\n"
-        ));
-        assert!(
-            e.to_string()
-                .contains(&format!("no stage is named \"{name}\"")),
-            "{e}"
-        );
-        assert!(e.to_string().contains(&format!("{name}:latest")), "{e}");
-    }
-    let g = ok("FROM alpine\n\
-         COPY --from=busybox:1 /a /a\n\
-         COPY --from=busybox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /b /b\n\
-         COPY --from=library/busybox /c /c\n\
-         COPY --from=localhost:5000/x /d /d\n");
-    assert_eq!(g.stages[0].references.len(), 4);
-    assert!(
-        g.stages[0]
-            .references
-            .iter()
-            .all(|r| matches!(r.source, Source::Image(_)))
-    );
-}
-
 #[test]
 fn bases_and_references() {
     let g = ok("FROM alpine AS build\n\
