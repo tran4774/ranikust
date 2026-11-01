@@ -25,6 +25,20 @@ const BASE_LABEL: (&str, &str) = ("base.label", "base");
 
 /// Files BuildKit rejects only when it converts the instructions to LLB, for
 /// reasons outside the parser: the builder must check these.
+/// Files BuildKit accepts and ranikust refuses on purpose, with the text
+/// its error holds: `COPY --from=<bare word>` naming no stage is refused
+/// rather than pulled from Docker Hub (ADR-0052, D2).
+const REFUSED_ON_PURPOSE: &[(&str, &str)] = &[
+    (
+        "Dockerfile_test_issue_2594",
+        "no stage is named \"busybox\"",
+    ),
+    (
+        "Dockerfile_test_issue_mz444",
+        "no stage is named \"executor-image\"",
+    ),
+];
+
 const DISPATCH_ERRORS: &[(&str, &str)] = &[
     (
         "Dockerfile_test_issue_3373_2",
@@ -179,6 +193,7 @@ fn kaniko_expansion_matches_buildkit() {
     goldens.sort();
     assert_eq!(goldens.len(), 200);
     let (mut matched, mut skipped, mut failed) = (0, Vec::new(), Vec::new());
+    let mut refused = 0;
     for path in goldens {
         let golden: Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("json");
@@ -200,7 +215,10 @@ fn kaniko_expansion_matches_buildkit() {
         let got = match got {
             Ok(v) => v,
             Err(e) => {
-                failed.push(format!("{file}: {e}"));
+                match REFUSED_ON_PURPOSE.iter().find(|(f, _)| *f == file) {
+                    Some((_, text)) if e.contains(text) => refused += 1,
+                    _ => failed.push(format!("{file}: {e}")),
+                }
                 continue;
             }
         };
@@ -223,10 +241,12 @@ fn kaniko_expansion_matches_buildkit() {
         }
     }
     eprintln!(
-        "expansion: {matched} of 200 files match BuildKit; {} rejected by BuildKit's dispatcher:\n  {}",
+        "expansion: {matched} of 200 files match BuildKit; {refused} refused by ranikust on \
+         purpose; {} rejected by BuildKit's dispatcher:\n  {}",
         skipped.len(),
         skipped.join("\n  ")
     );
     assert!(failed.is_empty(), "{}", failed.join("\n"));
-    assert_eq!(matched + skipped.len(), 200);
+    assert_eq!(refused, REFUSED_ON_PURPOSE.len(), "refused on purpose");
+    assert_eq!(matched + skipped.len() + refused, 200);
 }

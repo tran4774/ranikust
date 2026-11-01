@@ -185,6 +185,13 @@ fn graph_err(lines: Lines, message: impl Into<String>) -> Error {
     Error::at(ErrorKind::Graph, lines, message)
 }
 
+/// An image reference with no tag, digest, registry or path: `deps`,
+/// `builder`, also `alpine`, which as an image must be written
+/// `alpine:latest` or `docker.io/library/alpine`.
+fn is_bare_word(name: &str) -> bool {
+    !name.contains([':', '@', '/'])
+}
+
 /// Builds the stage graph: expands `FROM` with the global `ARG`s, resolves
 /// stage references (`FROM <stage>`, `COPY --from`, `RUN --mount from=`)
 /// and `ONBUILD` triggers of local base stages, checks for cycles and
@@ -192,7 +199,8 @@ fn graph_err(lines: Lines, message: impl Into<String>) -> Error {
 ///
 /// Resolution follows BuildKit: `FROM` matches only earlier stage names,
 /// exactly; `COPY --from` takes a stage index or a stage name in any case,
-/// anything else is an image; `RUN --mount from=` takes a name (no index);
+/// anything else is an image, but a bare word that names no stage is
+/// refused (ADR-0052, D2); `RUN --mount from=` takes a name (no index);
 /// a stage may only read from stages defined before it.
 ///
 /// # Errors
@@ -404,6 +412,21 @@ fn references(
                 },
                 Err(_) => match names.get(&to_lower(&c.from)) {
                     Some(&j) => Source::Stage(j),
+                    // A bare word naming no stage is most likely a mistyped
+                    // stage name; BuildKit pulls it from Docker Hub
+                    // (moby/buildkit#7091). Refused: an image is named with
+                    // a tag, a digest, a registry or a path (ADR-0052, D2).
+                    None if is_bare_word(&c.from) => {
+                        return Err(graph_err(
+                            ins.lines,
+                            format!(
+                                "COPY --from={0}: no stage is named {0:?}; to copy from an \
+                                 image, name it with a tag, a digest or a registry, such as \
+                                 {0}:latest",
+                                c.from
+                            ),
+                        ));
+                    }
                     None => Source::Image(c.from.clone()),
                 },
             };
