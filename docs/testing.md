@@ -135,8 +135,10 @@ runs as root on the host:
    close. A value set in the variables is used as is, with a warning if it
    leaves the host under 2 GiB. The disk is 20 GB (`RANIKUST_VM_DISK`,
    40 GB for `ultra`, at least 10 GB over the base image). The cache
-   directory must be yours and writable by no one else (one of yours that
-   others may write is made 0700), the base image a self-contained qcow2
+   directory must be yours, not a symbolic link, and writable by no one
+   else: the default one, when others may write it and everything in it is
+   yours and no link, is made 0700; one named by `RANIKUST_VM_CACHE` is
+   refused instead. The base image must be a self-contained qcow2
    (no backing or data file, checked with `qemu-img info` before each
    use), and the cache and target paths absolute without a comma (QEMU's
    option separator). All devices are virtio: the disk on its own I/O thread with
@@ -161,7 +163,8 @@ runs as root on the host:
    a directory, and only then put in place; teardown clears them the same
    way before it writes the serial log and `timings.txt`, through new
    files renamed into place. The guest refuses to run any suite when it
-   holds a user other than `rnk` or a host key older than its boot.
+   holds a user other than `rnk`, no SSH host key, or one older than its
+   boot.
 7. **Tear down** on every exit path, Ctrl-C included: QEMU is stopped
    through its monitor (then `SIGKILL`), the shared SSH connection is
    closed, and the overlay, seed and key are deleted (the base image stays

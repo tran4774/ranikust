@@ -31,9 +31,15 @@ mkdir -p out
 # keys made at this boot. Otherwise no suite runs.
 users="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 { print $1 }' | paste -sd' ')"
 boot=$(awk '/^btime / { print $2 }' /proc/stat)
-key_made=$(stat -c %Y /etc/ssh/ssh_host_ed25519_key.pub)
-if [ "$users" != rnk ] || [ "$key_made" -lt "$boot" ]; then
-  echo "error: this VM is not the run's own (users: '$users'; host key made $key_made, booted $boot)" | tee out/summary.txt
+own=1 keys=0
+for k in /etc/ssh/ssh_host_*_key; do
+  [ -f "$k" ] || continue
+  keys=$((keys + 1))
+  made=$(sudo stat -c %Y "$k")
+  [[ "$made" =~ ^[0-9]+$ ]] && [ "$made" -ge "$boot" ] || own=0
+done
+if [ "$users" != rnk ] || [ "$keys" = 0 ] || [ "$own" = 0 ] || ! [[ "$boot" =~ ^[0-9]+$ ]]; then
+  echo "error: this VM is not the run's own (users: '$users'; $keys host keys, all made since the boot at $boot: $own)" | tee out/summary.txt
   exit 1
 fi
 

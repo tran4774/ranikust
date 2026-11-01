@@ -23,10 +23,12 @@ runcmd:
   - [apt-get, clean]
   - [sh, -c, 'rm -f /etc/ssh/ssh_host_*']
   - [sh, -c, 'truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id']
-  # Docker's and systemd's per-machine state too: Docker made its engine ID
-  # (and maybe a key) when it started here; the random seed is this boot's.
+  # Docker's per-machine state too: it made its engine ID (and maybe a key)
+  # when it started here. (systemd's random seed is written again at
+  # power-off, so it stays in the image; every run's VM gets fresh entropy
+  # from virtio-rng and credits none from the seed.)
   - [systemctl, stop, docker.service, docker.socket]
-  - [rm, -f, /var/lib/docker/engine-id, /etc/docker/key.json, /var/lib/systemd/random-seed]
+  - [rm, -f, /var/lib/docker/engine-id, /etc/docker/key.json]
   # The disk has discard: freed blocks (the removed keys among them) go, and
   # the flattened image is smaller.
   - [fstrim, --all]

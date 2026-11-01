@@ -62,7 +62,11 @@ MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-
 HERE="$REPO/tests/vm"
 RELEASE="${RANIKUST_VM_RELEASE:-noble}"
 # Absolute: they end up in QEMU's -drive options and in rm -rf paths.
-CACHE="$(realpath -m -- "${RANIKUST_VM_CACHE:-$MAIN/tests/e2e/_vm-image}")"
+CACHE_GIVEN="${RANIKUST_VM_CACHE:-$MAIN/tests/e2e/_vm-image}"
+# Not a link (its last component): realpath would follow it, and the
+# permission checks below would then judge, and change, its target.
+[ ! -L "${CACHE_GIVEN%/}" ] || { echo "error: RANIKUST_VM_CACHE must not be a symbolic link (${CACHE_GIVEN%/})" >&2; exit 1; }
+CACHE="$(realpath -m -- "$CACHE_GIVEN")"
 IMAGE_REGISTRY="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
 GOLDEN_ON="${RANIKUST_VM_GOLDEN:-1}"
 TARGET="$(realpath -m -- "${CARGO_TARGET_DIR:-$REPO/target}")"
@@ -152,6 +156,12 @@ mkdir -p -- "$(dirname -- "$CACHE")"
 [ -e "$CACHE" ] || mkdir -m 0700 -- "$CACHE"
 [ -O "$CACHE" ] && [ -d "$CACHE" ] && [ ! -L "$CACHE" ] || die "$CACHE must be a directory owned by you"
 if [ -n "$(find "$CACHE" -maxdepth 0 -perm /022)" ]; then
+  # Tightened only when it is the default cache and everything in it is
+  # this user's and no link; anything else is the user's to look at.
+  [ -z "${RANIKUST_VM_CACHE:-}" ] ||
+    die "$CACHE is writable by group or others: make it 0700 (chmod 0700 $CACHE) or choose another RANIKUST_VM_CACHE"
+  [ -z "$(find "$CACHE" -mindepth 1 \( ! -user "$(id -u)" -o -type l \) -print -quit)" ] ||
+    die "$CACHE is writable by group or others and holds files of other users or links: check it, then make it 0700"
   log "$CACHE is writable by group or others: making it 0700"
   chmod 0700 "$CACHE"
 fi
@@ -337,8 +347,19 @@ T_BOOT='' T_SSH='' T_READY='' T_SUITES=''
 # executable is QEMU's and its command line names this run's pidfile.
 qemu_alive() {
   [ -n "$QEMU_PID" ] && [ -n "$QEMU_PIDFILE" ] || return 1
-  [ "$(basename "$(readlink "/proc/$QEMU_PID/exe" 2>/dev/null)")" = qemu-system-x86_64 ] || return 1
+  case "$(basename "$(readlink "/proc/$QEMU_PID/exe" 2>/dev/null)")" in
+    qemu-system-x86_64 | "qemu-system-x86_64 (deleted)") ;;
+    *) return 1 ;;
+  esac
   tr '\0' '\n' <"/proc/$QEMU_PID/cmdline" 2>/dev/null | grep -qxF -- "$QEMU_PIDFILE"
+}
+
+# qemu_quit: asks this run's QEMU to stop, through its monitor.
+qemu_quit() {
+  python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n"); s.recv(4096)
+' "$MONITOR" 2>/dev/null
 }
 
 # put <source> <name>: copies a file into $RESULTS through a new temporary
@@ -355,15 +376,15 @@ teardown() {
   set +e
   # The shared SSH connection, if one was opened.
   [ -z "$SOCKDIR" ] || [ ! -S "$SOCKDIR/ssh" ] || ssh -S "$SOCKDIR/ssh" -O exit rnk-vm >/dev/null 2>&1
-  if qemu_alive; then
+  # The monitor socket is this run's QEMU's by construction (in this run's
+  # private directory): quit through it whenever it is there. A pid is
+  # killed only while it is still this run's QEMU.
+  if [ -n "$MONITOR" ] && [ -S "$MONITOR" ]; then
     log "stopping the VM"
-    python3 -c '
-import socket, sys
-s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n"); s.recv(4096)
-' "$MONITOR" 2>/dev/null
+    qemu_quit
     for _ in $(seq 20); do qemu_alive || break; sleep 0.5; done
-    ! qemu_alive || kill -9 "$QEMU_PID" 2>/dev/null
   fi
+  ! qemu_alive || kill -9 "$QEMU_PID" 2>/dev/null
   # Whatever reached the results, links and special files go before
   # anything is written there.
   mkdir -p "$RESULTS" && find "$RESULTS" ! -type f ! -type d -delete
@@ -373,6 +394,8 @@ s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"quit\n");
   printf 'size: %s\nbase image: %s\naio: %s\nboot started: %s s\nSSH up: %s s\ncloud-init done: %s s\nsuites done: %s s\ntotal: %s s\n' \
     "$VM_SIZE" "${BASE_IMG:-}" "${QEMU_AIO:-}" "$T_BOOT" "$T_SSH" "$T_READY" "$T_SUITES" "$SECONDS" >"$RUN/timings.txt" &&
     put "$RUN/timings.txt" timings.txt
+  # (A directory the guest made 0555, cut short before the copy loop's chmod.)
+  [ ! -d "$RUN/out" ] || chmod -R u+rwX -- "$RUN/out"
   rm -rf "$RUN" ${SOCKDIR:+"$SOCKDIR"}
   if qemu_alive; then
     echo "error: QEMU (pid $QEMU_PID) is still running" >&2
@@ -409,7 +432,7 @@ start_qemu() {
       -display none -serial file:"$serial" -monitor unix:"$mon",server,nowait \
       "$@" -pidfile "$pidf" -daemonize 2>"$RUN/qemu.err"; then
       MONITOR=$mon QEMU_PID="$(cat "$pidf")" QEMU_AIO=$aio QEMU_PIDFILE=$pidf
-      qemu_alive || die "the pid in $pidf is not this run's QEMU"
+      qemu_alive || { qemu_quit; die "the pid in $pidf is not this run's QEMU"; }
       return 0
     fi
     [ "$aio" = threads ] || log "QEMU did not start with aio=io_uring ($(head -c 300 "$RUN/qemu.err")); trying aio=threads"
@@ -482,7 +505,7 @@ if [ "$GOLDEN_ON" = 1 ]; then
       [ "$SECONDS" -lt "$deadline" ] || die "provisioning the base image took over 20 minutes (serial log: $RESULTS/base-image-serial.log)"
       sleep 2
     done
-    QEMU_PID=
+    QEMU_PID='' MONITOR=''
     # The last line provisioning prints (its own line, so not the command's
     # text if cloud-init ever echoed it).
     awk '{ sub(/\r$/, "") } $0 == "ranikust-golden-ready" { ok = 1 } END { exit !ok }' "$g/serial.log" ||
@@ -597,6 +620,7 @@ while :; do
 done
 T_SUITES=$SECONDS
 log "suites done $((T_SUITES - T_READY)) s after cloud-init"
+mkdir -p -- "$(dirname -- "$RESULTS")"
 for i in 1 2 3 4 5; do
   # The guest's results hold only regular files and directories: a link
   # could point the host's tar outside $RESULTS, a device or FIFO has no
@@ -613,6 +637,9 @@ for i in 1 2 3 4 5; do
     tar -C "$RUN/out" --no-same-owner --no-same-permissions -xf -; then
     copied=1
   fi
+  # (chmod -R follows no link it meets; a directory the guest made 0555
+  # would stop the next attempt's rm.)
+  chmod -R u+rwX -- "$RUN/out"
   find "$RUN/out" ! -type f ! -type d -delete
   if [ "$copied" = 1 ]; then
     rm -rf "$RESULTS" && mv -T "$RUN/out" "$RESULTS"

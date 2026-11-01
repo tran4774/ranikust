@@ -280,15 +280,21 @@ LIMITS="$HOME/rnk/guest/e2e/limits.sh"
 # write (its results, as /bench-out or /rnk-out); everything the harness
 # writes goes to <dir> itself, which no container reaches.
 mount_dir() { mkdir -p "$1/mnt" && echo "$1/mnt"; }
-# take_results <dir>: after the container is gone, copies its known result
-# files out of <dir>/mnt if they are regular files, then drops the rest.
+# take_results <dir> <container>: once the container is gone (nothing can
+# write <dir>/mnt any more), copies its known result files out if they are
+# regular files, never through a link, then drops the rest.
 take_results() {
   local f
+  if sudo docker inspect "$2" >/dev/null 2>&1; then
+    echo "error: container $2 still exists; its results are not read" >&2
+    return 1
+  fi
   for f in metrics.json digest.txt; do
     if sudo test -f "$1/mnt/$f" && ! sudo test -L "$1/mnt/$f"; then
-      # Read as root, written as rnk into a directory no container reaches.
+      # Read as root (O_NOFOLLOW), written as rnk into a directory no
+      # container reaches.
       # shellcheck disable=SC2024
-      sudo cat -- "$1/mnt/$f" >"$1/$f"
+      sudo dd if="$1/mnt/$f" iflag=nofollow status=none >"$1/$f"
     fi
   done
   sudo rm -rf -- "$1/mnt"
@@ -327,7 +333,7 @@ build() {
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
-      take_results "$d"
+      take_results "$d" "$name"
       ;;
     buildkit)
       vol="rnk-e2e-bk-$RANDOM"; sudo docker volume create "$vol" >/dev/null
@@ -364,7 +370,7 @@ build() {
       rc=$(sudo docker wait "$name"); t1=$(now)
       sudo docker logs "$name" >"$d/build.log" 2>&1 || true
       sudo docker rm -f "$name" >/dev/null
-      take_results "$d"
+      take_results "$d" "$name"
       ;;
     rk-kaniko-host)
       local extra=()
