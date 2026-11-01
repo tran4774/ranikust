@@ -73,6 +73,12 @@ impl Relay {
             }
             let (read, write) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC)
                 .map_err(|e| sys_err("create a stdio pipe", e))?;
+            // The relay's read end alone never blocks: the `RUN` may open a
+            // second read end of its own pipe (`/proc/self/fd/1`) and take
+            // the bytes `poll` announced, and a `read` blocked outside
+            // `poll` would miss the stop event and the other stream. The
+            // write end, the `RUN`'s, stays blocking (its own description).
+            set_nonblocking(&read).map_err(|e| sys_err("make a stdio pipe non-blocking", e))?;
             let write = rustix::io::fcntl_dupfd_cloexec(&write, 3)
                 .map_err(|e| sys_err("duplicate a stdio pipe", e))?;
             if !uid.is_root()
@@ -134,7 +140,9 @@ struct Stream {
 }
 
 /// The thread: copies each pipe to its stream until its end, or until
-/// `stop` is signalled, then drains.
+/// `stop` is signalled, then drains. It blocks only in `poll`, never in a
+/// `read`; a `write` to ranikust's own stream may block while that stream
+/// is full and blocking, as ranikust's own output would.
 fn relay(mut streams: Vec<Stream>, stop: &OwnedFd) {
     let mut buf = vec![0u8; 64 * 1024];
     let mut deadline = None;
@@ -149,9 +157,6 @@ fn relay(mut streams: Vec<Stream>, stop: &OwnedFd) {
             }
             if !fds[0].revents().is_empty() {
                 deadline = Some(Instant::now() + DRAIN_TIME);
-                for s in &streams {
-                    let _ = set_nonblocking(&s.from);
-                }
                 continue;
             }
             let ready: Vec<bool> = fds[1..].iter().map(|f| !f.revents().is_empty()).collect();
@@ -175,8 +180,10 @@ fn relay(mut streams: Vec<Stream>, stop: &OwnedFd) {
     }
 }
 
-/// One read from the pipe, written out; false once the pipe has nothing
-/// more to give (its end, an error, or, while draining, nothing left).
+/// One read from the (non-blocking) pipe, written out; false once the pipe
+/// has nothing more to give (its end, an error, or, while draining,
+/// nothing left). `EAGAIN` before the stop means another reader took what
+/// `poll` announced: back to `poll`.
 fn copy_once(s: &mut Stream, buf: &mut [u8], stop: &OwnedFd, deadline: Option<Instant>) -> bool {
     let n = match rustix::io::read(&s.from, &mut *buf) {
         Ok(0) => return false,

@@ -80,8 +80,9 @@ and no `RUN` in any mode holds ranikust's own stream descriptors.
   a `RUN --network=none` at that `RUN` (Q-382).
 - **Order.** In every mode the mount types this phase lacks (`bind`,
   `tmpfs`, `ssh`, `cache,from=`) and malformed mounts (a cache without a
-  target, a secret without an id, an `env=` naming no variable) are
-  refused before any secret is read or cache leased; under `Direct` the secret-file refusal and the cache
+  target, a secret without an id, an `env=` naming no variable), and a
+  `required` secret missing from `--secret`, are refused before any
+  secret is read or cache leased; under `Direct` the secret-file refusal and the cache
   drop come before that too. `Error::Direct` in the sandbox backs the
   builder's checks. `bind`, `tmpfs`, `ssh` and `from=` on `/` wait for
   Phase 5 [open: Q-383].
@@ -94,7 +95,11 @@ and no `RUN` in any mode holds ranikust's own stream descriptors.
   deadline even while a writer keeps writing, so a write end that
   outlived the `RUN` (over a Unix socket, or reopened through
   `/proc/<pid>/fd` by a process of the same user) never holds the build.
-  A full stream (`EAGAIN`) is waited for with `poll`, not dropped.
+  A full stream (`EAGAIN`) is waited for with `poll`, not dropped. The
+  relay's read ends are non-blocking and it blocks only in `poll`: a
+  `RUN` that opens a second read end of its own pipe
+  (`/proc/self/fd/1`) and takes the bytes `poll` announced cannot park it
+  in a `read`, away from the stop event and the other stream (red team).
 - **`CAP_SETPCAP`.** `Sandbox::start_direct` checks what ADR-0051 checks
   per `RUN` (capabilities beyond Docker's defaults and no `CAP_SETPCAP` to
   drop them), so such a container is refused before the pull.

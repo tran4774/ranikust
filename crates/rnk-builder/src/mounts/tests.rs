@@ -514,3 +514,25 @@ fn red_team_direct_secret_mount_spellings() {
         assert!(direct_mounts(&[m]).unwrap().is_empty(), "{spec}");
     }
 }
+
+/// A required secret missing from `--secret` is refused before an earlier
+/// secret of the same `RUN` is read: reading that one would fail with
+/// another error.
+#[test]
+fn a_missing_required_secret_is_refused_before_any_secret_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let secrets: BTreeMap<String, Secret> =
+        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    let mut given = mount(MountType::Secret);
+    given.cache_id = "tok".into();
+    given.env = Some("TOK".into());
+    let mut absent = mount(MountType::Secret);
+    absent.cache_id = "other".into();
+    absent.env = Some("OTHER".into());
+    absent.required = true;
+    let e = run_mounts(&[given, absent], Path::new("/"), &store, &secrets, &never)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("\"other\" is required"), "{e}");
+}

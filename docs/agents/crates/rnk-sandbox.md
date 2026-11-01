@@ -152,7 +152,9 @@ from `rnk-store`, secret file) and passes `--network`.
   stdout and stderr it would inherit becomes a pipe, `fchown`ed to the
   `RUN`'s ids when not root (an id the process cannot give leaves it
   root's), and one thread per `RUN` copies the pipes to ranikust's streams,
-  waiting with `poll` on a full one. Once the `RUN` is reaped and swept an
+  waiting with `poll` on a full one; its read ends are non-blocking and it
+  blocks only in `poll`, so a `RUN` reading its own pipe back
+  (`/proc/self/fd/1`) cannot park it in a `read`. Once the `RUN` is reaped and swept an
   `eventfd` stops it: the pipes are read without blocking until empty, a
   stream that refuses writes gets two seconds, the drain stops at that
   deadline even while a writer keeps writing, and the thread is joined;

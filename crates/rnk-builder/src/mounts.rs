@@ -148,6 +148,18 @@ pub(crate) fn run_mounts(
     // share one file on the RUN's tmpfs.
     let mut read: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
     check_supported(mounts)?;
+    // A required secret that was not given fails the `RUN` before any
+    // secret of it is read.
+    if let Some(id) = mounts
+        .iter()
+        .filter(|m| m.kind == MountType::Secret && m.required)
+        .map(secret_id)
+        .find(|id| !secrets.contains_key(id))
+    {
+        return Err(Error::Invalid(format!(
+            "secret {id:?} is required but was not given (--secret)"
+        )));
+    }
     for m in mounts {
         match m.kind {
             MountType::Cache => {
@@ -358,12 +370,8 @@ fn secret_mount(
 ) -> Result<()> {
     // Never empty: `check_supported` refused that.
     let id = secret_id(m);
+    // A required one was checked by `run_mounts`: a missing one is left out.
     let Some(secret) = secrets.get(&id) else {
-        if m.required {
-            return Err(Error::Invalid(format!(
-                "secret {id:?} is required but was not given (--secret)"
-            )));
-        }
         return Ok(());
     };
     let data = match read.get(&id) {

@@ -293,8 +293,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   and stderr any more (a root `RUN` could truncate or rewrite a
   `> build.log`): every `RUN` writes to pipes of its own, owned by its
   user, which ranikust copies to its streams.
-- An unsupported `RUN --mount` (`bind`, `tmpfs`, `ssh`, `cache,from=`) is
-  refused before any secret of the same `RUN` is read.
+- An unsupported or malformed `RUN --mount` (`bind`, `tmpfs`, `ssh`,
+  `cache,from=`, a cache without a target, a bad `env=`), or a `required`
+  secret not given with `--secret`, is refused before any secret of the
+  same `RUN` is read.
 - In kaniko mode, a file deleted and created again between the walk and
   the layer export could get its old inode number back and be written with
   content the walk never compared. The export now also checks size,
