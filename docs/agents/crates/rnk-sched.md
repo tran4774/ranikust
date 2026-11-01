@@ -188,7 +188,7 @@ pub use tokio_util::sync::CancellationToken;
   failures at once may be reported either way.
 - Memory-aware limit: decided (ADR-0013); add the hook and measure now, the
   thresholds stay [open: Q-030] until measured.
-- Deferred: `--parallel-stages` (Phase 2 task 10); cache
+- `--parallel-stages` is refused for good (ADR-0060). Deferred: cache
   lookahead and skipping fully cached stages (Phase 4); `ONBUILD` and
   `RUN --mount=type=bind,from=` edges (Phase 5); deduplicating identical
   instructions across stages (later).

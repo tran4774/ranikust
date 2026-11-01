@@ -14,7 +14,7 @@ Modes affected:
 - [ ] overlay (root)
 - [ ] overlay (rootless)
 - [ ] kaniko
-- [ ] kaniko with `--parallel-stages`
+- [ ] kaniko with a directory per stage (outside a container)
 - [ ] none (no mode-specific behaviour)
 
 ## Checklist

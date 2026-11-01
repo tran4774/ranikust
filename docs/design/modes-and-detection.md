@@ -104,22 +104,28 @@ Q-111).
 5. **No overlay path passed.**
    - If ranikust is root: **kaniko mode**. A bind-mount test decides between
      "can mount" (per-stage directories, full sandbox) and "cannot mount"
-     (sequential on `/` in a container, else on a root in the state
-     directory). `mknod` of a character device is tested
-     for the `--parallel-stages` path: it works on rootful Docker and fails
-     under rootless podman.
+     (sequential on `/` in a container; a host where root may not mount is
+     refused, ADR-0050).
    - Otherwise: **refuse** with guidance (below).
 6. **Log the reason** for the chosen outcome, including each failed step and
    its errno (`ranikust`).
 
-Built so far (ADR-0040): `ranikust` enters the build's mount namespace
+Built (ADR-0040, ADR-0059): `ranikust` enters the build's mount namespace
 first, before anything is written; root refused there for lack of privilege
 gets kaniko mode ("cannot mount"), with the reason logged. Otherwise the
-overlay probes run as in Phase 1, and their refusal stands until the
-"kaniko, can mount" variant (Phase 2 task 9). Kaniko mode's flags
-(`--ignore-path`, `--single-snapshot`, `--materialize`)
-are refused in overlay mode where they would change the image, for good;
-`--ignore-var-run` is refused in both modes (ADR-0052 D4)
+overlay probes run as in Phase 1. Where they refuse because overlayfs
+cannot use the state directory (the probe's mount refused, or a state
+directory on overlayfs), `--mode=auto` outside a container builds in kaniko
+mode with a directory per stage and the full sandbox ("can mount"), with
+the reason logged; a failed step of the sandbox itself never routes there,
+since that variant needs the same sandbox. In a container where root may
+mount, kaniko mode on `/` is refused (ADR-0054), so the overlay refusal
+stands with what makes overlay mode work (a volume at the state
+directory). No refusal's guidance sends a user back to the mode they
+used. `--ignore-path` is refused in overlay mode where it would change the
+image, for good (ADR-0049); `--single-snapshot` is refused in every mode
+until Q-420 is answered; `--materialize` is refused until Phase 4
+(ADR-0064); `--ignore-var-run` is refused in both modes (ADR-0052 D4)
 ([ADR-0049](../adr/0049-security-and-performance-over-kaniko-compatibility.md)).
 
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode

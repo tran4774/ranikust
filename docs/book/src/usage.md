@@ -73,9 +73,9 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--registry-certificate=REGISTRY=PATH` | An extra CA certificate for one registry. Repeatable. |
 | `--insecure-registry=REGISTRY` | Reach this registry (`host[:port]`) over plain HTTP when HTTPS fails, as kaniko. Repeatable. A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP without it, as BuildKit. |
 | `--snapshot-mode=full\|redo\|time` | What kaniko mode compares between snapshots, as in kaniko; ignored, with a warning, in overlay mode. kaniko's `--snapshotMode` is refused, naming this flag. |
-| `--ignore-path=PATH` | An absolute path kaniko mode keeps out of every layer, as in kaniko. Repeatable. Refused in overlay mode for now. |
-| `--single-snapshot` | Kaniko mode takes one snapshot at the end of the build, as in kaniko. Refused in overlay mode for now. |
-| `--materialize` | As in kaniko; it matters only with a layer cache, which ranikust does not have yet. |
+| `--ignore-path=PATH` | An absolute path kaniko mode keeps out of every layer, as in kaniko; each part may be a glob, so `/var/cache/*` keeps what is in `/var/cache` but not the directory. Repeatable. The whole root (`/`, or a path that cleans to it) and a malformed pattern are refused. Refused in overlay mode, whose layers never hold mounts. |
+| `--single-snapshot` | Not offered yet, in any mode: a measurement is deciding whether one snapshot at the end is worth losing a layer per step (Q-420). Drop it. |
+| `--materialize` | Refused until the layer cache, the only place it has an effect, as `--cache` (ADR-0064). |
 | `--compression-level=N` | gzip `-1` (6) to `9`, zstd `1` to `19`. gzip `-2` and zstd `20` to `22`, which kaniko takes, are refused. Default: ranikust's (gzip 6, zstd 3). |
 | `--image-format=docker\|oci` | The image's media types. Default `oci`, as BuildKit; `docker` cannot go with `--compression=zstd`. Unlike kaniko, `oci` can go with `--tar-path`. |
 | `--label=KEY=VALUE` | A label on the image built (the pushed stage only), set before its first instruction, so a `LABEL` of the same key in that stage wins. Repeatable. |
@@ -93,19 +93,18 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `-v`, `--verbosity=LEVEL` | `trace`, `debug`, `info` (default), `warn` (or `warning`), `error`, in any case; `fatal` and `panic` log as `error`. Other programs' libraries log at `info` at most. Never changes the metrics report. |
 | `--log-format=text\|color\|json` | As kaniko's: `color` (default) colors the level and counts seconds since start (`INFO[0005] message`); `text` writes `time=… level=… msg=…`; `json` one object per line with `level`, `msg` and `time`. Times are UTC. |
 | `--log-timestamp` | In the `color` format, the full time instead of the seconds since start. |
-| `--custom-platform=linux/amd64` | Another name for `--platform` (also `--customPlatform`, with a warning). |
-| `--cache=false` | Accepted: no layer cache is what this version does. `--cache` itself comes later. `--compressed-caching=false` and `--no-push-cache` are accepted with a warning. |
-| `--skip-push-permission-check`, `--preserve-context` | Accepted: ranikust makes no write check before the build, and never touches the context. |
+| `--cache=false` | Accepted: no layer cache is what this version does. `--cache` itself comes later. |
+| `--skip-push-permission-check`, `--preserve-context` | Accepted: ranikust makes no write check before the build, and never changes or deletes the context. In kaniko mode on a container's `/`, a context inside the root is refused unless it is kept out of the layers (a volume, `/ranikust`). |
 
 ## ranikust's own flags
 
 | Flag | Meaning |
 |---|---|
-| `--mode=auto\|overlay\|kaniko` | How to snapshot: `auto` (default) probes the environment and picks the fastest mode that works, kaniko mode where root may not mount ([How ranikust builds](how-it-builds.md)). |
+| `--mode=auto\|overlay\|kaniko` | How to snapshot: `auto` (default) probes the environment and picks the fastest mode that works: overlay mode where root may mount, kaniko mode where it may not, and, outside a container where overlayfs refuses the state directory (NFS, overlayfs), kaniko mode with a directory per stage ([How ranikust builds](how-it-builds.md)). |
 | `--state-dir=DIR` | Where ranikust keeps its store and every build root it makes; kaniko's `--kaniko-dir`. Default `/var/lib/ranikust`. It must be new, empty, or a state directory ranikust made (it holds `.ranikust-state`; `/` never), owned by the user running ranikust and writable by no one else, below directories only root may write (root's sticky `/tmp` is fine); ranikust makes it mode `0700`. In a container, overlay mode needs it on a volume. There is no work-directory flag: ranikust builds on `/` in a container in kaniko mode, and everywhere else in directories it makes here ([ADR-0050](https://github.com/tran4774/ranikust/blob/main/docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)). |
-| `--jobs=N` | Stages built at once. Default: the number of CPUs available. |
+| `--jobs=N` | Stages built at once, and blobs uploaded at once. Default: the number of CPUs available. In kaniko mode on a container's `/` the stages run one at a time and only the uploads follow it. |
 | `--snapshot-workers=N` | Threads of kaniko mode's filesystem walk. Default 8, the fastest measured; ignored, with a warning, in overlay mode. |
-| `--network=host\|none` | The network `RUN` gets. Default `host`. |
+| `--network=host\|none` | The network `RUN` gets. Default `host`. `none` is refused in kaniko mode on a container's `/`, where a `RUN` gets no network namespace of its own. |
 | `--platform=linux/amd64` | The image platform. Only `linux/amd64` for now. kaniko's `--custom-platform` and `--customPlatform` are refused, naming this flag. |
 | `--metrics-file=PATH` | Write the metrics report there when ranikust exits, also after an error; works with `version` too. The only way to ask for it: `RANIKUST_METRICS_FILE` is not read (a warning says so). |
 | `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. Kept out of every layer, the config and the logs; at most 500 KiB. kaniko's and buildctl's syntax. Repeat for several. |

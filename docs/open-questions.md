@@ -480,6 +480,39 @@ Entry format:
 - **Interim:** refused in every mode (Phase 5).
 - **Raised:** 2026-11-01
 
+### Q-420: Does kaniko mode offer `--single-snapshot`?
+
+- **Blocks:** Phase 2 criterion 8 (the flag's meaning); **Area:**
+  `ranikust`, `rnk-snapshot`
+- **Context:** kaniko's `--single-snapshot` takes one snapshot at the end
+  of the build instead of one per step, giving one layer. ADR-0049 accepts
+  it only if measured faster; the maintainer asked for a measurement first
+  (2026-11-01, "1: theo đề xuất"). Measured
+  (`rnk-snapshot` `single_snapshot_poc`, release build, 32-core host, a
+  tree on an ext4 NVMe disk, page cache warm, medians of 3; a light
+  synthetic workload, not W1–W3): 10 steps of 200 rewrites and 200 new
+  files each.
+  - 80 000 files: a walk takes 0.07 s; per-step walks 0.69 s in all, one
+    walk at the end 0.08 s: 0.61 s saved.
+  - 250 000 files (about W1's size): 0.14 s a walk; 1.39 s against 0.24 s:
+    1.16 s saved.
+  - W1 in the VM spends 3.3 s in its ten walks (ADR-0061's run), so a
+    single snapshot would save up to about 3 s of its 22 s [inferred from
+    those numbers, not measured on W1].
+  The cost: the image gets one layer instead of one per step, so Phase 4's
+  layer cache can reuse nothing of a rebuild, and a step's files can no
+  longer be told apart.
+- **Options:** (a) implement it in kaniko mode (one walk and one layer at
+  the end); (b) refuse it for good, an ADR; (c) leave it refused until
+  Phase 4's cache shows what per-step layers are worth on rebuilds.
+- **Recommendation:** (b): at most a few seconds on a build the size of
+  W1, against the per-step layers a cached rebuild needs (security
+  neutral, performance a loss on rebuilds, one flag fewer); (c) if the
+  maintainer wants the Phase 4 numbers first.
+- **Interim:** refused in every mode with a message naming this question
+  (`config::SINGLE_SNAPSHOT`, `[open: Q-420]` in `crates/ranikust/src/main.rs`).
+- **Raised:** 2026-11-01
+
 ## Answered
 
 ### Q-410: How do per-stage directories stop costing more than kaniko on W1?

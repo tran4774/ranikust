@@ -70,9 +70,10 @@ privileged container, or as a regular user who may create user namespaces.
 Used when ranikust runs as root but may not mount, as in a Docker container
 with the default security profile or in most Kubernetes pods.
 
-> Built so far: sequential builds on a container's `/`, multi-stage
-> included, and per-stage directories elsewhere. Not offered:
-> `--parallel-stages`.
+> Built: sequential builds on a container's `/`, multi-stage included, and
+> per-stage directories elsewhere, built in parallel. Refused for good:
+> `--parallel-stages` (ADR-0060). Not offered yet: `--single-snapshot`
+> (Q-420).
 
 - On `/` in a container nothing can be mounted, so a `RUN` gets only what
   needs no mount
