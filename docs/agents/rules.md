@@ -37,7 +37,8 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   descriptor: owned by the running user, `0700`, its ancestors not writable
   by group or others (root-owned sticky directories excepted).
 - `RUN` enters via `pivot_root` (`MS_MOVE` + `chroot` if seccomp blocks it);
-  bare `chroot` only with `--parallel-stages` (T5). Bounding and inheritable
+  never a bare `chroot`: `--parallel-stages` is refused (`ADR-0060`, T5); the
+  whole root tree is `nodev` (T18). Bounding and inheritable
   capabilities drop to Docker's defaults for every `USER` (T6).
 - `USER` from the root's `/etc/passwd`/`/etc/group` (`rnk-rootfs`), never
   the host's; every descriptor `O_CLOEXEC`, none reaches `RUN` (T7).
