@@ -20,6 +20,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 rnk-metrics.workspace = true
 rustix = { workspace = true, features = ["process"] }
 tempfile.workspace = true

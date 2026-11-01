@@ -1375,6 +1375,7 @@ dependencies = [
 name = "rnk-rootfs"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "rnk-metrics",
  "rustix",
  "tar",

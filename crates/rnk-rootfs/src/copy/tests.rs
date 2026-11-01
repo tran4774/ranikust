@@ -555,7 +555,6 @@ fn a_file_holding_more_than_its_size_is_refused_never_cut_short() {
 /// (all of it, or nothing). A copy of the old size with the ranges after
 /// the cut turned into zeros is a file cut short without an error.
 #[test]
-#[ignore = "red team finding: a source cut short between SEEK_DATA calls copies as zeros, no error"]
 fn red_team_a_source_truncated_while_copied_is_refused_never_zero_filled() {
     use std::io::{Seek as _, SeekFrom, Write as _};
     const STEP: u64 = 1 << 20;

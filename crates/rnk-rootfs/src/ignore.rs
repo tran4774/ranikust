@@ -32,6 +32,10 @@ pub struct IgnoreList {
     below: HashSet<PathBuf>,
     /// Entries with glob characters, per component.
     globs: Vec<Glob>,
+    /// Components of the longest literal entry: a path's prefix with more
+    /// components can equal no literal entry, so [`IgnoreList::covers`]
+    /// looks at no longer prefix.
+    max_parts: usize,
 }
 
 impl IgnoreList {
@@ -50,8 +54,13 @@ impl IgnoreList {
     /// it with `..`.
     pub fn insert(&mut self, p: impl AsRef<Path>) -> Result<()> {
         let c = cleaned(p.as_ref())?;
+        self.note_parts(&c);
         self.paths.insert(c);
         Ok(())
+    }
+
+    fn note_parts(&mut self, c: &Path) {
+        self.max_parts = self.max_parts.max(c.iter().count());
     }
 
     /// Adds `p`, taken literally, ignoring only what is strictly below it:
@@ -62,6 +71,7 @@ impl IgnoreList {
     /// As [`IgnoreList::insert`].
     pub fn insert_below(&mut self, p: impl AsRef<Path>) -> Result<()> {
         let c = cleaned(p.as_ref())?;
+        self.note_parts(&c);
         self.below.insert(c);
         Ok(())
     }
@@ -86,6 +96,7 @@ impl IgnoreList {
             .iter()
             .any(|b| b"*?[\\".contains(b))
         {
+            self.note_parts(&c);
             self.paths.insert(c);
             return Ok(());
         }
@@ -120,15 +131,23 @@ impl IgnoreList {
         if c.as_os_str().is_empty() {
             return false;
         }
-        let mut first = true;
-        for a in c.ancestors() {
-            if a.as_os_str().is_empty() {
-                break;
-            }
-            if self.paths.contains(a) || (!first && self.below.contains(a)) {
+        // The cleaned path is `a/b/c`: its leading components are the bytes
+        // before each `/`, and the whole path. Only prefixes of at most
+        // `max_parts` components can equal a literal entry, so a deep path
+        // costs its length once, not its depth times its length.
+        let bytes = c.as_os_str().as_bytes();
+        let ends = bytes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| (b == b'/').then_some(i))
+            .chain(std::iter::once(bytes.len()))
+            .take(self.max_parts);
+        for end in ends {
+            let a = Path::new(OsStr::from_bytes(bytes.get(..end).unwrap_or_default()));
+            let whole = end == bytes.len();
+            if self.paths.contains(a) || (!whole && self.below.contains(a)) {
                 return true;
             }
-            first = false;
         }
         if self.globs.is_empty() {
             return false;

@@ -685,12 +685,14 @@ pub(crate) fn copy_node(
 ///
 /// The size is read once, first. A file holding more than that afterwards
 /// (one appended to while copied, or a filesystem whose size understates
-/// its content) is refused, never cut short: as the walk and the exporter
-/// refuse a file that changes under them.
+/// its content) is refused, never cut short; so is one whose size, `mtime`
+/// or `ctime` differ at the end from the start (cut short or rewritten
+/// meanwhile, which `SEEK_DATA` would read as a hole and copy as zeros):
+/// as the walk and the exporter refuse a file that changes under them.
 fn copy_data(src: BorrowedFd<'_>, out: BorrowedFd<'_>, path: &Path) -> Result<u64> {
     let err = |op| move |e: Errno| io_err(op, path, e);
-    let size = rustix::fs::fstat(src).map_err(err("stat"))?.st_size;
-    let size = u64::try_from(size).unwrap_or(0);
+    let first = rustix::fs::fstat(src).map_err(err("stat"))?;
+    let size = u64::try_from(first.st_size).unwrap_or(0);
     if size > 0 && rustix::fs::ioctl_ficlone(out, src).is_ok() {
         // The clone takes the whole file as it is now.
         let cloned = rustix::fs::fstat(out).map_err(err("stat"))?.st_size;
@@ -734,7 +736,7 @@ fn copy_data(src: BorrowedFd<'_>, out: BorrowedFd<'_>, path: &Path) -> Result<u6
     let mut byte = [0_u8; 1];
     loop {
         match rustix::io::pread(src, &mut byte, size) {
-            Ok(0) => return Ok(size),
+            Ok(0) => break,
             Ok(_) => {
                 return Err(Error::InvalidPath {
                     path: path.to_owned(),
@@ -745,6 +747,29 @@ fn copy_data(src: BorrowedFd<'_>, out: BorrowedFd<'_>, path: &Path) -> Result<u6
             Err(e) => return Err(io_err("read", path, e)),
         }
     }
+    // A file cut short, or rewritten, while its ranges were copied: a
+    // `SEEK_DATA` past the cut reads as a hole and the rest would come out
+    // as zeros. The size and times read again must be the ones read first.
+    let last = rustix::fs::fstat(src).map_err(err("stat"))?;
+    if (
+        last.st_size,
+        last.st_mtime,
+        last.st_mtime_nsec,
+        last.st_ctime,
+        last.st_ctime_nsec,
+    ) != (
+        first.st_size,
+        first.st_mtime,
+        first.st_mtime_nsec,
+        first.st_ctime,
+        first.st_ctime_nsec,
+    ) {
+        return Err(Error::InvalidPath {
+            path: path.to_owned(),
+            reason: "the file changed while it was copied",
+        });
+    }
+    Ok(size)
 }
 
 /// Copies bytes `from..to` of `src` to the same offsets of `out`.

@@ -310,6 +310,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- In kaniko mode, copying a stage and walking a root grew with the cube of
+  a directory chain's depth (a `RUN` can make 20,000 levels in seconds;
+  3000 took 17 s per copy and per walk): the ignore-list check looked up
+  every ancestor of every entry. It now looks only at prefixes as long as
+  the longest entry. A file cut short or rewritten while a stage was
+  copied is refused instead of being copied with zeros in place of the
+  cut part.
 - A `RUN` heredoc whose body starts with `#!` failed with "resolve a mount
   target in the root"; its script now runs from `/dev/pipes`, as in
   BuildKit.

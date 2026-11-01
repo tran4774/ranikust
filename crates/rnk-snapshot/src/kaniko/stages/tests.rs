@@ -863,11 +863,11 @@ fn red_team_huge_xattrs_are_copied_whole() {
 
 /// The copy of a parent and the child's baseline walk grow with a deep
 /// chain's depth no faster than its square: a `RUN` makes a chain of
-/// 20,000 directories in seconds. Each entry's `IgnoreList::covers` hashes
-/// every ancestor's full path, so both grow with its cube: 4x the depth
-/// costs 64x (1500 levels: 2.3 s in release, 3000: 17 s).
+/// 20,000 directories in seconds. A red-team finding: each entry's
+/// `IgnoreList::covers` used to hash every ancestor's full path, so both
+/// grew with its cube (3000 levels: 17 s in release); it now looks only at
+/// prefixes as long as the longest literal entry.
 #[test]
-#[ignore = "red team finding: copy and walk cost the cube of a chain's depth (IgnoreList::covers per entry)"]
 fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
     let time = |depth: usize| {
         let f = Fixture::new();
