@@ -227,7 +227,6 @@ build() {
       t1=$(now)
       sudo chown -R "$(id -u):$(id -g)" "$d"
       ;;
-    *) echo "error: unknown builder $b" >&2; return 1 ;;
     ranikust)
       local extra=()
       [ "$jobs" = - ] || [ "$jobs" = default ] || extra+=("--jobs=$jobs")
@@ -244,6 +243,7 @@ build() {
       t1=$(now)
       sudo chown -R "$(id -u):$(id -g)" "$d"
       ;;
+    *) echo "error: unknown builder $b" >&2; return 1 ;;
   esac
   status=ok
   if [ "$rc" != 0 ]; then
@@ -332,10 +332,13 @@ for w in "${WORKLOADS[@]}"; do
   for k in rk-kaniko rk-kaniko-host; do
     pairs+=("$k $(first_dir "$w" "$k") kaniko $wd/kaniko-r1" "$k $(first_dir "$w" "$k") ranikust $rnk")
   done
+  # W3's `du`-derived files differ between any two builds (Q-187).
+  noise=()
+  [ "$w" != w3 ] || noise=(--noise /out/a.txt --noise /out/b.txt --noise /out/c.txt --noise /out/all.txt)
   for p in "${pairs[@]}"; do
     read -r na da nb db <<<"$p"
     [ -f "$da/listing.tsv.gz" ] && [ -f "$db/listing.tsv.gz" ] || continue
-    "${PY[@]}" guest/e2e/compare.py "$na" "$da" "$nb" "$db" >"$wd/compare-$na-$nb.txt"
+    "${PY[@]}" guest/e2e/compare.py "${noise[@]}" "$na" "$da" "$nb" "$db" >"$wd/compare-$na-$nb.txt"
     log "$w $na vs $nb: $(tail -1 "$wd/compare-$na-$nb.txt")"
   done
   for b in ranikust rk-kaniko rk-kaniko-host; do
