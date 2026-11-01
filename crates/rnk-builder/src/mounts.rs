@@ -282,7 +282,10 @@ pub(crate) fn direct_mounts(mounts: &[Mount]) -> Result<Vec<Mount>> {
                         .to_owned(),
                 ));
             }
-            _ => kept.push(m.clone()),
+            // A secret as a variable: the only mount a `Direct` RUN keeps.
+            MountType::Secret => kept.push(m.clone()),
+            // Refused by `check_supported` above.
+            MountType::Bind | MountType::Tmpfs | MountType::Ssh => {}
         }
     }
     Ok(kept)
