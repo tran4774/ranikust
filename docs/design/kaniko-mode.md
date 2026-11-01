@@ -55,7 +55,7 @@ the scheduler runs one stage at a time) or a private directory per stage
     poisons it, and a start on the traces of a build cut short in this
     container (its marker `.ranikust-building`, holding the PID namespace
     and boot id, or names left with none) makes no name, so a `COPY
-    --from` a kept stage or an image fails [open: Q-360]; `memfd` only
+    --from` a kept stage or an image fails (ADR-0066); `memfd` only
     then, or when no file can be made on disk. After each `RUN` the state
     directory's path must still lead, with no link, to the directory held. The state directory holds no name while a `RUN` runs;
     what must outlive the emptying of the root (a kept stage) is a tar in

@@ -137,3 +137,4 @@ when new measurements contradict its evidence.
 | [0063](0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md) | Root tests that mean the same in a container run in rootful Docker on the test machine (tier T2c) | Accepted | 2026-11-01 | maintainer; VPS probe 2026-11-01; `docs/testing.md` |
 | [0064](0064-materialize-refused-until-the-layer-cache.md) | `--materialize` is refused until the layer cache | Accepted | 2026-11-01 | maintainer; criterion-8 review |
 | [0065](0065-single-snapshot-refused-for-good.md) | `--single-snapshot` is refused for good | Accepted | 2026-11-01 | maintainer, Q-420 measurement; ADR-0049 |
+| [0066](0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md) | Kaniko mode on `/` makes no names after a build in the container was cut short | Accepted | 2026-11-01 | maintainer, Q-360; host-safety review of ADR-0056 |

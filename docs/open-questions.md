@@ -409,44 +409,6 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-10-30
 
-### Q-360: What does kaniko mode on `/` do after an earlier build in the container was cut short?
-
-- **Blocks:** nothing yet; **Area:** `rnk-store`, `ranikust`
-- **Context:** found by the host-safety review of ADR-0056: the fence
-  keeps names away from this build's `RUN` processes only. When an earlier
-  ranikust in the same container was killed mid-`RUN` and was not PID 1,
-  its `RUN`'s processes live on, outside any fence and any sweep, and
-  could open a name in the moment it exists. ranikust sees the trace: its
-  marker `.ranikust-building` left in the state directory, or leftover
-  `.ranikust-anon-*` names.
-  The marker holds the PID namespace and boot id: one from another
-  container or boot is stale and taken over. It covers accidental kills
-  only: a `RUN` can delete the marker and then try to get ranikust killed;
-  leftover names with no marker still count. A `RUN` that failed after
-  its command ran, or was cancelled, also leaves the marker (its sweep may
-  not have finished), so later builds in the container use memory too.
-- **Options:** (a) make no name for that build: state in `memfd`, with a
-  warning saying why and how to avoid it (run ranikust as PID 1, or
-  restart the container), the marker kept for later builds; a `COPY
-  --from` a kept stage or an image on `/`, which needs a named directory,
-  fails the build with that advice; (b) refuse the build; (c) kill every
-  process that is not an ancestor of ranikust, which cannot be done
-  safely: the container's other processes (a CI shell, a sidecar) are not
-  identifiable as the dead build's; (d) make names only when ranikust is
-  PID 1 (no process of a dead build can outlive it there), `memfd`
-  otherwise: safe against a deleted marker too, at a memory cost under a
-  CI shell, the common case.
-- **Recommendation:** (a). The build still succeeds unless it needs a
-  `COPY --from`, and it costs only memory, in a container where something
-  unusual already happened. Choose (d) instead if a `RUN` deleting the
-  marker must be covered too.
-- **Note:** an anonymous store holds an exclusive `flock` on its state
-  directory, so two containers sharing a volume never build on it at the
-  same time (the second is refused): a marker is taken over only from a
-  dead build.
-- **Interim:** (a), on `feat/kaniko-state-on-disk` (`rnk_store::Store::open_anonymous`).
-- **Raised:** 2026-11-01
-
 ### Q-370: Should a built layer be encoded straight into its upload?
 
 - **Blocks:** nothing; **Area:** `rnk-builder`, `rnk-registry`
@@ -481,6 +443,21 @@ Entry format:
 - **Raised:** 2026-11-01
 
 ## Answered
+
+### Q-360: What does kaniko mode on `/` do after an earlier build in the container was cut short?
+
+- **Answer (2026-11-01):** "4: ok chốt a": option (a), the interim
+  behaviour stays. A store opened on this container's marker or on an
+  earlier store's leftover names makes no name for the build (state in
+  `memfd`, warned with why and how to avoid it: ranikust as PID 1, or
+  restart the container), keeps the marker, and a `COPY --from` a kept
+  stage or an image unpacked by name fails with that advice. Recorded in
+  [ADR-0066](adr/0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md).
+- **Context (as asked):** found by the host-safety review of ADR-0056: the
+  fence holds only this build's `RUN` processes, so a `RUN` of an earlier
+  ranikust killed mid-`RUN` (not PID 1) may live on and open a name in the
+  moment it exists. Options were (a) no names, `memfd`; (b) refuse; (c)
+  kill non-ancestors (unsafe); (d) names only as PID 1.
 
 ### Q-420: Does kaniko mode offer `--single-snapshot`?
 

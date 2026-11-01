@@ -46,7 +46,7 @@ fn building_mark() -> Option<String> {
 }
 
 /// Why a store opened on the traces of a build cut short makes no name
-/// [open: Q-360].
+/// (ADR-0066).
 const CUT_SHORT: &str = "an earlier build in this container did not end cleanly and may have \
      left RUN processes; run ranikust as the container's PID 1, or restart the container, to \
      keep state on disk";
@@ -327,7 +327,7 @@ impl Store {
     /// namespace and boot, and removed by a clean [`Store::close`] (ADR-0056):
     /// a store opened on this container's marker, or on names an earlier
     /// store left ([`crate::ANON_PREFIX`], removed here), makes no name for
-    /// the build and keeps the marker [open: Q-360]. A marker from another
+    /// the build and keeps the marker (ADR-0066). A marker from another
     /// container or boot is taken over. Anything else in the state directory
     /// is used as is, with a warning: a `RUN` can read what is there.
     ///
@@ -394,7 +394,7 @@ impl Store {
         let leftovers = anon::remove_leftovers(&root, &state_path)?;
         // A build that did not end cleanly here may have left `RUN`
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
-        // they would see a name, so this build makes none [open: Q-360].
+        // they would see a name, so this build makes none (ADR-0066).
         // The marker names the PID namespace and boot it was made in: one
         // from another container (a state directory on a volume) or an
         // earlier boot left no process here, and is taken over.
@@ -611,7 +611,7 @@ impl Store {
     /// [`Error::Anonymous`] when asked from inside a `RUN` on this thread,
     /// after a `RUN` that ended with an error, or in a store opened on the
     /// traces of a build cut short, whose `RUN` processes may live on
-    /// outside any fence [open: Q-360].
+    /// outside any fence (ADR-0066).
     pub fn named_window(&self) -> Result<NamedGuard> {
         if self.anon.as_ref().is_some_and(|a| a.tainted) {
             return Err(Error::Anonymous(

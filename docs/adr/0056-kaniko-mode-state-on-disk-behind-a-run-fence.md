@@ -76,7 +76,7 @@ Chosen: the third. In kaniko mode on `/`:
   `memfd`, warned, with the advice to run ranikust as PID 1 or restart
   the container; a `COPY --from` a kept stage or an image, unpacked by
   name, fails the build with the same advice) and keeps the marker
-  [open: Q-360]. A marker from another PID namespace or boot (a state
+  (ADR-0066). A marker from another PID namespace or boot (a state
   directory on a volume outliving its container) left no process here
   and is taken over: the store holds an exclusive `flock` on the state
   directory for its life, so a second build on it (another container on
