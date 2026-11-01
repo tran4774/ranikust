@@ -163,6 +163,13 @@ impl<R: StageRootfs> SourceRoot<R> {
         }
         Ok(())
     }
+
+    /// Takes the root out, for its owner to release elsewhere (kaniko
+    /// mode's background release, ADR-0061); `None` once taken or
+    /// released. Whatever reads it later finds it released.
+    pub fn take(&self) -> Option<R> {
+        self.lock().take()
+    }
 }
 
 /// What later stages read of a stage, kept before its root is reused
@@ -260,6 +267,12 @@ pub struct StageInput<'a, R, L> {
     /// the pushed stage only (`kaniko@44aa7ddc0 pkg/executor/build.go:190-191,
     /// 275-285`): empty for every other stage. ADR-0036.
     pub labels: &'a [(String, String)],
+    /// For `FROM <stage>`: this stage is the only one that reads the base
+    /// stage's root after it is built (no other `FROM`, `COPY --from` or
+    /// `RUN --mount from=` on it, decided from the stage graph alone, so
+    /// never by scheduling, ADR-0062), so its root takes the base's over
+    /// (`Snapshotter::prepare_last`, ADR-0061) instead of copying it.
+    pub take_base: bool,
 }
 
 /// A built stage.
@@ -356,7 +369,14 @@ pub fn build_stage<S: Snapshotter>(
             let parent_root = guard
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("the base stage was released".to_owned()))?;
-            let root = cx.snapshotter.prepare(Base::Stage(parent_root))?;
+            // Under the base's lock: no reader of it can come after this
+            // stage when it takes the base over (ADR-0062).
+            let root = if input.take_base {
+                cx.snapshotter.prepare_last(parent_root)?
+            } else {
+                cx.snapshotter.prepare(Base::Stage(parent_root))?
+            };
+            drop(guard);
             (
                 root,
                 parent.scope.clone(),

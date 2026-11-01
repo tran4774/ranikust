@@ -603,6 +603,78 @@ impl RootPath {
         .map_err(|e| io_err("rename", from, e))
     }
 
+    /// Moves the directory `name` of this root, the directory `moved` was
+    /// opened on, to `to_name` in the root `to`, and opens it there as a
+    /// root: `renameat2(RENAME_NOREPLACE)` between the two roots'
+    /// descriptors, never across a mount (`EXDEV`). Both names are single
+    /// plain names, so no path is resolved.
+    ///
+    /// Before the move `name` must still be `moved`'s directory (device,
+    /// inode and mount, not a mount root); after it the directory opened by
+    /// `to_name` on `to`'s descriptor (`O_PATH | O_DIRECTORY | O_NOFOLLOW`)
+    /// must be that directory again, on `to`'s mount. Anything else is
+    /// refused: before the move nothing moved; after it the directory is at
+    /// `to_name`, for the caller to delete. The new root stays on its mount
+    /// when `to` does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] for a name that is not one plain name or a
+    /// directory that is not `moved`'s; [`Error::Io`] from `renameat2`
+    /// (`EEXIST` when `to_name` exists) or `openat`.
+    pub fn move_sub_root(
+        &self,
+        name: impl AsRef<Path>,
+        moved: &RootPath,
+        to: &RootPath,
+        to_name: impl AsRef<Path>,
+    ) -> Result<RootPath> {
+        let (name, to_name) = (name.as_ref(), to_name.as_ref());
+        let (from_os, to_os) = (plain_name(name)?, plain_name(to_name)?);
+        for r in [self, moved, to] {
+            refuse_own_root(r, name)?;
+        }
+        let want = meta::statx_at(moved.fd(), OsStr::new(""), name)?;
+        let refused = |path: &Path, reason| Error::InvalidPath {
+            path: path.to_owned(),
+            reason,
+        };
+        let same = |st: &Stat| {
+            !st.mount_root
+                && (st.ino, st.dev_major, st.dev_minor, st.mnt_id)
+                    == (want.ino, want.dev_major, want.dev_minor, want.mnt_id)
+        };
+        let before = meta::statx_at(self.fd(), from_os, name)?;
+        if before.file_type() != FileType::Directory || !same(&before) {
+            return Err(refused(name, "the name no longer holds the root to move"));
+        }
+        rustix::fs::renameat_with(
+            self.fd(),
+            from_os,
+            to.fd(),
+            to_os,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|e| io_err("rename", name, e))?;
+        let fd = rustix::fs::openat(
+            to.fd(),
+            to_os,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| io_err("open", to_name, e))?;
+        let after = meta::statx_at(fd.as_fd(), OsStr::new(""), to_name)?;
+        if !same(&after) || after.mnt_id != to.mnt_id {
+            return Err(refused(
+                to_name,
+                "the directory moved is not the root moved",
+            ));
+        }
+        let mut sub = Self::from_dir_fd(fd, to_name)?;
+        sub.stay = to.stay;
+        Ok(sub)
+    }
+
     /// Removes the non-directory `p`; a symlink is removed, not followed.
     ///
     /// # Errors
@@ -867,6 +939,35 @@ pub(crate) fn open_name(
         },
         e => io_err("open", path, e),
     })
+}
+
+/// Refuses `root` when it is this process's own `/` (same device and
+/// inode): pruning or moving it would act on the machine itself, whatever
+/// the caller meant (ADR-0061; `rnk-sandbox` refuses system directories the
+/// same way).
+pub(crate) fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()> {
+    let own = meta::statx_at(rustix::fs::CWD, OsStr::new("/"), Path::new("/"))?;
+    let st = meta::statx_at(root.fd(), OsStr::new(""), path)?;
+    if (st.ino, st.dev_major, st.dev_minor) == (own.ino, own.dev_major, own.dev_minor) {
+        return Err(Error::InvalidPath {
+            path: path.to_owned(),
+            reason: "the machine's own root directory",
+        });
+    }
+    Ok(())
+}
+
+/// `p` as one plain name (no `/`, `.` or `..`), for the `*at` calls that
+/// take a name in an opened directory.
+fn plain_name(p: &Path) -> Result<&OsStr> {
+    let mut components = p.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) if p.as_os_str() == name => Ok(name),
+        _ => Err(Error::InvalidPath {
+            path: p.to_owned(),
+            reason: "not a single plain name",
+        }),
+    }
 }
 
 #[cfg(test)]

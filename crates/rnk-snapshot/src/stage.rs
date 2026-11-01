@@ -197,6 +197,20 @@ pub trait Snapshotter {
     /// stage directory cannot be made.
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;
 
+    /// A new stage root on the root `parent` ended with (`FROM <stage>`),
+    /// made by the only stage that reads `parent` (decided from the stage
+    /// graph, ADR-0062): nothing reads that root after this, so the
+    /// snapshotter may take it over instead of copying it (ADR-0061). What the new root holds is what
+    /// [`Snapshotter::prepare`] with `Base::Stage(parent)` gives. Default:
+    /// that.
+    ///
+    /// # Errors
+    ///
+    /// As [`Snapshotter::prepare`].
+    fn prepare_last(&self, parent: &Self::Root) -> Result<Self::Root> {
+        self.prepare(Base::Stage(parent))
+    }
+
     /// A root on an image's layers that a stage only reads (`COPY
     /// --from=<image>`), made while that stage holds its own root. Default:
     /// [`Snapshotter::prepare`]; kaniko mode unpacks it beside the shared

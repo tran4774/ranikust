@@ -910,3 +910,922 @@ fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
     assert!(c4 < 32.0 * c1.max(0.01), "copy: {c1:.3} s -> {c4:.3} s");
     assert!(w4 < 32.0 * w1.max(0.01), "walk: {w1:.3} s -> {w4:.3} s");
 }
+
+// The hand-over to the only stage that reads a parent (ADR-0061, ADR-0062).
+
+fn set_times(p: &Path, secs: i64) {
+    let t = rustix::fs::Timespec {
+        tv_sec: secs,
+        tv_nsec: 3,
+    };
+    let times = rustix::fs::Timestamps {
+        last_access: t,
+        last_modification: t,
+    };
+    rustix::fs::utimensat(
+        rustix::fs::CWD,
+        p,
+        &times,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .unwrap();
+}
+
+/// Path, mode, owner, size, mtime (seconds, nanoseconds), content or link
+/// target, and hardlink group.
+type FullEntry = (PathBuf, u32, u32, u64, i64, i64, Vec<u8>, PathBuf);
+
+/// Every entry below `dir` as a layer takes it: type and mode, owner, size,
+/// modification time, content or link target, and the first path of its
+/// hardlink group; inode numbers, access and change times left out, and a
+/// directory's size (a root handed over keeps its directories' sizes, a
+/// copy makes them compact: ADR-0062).
+fn full_listing(dir: &Path) -> Vec<FullEntry> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut all = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let md = fs::symlink_metadata(&p).unwrap();
+            if md.is_dir() {
+                stack.push(p.clone());
+            }
+            all.push((p, md));
+        }
+    }
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut groups = std::collections::BTreeMap::new();
+    all.into_iter()
+        .map(|(p, md)| {
+            let rel = p.strip_prefix(dir).unwrap().to_owned();
+            let body = if md.file_type().is_symlink() {
+                fs::read_link(&p).unwrap().into_os_string().into_vec()
+            } else if md.is_file() {
+                fs::read(&p).unwrap()
+            } else {
+                Vec::new()
+            };
+            let group = groups
+                .entry((md.dev(), md.ino()))
+                .or_insert_with(|| rel.clone())
+                .clone();
+            let owner = md.uid() ^ (md.gid() << 16);
+            (
+                rel,
+                md.mode(),
+                owner,
+                if md.is_dir() { 0 } else { md.len() },
+                md.mtime(),
+                md.mtime_nsec(),
+                body,
+                group,
+            )
+        })
+        .collect()
+}
+
+/// A parent as a `RUN` leaves one: an image layer, then files, a setuid
+/// file and its hardlink, links out, an ignored path, a FIFO and a socket,
+/// every directory's times set last.
+fn hostile_parent(f: &Fixture) -> (KanikoStage, std::os::unix::net::UnixListener) {
+    let l = f.layer("l", &[("etc/os", b"base"), ("usr/bin/tool", b"bin")], false);
+    let mut parent = f.stages.prepare(Base::Image(&[l])).unwrap();
+    parent.begin_layer().unwrap();
+    let p = parent.mount_point().to_owned();
+    for d in ["proc/1", "var/cache/app", "run"] {
+        fs::create_dir_all(p.join(d)).unwrap();
+    }
+    fs::write(p.join("proc/1/status"), b"ignored").unwrap();
+    fs::write(p.join("var/cache/app/data"), b"cached").unwrap();
+    fs::write(p.join("usr/bin/su"), b"setuid").unwrap();
+    fs::set_permissions(p.join("usr/bin/su"), fs::Permissions::from_mode(0o4755)).unwrap();
+    fs::hard_link(p.join("usr/bin/su"), p.join("etc/su-link")).unwrap();
+    std::os::unix::fs::symlink("/", p.join("etc/to-slash")).unwrap();
+    std::os::unix::fs::symlink("../../..", p.join("run/up")).unwrap();
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        p.join("run/fifo"),
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )
+    .unwrap();
+    let sock = std::os::unix::net::UnixListener::bind(p.join("run/sock")).unwrap();
+    for (secs, d) in (2_000_000..).zip([
+        "proc/1",
+        "proc",
+        "var/cache/app",
+        "var/cache",
+        "var",
+        "run",
+        "usr/bin",
+        "usr",
+        "etc",
+        "",
+    ]) {
+        set_times(&p.join(d), secs);
+    }
+    parent.end_layer().unwrap();
+    parent.done();
+    (parent, sock)
+}
+
+/// Makes the same change in `child` at the same times and returns the
+/// layer's digest.
+fn same_change(child: &mut KanikoStage) -> String {
+    child.begin_layer().unwrap();
+    let c = child.mount_point().to_owned();
+    fs::write(c.join("etc/os"), b"child").unwrap();
+    fs::write(c.join("run/new"), b"new").unwrap();
+    fs::remove_file(c.join("etc/su-link")).unwrap();
+    for (secs, p) in [
+        (3_000_001, "etc/os"),
+        (3_000_002, "run/new"),
+        (3_000_003, "etc"),
+        (3_000_004, "run"),
+    ] {
+        set_times(&c.join(p), secs);
+    }
+    let d = child.end_layer().unwrap();
+    let (digests, _) = d
+        .export(
+            rnk_layer::EncodeOptions {
+                compression: rnk_layer::Compression::None,
+                level: 0,
+                threads: NonZeroUsize::MIN,
+                mtime: None,
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+    digests.diff_id.to_string()
+}
+
+/// ADR-0061: the only stage that reads a parent takes its directory (the same
+/// inode, no copy) and gets exactly what a copy gives: the same entries,
+/// contents, modes, owners, times, links and hardlinks, without the ignored
+/// paths and special files; the same change then gives the same layer.
+#[test]
+fn the_last_reader_takes_the_parent_over_and_gets_what_a_copy_gets() {
+    let f = Fixture::new();
+    let (parent, _sock) = hostile_parent(&f);
+    let mut copied = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let ino = fs::metadata(parent.mount_point()).unwrap().ino();
+    let mut taken = f.stages.prepare_last(&parent).unwrap();
+
+    assert_eq!(
+        fs::metadata(taken.mount_point()).unwrap().ino(),
+        ino,
+        "moved, not copied"
+    );
+    assert!(fs::symlink_metadata(parent.mount_point()).is_err());
+    let (a, b) = (
+        full_listing(copied.mount_point()),
+        full_listing(taken.mount_point()),
+    );
+    assert_eq!(a, b);
+    for gone in ["proc", "run/fifo", "run/sock"] {
+        assert!(
+            !b.iter().any(|e| e.0 == Path::new(gone)),
+            "{gone} handed over"
+        );
+    }
+    let (rc, rt) = (
+        fs::metadata(copied.mount_point()).unwrap(),
+        fs::metadata(taken.mount_point()).unwrap(),
+    );
+    assert_eq!(
+        (rc.mode(), rc.uid(), rc.mtime(), rc.mtime_nsec()),
+        (rt.mode(), rt.uid(), rt.mtime(), rt.mtime_nsec()),
+        "the root directory"
+    );
+    assert_eq!(same_change(&mut copied), same_change(&mut taken));
+
+    copied.release().unwrap();
+    taken.release().unwrap();
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// ADR-0061: once handed over, the parent is read no more (no view, no
+/// second child, no layer) and its release deletes only its own directory.
+#[test]
+fn a_parent_handed_over_is_read_no_more() {
+    let f = Fixture::new();
+    let l = f.layer("l", &[("etc/os", b"base")], false);
+    let mut parent = f.stages.prepare(Base::Image(&[l])).unwrap();
+    parent.done();
+    let child = f.stages.prepare_last(&parent).unwrap();
+    assert_eq!(
+        fs::read(child.mount_point().join("etc/os")).unwrap(),
+        b"base"
+    );
+    let msg = |e: Error| e.to_string();
+    assert!(msg(parent.view().unwrap_err()).contains("handed"));
+    assert!(msg(f.stages.prepare(Base::Stage(&parent)).unwrap_err()).contains("handed"));
+    assert!(msg(f.stages.prepare_last(&parent).unwrap_err()).contains("handed"));
+    assert!(msg(parent.begin_layer().unwrap_err()).contains("handed"));
+    assert_eq!(
+        f.stage_dirs(),
+        ["0", "1"],
+        "nothing made for the refused ones"
+    );
+    parent.release().unwrap();
+    assert_eq!(f.stage_dirs(), ["1"]);
+    assert_eq!(
+        fs::read(child.mount_point().join("etc/os")).unwrap(),
+        b"base"
+    );
+    child.release().unwrap();
+    assert!(f.stage_dirs().is_empty());
+}
+
+/// ADR-0061: a parent root swapped for another directory before the hand-
+/// over is refused; the new stage directory goes, nothing is followed.
+#[test]
+fn a_swapped_parent_root_is_never_handed_over() {
+    let f = Fixture::new();
+    let parent = unwalked(&f, |p| fs::write(p.join("f"), b"real").unwrap());
+    let dir = parent.mount_point().parent().unwrap().to_owned();
+    fs::rename(dir.join("rootfs"), dir.join("away")).unwrap();
+    fs::create_dir(dir.join("rootfs")).unwrap();
+    fs::write(dir.join("rootfs/planted"), b"x").unwrap();
+    let e = f.stages.prepare_last(&parent).unwrap_err();
+    assert!(e.to_string().contains("no longer holds"), "{e}");
+    assert_eq!(f.stage_dirs(), ["0"], "the new stage directory is gone");
+    assert_eq!(fs::read(dir.join("away/f")).unwrap(), b"real");
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty());
+}
+
+thread_local! {
+    /// Makes the hand-over's move fail with `EINVAL` before anything moves,
+    /// as on a filesystem without `RENAME_NOREPLACE`.
+    pub(super) static FAIL_MOVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// ADR-0061: a move that fails before anything moved falls back to a copy
+/// of the pruned root (what a copy of the parent gives); the parent, pruned,
+/// stays refused.
+#[test]
+fn a_move_that_moved_nothing_falls_back_to_a_copy() {
+    let f = Fixture::new();
+    let (parent, _sock) = hostile_parent(&f);
+    let copied = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let ino = fs::metadata(parent.mount_point()).unwrap().ino();
+    FAIL_MOVE.with(|c| c.set(true));
+    let taken = f.stages.prepare_last(&parent);
+    FAIL_MOVE.with(|c| c.set(false));
+    let mut parent = parent;
+    let taken = taken.unwrap();
+    assert_ne!(
+        fs::metadata(taken.mount_point()).unwrap().ino(),
+        ino,
+        "a copy"
+    );
+    assert_eq!(
+        full_listing(copied.mount_point()),
+        full_listing(taken.mount_point())
+    );
+    assert!(
+        parent.view().unwrap_err().to_string().contains("handed"),
+        "the pruned parent is read no more"
+    );
+    for s in [copied, taken, parent] {
+        s.release().unwrap();
+    }
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// ADR-0061 (host-safety): a parent holding a file hardlinked from outside
+/// its root is copied, never handed over, so the child's `RUN` cannot
+/// reach that inode.
+#[test]
+fn a_hardlink_from_outside_is_copied_never_handed_over() {
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside-file");
+    fs::write(&outside, b"outside").unwrap();
+    let parent = unwalked(&f, |p| fs::hard_link(&outside, p.join("linked")).unwrap());
+    let child = f.stages.prepare_last(&parent).unwrap();
+    let c = child.mount_point().join("linked");
+    assert_eq!(fs::read(&c).unwrap(), b"outside");
+    assert_ne!(
+        fs::metadata(&c).unwrap().ino(),
+        fs::metadata(&outside).unwrap().ino(),
+        "the outside inode reached the child"
+    );
+    let mut parent = parent;
+    assert!(
+        parent.view().unwrap_err().to_string().contains("handed"),
+        "the pruned parent is read no more"
+    );
+    child.release().unwrap();
+    parent.release().unwrap();
+    assert_eq!(fs::read(&outside).unwrap(), b"outside");
+}
+
+// Red team of the hand-over (T1, T3, T4, T15, T18, ADR-0017, ADR-0041,
+// ADR-0061, ADR-0062): hostile parents handed to their only reader. Each
+// test fails when a defence gives way.
+
+/// A fixture whose stages use `ignore`.
+fn fixture_with(ignore: IgnoreList) -> Fixture {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = fs::canonicalize(tmp.path()).unwrap().join("state");
+    let store = Store::open(&BuildPaths::new(tmp.path(), &state)).unwrap();
+    let walk = WalkOptions {
+        workers: NonZeroUsize::new(2).unwrap(),
+        mode: SnapshotMode::Full,
+    };
+    let stages = KanikoStages::new(&store, ignore, walk).unwrap();
+    Fixture { tmp, store, stages }
+}
+
+/// The ignore list `ranikust` gives a stage root (`stages_snapshotter`):
+/// the fixed paths, the below-only one, and two `--ignore-path`s, a glob
+/// and a literal.
+fn production_ignore() -> IgnoreList {
+    let globs = [
+        PathBuf::from("/var/cache/*.bin"),
+        PathBuf::from("/opt/skip"),
+    ];
+    crate::kaniko::ignore_list(
+        &crate::kaniko::IgnoreSpec {
+            root: Path::new("/state/builds/1/stages"),
+            state_dir: None,
+            ignore_paths: &globs,
+        },
+        &[],
+    )
+    .unwrap()
+}
+
+/// Every directory the hostile tree of [`production_parent`] makes, deepest
+/// first, for setting times last.
+const PRODUCTION_DIRS: [&str; 19] = [
+    "proc/1",
+    "proc",
+    "sys/kernel",
+    "sys",
+    "dev/pts",
+    "dev",
+    "ranikust/bin",
+    "ranikust",
+    "etc",
+    "run",
+    "tmp/apt-key-gpghome/sub",
+    "tmp/apt-key-gpghome",
+    "tmp",
+    "var/cache/dir.bin",
+    "var/cache",
+    "var",
+    "opt/skip/in",
+    "opt/keep",
+    "d",
+];
+
+/// What a `RUN` can leave in a stage root against the real ignore list:
+/// every fixed path, the below-only directory, both `--ignore-path`s,
+/// hardlinks between kept and ignored names, whiteout-like names, links
+/// out, FIFOs and sockets at the top and nested.
+fn production_parent(f: &Fixture) -> (KanikoStage, Vec<std::os::unix::net::UnixListener>) {
+    use std::os::unix::fs::symlink;
+    let mut parent = f.stages.prepare(Base::Scratch).unwrap();
+    parent.begin_layer().unwrap();
+    let p = parent.mount_point().to_owned();
+    for d in PRODUCTION_DIRS {
+        fs::create_dir_all(p.join(d)).unwrap();
+    }
+    for (file, body) in [
+        ("proc/1/status", "ignored"),
+        ("sys/kernel/x", "ignored"),
+        ("dev/pts/0", "ignored"),
+        ("dev/null", "a plain file"),
+        ("ranikust/bin/ranikust", "ignored"),
+        ("etc/passwd", "root:x:0:0\n"),
+        (".dockerenv", ""),
+        ("run/.containerenv", "engine"),
+        ("run/keep", "kept"),
+        ("tmp/apt-key-gpghome/k", "below"),
+        ("tmp/apt-key-gpghome/sub/k2", "below"),
+        ("var/cache/a.bin", "glob"),
+        ("var/cache/a.txt", "kept"),
+        ("var/cache/dir.bin/in", "glob dir"),
+        ("opt/skip/in/f", "literal"),
+        ("opt/keep/f", "kept"),
+        (".wh.top", "whiteout-like"),
+        ("d/.wh..wh..opq", "opaque-like"),
+        ("d/.wh.gone", "whiteout-like"),
+    ] {
+        fs::write(p.join(file), body).unwrap();
+    }
+    symlink("../proc/self/mounts", p.join("etc/mtab")).unwrap();
+    symlink("/", p.join("etc/root")).unwrap();
+    symlink("../../..", p.join("run/up")).unwrap();
+    fs::hard_link(p.join("ranikust/bin/ranikust"), p.join("etc/hl-ign")).unwrap();
+    fs::hard_link(p.join("var/cache/a.bin"), p.join("var/cache/a.txt-link")).unwrap();
+    fs::hard_link(p.join("opt/keep/f"), p.join("d/f2")).unwrap();
+    fs::set_permissions(p.join("opt/keep/f"), fs::Permissions::from_mode(0o4755)).unwrap();
+    for fifo in [
+        "fifo",
+        "d/fifo",
+        "tmp/apt-key-gpghome/fifo",
+        "opt/keep/fifo",
+    ] {
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            p.join(fifo),
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .unwrap();
+    }
+    let socks = ["sock", "run/sock", "var/cache/sock"]
+        .map(|s| std::os::unix::net::UnixListener::bind(p.join(s)).unwrap())
+        .into();
+    for (secs, d) in (2_000_000..).zip(PRODUCTION_DIRS.iter().chain([&""])) {
+        set_times(&p.join(d), secs);
+    }
+    parent.end_layer().unwrap();
+    parent.done();
+    (parent, socks)
+}
+
+/// The same change made in `child` at the same times, through `change`;
+/// returns its layer's diff ID.
+fn digest_after(child: &mut KanikoStage, change: impl Fn(&Path)) -> String {
+    child.begin_layer().unwrap();
+    change(child.mount_point());
+    let d = child.end_layer().unwrap();
+    let (digests, _) = d
+        .export(
+            rnk_layer::EncodeOptions {
+                compression: rnk_layer::Compression::None,
+                level: 0,
+                threads: NonZeroUsize::MIN,
+                mtime: None,
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+    digests.diff_id.to_string()
+}
+
+/// T1, ADR-0041, ADR-0061: against the ignore list `ranikust` really uses
+/// (fixed paths, below-only, an `--ignore-path` glob and a literal), the
+/// hand-over leaves out exactly what the copy leaves out, whiteout-like
+/// names and hardlinks into ignored paths included, and the same change
+/// then gives the same layer.
+#[test]
+fn red_team_a_hand_over_with_the_real_ignore_list_gives_what_a_copy_gives() {
+    let f = fixture_with(production_ignore());
+    let (parent, _socks) = production_parent(&f);
+    let mut copied = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let mut taken = f.stages.prepare_last(&parent).unwrap();
+    let (a, b) = (
+        full_listing(copied.mount_point()),
+        full_listing(taken.mount_point()),
+    );
+    assert_eq!(a, b);
+    let has = |p: &str| b.iter().any(|e| e.0 == Path::new(p));
+    for gone in [
+        "proc",
+        "sys",
+        "dev",
+        "ranikust",
+        "etc/mtab",
+        ".dockerenv",
+        "run/.containerenv",
+        "tmp/apt-key-gpghome/k",
+        "tmp/apt-key-gpghome/sub",
+        "tmp/apt-key-gpghome/fifo",
+        "var/cache/a.bin",
+        "var/cache/dir.bin",
+        "opt/skip",
+        "fifo",
+        "d/fifo",
+        "opt/keep/fifo",
+        "sock",
+        "run/sock",
+        "var/cache/sock",
+    ] {
+        assert!(!has(gone), "{gone} handed over");
+    }
+    for kept in [
+        "tmp/apt-key-gpghome",
+        "etc/hl-ign",
+        "var/cache/a.txt",
+        "var/cache/a.txt-link",
+        ".wh.top",
+        "d/.wh..wh..opq",
+        "d/.wh.gone",
+        "d/f2",
+    ] {
+        assert!(has(kept), "{kept} missing");
+    }
+    let change = |c: &Path| {
+        fs::write(c.join("etc/passwd"), b"changed").unwrap();
+        fs::write(c.join("run/new"), b"new").unwrap();
+        fs::write(c.join("var/cache/a.txt-link"), b"through the link").unwrap();
+        fs::remove_file(c.join("etc/hl-ign")).unwrap();
+        // A changed `.wh.` name is refused by the layer on either path.
+        for (secs, p) in [
+            (3_000_001, "etc/passwd"),
+            (3_000_002, "run/new"),
+            (3_000_003, "var/cache/a.txt-link"),
+            (3_000_004, "etc"),
+            (3_000_005, "run"),
+        ] {
+            set_times(&c.join(p), secs);
+        }
+    };
+    assert_eq!(
+        digest_after(&mut copied, change),
+        digest_after(&mut taken, change)
+    );
+    copied.release().unwrap();
+    taken.release().unwrap();
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// Every xattr of `p` (not following a symlink), sorted.
+fn xattrs_of(p: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut names = vec![0_u8; 65_536];
+    let n = rustix::fs::llistxattr(p, &mut names).unwrap();
+    let mut out: Vec<(String, Vec<u8>)> = names[..n]
+        .split(|b| *b == 0)
+        .filter(|n| !n.is_empty())
+        .map(|name| {
+            let name = String::from_utf8(name.to_vec()).unwrap();
+            let mut v = vec![0_u8; 65_536];
+            let len = rustix::fs::lgetxattr(p, name.as_str(), &mut v).unwrap();
+            v.truncate(len);
+            (name, v)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// ADR-0061 ("what the new root holds is what a copy gives"): the xattrs
+/// a copy of a parent leaves out (overlay's own, `user.overlay.*`, which
+/// any `RUN` user may set on its files, and `trusted.overlay.*` from an
+/// image layer) are not handed over either, on a file, a directory or the
+/// root directory itself: a child's `RUN` sees the same xattrs whichever
+/// way it got its root. A red-team finding (`prune` kept every xattr),
+/// fixed: `prune` removes overlay's own from every entry it keeps.
+#[test]
+fn red_team_a_hand_over_keeps_no_xattr_a_copy_leaves_out() {
+    let f = Fixture::new();
+    let mut set = true;
+    let parent = unwalked(&f, |p| {
+        fs::create_dir(p.join("d")).unwrap();
+        fs::write(p.join("d/f"), b"f").unwrap();
+        for target in [p.join("d/f"), p.join("d"), p.to_owned()] {
+            for (name, value) in [
+                ("user.overlay.opaque", &b"y"[..]),
+                ("user.overlay.redirect", &b"/elsewhere"[..]),
+                ("user.overlay.overlay.escaped", &b"e"[..]),
+                ("user.plain", &b"p"[..]),
+            ] {
+                if rustix::fs::setxattr(&target, name, value, rustix::fs::XattrFlags::empty())
+                    .is_err()
+                {
+                    set = false;
+                }
+            }
+        }
+    });
+    if !set {
+        eprintln!("skipped: user xattrs refused here");
+        parent.release().unwrap();
+        return;
+    }
+    let copied = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let taken = f.stages.prepare_last(&parent).unwrap();
+    let r = ["", "d", "d/f"].map(|p| {
+        (
+            p,
+            xattrs_of(&copied.mount_point().join(p)),
+            xattrs_of(&taken.mount_point().join(p)),
+        )
+    });
+    copied.release().unwrap();
+    taken.release().unwrap();
+    parent.release().unwrap();
+    for (p, c, t) in r {
+        assert!(
+            c.iter().any(|(n, _)| n == "user.plain"),
+            "{p:?}: the copy kept no xattr: {c:?}"
+        );
+        assert_eq!(c, t, "{p:?}: the copy's xattrs, then the hand-over's");
+    }
+}
+
+/// T1, T3: the parent's `rootfs` name swapped for a symlink to a directory
+/// outside before the hand-over: refused; nothing outside is pruned (its
+/// FIFO and the file under an ignored name stay), nothing is moved there,
+/// and the new stage directory goes.
+#[test]
+fn red_team_a_hand_over_never_follows_a_rootfs_swapped_for_a_symlink() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside");
+    fs::create_dir_all(outside.join("proc")).unwrap();
+    fs::write(outside.join("proc/x"), b"host").unwrap();
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        outside.join("fifo"),
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )
+    .unwrap();
+    let parent = unwalked(&f, |p| fs::write(p.join("f"), b"real").unwrap());
+    let dir = parent.mount_point().parent().unwrap().to_owned();
+    fs::rename(dir.join("rootfs"), dir.join("away")).unwrap();
+    symlink(&outside, dir.join("rootfs")).unwrap();
+    let e = f.stages.prepare_last(&parent).unwrap_err();
+    assert!(e.to_string().contains("no longer holds"), "{e}");
+    assert_eq!(fs::read(outside.join("proc/x")).unwrap(), b"host");
+    assert!(fs::symlink_metadata(outside.join("fifo")).is_ok());
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 2);
+    assert_eq!(fs::read(dir.join("away/f")).unwrap(), b"real");
+    assert_eq!(f.stage_dirs(), ["0"], "the new stage directory is gone");
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty());
+}
+
+/// T1, T4: the name the child's stage directory takes, planted as a link
+/// out: the hand-over is refused before the parent is pruned or moved,
+/// nothing is written outside, and the next free name takes the parent
+/// whole.
+#[test]
+fn red_team_a_name_planted_at_the_child_directory_is_never_followed_by_a_hand_over() {
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    let parent = unwalked(&f, |p| {
+        fs::write(p.join("f"), b"parent").unwrap();
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            p.join("fifo"),
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .unwrap();
+    });
+    std::os::unix::fs::symlink(&outside, f.stages.stages_dir().join("1")).unwrap();
+    let e = f.stages.prepare_last(&parent).unwrap_err();
+    assert!(e.to_string().contains("exists"), "{e}");
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    assert!(
+        fs::symlink_metadata(parent.mount_point().join("fifo")).is_ok(),
+        "the parent was pruned before the refusal"
+    );
+    let child = f.stages.prepare_last(&parent).unwrap();
+    assert!(child.mount_point().ends_with("stages/2/rootfs"));
+    assert_eq!(fs::read(child.mount_point().join("f")).unwrap(), b"parent");
+    assert!(fs::symlink_metadata(child.mount_point().join("fifo")).is_err());
+    child.release().unwrap();
+    parent.release().unwrap();
+    fs::remove_file(f.stages.stages_dir().join("1")).unwrap();
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// T3: a thread swapping a directory of the parent with a symlink to a
+/// directory outside while the parent is handed over: whatever happens,
+/// nothing outside is pruned or moved (its FIFO stays), and a child that
+/// got a root never holds what is outside.
+#[test]
+fn red_team_a_swap_in_the_parent_during_the_hand_over_never_leaves_it() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let outside = f.tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("sentinel"), b"host").unwrap();
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        outside.join("fifo"),
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )
+    .unwrap();
+    let (mut ok, mut failed) = (0, 0);
+    for _ in 0..40 {
+        let parent = unwalked(&f, |p| {
+            fs::create_dir_all(p.join("a/b")).unwrap();
+            for i in 0..30 {
+                fs::write(p.join(format!("a/b/f{i}")), b"in").unwrap();
+                rustix::fs::mkfifoat(
+                    rustix::fs::CWD,
+                    p.join(format!("a/b/p{i}")),
+                    rustix::fs::Mode::from_raw_mode(0o600),
+                )
+                .unwrap();
+            }
+        });
+        let base = parent.mount_point().join("a");
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let taken = std::thread::scope(|s| {
+            s.spawn(|| {
+                let (real, parked, link) = (base.join("b"), base.join("b.p"), base.join("b.l"));
+                if symlink(&outside, &link).is_err() {
+                    return;
+                }
+                while !stop.load(Ordering::Relaxed) {
+                    if fs::rename(&real, &parked).is_ok() {
+                        let _ = fs::rename(&link, &real);
+                        let _ = fs::rename(&real, &link);
+                        let _ = fs::rename(&parked, &real);
+                    } else if fs::symlink_metadata(&base).is_err() {
+                        // Moved away: the race is over.
+                        break;
+                    }
+                }
+            });
+            let r = f.stages.prepare_last(&parent);
+            stop.store(true, Ordering::Relaxed);
+            r
+        });
+        // Listed once the swapper is gone: a rename whose path walk passed
+        // the parent's root before the move lands in the moved tree after
+        // it (seen on ext4), as any writer left running would.
+        match taken {
+            Ok(c) => {
+                ok += 1;
+                for (p, _) in listing(c.mount_point()) {
+                    assert_ne!(p.file_name().unwrap(), "sentinel", "{p:?}");
+                }
+                c.release().unwrap();
+            }
+            Err(_) => failed += 1,
+        }
+        parent.release().unwrap();
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"host");
+        assert!(fs::symlink_metadata(outside.join("fifo")).is_ok());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 2);
+    }
+    eprintln!("hand-overs: {ok} whole, {failed} refused");
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// T15: a tree deeper than `PATH_MAX` is handed over (pruned and moved by
+/// descriptors) and released; the leaf is still there.
+#[test]
+fn red_team_a_tree_deeper_than_path_max_is_handed_over_and_released() {
+    let f = Fixture::new();
+    let depth = 600;
+    let parent = unwalked(&f, |p| {
+        chain(p, depth);
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            p.join("dddddddd/fifo"),
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .unwrap();
+    });
+    let child = f.stages.prepare_last(&parent).unwrap();
+    let mut fd = rustix::fs::open(
+        child.mount_point(),
+        rustix::fs::OFlags::PATH,
+        rustix::fs::Mode::empty(),
+    )
+    .unwrap();
+    for _ in 0..depth {
+        fd = rustix::fs::openat(
+            &fd,
+            "dddddddd",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+    }
+    let leaf = rustix::fs::openat(
+        &fd,
+        "leaf",
+        rustix::fs::OFlags::RDONLY,
+        rustix::fs::Mode::empty(),
+    )
+    .unwrap();
+    let mut buf = [0_u8; 4];
+    rustix::io::read(&leaf, &mut buf).unwrap();
+    assert_eq!(&buf, b"deep");
+    assert!(fs::symlink_metadata(child.mount_point().join("dddddddd/fifo")).is_err());
+    child.release().unwrap();
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// T2 (root, the VM only): device nodes a parent made, one with two names,
+/// nested or at the top, are not handed over, nor its FIFOs and sockets
+/// (ADR-0041, ADR-0061); its files are.
+#[test]
+#[ignore = "T2: mknod as real root; run in the test VM only"]
+fn red_team_a_hand_over_never_gives_the_child_device_nodes() {
+    let f = Fixture::new();
+    let mut parent = f.stages.prepare(Base::Scratch).unwrap();
+    parent.begin_layer().unwrap();
+    let p = parent.mount_point().to_owned();
+    fs::create_dir_all(p.join("nested/deeper")).unwrap();
+    for (name, kind, dev) in [
+        ("null", rustix::fs::FileType::CharacterDevice, (1, 3)),
+        ("nested/sda", rustix::fs::FileType::BlockDevice, (8, 0)),
+        (
+            "nested/deeper/kmem",
+            rustix::fs::FileType::CharacterDevice,
+            (1, 2),
+        ),
+        ("nested/deeper/fifo", rustix::fs::FileType::Fifo, (0, 0)),
+    ] {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            p.join(name),
+            kind,
+            rustix::fs::Mode::from_raw_mode(0o666),
+            rustix::fs::makedev(dev.0, dev.1),
+        )
+        .expect("mknod as root");
+    }
+    fs::hard_link(p.join("null"), p.join("nested/null-too")).unwrap();
+    let _sock = std::os::unix::net::UnixListener::bind(p.join("nested/sock")).unwrap();
+    put(&parent, "file", b"kept", 0o644);
+    parent.end_layer().unwrap();
+    parent.done();
+    let child = f.stages.prepare_last(&parent).unwrap();
+    let c = child.mount_point();
+    for node in [
+        "null",
+        "nested/sda",
+        "nested/deeper/kmem",
+        "nested/deeper/fifo",
+        "nested/null-too",
+        "nested/sock",
+    ] {
+        assert!(
+            fs::symlink_metadata(c.join(node)).is_err(),
+            "{node} handed over"
+        );
+    }
+    assert_eq!(fs::read(c.join("file")).unwrap(), b"kept");
+    child.release().unwrap();
+    parent.release().unwrap();
+    assert!(f.stage_dirs().is_empty(), "{:?}", f.stage_dirs());
+}
+
+/// T2 (root, the VM only): a mount below the parent's root (a volume with
+/// a FIFO and a file) makes the hand-over fail: nothing is pruned across
+/// it, nothing on it moves, the new stage directory goes, and the parent's
+/// release does not cross it either. On a thread of its own in a new mount
+/// namespace, every mount private there.
+#[test]
+#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+fn red_team_a_hand_over_refuses_a_mount_below_the_parent_and_crosses_nothing() {
+    std::thread::spawn(|| {
+        use rustix::thread::UnshareFlags;
+        // SAFETY: this thread shares nothing that the unshared filesystem
+        // attributes or mount namespace would break; it ends with the test.
+        unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+            .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+        rustix::mount::mount_change(
+            "/",
+            rustix::mount::MountPropagationFlags::PRIVATE
+                | rustix::mount::MountPropagationFlags::REC,
+        )
+        .expect("make every mount private");
+        let f = Fixture::new();
+        let parent = unwalked(&f, |p| {
+            fs::create_dir_all(p.join("a/mnt")).unwrap();
+            fs::write(p.join("a/f"), b"parent").unwrap();
+        });
+        let target = parent.mount_point().join("a/mnt");
+        let source = f.tmp.path().join("volume");
+        fs::create_dir_all(source.join("proc")).unwrap();
+        fs::write(source.join("keep"), b"kept").unwrap();
+        fs::write(source.join("proc/x"), b"kept").unwrap();
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            source.join("fifo"),
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .unwrap();
+        rustix::mount::mount_bind(&source, &target).expect("bind mount");
+        // Dropped before `f`: the bind is detached before the directory is
+        // removed, on a panic too.
+        let bind = Detach(target);
+        let r = f.stages.prepare_last(&parent).map(|_| ());
+        let dirs = f.stage_dirs();
+        let released = parent.release();
+        let left = (
+            fs::read(source.join("keep")).ok(),
+            fs::read(source.join("proc/x")).ok(),
+            fs::symlink_metadata(source.join("fifo")).is_ok(),
+        );
+        drop(bind);
+        assert!(r.is_err(), "handed over across a mount");
+        assert_eq!(dirs, ["0"], "the new stage directory is gone");
+        assert_eq!(
+            left,
+            (Some(b"kept".to_vec()), Some(b"kept".to_vec()), true),
+            "the volume's entries stay"
+        );
+        assert!(released.is_err(), "the parent's release reports the mount");
+    })
+    .join()
+    .unwrap();
+}

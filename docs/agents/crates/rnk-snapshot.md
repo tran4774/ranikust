@@ -53,6 +53,7 @@ pub trait Snapshotter {                            // ADR-0046
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<Self::Layer>; // ADR-0055: kaniko Some, overlay None
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;  // Scratch | Image(&[Layer]) | Stage(&Root)
     fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root>;  // COPY --from=<image>; default prepare(Image)
+    fn prepare_last(&self, parent: &Self::Root) -> Result<Self::Root>;     // FROM <stage> by its only reader: may take the root over (ADR-0061, ADR-0062); default prepare(Stage)
 }
 pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction (rnk-builder: from the registry)
 impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
@@ -63,8 +64,11 @@ impl KanikoStages { pub fn new(store: &Store, ignore: IgnoreList, walk: WalkOpti
 // Snapshotter<Root = KanikoStage, Layer = KanikoLayer>: prepare makes stages/<n>/rootfs (stage dir 0700),
 //   each opened once and checked to be the one made (dev, ino, mount); Image: extract_blob each layer
 //   (a failure deletes the directory); Stage(p): copy_filtered p's root (copy_file_range, never
-//   hardlinks, ADR-0017) with p's root owner, mode and times; walks only when layers are needed; the
-//   walker dropped at done(); view = the root; release deletes the stage directory.
+//   hardlinks, ADR-0017) with p's root owner, mode, times and xattrs; walks only when layers are
+//   needed; the walker dropped at done(); view = the root; release deletes the stage directory.
+//   prepare_last(p) (ADR-0061): prune p's root of what the copy leaves out (rnk_rootfs::prune), then
+//   move stages/<p>/rootfs to stages/<c>/rootfs (RootPath::move_sub_root); p is then refused for
+//   view, root, begin_layer and another child, and its release deletes an empty directory.
 // KanikoStageDiff: the walk's diff with the stage root, ExportLayer.
 // kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
 // (the binary uses it on `/` only since ADR-0059)
@@ -251,6 +255,34 @@ impl WalkDiff {
   copy never leaks or leaves a directory; a chain deeper than `PATH_MAX`;
   64 KiB xattrs. Ignored reproducer of a finding: the copy and the walk
   cost the cube of a chain's depth (`IgnoreList::covers` per entry).
+  Hand-over (ADR-0061): the only reader takes the parent's directory (the
+  same inode) and gets, entry for entry (directory sizes aside), what a
+  copy of the same parent gives (a FIFO, a socket, an ignored path, a setuid hardlink, links out,
+  directory times), and the same change gives the same layer digest; a
+  parent handed over is refused for any read and releases only its
+  directory; a parent root swapped for another directory is never handed
+  over and the new stage directory goes; a move that moved nothing, and a
+  parent holding a file hardlinked from outside its root, fall back to a
+  copy, the pruned parent refused after it too. Red team
+  (`red_team_*`, ADR-0061, ADR-0062): among them, the hand-over keeps no
+  xattr a copy leaves out (overlay's own on a file, a directory and the
+  root), a finding fixed in `prune`. Red team of the hand-over
+  (ADR-0061, ADR-0062): with the ignore list `ranikust` gives a stage
+  root (fixed paths, below-only, an `--ignore-path` glob and a literal),
+  whiteout-like names, hardlinks into ignored paths, FIFOs and sockets
+  nested and at the top, the child gets what a copy gets and the same
+  change the same layer; a `rootfs` swapped for a symlink out is refused
+  with nothing outside pruned or moved; the child's directory name
+  planted as a link out refuses the hand-over before any prune, the next
+  name taking the parent whole; a directory exchanged with a link
+  out during the hand-over never leaks; a chain deeper than `PATH_MAX` is
+  handed over and released. Ignored reproducer of a finding
+  (`red_team_a_hand_over_keeps_no_xattr_a_copy_leaves_out`): the
+  hand-over keeps the `user.overlay.*` xattrs a copy leaves out, on
+  files, directories and the root. T2 (`just test-vm unit`): device
+  nodes (one with two names), FIFOs and sockets never handed over; a
+  mount below the parent's root fails the hand-over, nothing on it
+  pruned, the parent's release not crossing it either.
 - **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
   read after the root is reused, only the paths asked for, deleted on
   release, a second keep refused once the root was reused; a stage `FROM`
@@ -327,6 +359,9 @@ impl WalkDiff {
 - Record `rnk_snapshot.diff`; `mount`, `export` (`blocks_read`) and more;
   Phase 2 walk spans ([rows](../../design/metrics.md#rnk-snapshot));
   `rnk_snapshot.keep` (`paths`, 0 for the whole root) per kept stage.
+  `rnk_snapshot.hand_over` around a hand-over (ADR-0061), inside
+  `rnk_snapshot.prepare` (`handed_over = true`), with `rnk_rootfs.prune`
+  in it.
 - Overlay records `rnk_snapshot.diff` inside `export`, which is the walk
   that classifies the entries, so a diff never exported is not recorded.
   The kaniko exporter (`WalkDiff::export`) records the same pair:

@@ -487,9 +487,41 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   (`rnk_rootfs::copy_filtered`: owners, modes, times, xattrs, hardlinks
   inside the tree; a file cloned with `FICLONE` where the filesystem
   shares extents, else only its data ranges, holes kept) with the parent
-  root's owner, mode and times; never a hardlink to it (ADR-0017). Device
-  nodes, FIFOs and sockets a parent's `RUN` made are left out
-  (`CopyOpts::skip_special`, ADR-0041).
+  root's owner, mode, times and xattrs (overlay's own left out); never a
+  hardlink to it (ADR-0017). Device nodes, FIFOs and sockets a parent's
+  `RUN` made are left out (`CopyOpts::skip_special`, ADR-0041).
+- **Hand-over to the only reader** ([ADR-0061](../adr/0061-per-stage-directories-hand-over-to-the-last-reader-and-release-early.md),
+  [ADR-0062](../adr/0062-stage-directory-hand-over-decided-from-the-stage-graph.md)):
+  the build counts, per stage, from the stage graph, the stages that read
+  its root after it is built (each `FROM` it one, each stage reading it
+  with `COPY --from` or `RUN --mount from=` one; a stage doing both counts
+  twice). A stage built `FROM` a stage whose count is exactly one, so
+  read by it alone, takes that stage's directory over
+  (`Snapshotter::prepare_last`, `take_base` in `rnk-builder`) instead of
+  copying it; every other `FROM <stage>` copies. The choice never
+  depends on scheduling, because a directory taken over is not byte for
+  byte the copy: ext4 and xfs keep the size of a directory emptied in
+  place, a copy makes it compact, and the walk compares directory sizes.
+  The hand-over: `rnk_rootfs::prune` deletes in place what the copy leaves
+  out (the ignore list, device nodes, FIFOs, sockets; through descriptors,
+  the machine's own `/` and a mount below the root refused) and sets each
+  directory's times back, then `RootPath::move_sub_root` moves
+  `stages/<p>/rootfs` to `stages/<c>/rootfs` (`renameat2(RENAME_NOREPLACE)`
+  between the stage directories' descriptors, device, inode and mount
+  checked before and after). The prune also removes overlay's own xattrs
+  (`rnk_rootfs::is_overlay_own`, the predicate the copy uses) from every
+  entry it keeps and from the root. The result has the copy's entries,
+  contents, owners, modes, modification times, xattrs, links and
+  hardlinks. What a `RUN` can still tell apart, and no layer holds:
+  access and change times, directory sizes (ext4 and xfs keep them after
+  deletions, a copy makes them compact), the order `readdir` lists a
+  directory in, and inode flags the copy does not carry (`chattr` flags a
+  non-privileged owner may set, such as `A` or `d`). It falls back to a copy of the pruned root when a file there
+  has a hardlink the prune did not find inside the root (moved, it would
+  reach outside), or when the move failed before anything moved (`EINVAL`
+  without `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over, and
+  after such a fallback (its root was pruned), the parent is read no more: its view, root, a second child and a layer are
+  refused, and its release deletes an empty directory.
 - **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
   `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as
   BuildKit, because every `RUN` enters the root `nodev` (the full
@@ -513,13 +545,19 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   instructions. The ignore list of a stage root is the fixed paths and
   `--ignore-path`; nothing is mounted in a directory ranikust made.
 - **Release**: safe deletion of the stage directory, through descriptors,
-  crossing no mount; the rest goes with the build directory.
-- **Cost**: one copy of the base per stage (its data on ext4 and tmpfs,
-  a reflink on xfs and btrfs), all stage directories held to the end of
-  the build, so the peak is about the sum of the stages' roots;
-  experiment 12 measured W3 at 3.28 GB against 2.13 GB for overlay mode.
-  Releasing a stage's directory once no later stage reads it is not done
-  yet.
+  crossing no mount; the rest goes with the build directory. A directory
+  whose readers are all done (its own stage done too), and the root of a
+  `COPY --from` image once the stage that read it is done, go at once to
+  one release thread (ADR-0061); at the end the build hands it every root
+  left and waits for it before the store closes. A second signal exits at
+  once and leaves the rest to the next build's clean-up.
+- **Cost**: one copy of the base per stage built `FROM` a stage, except
+  where it is that stage's only reader and takes the directory over (a
+  chain of stages copies nothing); its data on ext4 and tmpfs, a reflink
+  on xfs and btrfs. The peak is the roots read at the same time plus the
+  copies being made, not every stage's root: a directory goes once nobody
+  reads it. Experiment 12 measured W3 at 3.28 GB against 2.13 GB for
+  overlay mode before ADR-0061.
 - **Placed files**: `hosts`, `resolv.conf`, stub mount points and `/dev`
   nodes change the mtime of their parent, so `/etc` would enter every layer.
   The full sandbox records the parent's mtime before placing (m0) and after

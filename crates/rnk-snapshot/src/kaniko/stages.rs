@@ -19,6 +19,13 @@
 //!   to it (ADR-0017): nothing a `RUN` does reaches the parent or a
 //!   sibling. Device nodes, FIFOs and sockets are left out, as from every
 //!   kaniko-mode extraction (ADR-0041).
+//! - The only stage that reads a parent (ADR-0062) takes its directory over instead
+//!   ([`Snapshotter::prepare_last`], ADR-0061): the parent's root is pruned
+//!   of what the copy leaves out (`rnk_rootfs::prune`, the same filter, the
+//!   directories' times kept) and moved into the new stage directory
+//!   (`renameat2(RENAME_NOREPLACE)` between descriptors, its identity
+//!   checked again). The new root holds what the copy would give, with no
+//!   copy; the parent is never read again and keeps an empty directory.
 //! - Nothing is kept or emptied between stages: a stage's directory stays
 //!   until it is released, and a `COPY --from` reads it as it is.
 //! - The walk and its record live with the stage and go when it is done
@@ -29,11 +36,14 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rnk_layer::LayerDigests;
 use rnk_oci::Digest;
-use rnk_rootfs::{CopyOpts, IgnoreList, Meta, RootPath, copy_filtered, delete_contents};
+use rnk_rootfs::{
+    CopyOpts, FileType, IgnoreList, Meta, RootPath, copy_filtered, delete_contents, is_overlay_own,
+    prune,
+};
 use rnk_store::Store;
 
 use super::root::{KanikoLayer, extract_blob};
@@ -107,17 +117,91 @@ impl KanikoStages {
     }
 }
 
-/// The owner, mode and times of `root`'s own directory.
+/// The owner, mode, times and xattrs (overlay's own left out, as every copy
+/// leaves them out) of `root`'s own directory: what a copy of the root
+/// gives its new root, which the directory handed over keeps (ADR-0061).
 fn root_meta(root: &RootPath) -> Result<Meta> {
     let st = root.statx("/")?;
+    let xattrs = root
+        .xattrs("/")?
+        .into_iter()
+        .filter(|(name, _)| !is_overlay_own(name.as_encoded_bytes()))
+        .collect();
     Ok(Meta {
         uid: Some(st.uid),
         gid: Some(st.gid),
         mode: Some(st.mode & 0o7777),
         atime: Some(st.atime),
         mtime: Some(st.mtime),
-        xattrs: Vec::new(),
+        xattrs,
     })
+}
+
+/// Copies the stage root `from` into the empty root `into`, as `FROM
+/// <stage>` does: device nodes, FIFOs and sockets a parent's `RUN` made are
+/// left out, as from every kaniko-mode extraction and layer (ADR-0041):
+/// nothing is `mknod`ed outside a sandbox; so is what the ignore list
+/// covers. The hand-over (`KanikoStage::hand_over`) prunes the same. The
+/// root directory gets `from`'s owner, mode and times, and each of its
+/// xattrs the new root takes: one it refuses (`security.selinux` in a
+/// confined domain) is left out with a warning, as inside the copy.
+fn copy_stage(from: &RootPath, into: &RootPath, ignore: &IgnoreList) -> Result<()> {
+    let opts = CopyOpts {
+        skip_special: true,
+        ..CopyOpts::default()
+    };
+    copy_filtered(from, "", into, "", &opts, &|p, _| !ignore.covers(p))?;
+    let mut meta = root_meta(from)?;
+    let xattrs = std::mem::take(&mut meta.xattrs);
+    for x in xattrs {
+        let name = x.0.clone();
+        let one = Meta {
+            xattrs: vec![x],
+            ..Meta::default()
+        };
+        if let Err(e) = into.set_meta("", &one) {
+            tracing::warn!(
+                "the stage root's xattr {} is left out of its copy: {e}",
+                name.to_string_lossy()
+            );
+        }
+    }
+    // Times last: setting an xattr changes no time a layer holds, but the
+    // mode and owner come with them in one go.
+    into.set_meta("", &meta)?;
+    Ok(())
+}
+
+/// Whether a failed move left the root where it was: an error of the
+/// rename itself that moves nothing, and nothing at the destination.
+fn nothing_moved(e: &rnk_rootfs::Error, to: &RootPath) -> bool {
+    use rustix::io::Errno;
+    let refused = e
+        .raw_os_error()
+        .map(Errno::from_raw_os_error)
+        .is_some_and(|n| {
+            matches!(
+                n,
+                Errno::INVAL
+                    | Errno::BUSY
+                    | Errno::XDEV
+                    | Errno::NOSYS
+                    | Errno::PERM
+                    | Errno::OPNOTSUPP
+            )
+        });
+    refused
+        && to
+            .statx("rootfs")
+            .is_err_and(|e| e.raw_os_error() == Some(Errno::NOENT.raw_os_error()))
+}
+
+/// Device nodes, FIFOs and sockets: what a stage copy leaves out (ADR-0041).
+fn special(t: FileType) -> bool {
+    matches!(
+        t,
+        FileType::Fifo | FileType::CharDevice | FileType::BlockDevice | FileType::Socket
+    )
 }
 
 impl Snapshotter for KanikoStages {
@@ -138,10 +222,11 @@ impl Snapshotter for KanikoStages {
     }
 
     fn prepare(&self, base: Base<'_, KanikoStage, KanikoLayer>) -> Result<KanikoStage> {
-        if let Base::Stage(parent) = &base
-            && parent.open
-        {
-            return Err(Error::State("the parent stage has a layer open"));
+        if let Base::Stage(parent) = &base {
+            if parent.open {
+                return Err(Error::State("the parent stage has a layer open"));
+            }
+            parent.handed_over()?;
         }
         let shared = &self.shared;
         let layers = match &base {
@@ -161,17 +246,7 @@ impl Snapshotter for KanikoStages {
                 return Err(e.into());
             }
         };
-        let stage = KanikoStage {
-            shared: Arc::clone(shared),
-            path: shared.stages_path.join(&name).join("rootfs"),
-            name,
-            dir,
-            root: Arc::new(root),
-            needed: true,
-            open: false,
-            walked: false,
-            walker: None,
-        };
+        let stage = KanikoStage::new(shared, name, dir, root);
         if let Err(e) = stage.fill(base) {
             if let Err(r) = stage.remove() {
                 tracing::warn!("removing a stage directory after a failure: {r}");
@@ -179,6 +254,33 @@ impl Snapshotter for KanikoStages {
             return Err(e);
         }
         Ok(stage)
+    }
+
+    /// Takes the parent's directory over (ADR-0061): its root, pruned of
+    /// what [`Snapshotter::prepare`] with `Base::Stage` would not copy,
+    /// moves into the new stage directory. The parent is then read no more:
+    /// its view and root are refused, and its release deletes only its own,
+    /// now empty, directory.
+    fn prepare_last(&self, parent: &KanikoStage) -> Result<KanikoStage> {
+        if parent.open {
+            return Err(Error::State("the parent stage has a layer open"));
+        }
+        if !Arc::ptr_eq(&parent.shared, &self.shared) {
+            return Err(Error::State("the parent stage is another build's"));
+        }
+        let shared = &self.shared;
+        let span = tracing::info_span!("rnk_snapshot.prepare", layers = 0, handed_over = true);
+        let _entered = span.enter();
+        let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
+        let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+        match parent.hand_over(&dir) {
+            Ok(root) => Ok(KanikoStage::new(shared, name, dir, root)),
+            Err(e) => {
+                // What was moved, if anything, is inside the new directory.
+                remove_stage_dir(shared, &name, &dir);
+                Err(e)
+            }
+        }
     }
 }
 
@@ -211,9 +313,92 @@ pub struct KanikoStage {
     /// Made at the first walk (it owns a thread pool), dropped when the
     /// stage is done.
     walker: Option<Walker>,
+    /// The root was handed to the stage built on it (ADR-0061): it is no
+    /// longer this stage's to read.
+    handed: AtomicBool,
 }
 
 impl KanikoStage {
+    fn new(shared: &Arc<StagesShared>, name: String, dir: RootPath, root: RootPath) -> Self {
+        Self {
+            shared: Arc::clone(shared),
+            path: shared.stages_path.join(&name).join("rootfs"),
+            name,
+            dir,
+            root: Arc::new(root),
+            needed: true,
+            open: false,
+            walked: false,
+            walker: None,
+            handed: AtomicBool::new(false),
+        }
+    }
+
+    /// Hands the root to the stage directory `to` (ADR-0061): prunes it of
+    /// what a stage copy leaves out and moves it there, returning it opened
+    /// in its new place. Called once, by the only stage that reads this one
+    /// (ADR-0062).
+    ///
+    /// Copies instead, from the pruned root (the same result), when a file
+    /// it keeps has a hardlink outside it (moved, it would reach outside
+    /// the root) or when the move failed before anything moved (a
+    /// filesystem without `RENAME_NOREPLACE`, `EBUSY`). Either way this
+    /// stage, pruned, is read no more.
+    fn hand_over(&self, to: &RootPath) -> Result<RootPath> {
+        if self.handed.swap(true, Ordering::SeqCst) {
+            return Err(Error::State("the stage's root was handed over already"));
+        }
+        let span = tracing::info_span!("rnk_snapshot.hand_over");
+        let _entered = span.enter();
+        let ignore = &self.shared.ignore;
+        // The same filter as the copy in `fill`: what the ignore list
+        // covers, and device nodes, FIFOs and sockets.
+        let pruned = prune(&self.root, &|p, t| ignore.covers(p) || special(t))?;
+        if pruned.linked_outside {
+            tracing::warn!(
+                "a stage root holds a file hardlinked from outside it: copied, not handed over"
+            );
+            return self.copy_instead(to);
+        }
+        match self.move_root(to) {
+            Ok(root) => Ok(root),
+            Err(e) if nothing_moved(&e, to) => {
+                tracing::warn!("handing a stage root over: {e}; copied instead");
+                self.copy_instead(to)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn move_root(&self, to: &RootPath) -> rnk_rootfs::Result<RootPath> {
+        #[cfg(test)]
+        if tests::FAIL_MOVE.with(std::cell::Cell::get) {
+            return Err(rnk_rootfs::Error::Io {
+                op: "rename",
+                path: PathBuf::from("rootfs"),
+                source: std::io::Error::from_raw_os_error(rustix::io::Errno::INVAL.raw_os_error()),
+            });
+        }
+        self.dir.move_sub_root("rootfs", &self.root, to, "rootfs")
+    }
+
+    /// The copy the hand-over falls back to, into a new `rootfs` in `to`.
+    /// This stage stays refused: its root was pruned for the hand-over.
+    fn copy_instead(&self, to: &RootPath) -> Result<RootPath> {
+        let root = to.create_sub_root("rootfs", 0o755)?;
+        copy_stage(&self.root, &root, &self.shared.ignore)?;
+        Ok(root)
+    }
+
+    fn handed_over(&self) -> Result<()> {
+        if self.handed.load(Ordering::SeqCst) {
+            return Err(Error::State(
+                "the stage's root was handed to the stage built on it",
+            ));
+        }
+        Ok(())
+    }
+
     /// Puts `base` into the new, empty root.
     fn fill(&self, base: Base<'_, KanikoStage, KanikoLayer>) -> Result<()> {
         let root = &*self.root;
@@ -229,15 +414,8 @@ impl KanikoStage {
                 }
             }
             Base::Stage(parent) => {
-                // Device nodes, FIFOs and sockets a parent's `RUN` made are
-                // left out, as from every kaniko-mode extraction and layer
-                // (ADR-0041): nothing is `mknod`ed outside a sandbox.
-                let opts = CopyOpts {
-                    skip_special: true,
-                    ..CopyOpts::default()
-                };
-                copy_filtered(&parent.root, "", root, "", &opts, &|p, _| !ignore.covers(p))?;
-                root.set_meta("", &root_meta(&parent.root)?)?;
+                parent.handed_over()?;
+                copy_stage(&parent.root, root, ignore)?;
             }
         }
         Ok(())
@@ -276,6 +454,7 @@ impl StageRootfs for KanikoStage {
         if !self.open {
             return Err(Error::State("no layer is open"));
         }
+        self.handed_over()?;
         Ok(&self.root)
     }
 
@@ -287,6 +466,7 @@ impl StageRootfs for KanikoStage {
         if self.open {
             return Err(Error::State("a layer is open already"));
         }
+        self.handed_over()?;
         if self.needed && !self.walked {
             self.baseline()?;
         }
@@ -318,6 +498,7 @@ impl StageRootfs for KanikoStage {
     }
 
     fn view(&mut self) -> Result<&RootPath> {
+        self.handed_over()?;
         Ok(&self.root)
     }
 

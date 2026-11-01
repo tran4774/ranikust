@@ -1,0 +1,19 @@
+# The background release (ADR-0061) against a late reader: `c`, built
+# FROM `p`, ends long before `slow` copies from `p`; `p` has two readers,
+# so `c` copies it (ADR-0062) and `p` stays until `slow` read it. `slow`
+# itself is read by the last stage, which `c`'s only other reader is not:
+# `c` is taken over by the last stage.
+ARG BASE=docker.io/library/alpine:3.20
+FROM ${BASE} AS p
+RUN echo p >/p
+
+FROM p AS c
+RUN echo c >/c
+
+FROM ${BASE} AS slow
+RUN sleep 3
+COPY --from=p /p /from-p
+
+FROM c
+COPY --from=slow /from-p /from-p
+CMD ["sh", "-c", "cat /p /c /from-p | tr '\\n' ' '"]

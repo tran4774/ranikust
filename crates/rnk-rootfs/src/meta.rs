@@ -32,7 +32,7 @@ impl FileTime {
         Self { secs, nanos: 0 }
     }
 
-    fn to_timespec(self) -> rustix::fs::Timespec {
+    pub(crate) fn to_timespec(self) -> rustix::fs::Timespec {
         rustix::fs::Timespec {
             tv_sec: self.secs,
             tv_nsec: i64::from(self.nanos),
@@ -372,12 +372,82 @@ pub(crate) fn read_xattrs(
 
 /// An xattr overlayfs itself keeps on a layer's entries (`trusted.overlay.*`,
 /// `user.overlay.*`), as opposed to the escaped content xattrs
-/// `user.overlay.overlay.*` (`ADR-0016`).
-fn is_overlay_own(name: &[u8]) -> bool {
+/// `user.overlay.overlay.*` (`ADR-0016`): what a layer and a copy leave out
+/// ([`Xattrs::Layer`], [`Xattrs::Copy`]) and [`crate::prune`] removes.
+#[must_use]
+pub fn is_overlay_own(name: &[u8]) -> bool {
     if name.starts_with(b"user.overlay.overlay.") {
         return false;
     }
     name.starts_with(b"trusted.overlay.") || name.starts_with(b"user.overlay.")
+}
+
+/// Removes overlay's own xattrs ([`is_overlay_own`]) from the pinned entry
+/// `fd` of type `file_type`, reaching it as [`read_xattrs`] does: through
+/// the fd's magic link, or a symlink by its name in its pinned parent with
+/// the `l*` calls (a symlink without a parent is left alone), checked
+/// afterwards to still be the pinned one. No time a layer holds changes.
+/// `path` is only for error messages.
+pub(crate) fn strip_overlay_own(
+    fd: BorrowedFd<'_>,
+    file_type: FileType,
+    parent: Option<(BorrowedFd<'_>, &OsStr)>,
+    path: &Path,
+) -> Result<()> {
+    proc_fd_dir(path)?;
+    let (target, follow) = if file_type == FileType::Symlink {
+        let Some((pfd, name)) = parent else {
+            return Ok(());
+        };
+        let mut p = OsString::from(proc_path(pfd));
+        p.push("/");
+        p.push(name);
+        (p, false)
+    } else {
+        (OsString::from(proc_path(fd)), true)
+    };
+    let mut buf = vec![0; XATTR_MAX];
+    let listed = if follow {
+        rustix::fs::listxattr(&target, &mut buf[..])
+    } else {
+        rustix::fs::llistxattr(&target, &mut buf[..])
+    };
+    let names: Vec<OsString> = match listed {
+        Ok(n) => buf[..n]
+            .split(|&b| b == 0)
+            .filter(|s| is_overlay_own(s))
+            .map(|s| OsStr::from_bytes(s).to_owned())
+            .collect(),
+        Err(Errno::NOTSUP) => return Ok(()),
+        Err(e) => return Err(io_err("listxattr", path, e)),
+    };
+    if names.is_empty() {
+        return Ok(());
+    }
+    if let (false, Some((pfd, name))) = (follow, parent) {
+        // By name: check first that the name still is the pinned symlink.
+        let pinned = statx_at(fd, OsStr::new(""), path)?;
+        let named = statx_at(pfd, name, path)?;
+        if (named.ino, named.dev_major, named.dev_minor)
+            != (pinned.ino, pinned.dev_major, pinned.dev_minor)
+        {
+            return Err(Error::Changed {
+                path: path.to_owned(),
+            });
+        }
+    }
+    for n in names {
+        let r = if follow {
+            rustix::fs::removexattr(&target, n.as_os_str())
+        } else {
+            rustix::fs::lremovexattr(&target, n.as_os_str())
+        };
+        match r {
+            Ok(()) | Err(Errno::NODATA) => {}
+            Err(e) => return Err(io_err("removexattr", path, e)),
+        }
+    }
+    Ok(())
 }
 
 /// Applies `m` to the entry behind `h`. `path` is only for error messages.

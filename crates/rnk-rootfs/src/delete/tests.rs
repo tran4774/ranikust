@@ -1,5 +1,6 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -279,4 +280,560 @@ fn mounts_inside_the_root_survive() {
     })
     .join()
     .unwrap();
+}
+
+/// An entry as a layer takes it: mode, owner, size, modification time,
+/// link count, content or link target, and the first path of its hardlink
+/// group. A directory's size is left out: a copy builds compact
+/// directories, while one emptied in place keeps its size on ext4 and xfs,
+/// which is why the hand-over is decided from the stage graph (ADR-0062).
+type Entry = (u32, u32, u32, u64, (i64, i64), u64, Vec<u8>, PathBuf);
+
+fn listing(dir: &Path) -> BTreeMap<PathBuf, Entry> {
+    let mut all = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let md = fs::symlink_metadata(&p).unwrap();
+            if md.is_dir() {
+                stack.push(p.clone());
+            }
+            all.push((p, md));
+        }
+    }
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut groups: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
+    let mut out = BTreeMap::new();
+    for (p, md) in all {
+        let rel = p.strip_prefix(dir).unwrap().to_owned();
+        let body = if md.file_type().is_symlink() {
+            fs::read_link(&p).unwrap().into_os_string().into_vec()
+        } else if md.is_file() {
+            fs::read(&p).unwrap()
+        } else {
+            Vec::new()
+        };
+        let group = groups
+            .entry((md.dev(), md.ino()))
+            .or_insert_with(|| rel.clone())
+            .clone();
+        let mtime = (md.mtime(), md.mtime_nsec());
+        out.insert(
+            rel,
+            (
+                md.mode(),
+                md.uid(),
+                md.gid(),
+                if md.is_dir() { 0 } else { md.len() },
+                mtime,
+                md.nlink(),
+                body,
+                group,
+            ),
+        );
+    }
+    out
+}
+
+fn set_times(p: &Path, secs: i64) {
+    let t = rustix::fs::Timespec {
+        tv_sec: secs,
+        tv_nsec: 7,
+    };
+    let times = rustix::fs::Timestamps {
+        last_access: t,
+        last_modification: t,
+    };
+    rustix::fs::utimensat(CWD, p, &times, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+}
+
+/// A tree mixing what kaniko mode leaves out of a stage copy (ignored
+/// paths, FIFOs, sockets) with what it keeps; every directory's times are
+/// set last, to known values. The listener keeps the socket bound.
+fn hand_over_tree(f: &Fixture) -> std::os::unix::net::UnixListener {
+    let (out, _) = f.outside();
+    for d in [
+        "etc/sub",
+        "var/run/app",
+        "proc",
+        "keep/deep/er",
+        "ign-dir/x",
+    ] {
+        fs::create_dir_all(f.host(d)).unwrap();
+    }
+    fs::write(f.host("etc/passwd"), b"root:x:0:0\n").unwrap();
+    fs::write(f.host("var/run/app/pid"), b"42").unwrap();
+    fs::write(f.host("proc/stale"), b"x").unwrap();
+    fs::write(f.host("ign-dir/x/f"), b"ignored").unwrap();
+    fs::write(f.host("keep/deep/er/f"), b"kept").unwrap();
+    fs::set_permissions(f.host("keep/deep/er/f"), fs::Permissions::from_mode(0o4755)).unwrap();
+    fs::hard_link(f.host("keep/deep/er/f"), f.host("etc/hl")).unwrap();
+    fs::hard_link(f.host("keep/deep/er/f"), f.host("ign-dir/hl")).unwrap();
+    symlink(&out, f.host("etc/out")).unwrap();
+    symlink("../../..", f.host("keep/up")).unwrap();
+    rustix::fs::mkfifoat(CWD, f.host("keep/fifo"), Mode::from_raw_mode(0o600)).unwrap();
+    rustix::fs::mkfifoat(CWD, f.host("fifo-top"), Mode::from_raw_mode(0o644)).unwrap();
+    let sock = std::os::unix::net::UnixListener::bind(f.host("etc/sub/sock")).unwrap();
+    let dirs = [
+        "etc/sub",
+        "etc",
+        "var/run/app",
+        "var/run",
+        "var",
+        "proc",
+        "keep/deep/er",
+        "keep/deep",
+        "keep",
+        "ign-dir/x",
+        "ign-dir",
+        "",
+    ];
+    for (secs, d) in (1_000_000..).zip(dirs) {
+        set_times(&f.host(d), secs);
+    }
+    sock
+}
+
+fn hand_over_ignore() -> IgnoreList {
+    let mut ignore = IgnoreList::new();
+    ignore.insert_below("/proc").unwrap();
+    ignore.insert("/var/run").unwrap();
+    ignore.insert("/ign-dir").unwrap();
+    ignore
+}
+
+fn special(t: FileType) -> bool {
+    matches!(
+        t,
+        FileType::Fifo | FileType::CharDevice | FileType::BlockDevice | FileType::Socket
+    )
+}
+
+/// ADR-0061: pruning a root of what a stage copy leaves out gives what the
+/// copy gives, entry for entry (contents, modes, owners, modification
+/// times, links, hardlinks between the names kept), and every directory it
+/// deleted from keeps its times, the root's included.
+#[test]
+fn prune_gives_what_a_filtered_copy_gives() {
+    let f = Fixture::new();
+    let _sock = hand_over_tree(&f);
+    let ignore = hand_over_ignore();
+    let copy = Fixture::new();
+    let opts = crate::CopyOpts {
+        skip_special: true,
+        ..crate::CopyOpts::default()
+    };
+    crate::copy_filtered(&f.root, "", &copy.root, "", &opts, &|p, _| {
+        !ignore.covers(p)
+    })
+    .unwrap();
+    let root_times = (
+        fs::metadata(&f.host).unwrap().mtime(),
+        fs::metadata(&f.host).unwrap().mtime_nsec(),
+    );
+
+    prune(&f.root, &|p, t| ignore.covers(p) || special(t)).unwrap();
+
+    let (pruned, copied) = (listing(&f.host), listing(&copy.host));
+    assert_eq!(pruned, copied);
+    assert!(
+        pruned.contains_key(Path::new("proc")),
+        "below-only keeps its directory"
+    );
+    for gone in [
+        "var/run",
+        "ign-dir",
+        "keep/fifo",
+        "fifo-top",
+        "etc/sub/sock",
+        "proc/stale",
+    ] {
+        assert!(!pruned.contains_key(Path::new(gone)), "{gone}");
+    }
+    assert_eq!(fs::metadata(f.host("etc/sub")).unwrap().mtime(), 1_000_000);
+    let now = fs::metadata(&f.host).unwrap();
+    assert_eq!((now.mtime(), now.mtime_nsec()), root_times);
+}
+
+/// ADR-0061: `prune` removes overlay's own xattrs (`user.overlay.*`, the
+/// predicate a copy uses) from the root, a directory and a file it keeps,
+/// and keeps the escaped `user.overlay.overlay.*` and every other xattr,
+/// with no time a layer holds changed. Skipped where the filesystem has no
+/// `user.*` xattrs.
+#[test]
+fn prune_removes_overlays_own_xattrs_as_a_copy_does() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/f"), b"x").unwrap();
+    for p in ["", "d", "d/f"] {
+        for (n, v) in [
+            ("user.overlay.opaque", b"y".as_slice()),
+            ("user.overlay.overlay.kept", b"escaped"),
+            ("user.keep", b"mine"),
+        ] {
+            match rustix::fs::setxattr(f.host(p), n, v, rustix::fs::XattrFlags::empty()) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::NOTSUP | rustix::io::Errno::PERM) => {
+                    eprintln!("no user xattrs here; skipped");
+                    return;
+                }
+                Err(e) => panic!("setxattr {p}: {e}"),
+            }
+        }
+        set_times(&f.host(p), 1_000_000);
+    }
+    let copy = Fixture::new();
+    crate::copy_filtered(
+        &f.root,
+        "",
+        &copy.root,
+        "",
+        &crate::CopyOpts::default(),
+        &|_, _| true,
+    )
+    .unwrap();
+    prune(&f.root, &|_, _| false).unwrap();
+    let names = |p: &Path| {
+        let mut buf = vec![0; 4096];
+        let n = rustix::fs::listxattr(p, &mut buf).unwrap();
+        let mut v: Vec<_> = buf[..n]
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8(s.to_vec()).unwrap())
+            .collect();
+        v.sort();
+        v
+    };
+    for p in ["d", "d/f"] {
+        assert_eq!(names(&f.host(p)), names(&copy.host(p)), "{p}");
+        assert_eq!(
+            names(&f.host(p)),
+            ["user.keep", "user.overlay.overlay.kept"],
+            "{p}"
+        );
+        assert_eq!(fs::metadata(f.host(p)).unwrap().mtime(), 1_000_000, "{p}");
+    }
+    assert_eq!(
+        names(&f.host),
+        ["user.keep", "user.overlay.overlay.kept"],
+        "the root"
+    );
+}
+
+#[test]
+fn prune_never_follows_a_link_out() {
+    let f = Fixture::new();
+    let (out, before) = f.outside();
+    symlink(&out, f.host("to-outside")).unwrap();
+    symlink("/", f.host("slash")).unwrap();
+    fs::create_dir(f.host("d")).unwrap();
+    symlink(out.join("sentinel"), f.host("d/sentinel")).unwrap();
+    prune(&f.root, &|p, _| {
+        p.starts_with("d") || p == Path::new("to-outside")
+    })
+    .unwrap();
+    assert_eq!(tree(&f.host), BTreeSet::from([PathBuf::from("slash")]));
+    assert_eq!(snapshot(&out), before);
+}
+
+#[test]
+fn prune_refuses_a_root_on_another_mount() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("a")).unwrap();
+    // The root now looks as if it were on another mount than it claims.
+    let root = RootPath::open(&f.host)
+        .unwrap()
+        .with_mnt_id(f.root.mnt_id() + 1);
+    let e = prune(&root, &|_, _| true).unwrap_err();
+    assert!(matches!(e, Error::Changed { .. }), "{e:?}");
+    assert_eq!(tree(&f.host), BTreeSet::from([PathBuf::from("a")]));
+}
+
+/// ADR-0061: the machine's own `/` is refused before anything is walked
+/// (the filter would delete nothing anyway, should the guard fail).
+#[test]
+fn prune_refuses_the_machines_own_root() {
+    let slash = RootPath::open("/").unwrap();
+    let e = prune(&slash, &|_, _| false).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::InvalidPath {
+                reason: "the machine's own root directory",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+}
+
+/// Links inside the root only: a pair, a kept name whose other name prune
+/// deletes (a file at the top, `gone`), and one whose other names are in a
+/// directory prune deletes whole (`ign/`). `top_first` creates the names
+/// at the top before the directory `d`, which tmpfs lists in creation
+/// order (ext4 in hash order), so the walk meets them in both orders.
+fn links_only_inside(f: &Fixture, top_first: bool) {
+    let top = |f: &Fixture| {
+        fs::write(f.host("gone"), b"y").unwrap();
+        fs::create_dir(f.host("ign")).unwrap();
+        fs::write(f.host("ign/z"), b"z").unwrap();
+    };
+    if top_first {
+        top(f);
+    }
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/a"), b"x").unwrap();
+    fs::hard_link(f.host("d/a"), f.host("d/b")).unwrap();
+    if !top_first {
+        top(f);
+    }
+    fs::hard_link(f.host("gone"), f.host("d/kept")).unwrap();
+    fs::hard_link(f.host("ign/z"), f.host("d/kept-z")).unwrap();
+    fs::hard_link(f.host("ign/z"), f.host("ign/z2")).unwrap();
+}
+
+/// ADR-0061: a kept file with a hardlink outside the root is reported; links
+/// whose names are all inside it are not, whether prune keeps those names,
+/// deletes them itself or inside a directory it deletes whole, and in
+/// whatever order it meets them.
+#[test]
+fn prune_reports_a_hardlink_from_outside_the_root_in_any_order() {
+    for top_first in [true, false] {
+        let f = Fixture::new();
+        links_only_inside(&f, top_first);
+        let remove = |p: &Path, _: FileType| p == Path::new("gone") || p == Path::new("ign");
+        let inside = prune(&f.root, &remove).unwrap();
+        assert!(!inside.linked_outside, "top first {top_first}: {inside:?}");
+        assert_eq!(
+            tree(&f.host),
+            ["d", "d/a", "d/b", "d/kept", "d/kept-z"]
+                .map(PathBuf::from)
+                .into(),
+        );
+
+        let (out, _) = f.outside();
+        fs::hard_link(out.join("sentinel"), f.host("d/from-outside")).unwrap();
+        let outside = prune(&f.root, &|_, _| false).unwrap();
+        assert!(outside.linked_outside, "top first {top_first}: {outside:?}");
+        assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"x");
+    }
+}
+
+/// ADR-0061: a link to a file outside the root whose every name in the
+/// root prune deletes leaves nothing behind that reaches outside: not
+/// reported, in a directory deleted whole or at the top.
+#[test]
+fn prune_does_not_report_an_outside_link_it_deletes() {
+    let f = Fixture::new();
+    let (out, _) = f.outside();
+    fs::create_dir(f.host("ign")).unwrap();
+    fs::hard_link(out.join("sentinel"), f.host("ign/outside")).unwrap();
+    fs::hard_link(out.join("sub/file"), f.host("top-outside")).unwrap();
+    let remove = |p: &Path, _: FileType| p == Path::new("ign") || p == Path::new("top-outside");
+    let r = prune(&f.root, &remove).unwrap();
+    assert!(!r.linked_outside, "{r:?}");
+    assert!(tree(&f.host).is_empty());
+    assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"x");
+}
+
+/// ADR-0061: a mount below the root is refused, never pruned across, and
+/// nothing on it is touched; a copy refuses one too.
+#[test]
+#[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+fn prune_refuses_a_mount_below_the_root() {
+    std::thread::spawn(|| {
+        use rustix::mount::{MountPropagationFlags, mount_bind, mount_change};
+        use rustix::thread::UnshareFlags;
+        // SAFETY: this thread shares nothing that the unshared filesystem
+        // attributes or mount namespace would break; it ends with the test.
+        unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+            .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+        mount_change(
+            "/",
+            MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+        )
+        .expect("make every mount private");
+        let f = Fixture::new();
+        let source = f.host.parent().unwrap().join("bind-source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("keep"), b"bind").unwrap();
+        rustix::fs::mkfifoat(CWD, source.join("fifo"), Mode::from_raw_mode(0o600)).unwrap();
+        fs::create_dir_all(f.host("a/bind")).unwrap();
+        let mut guard = Detach(Vec::new());
+        mount_bind(&source, f.host("a/bind")).expect("bind mount");
+        guard.0.push(f.host("a/bind"));
+        let e = prune(&f.root, &|_, t| special(t)).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                Error::InvalidPath {
+                    reason: "a mount below the root",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        assert_eq!(fs::read(source.join("keep")).unwrap(), b"bind");
+        assert!(fs::symlink_metadata(source.join("fifo")).is_ok());
+        drop(guard);
+    })
+    .join()
+    .unwrap();
+}
+
+// Red team of `prune` (T1, T3, T4, T15, ADR-0061, ADR-0062): hostile trees
+// and a concurrent writer. Each test fails when a defence gives way.
+
+/// An inode with a name `prune` keeps, a name it deletes and a name
+/// outside the root is reported, whatever order the walk meets the names
+/// in and whether the deleted name is at the top or in a directory deleted
+/// whole: the root handed over would keep an inode shared with outside.
+/// A symlink hardlinked from outside counts as a file (a child's `RUN`
+/// could `lchown` it); a FIFO hardlinked from outside does not, every name
+/// of it in the root being deleted.
+#[test]
+fn red_team_prune_reports_a_link_kept_deleted_and_outside_in_any_order() {
+    for (top_first, whole) in [(true, false), (false, false), (true, true), (false, true)] {
+        let f = Fixture::new();
+        let (out, _) = f.outside();
+        let deleted = if whole { "ign/z" } else { "gone" };
+        let make_deleted = |f: &Fixture| {
+            if whole {
+                fs::create_dir(f.host("ign")).unwrap();
+            }
+            fs::hard_link(out.join("sentinel"), f.host(deleted)).unwrap();
+        };
+        if top_first {
+            make_deleted(&f);
+        }
+        fs::create_dir(f.host("d")).unwrap();
+        fs::hard_link(out.join("sentinel"), f.host("d/kept")).unwrap();
+        if !top_first {
+            make_deleted(&f);
+        }
+        let remove = |p: &Path, _: FileType| p == Path::new("gone") || p == Path::new("ign");
+        let r = prune(&f.root, &remove).unwrap();
+        assert!(
+            r.linked_outside,
+            "top first {top_first}, whole {whole}: {r:?}"
+        );
+        assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"x");
+        assert_eq!(fs::metadata(out.join("sentinel")).unwrap().nlink(), 2);
+    }
+
+    let f = Fixture::new();
+    let (out, before) = f.outside();
+    symlink("/", out.join("sl")).unwrap();
+    rustix::fs::linkat(CWD, out.join("sl"), CWD, f.host("sl"), AtFlags::empty()).unwrap();
+    let r = prune(&f.root, &|_, _| false).unwrap();
+    assert!(r.linked_outside, "a symlink linked from outside: {r:?}");
+
+    let f = Fixture::new();
+    let (out, _) = f.outside();
+    rustix::fs::mkfifoat(CWD, out.join("fifo"), Mode::from_raw_mode(0o600)).unwrap();
+    fs::hard_link(out.join("fifo"), f.host("fifo")).unwrap();
+    fs::create_dir(f.host("d")).unwrap();
+    fs::hard_link(out.join("fifo"), f.host("d/fifo")).unwrap();
+    let r = prune(&f.root, &|_, t| special(t)).unwrap();
+    assert!(!r.linked_outside, "a FIFO pruned everywhere: {r:?}");
+    assert_eq!(tree(&f.host), BTreeSet::from([PathBuf::from("d")]));
+    assert!(fs::symlink_metadata(out.join("fifo")).is_ok());
+    drop(before);
+}
+
+/// T3: a thread swapping a directory `prune` walks with a symlink to a
+/// directory outside (`RENAME_EXCHANGE`, as a process left by a `RUN`
+/// could) never gets `prune` to delete, follow or retime anything there:
+/// the FIFOs and the `ign` directory outside, which `prune` deletes inside
+/// the root, stay, and so do the outside directory's own times.
+#[test]
+fn red_team_prune_under_a_concurrent_swap_never_reaches_outside() {
+    let (mut ok, mut failed) = (0, 0);
+    for _ in 0..40 {
+        let f = Fixture::new();
+        let (out, _) = f.outside();
+        rustix::fs::mkfifoat(CWD, out.join("p0"), Mode::from_raw_mode(0o600)).unwrap();
+        fs::create_dir(out.join("ign")).unwrap();
+        fs::write(out.join("ign/f"), b"outside").unwrap();
+        set_times(&out, 5_000_000);
+        let before = snapshot(&out);
+        let out_times = |o: &Path| {
+            let m = fs::metadata(o).unwrap();
+            (m.mtime(), m.mtime_nsec(), m.atime(), m.atime_nsec())
+        };
+        let times = out_times(&out);
+        fs::create_dir_all(f.host("d/ign")).unwrap();
+        fs::write(f.host("d/ign/f"), b"inside").unwrap();
+        for i in 0..40 {
+            fs::write(f.host(&format!("d/f{i}")), b"").unwrap();
+            rustix::fs::mkfifoat(CWD, f.host(&format!("d/p{i}")), Mode::from_raw_mode(0o600))
+                .unwrap();
+        }
+        symlink(&out, f.host("swap")).unwrap();
+        let host_dir = fs::File::open(&f.host).unwrap();
+        let stop = AtomicBool::new(false);
+        let result = std::thread::scope(|s| {
+            s.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let r = rustix::fs::renameat_with(
+                        &host_dir,
+                        "d",
+                        &host_dir,
+                        "swap",
+                        rustix::fs::RenameFlags::EXCHANGE,
+                    );
+                    if r.is_err() {
+                        break;
+                    }
+                }
+            });
+            let r = prune(&f.root, &|p, t| {
+                special(t) || p.file_name() == Some(OsStr::new("ign"))
+            });
+            stop.store(true, Ordering::Relaxed);
+            r
+        });
+        // Read before anything here reads the directory again (its atime).
+        assert_eq!(out_times(&out), times, "outside retimed: {result:?}");
+        assert_eq!(snapshot(&out), before, "outside changed: {result:?}");
+        match result {
+            Ok(_) => ok += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    eprintln!("prunes: {ok} whole, {failed} refused");
+}
+
+/// T15: one directory of 100,000 entries, all but two of them FIFOs, is
+/// pruned to what a filtered copy gives (the file and its hardlink), and
+/// keeps its times; nothing is buffered per entry beyond its name.
+#[test]
+fn red_team_prune_of_a_directory_of_100k_entries_gives_what_a_copy_gives() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("big")).unwrap();
+    let dir = fs::File::open(f.host("big")).unwrap();
+    for i in 0..99_998 {
+        rustix::fs::mkfifoat(&dir, format!("fifo-{i}"), Mode::from_raw_mode(0o600)).unwrap();
+    }
+    fs::write(f.host("big/kept"), b"kept").unwrap();
+    fs::hard_link(f.host("big/kept"), f.host("big/kept-link")).unwrap();
+    set_times(&f.host("big"), 4_000_000);
+    let copy = Fixture::new();
+    let opts = crate::CopyOpts {
+        skip_special: true,
+        ..crate::CopyOpts::default()
+    };
+    crate::copy_filtered(&f.root, "", &copy.root, "", &opts, &|_, _| true).unwrap();
+    let r = prune(&f.root, &|_, t| special(t)).unwrap();
+    assert!(!r.linked_outside);
+    assert_eq!(listing(&f.host), listing(&copy.host));
+    assert_eq!(
+        tree(&f.host),
+        ["big", "big/kept", "big/kept-link"]
+            .map(PathBuf::from)
+            .into()
+    );
+    let m = fs::metadata(f.host("big")).unwrap();
+    assert_eq!((m.mtime(), m.mtime_nsec()), (4_000_000, 7));
 }

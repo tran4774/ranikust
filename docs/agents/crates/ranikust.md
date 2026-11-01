@@ -194,7 +194,10 @@ error, a refused kaniko flag, an invalid combination, and for now every
   folded mid-chain and kept with its readers' sources (targets, triggers,
   indexes), and hostile `--from` values (out-of-range, negative, huge,
   zero-padded, self, cycles, case, empty) planned or refused, never a
-  panic (kaniko-oss#724). T1 and T2: the `copy-from`, `copy-from-root`
+  panic (kaniko-oss#724); references by index, in another case, to a
+  name a later stage takes again, from a local base's `ONBUILD`, and
+  `--target` choices count readers as the builder reads them, so no
+  stage with two readers is handed over (ADR-0062). T1 and T2: the `copy-from`, `copy-from-root`
   and `copy-from-daemon` quick cases ([testing](../../testing.md#quick-smoke-cases)).
 - T0 built, `src/cli/tests.rs`: kaniko spellings per accepted flag
   (short forms, `=` and separate values, pflag booleans, `--target` lists),
@@ -315,7 +318,14 @@ error, a refused kaniko flag, an invalid combination, and for now every
   a `--jobs` permit per `RUN` over a channel; then the outputs in
   kaniko's order (OCI layout, Docker tar, push) and the digest on stdout.
   Roots are released children first, then the store closed, on success
-  and failure alike. `--secret` takes buildctl's and kaniko's syntax
+  and failure alike. Kaniko mode off `/` (ADR-0061): `stage_readers`
+  counts each stage's readers from the stage graph; a stage built `FROM`
+  a stage with exactly one reader gets `take_base` (ADR-0062: from the
+  graph, never from scheduling); each stage counts its `FROM`, `COPY
+  --from` and `RUN --mount from=` reads off when it ends, and a root nobody reads any more (and a `COPY --from`
+  image's root once its stage is done) goes at once to one release
+  thread (`Releaser`); `release_all` hands it the rest and waits for it
+  before the store closes. `--secret` takes buildctl's and kaniko's syntax
   (`id=`, `type=file|env`, `src=`, `env=`; without a source the variable
   named by the id, else the file), ids unique; a file secret must exist
   and fit 500 KiB at the start. `--allow network.host` is BuildKit's

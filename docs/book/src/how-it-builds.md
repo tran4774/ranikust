@@ -171,12 +171,14 @@ with the default security profile or in most Kubernetes pods.
 - Outside a container, kaniko mode never builds on the machine's `/`: it
   makes a directory for each stage in its state directory,
   `<state>/builds/<id>/stages/<n>/rootfs`, builds independent stages in
-  parallel (`--jobs`) as overlay mode does, and removes the directories
-  with the build. A stage built `FROM` another gets a copy of it (a
-  reflink on xfs and btrfs, a copy of its data on ext4; holes stay holes),
-  so each stage costs disk, and every stage's directory stays until the
-  build ends: plan for about the sum of the stages' roots. Device nodes,
-  FIFOs and sockets a `RUN` made in the parent are not copied. `RUN` there gets the full sandbox, so ranikust needs mount
+  parallel (`--jobs`) as overlay mode does, and removes each directory as
+  soon as no later stage reads it. A stage built `FROM` another gets a
+  copy of it (a reflink on xfs and btrfs, a copy of its data on ext4;
+  holes stay holes), except when it is the only stage that reads it,
+  which then takes the directory itself over with the same contents: a
+  chain of stages copies nothing. Plan for the roots read at the same time plus the copies being
+  made. Device nodes, FIFOs and sockets a `RUN` made in the parent do not
+  reach the stage built on it (ADR-0061). `RUN` there gets the full sandbox, so ranikust needs mount
   privileges there and refuses to build without them (run it in a
   container instead). The context, the outputs and secret files must not
   be inside the state directory's build area.

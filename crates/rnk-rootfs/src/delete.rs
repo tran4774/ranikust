@@ -57,6 +57,241 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
     r.map(drop)
 }
 
+/// Deletes the entries of `root` that `remove` names, each with everything
+/// below it, and leaves the rest exactly as it is: every directory it
+/// deletes from gets its access and modification times back. `remove` gets
+/// each entry's cleaned path inside the root and its type; the root itself
+/// is never offered.
+///
+/// Overlay's own xattrs ([`crate::is_overlay_own`]) go from every entry
+/// kept and from the root, as a copy leaves them out. A copy of the root
+/// that leaves out what `remove` names ([`crate::copy_filtered`] with the
+/// same filter, which also leaves out `CopyOpts::skip_special`'s nodes when
+/// `remove` names them) then gives the same entries, contents, owners,
+/// modes, modification times, xattrs, links and hardlinks between kept
+/// names. What a `RUN` can still tell apart, which no layer holds: access
+/// and change times, directory sizes (ext4 and xfs keep them after
+/// deletions), the order `readdir` lists a directory in, and inode flags a
+/// copy does not carry (`chattr` flags a non-privileged owner may set). Kaniko mode hands a stage's directory to
+/// the stage built on it this way instead of copying it (ADR-0061).
+///
+/// Walks and deletes as [`delete_contents`] does: by `(parent fd, name)`,
+/// never following a symlink, each directory checked against the `statx`
+/// taken before opening it. A mount anywhere below the root (another mount
+/// id, or a mount root) is an error, as a copy refuses one: nothing would
+/// be deleted across it, so it would stay where the copy would not have it.
+///
+/// It also reports ([`Pruned::linked_outside`]) whether an entry it keeps
+/// has more hardlinks than the names it saw for it in the root: a root
+/// handed over keeps its inodes, so such a link would reach outside it.
+///
+/// # Errors
+///
+/// [`Error::InvalidPath`] for this process's own `/` (nothing is walked)
+/// or a mount below the root; [`Error::Changed`] when an entry changes or
+/// goes while it is walked; [`Error::Io`] on the first failing syscall.
+/// What was deleted until then stays deleted.
+pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned> {
+    let span = tracing::info_span!(
+        "rnk_rootfs.prune",
+        entries = tracing::field::Empty,
+        files = tracing::field::Empty,
+        dirs = tracing::field::Empty,
+        kept = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    crate::root::refuse_own_root(root, Path::new(""))?;
+    let mut counts = Counts::default();
+    let mut links = Links::default();
+    let r = prune_walk(root, remove, &mut counts, &mut links);
+    counts.record(&span);
+    r.map(|()| Pruned {
+        linked_outside: links.outside(),
+    })
+}
+
+/// What [`prune`] found besides what it deleted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pruned {
+    /// A non-directory `prune` keeps has a hardlink outside the root: its
+    /// link count when first seen was more than the names `prune` found for
+    /// it in the root, kept or deleted, whatever order it walked them in.
+    pub linked_outside: bool,
+}
+
+/// Per inode with several links when first seen: that link count, the
+/// names seen for it since in the root, and whether `prune` keeps one.
+///
+/// Exact: every name is seen before it is deleted (`prune`'s own entries
+/// and those `remove_below` deletes inside a directory removed whole), so
+/// at an inode's first sight every other name of it is still there, inside
+/// the root or outside; deleting names only lowers the count later. An
+/// inode whose names in the root are all deleted leaves nothing behind.
+#[derive(Default)]
+struct Links(std::collections::HashMap<(u32, u32, u64), LinkCount>);
+
+#[derive(Clone, Copy)]
+struct LinkCount {
+    nlink: u32,
+    seen: u32,
+    kept: bool,
+}
+
+impl Links {
+    fn key(st: &Stat) -> (u32, u32, u64) {
+        (st.dev_major, st.dev_minor, st.ino)
+    }
+
+    fn saw(&mut self, st: &Stat) {
+        if st.file_type() == FileType::Directory {
+            return;
+        }
+        if let Some(e) = self.0.get_mut(&Self::key(st)) {
+            e.seen += 1;
+        } else if st.nlink > 1 {
+            self.0.insert(
+                Self::key(st),
+                LinkCount {
+                    nlink: st.nlink,
+                    seen: 1,
+                    kept: false,
+                },
+            );
+        }
+    }
+
+    /// `st`, seen already, is a name `prune` keeps.
+    fn keep(&mut self, st: &Stat) {
+        if let Some(e) = self.0.get_mut(&Self::key(st)) {
+            e.kept = true;
+        }
+    }
+
+    fn outside(&self) -> bool {
+        self.0.values().any(|e| e.kept && e.nlink > e.seen)
+    }
+}
+
+/// One directory [`prune`] walks.
+struct PruneFrame {
+    /// `O_RDONLY | O_DIRECTORY` fd: `futimens` needs an open file.
+    fd: OwnedFd,
+    path: PathBuf,
+    /// Its `statx` before anything in it was deleted.
+    st: Stat,
+    names: Vec<OsString>,
+    /// Something in it was deleted: its times are set back when it is done.
+    changed: bool,
+}
+
+fn prune_walk(
+    root: &RootPath,
+    remove: &dyn Fn(&Path, FileType) -> bool,
+    counts: &mut Counts,
+    links: &mut Links,
+) -> Result<()> {
+    let start = open_dir(root, Path::new(""))?;
+    let st = meta::statx_at(start.as_fd(), OsStr::new(""), Path::new(""))?;
+    if st.mnt_id != root.mnt_id() {
+        return Err(Error::Changed {
+            path: PathBuf::new(),
+        });
+    }
+    // Overlay's own xattrs go from every entry kept, the root included: a
+    // copy leaves them out (`meta::Xattrs::Copy`).
+    meta::strip_overlay_own(start.as_fd(), FileType::Directory, None, Path::new(""))?;
+    let names = read_names(start.as_fd(), Path::new(""))?;
+    let mut stack = vec![PruneFrame {
+        fd: start,
+        path: PathBuf::new(),
+        st,
+        names,
+        changed: false,
+    }];
+    while let Some(top) = stack.last_mut() {
+        let Some(name) = top.names.pop() else {
+            if let Some(done) = stack.pop()
+                && done.changed
+            {
+                let times = rustix::fs::Timestamps {
+                    last_access: done.st.atime.to_timespec(),
+                    last_modification: done.st.mtime.to_timespec(),
+                };
+                rustix::fs::futimens(&done.fd, &times)
+                    .map_err(|e| io_err("utimensat", &done.path, e))?;
+            }
+            continue;
+        };
+        let child = top.path.join(&name);
+        // Nothing else writes the root while it is pruned: an entry that
+        // goes meanwhile is a change, not something to skip.
+        let st = match meta::statx_at(top.fd.as_fd(), &name, &child) {
+            Ok(st) => st,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                return Err(Error::Changed { path: child });
+            }
+            Err(e) => return Err(e),
+        };
+        if st.mnt_id != root.mnt_id() || st.mount_root {
+            return Err(Error::InvalidPath {
+                path: child,
+                reason: "a mount below the root",
+            });
+        }
+        links.saw(&st);
+        let file_type = st.file_type();
+        let is_dir = file_type == FileType::Directory;
+        if !remove(&child, file_type) {
+            if is_dir {
+                let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
+                meta::strip_overlay_own(fd.as_fd(), file_type, None, &child)?;
+                let names = read_names(fd.as_fd(), &child)?;
+                stack.push(PruneFrame {
+                    fd,
+                    path: child,
+                    st,
+                    names,
+                    changed: false,
+                });
+            } else {
+                let pin = pin_checked(top.fd.as_fd(), &name, &st, &child)?;
+                meta::strip_overlay_own(
+                    pin.as_fd(),
+                    file_type,
+                    Some((top.fd.as_fd(), &name)),
+                    &child,
+                )?;
+                links.keep(&st);
+                counts.kept += 1;
+            }
+            continue;
+        }
+        top.changed = true;
+        if is_dir {
+            let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
+            let mut all = |_: &Path, _: FileType| Keep::Remove;
+            let mut seen = |st: &Stat| links.saw(st);
+            // Entries on another mount are kept by `remove_below`, which
+            // then cannot remove the directory: refused below as a change.
+            remove_below_seen(root, fd, &child, &mut all, counts, &mut seen)?;
+            match rustix::fs::unlinkat(&top.fd, &name, AtFlags::REMOVEDIR) {
+                Ok(()) => counts.dirs += 1,
+                Err(Errno::NOTDIR | Errno::NOTEMPTY | Errno::NOENT) => {
+                    return Err(Error::Changed { path: child });
+                }
+                Err(e) => return Err(io_err("rmdir", &child, e)),
+            }
+        } else {
+            match rustix::fs::unlinkat(&top.fd, &name, AtFlags::empty()) {
+                Ok(()) => counts.files += 1,
+                Err(Errno::NOENT | Errno::ISDIR) => return Err(Error::Changed { path: child }),
+                Err(e) => return Err(io_err("unlink", &child, e)),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Opens the directory `dir` inside `root` for a deletion walk: no final
 /// symlink followed, no mount entered on the way (`EXDEV`).
 pub(crate) fn open_dir(root: &RootPath, dir: &Path) -> Result<OwnedFd> {
@@ -128,6 +363,20 @@ pub(crate) fn remove_below(
     decide: &mut dyn FnMut(&Path, FileType) -> Keep,
     counts: &mut Counts,
 ) -> Result<bool> {
+    remove_below_seen(root, fd, dir, decide, counts, &mut |_| {})
+}
+
+/// [`remove_below`], showing `seen` the `statx` of every entry below `dir`
+/// before anything is done with it ([`prune`] counts the names of each
+/// inode it deletes).
+fn remove_below_seen(
+    root: &RootPath,
+    fd: OwnedFd,
+    dir: &Path,
+    decide: &mut dyn FnMut(&Path, FileType) -> Keep,
+    counts: &mut Counts,
+    seen: &mut dyn FnMut(&Stat),
+) -> Result<bool> {
     let st = meta::statx_at(fd.as_fd(), OsStr::new(""), dir)?;
     if st.mnt_id != root.mnt_id() {
         counts.kept += 1;
@@ -178,6 +427,7 @@ pub(crate) fn remove_below(
             Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => continue,
             Err(e) => return Err(e),
         };
+        seen(&st);
         if st.mnt_id != root.mnt_id() || st.mount_root {
             top.kept = true;
             counts.kept += 1;
@@ -213,6 +463,34 @@ pub(crate) fn remove_below(
             }
         }
     }
+}
+
+/// Pins the entry `name` in `dirfd` (`O_PATH | O_NOFOLLOW`, never entering
+/// another mount) and checks it is the entry `st` described.
+fn pin_checked(dirfd: BorrowedFd<'_>, name: &OsStr, st: &Stat, path: &Path) -> Result<OwnedFd> {
+    let fd = match open_name(dirfd, name, OFlags::PATH | OFlags::NOFOLLOW, 0, true, path) {
+        Ok(fd) => fd,
+        Err(e)
+            if matches!(
+                e.raw_os_error().map(Errno::from_raw_os_error),
+                Some(Errno::XDEV | Errno::NOENT)
+            ) =>
+        {
+            return Err(Error::Changed {
+                path: path.to_owned(),
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    let now = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?;
+    if (now.ino, now.dev_major, now.dev_minor, now.mnt_id)
+        != (st.ino, st.dev_major, st.dev_minor, st.mnt_id)
+    {
+        return Err(Error::Changed {
+            path: path.to_owned(),
+        });
+    }
+    Ok(fd)
 }
 
 /// Opens the directory `name` in `dirfd` without following a symlink or
