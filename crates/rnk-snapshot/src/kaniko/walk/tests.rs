@@ -560,3 +560,91 @@ fn arena_offsets_beyond_u32_are_errors() {
         Err(Error::WalkTooLarge)
     ));
 }
+
+/// Q-420's measurement: what `--single-snapshot` would save in kaniko mode.
+/// A light synthetic workload, not W1–W3 (those run only as the ultra
+/// benchmark): a base of `RANIKUST_BENCH_FILES` small files (default
+/// 80 000) in 400 directories, then 10 steps that each rewrite 200 files and
+/// add 200. Per-step snapshots walk after every step; a single snapshot
+/// walks once at the end. The tree sits in `RANIKUST_BENCH_DIR` (a disk
+/// directory; default a temp dir). Prints the medians of 3 runs; run with
+/// `cargo test -p rnk-snapshot --release --lib single_snapshot_poc --
+/// --ignored --nocapture`.
+#[test]
+#[ignore = "bench (Q-420): writes ~100k files and takes tens of seconds"]
+fn single_snapshot_poc() {
+    const DIRS: usize = 400;
+    const STEPS: usize = 10;
+    const PER_STEP: usize = 200;
+    let files: usize = std::env::var("RANIKUST_BENCH_FILES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(80_000);
+    let parent = std::env::var_os("RANIKUST_BENCH_DIR").map(PathBuf::from);
+    let make = || {
+        let tmp = match &parent {
+            Some(p) => tempfile::tempdir_in(p).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        };
+        let host = tmp.path().join("root");
+        for d in 0..DIRS {
+            fs::create_dir_all(host.join(format!("d{d}"))).unwrap();
+        }
+        for i in 0..files {
+            fs::write(host.join(format!("d{}/f{i}", i % DIRS)), [b'x'; 64]).unwrap();
+        }
+        let root = RootPath::open(fs::canonicalize(&host).unwrap()).unwrap();
+        (tmp, host, root)
+    };
+    let step = |host: &Path, s: usize| {
+        for k in 0..PER_STEP {
+            let i = (s * PER_STEP + k) * 7 % files;
+            fs::write(
+                host.join(format!("d{}/f{i}", i % DIRS)),
+                format!("step {s} {k}"),
+            )
+            .unwrap();
+            fs::write(host.join(format!("d{}/new-{s}-{k}", k % DIRS)), [b'y'; 64]).unwrap();
+        }
+    };
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let (mut per_step, mut single, mut base) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut changed_per_step, mut changed_single) = (0, 0);
+    for _ in 0..3 {
+        let (_a, host, root) = make();
+        let mut w = walker(SnapshotMode::Full, 8);
+        let t = std::time::Instant::now();
+        w.baseline(&root, &none()).unwrap();
+        base.push(t.elapsed().as_secs_f64());
+        let mut total = 0.0;
+        changed_per_step = 0;
+        for s in 0..STEPS {
+            step(&host, s);
+            let t = std::time::Instant::now();
+            changed_per_step += w.diff(&root, &none()).unwrap().changed.len();
+            total += t.elapsed().as_secs_f64();
+        }
+        per_step.push(total);
+        let (_b, host, root) = make();
+        let mut w = walker(SnapshotMode::Full, 8);
+        w.baseline(&root, &none()).unwrap();
+        for s in 0..STEPS {
+            step(&host, s);
+        }
+        let t = std::time::Instant::now();
+        changed_single = w.diff(&root, &none()).unwrap().changed.len();
+        single.push(t.elapsed().as_secs_f64());
+    }
+    let (b, p, s) = (median(base), median(per_step), median(single));
+    eprintln!(
+        "single_snapshot_poc: files={files} steps={STEPS} baseline={b:.3}s \
+         per-step walks total={p:.3}s ({:.3}s each, {changed_per_step} changes) \
+         single walk={s:.3}s ({changed_single} changes) saved={:.3}s",
+        p / STEPS as f64,
+        p - s
+    );
+    assert!(changed_single > 0 && changed_per_step >= changed_single);
+}
