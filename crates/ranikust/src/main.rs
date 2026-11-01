@@ -764,6 +764,30 @@ mod tests {
         BuildConfig::from_args(&args).unwrap()
     }
 
+    /// Kaniko mode on `/` refuses in a fixed order: root that may mount
+    /// (ADR-0054) before `--network=none` (ADR-0057). Both return before
+    /// /proc/sys is read, so this needs no file and no privilege.
+    #[test]
+    fn the_refusals_on_slash_come_in_their_order() {
+        let config = config_of(&["--no-push", "--network=none"]);
+        let may_mount = refuse_unsafe_slash(&config, "--mode=kaniko", true).unwrap_err();
+        assert!(
+            may_mount
+                .message
+                .contains("in a container where root may mount"),
+            "{}",
+            may_mount.message
+        );
+        let no_mount = refuse_unsafe_slash(&config, "--mode=kaniko", false).unwrap_err();
+        assert!(
+            no_mount
+                .message
+                .contains("--network=none: kaniko mode on / runs RUN directly"),
+            "{}",
+            no_mount.message
+        );
+    }
+
     /// `--snapshot-mode` and `--snapshot-workers` reach the walk with their
     /// meaning (criterion 8, review finding #3): a swapped arm or a lost
     /// worker count fails here.
