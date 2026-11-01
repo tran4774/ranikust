@@ -270,9 +270,11 @@ and compares and checks the images. It has two profiles:
   acceptance): `ranikust`, overlay mode as root in a systemd scope with the
   same budget (`CPUQuota=400%`, `MemoryMax` and `MemorySwapMax` 8 GiB,
   as Docker gives a container with `--memory` alone, `AllowedCPUs` the
-  same vCPUs); `rk-kaniko`, `--mode=kaniko` on the `/` of a default
+  same vCPUs); `rk-kaniko`, kaniko mode on the `/` of a default
   `docker run` (root, Docker's capabilities, no option) from an empty
-  image, the static binary mounted at `/ranikust/bin` (ADR-0048);
+  image, the static binary mounted at `/ranikust/bin` (ADR-0048), run
+  without `--mode` so that `--mode=auto` must pick kaniko mode there (the
+  build fails unless its log says so);
   `rk-kaniko-host`, `--mode=kaniko` as root on the VM in the same kind of
   scope, one directory per stage in its state directory (ADR-0059). Each
   gets a fresh state directory. The builders' results directories are
@@ -649,7 +651,8 @@ nextjs-kaniko workloads (`e2e`) are for large benchmarks only.
 | `scratch` | `FROM scratch` with a root built in another stage, an exec-form `ENTRYPOINT`, the default `PATH` added to a config without one (ADR-0032) |
 | `metadata` | The image config as BuildKit writes it: `ARG` before `FROM`, `ARG`/`ENV` expansion, relative and absolute `WORKDIR`, `USER name:group`, `LABEL`, `EXPOSE` (tcp, udp, a range expanded), `STOPSIGNAL`, `HEALTHCHECK`, `SHELL`, exec-form `ENTRYPOINT` with `CMD`; with `--target shellform`, a shell-form `ENTRYPOINT` that clears the `CMD` inherited from its base stage |
 | `copy` | `COPY` wildcards, one matching nothing (not an error), `.dockerignore` with an exception, `--chown`, `--chmod` octal and symbolic, a symlinked source (followed), a directory into a new destination, a heredoc; checked inside the image |
-| `multistage` | Two independent stages at `--jobs 2`, `FROM <stage>`, `COPY --from` all of them |
+| `multistage` | Two independent stages at `--jobs 2`, `FROM <stage>`, `COPY --from` all of them; in kaniko mode on a container's `/` the log says the stages run one at a time and `--jobs` still bounds the uploads |
+| `kaniko-flags` | The kaniko-mode flags' meaning (Phase 2 criterion 8): `--snapshot-mode=time` misses a rewrite of the same size and mtime that `full` catches; `--ignore-path=/var/cache/*` keeps a `RUN`'s files below it out of every layer; in the T1 kaniko leg, a build without `--mode` picks kaniko mode in a default container and says why. In overlay mode `--ignore-path` is refused (exit 2) and `--snapshot-mode` changes nothing. With the VM's kaniko quick suite (`RANIKUST_QUICK_MODE=kaniko`), `quick.sh` also checks ADR-0054's refusals (kaniko mode in `docker run --privileged` and with `systempaths=unconfined` exits 1 before anything is pulled) and that `--mode=auto` with a state directory on overlayfs, as root on the VM, builds in kaniko mode with a directory per stage instead of refusing. Then the red team of `--mode=auto`'s routing (`rt_*`): `container=docker` on the VM never builds on `/` (`--mode=kaniko` and auto with a state directory on overlayfs both exit 1, a sentinel in `/` stays); auto with `--ignore-path` where overlay mode runs exits 2 after its set-up with no build directory, mount or process left and the next build works, and is honoured when routed; a ramfs state directory (the probe fails writing through the overlay) is refused, never routed, and each build removes the one before's leftovers; root without `CAP_SYS_ADMIN` (`setpriv`), with or without a container signal, in auto and kaniko mode, exits 1 before creating the state directory (a writable `/proc/sys`, or no mounts off `/`); a `--privileged` container in auto keeps ADR-0054's refusal with or without `/.dockerenv`, its `/` whole |
 | `copy-from` | Red team of what kaniko mode keeps (ADR-0051): a hostile stage (links out of its root, to the state directory, `/ranikust`, `/` and `/proc`; a FIFO, a setuid file, a hardlink, a `0700` directory of uid 1000, a device node where root may make one) read with `COPY --from` and built `FROM` after another stage reused the root; in the image its metadata as it was; four builds whose sources reach the state directory, `/ranikust` or `/proc` through links or by name fail without an image |
 | `copy-from-root` | `COPY --from=<stage> / /all/`: the whole stage, without the state directory, `/ranikust` or `/proc`; in kaniko mode on the container's `/` the whole root is kept (a red-team finding, fixed) |
 | `copy-from-daemon` | A `setsid` process left by a `RUN` (kaniko#1697) changes the root while kaniko mode with `RUN` `Direct` walks, keeps, empties and copies it back: the build fails closed, or its image holds nothing of the state directory, `/ranikust` or the secret |

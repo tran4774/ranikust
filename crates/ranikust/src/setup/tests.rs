@@ -27,7 +27,7 @@ fn both_probes_succeeding_pick_overlay_as_root() {
 }
 
 #[test]
-fn a_refused_overlay_mount_needs_kaniko_mode_as_root_but_a_host_error_does_not() {
+fn a_refused_overlay_mount_routes_root_to_kaniko_stages_but_a_host_error_does_not() {
     let mount = SnapshotError::Probe {
         step: "mount",
         source: Box::new(SnapshotError::Mount {
@@ -40,7 +40,9 @@ fn a_refused_overlay_mount_needs_kaniko_mode_as_root_but_a_host_error_does_not()
         }),
     };
     let r = overlay_refusal(&mount, 0);
-    assert_eq!(r.guidance, NEEDS_KANIKO_MODE);
+    assert_eq!(r.guidance, OVERLAY_UNUSABLE);
+    assert_eq!(r.kind, Kind::OverlayUnusable);
+    assert!(!r.needs_kaniko_mode());
     assert!(
         r.reason.contains("EINVAL") || r.reason.contains("Invalid"),
         "{r}"
@@ -53,6 +55,105 @@ fn a_refused_overlay_mount_needs_kaniko_mode_as_root_but_a_host_error_does_not()
         source: io::Error::from_raw_os_error(EACCES),
     };
     assert_eq!(overlay_refusal(&host, 0).guidance, "");
+    assert_eq!(overlay_refusal(&host, 0).kind, Kind::Other);
+}
+
+/// A probe mount that never reached the kernel (its thread could not start,
+/// `EAGAIN`) or ran out of memory or descriptors says nothing about
+/// overlayfs: no routing to kaniko mode (host-safety round 1, item 5).
+#[test]
+fn a_mount_thread_that_could_not_start_is_not_an_unusable_overlay() {
+    let probe = |step: &str, errno| SnapshotError::Probe {
+        step: "mount",
+        source: Box::new(SnapshotError::Mount {
+            target: "/s/merged".into(),
+            lowers: 1,
+            how: "mount(2)",
+            step: step.into(),
+            errno,
+            options: Some(120),
+        }),
+    };
+    use rustix::io::Errno;
+    for (step, errno) in [
+        (
+            "start the mount thread: Resource temporarily unavailable",
+            Errno::AGAIN,
+        ),
+        ("mount", Errno::AGAIN),
+        ("mount", Errno::NOMEM),
+        ("mount", Errno::MFILE),
+        ("mount", Errno::NOSPC),
+        ("mount", Errno::DQUOT),
+        ("mount", Errno::IO),
+    ] {
+        let r = overlay_refusal(&probe(step, errno), 0);
+        assert_eq!(r.kind, Kind::Other, "{step} {errno:?}");
+        assert_eq!(route(&r, false), Route::Refuse, "{step} {errno:?}");
+    }
+    for errno in [Errno::INVAL, Errno::PERM, Errno::ACCESS, Errno::NODEV] {
+        let r = overlay_refusal(&probe("mount", errno), 0);
+        assert_eq!(route(&r, false), Route::KanikoStages, "{errno:?}");
+    }
+}
+
+/// `--mode=auto`'s routing after overlay mode's set-up refused, as a pure
+/// function (host-safety round 1, item 5).
+#[test]
+fn route_sends_only_an_unusable_overlay_outside_a_container_to_kaniko_stages() {
+    let of = |kind| Refusal {
+        kind,
+        reason: "r".to_owned(),
+        guidance: "",
+    };
+    // The probe's mount refused, or a state directory on overlayfs.
+    assert_eq!(
+        route(&of(Kind::OverlayUnusable), false),
+        Route::KanikoStages
+    );
+    // In a container where root may mount, kaniko mode on `/` is refused
+    // (ADR-0054): the refusal stands.
+    assert_eq!(
+        route(&of(Kind::OverlayUnusable), true),
+        Route::RefuseInContainer
+    );
+    for kind in [Kind::SandboxBlocked, Kind::NoMountPrivilege, Kind::Other] {
+        for in_container in [false, true] {
+            assert_eq!(route(&of(kind), in_container), Route::Refuse, "{kind:?}");
+        }
+    }
+    // A state directory on overlayfs (`set_up`'s first refusal) is of the
+    // routed kind; the VM's kaniko quick suite builds there
+    // (`auto_routes_to_stages`).
+}
+
+#[test]
+fn a_failed_sandbox_step_never_routes_to_kaniko_stages() {
+    // Kaniko mode off `/` needs the same sandbox: `--mode=auto` must not
+    // turn a blocked sandbox step into a kaniko-mode build.
+    let r = pick::<()>(
+        Err(SandboxError::Setup {
+            step: Step::MountProc,
+            source: io::Error::from_raw_os_error(EACCES),
+        }),
+        overlay_ok(),
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(r.guidance, SANDBOX_BLOCKED);
+    assert_eq!(r.kind, Kind::SandboxBlocked);
+    assert_eq!(route(&r, false), Route::Refuse);
+    assert!(!r.needs_kaniko_mode());
+}
+
+#[test]
+fn no_guidance_sends_a_user_back_to_the_mode_they_used() {
+    // The refusals `--mode=auto` can show never tell its user to use
+    // `--mode=auto` (Phase 2 criterion 8, review finding #2).
+    for text in [OVERLAY_UNUSABLE, ON_OVERLAYFS, SANDBOX_BLOCKED] {
+        assert!(!text.contains("use --mode=auto"), "{text}");
+    }
+    assert!(NEEDS_KANIKO_MODE.contains("drop --mode=overlay"));
 }
 
 #[test]
@@ -65,14 +166,43 @@ fn a_sandbox_without_privileges_needs_root_unless_already_root() {
     .unwrap_err();
     assert_eq!(refusal.guidance, NEEDS_ROOT);
     assert!(refusal.reason.contains("RUN sandbox"), "{refusal}");
-    // Root without the privileges: Docker's defaults, kaniko mode's place.
+    // Root that entered the build's mount namespace but whose sandbox
+    // lacks a privilege: kaniko mode off `/` would need it too, so the
+    // guidance is its own and never sends an auto user back to auto
+    // (host-safety re-check of round 1, item 4).
     let refusal = pick::<()>(
         Err(SandboxError::Privilege("the RUN sandbox")),
         overlay_ok(),
         0,
     )
     .unwrap_err();
-    assert_eq!(refusal.guidance, NEEDS_KANIKO_MODE);
+    assert_eq!(refusal.guidance, SANDBOX_NO_PRIVILEGE);
+    assert_eq!(refusal.kind, Kind::SandboxBlocked);
+    assert_eq!(route(&refusal, false), Route::Refuse);
+    assert!(!refusal.to_string().contains("--mode=auto"), "{refusal}");
+}
+
+/// A blocked sandbox step wins over an unusable overlay: `pick` reports
+/// the sandbox, and `--mode=auto` does not route to kaniko mode off `/`,
+/// which needs that sandbox (host-safety re-check of round 1, item 2).
+#[test]
+fn a_blocked_sandbox_wins_over_an_unusable_overlay() {
+    let overlay = Refusal {
+        kind: Kind::OverlayUnusable,
+        reason: "overlay: EINVAL".to_owned(),
+        guidance: OVERLAY_UNUSABLE,
+    };
+    let r = pick::<()>(
+        Err(SandboxError::Setup {
+            step: Step::MountProc,
+            source: io::Error::from_raw_os_error(EACCES),
+        }),
+        Err(overlay),
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(r.kind, Kind::SandboxBlocked);
+    assert_eq!(route(&r, false), Route::Refuse);
 }
 
 #[test]
@@ -113,8 +243,9 @@ fn a_host_side_failure_does_not_suggest_kaniko_mode() {
 #[test]
 fn a_failed_overlay_probe_refuses_even_with_a_sandbox() {
     let failed = Refusal {
+        kind: Kind::OverlayUnusable,
         reason: "overlay: EINVAL".to_owned(),
-        guidance: NEEDS_KANIKO_MODE,
+        guidance: OVERLAY_UNUSABLE,
     };
     let r = pick(Ok(()), Err(failed), 0);
     assert_eq!(r.unwrap_err().reason, "overlay: EINVAL");
@@ -205,4 +336,72 @@ fn kaniko_mode_on_a_host_without_mounts_is_refused() {
     assert_eq!(refusal.guidance, HOST_WITHOUT_MOUNTS);
     assert!(host_without_mounts(true, false).is_none());
     assert!(host_without_mounts(false, true).is_none());
+}
+
+/// Red team (criterion 8): only a refused overlay mount routes `--mode=auto`
+/// to kaniko mode. A probe that mounted but could not unmount, failed
+/// writing through the overlay, a state directory path overlay's options
+/// cannot carry, an option string too long, a `Mount` error not wrapped
+/// as the probe's, a probe error wrapping a probe error, and `ENFILE`
+/// (the one excluded errno the earlier test leaves out) all refuse, in a
+/// container or not.
+#[test]
+fn red_team_probe_failures_other_than_a_refused_mount_never_route() {
+    use rustix::io::Errno;
+    let mount = |errno| SnapshotError::Mount {
+        target: "/s/merged".into(),
+        lowers: 1,
+        how: "mount(2)",
+        step: "mount".into(),
+        errno,
+        options: Some(120),
+    };
+    let probe = |step, source| SnapshotError::Probe {
+        step,
+        source: Box::new(source),
+    };
+    let not_routed = [
+        probe(
+            "unmount",
+            SnapshotError::Unmount {
+                target: "/s/merged".into(),
+                errno: Errno::BUSY,
+            },
+        ),
+        probe(
+            "write through the overlay",
+            SnapshotError::Rootfs(rnk_rootfs::Error::InvalidPath {
+                path: "new".into(),
+                reason: "test",
+            }),
+        ),
+        SnapshotError::UnsafePath {
+            path: "/s,lowerdir=/".into(),
+            reason: "a comma",
+        },
+        probe(
+            "mount",
+            SnapshotError::OptionsTooLong {
+                target: "/s/merged".into(),
+                lowers: 1,
+                len: 5000,
+                max: 4095,
+            },
+        ),
+        // Not the probe's: never a refused probe mount.
+        mount(Errno::INVAL),
+        probe("mount", probe("mount", mount(Errno::INVAL))),
+        probe("mount", mount(Errno::NFILE)),
+    ];
+    for e in &not_routed {
+        let r = overlay_refusal(e, 0);
+        assert_eq!(r.kind, Kind::Other, "{e}");
+        for in_container in [false, true] {
+            assert_eq!(route(&r, in_container), Route::Refuse, "{e}");
+        }
+        assert!(!r.needs_kaniko_mode(), "{e}");
+    }
+    // Not root: whatever the kernel said, never kaniko mode.
+    let r = overlay_refusal(&probe("mount", mount(Errno::INVAL)), USER);
+    assert_eq!(route(&r, false), Route::Refuse);
 }

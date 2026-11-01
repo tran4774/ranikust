@@ -303,22 +303,52 @@ fn class_char(chars: &[char], i: &mut usize) -> Option<char> {
     }
 }
 
-/// Backtracking match of a whole component. Patterns come from the
-/// operator and components are at most 255 bytes.
+/// Matches a whole component in O(tokens × characters) time: the iterative
+/// wildcard algorithm. Every token but `*` takes exactly one character; on
+/// a mismatch only the last `*` is widened by one character, never an
+/// earlier one, which gives the same answer as trying every split (a later
+/// star can absorb whatever an earlier one would have) without the
+/// exponential cost. A component never holds `/`, so nothing is crossed.
+/// Names come from images and `RUN` steps: the time must not depend on how
+/// many stars meet a long name.
 fn match_from(toks: &[Tok], name: &[char]) -> bool {
-    let Some((tok, rest)) = toks.split_first() else {
-        return name.is_empty();
-    };
+    let (mut t, mut n) = (0, 0);
+    // After the last `*` seen: the token that follows it, and the first
+    // character it has not absorbed yet.
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        match toks.get(t) {
+            Some(Tok::Star) => {
+                star = Some((t + 1, n));
+                t += 1;
+            }
+            Some(tok) if takes(tok, name[n]) => {
+                t += 1;
+                n += 1;
+            }
+            _ => match star {
+                Some((after, from)) => {
+                    star = Some((after, from + 1));
+                    t = after;
+                    n = from + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    toks.get(t..)
+        .is_some_and(|rest| rest.iter().all(|tok| *tok == Tok::Star))
+}
+
+/// Whether a one-character token takes `c`; `*` takes nothing here.
+fn takes(tok: &Tok, c: char) -> bool {
     match tok {
-        Tok::Star => (0..=name.len()).any(|k| name.get(k..).is_some_and(|n| match_from(rest, n))),
-        Tok::Any => name.split_first().is_some_and(|(_, n)| match_from(rest, n)),
-        Tok::Lit(c) => name
-            .split_first()
-            .is_some_and(|(h, n)| h == c && match_from(rest, n)),
-        Tok::Class { negated, ranges } => name.split_first().is_some_and(|(h, n)| {
-            let inside = ranges.iter().any(|(lo, hi)| (lo..=hi).contains(&h));
-            inside != *negated && match_from(rest, n)
-        }),
+        Tok::Star => false,
+        Tok::Any => true,
+        Tok::Lit(l) => *l == c,
+        Tok::Class { negated, ranges } => {
+            ranges.iter().any(|(lo, hi)| (lo..=hi).contains(&&c)) != *negated
+        }
     }
 }
 

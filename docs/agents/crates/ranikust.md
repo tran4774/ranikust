@@ -46,11 +46,14 @@ struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, d
     context is a plain path and `dir://` is refused, exit 2 (ADR-0053, ADR-0054);
     `context_sub_path` then applies to fetched contexts only and a local context with it is
     refused, exit 2 (ADR-0054);
-    kaniko mode (ADR-0040): ignore_paths, single_snapshot, materialize (`--ignore-var-run`
-    and `--whitelist-var-run` refused, ADR-0052 D4);
+    kaniko mode (ADR-0040): ignore_paths (globs; `/` and bad patterns refused early),
+    single_snapshot (refused by `BuildConfig::from_args` in every mode, [open: Q-420]); `--materialize` refused
+    until Phase 4 (ADR-0064); `--ignore-var-run` and `--whitelist-var-run` refused,
+    ADR-0052 D4;
     ours: mode, state_dir, jobs, network, secret, allow, metrics_file, snapshot_workers.
     No --workdir, --force refused (ADR-0050); kaniko's old spellings refused (ADR-0052).
-    Planned: cache, cache_repo (4), parallel_stages (2), seccomp, userns (3) */ }
+    Planned: cache, cache_repo, materialize (4), seccomp, userns (3);
+    --parallel-stages refused for good (ADR-0060) */ }
 fn cli::parse(args) -> Result<Parsed, ParseError>;  // refused kaniko flags first, none ignored
     // (ADR-0049), old spellings among them, naming the flag to use (ADR-0052); then clap
 struct BuildConfig { /* built: the flags validated, paths absolute, enums resolved */ }
@@ -87,11 +90,15 @@ the kaniko-mode flags (`overlay_mode_flags`) and its state directory, then
 enters the namespace; `--mode=auto` enters the namespace first and, where
 the namespace is refused to root for lack of privilege
 (`needs_kaniko_mode`), logs why
-and goes to kaniko mode, else continues as overlay mode. Kaniko mode
-(ADR-0050): `--single-snapshot` refused, root required
+and goes to kaniko mode, else runs overlay mode's set-up; where that
+refuses because overlayfs cannot use the state directory
+(`setup::route` on the refusal's `Kind`) outside a container, it logs why and goes to kaniko
+mode with a directory per stage (`can_mount`). Kaniko mode
+(ADR-0050): `--single-snapshot` refused ([open: Q-420]), root required
 (`NofileLimit::current()` read first, for `RUN`), the root picked by
 `container::detect` (`/` in a container, else a root in the state
-directory), `RLIMIT_NOFILE` raised, `--jobs` ignored with a warning, then
+directory), `RLIMIT_NOFILE` raised, on `/` a warning that the stages run one
+at a time and `--jobs` only bounds the uploads, then
 `setup::set_up_kaniko`: the state directory checked (`statedir::prepare`),
 the store (on `/`, `Store::open_anonymous` and `Sandbox::start_direct`,
 ADR-0051, after `exposure`'s warnings for a secret-looking `--build-arg`
@@ -179,6 +186,32 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `@argfile`, non-UTF-8) and `tests/cli.rs`
   `parallel_stages_is_refused_before_any_work` (exit 2, no state
   directory, the value never echoed, no `RANIKUST_*` variable read).
+- Red team of criterion 8 (ADR-0064), T0: `tests/cli.rs`
+  `red_team_single_snapshot_and_materialize_have_no_bypass_spelling`
+  (every pflag boolean, repeats, a separate value, non-UTF-8, `--`,
+  `@argfile`, as another flag's value, behind `build`, every mode: exit 2,
+  no state directory, no variable read) and
+  `red_team_whole_root_ignore_paths_are_refused_in_every_spelling_before_any_io`
+  (`//`, `/.`, `/*/..`, `/./*`, `/**`, `/*?`, all-ASCII and non-UTF-8
+  classes, malformed patterns); `main.rs`
+  `red_team_accepted_ignore_paths_never_uncover_protected_paths_nor_fail_later`
+  (an accepted `--ignore-path` keeps the state directory, mount points and
+  fixed paths ignored on `/` and on a stage root, and is never refused
+  after the set-up); `setup/tests.rs`
+  `red_team_probe_failures_other_than_a_refused_mount_never_route` (an
+  unmount or write-through failure, an unsafe path, options too long, a
+  bare or doubly wrapped `Mount`, `ENFILE`: refused, never kaniko mode).
+  Ignored finding: `config/tests.rs`
+  `red_team_finding_ignore_paths_that_together_take_the_whole_root_pass_the_early_check`
+  (the check is per path: `/[a-m]*`, `/[n-z]*` and `/[^a-z]*` together,
+  or `/??*` alone, pass). T2 (`RANIKUST_QUICK_MODE=kaniko`, `quick.sh`
+  `rt_*`): `container=docker` on the VM never builds on `/`, `--mode=auto`
+  with `--ignore-path` refused after overlay mode's set-up leaves nothing
+  and the next build works, a ramfs state directory refused (not routed),
+  root without `CAP_SYS_ADMIN` with or without a container signal refused
+  before the state directory exists, and a `--privileged` container with
+  or without `/.dockerenv`
+  ([testing](../../testing.md#quick-smoke-cases)).
 - Kaniko-mode builds (Phase 2 tasks 6 and 8), measured 2026-10-31: T2
   `RANIKUST_QUICK_MODE=kaniko just test-vm quick` (VM root, full sandbox
   on a root in the state directory) builds all 7 cases, the multi-stage
@@ -229,9 +262,17 @@ error, a refused kaniko flag, an invalid combination, and for now every
   check on a fake host, in kaniko's order (first runtime named wins,
   OpenVZ host vs container, the overlay `/` only on the first mount line).
   `src/config/tests.rs`: the default state directory, the
-  kaniko flags' defaults and cleaned paths, a relative `--ignore-path`
-  refused, the overlay-mode refusals and warnings (ADR-0049); one
-  `--target` only.
+  kaniko flags' defaults and cleaned paths, a relative `--ignore-path`,
+  one that cleans to `/` and a malformed pattern refused, the overlay-mode
+  refusals and warnings (ADR-0049), `--single-snapshot` refused naming
+  Q-420; one `--target` only. `src/main.rs` tests: `--snapshot-mode` and
+  `--snapshot-workers` reach the walk, `--ignore-path` reaches the ignore
+  lists of `/` and of a stage root. `src/setup/tests.rs`: which refusals
+  route `--mode=auto` to per-stage kaniko mode, and that no guidance sends
+  a user back to the mode they used. Smoke case `kaniko-flags` (T1, VM
+  quick): the flags' meaning in kaniko mode and `--mode=auto` picking it in
+  a default container; the VM's kaniko quick suite checks ADR-0054's two
+  refusals.
   `src/cli/tests.rs`: the flags; kaniko's old spellings and `--force`
   refused with their reasons, `--workdir` unknown. `tests/cli.rs`: the
   kaniko flags in kaniko and overlay mode.
@@ -340,7 +381,15 @@ error, a refused kaniko flag, an invalid combination, and for now every
 - Left for Phase 2 ([phase-2.md](../phase-2.md)): the workdir checks and
   the kaniko-mode workdir lock (`ADR-0038`, Q-011), built in Phase 2 task
   1, then replaced by ranikust picking the root (ADR-0050).
-- Rootful overlay only: elsewhere, fail with the probe's diagnosis.
-- `--parallel-stages` refused with exit 2 (ADR-0060). Deferred: `--ignore-path` (phase 2); `--seccomp`,
+- Mode: `--mode=auto` gives overlay mode where root may mount, kaniko mode
+  where it may not, and kaniko mode with a directory per stage where root
+  may mount but overlayfs refuses the state directory outside a container
+  (`setup::route`, a pure function of the refusal's `Kind` and whether
+  ranikust runs in a container, read once; a failed sandbox step, or a
+  probe mount that never reached the kernel, never routes there); overlay
+  mode's flags are evaluated before its set-up and refused after it, only
+  if overlay mode is picked (the store is closed on that refusal);
+  in a container where root may mount the overlay refusal stands (ADR-0054).
+- `--parallel-stages` refused with exit 2 (ADR-0060). Deferred: `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push`
   (an OCI layout only, ADR-0052); no `login` (ADR-0049).

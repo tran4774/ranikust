@@ -187,3 +187,70 @@ fn a_deep_path_is_covered_by_a_shallow_entry_and_a_deep_one() {
     assert!(!only_below.covers("d0/d1/d2/d3"));
     assert!(only_below.covers(format!("{deep}/x")));
 }
+
+/// Red team (criterion 8, resources): an `--ignore-path` glob is matched
+/// against every name the walk, extraction and deletion reach, and those
+/// names come from the image. The matcher backtracks over every split of a
+/// name among the stars, so a pattern with a few stars meets a long name
+/// in time exponential in the stars (measured on a release build: 120
+/// characters, 4 stars 21 ms, 5 stars 0.46 s, 6 stars 9 s; 255
+/// characters, 4 stars 14 s; 200 characters, 5 stars 135 s), per name. Go's
+/// `filepath.Match`, which kaniko uses, takes each star's next chunk at
+/// its first match and never backtracks across stars. A file named by a
+/// hostile base image
+/// or `RUN` then stalls a build whose operator passed such a pattern.
+#[test]
+fn red_team_finding_a_glob_with_stars_against_a_long_name_takes_linear_time() {
+    let mut l = IgnoreList::new();
+    l.insert_glob("/var/cache/*a*a*a*a*b").unwrap();
+    l.insert_glob("/var/cache/*a*a*a*a*a*a*a*a*a*a*c").unwrap();
+    // NAME_MAX: the longest name a layer or a `RUN` can make.
+    let name = format!("var/cache/{}", "a".repeat(255));
+    let started = std::time::Instant::now();
+    for _ in 0..100 {
+        assert!(!l.covers(&name));
+    }
+    let took = started.elapsed();
+    // 100 rounds of 4 and 10 stars against 255 characters: microseconds
+    // each, even in a debug build (was 14 s for one round of 4 stars).
+    assert!(
+        took < std::time::Duration::from_millis(500),
+        "100 rounds took {took:?}"
+    );
+    // And a long name the stars do match.
+    assert!(l.covers(format!("var/cache/{}b", "a".repeat(254))));
+}
+
+/// The matcher before the iterative algorithm: every split of the name
+/// among the stars. Exponential, kept as the oracle of the property test.
+fn match_by_every_split(toks: &[Tok], name: &[char]) -> bool {
+    let Some((tok, rest)) = toks.split_first() else {
+        return name.is_empty();
+    };
+    match tok {
+        Tok::Star => (0..=name.len()).any(|k| match_by_every_split(rest, &name[k..])),
+        _ => name
+            .split_first()
+            .is_some_and(|(h, n)| takes(tok, *h) && match_by_every_split(rest, n)),
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(4000))]
+    /// The iterative matcher answers as trying every split does, on random
+    /// patterns (`*`, `?`, literals, classes, negated classes, escapes) and
+    /// names over a small alphabet, where stars and repeats collide often.
+    #[test]
+    fn the_linear_matcher_agrees_with_every_split(
+        pattern in "(a|b|\\*|\\?|\\[ab\\]|\\[\\^a\\]|\\[a-b\\]|\\\\\\*){0,8}",
+        name in "[ab*]{0,10}",
+    ) {
+        let compiled = Pattern::compile(OsStr::new(&pattern)).expect("valid pattern");
+        let chars: Vec<char> = name.chars().collect();
+        proptest::prop_assert_eq!(
+            match_from(&compiled.0, &chars),
+            match_by_every_split(&compiled.0, &chars),
+            "pattern {:?} name {:?}", pattern, name
+        );
+    }
+}

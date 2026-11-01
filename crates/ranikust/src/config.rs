@@ -172,10 +172,6 @@ pub(crate) struct BuildConfig {
     pub(crate) snapshot_mode: SnapshotMode,
     /// `--ignore-path`s, absolute and cleaned as kaniko's `filepath.Clean`.
     pub(crate) ignore_paths: Vec<PathBuf>,
-    /// `--single-snapshot`.
-    pub(crate) single_snapshot: bool,
-    /// `--materialize`; no effect without a layer cache (Phase 4).
-    pub(crate) materialize: bool,
     /// Workers of the kaniko-mode walk (ADR-0039).
     pub(crate) snapshot_workers: NonZeroUsize,
     /// The requested mode.
@@ -373,6 +369,11 @@ impl BuildConfig {
                 args.targets.join(", ")
             )));
         }
+        // Refused in every mode while the flags are read, before any I/O
+        // [open: Q-420].
+        if args.single_snapshot {
+            return Err(Invalid(SINGLE_SNAPSHOT.to_owned()));
+        }
         // kaniko keeps a relative `--ignore-path`, which then never matches
         // the absolute paths of its walk; ranikust says so instead.
         if let Some(path) = args.ignore_paths.iter().find(|p| !p.is_absolute()) {
@@ -381,6 +382,34 @@ impl BuildConfig {
                  match a relative one",
                 path.display()
             )));
+        }
+        // Said here, before any set-up, on the path as the ignore list will
+        // get it (cleaned): one that is `/`, or a pattern taking every
+        // top-level entry (`/*`, `/?*`, Go's `/[^.]*`), would keep the whole root
+        // out of every layer; a malformed pattern would otherwise surface
+        // only once the ignore list is built.
+        let mut list = rnk_rootfs::IgnoreList::new();
+        for path in &args.ignore_paths {
+            let cleaned = clean(path);
+            if cleaned == Path::new("/") {
+                return Err(Invalid(format!(
+                    "--ignore-path={}: it is the whole root, which would leave every layer \
+                     empty; name a directory or file in the image",
+                    path.display()
+                )));
+            }
+            if let Err(e) = list.insert_glob(&cleaned) {
+                return Err(Invalid(format!("--ignore-path={}: {e}", path.display())));
+            }
+        }
+        // All of them together, best effort: several patterns can share the
+        // top level out between them.
+        if !args.ignore_paths.is_empty() && TOP_LEVEL_PROBES.iter().all(|name| list.covers(name)) {
+            return Err(Invalid(
+                "--ignore-path: together these take every top-level entry of the root, which \
+                 would leave every layer empty; name directories or files in the image"
+                    .to_owned(),
+            ));
         }
         Ok(Self {
             context: absolute(&context_with_sub_path(args)?),
@@ -406,8 +435,6 @@ impl BuildConfig {
                 .collect(),
             snapshot_mode: args.snapshot_mode.unwrap_or_default(),
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
-            single_snapshot: args.single_snapshot,
-            materialize: args.materialize,
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
             mode: args.mode,
             state_dir: args
@@ -464,7 +491,6 @@ impl BuildConfig {
                 "tar": self.tar_path.is_some(),
             },
             "reproducible": self.reproducible,
-            "single_snapshot": self.single_snapshot,
             "snapshot_mode": name(self.snapshot_mode),
             "snapshot_workers": self.snapshot_workers.get(),
             "targets": self.targets.len(),
@@ -474,44 +500,65 @@ impl BuildConfig {
 
 /// What overlay mode makes of the kaniko-mode flags given in `args`
 /// (ADR-0040): the warnings for those that change nothing there
-/// (`--snapshot-mode`, `--snapshot-workers`, `--materialize`).
+/// (`--snapshot-mode`, `--snapshot-workers`).
 ///
 /// # Errors
 ///
-/// [`Invalid`] for those that would change the image: `--ignore-path` and
-/// `--single-snapshot` take effect in kaniko mode only (ADR-0049): overlay
-/// mode's layers never hold mounts, and squashing them costs a re-encode.
+/// [`Invalid`] for those that would change the image: `--ignore-path` takes
+/// effect in kaniko mode only (ADR-0049): overlay mode's layers never hold
+/// mounts. (`--single-snapshot` never gets here: [`BuildConfig::from_args`]
+/// refuses it in every mode.)
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
-    let mut changes = Vec::new();
     if !args.ignore_paths.is_empty() {
-        changes.push("--ignore-path");
-    }
-    if args.single_snapshot {
-        changes.push("--single-snapshot");
-    }
-    if !changes.is_empty() {
-        return Err(Invalid(format!(
-            "{} take effect in kaniko mode only (ADR-0049); overlay mode would build a \
-             different image: drop them, or use --mode=kaniko",
-            changes.join(", ")
-        )));
+        return Err(Invalid(
+            "--ignore-path takes effect in kaniko mode only (ADR-0049); overlay mode would \
+             build a different image: drop it, or use --mode=kaniko outside a container"
+                .to_owned(),
+        ));
     }
     let mut warnings = Vec::new();
     if args.snapshot_mode.is_some() {
         warnings.push("--snapshot-mode is ignored in overlay mode (ADR-0023)".to_owned());
     }
-    for (given, flag) in [
-        (args.snapshot_workers.is_some(), "--snapshot-workers"),
-        (args.materialize, "--materialize"),
-    ] {
-        if given {
-            warnings.push(format!(
-                "{flag} is ignored in overlay mode, where it changes nothing"
-            ));
-        }
+    if args.snapshot_workers.is_some() {
+        warnings.push(
+            "--snapshot-workers is ignored in overlay mode, where it changes nothing".to_owned(),
+        );
     }
     Ok(warnings)
 }
+
+/// Names the `--ignore-path`s together are tried against: covering all of
+/// them takes every top-level entry of a real image (`/*`, `/?*`, `/??*`,
+/// Go's `/[^.]*`, or `/[a-m]*` with `/[n-z]*` and `/[^a-z]*`), which is
+/// refused as `/` is. A best-effort guard against typos, not a proof: the
+/// names a real image's top level holds, of two characters or more and
+/// without a leading dot, in several shapes (common directories, a digit
+/// or a capital first, `-` and `_`, a long name, a non-ASCII one). A pattern
+/// taking only some of them, such as `/[a-z]*`, passes: it only widens what
+/// is kept out of the layers.
+const TOP_LEVEL_PROBES: [&str; 13] = [
+    "bin",
+    "etc",
+    "usr",
+    "var",
+    "lib64",
+    "home",
+    "root",
+    "x-y_z",
+    "Zz",
+    "0a",
+    "_x",
+    "a-long-top-level-directory-name-of-sixty-characters-or-so-xx",
+    "données",
+];
+
+/// The refusal of `--single-snapshot`, in every mode, until a measurement
+/// settles whether one walk at the end of the build is worth the per-step
+/// layers it gives up [open: Q-420].
+pub(crate) const SINGLE_SNAPSHOT: &str = "--single-snapshot is not offered yet: whether one \
+     snapshot at the end beats a snapshot per step is still being measured (Q-420); drop the \
+     flag";
 
 /// A value enum's command-line name.
 pub(crate) fn name<T: ValueEnum>(value: T) -> String {

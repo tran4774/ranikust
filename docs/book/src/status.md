@@ -3,9 +3,11 @@
 ## Where the project is
 
 ranikust is **pre-alpha**. There is no release. The binary builds a
-Dockerfile in overlay mode as root, stages in parallel, and writes an OCI
-layout, a Docker tar or pushes ([Command line](usage.md)); it has not yet
-been measured against kaniko on real projects. Its build metrics already work:
+Dockerfile in overlay mode as root, stages in parallel, or in kaniko mode
+where root may not mount (on a container's `/`, as kaniko, or a directory
+per stage elsewhere), and writes an OCI layout, a Docker tar or pushes
+([Command line](usage.md)). Both modes have been compared with kaniko on
+the test workloads in a VM, not yet on real projects. Its build metrics already work:
 with `--metrics-file=<path>`, it writes a
 JSON report of where the run spent time and resources when it exits.
 
@@ -25,7 +27,7 @@ The work is planned in phases. There are no dates.
 |---|---|---|
 | 0. Spike | Prove the risky parts: the `RUN` sandbox, overlay snapshots, mode detection | Mostly done by the pre-code experiments |
 | 1. First internal milestone | Overlay mode as root, parallel stages, local build context, the common Dockerfile instructions, registry pull and push, Docker tar and OCI layout output | Builds end to end; acceptance runs left |
-| 2. kaniko mode | Snapshot by filesystem walk, one root filesystem, optional parallel stages | Not started |
+| 2. kaniko mode | Snapshot by filesystem walk; on a container's `/` stages one at a time, elsewhere a directory per stage built in parallel (`--parallel-stages` refused, ADR-0060) | Built; closing checks left |
 | 3. Rootless and detection | Overlay mode in a user namespace, automatic mode selection, refusing with guidance, `--seccomp` and `--userns` | Not started |
 | 4. Cache | Layer cache in a registry, with ranikust's own versioned keys | Not started |
 | 5. Feature coverage | `ADD` from URLs and git, more `RUN --mount` and `COPY` options, registry mirrors, credential helpers, `prune` | Not started |

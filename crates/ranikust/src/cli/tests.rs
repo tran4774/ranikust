@@ -250,14 +250,13 @@ fn flags_that_change_nothing_are_refused() {
 fn kaniko_mode_flags_parse_with_kanikos_defaults() {
     let args = build(&["--no-push"]);
     assert!(args.ignore_paths.is_empty());
-    assert!(!args.single_snapshot && !args.materialize);
+    assert!(!args.single_snapshot);
     assert_eq!(args.snapshot_workers, None);
     let args = build(&[
         "--ignore-path=/a",
         "--ignore-path",
         "/b/../c",
         "--single-snapshot",
-        "--materialize=true",
         "--snapshot-workers=3",
         "--no-push",
     ]);
@@ -265,7 +264,7 @@ fn kaniko_mode_flags_parse_with_kanikos_defaults() {
         args.ignore_paths,
         [PathBuf::from("/a"), PathBuf::from("/b/../c")]
     );
-    assert!(args.single_snapshot && args.materialize);
+    assert!(args.single_snapshot);
     assert_eq!(args.snapshot_workers.map(NonZeroUsize::get), Some(3));
     assert_eq!(
         clap_error(&["--snapshot-workers=0", "--no-push"]).exit_code(),

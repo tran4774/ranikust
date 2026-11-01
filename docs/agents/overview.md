@@ -48,7 +48,7 @@ Every step emits `tracing` spans; with `--metrics-file=<path>`,
 | Needs | mount privileges: root, or a usable user namespace (rootless) | root |
 | Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container, else one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059) |
 | Diff | the instruction's upper directory | parallel walk and hash with a stat cache |
-| Stages | parallel along the DAG | sequential by default; `--parallel-stages` opts in (`ADR-0014`) |
+| Stages | parallel along the DAG | one at a time on a container's `/`; parallel along the DAG in per-stage directories (`ADR-0059`); `--parallel-stages` refused (`ADR-0060`) |
 | Phase | 1 (root), 3 (rootless) | 2 |
 
 The probe (`--mode=auto`; `--snapshot-mode` keeps kaniko's meaning,

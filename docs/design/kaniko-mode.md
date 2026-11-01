@@ -3,8 +3,9 @@
 How ranikust builds when overlay is not available: on `/` in a container
 one root filesystem, emptied safely between stages; anywhere else a
 directory per stage in the state directory (ADR-0050, ADR-0059). Each
-layer is found by walking and hashing the root. Also covers the opt-in
-`--parallel-stages` path with its fake `/proc`.
+layer is found by walking and hashing the root. The `--parallel-stages`
+path of ADR-0014 (a bare `chroot` per stage with a fake `/proc`) is refused
+for good (ADR-0060).
 
 Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0014](../adr/0014-kaniko-mode-sequential-by-default.md),
@@ -20,9 +21,9 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 
 | Variant | When | Stage root | `RUN` | Stages |
 |---|---|---|---|---|
-| **Sequential** (default in a container) | root in a container, cannot mount (Docker default, ordinary pods) | `/` | directly (`rnk-sandbox`'s `Isolation::Direct`), with the container's real `/proc`, `/dev` and network files | one at a time, `--jobs` ignored |
-| **Per-stage, sandboxed** | root outside a container (it must be able to mount: a host where root may not mount is refused, Q-330, `ADR-0050`, so the `chroot` path of `ADR-0043` is not used) | `<state>/builds/<id>/stages/<n>/rootfs`, one per stage (ADR-0059) | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
-| **Per-stage, bare chroot** | as Sequential, plus `--parallel-stages` | one directory per stage | bare `chroot`, no `/proc` | DAG, `--jobs` |
+| **Sequential** (default in a container) | root in a container, cannot mount (Docker default, ordinary pods) | `/` | directly (`rnk-sandbox`'s `Isolation::Direct`), with the container's real `/proc`, `/dev` and network files | one at a time; `--jobs` bounds only the uploads |
+| **Per-stage, sandboxed** | root outside a container (it must be able to mount: a host where root may not mount is refused, Q-330, `ADR-0050`, so the `chroot` path of `ADR-0043` is not used); `--mode=auto` picks it there when overlayfs refuses the state directory | `<state>/builds/<id>/stages/<n>/rootfs`, one per stage (ADR-0059) | full sandbox ([sandbox](sandbox.md)) | DAG, `--jobs` |
+| ~~Per-stage, bare chroot~~ | refused for good: `--parallel-stages` exits 2 (ADR-0060) | | | |
 
 All variants share the walk, the diff, the exporter and safe deletion. They
 implement the `StageRootfs` trait of `rnk-snapshot`: `/` (`Kaniko`, shared,

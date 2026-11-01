@@ -75,9 +75,9 @@ These are documented properties, not vulnerabilities:
   another process of the container holds in its environment, and files
   mounted into the container. Pass registry credentials in
   `DOCKER_AUTH_CONFIG`, secrets with `--secret`, and run ranikust as the
-  container's PID 1. With
-  `--parallel-stages`, stages can also read each other's files and secrets
-  ([ADR-0014](docs/adr/0014-kaniko-mode-sequential-by-default.md)). Kaniko
+  container's PID 1. `--parallel-stages`, which would let stages read each
+  other's files and secrets, is refused
+  ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)). Kaniko
   mode outside a container where root may not mount is refused: `RUN`
   would run in a bare `chroot` on the host
   ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).

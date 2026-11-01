@@ -58,7 +58,7 @@ pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mod
     // by the child on its own tmpfs, bound read-only; Debug hides the bytes, as RunSpec's the env values
 pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
-pub enum Isolation { Full, Direct }             // #[non_exhaustive]; BareChroot { fake_proc } [design], Phase 2
+pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no BareChroot: --parallel-stages refused (ADR-0060)
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
 pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), .. }  // Direct: a Direct RUN asked for a mount, a secret file, --network=none, or a script it cannot run (ADR-0057)
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve: no RUN process can outlive it (ADR-0056); false for Cancelled
@@ -354,7 +354,7 @@ from `rnk-store`, secret file) and passes `--network`.
   result from inside; nothing has run as real root yet (T2).
 - Left for `ranikust` (task 8): calling `enter_build_namespace` and `probe`
   in the single-threaded window and `Sandbox::start` after.
-- Deferred: bare `chroot`, fake `/proc`, `JAVA_TOOL_OPTIONS` (Phase 2); user
+- Not built: bare `chroot`, fake `/proc`, `JAVA_TOOL_OPTIONS` (their only user, `--parallel-stages`, is refused, ADR-0060). Deferred: user
   namespaces, the `proc` and `sysfs` fallbacks, the full probe and guidance
   (uid map, `sysfs`, bind, `mknod`), `--seccomp`, `--userns` (Phase 3);
   `RUN --mount=type=bind` (Phase 5).

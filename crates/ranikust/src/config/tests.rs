@@ -320,43 +320,118 @@ fn secrets_are_absolute_and_ids_unique() {
 fn kaniko_mode_flags_take_kanikos_defaults_and_cleaned_paths() {
     let plain = config(&["--no-push"]).expect("plain");
     assert!(plain.ignore_paths.is_empty());
-    assert!(!plain.single_snapshot && !plain.materialize);
     assert_eq!(plain.snapshot_workers.get(), 8);
     let set = config(&[
         "--no-push",
         "--ignore-path=/var//cache/./x/../y/",
-        "--ignore-path=/..",
+        "--ignore-path=/var/cache/*",
         "--snapshot-workers=2",
     ])
     .expect("set");
     assert_eq!(
         set.ignore_paths,
-        [PathBuf::from("/var/cache/y"), PathBuf::from("/")]
+        [PathBuf::from("/var/cache/y"), PathBuf::from("/var/cache/*")]
     );
     assert_eq!(set.snapshot_workers.get(), 2);
     let err = config(&["--no-push", "--ignore-path=var/cache"]).expect_err("relative");
     assert!(err.0.contains("absolute path"), "{}", err.0);
 }
 
+/// An `--ignore-path` that cleans to `/` or holds a malformed pattern is
+/// refused when the flags are read (exit 2), before any set-up (criterion
+/// 8, review finding #7).
+#[test]
+fn an_ignore_path_of_the_whole_root_or_a_bad_glob_is_refused_early() {
+    for root in [
+        "--ignore-path=/",
+        "--ignore-path=/..",
+        "--ignore-path=/a/../",
+    ] {
+        let err = config(&["--no-push", root]).expect_err(root);
+        assert!(err.0.contains("whole root"), "{root}: {}", err.0);
+    }
+    let err = config(&["--no-push", "--ignore-path=/x/[a"]).expect_err("bad glob");
+    assert!(err.0.contains("malformed glob"), "{}", err.0);
+    // A pattern taking every top-level entry is refused as `/` is.
+    for every in [
+        "--ignore-path=/*",
+        "--ignore-path=/?*",
+        "--ignore-path=/[^.]*",
+    ] {
+        let err = config(&["--no-push", every]).expect_err(every);
+        assert!(
+            err.0.contains("every top-level entry"),
+            "{every}: {}",
+            err.0
+        );
+    }
+    // Checked as the ignore list gets it: cleaned, so `/../etc` is `/etc`.
+    let ok = config(&[
+        "--no-push",
+        "--ignore-path=/../etc",
+        "--ignore-path=/[a-z]*",
+    ])
+    .expect("cleaned and partial patterns pass");
+    assert_eq!(ok.ignore_paths[0], PathBuf::from("/etc"));
+}
+
+/// `--single-snapshot` is refused while the flags are read, in every mode
+/// (`--mode=auto` included), before any I/O [open: Q-420] (host-safety
+/// round 1, item 1).
+#[test]
+fn single_snapshot_is_refused_in_every_mode_before_any_set_up() {
+    for mode in ["--mode=auto", "--mode=overlay", "--mode=kaniko"] {
+        let err = config(&["--no-push", mode, "--single-snapshot"]).expect_err(mode);
+        assert!(err.0.contains("Q-420"), "{mode}: {}", err.0);
+        assert!(!err.0.contains("--mode=kaniko"), "{mode}: {}", err.0);
+    }
+    config(&["--no-push", "--single-snapshot=false"]).expect("false is fine");
+}
+
 /// In overlay mode, the kaniko-mode flags that would change the image are
 /// refused (ADR-0049); the others are warned about.
 #[test]
 fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
-    for flag in ["--ignore-path=/x", "--single-snapshot"] {
-        let err = overlay_mode_flags(&args(&["--no-push", flag])).expect_err(flag);
-        assert!(err.0.contains("kaniko mode only"), "{flag}: {}", err.0);
-    }
+    let err = overlay_mode_flags(&args(&["--no-push", "--ignore-path=/x"])).expect_err("ignore");
+    assert!(err.0.contains("kaniko mode only"), "{}", err.0);
     let warnings = overlay_mode_flags(&args(&[
         "--no-push",
         "--snapshot-mode=redo",
         "--snapshot-workers=4",
-        "--materialize",
     ]))
     .expect("warnings only");
-    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
     assert!(
         overlay_mode_flags(&args(&["--no-push"]))
             .unwrap()
             .is_empty()
     );
+}
+
+/// Red team (criterion 8, review finding #7): the early `--ignore-path`
+/// check probes each path alone, against short names. Several paths that
+/// each pass can together take every possible top-level name, and `/??*`
+/// (every name of two characters or more, so every top-level entry of a real
+/// image) passes while `/?*` is refused. Either leaves every layer empty;
+/// no host path is touched, so this is a gap in the best-effort refusal,
+/// not in host safety.
+#[test]
+fn red_team_finding_ignore_paths_that_together_take_the_whole_root_pass_the_early_check() {
+    // Together: every name starting with a-m, n-z, or anything else.
+    let union = config(&[
+        "--no-push",
+        "--ignore-path=/[a-m]*",
+        "--ignore-path=/[n-z]*",
+        "--ignore-path=/[^a-z]*",
+    ]);
+    assert!(
+        union.is_err(),
+        "a union of --ignore-paths covering every top-level name is accepted"
+    );
+    for every_real in ["--ignore-path=/??*", "--ignore-path=/[^.]?*"] {
+        assert!(
+            config(&["--no-push", every_real]).is_err(),
+            "{every_real} takes every top-level entry of a real image and is accepted"
+        );
+    }
 }

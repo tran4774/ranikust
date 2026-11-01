@@ -1,7 +1,8 @@
 # Choosing where to run it
 
-> This page describes the design. ranikust cannot build images yet. The
-> expected modes come from experiments run before the code was written.
+> Overlay mode as root and kaniko mode are built; rootless overlay mode
+> (Phase 3) is not yet. The expected modes for each environment come from
+> experiments, checked in the test VM where marked.
 
 ranikust needs **Linux 5.8 or later**: it checks at start-up and stops
 with a clear message on older kernels, such as RHEL/CentOS 8, Debian 10,
@@ -40,8 +41,9 @@ Real Kubernetes clusters have not been tested yet.
 - **Fastest builds:** an environment that gets overlay mode, root or
   rootless.
 - **Locked-down CI:** kaniko mode works where kaniko works. Builds there are
-  sequential on a container's `/`; `--parallel-stages` is not offered yet
-  (see [How ranikust builds](how-it-builds.md#kaniko-mode)).
+  sequential on a container's `/`; `--parallel-stages` is refused for good
+  there, since a bare `chroot` per stage would let a `RUN` reach the
+  others (see [How ranikust builds](how-it-builds.md#kaniko-mode)).
 - **Untrusted Dockerfiles:** prefer a disposable VM, or a container made for
   that one build. In kaniko mode the container is the only boundary between
   `RUN` and everything else in it.

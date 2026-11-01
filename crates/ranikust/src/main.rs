@@ -241,7 +241,8 @@ fn build(
                     false
                 }
             };
-            kaniko(&config, "--mode=kaniko", can_mount, metrics_file)
+            let runtime = container::detect(&container::Real);
+            kaniko(&config, "--mode=kaniko", can_mount, runtime, metrics_file)
         }
         config::Mode::Overlay => {
             overlay_flags(args)?;
@@ -257,13 +258,56 @@ fn build(
             let span = tracing::debug_span!("ranikust.setup");
             match span.in_scope(setup::enter_namespace) {
                 Ok(()) => {
-                    overlay_flags(args)?;
-                    overlay(&config, &span)
+                    // Root may mount: overlay mode if its probes pass. Where
+                    // overlayfs is unusable (a state directory on NFS or on
+                    // overlayfs) outside a container, kaniko mode keeps a
+                    // directory per stage and the full sandbox (ADR-0059,
+                    // `design/modes-and-detection.md`, `setup::route`).
+                    // Overlay mode's flags are checked before its set-up
+                    // writes anything, and count only if it is picked.
+                    let flags = config::overlay_mode_flags(args);
+                    let refusal = match span.in_scope(|| {
+                        setup::set_up(&config.state_dir, config.allow_network_none_userns)
+                    }) {
+                        Ok(setup) => {
+                            let warnings = match flags {
+                                Ok(warnings) => warnings,
+                                Err(invalid) => {
+                                    close_store(setup.store);
+                                    return Err(Failure::usage(invalid.0));
+                                }
+                            };
+                            for warning in warnings {
+                                tracing::warn!("{warning}");
+                            }
+                            return overlay_built(&config, setup);
+                        }
+                        Err(refusal) => refusal,
+                    };
+                    let runtime = container::detect(&container::Real);
+                    match setup::route(&refusal, runtime.is_some()) {
+                        setup::Route::Refuse => Err(Failure::error(refusal.to_string())),
+                        setup::Route::RefuseInContainer => Err(Failure::error(format!(
+                            "{}\n  in a container where root may mount, ranikust builds in \
+                             overlay mode only (ADR-0054): mount a volume at the state \
+                             directory",
+                            refusal.reason
+                        ))),
+                        setup::Route::KanikoStages => {
+                            let why = refusal.reason;
+                            tracing::info!(
+                                "kaniko mode with a directory per stage, because overlay mode \
+                                 cannot run here: {why}"
+                            );
+                            kaniko(&config, "--mode=auto", true, runtime, metrics_file)
+                        }
+                    }
                 }
                 Err(refusal) if refusal.needs_kaniko_mode() => {
                     let why = refusal.reason;
                     tracing::info!("kaniko mode, because root may not mount here: {why}");
-                    kaniko(&config, "--mode=auto", false, metrics_file)
+                    let runtime = container::detect(&container::Real);
+                    kaniko(&config, "--mode=auto", false, runtime, metrics_file)
                 }
                 Err(refusal) => Err(Failure::error(refusal.to_string())),
             }
@@ -287,6 +331,22 @@ fn overlay(config: &BuildConfig, span: &tracing::Span) -> Result<(), Failure> {
     let setup = span
         .in_scope(|| setup::set_up(&config.state_dir, config.allow_network_none_userns))
         .map_err(|refusal| Failure::error(refusal.to_string()))?;
+    overlay_built(config, setup)
+}
+
+/// Closes a store this run will not build with: its build directory goes
+/// now, not at the next start. A store still shared (never, before a
+/// build) is left to its last holder.
+fn close_store(store: std::sync::Arc<rnk_store::Store>) {
+    if let Ok(store) = std::sync::Arc::try_unwrap(store)
+        && let Err(e) = store.close()
+    {
+        tracing::warn!("closing the store: {e}");
+    }
+}
+
+/// Overlay mode's build, once set up.
+fn overlay_built(config: &BuildConfig, setup: setup::Setup) -> Result<(), Failure> {
     tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
     tracing::info!("set up for {}", setup.outcome);
     let setup::Outcome::OverlayRoot { overlay, .. } = setup.outcome;
@@ -311,18 +371,15 @@ fn overlay(config: &BuildConfig, span: &tracing::Span) -> Result<(), Failure> {
 /// overlay mode's stages (`#per-stage-directories`, ADR-0059). Then
 /// `RLIMIT_NOFILE` is raised (the original kept for `RUN`), the state
 /// directory and store set up, and the ignore list built. `can_mount` is
-/// whether the build's mount namespace could be entered.
+/// whether the build's mount namespace could be entered; `runtime` is
+/// what [`container::detect`] found, read once by the caller.
 fn kaniko(
     config: &BuildConfig,
     how: &str,
     can_mount: bool,
+    runtime: Option<container::Runtime>,
     metrics_file: Option<&Path>,
 ) -> Result<(), Failure> {
-    if config.single_snapshot {
-        return Err(Failure::usage(
-            "--single-snapshot is not implemented in kaniko mode yet (Phase 2)",
-        ));
-    }
     let nofile = rnk_sandbox::NofileLimit::current();
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(Failure::error(format!(
@@ -330,7 +387,7 @@ fn kaniko(
              run ranikust as root in the container or VM that builds"
         )));
     }
-    let on_slash = match container::detect(&container::Real) {
+    let on_slash = match runtime {
         Some(runtime) => {
             tracing::debug!(%runtime, "running in a container: building on /");
             true
@@ -393,7 +450,8 @@ fn kaniko(
     }
     if on_slash && config.jobs.is_some() {
         tracing::warn!(
-            "--jobs is ignored in kaniko mode on /: stages run one at a time on the shared root"
+            "kaniko mode on /: stages run one at a time on the shared root; --jobs still \
+             bounds the uploads"
         );
     }
     let setup = tracing::debug_span!("ranikust.setup")
@@ -455,13 +513,11 @@ fn kaniko_snapshotter(
     let state_root = rnk_rootfs::RootPath::open(state_dir)
         .map_err(|e| fail(&format!("opening {}", state_dir.display()), &e))?;
     same_mount_only_inside(&root, root_path, &state_root, state_dir, &mounts)?;
-    let spec = rnk_snapshot::kaniko::IgnoreSpec {
-        root: root_path,
-        state_dir: Some(state_dir),
-        ignore_paths: &config.ignore_paths,
-    };
-    let ignore = rnk_snapshot::kaniko::ignore_list(&spec, &mounts)
-        .map_err(|e| fail("building the ignore list", &e))?;
+    let ignore = rnk_snapshot::kaniko::ignore_list(
+        &ignore_spec(config, root_path, Some(state_dir)),
+        &mounts,
+    )
+    .map_err(|e| fail("building the ignore list", &e))?;
     paths_outside_the_root(config, metrics_file, root_path, &ignore)?;
     // Nothing is kept by name: the keep area is the state directory, on
     // the ignore list, for the directories a `COPY --from` reads from while
@@ -491,17 +547,35 @@ fn stages_snapshotter(
 ) -> Result<rnk_snapshot::KanikoStages, Failure> {
     let fail = |what: &str, e: &dyn std::fmt::Display| Failure::error(format!("{what}: {e}"));
     let stages_dir = store.build_dir().join("stages");
-    let spec = rnk_snapshot::kaniko::IgnoreSpec {
-        root: &stages_dir,
-        state_dir: None,
-        ignore_paths: &config.ignore_paths,
-    };
-    // Mounts are none of a stage root's: it is made after this list.
-    let ignore = rnk_snapshot::kaniko::ignore_list(&spec, &[])
-        .map_err(|e| fail("building the ignore list", &e))?;
+    let ignore =
+        stage_ignore_list(config, &stages_dir).map_err(|e| fail("building the ignore list", &e))?;
     paths_outside_the_root(config, metrics_file, &stages_dir, &ignore)?;
     rnk_snapshot::KanikoStages::new(store, ignore, walk_options(config))
         .map_err(|e| fail("setting up the stage directories", &e))
+}
+
+/// What the ignore list is built from: the root (and, on `/`, the state
+/// directory) and `--ignore-path`.
+fn ignore_spec<'a>(
+    config: &'a BuildConfig,
+    root: &'a Path,
+    state_dir: Option<&'a Path>,
+) -> rnk_snapshot::kaniko::IgnoreSpec<'a> {
+    rnk_snapshot::kaniko::IgnoreSpec {
+        root,
+        state_dir,
+        ignore_paths: &config.ignore_paths,
+    }
+}
+
+/// The ignore list of a stage root off `/` (ADR-0059): the fixed paths and
+/// `--ignore-path`. Mounts are none of a stage root's: it is made after
+/// this list.
+fn stage_ignore_list(
+    config: &BuildConfig,
+    stages_dir: &Path,
+) -> Result<rnk_rootfs::IgnoreList, rnk_snapshot::Error> {
+    rnk_snapshot::kaniko::ignore_list(&ignore_spec(config, stages_dir, None), &[])
 }
 
 /// The walk's options from the flags.
@@ -678,6 +752,53 @@ mod tests {
         BuildConfig::from_args(&args).unwrap()
     }
 
+    /// `--snapshot-mode` and `--snapshot-workers` reach the walk with their
+    /// meaning (criterion 8, review finding #3): a swapped arm or a lost
+    /// worker count fails here.
+    #[test]
+    fn the_snapshot_flags_reach_the_walk_with_their_meaning() {
+        let opts = walk_options(&config_of(&["--no-push"]));
+        assert_eq!(opts.mode, rnk_snapshot::SnapshotMode::Full);
+        assert_eq!(opts.workers.get(), 8);
+        for (flag, mode) in [
+            ("--snapshot-mode=full", rnk_snapshot::SnapshotMode::Full),
+            ("--snapshot-mode=redo", rnk_snapshot::SnapshotMode::Redo),
+            ("--snapshot-mode=time", rnk_snapshot::SnapshotMode::Time),
+        ] {
+            let opts = walk_options(&config_of(&["--no-push", flag, "--snapshot-workers=3"]));
+            assert_eq!(opts.mode, mode, "{flag}");
+            assert_eq!(opts.workers.get(), 3, "{flag}");
+        }
+    }
+
+    /// `--ignore-path` reaches a stage root's ignore list, a glob per
+    /// component as in kaniko, and the list of `/` (criterion 8, review
+    /// finding #3).
+    #[test]
+    fn ignore_paths_reach_the_ignore_lists_of_both_kinds_of_root() {
+        let config = config_of(&[
+            "--no-push",
+            "--ignore-path=/var/cache/*",
+            "--ignore-path=/opt/keep",
+        ]);
+        let stages = Path::new("/state/builds/b1/stages");
+        let list = stage_ignore_list(&config, stages).unwrap();
+        assert!(list.covers("var/cache/apt/x"), "glob entry");
+        assert!(!list.covers("var/cache"), "the directory itself stays");
+        assert!(list.covers("opt/keep/f") && list.covers("opt/keep"));
+        assert!(!list.covers("opt/other"));
+        let plain = stage_ignore_list(&config_of(&["--no-push"]), stages).unwrap();
+        assert!(!plain.covers("var/cache/apt/x"));
+        let spec = ignore_spec(
+            &config,
+            Path::new("/"),
+            Some(Path::new("/var/lib/ranikust")),
+        );
+        assert_eq!(spec.ignore_paths, config.ignore_paths.as_slice());
+        let on_slash = rnk_snapshot::kaniko::ignore_list(&spec, &[]).unwrap();
+        assert!(on_slash.covers("var/cache/apt/x") && on_slash.covers("var/lib/ranikust/x"));
+    }
+
     #[test]
     fn operator_paths_in_the_root_are_refused_unless_ignored() {
         let tmp = tempfile::tempdir().unwrap();
@@ -762,5 +883,116 @@ mod tests {
         );
         let held = state_in_root(&more, (1, Path::new("/srv/w")), (6, Path::new("/state2")));
         assert_eq!(held, Some(true));
+    }
+
+    /// Red team (criterion 8, T4): an `--ignore-path` the flags accept never
+    /// takes a protected path off either ignore list (the state directory
+    /// on `/`, a mount point, the fixed paths: they stay covered, the list
+    /// only grows), and never fails later, once the set-up has written:
+    /// what `BuildConfig::from_args` accepts, `ignore_list` accepts on `/`
+    /// and on a stage root.
+    #[test]
+    fn red_team_accepted_ignore_paths_never_uncover_protected_paths_nor_fail_later() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let mounts = rnk_snapshot::kaniko::parse_mountinfo(
+            b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+              2 1 0:5 / /mnt/vol rw - ext4 /dev/sdb1 rw\n",
+        )
+        .unwrap();
+        let state = Path::new("/var/lib/ranikust");
+        let stages = Path::new("/var/lib/ranikust/builds/b1/stages");
+        let mut corpus: Vec<Vec<u8>> = [
+            "/var/lib/ranikust/*",
+            "/var/lib/[r]anikust",
+            "/var/lib/ranikust/x/..",
+            "/var/lib/rani*/builds",
+            "/var/lib/*",
+            "/mnt/vol/*",
+            "/mnt/[v]ol",
+            "/proc/*",
+            "/sys/../dev",
+            "/dev/[^n]*",
+            "/tmp/apt-key-gpghome",
+            "/[a-z]*",
+            "/??*",
+            "/*/*",
+            "/\\*",
+            "/[\\]]",
+            "/[\\-]x",
+            "/a*b?c[d-f]",
+            "/ ",
+            "/\t",
+            "/x/*/y/**",
+            "/../../etc",
+            "/etc/../../..//usr/./lib",
+        ]
+        .iter()
+        .map(|p| p.as_bytes().to_vec())
+        .collect();
+        corpus.push(b"/\xff*".to_vec());
+        corpus.push(b"/[\xff]*".to_vec());
+        corpus.push(format!("/{}", "a".repeat(255)).into_bytes());
+        corpus.push(format!("/{}", "d/".repeat(1000)).into_bytes());
+        corpus.push(format!("/{}", "*".repeat(200)).into_bytes());
+        let protected = [
+            "var/lib/ranikust",
+            "var/lib/ranikust/builds/b1/stages/0/rootfs/etc",
+            "mnt/vol",
+            "mnt/vol/data",
+            "proc",
+            "proc/1/environ",
+            "sys/kernel",
+            "dev",
+            "dev/null",
+            "ranikust/bin/ranikust",
+            "etc/mtab",
+            ".dockerenv",
+            "run/.containerenv",
+            "tmp/apt-key-gpghome/x",
+        ];
+        let stage_protected = [
+            "proc",
+            "sys",
+            "dev/null",
+            "ranikust",
+            "etc/mtab",
+            ".dockerenv",
+        ];
+        let mut checked = 0;
+        for path in &corpus {
+            let shown = String::from_utf8_lossy(path);
+            let mut flag = b"--ignore-path=".to_vec();
+            flag.extend_from_slice(path);
+            let argv = [
+                std::ffi::OsString::from("ranikust"),
+                "--no-push".into(),
+                std::ffi::OsString::from_vec(flag),
+            ];
+            let Command::Build(args) = cli::parse(argv).unwrap().cli.into_command() else {
+                panic!("expected build");
+            };
+            let Ok(config) = BuildConfig::from_args(&args) else {
+                continue; // Refused before any I/O: nothing to check.
+            };
+            let on_slash = rnk_snapshot::kaniko::ignore_list(
+                &ignore_spec(&config, Path::new("/"), Some(state)),
+                &mounts,
+            )
+            .unwrap_or_else(|e| panic!("{shown}: accepted early, refused late on /: {e}"));
+            for p in protected {
+                assert!(on_slash.covers(p), "{shown}: {p} no longer ignored on /");
+            }
+            let staged = stage_ignore_list(&config, stages)
+                .unwrap_or_else(|e| panic!("{shown}: accepted early, refused late off /: {e}"));
+            for p in stage_protected {
+                assert!(
+                    staged.covers(p),
+                    "{shown}: {p} no longer ignored on a stage root"
+                );
+            }
+            checked += 1;
+        }
+        // The corpus is mostly accepted: the checks above ran.
+        assert!(checked >= corpus.len() - 2, "{checked} of {}", corpus.len());
     }
 }

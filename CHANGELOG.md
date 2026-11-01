@@ -240,6 +240,22 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
+- `--mode=auto` builds in kaniko mode with a directory per stage where
+  root may mount but overlayfs refuses the state directory (NFS, overlayfs)
+  outside a container, instead of refusing; a failed step of the `RUN`
+  sandbox never routes there. Refusals no longer tell a user to use the
+  mode they already used.
+- `--materialize` is refused until the layer cache (ADR-0064), and
+  `--single-snapshot` in every mode until Q-420 is answered (a measurement:
+  about 1 s saved per 250 000-file build of 10 steps, against a layer per
+  step). An `--ignore-path` of the whole root, `--ignore-path`s that together
+  take every top-level entry of a real image (`/*`, `/??*`, or `/[a-m]*`
+  with `/[n-z]*` and `/[^a-z]*`; best effort), and a malformed pattern are
+  refused while the flags are read (exit 2), as is `--single-snapshot`. `--parallel-stages` is a
+  decided refusal (ADR-0060), not a later phase. The `--jobs` warning in
+  kaniko mode on `/` says it still bounds the uploads; the help of
+  `--preserve-context`, `--jobs` and `--network` says what kaniko mode on
+  `/` does.
 - The test VM (`just test-vm`) gets 12 vCPUs and 16 GiB for every suite,
   shrunk to what the host can spare, and boots a cached base image with
   Docker already installed (built once per cloud image and provisioning
@@ -373,6 +389,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- The ignore list's glob matcher (`--ignore-path` patterns) no longer
+  takes time exponential in the number of `*`: a few stars against a
+  long name an image brings could stall a build for seconds to minutes.
+  It now runs in time proportional to the pattern times the name.
 - The VM's `e2e` suite no longer fills the guest's disk: the registry
   freed no blob when the suite deleted its repositories before each build,
   so a few dozen builds filled the 80 GB disk and the VM stopped answering

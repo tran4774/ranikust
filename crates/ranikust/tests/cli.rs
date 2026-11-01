@@ -142,12 +142,23 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
         &[],
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("Phase 2"), "{}", stderr(&out));
-    // In overlay mode they would change the image: refused before the
-    // set-up (ADR-0049).
+    // Offered in no mode until Q-420 is answered.
+    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    // Nor in overlay mode, whose refusal no longer sends the user to
+    // `--mode=kaniko` (criterion 8, review finding #1).
     let out = ranikust(
         tmp.path(),
         &["--no-push", "--mode=overlay", "--single-snapshot"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("--mode=kaniko"), "{}", stderr(&out));
+    // `--ignore-path` would change an overlay-mode image: refused before
+    // the set-up (ADR-0049).
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--mode=overlay", "--ignore-path=/x"],
         &[],
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
@@ -156,6 +167,44 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
         "{}",
         stderr(&out)
     );
+    // The whole root or a malformed pattern: refused while the flags are
+    // read, exit 2, nothing created (review finding #7).
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    for bad in ["--ignore-path=/..", "--ignore-path=/x/[a"] {
+        let out = ranikust(tmp.path(), &["--no-push", "--mode=kaniko", &arg, bad], &[]);
+        assert_eq!(out.status.code(), Some(2), "{bad}: {}", stderr(&out));
+        assert!(!state.exists(), "{bad}: nothing is created");
+    }
+}
+
+/// `--single-snapshot` is refused with `--mode=auto` too (no `--mode`), as a
+/// non-root user, before anything is created [open: Q-420] (host-safety
+/// round 1, item 1).
+#[test]
+fn single_snapshot_is_refused_in_auto_mode_before_any_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    let out = ranikust(tmp.path(), &["--no-push", &arg, "--single-snapshot"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    assert!(!state.exists(), "nothing is created");
+}
+
+/// `--materialize` changes nothing until Phase 4's cache: refused rather than
+/// accepted to be ignored (ADR-0064), before any work.
+#[test]
+fn materialize_is_refused_before_any_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    for flag in ["--materialize", "--materialize=true", "--materialize=false"] {
+        let out = ranikust(tmp.path(), &["--no-push", &arg, flag], &[]);
+        assert_eq!(out.status.code(), Some(2), "{flag}: {}", stderr(&out));
+        assert!(stderr(&out).contains("Phase 4"), "{flag}: {}", stderr(&out));
+        assert!(!state.exists(), "{flag}: nothing is created");
+    }
 }
 
 #[test]
@@ -475,5 +524,184 @@ fn parallel_stages_is_refused_before_any_work() {
         let err = stderr(&out);
         assert!(err.contains(STOPS_AS_A_USER), "{err}");
         assert!(!err.to_lowercase().contains("parallel"), "{err}");
+    }
+}
+
+/// Runs the binary in `cwd` with raw (possibly non-UTF-8) arguments and
+/// the environment of [`ranikust`].
+fn ranikust_os(cwd: &Path, args: &[std::ffi::OsString]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ranikust"));
+    cmd.args(args)
+        .current_dir(cwd)
+        .env_remove("RANIKUST_METRICS_FILE")
+        .env_remove("RANIKUST_METRICS_SUMMARY")
+        .env_remove("RANIKUST_DEBUG_FAULT")
+        .env("RUST_BACKTRACE", "0");
+    cmd.output().expect("run ranikust")
+}
+
+/// Red team (ADR-0064, criterion 8): `--single-snapshot` and `--materialize`
+/// exit 2 before any work in every spelling: every boolean spelling,
+/// repeated, a value as a separate argument, a non-UTF-8 value, after
+/// `--`, in an `@argfile` (never expanded), as the value of another flag,
+/// behind the `build` subcommand, in every mode. The state directory is
+/// never created. A `RANIKUST_*` or `KANIKO_*` variable naming them is not
+/// read: the run stops where it stops without it.
+#[test]
+fn red_team_single_snapshot_and_materialize_have_no_bypass_spelling() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let state_arg = format!("--state-dir={}", state.display());
+    fs::write(
+        tmp.path().join("argf"),
+        "--materialize\n--single-snapshot\n",
+    )
+    .expect("argfile");
+    let spelled: Vec<String> = ["1", "t", "T", "true", "TRUE", "True"]
+        .iter()
+        .map(|v| format!("--single-snapshot={v}"))
+        .chain(
+            ["1", "0", "f", "yes", "", "tok-RNK-4242"]
+                .iter()
+                .map(|v| format!("--materialize={v}")),
+        )
+        .collect();
+    let mut cases: Vec<Vec<&str>> = spelled.iter().map(|s| vec![s.as_str()]).collect();
+    cases.extend([
+        vec!["--single-snapshot=yes"],
+        vec!["--single-snapshot="],
+        vec!["--single-snapshot", "true"],
+        vec!["--single-snapshot", "--single-snapshot=false"],
+        vec!["--single-snapshot=false", "--single-snapshot"],
+        vec!["--single-snap"],
+        vec!["-single-snapshot"],
+        vec!["--materialize", "true"],
+        vec!["--materialize", "--materialize=false"],
+        vec!["-materialize"],
+        vec!["--MATERIALIZE"],
+        vec!["--context", "--materialize"],
+        vec!["--", "--materialize"],
+        vec!["--", "--single-snapshot"],
+        vec!["@argf"],
+    ]);
+    for mode in ["--mode=auto", "--mode=overlay", "--mode=kaniko"] {
+        cases.push(vec![mode, "--single-snapshot"]);
+        cases.push(vec![mode, "--materialize"]);
+    }
+    for case in &cases {
+        let mut args = vec!["--no-push", &state_arg];
+        args.extend(case.iter().copied());
+        let out = ranikust(tmp.path(), &args, &[]);
+        assert_eq!(out.status.code(), Some(2), "{case:?}: {}", stderr(&out));
+        assert!(
+            !stderr(&out).contains("tok-RNK-4242"),
+            "{case:?}: the value is echoed: {}",
+            stderr(&out)
+        );
+        assert!(!state.exists(), "{case:?}: the state directory was created");
+    }
+    // Behind the subcommand.
+    for flag in ["--single-snapshot", "--materialize"] {
+        let out = ranikust(tmp.path(), &["build", "--no-push", &state_arg, flag], &[]);
+        assert_eq!(out.status.code(), Some(2), "build {flag}: {}", stderr(&out));
+        assert!(
+            !state.exists(),
+            "build {flag}: the state directory was created"
+        );
+    }
+    // Non-UTF-8 values and names.
+    use std::os::unix::ffi::OsStringExt as _;
+    for raw in [
+        b"--single-snapshot=\xff".to_vec(),
+        b"--materialize=\xff".to_vec(),
+        b"--single-snapshot\xff".to_vec(),
+    ] {
+        let args = [
+            "--no-push".into(),
+            state_arg.clone().into(),
+            std::ffi::OsString::from_vec(raw.clone()),
+        ];
+        let out = ranikust_os(tmp.path(), &args);
+        assert_eq!(out.status.code(), Some(2), "{raw:?}: {}", stderr(&out));
+        assert!(!state.exists(), "{raw:?}: the state directory was created");
+    }
+    if skip_as_root() {
+        return;
+    }
+    for env in [
+        &[
+            ("RANIKUST_SINGLE_SNAPSHOT", "true"),
+            ("RANIKUST_MATERIALIZE", "true"),
+        ][..],
+        &[("KANIKO_SINGLE_SNAPSHOT", "true"), ("SINGLE_SNAPSHOT", "1")],
+    ] {
+        let out = ranikust(tmp.path(), &["--no-push", "--mode=overlay"], env);
+        assert_eq!(out.status.code(), Some(1), "{env:?}: {}", stderr(&out));
+        let err = stderr(&out);
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
+        assert!(!err.contains("Q-420") && !err.contains("Phase 4"), "{err}");
+    }
+}
+
+/// Red team (criterion 8, review finding #7): an `--ignore-path` that is the
+/// whole root or takes every top-level entry in another spelling (`//`,
+/// `/.`, `/*/..`, `/./*`, `//*/`, `/**`, `/*?`, a class over all of
+/// ASCII, a negated class of a non-UTF-8 byte), or a malformed pattern,
+/// exits 2 before anything is created, in every mode.
+#[test]
+fn red_team_whole_root_ignore_paths_are_refused_in_every_spelling_before_any_io() {
+    use std::os::unix::ffi::OsStringExt as _;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let state_arg = format!("--state-dir={}", state.display());
+    let mut bad: Vec<Vec<u8>> = [
+        "//",
+        "/.",
+        "/./.",
+        "/a/b/../../..",
+        "/*/..",
+        "/[^.]*/..",
+        "/./*",
+        "//*/",
+        "/*/.",
+        "/**",
+        "/*?",
+        "/[!-~]*",
+        "/x\\",
+        "/[]",
+        "/[^]",
+        "/[a-]",
+        "/[z-a]",
+        "/[^-]*",
+        "/[^/]*",
+    ]
+    .iter()
+    .map(|p| p.as_bytes().to_vec())
+    .collect();
+    bad.push(b"/[^\xff]*".to_vec());
+    for path in &bad {
+        for mode in ["--mode=auto", "--mode=overlay", "--mode=kaniko"] {
+            let mut flag = b"--ignore-path=".to_vec();
+            flag.extend_from_slice(path);
+            let args = [
+                "--no-push".into(),
+                mode.into(),
+                state_arg.clone().into(),
+                std::ffi::OsString::from_vec(flag),
+            ];
+            let out = ranikust_os(tmp.path(), &args);
+            assert_eq!(
+                out.status.code(),
+                Some(2),
+                "{} {mode}: {}",
+                String::from_utf8_lossy(path),
+                stderr(&out)
+            );
+            assert!(
+                !state.exists(),
+                "{}: the state directory was created",
+                String::from_utf8_lossy(path)
+            );
+        }
     }
 }
