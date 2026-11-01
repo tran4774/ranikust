@@ -502,7 +502,7 @@ fn a_regular_file_swapped_for_another_is_refused() {
 }
 
 #[test]
-#[ignore = "T2: mknod of a device node needs root"]
+#[ignore = "T2c: default: mknod of /dev/zero's node needs CAP_MKNOD and a TMPDIR without nodev"]
 fn a_device_node_swapped_in_for_a_regular_file_is_never_opened() {
     let f = Fixture::new();
     f.write("x", b"data");

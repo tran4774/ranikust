@@ -97,9 +97,9 @@ fn reap_named(name: &str) {
 /// `/dev/fd/<n>` or `/proc/self/fd/<n>` read-write. What it reads back
 /// is what was given, and the next heredoc runs its own body. Nothing of
 /// it is named in the root (`/dev/pipes`). An interpreter that is the
-/// script itself (`#!/dev/fd/3`) fails, it does not loop. T2.
+/// script itself (`#!/dev/fd/3`) fails, it does not loop. T2c (root in the VM, or a default rootful Docker run).
 #[test]
-#[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+#[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
 fn red_team_direct_heredoc_cannot_rewrite_its_script() {
     let sandbox = Sandbox::start_direct().unwrap();
     let dir = scratch();
@@ -173,9 +173,9 @@ fn red_team_direct_heredoc_cannot_rewrite_its_script() {
 /// without close-on-exec, not ranikust's own stdout. As root and as
 /// another user, in shell form and as a `#!` heredoc. As another user it
 /// owns its streams: it reopens `/dev/stdout`, `/proc/self/fd/1` and
-/// `/dev/stderr` (kaniko#2928). T2.
+/// `/dev/stderr` (kaniko#2928). T2c.
 #[test]
-#[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+#[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
 fn red_team_direct_run_holds_only_its_own_descriptors() {
     let sandbox = Sandbox::start_direct().unwrap();
     let dir = scratch();
@@ -385,9 +385,9 @@ fn steal_script(send: bool, stall_fails: bool) -> String {
 /// `RUN` exits, the build must go on after the relay's drain time, not
 /// wait for that process (T21, ADR-0057: a `RUN` cannot hang ranikust;
 /// the relay "never waits for the end of a pipe"). Ten `RUN`s, as the
-/// race may go either way. T2.
+/// race may go either way. T2c.
 #[test]
-#[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+#[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
 fn red_team_direct_run_stealing_its_output_cannot_hang_the_build() {
     let sandbox = Sandbox::start_direct().unwrap();
     let dir = scratch();
@@ -428,9 +428,9 @@ fn red_team_direct_run_stealing_its_output_cannot_hang_the_build() {
 
 /// A `RUN` that reads its own stderr back ([`steal_script`]) never stops
 /// the relay from copying its stdout: its stdout writes keep being taken.
-/// (The `RUN` exits 3 when 1 MiB of stdout waits more than 2 s.) T2.
+/// (The `RUN` exits 3 when 1 MiB of stdout waits more than 2 s.) T2c.
 #[test]
-#[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+#[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
 fn red_team_direct_run_reading_its_stderr_back_does_not_stall_its_stdout() {
     let sandbox = Sandbox::start_direct().unwrap();
     let quiet = QuietStdout::new();
@@ -455,9 +455,9 @@ fn red_team_direct_run_reading_its_stderr_back_does_not_stall_its_stdout() {
 /// time: `Ok` with none of the loop left, or [`Error::Survivors`]; never
 /// wait for the loop (ADR-0051: "a tree still there after the rounds
 /// fails the build"). The loop ends by itself after 30 s whatever happens.
-/// T2.
+/// T2c.
 #[test]
-#[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+#[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
 fn red_team_direct_pid_hopping_survivor_fails_the_build_in_bounded_time() {
     const NAME: &str = "rnkhopper";
     let sandbox = Sandbox::start_direct().unwrap();
@@ -527,9 +527,9 @@ fn red_team_direct_pid_hopping_survivor_fails_the_build_in_bounded_time() {
 /// A `RUN` sets `O_NONBLOCK` on its stdout and stderr, floods them, then
 /// closes them early and keeps running: the build succeeds, ranikust's own
 /// stdout keeps its flags, and every byte written before the close reaches
-/// it. T2.
+/// it. T2c.
 #[test]
-#[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+#[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
 fn red_team_direct_run_nonblocking_flood_and_early_close() {
     const BYTES: usize = 4 << 20;
     let sandbox = Sandbox::start_direct().unwrap();

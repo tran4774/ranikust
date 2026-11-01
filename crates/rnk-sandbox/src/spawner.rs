@@ -1836,7 +1836,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "T2: creates network namespaces; run as root in the test VM only"]
+    #[ignore = "T2c: netadmin: creates user and network namespaces and brings loopback up"]
     fn root_brings_up_loopback_itself_and_in_a_user_namespace() {
         assert_eq!(probe_network(false), NetMode::Clone);
         assert_eq!(probe_network(true), NetMode::Clone);
@@ -2342,9 +2342,9 @@ mod tests {
     }
 
     /// A real `RUN` killed mid-way: root is needed for `setgroups`, so it
-    /// runs in the T2 VM, on the VM's own `/bin/sleep`.
+    /// runs as root (T2c: the VM, or a default rootful Docker run) on its own `/bin/sleep`.
     #[test]
-    #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+    #[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
     fn a_cancel_kills_a_running_run() {
         let dir = tempfile::tempdir().unwrap();
         let sandbox = Sandbox::start_inner(None, dir.path(), None).unwrap();
@@ -2365,9 +2365,9 @@ mod tests {
 
     /// Processes a `Direct` `RUN` leaves, in its group, `setsid` out of it
     /// or double-forked, are gone when `run` returns (ADR-0051). Real root
-    /// (the `RUN` switches to root's ids); T2.
+    /// (the `RUN` switches to root's ids); T2c.
     #[test]
-    #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+    #[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
     fn a_direct_run_leaves_no_process_behind() {
         let sandbox = Sandbox::start_direct().unwrap();
         // `sleep` under a name of this test's own: its processes, alive or
@@ -2403,9 +2403,9 @@ mod tests {
     /// that the interpreter reads as `/dev/fd/<n>`; nothing is named in
     /// the root (ADR-0057). Also as a `USER` other than root, which then
     /// writes `/dev/stdout` and `/dev/stderr` through pipes of its own
-    /// (kaniko#2928). T2.
+    /// (kaniko#2928). T2c.
     #[test]
-    #[ignore = "T2: a Direct RUN switches groups; run as root in the test VM only"]
+    #[ignore = "T2c: default: a Direct RUN switches groups on the container's /"]
     fn a_direct_heredoc_runs_from_an_anonymous_file() {
         use std::os::unix::fs::PermissionsExt as _;
         let sandbox = Sandbox::start_direct().unwrap();

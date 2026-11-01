@@ -50,7 +50,7 @@ fn a_directory_swapped_for_another_is_not_emptied() {
 }
 
 #[test]
-#[ignore = "T2: bind-mounts a directory into the state directory; run as root in the test VM only"]
+#[ignore = "T2c: sysadmin: bind-mounts in a private mount namespace"]
 fn a_mount_where_clean_up_deletes_is_not_emptied() {
     // On a thread of its own in a new mount namespace, every mount private,
     // so nothing it mounts reaches another namespace.
