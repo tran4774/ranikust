@@ -206,8 +206,8 @@ settles them (Q-024):
   `/` in a container (ADR-0043); `RLIMIT_NOFILE` as ranikust
   started (`NofileLimit::current()` before the raise,
   `Sandbox::set_nofile_limit`). The sandbox reopens the root by path for
-  each `RUN` and refuses it when it is no longer the directory
-  `Sandbox::start_with_root` checked (device, inode, mount id). On `/` a
+  each `RUN` and refuses it when it is no longer the directory the caller
+  checked (device, inode, mount id; `RunSpec::root_id`). On `/` a
   `#!` heredoc runs from a sealed memfd (`RunSpec::script`), a secret as
   a variable works, a cache mount is left out with a warning (the `RUN`
   runs without it, and what it writes at the target lands in its layer), and a secret as a file and `--network=none` are

@@ -204,7 +204,8 @@ image's entry is renamed to in the same directory; after the `RUN` the
 entry is renamed back, or the placed one removed, and the parent's times
 restored as for stubs. Placing and undoing never resolve through another
 mount below the root. A replay accepts only those paths and aside names,
-and a root below the state directory or the shared root given to
+and a root below the state directory or, in tests only since ADR-0060
+(the binary never runs `Direct` off `/`), the shared root given to
 `Sandbox::start_with_root`, opened once and matched by device, inode and
 mount. A root that is the host's `/`, `/etc` or `/dev` by device and inode
 is refused before anything is placed, and a `Direct` `RUN` off `/` is

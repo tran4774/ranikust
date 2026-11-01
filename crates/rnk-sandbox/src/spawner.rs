@@ -1206,7 +1206,8 @@ fn mount_setattr_supported() -> bool {
 /// without `mount_setattr` only the top mount of the root's bind becomes
 /// `nodev`, so a device node on a submount would open.
 fn refuse_submounts(root_dir: &Path) -> Result<()> {
-    let p = Path::new("/proc/self/mountinfo");
+    // This thread's namespace: the one the child's is copied from.
+    let p = Path::new("/proc/thread-self/mountinfo");
     let text = fs::read(p).map_err(|e| io_err("read", p, e))?;
     match submount_below(&text, root_dir.as_os_str().as_bytes()) {
         Some(m) => Err(Error::InvalidSpec(format!(
@@ -2514,6 +2515,52 @@ mod tests {
         assert_eq!(first, mount_setattr_supported());
     }
 
+    /// A T2 test's temporary directory and the mounts it made below it, in
+    /// its private mount namespace. On drop, panics included, each mount is
+    /// detached, last first, before the directory is removed; if one cannot
+    /// be, the directory is kept rather than removed through the mount.
+    struct TestMounts {
+        dir: Option<tempfile::TempDir>,
+        targets: Vec<PathBuf>,
+    }
+
+    impl TestMounts {
+        fn new(dir: tempfile::TempDir) -> Self {
+            Self {
+                dir: Some(dir),
+                targets: Vec::new(),
+            }
+        }
+
+        fn path(&self) -> &Path {
+            self.dir
+                .as_ref()
+                .map_or(Path::new("/nonexistent"), |d| d.path())
+        }
+
+        /// Records a mount just made, right after it succeeded.
+        fn add(&mut self, target: PathBuf) {
+            self.targets.push(target);
+        }
+    }
+
+    impl Drop for TestMounts {
+        fn drop(&mut self) {
+            let mut detached = true;
+            for t in self.targets.iter().rev() {
+                if let Err(e) = rustix::mount::unmount(t, rustix::mount::UnmountFlags::DETACH) {
+                    eprintln!("cannot detach {}: {e}", t.display());
+                    detached = false;
+                }
+            }
+            if let Some(dir) = self.dir.take()
+                && !detached
+            {
+                eprintln!("left in place, not removed: {}", dir.keep().display());
+            }
+        }
+    }
+
     /// T2 (root, the VM only): a mount below a full-sandbox root, holding a
     /// device node, is `nodev` in the `RUN` too, not only the root's own
     /// mount: writing to `/sub/null` fails, while the sandbox's own
@@ -2524,7 +2571,7 @@ mod tests {
     #[ignore = "T2: mounts and mknod as real root in a private mount namespace; run in the test VM only"]
     fn a_mount_below_the_root_is_nodev_in_the_run() {
         std::thread::spawn(|| {
-            use rustix::mount::{MountPropagationFlags, UnmountFlags};
+            use rustix::mount::MountPropagationFlags;
             use rustix::thread::UnshareFlags;
             // SAFETY: this thread shares nothing that the unshared
             // filesystem attributes or mount namespace would break; it ends
@@ -2537,14 +2584,26 @@ mod tests {
             )
             .expect("make every mount private");
             assert!(mount_setattr_supported(), "the VM kernel has mount_setattr");
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().canonicalize().unwrap().join("root");
+            // Owns the directory: every mount below it is detached before
+            // it is removed, on a panic too, or it is leaked.
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
             fs::create_dir_all(root.join("usr")).unwrap();
             fs::create_dir(root.join("sub")).unwrap();
             for l in ["bin", "lib", "lib64", "sbin"] {
                 std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).unwrap();
             }
             rustix::mount::mount_bind("/usr", root.join("usr")).expect("bind /usr");
+            mounts.add(root.join("usr"));
+            // Read-only: neither the `RUN` nor a removal reaches the real
+            // `/usr` through it.
+            rustix::mount::mount_remount(
+                root.join("usr"),
+                MountFlags::BIND | MountFlags::RDONLY,
+                c"",
+            )
+            .expect("remount the /usr bind read-only");
             rustix::mount::mount(
                 "tmpfs",
                 root.join("sub"),
@@ -2553,6 +2612,7 @@ mod tests {
                 None,
             )
             .expect("tmpfs below the root");
+            mounts.add(root.join("sub"));
             rustix::fs::mknodat(
                 rustix::fs::CWD,
                 root.join("sub/null"),
@@ -2561,8 +2621,7 @@ mod tests {
                 rustix::fs::makedev(1, 3),
             )
             .expect("mknod /sub/null");
-            let runner =
-                Runner::new(&dir.path().join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
             let parent = ParentPid::new().unwrap();
             let sh = |script: &str| {
                 let spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
@@ -2572,8 +2631,7 @@ mod tests {
             };
             let control = sh("echo x > /dev/null");
             let below = sh("echo x > /sub/null");
-            let _ = rustix::mount::unmount(root.join("sub"), UnmountFlags::DETACH);
-            let _ = rustix::mount::unmount(root.join("usr"), UnmountFlags::DETACH);
+            drop(mounts);
             assert!(
                 control.success(),
                 "the sandbox's /dev/null opens: {control:?}"

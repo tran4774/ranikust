@@ -3,10 +3,11 @@
 //! A test binary of its own, and the [`Capture`] is created before any span
 //! is reached: tracing caches whether a span is wanted once per process.
 //!
-//! The `RUN` is `Isolation::Direct` with a `WORKDIR` and a program that do
-//! not exist, under a fresh empty directory: a real child through the
-//! spawner thread that fails before executing anything, with no namespace
-//! and no mount, whatever the privileges of the test.
+//! The `RUN` is `Isolation::Direct` on `/` (`Sandbox::start_direct`) with a
+//! `WORKDIR` and a program that do not exist, under a fresh empty
+//! directory: a real child through the spawner thread that fails before
+//! executing anything, with no namespace and no mount, whatever the
+//! privileges of the test.
 
 use rnk_metrics::Capture;
 use rnk_sandbox::{Error, Isolation, RunSpec, Sandbox, Step};
