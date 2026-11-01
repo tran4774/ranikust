@@ -1,7 +1,10 @@
 #cloud-config
-# NoCloud seed of the T2 VM; tests/vm/vm.sh puts the run's own key in place
-# of @SSH_KEY@ and the Docker Hub mirror (RANIKUST_VM_IMAGE_REGISTRY) in place
-# of @REGISTRY_MIRRORS@, so the guest's Docker avoids Docker Hub's pull limit.
+# NoCloud seed of each T2 VM run; tests/vm/vm.sh puts the run's own key in
+# place of @SSH_KEY@, the Docker Hub mirror (RANIKUST_VM_IMAGE_REGISTRY) in
+# place of @REGISTRY_MIRRORS@, so the guest's Docker avoids Docker Hub's pull
+# limit, and in place of @PACKAGES@ nothing when the run boots the
+# provisioned base image (cloud-init/provision, the default), or the package
+# list when it boots the plain cloud image (RANIKUST_VM_GOLDEN=0).
 hostname: ranikust-vm
 ssh_pwauth: false
 
@@ -13,9 +16,7 @@ users:
     ssh_authorized_keys:
       - @SSH_KEY@
 
-package_update: true
-packages:
-  - docker.io
+@PACKAGES@
 
 write_files:
   - path: /etc/docker/daemon.json

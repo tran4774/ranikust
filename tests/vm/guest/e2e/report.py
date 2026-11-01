@@ -60,6 +60,32 @@ def main():
                 print(f"- `{f}`: {head}; {last}")
             else:
                 print(f"### {f}\n\n{text}\n")
+    phases(root)
+
+
+def phases(root):
+    """Where the suite's time went: phases.tsv (one row per build and step:
+    wipe, the timed build, flatten, leaks, blobs; compare once) and
+    suite-seconds.txt."""
+    f = os.path.join(root, "phases.tsv")
+    if not os.path.exists(f):
+        return
+    steps = {}
+    for line in open(f).read().splitlines()[1:]:
+        w, build, step, secs = line.split("\t")
+        steps.setdefault(step, []).append(float(secs))
+    print("\n## Time per step (s)\n")
+    print("| Step | Count | Total | Max |")
+    print("|---|---|---|---|")
+    for step in ("wipe", "build", "flatten", "leaks", "blobs", "compare"):
+        if step in steps:
+            v = steps.pop(step)
+            print(f"| {step} | {len(v)} | {sum(v):.1f} | {max(v):.1f} |")
+    for step, v in sorted(steps.items()):
+        print(f"| {step} | {len(v)} | {sum(v):.1f} | {max(v):.1f} |")
+    wall = os.path.join(root, "suite-seconds.txt")
+    if os.path.exists(wall):
+        print(f"\nSuite wall time (images loaded to report): {float(open(wall).read()):.1f} s")
 
 
 if __name__ == "__main__":

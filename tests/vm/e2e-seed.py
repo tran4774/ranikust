@@ -1,8 +1,10 @@
-"""Writes the seed of the VM's e2e suite as a tar stream on stdout.
+"""Writes the seed of the VM's e2e or ultra suite as a tar stream on stdout.
 
     python3 -I tests/vm/e2e-seed.py <nextjs-kaniko dir> <image dir> <images.txt> | <ssh> 'tar -x ...'
+    python3 -I tests/vm/e2e-seed.py --images-only <image dir> <images.txt> | ...
 
-Read by tests/vm/vm.sh; unpacked as ~/rnk/e2e/ in the VM. Holds:
+Read by tests/vm/vm.sh; unpacked as ~/rnk/e2e/ in the VM. The light e2e
+(--images-only) needs only the reference images; ultra holds:
 
 - images/<id>.tar, images.txt: the reference images (kaniko, BuildKit,
   registry, verdaccio), one docker-archive each as saved from the host's
@@ -48,15 +50,24 @@ def repo_of(image_file):
     return ref.split("/", 1)[1].split("@", 1)[0]
 
 
+def add_images(tar, images_dir, images_txt):
+    for line in open(images_txt):
+        image_id = line.split()[0]
+        tar.add(os.path.join(images_dir, f"{image_id}.tar"), f"images/{image_id}.tar", filter=owned_by_root)
+    tar.add(images_txt, "images.txt", filter=owned_by_root)
+
+
 def main():
+    if sys.argv[1:2] == ["--images-only"]:
+        images_dir, images_txt = sys.argv[2:4]
+        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as tar:
+            add_images(tar, images_dir, images_txt)
+        return
     nk, images_dir, images_txt = sys.argv[1:4]
     v2 = os.path.join(nk, ".data/registry/docker/registry/v2")
     repos = [repo_of(os.path.join(nk, "bench", f)) for f in ("base-image.txt", "tools-image.txt")]
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as tar:
-        for line in open(images_txt):
-            image_id = line.split()[0]
-            tar.add(os.path.join(images_dir, f"{image_id}.tar"), f"images/{image_id}.tar", filter=owned_by_root)
-        tar.add(images_txt, "images.txt", filter=owned_by_root)
+        add_images(tar, images_dir, images_txt)
         blobs = set()
         for repo in repos:
             rdir = os.path.join(v2, "repositories", repo)

@@ -216,11 +216,25 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   root on the VM with a directory per stage (`rk-kaniko-host`, `--jobs`
   compared on W3), next to kaniko, BuildKit and overlay mode; every
   ranikust image is checked for state, runtime markers and mount points
-  that must not reach a layer. `RANIKUST_E2E_QUICK=1` runs a short check
-  of the suite.
+  that must not reach a layer. `just test-vm e2e` is now a light check of
+  the whole pipeline (W0: a few small Dockerfiles on a busybox base made in
+  the VM, every builder, a few minutes); the W1–W3 workloads are the ultra
+  benchmark, `just test-vm ultra`, run only when asked for. Images are
+  checked on the first round only (`RANIKUST_E2E_CHECK_ALL=1` for every
+  round), and flattening an image is much faster (whiteouts applied to a
+  whole subtree at once, each layer read once per run).
 
 ### Changed
 
+- The test VM (`just test-vm`) gets 12 vCPUs and 16 GiB for every suite,
+  shrunk to what the host can spare, and boots a cached base image with
+  Docker already installed (built once per cloud image and provisioning
+  seed; `RANIKUST_VM_GOLDEN=0` for the plain cloud image), with a virtio
+  entropy source, the disk on an I/O thread through io_uring, and one SSH
+  connection for the whole run; `timings.txt` records where a run's time
+  went. In `e2e`, every builder is pinned to the same vCPUs as well as
+  limited to the same CPU quota, memory and swap, and each build's limits,
+  read from its cgroup, are in its results.
 - `--parallel-stages` is recognised and refused with exit 2 and its reason
   (ADR-0060, Q-400): outside a container
   kaniko mode already builds stages in parallel, and on a container's `/`

@@ -1,0 +1,43 @@
+#cloud-config
+# Provisions the T2 VM's base image ("golden" image): tests/vm/vm.sh boots
+# the verified cloud image once with this seed, waits for the VM to power
+# itself off, and keeps the result in its cache as the read-only backing
+# file of every run's throwaway disk (docs/testing.md#the-vm-harness-tier-t2).
+# vm.sh puts the package list in place of @PACKAGES@.
+#
+# Nothing to log in with is left in it: no user, no key, no password; the
+# SSH host keys and the machine ID are removed, so that each run's first
+# boot (a new instance ID) makes its own, and each run's seed adds user
+# `rnk` with that run's key.
+users: []
+ssh_pwauth: false
+disable_root: true
+
+@PACKAGES@
+
+runcmd:
+  - [systemctl, enable, docker]
+  # Background apt runs compete with the suites for CPU and disk, and with
+  # e2e's timings: none in the base image.
+  - [systemctl, disable, --now, apt-daily.timer, apt-daily-upgrade.timer, unattended-upgrades.service]
+  - [apt-get, clean]
+  - [sh, -c, 'rm -f /etc/ssh/ssh_host_*']
+  - [sh, -c, 'truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id']
+  # Docker's per-machine state too: it made its engine ID (and maybe a key)
+  # when it started here. (systemd's random seed is written again at
+  # power-off, so it stays in the image, shared by every run's VM, and
+  # systemd may credit it when it carries user.random-seed-creditable.
+  # Harmless: the kernel's pool is also seeded from RDRAND and from the
+  # host through virtio-rng, so a known seed does not make it predictable.)
+  - [systemctl, stop, docker.service, docker.socket]
+  - [rm, -f, /var/lib/docker/engine-id, /etc/docker/key.json]
+  # The disk has discard: freed blocks (the removed keys among them) go, and
+  # the flattened image is smaller.
+  - [fstrim, --all]
+  # Read by vm.sh from the serial log: the image is complete.
+  - [sh, -c, 'command -v docker && command -v zstd && command -v pigz && command -v busybox && systemctl is-enabled docker && echo ranikust-golden-ready >/dev/ttyS0']
+
+power_state:
+  mode: poweroff
+  timeout: 120
+  condition: true

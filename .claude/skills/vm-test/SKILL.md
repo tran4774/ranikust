@@ -17,7 +17,8 @@ just test-vm unit         # only the #[ignore = "T2: ..."] tests
 just test-vm quick        # the quick smoke cases (tests/smoke/cases) as real root
 RANIKUST_QUICK_CASES="run copy" just test-vm quick   # some of them
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
-just test-vm e2e          # large benchmark only: nextjs-kaniko W1-W3
+just test-vm e2e          # light e2e: W0 by every builder, a few minutes
+just test-vm ultra        # ultra benchmark (W1-W3): only when the maintainer asks
 just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
 just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker (ADR-0051)
 ```
@@ -25,20 +26,23 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 - **Smoke test or proof of concept as real root: `quick`**, the small
   Dockerfiles of `tests/smoke/cases` (a few seconds each; a new concern is
   a new case there, see the `test` skill). Not `e2e`.
-- **`e2e` only for a large benchmark or an acceptance measurement**: a
-  12 GiB VM and 45–60 minutes for 3 rounds of all three builders. Prefer
-  `RANIKUST_E2E_BUILDERS=ranikust RANIKUST_E2E_ROUNDS=1` unless official
-  numbers are needed.
+- **`e2e` for a change to the e2e harness or to how builders are
+  compared**: the light workload W0, every builder, a few minutes.
+- **`ultra` only when the maintainer asks** for performance numbers or an
+  acceptance run (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`):
+  nextjs-kaniko's W1–W3, tens of minutes per round. Never on a fork's own
+  initiative (docs/testing.md#which-test-for-what).
 
 - `secrets` runs only when named: a few minutes; a change to kaniko mode
   on `/`, the store's anonymous mode or `Isolation::Direct` reruns it.
 - `push` runs only when named and needs the host's test registries
   (`just registry-up`, docs/testing.md#test-registries), which the VM
   reaches as `10.0.2.2`.
-- `e2e` runs only when named: 15–25 minutes per round and 2.8 GB copied in,
-  read from the `nextjs-kaniko` checkout next to the main checkout and
-  from the host's podman images (docs/testing.md#end-to-end-workloads-e2e).
-  Its `report.md` holds the times, `compare-*.txt` the flattened-image
+- `e2e` and `ultra` run only when named. `e2e` copies in only the
+  reference images from the host's podman; `ultra` also reads the
+  `nextjs-kaniko` checkout next to the main checkout (2.8 GB copied in,
+  docs/testing.md#end-to-end-workloads-e2e). Their `report.md` holds the
+  times (and the time of each step), `compare-*.txt` the flattened-image
   comparison (`result: other=0` is what Phase 1 acceptance needs), and a
   `ranikust` build that hits an unbuilt part is `pending`, not a failure.
 
@@ -49,8 +53,15 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
   `tests/e2e/_vm-image/` of the main checkout, shared by every worktree,
   and a second run waits on its lock (the `test` skill has the rules and
   the clean-up policy).
-- Run it in the background: a cold run (image download, release build,
-  boot, cloud-init installing Docker) takes several minutes.
+- Every suite gets a 12-vCPU, 16 GiB VM (`RANIKUST_VM_CPUS`/`_MEM`; the
+  memory shrinks to what the host can spare, the CPUs to the host's less
+  2), booted from a cached, provisioned base image (Docker installed):
+  the first run after a new cloud image or a change to
+  `tests/vm/cloud-init/provision` builds it, a few minutes, once.
+  `RANIKUST_VM_GOLDEN=0` boots the plain cloud image instead.
+  `timings.txt` in the results says where a run's time went.
+- Run it in the background: a cold run (image download, base image,
+  release build) takes several minutes.
 - If `just` or `cargo-zigbuild` is not found, put `~/.cargo/bin` on `PATH`.
 - Never `sudo` anything on the host to make it pass. No `/dev/kvm` access
   means stop and tell the maintainer.
@@ -58,8 +69,10 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 ## Read the results
 
 `target/vm/results/<release>/`: `summary.txt` (one line per suite),
-`env.txt` (kernel, Docker, cgroup), `<suite>.log`, `serial.log` (boot and
-cloud-init, for a VM that never answered SSH). Quote the summary and the
+`env.txt` (kernel, Docker, cgroup, CPUs, memory, the VM's size, the run's own user, key, host key and machine ID),
+`<suite>.log`, `suite-times.txt`, `timings.txt` (boot, SSH, cloud-init,
+suites), `serial.log` (boot and cloud-init, for a VM that never answered
+SSH; `base-image-serial.log` when building the base image failed). Quote the summary and the
 failing lines in your report; a run that did not happen is "not run", not
 "passes".
 

@@ -1,6 +1,6 @@
 ---
 name: bench-runner
-description: Measures ranikust's performance - the W1-W3 workloads against kaniko and BuildKit in the test VM (`just test-vm e2e`), and focused benchmarks (walk/hash, mount cost, snapshot modes, COPY of many files, push throughput) - with repeated runs, median and spread, and the environment recorded. Use it for acceptance measurements and open questions that wait on numbers (Q-033, Q-245, --snapshot-mode). The caller passes what to measure, the question it answers and the build or branch.
+description: Measures ranikust's performance - the W1-W3 workloads against kaniko and BuildKit in the test VM (the ultra benchmark, `just test-vm ultra`, only when the maintainer asks), and focused benchmarks (walk/hash, mount cost, snapshot modes, COPY of many files, push throughput) - with repeated runs, median and spread, and the environment recorded. Use it for acceptance measurements and open questions that wait on numbers (Q-033, Q-245, --snapshot-mode). The caller passes what to measure, the question it answers and the build or branch.
 tools: Bash, Read, Write
 model: sonnet
 ---
@@ -19,11 +19,13 @@ parallel `pnpm install` stages; `docs/agents/glossary.md`).
 
 ## Where and how
 
-- W1–W3: `just test-vm e2e` (`tests/vm/guest/e2e.sh`, `docs/testing.md`
-  "End-to-end workloads"): kaniko, BuildKit and ranikust under the same CPU
-  quota and memory limit, one discarded warm-up per workload. It needs a
-  12 GiB VM and 45–60 minutes for 3 rounds; `RANIKUST_E2E_BUILDERS` and
-  `RANIKUST_E2E_ROUNDS` narrow it.
+- W1–W3: the ultra benchmark, `just test-vm ultra` (`tests/vm/guest/e2e.sh`,
+  `docs/testing.md` "End-to-end workloads"), only when the maintainer has
+  asked for it: kaniko, BuildKit and ranikust under the same CPU quota,
+  memory limit and pinned vCPUs, one discarded warm-up per workload; tens
+  of minutes per round; `RANIKUST_E2E_WORKLOADS`, `_BUILDERS` and
+  `_ROUNDS` narrow it. `just test-vm e2e` is the light W0 check of the
+  harness itself, not a benchmark.
 - Focused benchmarks: an existing harness first (`tests/bench/walk-hash`
   with `run.sh` and `summarize.py`); a new one goes to
   `tests/bench/<name>/` with a `run.sh`, a `results/<date>.md` and no

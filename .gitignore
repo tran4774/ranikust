@@ -9,3 +9,7 @@ CLAUDE.local.md
 
 # graphify knowledge graph (rebuilt locally by `graphify update .`)
 graphify-out/
+
+# Python bytecode (the VM harness and tests run Python helpers)
+__pycache__/
+*.pyc
