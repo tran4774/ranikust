@@ -237,6 +237,17 @@ memory, with swap full, an earlier version of the harness lost whole runs
 when the VM stalled for over 45 s and its single SSH session dropped. A run of one round took about 15 minutes on noble, most of it
 the seed copy, the builds and flattening W1's images.
 
+First run with kaniko mode (2026-11-01, `RANIKUST_E2E_QUICK=1`, noble,
+4 vCPUs, one round, so indicative only; 19 minutes with the VM's boot and
+the seed): W1 kaniko 24.3 s, overlay mode 20.5 s, `rk-kaniko` 22.9 s,
+`rk-kaniko-host` 31.4 s
+([Q-410](open-questions.md#q-410-how-do-per-stage-directories-stop-costing-more-than-kaniko-on-w1));
+W3 kaniko 28.9 s, overlay mode 15.3/14.1 s (`--jobs` 1/default),
+`rk-kaniko` 20.5 s, `rk-kaniko-host` 15.2/14.5 s. Every image matched
+kaniko's with no `other` difference, no leak, and W3's content did not
+depend on `--jobs` in either mode (raw digests differ only by the `du`
+files). The guest ended with 6.3 GB of its disk used.
+
 First run (2026-10-30, noble, 4 vCPUs, one round, so indicative only):
 kaniko W1 22.4 s, W2 16.3 s, W3 29.7 s; BuildKit W1 48.4 s, W2 13.2 s,
 W3 15.3 s; every `ranikust` build pending on `--insecure-registry`
