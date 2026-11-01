@@ -23,7 +23,10 @@ SECRET="$W/secret"
 
 # $W itself 0700: the state directories and every build root below them
 # stay out of other users' reach (ADR-0050).
-sudo rm -rf "$W" && sudo mkdir -m 700 "$W"
+# Never delete through a mount an earlier run left: refuse instead.
+! grep -qF " $W" /proc/self/mountinfo ||
+  { echo "error: mounts left under $W by an earlier run" >&2; exit 1; }
+sudo rm -rf --one-file-system "$W" && sudo mkdir -m 700 "$W"
 printf %s "$SMOKE_CASE_SECRET" | sudo tee "$SECRET" >/dev/null
 mkdir -p "$CASES_OUT"
 
@@ -75,9 +78,22 @@ auto_routes_to_stages() {
   printf 'FROM scratch\nCOPY f /f\n' | sudo tee "$ctx/Dockerfile" >/dev/null
   echo routed | sudo tee "$ctx/f" >/dev/null
   sudo mount -t overlay overlay -o "lowerdir=$ov/l,upperdir=$ov/u,workdir=$ov/w" "$ov/m" || return 1
+  # Detached on every exit path, even an interrupted one.
+  trap 'sudo umount -l "'"$ov/m"'" 2>/dev/null || true' EXIT
   log="$(sudo "$RNK" --context "$ctx" --state-dir "$ov/m/state" --no-push \
     --oci-layout-path "$o/oci" 2>&1)" || rc=$?
-  sudo umount -l "$ov/m" || rc=1
+  # A mount the build left below the overlay must fail the check, not be
+  # hidden by a lazy unmount of the overlay.
+  if grep -qF " $ov/m/" /proc/self/mountinfo; then
+    echo "error: mounts left below $ov/m after the build" >&2
+    rc=1
+  fi
+  if ! sudo umount "$ov/m"; then
+    echo "error: $ov/m busy after the build; detached lazily" >&2
+    sudo umount -l "$ov/m" || true
+    rc=1
+  fi
+  trap - EXIT
   if [ "$rc" != 0 ] ||
     ! grep -q 'kaniko mode with a directory per stage, because overlay mode cannot run here' <<<"$log"; then
     echo "error: --mode=auto with a state directory on overlayfs: exit $rc" >&2
@@ -101,8 +117,8 @@ set -e
 
 sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep '^localhost/rnk-case:' |
   xargs -r sudo docker rmi -f >/dev/null
-! grep -q "$W" /proc/self/mountinfo || { echo "error: mounts left under $W" >&2; exit 1; }
+! grep -qF " $W" /proc/self/mountinfo || { echo "error: mounts left under $W" >&2; exit 1; }
 ! pgrep -x ranikust >/dev/null || { echo "error: ranikust processes left" >&2; exit 1; }
-sudo rm -rf "$W"
+sudo rm -rf --one-file-system "$W"
 [ "$rc" = 0 ] && echo "quick: ok"
 exit "$rc"

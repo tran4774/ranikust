@@ -241,8 +241,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 - `--materialize` is refused until the layer cache (ADR-0064), and
   `--single-snapshot` in every mode until Q-420 is answered (a measurement:
   about 1 s saved per 250 000-file build of 10 steps, against a layer per
-  step). An `--ignore-path` of the whole root or with a malformed pattern
-  is refused while the flags are read (exit 2). `--parallel-stages` is a
+  step). An `--ignore-path` of the whole root (also a pattern taking every
+  top-level entry, `/*`) or with a malformed pattern is refused while the
+  flags are read (exit 2), as is `--single-snapshot`. `--parallel-stages` is a
   decided refusal (ADR-0060), not a later phase. The `--jobs` warning in
   kaniko mode on `/` says it still bounds the uploads; the help of
   `--preserve-context`, `--jobs` and `--network` says what kaniko mode on

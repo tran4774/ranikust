@@ -178,6 +178,20 @@ fn kaniko_mode_flags_are_checked_against_the_mode() {
     }
 }
 
+/// `--single-snapshot` is refused with `--mode=auto` too (no `--mode`), as a
+/// non-root user, before anything is created [open: Q-420] (host-safety
+/// round 1, item 1).
+#[test]
+fn single_snapshot_is_refused_in_auto_mode_before_any_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    let out = ranikust(tmp.path(), &["--no-push", &arg, "--single-snapshot"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Q-420"), "{}", stderr(&out));
+    assert!(!state.exists(), "nothing is created");
+}
+
 /// `--materialize` changes nothing until Phase 4's cache: refused rather than
 /// accepted to be ignored (ADR-0064), before any work.
 #[test]

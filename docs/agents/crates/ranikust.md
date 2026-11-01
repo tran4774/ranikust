@@ -47,7 +47,7 @@ struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, d
     `context_sub_path` then applies to fetched contexts only and a local context with it is
     refused, exit 2 (ADR-0054);
     kaniko mode (ADR-0040): ignore_paths (globs; `/` and bad patterns refused early),
-    single_snapshot (refused in every mode, [open: Q-420]); `--materialize` refused
+    single_snapshot (refused by `BuildConfig::from_args` in every mode, [open: Q-420]); `--materialize` refused
     until Phase 4 (ADR-0064); `--ignore-var-run` and `--whitelist-var-run` refused,
     ADR-0052 D4;
     ours: mode, state_dir, jobs, network, secret, allow, metrics_file, snapshot_workers.
@@ -92,7 +92,7 @@ the namespace is refused to root for lack of privilege
 (`needs_kaniko_mode`), logs why
 and goes to kaniko mode, else runs overlay mode's set-up; where that
 refuses because overlayfs cannot use the state directory
-(`overlay_unusable`) outside a container, it logs why and goes to kaniko
+(`setup::route` on the refusal's `Kind`) outside a container, it logs why and goes to kaniko
 mode with a directory per stage (`can_mount`). Kaniko mode
 (ADR-0050): `--single-snapshot` refused ([open: Q-420]), root required
 (`NofileLimit::current()` read first, for `RUN`), the root picked by
@@ -358,7 +358,11 @@ error, a refused kaniko flag, an invalid combination, and for now every
 - Mode: `--mode=auto` gives overlay mode where root may mount, kaniko mode
   where it may not, and kaniko mode with a directory per stage where root
   may mount but overlayfs refuses the state directory outside a container
-  (`Refusal::overlay_unusable`; a failed sandbox step never routes there);
+  (`setup::route`, a pure function of the refusal's `Kind` and whether
+  ranikust runs in a container, read once; a failed sandbox step, or a
+  probe mount that never reached the kernel, never routes there); overlay
+  mode's flags are checked before its set-up and count only if overlay
+  mode is picked (the store is closed on that refusal);
   in a container where root may mount the overlay refusal stands (ADR-0054).
 - `--parallel-stages` refused with exit 2 (ADR-0060). Deferred: `--seccomp`,
   `--userns` (3); `--cache`, `--cache-repo` (4); `prune` (5); `push`

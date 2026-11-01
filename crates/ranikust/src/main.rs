@@ -241,7 +241,8 @@ fn build(
                     false
                 }
             };
-            kaniko(&config, "--mode=kaniko", can_mount, metrics_file)
+            let runtime = container::detect(&container::Real);
+            kaniko(&config, "--mode=kaniko", can_mount, runtime, metrics_file)
         }
         config::Mode::Overlay => {
             overlay_flags(args)?;
@@ -261,42 +262,52 @@ fn build(
                     // overlayfs is unusable (a state directory on NFS or on
                     // overlayfs) outside a container, kaniko mode keeps a
                     // directory per stage and the full sandbox (ADR-0059,
-                    // `design/modes-and-detection.md`). The overlay probes
-                    // write in the state directory first; their store is
-                    // dropped and cleaned up by the next open.
+                    // `design/modes-and-detection.md`, `setup::route`).
+                    // Overlay mode's flags are checked before its set-up
+                    // writes anything, and count only if it is picked.
+                    let flags = config::overlay_mode_flags(args);
                     let refusal = match span.in_scope(|| {
                         setup::set_up(&config.state_dir, config.allow_network_none_userns)
                     }) {
                         Ok(setup) => {
-                            overlay_flags(args)?;
+                            let warnings = match flags {
+                                Ok(warnings) => warnings,
+                                Err(invalid) => {
+                                    close_store(setup.store);
+                                    return Err(Failure::usage(invalid.0));
+                                }
+                            };
+                            for warning in warnings {
+                                tracing::warn!("{warning}");
+                            }
                             return overlay_built(&config, setup);
                         }
                         Err(refusal) => refusal,
                     };
-                    if !refusal.overlay_unusable() {
-                        return Err(Failure::error(refusal.to_string()));
-                    }
-                    if container::detect(&container::Real).is_some() {
-                        // Kaniko mode on a container's `/` where root may
-                        // mount is refused (ADR-0054): the overlay refusal
-                        // stands, with what makes overlay mode work.
-                        return Err(Failure::error(format!(
+                    let runtime = container::detect(&container::Real);
+                    match setup::route(&refusal, runtime.is_some()) {
+                        setup::Route::Refuse => Err(Failure::error(refusal.to_string())),
+                        setup::Route::RefuseInContainer => Err(Failure::error(format!(
                             "{}\n  in a container where root may mount, ranikust builds in \
-                             overlay mode only: mount a volume at the state directory",
+                             overlay mode only (ADR-0054): mount a volume at the state \
+                             directory",
                             refusal.reason
-                        )));
+                        ))),
+                        setup::Route::KanikoStages => {
+                            let why = refusal.reason;
+                            tracing::info!(
+                                "kaniko mode with a directory per stage, because overlay mode \
+                                 cannot run here: {why}"
+                            );
+                            kaniko(&config, "--mode=auto", true, runtime, metrics_file)
+                        }
                     }
-                    let why = refusal.reason;
-                    tracing::info!(
-                        "kaniko mode with a directory per stage, because overlay mode cannot \
-                         run here: {why}"
-                    );
-                    kaniko(&config, "--mode=auto", true, metrics_file)
                 }
                 Err(refusal) if refusal.needs_kaniko_mode() => {
                     let why = refusal.reason;
                     tracing::info!("kaniko mode, because root may not mount here: {why}");
-                    kaniko(&config, "--mode=auto", false, metrics_file)
+                    let runtime = container::detect(&container::Real);
+                    kaniko(&config, "--mode=auto", false, runtime, metrics_file)
                 }
                 Err(refusal) => Err(Failure::error(refusal.to_string())),
             }
@@ -321,6 +332,17 @@ fn overlay(config: &BuildConfig, span: &tracing::Span) -> Result<(), Failure> {
         .in_scope(|| setup::set_up(&config.state_dir, config.allow_network_none_userns))
         .map_err(|refusal| Failure::error(refusal.to_string()))?;
     overlay_built(config, setup)
+}
+
+/// Closes a store this run will not build with: its build directory goes
+/// now, not at the next start. A store still shared (never, before a
+/// build) is left to its last holder.
+fn close_store(store: std::sync::Arc<rnk_store::Store>) {
+    if let Ok(store) = std::sync::Arc::try_unwrap(store)
+        && let Err(e) = store.close()
+    {
+        tracing::warn!("closing the store: {e}");
+    }
 }
 
 /// Overlay mode's build, once set up.
@@ -349,17 +371,15 @@ fn overlay_built(config: &BuildConfig, setup: setup::Setup) -> Result<(), Failur
 /// overlay mode's stages (`#per-stage-directories`, ADR-0059). Then
 /// `RLIMIT_NOFILE` is raised (the original kept for `RUN`), the state
 /// directory and store set up, and the ignore list built. `can_mount` is
-/// whether the build's mount namespace could be entered.
+/// whether the build's mount namespace could be entered; `runtime` is
+/// what [`container::detect`] found, read once by the caller.
 fn kaniko(
     config: &BuildConfig,
     how: &str,
     can_mount: bool,
+    runtime: Option<container::Runtime>,
     metrics_file: Option<&Path>,
 ) -> Result<(), Failure> {
-    if config.single_snapshot {
-        // [open: Q-420]
-        return Err(Failure::usage(config::SINGLE_SNAPSHOT));
-    }
     let nofile = rnk_sandbox::NofileLimit::current();
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(Failure::error(format!(
@@ -367,7 +387,7 @@ fn kaniko(
              run ranikust as root in the container or VM that builds"
         )));
     }
-    let on_slash = match container::detect(&container::Real) {
+    let on_slash = match runtime {
         Some(runtime) => {
             tracing::debug!(%runtime, "running in a container: building on /");
             true

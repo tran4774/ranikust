@@ -172,8 +172,6 @@ pub(crate) struct BuildConfig {
     pub(crate) snapshot_mode: SnapshotMode,
     /// `--ignore-path`s, absolute and cleaned as kaniko's `filepath.Clean`.
     pub(crate) ignore_paths: Vec<PathBuf>,
-    /// `--single-snapshot`.
-    pub(crate) single_snapshot: bool,
     /// Workers of the kaniko-mode walk (ADR-0039).
     pub(crate) snapshot_workers: NonZeroUsize,
     /// The requested mode.
@@ -373,6 +371,11 @@ impl BuildConfig {
         }
         // kaniko keeps a relative `--ignore-path`, which then never matches
         // the absolute paths of its walk; ranikust says so instead.
+        // Refused in every mode while the flags are read, before any I/O
+        // [open: Q-420].
+        if args.single_snapshot {
+            return Err(Invalid(SINGLE_SNAPSHOT.to_owned()));
+        }
         if let Some(path) = args.ignore_paths.iter().find(|p| !p.is_absolute()) {
             return Err(Invalid(format!(
                 "--ignore-path={}: give an absolute path in the image; kaniko would never \
@@ -380,19 +383,29 @@ impl BuildConfig {
                 path.display()
             )));
         }
-        // Said here, before any set-up: a path that cleans to `/` would keep
-        // the whole root out of every layer, and a malformed pattern would
-        // otherwise surface only once the ignore list is built.
+        // Said here, before any set-up, on the path as the ignore list will
+        // get it (cleaned): one that is `/`, or a pattern taking every
+        // top-level entry (`/*`, `/?*`, Go's `/[^.]*`), would keep the whole root
+        // out of every layer; a malformed pattern would otherwise surface
+        // only once the ignore list is built.
         for path in &args.ignore_paths {
-            if clean(path) == Path::new("/") {
-                return Err(Invalid(format!(
-                    "--ignore-path={}: it is the whole root, which would leave every layer \
-                     empty; name a directory or file in the image",
+            let cleaned = clean(path);
+            let whole_root = |why: &str| {
+                Invalid(format!(
+                    "--ignore-path={}: {why}, which would leave every layer empty; name a \
+                     directory or file in the image",
                     path.display()
-                )));
+                ))
+            };
+            if cleaned == Path::new("/") {
+                return Err(whole_root("it is the whole root"));
             }
-            if let Err(e) = rnk_rootfs::IgnoreList::new().insert_glob(path) {
+            let mut list = rnk_rootfs::IgnoreList::new();
+            if let Err(e) = list.insert_glob(&cleaned) {
                 return Err(Invalid(format!("--ignore-path={}: {e}", path.display())));
+            }
+            if TOP_LEVEL_PROBES.iter().all(|name| list.covers(name)) {
+                return Err(whole_root("it takes every top-level entry of the root"));
             }
         }
         Ok(Self {
@@ -419,7 +432,6 @@ impl BuildConfig {
                 .collect(),
             snapshot_mode: args.snapshot_mode.unwrap_or_default(),
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
-            single_snapshot: args.single_snapshot,
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
             mode: args.mode,
             state_dir: args
@@ -476,7 +488,6 @@ impl BuildConfig {
                 "tar": self.tar_path.is_some(),
             },
             "reproducible": self.reproducible,
-            "single_snapshot": self.single_snapshot,
             "snapshot_mode": name(self.snapshot_mode),
             "snapshot_workers": self.snapshot_workers.get(),
             "targets": self.targets.len(),
@@ -492,12 +503,9 @@ impl BuildConfig {
 ///
 /// [`Invalid`] for those that would change the image: `--ignore-path` takes
 /// effect in kaniko mode only (ADR-0049): overlay mode's layers never hold
-/// mounts. `--single-snapshot` is offered in no mode until Q-420 is
-/// answered.
+/// mounts. (`--single-snapshot` never gets here: [`BuildConfig::from_args`]
+/// refuses it in every mode.)
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
-    if args.single_snapshot {
-        return Err(Invalid(SINGLE_SNAPSHOT.to_owned()));
-    }
     if !args.ignore_paths.is_empty() {
         return Err(Invalid(
             "--ignore-path takes effect in kaniko mode only (ADR-0049); overlay mode would \
@@ -516,6 +524,14 @@ pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invali
     }
     Ok(warnings)
 }
+
+/// Names an `--ignore-path` pattern is tried against: one that covers all of
+/// them takes every top-level entry of a root (`/*`, `/?*`, Go's `/[^.]*`) and
+/// is refused as `/` is. Common top-level directories, and names starting
+/// with a digit, an underscore, a capital and a single letter.
+const TOP_LEVEL_PROBES: [&str; 10] = [
+    "bin", "etc", "usr", "var", "opt", "root", "a", "Z", "_x", "0",
+];
 
 /// The refusal of `--single-snapshot`, in every mode, until a measurement
 /// settles whether one walk at the end of the build is worth the per-step

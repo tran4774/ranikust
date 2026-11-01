@@ -61,22 +61,59 @@ pub(crate) struct Refusal {
     pub(crate) reason: String,
     /// What to do instead; empty when the reason already says it.
     pub(crate) guidance: &'static str,
+    /// What kind of refusal it is: what `--mode=auto` may make of it
+    /// ([`route`]).
+    pub(crate) kind: Kind,
+}
+
+/// What kind of refusal a [`Refusal`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// Anything else: a host-side failure, a missing tool, a lock.
+    Other,
+    /// Root lacks the privilege to mount: kaniko mode's place.
+    NoMountPrivilege,
+    /// Root may mount, but overlayfs refuses the state directory: the
+    /// probe's mount was refused by the kernel, or the state directory is
+    /// on overlayfs.
+    OverlayUnusable,
+    /// A step of the `RUN` sandbox was refused although root may mount (an
+    /// LSM blocking mounts).
+    SandboxBlocked,
+}
+
+/// What `--mode=auto` does after overlay mode's set-up refused, once root
+/// could enter the build's mount namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// Build in kaniko mode with a directory per stage and the full
+    /// sandbox (ADR-0059).
+    KanikoStages,
+    /// The refusal stands.
+    Refuse,
+    /// The refusal stands, with what makes overlay mode work: kaniko mode
+    /// on a container's `/` where root may mount is refused (ADR-0054).
+    RefuseInContainer,
+}
+
+/// Where `--mode=auto` goes after overlay mode's set-up refused with
+/// `refusal`, root having entered the build's mount namespace. Only an
+/// unusable overlayfs routes to kaniko mode, and only outside a container:
+/// a blocked sandbox step would block kaniko mode off `/` too, and a
+/// host-side failure is no reason to change modes.
+pub(crate) fn route(refusal: &Refusal, in_container: bool) -> Route {
+    match (refusal.kind, in_container) {
+        (Kind::OverlayUnusable, false) => Route::KanikoStages,
+        (Kind::OverlayUnusable, true) => Route::RefuseInContainer,
+        _ => Route::Refuse,
+    }
 }
 
 impl Refusal {
     /// Whether this environment needs kaniko mode: root that may not mount
     /// or cannot use overlay, what `--mode=auto` turns into kaniko mode.
     pub(crate) fn needs_kaniko_mode(&self) -> bool {
-        self.guidance == NEEDS_KANIKO_MODE
-    }
-
-    /// Whether root may mount but overlayfs refused the state directory
-    /// (its probe's mount, or a state directory on overlayfs): outside a
-    /// container `--mode=auto` builds in kaniko mode with a directory per
-    /// stage there (ADR-0059). Not a failed sandbox step: kaniko mode off
-    /// `/` needs that sandbox too.
-    pub(crate) fn overlay_unusable(&self) -> bool {
-        self.guidance == OVERLAY_UNUSABLE || self.guidance == ON_OVERLAYFS
+        self.kind == Kind::NoMountPrivilege
     }
 }
 
@@ -158,6 +195,7 @@ pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Re
     prepare_state_dir(state_dir)?;
     if crate::statedir::on_overlayfs(state_dir) {
         return Err(Refusal {
+            kind: Kind::OverlayUnusable,
             reason: format!(
                 "the state directory {} is on overlayfs, a container's own root, where overlay \
                  mode cannot keep its upper directories",
@@ -183,6 +221,7 @@ pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Re
     tracing::info!("ranikust: {outcome}");
     let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| Refusal {
+        kind: Kind::Other,
         reason: e.to_string(),
         guidance: "",
     })?;
@@ -205,6 +244,7 @@ const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
 /// Opens the store in `state_dir` for a build whose root is `root`.
 fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
     Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| Refusal {
+        kind: Kind::Other,
         reason: format!("cannot open the store in {}: {e}", state_dir.display()),
         guidance: "",
     })
@@ -258,6 +298,7 @@ pub(crate) fn set_up_kaniko(
     let euid = rustix::process::geteuid().as_raw();
     if euid != 0 {
         return Err(Refusal {
+            kind: Kind::Other,
             reason: format!("kaniko mode cannot run as uid {euid}"),
             guidance: KANIKO_NEEDS_ROOT,
         });
@@ -274,6 +315,7 @@ pub(crate) fn set_up_kaniko(
     // blobs are anonymous files (ADR-0051).
     let store = if on_slash {
         Store::open_anonymous(state_dir).map_err(|e| Refusal {
+            kind: Kind::Other,
             reason: format!("cannot open the store in {}: {e}", state_dir.display()),
             guidance: "",
         })?
@@ -294,6 +336,7 @@ pub(crate) fn set_up_kaniko(
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
         let caps = rnk_sandbox::probe(&sandbox_dir).map_err(|e| Refusal {
+            kind: Kind::Other,
             reason: format!("the RUN sandbox cannot run here: {e}"),
             guidance: "",
         })?;
@@ -315,6 +358,7 @@ pub(crate) fn set_up_kaniko(
         None => Sandbox::start_direct(),
     };
     let mut sandbox = started.map_err(|e| Refusal {
+        kind: Kind::Other,
         reason: e.to_string(),
         guidance: "",
     })?;
@@ -350,6 +394,7 @@ const HOST_WITHOUT_MOUNTS: &str = "run ranikust in a container (kaniko mode then
 /// Refused (Q-330, ADR-0050).
 pub(crate) fn host_without_mounts(on_slash: bool, can_mount: bool) -> Option<Refusal> {
     (!on_slash && !can_mount).then(|| Refusal {
+        kind: Kind::Other,
         reason: "kaniko mode outside a container, where root may not mount: RUN would run in \
                  a bare chroot on this machine, which root can leave"
             .to_owned(),
@@ -369,6 +414,7 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
     match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => Ok(fd),
         Err(rustix::io::Errno::WOULDBLOCK) => Err(Refusal {
+            kind: Kind::Other,
             reason: "another ranikust build is using / in this container".to_owned(),
             guidance: "run one kaniko-mode build at a time per container",
         }),
@@ -379,6 +425,7 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
 /// A set-up step that failed with `e`.
 fn failed(what: &str, e: &dyn fmt::Display) -> Refusal {
     Refusal {
+        kind: Kind::Other,
         reason: format!("{what}: {e}"),
         guidance: "",
     }
@@ -393,6 +440,7 @@ fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal> {
         .mode(0o700)
         .create(&dir)
         .map_err(|e| Refusal {
+            kind: Kind::Other,
             reason: format!("cannot create {}: {e}", dir.display()),
             guidance: "",
         })?;
@@ -404,46 +452,55 @@ fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal> {
 /// no privilege), root needs kaniko mode; a host-side failure (the state
 /// directory unwritable, a full disk) gets no such guidance.
 fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
-    let refused_mount = matches!(
-        e,
-        SnapshotError::Probe { source, .. }
-            if matches!(**source, SnapshotError::Mount { .. })
-    ) || matches!(e, SnapshotError::ProbeCheck(_));
+    let refused_mount = match e {
+        SnapshotError::Probe { source, .. } => kernel_refused_mount(source),
+        SnapshotError::ProbeCheck(_) => true,
+        _ => false,
+    };
+    let (kind, guidance) = match (refused_mount, euid) {
+        (true, 0) => (Kind::OverlayUnusable, OVERLAY_UNUSABLE),
+        (true, _) => (Kind::Other, NEEDS_ROOT),
+        (false, _) => (Kind::Other, ""),
+    };
     Refusal {
+        kind,
         reason: format!("overlay mode cannot run here: {e}"),
-        guidance: match (refused_mount, euid) {
-            (true, 0) => OVERLAY_UNUSABLE,
-            (true, _) => NEEDS_ROOT,
-            (false, _) => "",
-        },
+        guidance,
+    }
+}
+
+/// Whether the kernel refused the probe's overlay mount: a `Mount` error
+/// from the mount itself, not from starting its thread or running out of
+/// memory, descriptors or processes, which say nothing about overlayfs.
+fn kernel_refused_mount(e: &SnapshotError) -> bool {
+    use rustix::io::Errno;
+    match e {
+        SnapshotError::Mount { step, errno, .. } => {
+            !step.starts_with("start the mount thread")
+                && ![Errno::AGAIN, Errno::NOMEM, Errno::MFILE, Errno::NFILE].contains(errno)
+        }
+        _ => false,
     }
 }
 
 /// [`crate::statedir::prepare`] as a [`Refusal`].
 fn prepare_state_dir(state_dir: &Path) -> Result<(), Refusal> {
     crate::statedir::prepare(state_dir).map_err(|refused| Refusal {
+        kind: Kind::Other,
         reason: refused.0,
         guidance: "",
     })
 }
 
-/// The guidance for missing privileges: root that still lacks them (Docker's
-/// defaults) needs kaniko mode; anyone else needs root.
-fn privilege_guidance(euid: u32) -> &'static str {
-    if euid == 0 {
-        NEEDS_KANIKO_MODE
-    } else {
-        NEEDS_ROOT
-    }
-}
-
 /// The refusal for a failed [`rnk_sandbox::enter_build_namespace`].
 fn namespace_refusal(e: SandboxError, euid: u32) -> Refusal {
-    let guidance = match e {
-        SandboxError::Privilege(_) => privilege_guidance(euid),
-        _ => "",
+    let (kind, guidance) = match (&e, euid) {
+        (SandboxError::Privilege(_), 0) => (Kind::NoMountPrivilege, NEEDS_KANIKO_MODE),
+        (SandboxError::Privilege(_), _) => (Kind::Other, NEEDS_ROOT),
+        _ => (Kind::Other, ""),
     };
     Refusal {
+        kind,
         reason: e.to_string(),
         guidance,
     }
@@ -460,13 +517,18 @@ fn pick<C>(
     overlay: Result<OverlayCaps, Refusal>,
     euid: u32,
 ) -> Result<(C, OverlayCaps), Refusal> {
-    let sandbox = sandbox.map_err(|e| Refusal {
-        guidance: match e {
-            SandboxError::Privilege(_) => privilege_guidance(euid),
-            SandboxError::Setup { .. } => SANDBOX_BLOCKED,
-            _ => "",
-        },
-        reason: format!("the RUN sandbox cannot run here: {e}"),
+    let sandbox = sandbox.map_err(|e| {
+        let (kind, guidance) = match (&e, euid) {
+            (SandboxError::Privilege(_), 0) => (Kind::NoMountPrivilege, NEEDS_KANIKO_MODE),
+            (SandboxError::Privilege(_), _) => (Kind::Other, NEEDS_ROOT),
+            (SandboxError::Setup { .. }, _) => (Kind::SandboxBlocked, SANDBOX_BLOCKED),
+            _ => (Kind::Other, ""),
+        };
+        Refusal {
+            kind,
+            guidance,
+            reason: format!("the RUN sandbox cannot run here: {e}"),
+        }
     })?;
     Ok((sandbox, overlay?))
 }
