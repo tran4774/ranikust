@@ -456,6 +456,71 @@ fn prune_gives_what_a_filtered_copy_gives() {
     assert_eq!((now.mtime(), now.mtime_nsec()), root_times);
 }
 
+/// ADR-0061: `prune` removes overlay's own xattrs (`user.overlay.*`, the
+/// predicate a copy uses) from the root, a directory and a file it keeps,
+/// and keeps the escaped `user.overlay.overlay.*` and every other xattr,
+/// with no time a layer holds changed. Skipped where the filesystem has no
+/// `user.*` xattrs.
+#[test]
+fn prune_removes_overlays_own_xattrs_as_a_copy_does() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/f"), b"x").unwrap();
+    for p in ["", "d", "d/f"] {
+        for (n, v) in [
+            ("user.overlay.opaque", b"y".as_slice()),
+            ("user.overlay.overlay.kept", b"escaped"),
+            ("user.keep", b"mine"),
+        ] {
+            match rustix::fs::setxattr(f.host(p), n, v, rustix::fs::XattrFlags::empty()) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::NOTSUP | rustix::io::Errno::PERM) => {
+                    eprintln!("no user xattrs here; skipped");
+                    return;
+                }
+                Err(e) => panic!("setxattr {p}: {e}"),
+            }
+        }
+        set_times(&f.host(p), 1_000_000);
+    }
+    let copy = Fixture::new();
+    crate::copy_filtered(
+        &f.root,
+        "",
+        &copy.root,
+        "",
+        &crate::CopyOpts::default(),
+        &|_, _| true,
+    )
+    .unwrap();
+    prune(&f.root, &|_, _| false).unwrap();
+    let names = |p: &Path| {
+        let mut buf = vec![0; 4096];
+        let n = rustix::fs::listxattr(p, &mut buf).unwrap();
+        let mut v: Vec<_> = buf[..n]
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8(s.to_vec()).unwrap())
+            .collect();
+        v.sort();
+        v
+    };
+    for p in ["d", "d/f"] {
+        assert_eq!(names(&f.host(p)), names(&copy.host(p)), "{p}");
+        assert_eq!(
+            names(&f.host(p)),
+            ["user.keep", "user.overlay.overlay.kept"],
+            "{p}"
+        );
+        assert_eq!(fs::metadata(f.host(p)).unwrap().mtime(), 1_000_000, "{p}");
+    }
+    assert_eq!(
+        names(&f.host),
+        ["user.keep", "user.overlay.overlay.kept"],
+        "the root"
+    );
+}
+
 #[test]
 fn prune_never_follows_a_link_out() {
     let f = Fixture::new();

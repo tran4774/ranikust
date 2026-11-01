@@ -1471,10 +1471,9 @@ fn xattrs_of(p: &Path) -> Vec<(String, Vec<u8>)> {
 /// any `RUN` user may set on its files, and `trusted.overlay.*` from an
 /// image layer) are not handed over either, on a file, a directory or the
 /// root directory itself: a child's `RUN` sees the same xattrs whichever
-/// way it got its root. A red-team finding: `prune` keeps every xattr, so
-/// the hand-over keeps overlay's own where the copy drops them.
+/// way it got its root. A red-team finding (`prune` kept every xattr),
+/// fixed: `prune` removes overlay's own from every entry it keeps.
 #[test]
-#[ignore = "red team finding: the hand-over keeps user.overlay.* xattrs a copy leaves out"]
 fn red_team_a_hand_over_keeps_no_xattr_a_copy_leaves_out() {
     let f = Fixture::new();
     let mut set = true;

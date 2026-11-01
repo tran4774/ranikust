@@ -41,7 +41,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rnk_layer::LayerDigests;
 use rnk_oci::Digest;
 use rnk_rootfs::{
-    CopyOpts, FileType, IgnoreList, Meta, RootPath, copy_filtered, delete_contents, prune,
+    CopyOpts, FileType, IgnoreList, Meta, RootPath, copy_filtered, delete_contents, is_overlay_own,
+    prune,
 };
 use rnk_store::Store;
 
@@ -124,7 +125,7 @@ fn root_meta(root: &RootPath) -> Result<Meta> {
     let xattrs = root
         .xattrs("/")?
         .into_iter()
-        .filter(|(name, _)| !overlay_own(name.as_encoded_bytes()))
+        .filter(|(name, _)| !is_overlay_own(name.as_encoded_bytes()))
         .collect();
     Ok(Meta {
         uid: Some(st.uid),
@@ -134,14 +135,6 @@ fn root_meta(root: &RootPath) -> Result<Meta> {
         mtime: Some(st.mtime),
         xattrs,
     })
-}
-
-/// An xattr overlayfs keeps for itself (`trusted.overlay.*`,
-/// `user.overlay.*`, not the escaped `user.overlay.overlay.*`): a copy
-/// leaves them out and no layer holds one.
-fn overlay_own(name: &[u8]) -> bool {
-    !name.starts_with(b"user.overlay.overlay.")
-        && (name.starts_with(b"trusted.overlay.") || name.starts_with(b"user.overlay."))
 }
 
 /// Copies the stage root `from` into the empty root `into`, as `FROM

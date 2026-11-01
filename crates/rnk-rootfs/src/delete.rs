@@ -63,11 +63,16 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
 /// each entry's cleaned path inside the root and its type; the root itself
 /// is never offered.
 ///
-/// A copy of the root that leaves out what `remove` names
-/// ([`crate::copy_filtered`] with the same filter, which also leaves out
-/// `CopyOpts::skip_special`'s nodes when `remove` names them) gives the same
-/// entries, contents, owners, modes, modification times, links and
-/// hardlinks between kept names. Kaniko mode hands a stage's directory to
+/// Overlay's own xattrs ([`crate::is_overlay_own`]) go from every entry
+/// kept and from the root, as a copy leaves them out. A copy of the root
+/// that leaves out what `remove` names ([`crate::copy_filtered`] with the
+/// same filter, which also leaves out `CopyOpts::skip_special`'s nodes when
+/// `remove` names them) then gives the same entries, contents, owners,
+/// modes, modification times, xattrs, links and hardlinks between kept
+/// names. What a `RUN` can still tell apart, which no layer holds: access
+/// and change times, directory sizes (ext4 and xfs keep them after
+/// deletions), the order `readdir` lists a directory in, and inode flags a
+/// copy does not carry (`chattr` flags a non-privileged owner may set). Kaniko mode hands a stage's directory to
 /// the stage built on it this way instead of copying it (ADR-0061).
 ///
 /// Walks and deletes as [`delete_contents`] does: by `(parent fd, name)`,
@@ -192,6 +197,9 @@ fn prune_walk(
             path: PathBuf::new(),
         });
     }
+    // Overlay's own xattrs go from every entry kept, the root included: a
+    // copy leaves them out (`meta::Xattrs::Copy`).
+    meta::strip_overlay_own(start.as_fd(), FileType::Directory, None, Path::new(""))?;
     let names = read_names(start.as_fd(), Path::new(""))?;
     let mut stack = vec![PruneFrame {
         fd: start,
@@ -236,6 +244,7 @@ fn prune_walk(
         if !remove(&child, file_type) {
             if is_dir {
                 let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
+                meta::strip_overlay_own(fd.as_fd(), file_type, None, &child)?;
                 let names = read_names(fd.as_fd(), &child)?;
                 stack.push(PruneFrame {
                     fd,
@@ -245,6 +254,13 @@ fn prune_walk(
                     changed: false,
                 });
             } else {
+                let pin = pin_checked(top.fd.as_fd(), &name, &st, &child)?;
+                meta::strip_overlay_own(
+                    pin.as_fd(),
+                    file_type,
+                    Some((top.fd.as_fd(), &name)),
+                    &child,
+                )?;
                 links.keep(&st);
                 counts.kept += 1;
             }
@@ -447,6 +463,34 @@ fn remove_below_seen(
             }
         }
     }
+}
+
+/// Pins the entry `name` in `dirfd` (`O_PATH | O_NOFOLLOW`, never entering
+/// another mount) and checks it is the entry `st` described.
+fn pin_checked(dirfd: BorrowedFd<'_>, name: &OsStr, st: &Stat, path: &Path) -> Result<OwnedFd> {
+    let fd = match open_name(dirfd, name, OFlags::PATH | OFlags::NOFOLLOW, 0, true, path) {
+        Ok(fd) => fd,
+        Err(e)
+            if matches!(
+                e.raw_os_error().map(Errno::from_raw_os_error),
+                Some(Errno::XDEV | Errno::NOENT)
+            ) =>
+        {
+            return Err(Error::Changed {
+                path: path.to_owned(),
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    let now = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?;
+    if (now.ino, now.dev_major, now.dev_minor, now.mnt_id)
+        != (st.ino, st.dev_major, st.dev_minor, st.mnt_id)
+    {
+        return Err(Error::Changed {
+            path: path.to_owned(),
+        });
+    }
+    Ok(fd)
 }
 
 /// Opens the directory `name` in `dirfd` without following a symlink or

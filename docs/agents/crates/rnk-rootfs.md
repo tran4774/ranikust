@@ -62,7 +62,7 @@ pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore; kaniko's ignore list, a refused mount point skipped, not an error)
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<Chmod>, pub skip_special: bool } // built: None keeps the source's; skip_special leaves devices, FIFOs, sockets out (ADR-0059)
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built
-pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // built: deletes what `remove` names (each with what is below), every touched directory's times set back: copy_filtered's entries (directory sizes aside); the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root (exact: every name counted before it is deleted, in any walk order)
+pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // built: deletes what `remove` names (each with what is below), every touched directory's times set back: copy_filtered's entries (directory sizes aside); overlay's own xattrs (pub fn is_overlay_own, the copy's predicate) removed from every kept entry and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root (exact: every name counted before it is deleted, in any walk order)
 pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component); covers (looks only at prefixes as long as the longest literal entry: a path's length, not its depth times its length), has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
@@ -133,7 +133,9 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   below-only entries, FIFOs, a socket, a setuid hardlink split by an
   ignored name, links out, every directory's times) compares entry for
   entry with `copy_filtered`; `prune` never follows a link out and
-  refuses a root on another mount and the machine's own `/`; it reports a
+  refuses a root on another mount and the machine's own `/`; it removes
+  overlay's own xattrs from the root, a directory and a file, keeping the
+  escaped ones and every other (as the copy); it reports a
   kept file hardlinked from outside the root, in both walk orders, and not
   links whose other names are inside (kept, deleted, or in a directory
   deleted whole) nor an outside link whose names it all deletes;

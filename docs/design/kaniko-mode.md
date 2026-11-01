@@ -508,10 +508,15 @@ Kaniko mode outside a container ([ADR-0059](../adr/0059-kaniko-mode-off-root-bui
   directory's times back, then `RootPath::move_sub_root` moves
   `stages/<p>/rootfs` to `stages/<c>/rootfs` (`renameat2(RENAME_NOREPLACE)`
   between the stage directories' descriptors, device, inode and mount
-  checked before and after). The result has the copy's entries, contents,
-  owners, modes, modification times, links and hardlinks; directory sizes,
-  access and change times and overlay's own xattrs, which no layer holds,
-  may differ. It falls back to a copy of the pruned root when a file there
+  checked before and after). The prune also removes overlay's own xattrs
+  (`rnk_rootfs::is_overlay_own`, the predicate the copy uses) from every
+  entry it keeps and from the root. The result has the copy's entries,
+  contents, owners, modes, modification times, xattrs, links and
+  hardlinks. What a `RUN` can still tell apart, and no layer holds:
+  access and change times, directory sizes (ext4 and xfs keep them after
+  deletions, a copy makes them compact), the order `readdir` lists a
+  directory in, and inode flags the copy does not carry (`chattr` flags a
+  non-privileged owner may set, such as `A` or `d`). It falls back to a copy of the pruned root when a file there
   has a hardlink the prune did not find inside the root (moved, it would
   reach outside), or when the move failed before anything moved (`EINVAL`
   without `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over, and

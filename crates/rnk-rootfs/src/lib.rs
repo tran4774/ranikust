@@ -46,7 +46,7 @@ pub use extract::{
     Extracted, Whiteouts, extract, extract_live, extract_live_literal, extract_overlay,
 };
 pub use ignore::IgnoreList;
-pub use meta::{FileTime, FileType, Meta, Stat};
+pub use meta::{FileTime, FileType, Meta, Stat, is_overlay_own};
 pub use mode::{Chmod, ModeSet};
 pub use root::{OpenHow, Pinned, RootPath};
 pub use support::{Cause, Unsupported, probe_support};

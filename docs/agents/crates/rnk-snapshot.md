@@ -263,7 +263,10 @@ impl WalkDiff {
   directory; a parent root swapped for another directory is never handed
   over and the new stage directory goes; a move that moved nothing, and a
   parent holding a file hardlinked from outside its root, fall back to a
-  copy, the pruned parent refused after it too. Red team of the hand-over
+  copy, the pruned parent refused after it too. Red team
+  (`red_team_*`, ADR-0061, ADR-0062): among them, the hand-over keeps no
+  xattr a copy leaves out (overlay's own on a file, a directory and the
+  root), a finding fixed in `prune`. Red team of the hand-over
   (ADR-0061, ADR-0062): with the ignore list `ranikust` gives a stage
   root (fixed paths, below-only, an `--ignore-path` glob and a literal),
   whiteout-like names, hardlinks into ignored paths, FIFOs and sockets
