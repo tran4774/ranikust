@@ -269,7 +269,8 @@ const WITHHELD: &str = "its credentials are not sent over plain HTTP to a \
 const WITHHELD_UNVERIFIED: &str = "in kaniko mode on / its credentials go only over \
     verified TLS: a RUN can edit /etc/hosts and /etc/resolv.conf, so plain HTTP or an \
     unverified certificate could carry them to a host of its choosing; use the registry \
-    over HTTPS with a certificate ranikust trusts (--registry-certificate)";
+    over HTTPS with a certificate ranikust trusts (--registry-certificate) and do not \
+    list it under --skip-tls-verify*";
 
 /// Why configured credentials must not be sent to `registry`, reached
 /// through `transport`; `None` when they may be.
@@ -1490,6 +1491,11 @@ mod tests {
         }
         assert_eq!(Withheld::PlainHttp.reason(), WITHHELD);
         assert_eq!(Withheld::UnverifiedTls.reason(), WITHHELD_UNVERIFIED);
+        // The advice must work for both halves: plain HTTP and a registry
+        // listed under `--skip-tls-verify*`.
+        let advice = Withheld::UnverifiedTls.reason();
+        assert!(advice.contains("over HTTPS"), "{advice}");
+        assert!(advice.contains("--skip-tls-verify"), "{advice}");
     }
 
     #[test]
