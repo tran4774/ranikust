@@ -72,8 +72,7 @@ with the default security profile or in most Kubernetes pods.
 
 > Built: sequential builds on a container's `/`, multi-stage included, and
 > per-stage directories elsewhere, built in parallel. Refused for good:
-> `--parallel-stages` (ADR-0060). Not offered yet: `--single-snapshot`
-> (Q-420).
+> `--parallel-stages` (ADR-0060) and `--single-snapshot` (ADR-0065).
 
 - On `/` in a container nothing can be mounted, so a `RUN` gets only what
   needs no mount

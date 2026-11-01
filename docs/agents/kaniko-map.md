@@ -93,7 +93,7 @@ meaning tests are listed there):
 | `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | refused with the reason: they change nothing in ranikust, and no flag is ignored (ADR-0049) |
 | `--context-sub-path` (`:339`) | kaniko joins it onto a `dir://` or fetched context (`root.go:599-631`, `buildcontext/dir.go:25`) and ignores it for a plain path; ranikust drops `dir://` (refused, exit 2) and applies it to fetched contexts only, and refuses it with a local context, exit 2 (ADR-0053, ADR-0054) |
 | `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
-| `--single-snapshot` | refused in every mode while the flags are read (exit 2) until Q-420 is answered (a measurement: one walk at the end saves about 1 s per 250k-file build of 10 steps, against per-step layers); overlay mode refused it for good (ADR-0049) |
+| `--single-snapshot` | refused for good in every mode, whatever its value, before the arguments are parsed (exit 2, ADR-0065): one walk at the end saves about 1 s per 250k-file build of 10 steps and gives up the per-step layers a cached rebuild reuses |
 | `--materialize` | refused until Phase 4's layer cache gives it a meaning, as `--cache` (ADR-0064) |
 | `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | refused, exit 2: kaniko mode ignores `/var/run` only where it is a mount point, as every mount point, so the flag changes nothing (ADR-0052 D4, ADR-0049) |
 | `--registry-client-cert`, `--skip-default-registry-fallback`, `--push-ignore-immutable-tag-errors` | refused until Phase 5 |

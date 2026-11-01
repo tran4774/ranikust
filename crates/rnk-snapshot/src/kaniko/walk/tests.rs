@@ -561,7 +561,8 @@ fn arena_offsets_beyond_u32_are_errors() {
     ));
 }
 
-/// Q-420's measurement: what `--single-snapshot` would save in kaniko mode.
+/// Q-420's measurement: what `--single-snapshot` would save in kaniko mode;
+/// kept as the record of ADR-0065, which refused the flag for good.
 /// A light synthetic workload, not W1–W3 (those run only as the ultra
 /// benchmark): a base of `RANIKUST_BENCH_FILES` small files (default
 /// 80 000) in 400 directories, then 10 steps that each rewrite 200 files and

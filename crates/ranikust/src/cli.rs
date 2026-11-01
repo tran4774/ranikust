@@ -352,20 +352,6 @@ pub(crate) struct BuildArgs {
     #[arg(long = "ignore-path", value_name = "PATH", help_heading = "Snapshots")]
     pub(crate) ignore_paths: Vec<PathBuf>,
 
-    /// kaniko's one snapshot at the end of the build. Not offered yet: refused
-    /// in both modes until a measurement settles it (Q-420).
-    #[arg(
-        long,
-        value_name = "BOOL",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        default_value = "false",
-        value_parser = parse_bool,
-        help_heading = "Snapshots"
-    )]
-    pub(crate) single_snapshot: bool,
-
     /// Workers of the kaniko-mode walk (ADR-0039); ignored in overlay mode
     /// [default: 8].
     #[arg(long, value_name = "N", help_heading = "Snapshots")]
@@ -449,6 +435,13 @@ const PARALLEL_STAGES: &str = "not offered (ADR-0060, Q-400): outside a containe
      container's /, a bare chroot per stage cannot keep the state directory, credentials and \
      the other stages out of RUN's reach (ADR-0051); allow mounts to get overlay mode's \
      parallel stages, or drop the flag";
+/// `--single-snapshot` (kaniko's one snapshot at the end of the build):
+/// refused (ADR-0065, Q-420: b). Measured, one walk at the end saves at most
+/// a few seconds on a W1-sized build, and gives up the per-step layers a
+/// cached rebuild reuses (Phase 4).
+const SINGLE_SNAPSHOT: &str = "not offered (ADR-0065, Q-420): one snapshot at the end of the \
+     build saves a few seconds at most and gives up the per-step layers a cached rebuild \
+     reuses; drop the flag";
 const PHASE_5: &str = "it comes in Phase 5 with registry mirrors and credential helpers (Q-047)";
 
 /// kaniko executor flags that ranikust recognises but does not accept
@@ -475,6 +468,8 @@ const REFUSED: &[(&str, Refusal)] = &[
     ),
     // ranikust's own flag of ADR-0014, refused by ADR-0060 (Q-400: a).
     ("parallel-stages", Refusal::Refused(PARALLEL_STAGES)),
+    // kaniko's flag, refused for good by ADR-0065 (Q-420: b).
+    ("single-snapshot", Refusal::Refused(SINGLE_SNAPSHOT)),
     ("cache", Refusal::NotYet(PHASE_4)),
     // Accepted to change nothing until Phase 4's cache: refused instead
     // (ADR-0064, ADR-0049).

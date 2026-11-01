@@ -47,7 +47,7 @@ struct BuildArgs { /* built: context, dockerfile, build_arg, target, platform, d
     `context_sub_path` then applies to fetched contexts only and a local context with it is
     refused, exit 2 (ADR-0054);
     kaniko mode (ADR-0040): ignore_paths (globs; `/` and bad patterns refused early),
-    single_snapshot (refused by `BuildConfig::from_args` in every mode, [open: Q-420]); `--materialize` refused
+    `--single-snapshot` refused for good with the refused kaniko flags (ADR-0065); `--materialize` refused
     until Phase 4 (ADR-0064); `--ignore-var-run` and `--whitelist-var-run` refused,
     ADR-0052 D4;
     ours: mode, state_dir, jobs, network, secret, allow, metrics_file, snapshot_workers.
@@ -94,7 +94,7 @@ and goes to kaniko mode, else runs overlay mode's set-up; where that
 refuses because overlayfs cannot use the state directory
 (`setup::route` on the refusal's `Kind`) outside a container, it logs why and goes to kaniko
 mode with a directory per stage (`can_mount`). Kaniko mode
-(ADR-0050): `--single-snapshot` refused ([open: Q-420]), root required
+(ADR-0050): root required
 (`NofileLimit::current()` read first, for `RUN`), the root picked by
 `container::detect` (`/` in a container, else a root in the state
 directory), `RLIMIT_NOFILE` raised, on `/` a warning that the stages run one
@@ -264,8 +264,8 @@ error, a refused kaniko flag, an invalid combination, and for now every
   `src/config/tests.rs`: the default state directory, the
   kaniko flags' defaults and cleaned paths, a relative `--ignore-path`,
   one that cleans to `/` and a malformed pattern refused, the overlay-mode
-  refusals and warnings (ADR-0049), `--single-snapshot` refused naming
-  Q-420; one `--target` only. `src/main.rs` tests: `--snapshot-mode` and
+  refusals and warnings (ADR-0049); one `--target` only. `src/cli/tests.rs`:
+  `--single-snapshot` refused for good whatever its value (ADR-0065). `src/main.rs` tests: `--snapshot-mode` and
   `--snapshot-workers` reach the walk, `--ignore-path` reaches the ignore
   lists of `/` and of a stage root. `src/setup/tests.rs`: which refusals
   route `--mode=auto` to per-stage kaniko mode, and that no guidance sends

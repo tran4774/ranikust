@@ -136,3 +136,4 @@ when new measurements contradict its evidence.
 | [0062](0062-stage-directory-hand-over-decided-from-the-stage-graph.md) | A stage directory is handed over only to its only reader, decided from the stage graph | Accepted | 2026-11-01 | host-safety review of ADR-0061; refines ADR-0061 |
 | [0063](0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md) | Root tests that mean the same in a container run in rootful Docker on the test machine (tier T2c) | Accepted | 2026-11-01 | maintainer; VPS probe 2026-11-01; `docs/testing.md` |
 | [0064](0064-materialize-refused-until-the-layer-cache.md) | `--materialize` is refused until the layer cache | Accepted | 2026-11-01 | maintainer; criterion-8 review |
+| [0065](0065-single-snapshot-refused-for-good.md) | `--single-snapshot` is refused for good | Accepted | 2026-11-01 | maintainer, Q-420 measurement; ADR-0049 |

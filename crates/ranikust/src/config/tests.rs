@@ -375,19 +375,6 @@ fn an_ignore_path_of_the_whole_root_or_a_bad_glob_is_refused_early() {
     assert_eq!(ok.ignore_paths[0], PathBuf::from("/etc"));
 }
 
-/// `--single-snapshot` is refused while the flags are read, in every mode
-/// (`--mode=auto` included), before any I/O [open: Q-420] (host-safety
-/// round 1, item 1).
-#[test]
-fn single_snapshot_is_refused_in_every_mode_before_any_set_up() {
-    for mode in ["--mode=auto", "--mode=overlay", "--mode=kaniko"] {
-        let err = config(&["--no-push", mode, "--single-snapshot"]).expect_err(mode);
-        assert!(err.0.contains("Q-420"), "{mode}: {}", err.0);
-        assert!(!err.0.contains("--mode=kaniko"), "{mode}: {}", err.0);
-    }
-    config(&["--no-push", "--single-snapshot=false"]).expect("false is fine");
-}
-
 /// In overlay mode, the kaniko-mode flags that would change the image are
 /// refused (ADR-0049); the others are warned about.
 #[test]
