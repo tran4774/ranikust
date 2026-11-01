@@ -38,8 +38,8 @@ the code.
 | [x] | (done 2026-11-01, `ADR-0059`: `KanikoStages`, reflink or data-range copies without special files, the stage root's identity checked per `RUN`; follow-ups: release a stage directory once nothing depends on it, `st_ino`/`st_blocks` in the copy's change check, FICLONE on btrfs/xfs untested) Per-stage directories `builds/<id>/stages/<n>/rootfs` in the state directory, by extraction or reflink copy, never hardlinks (`ADR-0017`); the full sandbox where mounting is possible | `rnk-snapshot`, `rnk-store`, `rnk-sandbox` |
 | [x] | (done 2026-11-01 as a refusal: `ADR-0060`, Q-400 (a) — a bare `chroot` on a container's `/` lets a root `RUN` escape (experiment 12) and off `/` stages already run in parallel in the full sandbox (`ADR-0059`); nothing below was built; a hardened bare `chroot` (Q-400 (b)) only after a VM measurement) `--parallel-stages` (the final name, `ADR-0038`, Q-019): `Isolation::BareChroot`, `/dev` by `mknod`, child subreaper, the start-up log line; fake `/proc` with the fourteen files per cgroup version (`ADR-0038`, Q-037); `JAVA_TOOL_OPTIONS` under cgroup limits (`ADR-0019`); the Java warnings and the hints after a failed `RUN` | `rnk-sandbox`, `ranikust` |
 | [~] | kaniko flags refused until Phase 2 (`ADR-0036`): `--ignore-path`, `--ignore-var-run`, `--whitelist-var-run`, `--single-snapshot`, `--materialize`, `--snapshot-mode` taking effect; the ignored class revisited for kaniko mode | `ranikust` |
-| [ ] | Metrics: `rnk_snapshot.baseline`, `.walk`, `.resolve`, `.syncfs` and the deletion spans ([design/metrics.md](../design/metrics.md#rnk-snapshot)) | each crate |
-| [ ] | T2: the VM runs kaniko mode as real root on a host workdir and inside a default `docker run` (no extra capability); deletion tests D1–D3 of experiment 09; the `e2e` suite gets a kaniko-mode leg | tests |
+| [x] | (done 2026-11-01, task 11: stage-directory span test; `.resolve` and `.syncfs` documented as steps ranikust does not have) Metrics: `rnk_snapshot.baseline`, `.walk`, `.resolve`, `.syncfs` and the deletion spans ([design/metrics.md](../design/metrics.md#rnk-snapshot)) | each crate |
+| [x] | (done 2026-11-01, task 11: `rk-kaniko` in a default `docker run`, `rk-kaniko-host` as root off `/`, D2 as a T2 test, D1/D3 mapped in testing.md, leak check per image, disk guards) T2: the VM runs kaniko mode as real root on a host workdir and inside a default `docker run` (no extra capability); deletion tests D1–D3 of experiment 09; the `e2e` suite gets a kaniko-mode leg | tests |
 
 ## Task order
 
@@ -59,7 +59,7 @@ Three tracks after task 0: set-up (1, 2), the snapshot (3–6) and execution
 | 8 | Sequential flow: squashing, kept stage outputs, shared-`/` exclusivity in `rnk-sched`, lazy snapshots | 6, 7 | |
 | 9 | (done 2026-11-01: `ADR-0059`) Per-stage directories with the full sandbox | 6, 8 | |
 | 10 | (done 2026-11-01: refused, `ADR-0060`) `--parallel-stages`: bare `chroot`, `/dev`, subreaper, fake `/proc`, Java | 9 | |
-| 11 | CLI end to end in the VM, the e2e kaniko-mode leg, acceptance runs | all | |
+| 11 | (done 2026-11-01 except the full acceptance run; shortened e2e green; Q-410 open) CLI end to end in the VM, the e2e kaniko-mode leg, acceptance runs | all | |
 
 Run in parallel from 2026-10-30, each on its own branch and worktree,
 because these parts need only what is already built: task 2; task 3; task
