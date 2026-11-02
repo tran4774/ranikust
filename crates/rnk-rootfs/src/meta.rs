@@ -133,7 +133,8 @@ impl Stat {
     }
 
     /// Whether `other` describes the same entry: the same inode, reached on
-    /// the same mount.
+    /// the same mount. Whether either is a mount point (`mount_root`) is not
+    /// compared: callers that need it check it themselves.
     pub(crate) fn same_entry(&self, other: &Stat) -> bool {
         self.same_inode(other) && self.mnt_id == other.mnt_id
     }
@@ -457,8 +458,9 @@ pub fn is_overlay_own(name: &[u8]) -> bool {
 /// Removes overlay's own xattrs ([`is_overlay_own`]) from the pinned entry
 /// `fd` of type `file_type`, reaching it as [`read_xattrs`] does: through
 /// the fd's magic link, or a symlink by its name in its pinned parent with
-/// the `l*` calls (a symlink without a parent is left alone), checked
-/// afterwards to still be the pinned one. No time a layer holds changes.
+/// the `l*` calls (a symlink without a parent is left alone), checked,
+/// before anything is removed, to still be the pinned one. No time a layer
+/// holds changes.
 /// `path` is only for error messages.
 pub(crate) fn strip_overlay_own(
     fd: BorrowedFd<'_>,
