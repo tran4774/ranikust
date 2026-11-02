@@ -5,6 +5,11 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Recipe arguments reach the recipe as positional parameters. Use them as
+# "$@" or "$1", never as `{{ arg }}`: just splices `{{ }}` into the shell
+# line as text, so an argument such as 'x; cmd' would run cmd.
+set positional-arguments
+
 musl_target := "x86_64-unknown-linux-musl"
 static_bin := "target/" + musl_target + "/release/ranikust"
 
@@ -29,7 +34,7 @@ lint:
 
 # Tier T0 tests (CI job `test`). Extra arguments go to `cargo test`, e.g. a name filter.
 test *args:
-    cargo test --workspace --locked {{ args }}
+    cargo test --workspace --locked "$@"
 
 # The musl recipes run through cargo-zigbuild (ADR-0020), which compiles every
 # C dependency (libzstd, mimalloc, ring...) with `zig cc` for the target, so
@@ -138,7 +143,7 @@ test-aarch64 *args:
       cargo-zigbuild build --release --locked --target $target -p ranikust
       static_check
       "$BIN" version
-      cargo-zigbuild test --workspace --locked --target $target {{ args }}
+      cargo-zigbuild test --workspace --locked --target $target "$@"
       exit 0
     fi
     qemu="${QEMU_AARCH64:-$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)}"
@@ -165,13 +170,13 @@ test-aarch64 *args:
       --skip logging_flags_change_what_is_written
       --skip seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else)
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
-      cargo-zigbuild test --workspace --locked --target $target {{ args }} -- "${skip[@]}"
+      cargo-zigbuild test --workspace --locked --target $target "$@" -- "${skip[@]}"
     else
       echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics, rnk-store's processes)" >&2
       skip+=(--skip concurrent_fills_from_processes_run_the_filler_once
         --skip a_build_killed_mid_fill_leaves_nothing_behind)
-      cargo-zigbuild test --workspace --exclude ranikust --locked --target $target {{ args }} -- "${skip[@]}"
-      cargo-zigbuild test -p ranikust --bins --locked --target $target {{ args }} -- "${skip[@]}"
+      cargo-zigbuild test --workspace --exclude ranikust --locked --target $target "$@" -- "${skip[@]}"
+      cargo-zigbuild test -p ranikust --bins --locked --target $target "$@" -- "${skip[@]}"
     fi
 
 # Advisories, licenses, bans and sources with cargo-deny (CI job `deny`).
@@ -189,7 +194,7 @@ book:
 # The draft goes to stdout; edit it into CHANGELOG.md by hand.
 # Draft release notes for unreleased commits; requires git-cliff (`cargo install --locked git-cliff`).
 changelog *args:
-    git cliff --unreleased {{ args }}
+    git cliff --unreleased "$@"
 
 # Local only, not in CI yet: mechanical checks of the decision records (every ADR indexed with its status, no duplicate question, no `[open: Q-NNN]` left for an answered question). Requires python3.
 docs-lint:
@@ -197,7 +202,7 @@ docs-lint:
 
 # Local only: print the brief the `host-safety` subagent needs for a branch against main (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries). Requires python3; graphify optional.
 review-pack branch *args:
-    python3 -I scripts/review-pack.py {{ branch }} {{ args }}
+    python3 -I scripts/review-pack.py "$@"
 
 # Everything CI runs, in CI's order.
 ci: fmt-check lint test build-static check-aarch64 test-aarch64 deny doc book
@@ -211,6 +216,7 @@ ci: fmt-check lint test build-static check-aarch64 test-aarch64 deny doc book
 smoke image="docker.io/library/alpine:3.20":
     #!/usr/bin/env bash
     set -euo pipefail
+    smoke_image="$1"
     if [ "$(id -u)" = 0 ] || [ "$(podman info --format '{{{{.Host.Security.Rootless}}')" != true ]; then
       echo "error: run as a normal user with rootless podman (T1); real root belongs in the VM (T2)" >&2
       exit 1
@@ -227,7 +233,7 @@ smoke image="docker.io/library/alpine:3.20":
     for c in "${smoke_checks[@]}"; do runs+=(--run "$c"); done
     podman run --rm --privileged \
       -v "$BIN:/smoke-build:ro" -v "$OUT:/out" \
-      "{{ image }}" /smoke-build --image "{{ image }}" --out /out --tag "$NAME" "${runs[@]}"
+      "$smoke_image" /smoke-build --image "$smoke_image" --out /out --tag "$NAME" "${runs[@]}"
     smoke_check_no_stub_leak "$OUT"
     # `podman load` reads the layout as an OCI archive and names the image
     # after its `ref.name` annotation.
@@ -243,7 +249,7 @@ smoke image="docker.io/library/alpine:3.20":
     e2e() {
       local rc=0 log
       log="$(podman run --rm --privileged -v "$RNK:/ranikust:ro" -v "$PWD/tests/smoke/e2e:/ctx:ro" \
-        -v "$E/w:/tmp/w" -v "$E/out:/out" -v "$E/token:/token:ro" "{{ image }}" \
+        -v "$E/w:/tmp/w" -v "$E/out:/out" -v "$E/token:/token:ro" "$smoke_image" \
         /ranikust "${e2e_args[@]}" "$@" 2>&1)" || rc=$?
       smoke_check_build "$log" pivot_root "$rc" >&2 || return 1
       smoke_digest "$log"
@@ -270,15 +276,15 @@ smoke-case *names:
       exit 1
     fi
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust --bin ranikust
-    tests/smoke/run-cases.sh "${CARGO_TARGET_DIR:-$PWD/target}/{{ musl_target }}/release/ranikust" {{ names }}
+    tests/smoke/run-cases.sh "${CARGO_TARGET_DIR:-$PWD/target}/{{ musl_target }}/release/ranikust" "$@"
 
 # Tier T2 suites (`unit`: every `#[ignore = "T2: ..."]` and `"T2c: ..."` test; `smoke`: smoke-build as real root and in rootful Docker; `quick`: the quick smoke cases as real root; `e2e`, only when named: the light W0 workload against kaniko and BuildKit; `ultra`, only when named and asked for: the W1-W3 benchmark; `push`, only when named: pushes to a loopback and the host's test registries, needs `just registry-up`) in a disposable QEMU/KVM VM, never on the host. RANIKUST_VM_RELEASE=noble|jammy picks the kernel. Requires /dev/kvm access, qemu, xorriso, zig, cargo-zigbuild.
 test-vm *suites:
-    tests/vm/vm.sh {{ suites }}
+    tests/vm/vm.sh "$@"
 
 # Tier T2c (ADR-0063): the `#[ignore = "T2c: <profile>: ..."]` tests as root in throwaway rootful Docker containers (default, +SYS_ADMIN, +NET_ADMIN; never --privileged, no host volume) on the disposable test machine, through the lane helper (RANIKUST_LANE, default rnk-vps-lane). Sends the current branch as committed. Suites: `unit-c`.
 test-container *suites:
-    bash tests/container/remote.sh {{ suites }}
+    bash tests/container/remote.sh "$@"
 
 # Start the test registries (tests/registry/compose.yaml): plain HTTP on 127.0.0.1:5000 and HTTPS with a self-signed CA and basic auth on 127.0.0.1:5443, data in tests/registry/_data; then push and read back an image in each. Requires podman (compose), openssl, python3-bcrypt, skopeo.
 registry-up:
