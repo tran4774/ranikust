@@ -342,22 +342,23 @@ pub(crate) fn read_xattrs(
         }
     }
     // After the reads, so a swap during them is caught too.
-    target.check_still_pinned(fd, path)?;
+    target.check_still_pinned(path)?;
     Ok(out)
 }
 
-/// How [`read_xattrs`] and [`strip_overlay_own`] reach a pinned entry's
-/// xattrs. The variant picks the calls, so a symlink's name is never given
-/// to a call that follows it.
+/// How [`read_xattrs`], [`strip_overlay_own`] and [`apply`] reach a pinned
+/// entry's xattrs. The variant picks the calls, so a symlink's name is never
+/// given to a call that follows it.
 enum XattrTarget<'a> {
     /// The fd's magic link in ranikust's own `/proc/self/fd`, with the plain
     /// calls, which follow it to exactly the pinned inode.
     MagicLink(OsString),
     /// A symlink: its name in its pinned parent, with the `l*` calls, which
     /// never follow the last name; [`XattrTarget::check_still_pinned`]
-    /// checks the name.
+    /// checks the name against `pinned`.
     Named {
         target: OsString,
+        pinned: BorrowedFd<'a>,
         parent: BorrowedFd<'a>,
         name: &'a OsStr,
     },
@@ -367,7 +368,7 @@ impl<'a> XattrTarget<'a> {
     /// The target of the pinned entry `fd` of type `file_type`; `None` for a
     /// symlink without a pinned parent, whose xattrs cannot be reached.
     fn of(
-        fd: BorrowedFd<'_>,
+        fd: BorrowedFd<'a>,
         file_type: FileType,
         parent: Option<(BorrowedFd<'a>, &'a OsStr)>,
     ) -> Option<Self> {
@@ -380,6 +381,7 @@ impl<'a> XattrTarget<'a> {
         target.push(name);
         Some(Self::Named {
             target,
+            pinned: fd,
             parent: pfd,
             name,
         })
@@ -406,16 +408,30 @@ impl<'a> XattrTarget<'a> {
         }
     }
 
+    fn set(&self, n: &OsStr, value: &[u8]) -> rustix::io::Result<()> {
+        match self {
+            Self::MagicLink(target) => rustix::fs::setxattr(target, n, value, XattrFlags::empty()),
+            Self::Named { target, .. } => {
+                rustix::fs::lsetxattr(target, n, value, XattrFlags::empty())
+            }
+        }
+    }
+
     /// For a symlink reached by name: that the name still is the pinned
-    /// symlink `fd`, not an entry swapped in meanwhile. The magic link
-    /// reaches exactly the pinned inode, so it has nothing to check.
-    fn check_still_pinned(&self, fd: BorrowedFd<'_>, path: &Path) -> Result<()> {
+    /// symlink, not an entry swapped in meanwhile. The magic link reaches
+    /// exactly the pinned inode, so it has nothing to check.
+    fn check_still_pinned(&self, path: &Path) -> Result<()> {
         match self {
             Self::MagicLink(_) => Ok(()),
-            Self::Named { parent, name, .. } => {
-                let pinned = statx_at(fd, OsStr::new(""), path)?;
+            Self::Named {
+                pinned,
+                parent,
+                name,
+                ..
+            } => {
+                let held = statx_at(*pinned, OsStr::new(""), path)?;
                 let named = statx_at(*parent, name, path)?;
-                if !named.same_inode(&pinned) {
+                if !named.same_inode(&held) {
                     return Err(Error::Changed {
                         path: path.to_owned(),
                     });
@@ -468,7 +484,7 @@ pub(crate) fn strip_overlay_own(
         return Ok(());
     }
     // Before the removals: they change the entry.
-    target.check_still_pinned(fd, path)?;
+    target.check_still_pinned(path)?;
     for n in names {
         match target.remove(n.as_os_str()) {
             Ok(()) | Err(Errno::NODATA) => {}
@@ -619,30 +635,17 @@ fn apply_with(
             if !m.xattrs.is_empty() {
                 // Validated before the path through /proc is used.
                 proc_fd_dir(path)?;
-                let target = if file_type == FileType::Symlink {
-                    // `setxattr` through the fd's magic link would follow
-                    // the symlink; name it in its pinned parent instead and
-                    // use `lsetxattr`, which never follows the last name.
-                    let Some((pfd, name)) = parent else {
-                        return Err(Error::InvalidPath {
-                            path: path.to_owned(),
-                            reason: "a symlink root has no parent to set xattrs through",
-                        });
-                    };
-                    let mut p = OsString::from(proc_path(pfd));
-                    p.push("/");
-                    p.push(name);
-                    p
-                } else {
-                    OsString::from(proc_path(fd))
+                // `setxattr` through the fd's magic link would follow a
+                // symlink: a symlink is named in its pinned parent instead,
+                // with `lsetxattr`, which never follows the last name.
+                let Some(target) = XattrTarget::of(fd, file_type, parent) else {
+                    return Err(Error::InvalidPath {
+                        path: path.to_owned(),
+                        reason: "a symlink root has no parent to set xattrs through",
+                    });
                 };
                 for (name, value) in &m.xattrs {
-                    let r = if file_type == FileType::Symlink {
-                        rustix::fs::lsetxattr(&target, name.as_os_str(), value, XattrFlags::empty())
-                    } else {
-                        rustix::fs::setxattr(&target, name.as_os_str(), value, XattrFlags::empty())
-                    };
-                    xattr_result(r, name, skipped, path)?;
+                    xattr_result(target.set(name, value), name, skipped, path)?;
                 }
             }
             if let Some(mode) = mode
