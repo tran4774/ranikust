@@ -701,10 +701,11 @@ impl Client {
             host: &host.name,
             target: digest.as_str(),
         };
+        let idle = self.options.read_timeout;
         retry(&self.options.retry, async |_| {
-            host.oci
-                .blob_exists(&oci_ref, digest.as_str())
+            fetch::on_socket(idle, host.oci.blob_exists(&oci_ref, digest.as_str()))
                 .await
+                .map_err(|fetch::Idle| idle_error(&ctx, idle))?
                 .map_err(|e| ctx.error(e))
         })
         .await
@@ -873,7 +874,14 @@ impl Client {
             (Strategy::None, _)
             | (Strategy::Oci(RegistryAuth::Bearer(_)), _)
             | (Strategy::Oci(RegistryAuth::Anonymous | RegistryAuth::Basic(..)), None) => {
-                let mounted = host.oci.mount_blob(oci_ref, from_ref, digest).await.is_ok();
+                // A `POST` with no body: bounded like a pull's waits; a
+                // registry that never answers it is a mount refused.
+                let mounted = fetch::on_socket(
+                    self.options.read_timeout,
+                    host.oci.mount_blob(oci_ref, from_ref, digest),
+                )
+                .await
+                .is_ok_and(|r| r.is_ok());
                 return (mounted, 1);
             }
             (Strategy::Oci(auth), Some(challenge)) => {
@@ -906,14 +914,15 @@ impl Client {
             return (false, 1);
         };
         let url = format!("{}/v2/{repository}/blobs/uploads/", host.base_url);
-        let mounted = host
+        let request = host
             .http
             .post(url)
             .query(&[("mount", digest), ("from", from_repository)])
             .bearer_auth(token)
-            .send()
+            .send();
+        let mounted = fetch::on_socket(self.options.read_timeout, request)
             .await
-            .is_ok_and(|r| r.status() == reqwest::StatusCode::CREATED);
+            .is_ok_and(|r| r.is_ok_and(|r| r.status() == reqwest::StatusCode::CREATED));
         (mounted, 2)
     }
 
@@ -1471,9 +1480,36 @@ impl Client {
                     .await
                     .0
                 }
+                // Basic authentication without a token service: what
+                // `oci-client`'s `auth` would store, without its own
+                // `GET /v2/`, which no `registry-idle` limit bounds and which
+                // a second challenge could turn into a realm request
+                // (ADR-0079). Pulls send the credential themselves
+                // (`with_auth`); pushes through `oci-client` find it here.
+                (Strategy::Oci(auth @ RegistryAuth::Basic(user, password)), None) => {
+                    host.oci
+                        .store_auth_if_needed(oci_ref.resolve_registry(), auth)
+                        .await;
+                    let mut ops = vec![op];
+                    if op == RegistryOperation::Push {
+                        ops.push(RegistryOperation::Pull);
+                    }
+                    for op in ops {
+                        let basic = RegistryTokenType::Basic(user.clone(), password.clone());
+                        host.oci.tokens.insert(oci_ref, op, basic).await;
+                        scopes.insert((repository.to_owned(), op), None);
+                    }
+                    return Ok(());
+                }
+                // A static bearer token, which `oci-client` stores with no
+                // request; any other case it would ask `GET /v2/` for is
+                // bounded like every other wait of a pull.
                 (Strategy::Oci(auth), _) => {
+                    let idle = self.options.read_timeout;
                     let (result, _) = retry(&self.options.retry, async |_| {
-                        let token = host.oci.auth(oci_ref, auth, op).await;
+                        let token = fetch::on_socket(idle, host.oci.auth(oci_ref, auth, op))
+                            .await
+                            .map_err(|fetch::Idle| idle_error(&ctx, idle))?;
                         // `GET /v2/`, then the realm when a token came back;
                         // a static bearer token needs no request.
                         requests += match (auth, &token) {

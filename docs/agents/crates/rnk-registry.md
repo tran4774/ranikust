@@ -115,7 +115,11 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 - T0, `tests/limits/`: the `--limit` limits against hostile bodies (64 MiB
   manifests, token responses and error bodies the fake streams), memory
   measured by a counting allocator, a config refused before any request,
-  and a stalled body failing after `registry-idle` (ADR-0079).
+  and a stalled body failing after `registry-idle` (ADR-0079); a pull
+  under basic authentication sends one `GET /v2/` only, never
+  `oci-client`'s own, and a push carries the same credential
+  (`basic_authentication`; `rnk-builder` `tests/stall.rs` runs it inside
+  the store's locked fill).
 - T0, `tests/registry/`: an in-process fake registry (hand-written on
   `hyper`, which the tree already has; it keeps blobs, manifests and upload
   sessions, which a request-matching mock would have to script): open,

@@ -420,6 +420,19 @@ async fn basic_authentication() {
     let client = client_with(&registry, &basic_auth_entry(&registry.host(), "u", "p"));
     let manifest = client.pull_manifest(&reference).await.unwrap();
     assert_eq!(manifest.digest().as_str(), image.manifest_digest);
+
+    // A push through `oci-client` carries the same credential.
+    let target = support::reference(&registry, "copy:v1");
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    let body = BlobBody::Bytes(Bytes::from(image.layer.clone()));
+    assert_eq!(
+        client.push_blob(&target, &blob, &body).await.unwrap(),
+        PushOutcome::Uploaded
+    );
+    // One ping per client: under basic authentication nothing asks
+    // `GET /v2/` again, which no `registry-idle` limit would bound
+    // (ADR-0079).
+    assert_eq!(registry.count("GET /v2/?"), 2, "{:?}", registry.state().log);
 }
 
 #[tokio::test]

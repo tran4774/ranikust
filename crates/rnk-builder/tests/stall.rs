@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use rnk_oci::{Descriptor, Digest, MediaType, Reference};
 use rnk_registry::{Client, ClientOptions, Credentials, RetryPolicy, TrustStore};
 use rnk_store::{BuildPaths, EntryKey, Store};
@@ -98,4 +99,69 @@ fn a_stalled_blob_pull_releases_the_store_lock() {
             .unwrap()
             .is_some()
     );
+}
+
+/// A registry asking for basic authentication answers ranikust's own
+/// `GET /v2/` and then no other. A pull under basic credentials asks
+/// nothing more of `/v2/` inside the store's locked fill, where an
+/// unbounded wait would hold the per-digest lock (ADR-0079): `oci-client`'s
+/// own `GET /v2/` is not sent, and the blob comes with the credential.
+#[test]
+fn a_basic_auth_pull_asks_no_second_ping_inside_the_store_lock() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let registry = runtime.block_on(FakeRegistry::start(Auth::Basic {
+        user: "builder".to_owned(),
+        password: "s3cret".to_owned(),
+    }));
+    let content = b"layer".repeat(100);
+    registry.add_blob("app", &content);
+    registry.state().pings_answered = Some(1);
+    let blob = Descriptor::new(
+        MediaType::OCI_LAYER_GZIP,
+        Digest::parse(&sha256(&content)).unwrap(),
+        u64::try_from(content.len()).unwrap(),
+    );
+    let host = registry.host();
+    let reference = Reference::parse(&format!("{host}/app")).unwrap();
+    let mut options = ClientOptions::default();
+    options.insecure = BTreeSet::from([host.clone()]);
+    options.http_credentials = options.insecure.clone();
+    options.read_timeout = Some(Duration::from_millis(500));
+    options.retry = RetryPolicy {
+        attempts: 2,
+        initial_delay: Duration::from_millis(1),
+        factor: 2,
+    };
+    let auth = base64::engine::general_purpose::STANDARD.encode("builder:s3cret");
+    let config = format!(r#"{{"auths":{{"{host}":{{"auth":"{auth}"}}}}}}"#);
+    let credentials = Credentials::from_env_value(config.as_bytes()).unwrap();
+    let client = Client::new(options, TrustStore::load(), credentials).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    let handle = runtime.handle().clone();
+    let (done, finished) = mpsc::channel();
+    // Not a scoped thread: a fill that never returns must fail this test,
+    // not hang it.
+    let worker = {
+        let blob = blob.clone();
+        std::thread::spawn(move || {
+            let outcome = fill(&store, &handle, &client, &reference, &blob);
+            let _ = done.send(outcome);
+            store
+        })
+    };
+    let outcome = finished
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the fill still waits on the registry, holding the store lock");
+    outcome.unwrap();
+    let store = worker.join().unwrap();
+    assert!(
+        store
+            .get(&EntryKey::Blob(blob.digest.clone()))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(registry.count("GET /v2/?"), 1, "{:?}", registry.state().log);
 }

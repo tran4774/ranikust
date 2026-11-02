@@ -40,7 +40,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   could make ranikust allocate gigabytes, and a registry that stopped
   sending held a pull, and the store's per-digest lock other builds wait
   for, forever. Manifest and blob pulls and anonymous or basic token
-  requests are now sent by `rnk-registry` itself rather than `oci-client`.
+  requests are now sent by `rnk-registry` itself rather than `oci-client`;
+  under basic authentication without a token service, `oci-client`'s own
+  second `GET /v2/` is no longer sent, and a blob's existence check and a
+  cross-repository mount wait at most `registry-idle` too.
 
 - The `par-stages` smoke case: four independent stages give one digest at
   `--jobs 1` and `4` and the same as when chained; with

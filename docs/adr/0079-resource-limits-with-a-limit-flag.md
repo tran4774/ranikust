@@ -161,5 +161,16 @@ task.
 - ADR-0070: references still reach `oci-client` built from their parts,
   now only for the push side; manifest and blob pulls no longer go
   through it.
+- Clarified 2026-11-03, after review: under basic authentication without
+  a token service, `rnk-registry` stores the credential in `oci-client`
+  itself instead of calling `oci-client`'s `auth`, whose own `GET /v2/` no
+  `registry-idle` timer bounded and whose second challenge could send the
+  credential to a realm unchecked; that request ran inside a pull, holding
+  the store's per-digest lock. The push side's requests without a body (a
+  blob's existence check, a cross-repository mount) wait at most
+  `registry-idle` for their answer too; only uploads and manifest pushes
+  have no idle bound. T0 `a_basic_auth_pull_asks_no_second_ping_inside_the_store_lock`
+  (`rnk-builder` `tests/stall.rs`) and `basic_authentication`
+  (`rnk-registry`) **[measured]**.
 - [rootfs design](../design/rootfs.md), [metrics design](../design/metrics.md),
   the book's usage page.

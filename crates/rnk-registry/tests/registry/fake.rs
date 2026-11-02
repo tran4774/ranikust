@@ -72,6 +72,10 @@ pub(crate) struct State {
     pub(crate) cut: HashMap<String, usize>,
     /// Requests whose path contains one of these are never answered.
     pub(crate) stalled: Vec<String>,
+    /// `GET /v2/` is answered this many times, then never again.
+    pub(crate) pings_answered: Option<usize>,
+    /// `GET /v2/` requests seen so far.
+    pings: usize,
     /// Requests whose path contains one of these get `200`, the full
     /// length announced, 1 KiB of the body and then nothing, the
     /// connection held open.
@@ -289,7 +293,11 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
 
     let stalled = {
         let mut state = state.lock().unwrap();
-        let stalled = state.stalled.iter().any(|s| path.contains(s.as_str()));
+        let mut stalled = state.stalled.iter().any(|s| path.contains(s.as_str()));
+        if path == "/v2/" {
+            stalled |= state.pings_answered.is_some_and(|n| state.pings >= n);
+            state.pings += 1;
+        }
         if stalled {
             state.log.push(format!("{method} {path}?{query}"));
         }
