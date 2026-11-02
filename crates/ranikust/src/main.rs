@@ -497,9 +497,12 @@ fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Resu
             )));
         }
     }
-    // What ranikust cannot close itself (ADR-0051, B4 and B5).
+    // What ranikust cannot close itself (ADR-0051, B4 and B5; ADR-0078).
     exposure::warn_build_args(&config.build_args);
     exposure::warn_credential_holders(&exposure::secret_variables(config));
+    for warning in exposure::file_secret_warnings(&config.secrets) {
+        tracing::warn!("{warning}");
+    }
     Ok(())
 }
 
