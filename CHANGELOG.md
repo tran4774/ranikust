@@ -396,6 +396,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   Docker Hub. References now reach the client built from ranikust's own
   parse, and a request that would go to another host fails before it is
   sent.
+- A registry named by a bracketed IPv6 address (`[::1]:5000/app`,
+  `[fc00::1]:5000/app`) was refused with "invalid reference format" after
+  the first request to it; it now works, including the loopback `[::1]`
+  over plain HTTP.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

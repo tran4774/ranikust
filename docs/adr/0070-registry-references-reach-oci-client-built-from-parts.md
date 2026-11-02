@@ -20,7 +20,9 @@ the registry (`LOCALDOMAIN/debian` is registry `LOCALDOMAIN`). `oci-spec`
 `LOCALDOMAIN`, then `oci-client` authenticates against `index.docker.io`
 with that credential: an operator's credential goes to Docker Hub. The same
 holds for `LOCALHOST/app`. Any reference whose two parses disagree has this
-shape.
+shape. A bracketed IPv6 registry (`[fc00::1]:5000/app`, `[::1]:5000/app`)
+is another disagreement: `oci-spec` has no `[v6]:port` form, so every such
+reference was refused ("invalid reference format") after the `/v2/` ping.
 
 ## Considered Options
 
@@ -45,20 +47,29 @@ the one the connection and the credential were chosen for.
 - One parse, `rnk_oci`'s, decides the registry for the connection, the
   credential lookup, the realm check and every `oci-client` request: pulls,
   blob checks, pushes, mounts and manifest pushes.
+- Every call converts its references (the mount source too) before it
+  connects or authenticates, so a refused reference sends nothing, not even
+  the `/v2/` ping.
 - The check compares `resolve_registry()` with the endpoint `connect` used
-  (`index.docker.io` for Docker Hub, else the registry as written), ignoring
-  ASCII case, and the repository exactly. It holds by construction today;
-  it fails closed if a later `oci-client` maps a registry elsewhere.
-- References without a tag or digest (blob requests) carry `latest`, as
-  `oci-spec`'s parse gave them; `oci-client` uses only the registry and the
-  repository there.
+  (`index.docker.io` for Docker Hub, else the registry as written), and the
+  repository, exactly: `oci-client` keys its credentials and tokens on them
+  case-sensitively. It holds by construction today; it fails closed if a
+  later `oci-client` maps a registry elsewhere.
+- Blob requests carry the caller's reference, with whatever tag or digest
+  it has (`latest` when it has neither, as `oci-spec`'s parse gave);
+  `oci-client` uses only its registry and repository there.
 - Otherwise ADR-0026 stands: no `oci-spec` type crosses a crate boundary.
 
 ### Consequences
 
-- Good, because a credential goes only to the host it was chosen for.
+- Good, because a credential goes only to the registry it was chosen for
+  and the token realm that registry names.
 - Good, because an upper-case, dot-less registry name now works end to end,
   as in distribution and BuildKit, instead of reaching Docker Hub.
+- Good, because bracketed IPv6 registries, refused before, now work
+  (pulled from `[::1]` in a T0 test).
+- Neutral, because references both parsers read alike give the same
+  `oci-client` reference as before (tested).
 - Bad, because `oci-spec`'s own reference checks (name length, digest
   format) no longer run on these references; `rnk_oci::Reference::parse`
   already checks both.
@@ -70,15 +81,24 @@ the one the connection and the credential were chosen for.
   `src/distribution/reference.rs` `split_domain`: only `.`, `:` or
   `localhost`; `resolve_registry` maps `docker.io` to `index.docker.io`.
 - [code] `oci-client` 0.18.0 `auth` stores the credential for
-  `resolve_registry()` and `_auth` requests `/v2/` and the realm of that host;
-  its token cache is keyed on `resolve_registry()` and the repository.
+  `resolve_registry()` and `_auth` requests `/v2/` of that host, then sends
+  a Basic credential to the token realm its challenge names; its token cache
+  is keyed on `resolve_registry()` and the repository.
 - [measured] T0 `rnk-registry`
   `oci_client_addresses_the_registry_credentials_were_chosen_for`: with the
   string form, `LOCALDOMAIN/debian:1` resolved to `index.docker.io` (the
-  test failed); built from parts, every spelling resolves to the endpoint
-  `connect` uses (`LOCALDOMAIN`, `LOCALHOST`, `Registry`, `localhost`,
-  `localhost:5000`, `registry.example.com`, `[fc00::1]:5000`,
-  `index.docker.io` for Docker Hub, by tag and by digest).
+  test failed). Built from parts, each spelling resolves to a literal
+  expected host: `LOCALDOMAIN`, `LOCALHOST`, `Registry`, `localhost`,
+  `localhost:5000`, `registry.example.com`, `index.docker.io` for Docker
+  Hub, by tag, by digest and by both. Where both parsers agree, the result
+  equals `oci-spec`'s parse of the string form. The upper-case spellings'
+  string forms are refused by the check
+  (`a_reference_oci_client_would_address_elsewhere_is_refused`, also for a
+  host differing only in case). `[fc00::1]:5000` and `[::1]:5000` do not
+  parse in `oci-spec`.
+- [measured] T0 `a_bracketed_ipv6_registry_pulls`: a manifest and a blob
+  pulled from a fake registry on `[::1]`; on the previous code it failed
+  with "invalid reference format".
 
 ## More Information
 

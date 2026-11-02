@@ -87,9 +87,10 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   cache keys ([threat model T11](../../security/threat-model.md#5-threats-and-mitigations)), and never go to a plain-HTTP token
   realm of an HTTPS registry.
 - References reach `oci-client` built from the parts `rnk_oci` parsed,
-  never parsed again, and a request fails before it is sent if `oci-client`
-  would address a host or repository other than the one the connection and
-  the credential were chosen for (ADR-0070, refining ADR-0026).
+  never parsed again, and converted before the call connects, so a request
+  fails before anything is sent if `oci-client` would address a host or
+  repository other than the one the connection and the credential were
+  chosen for (ADR-0070, refining ADR-0026).
 
 ## Refs
 

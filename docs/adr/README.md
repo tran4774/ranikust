@@ -98,7 +98,7 @@ when new measurements contradict its evidence.
 | [0023](0023-mode-flag.md) | `--mode` selects the snapshot mode; `--snapshot-mode` keeps kaniko's meaning | Accepted | 2026-10-30 | Phase 1 O2 |
 | [0024](0024-tls-rustls-ring.md) | rustls with the `ring` provider; trust host CAs and embedded roots together | Accepted | 2026-10-30 | Phase 1 O4, Exp 05 |
 | [0025](0025-build-metrics-from-tracing-spans.md) | Build metrics from `tracing` spans, aggregated by an opt-in `rnk-metrics` crate | Accepted | 2026-10-30 | kaniko fork metrics, Exp 07, 08, 12 |
-| [0026](0026-rnk-oci-owns-its-types.md) | `rnk-oci` owns its OCI and Docker image types instead of using `oci-spec` | Accepted | 2026-10-30 | `oci-spec` 0.10 source, `rnk-oci` tests |
+| [0026](0026-rnk-oci-owns-its-types.md) | `rnk-oci` owns its OCI and Docker image types instead of using `oci-spec` | Accepted | 2026-10-30 | `oci-spec` 0.10 source, `rnk-oci` tests; the string-form hand-over to `oci-client` refined by ADR-0070 |
 | [0027](0027-context-filtering-follows-buildkit-walk.md) | Build-context filtering follows BuildKit's walk, not `MatchesOrParentMatches` | Accepted | 2026-10-30 | Q-050, `rnk-ignore` goldens |
 | [0028](0028-minimum-kernel-linux-5-8.md) | Require Linux 5.8 or later and check it at start-up | Accepted | 2026-10-30 | Q-054, `rnk-rootfs` escape suite |
 | [0029](0029-zstd-layers-as-independent-1-mib-frames.md) | zstd layers are written as independent 1 MiB frames | Accepted | 2026-10-30 | Exp 05 Q3, `rnk-layer` tests |
