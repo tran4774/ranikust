@@ -472,6 +472,31 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   take twice the space until a prune exists. The new layout stops reuse
   but does not repair a `layers/v2/` tree that a crafted XFS ACL already
   damaged: root must remove it.
+- The build context's owner (a merge request's author, a third-party
+  repository, an account whose directory root builds) can no longer steer
+  ranikust's own host reads and writes (ADR-0076):
+  - **Outputs.** The digest files, `--tar-path`, `--oci-layout-path` and
+    `--metrics-file` followed a symlink at the leaf or a parent, so a
+    committed `digest -> /etc/...` made root truncate a host file. They are
+    now reached from `/` without following any symlink. The digest files
+    are written in place only into a regular file with one link; the other
+    outputs replace their name by rename.
+  - **Outputs in the context.** An output in the build context, or one
+    reached through a symlink, is refused before the build, exit code 2 for
+    `--metrics-file`.
+  - **`--dockerfile`.** A path leading into the context
+    (`$CI_PROJECT_DIR/Dockerfile`, or the default `Dockerfile` run from the
+    checkout) was read on the host through a committed symlink, and the
+    target's first token was printed in the parse error. It is now read
+    through the context. Outside the context, symlinks are still followed,
+    so a ConfigMap mount keeps working, and only a regular file is read.
+  - **`--context`.** The context was resolved with `canonicalize` as root;
+    it is now opened without following any symlink, and one in the path is
+    refused.
+  - **Hardlinks.** `COPY`, `ADD` and the Dockerfile read refuse a context
+    file that is a hardlink owned by another account than the context's,
+    the form a root-only file takes when an account links it into its
+    context with `fs.protected_hardlinks=0`.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

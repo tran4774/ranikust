@@ -86,8 +86,10 @@ struct PushArgs { path: PathBuf, destination: Vec<String> } // an OCI layout onl
 Set-up order, built so far: parse the flags (no I/O; refused kaniko flags
 reported first, so `--help` works on any kernel) → the Linux 5.8 check
 (`rnk_rootfs::probe_support`, ADR-0028; skipped by `version`) →
-`rnk_metrics::init` (starts no thread), `--metrics-file` over
-`--metrics-file` (ADR-0037) → `BuildConfig::from_args` → the mode
+`--metrics-file` refused in the build context or through a symlink
+(`check_metrics_file`, ADR-0076) → `rnk_metrics::init` (starts no thread),
+`--metrics-file` over `RANIKUST_METRICS_FILE` (ADR-0037), written by
+`write_metrics_file` → `BuildConfig::from_args` → the mode
 (ADR-0040): `--mode=kaniko` goes to kaniko mode; `--mode=overlay` checks
 the kaniko-mode flags (`overlay_mode_flags`) and its state directory, then
 enters the namespace; `--mode=auto` enters the namespace first and, where

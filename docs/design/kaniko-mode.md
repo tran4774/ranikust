@@ -186,7 +186,10 @@ settles them (Q-024):
   (`--tar-path`, `--oci-layout-path`, the digest files), `--metrics-file`
   and file secrets
   are refused before the root changes when they lie in it, unless the
-  ignore list keeps them (a volume, `/ranikust`, `--ignore-path`).
+  ignore list keeps them (a volume, `/ranikust`, `--ignore-path`). In
+  every mode, an output must also lie outside the build context and be
+  reached without a symlink, and `--context` must have no symlink in it
+  (ADR-0076).
 - **A root off `/` is private** (ADR-0047's rule, moved to the state
   directory by ADR-0050): an image's setuid files land in it, so it lies
   below the state directory, owned by the user running ranikust, mode

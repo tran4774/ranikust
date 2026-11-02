@@ -20,8 +20,11 @@
 //! - Does not order stages (`rnk-sched`) or parse flags (`ranikust`).
 //! - Does not write tar itself: layers and the Docker tarball go through
 //!   `rnk-layer`'s writer.
-//! - Output paths come from the command line and are trusted; a path inside
-//!   an image root is reached only through `rnk-rootfs`.
+//! - Output paths come from the command line, but a directory on the way may
+//!   be a less trusted principal's, such as the build context's owner
+//!   (ADR-0076): outputs are reached through `rnk_rootfs::OutputDir`, never
+//!   through a symlink. A path inside an image root is reached only through
+//!   `rnk-rootfs`.
 
 mod error;
 mod glob;

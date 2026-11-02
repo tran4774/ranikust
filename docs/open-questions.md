@@ -544,6 +544,29 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-11-01
 
+### Q-438: Does ranikust refuse a context file its owner could not read?
+
+- **Blocks:** nothing yet; **Area:** `rnk-context`, `rnk-rootfs` (security)
+- **Context:** ranikust reads context files as root, so `COPY` would copy
+  a file the context's owner cannot read. ADR-0076 refuses the case an
+  unprivileged owner can set up: a hardlink to a file from outside, with
+  another owner, where `fs.protected_hardlinks=0`. A single-link file of
+  another owner in the context (one root put there) is still read.
+  BuildKit reads the context as the invoking user, so such a file is not
+  readable there.
+- **Options:**
+  - (a) Refuse a file the owner's uid, gid and supplementary groups could
+    not read by its mode bits. Exact only without ACLs, and the groups come
+    from the host's NSS.
+  - (b) Read context files with the owner's filesystem credentials
+    (`setfsuid`/`setfsgid` and supplementary groups on a dedicated thread),
+    as BuildKit's client reads them.
+  - (c) Keep the hardlink rule only.
+- **Recommendation:** (b) when the context reader gets its own thread
+  (Phase 5's remote contexts); until then (c).
+- **Interim:** (c), ADR-0076's hardlink rule.
+- **Raised:** 2026-11-02
+
 ## Answered
 
 ### Q-033: Which performance conditions are still unmeasured?

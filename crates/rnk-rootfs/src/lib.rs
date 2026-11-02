@@ -5,8 +5,12 @@
 //! Built on it: layer extraction from an already decompressed tar stream,
 //! writing whiteouts in the form the caller asks for; copy, ownership and
 //! xattrs; `USER` and `--chown` name lookup in the root's `/etc/passwd` and
-//! `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the ignore list; and safe
-//! deletion of a root's contents.
+//! `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the ignore list; safe
+//! deletion of a root's contents; and the operator's host paths that the
+//! build context's owner must not steer (ADR-0076): output directories
+//! reached without a symlink and outside the context ([`OutputDir`]), and the
+//! walk that hands a read path over to the context's root once it enters it
+//! ([`reach`]).
 //!
 //! Linux only: the crate needs `openat2` (Linux 5.6) and the `statx` mount id
 //! (Linux 5.8). When either is missing or blocked by seccomp it fails with
