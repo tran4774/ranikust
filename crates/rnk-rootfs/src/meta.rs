@@ -651,9 +651,12 @@ fn apply_with(
                 // That detects a swap and narrows the window, but does not
                 // prevent the write: an entry swapped in between a check
                 // and a set gets the xattr (one in the same pinned parent,
-                // never through a symlink). `setxattrat(2)` (Linux 6.13)
-                // with `AT_EMPTY_PATH` on the `O_PATH` fd would set it
-                // race-free.
+                // never through a symlink), and a swap undone before the
+                // second check is not seen. `setxattrat(2)` (Linux 6.13)
+                // with `AT_EMPTY_PATH` on the `O_PATH` fd might set it
+                // race-free, if the kernel accepts an `O_PATH` fd there
+                // (unverified; to settle with poc-runner in the hardening
+                // pass).
                 target.check_still_pinned(path)?;
                 for (name, value) in &m.xattrs {
                     xattr_result(target.set(name, value), name, skipped, path)?;
