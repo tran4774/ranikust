@@ -49,6 +49,26 @@ pub struct CopyOpts {
     /// into a root a `RUN` enters without `nodev`, `Isolation::Direct`
     /// (ADR-0060). What is left out is warned about once per copy.
     pub skip_special: bool,
+    /// The build context's owner, for a copy out of the context (ADR-0076):
+    /// a regular file with more than one link and another owner is refused.
+    /// It is a hardlink to a file from outside the context, which only
+    /// `fs.protected_hardlinks=0` lets an account make to a file it cannot
+    /// read; ranikust reads as root, so the copy would carry it into the
+    /// image. Same-owner hardlinks (a pnpm store) are copied as before.
+    /// `None` for a copy between roots (`COPY --from`, stage directories).
+    pub link_owner: Option<u32>,
+}
+
+/// Why [`CopyOpts::link_owner`] refuses a file.
+pub(crate) const PLANTED_LINK: &str = "its source in the build context is a hardlink owned by another \
+     account than the context's, as one made to a file from outside the context is; it is not \
+     copied (ADR-0076)";
+
+/// Whether the source `st` is a regular file with other links and an owner
+/// other than `owner`: a hardlink planted from outside the context.
+#[must_use]
+pub fn planted_link(st: &Stat, owner: u32) -> bool {
+    st.file_type() == FileType::Regular && st.nlink > 1 && st.uid != owner
 }
 
 /// Whether `t` is a node [`CopyOpts::skip_special`] leaves out.
@@ -472,6 +492,14 @@ impl Copier<'_> {
         name: &OsStr,
         to: &Path,
     ) -> Result<()> {
+        if let Some(owner) = self.o.link_owner
+            && planted_link(st, owner)
+        {
+            return Err(Error::InvalidPath {
+                path: to.to_owned(),
+                reason: PLANTED_LINK,
+            });
+        }
         match self.existing(pfd, name, to)? {
             Some(e) if e.file_type() == FileType::Directory => {
                 return Err(Error::InvalidPath {

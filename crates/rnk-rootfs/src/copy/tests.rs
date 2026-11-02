@@ -58,6 +58,38 @@ fn source() -> Fixture {
     s
 }
 
+/// A copy out of the build context refuses a hardlink owned by another
+/// account than the context's: one planted from outside it, to a file its
+/// owner cannot read (ADR-0076). Same-owner hardlinks, as a pnpm store
+/// makes, are copied as before. Unprivileged, "another account" is played by
+/// a `link_owner` that is not the test's own uid.
+#[test]
+fn a_hardlink_owned_by_another_account_is_not_copied_out_of_the_context() {
+    let s = source();
+    let (me, _) = s.ids();
+    let other = me.wrapping_add(4242);
+    let d = Fixture::new();
+    let planted = CopyOpts {
+        link_owner: Some(other),
+        ..CopyOpts::default()
+    };
+    for (from, to) in [("a/hl", "hl"), ("a", "app")] {
+        let e = copy(&s.root, from, &d.root, to, &planted).unwrap_err();
+        assert!(e.to_string().contains("hardlink"), "{from}: {e}");
+    }
+    assert!(!d.host("hl").exists());
+    assert!(!d.host("app/hl").exists() && !d.host("app/f").exists());
+    // Owned by the context's owner: copied, links kept.
+    let own = CopyOpts {
+        link_owner: Some(me),
+        ..CopyOpts::default()
+    };
+    copy(&s.root, "a", &d.root, "mine", &own).unwrap();
+    assert_eq!(fs::metadata(d.host("mine/hl")).unwrap().nlink(), 2);
+    // A file with one link is copied whoever owns it.
+    copy(&s.root, "a/ro/inside", &d.root, "inside", &planted).unwrap();
+}
+
 #[test]
 fn a_directory_copies_its_contents_with_raw_modes_times_and_links() {
     let s = source();
@@ -98,6 +130,7 @@ fn chown_and_chmod_apply_to_every_entry_but_symlink_modes() {
         owner: Some(Owner { uid, gid }),
         chmod: Some(Chmod::Octal(0o750)),
         skip_special: false,
+        link_owner: None,
     };
     copy(&s.root, "a", &d.root, "deep/er/app", &o).unwrap();
     for p in ["deep/er/app/f", "deep/er/app/ro", "deep/er/app/fifo"] {
@@ -395,6 +428,7 @@ fn device_nodes_and_foreign_owners_are_copied() {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
         skip_special: false,
+        link_owner: None,
     };
     copy(&s.root, "a", &d.root, "root", &o).unwrap();
     let owned = d.root.statx("root/owned").unwrap();
@@ -413,6 +447,7 @@ fn foreign_owners_fail_cleanly_unprivileged() {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
         skip_special: false,
+        link_owner: None,
     };
     let e = copy(&s.root, "a/f", &d.root, "f", &o).unwrap_err();
     assert_eq!(errno(&e), Some(Errno::PERM), "{e}");

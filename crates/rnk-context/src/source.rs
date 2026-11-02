@@ -249,8 +249,20 @@ impl Context {
     }
 
     /// The ignore file `rel` in the context, `None` when it is missing.
+    /// Opens the regular file `rel` of the context for reading, following
+    /// symlinks inside the context only, and refusing a hardlink owned by
+    /// another account than the context's, as `COPY` refuses it
+    /// ([`rnk_rootfs::CopyOpts::link_owner`], ADR-0076).
+    ///
+    /// # Errors
+    ///
+    /// As [`RootPath::open_context_file`].
+    pub fn open_file(&self, rel: impl AsRef<Path>) -> rnk_rootfs::Result<std::os::fd::OwnedFd> {
+        self.root.open_context_file(rel, self.owner())
+    }
+
     fn read_ignore(&self, rel: &Path) -> Result<Option<Vec<u8>>> {
-        match self.root.open_regular(rel) {
+        match self.open_file(rel) {
             Ok(fd) => {
                 let mut contents = Vec::new();
                 File::from(fd)

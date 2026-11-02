@@ -36,6 +36,24 @@ fn open_refuses_symlinked_host_path_and_missing_dir() {
     ));
 }
 
+/// A context file that is a hardlink owned by another account than the
+/// context's is refused; a single-link file, or the owner's own hardlink,
+/// is read (ADR-0076). Unprivileged, the "other account" is an owner that
+/// is not the test's uid.
+#[test]
+fn a_context_file_planted_as_a_foreign_hardlink_is_refused() {
+    let f = Fixture::new();
+    let (me, _) = f.ids();
+    fs::write(f.host("df"), b"FROM scratch\n").unwrap();
+    fs::hard_link(f.host("df"), f.host("df-link")).unwrap();
+    fs::write(f.host("single"), b"one\n").unwrap();
+    let other = me.wrapping_add(4242);
+    let e = f.root.open_context_file("df", other).unwrap_err();
+    assert!(e.to_string().contains("hardlink"), "{e}");
+    assert!(f.root.open_context_file("df", me).is_ok());
+    assert!(f.root.open_context_file("single", other).is_ok());
+}
+
 #[test]
 fn open_at_create_write_read() {
     let f = Fixture::new();

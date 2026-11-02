@@ -598,7 +598,7 @@ fn read_dockerfile(dockerfile: &Path, context: &Context) -> Result<(String, Dock
         }
     };
     let mut text = String::new();
-    let fd = context.root().open_regular(&rel).map_err(|e| {
+    let fd = context.open_file(&rel).map_err(|e| {
         format!(
             "reading the Dockerfile {} in the context: {e}",
             rel.display()

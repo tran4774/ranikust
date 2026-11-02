@@ -50,6 +50,49 @@ fn a_context_path_through_a_symlink_is_refused() {
     assert_eq!(ctx.origin(), checkout.path().join("services"));
 }
 
+/// T2c (the VM or a default rootful Docker run): a root-only file
+/// hardlinked into a context another account owns, as that account can do
+/// where `fs.protected_hardlinks=0`, is neither read as the Dockerfile nor
+/// copied, though ranikust reads as root (ADR-0076). Root makes the link
+/// here, standing in for the account.
+#[test]
+#[ignore = "T2c: default: chown to another user and a root-only file need root"]
+fn a_root_only_file_hardlinked_into_the_context_is_never_read() {
+    let tmp = ctx_dir();
+    let secret = tmp.path().join("secret");
+    fs::write(&secret, b"DUMMY-ROOT-ONLY-7f3a\n").unwrap();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+    let ctx_path = tmp.path().join("ctx");
+    fs::create_dir(&ctx_path).unwrap();
+    fs::hard_link(&secret, ctx_path.join("s")).unwrap();
+    fs::write(ctx_path.join("own"), b"mine\n").unwrap();
+    for p in [ctx_path.clone(), ctx_path.join("own")] {
+        rustix::fs::chown(
+            &p,
+            Some(rustix::fs::Uid::from_raw(1000)),
+            Some(rustix::fs::Gid::from_raw(1000)),
+        )
+        .unwrap();
+    }
+    let ctx = DirSource::new(&ctx_path).open().unwrap();
+    assert_eq!(ctx.owner(), 1000);
+    let e = ctx.open_file("s").unwrap_err();
+    assert!(e.to_string().contains("hardlink"), "{e}");
+    assert!(ctx.open_file("own").is_ok());
+
+    let dst = ctx_dir();
+    let dst_root = rnk_rootfs::RootPath::open(dst.path()).unwrap();
+    let opts = rnk_rootfs::CopyOpts {
+        link_owner: Some(ctx.owner()),
+        ..rnk_rootfs::CopyOpts::default()
+    };
+    let e = rnk_rootfs::copy(ctx.root(), "s", &dst_root, "s", &opts).unwrap_err();
+    assert!(e.to_string().contains("hardlink"), "{e}");
+    let e = rnk_rootfs::copy(ctx.root(), "", &dst_root, "all", &opts).unwrap_err();
+    assert!(e.to_string().contains("hardlink"), "{e}");
+    assert!(!dst.path().join("s").exists());
+}
+
 #[test]
 fn walks_in_buildkit_order_without_following_symlinks() {
     let outside = ctx_dir();

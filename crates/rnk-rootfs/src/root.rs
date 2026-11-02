@@ -314,13 +314,37 @@ impl RootPath {
     /// [`Error::InvalidPath`] when `p` is not a regular file; [`Error::Io`]
     /// as [`RootPath::open_at`].
     pub fn open_regular(&self, p: impl AsRef<Path>) -> Result<OwnedFd> {
-        let p = p.as_ref();
+        self.open_regular_checked(p.as_ref(), None)
+    }
+
+    /// [`RootPath::open_regular`] for a file of a build context owned by
+    /// `owner`: a hardlink owned by another account is refused, as
+    /// [`crate::CopyOpts::link_owner`] refuses it (ADR-0076). Checked on the
+    /// pinned inode, the one then read.
+    ///
+    /// # Errors
+    ///
+    /// As [`RootPath::open_regular`], and [`Error::InvalidPath`] for such a
+    /// hardlink.
+    pub fn open_context_file(&self, p: impl AsRef<Path>, owner: u32) -> Result<OwnedFd> {
+        self.open_regular_checked(p.as_ref(), Some(owner))
+    }
+
+    fn open_regular_checked(&self, p: &Path, link_owner: Option<u32>) -> Result<OwnedFd> {
         let pinned = self.resolve(p, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
-        let file_type = meta::statx_at(pinned.as_fd(), OsStr::new(""), p)?.file_type();
-        if file_type != FileType::Regular {
+        let st = meta::statx_at(pinned.as_fd(), OsStr::new(""), p)?;
+        if st.file_type() != FileType::Regular {
             return Err(Error::InvalidPath {
                 path: p.to_owned(),
                 reason: "not a regular file",
+            });
+        }
+        if let Some(owner) = link_owner
+            && crate::copy::planted_link(&st, owner)
+        {
+            return Err(Error::InvalidPath {
+                path: p.to_owned(),
+                reason: crate::copy::PLANTED_LINK,
             });
         }
         let proc = meta::proc_fd_dir(p)?;
