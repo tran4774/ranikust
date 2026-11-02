@@ -32,7 +32,6 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use rnk_rootfs::{FileTime, FileType, Meta, OpenHow, RootPath};
@@ -49,6 +48,13 @@ const MAX_SYMLINKS: u32 = 40;
 const JOURNAL_EXT: &str = "journal";
 /// Extension of a journal being created, before it is locked and renamed.
 const NEW_EXT: &str = "journal-new";
+
+/// The most bytes a journal holds, written or replayed. Each entry takes
+/// two lines, each with one path of at most `PATH_MAX` in hex (8 KiB) and
+/// two times: about a thousand stubs at the longest paths, tens of
+/// thousands at ordinary ones. A `RUN` whose mounts need more fails before
+/// placing the entry; a replay leaves a larger file unread, with a warning.
+const MAX_JOURNAL_BYTES: u64 = 16 << 20;
 
 /// Scratch files of a run, removed by name, never recursively.
 pub(crate) const SCRATCH_FILES: [&str; 3] = ["resolv.conf", "hosts", "hostname"];
@@ -112,6 +118,8 @@ pub(crate) struct Journal {
     scratch: PathBuf,
     root: RootPath,
     stubs: Vec<StubRecord>,
+    /// Bytes written so far, at most [`MAX_JOURNAL_BYTES`].
+    len: u64,
     /// `placed` records written since the last sync.
     unsynced: bool,
 }
@@ -158,6 +166,7 @@ impl Journal {
             // mount: a mount below it is never written through.
             root: root.stay_on_mount(),
             stubs: Vec::new(),
+            len: 0,
             unsynced: false,
         };
         journal.append(&format!("root\t{}\n", hex(root_dir.as_os_str().as_bytes())))?;
@@ -418,9 +427,16 @@ impl Journal {
     }
 
     fn append(&mut self, line: &str) -> Result<()> {
+        let len = u64::try_from(line.len())
+            .ok()
+            .and_then(|n| self.len.checked_add(n))
+            .filter(|&len| len <= MAX_JOURNAL_BYTES)
+            .ok_or_else(|| io_err("write the stub journal", &self.path, too_large()))?;
         self.file
             .write_all(line.as_bytes())
-            .map_err(|e| io_err("write the stub journal", &self.path, e))
+            .map_err(|e| io_err("write the stub journal", &self.path, e))?;
+        self.len = len;
+        Ok(())
     }
 
     fn sync(&mut self) -> Result<()> {
@@ -491,16 +507,69 @@ pub(crate) fn replay(
 
 /// Removes a journal that was never published, unless it is locked.
 fn remove_unlocked(path: &Path) {
-    let Ok(file) = File::options()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-    else {
-        return;
+    let file = match open_journal(path, false) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!("rnk-sandbox: left {} in place: {e}", path.display());
+            return;
+        }
     };
     if rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
         let _ = fs::remove_file(path);
     }
+}
+
+/// Opens the journal `path` for I/O only if it is a regular file, as the
+/// store opens its lock files: the entry is pinned with
+/// `O_PATH | O_NOFOLLOW`, its type is checked on that descriptor, and only
+/// a regular file is reopened, through ranikust's own `/proc/self/fd`,
+/// with `O_NONBLOCK | O_NOCTTY`. A FIFO planted at a journal's name would
+/// block the replay in `open`, or, opened read-write, in a `read` whose
+/// only writer is the replay itself; a device node would be opened as
+/// root. Neither ever is: the open fails with `InvalidData`.
+fn open_journal(path: &Path, write: bool) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags};
+    let pinned = rustix::fs::open(
+        path,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let st = rustix::fs::fstat(&pinned)?;
+    if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a regular file, so not a journal ranikust wrote",
+        ));
+    }
+    let proc = rustix::fs::open(
+        "/proc/self/fd",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    if rustix::fs::fstatfs(&proc)?.f_type != rustix::fs::PROC_SUPER_MAGIC {
+        return Err(io::Error::other("/proc/self/fd is not on procfs"));
+    }
+    let access = if write { OFlags::RDWR } else { OFlags::RDONLY };
+    let num = std::os::fd::AsRawFd::as_raw_fd(&pinned).to_string();
+    let fd = rustix::fs::openat(
+        &proc,
+        num.as_str(),
+        access | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    Ok(File::from(fd))
+}
+
+/// The error for a journal over [`MAX_JOURNAL_BYTES`].
+fn too_large() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::FileTooLarge,
+        format!(
+            "too large: a stub journal holds at most {} MiB",
+            MAX_JOURNAL_BYTES >> 20
+        ),
+    )
 }
 
 /// Replays one journal; `None` when a live run still holds it.
@@ -509,12 +578,10 @@ fn replay_one(
     confine: &Path,
     shared_root: Option<&RootPath>,
 ) -> Result<Option<usize>> {
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|e| io_err("open the stub journal", path, e))?;
+    // Read-write: where `flock` is emulated with record locks (NFS), an
+    // exclusive lock needs a descriptor open for writing.
+    let mut file =
+        open_journal(path, true).map_err(|e| io_err("open the stub journal", path, e))?;
     match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => {}
         Err(Errno::WOULDBLOCK) => return Ok(None),
@@ -542,9 +609,17 @@ fn replay_locked(
     if st.st_nlink == 0 {
         return Ok(None);
     }
+    // Bounded both before and while reading: the file may still grow.
+    if u64::try_from(st.st_size).map_or(true, |size| size > MAX_JOURNAL_BYTES) {
+        return Err(io_err("read the stub journal", path, too_large()));
+    }
     let mut text = Vec::new();
-    file.read_to_end(&mut text)
+    io::Read::take(&mut *file, MAX_JOURNAL_BYTES + 1)
+        .read_to_end(&mut text)
         .map_err(|e| io_err("read the stub journal", path, e))?;
+    if u64::try_from(text.len()).map_or(true, |len| len > MAX_JOURNAL_BYTES) {
+        return Err(io_err("read the stub journal", path, too_large()));
+    }
     let (root_dir, stubs) = parse(&text);
     let mut removed = 0;
     if let Some(root_dir) = root_dir {
@@ -1032,6 +1107,126 @@ mod tests {
         std::os::unix::fs::symlink(&target, f.runs.join(format!("y.{NEW_EXT}"))).unwrap();
         replay(&f.runs, f.base(), None).unwrap();
         assert_untouched(&victim);
+    }
+
+    /// Makes a FIFO at `p`, in this process.
+    fn mkfifo(p: &Path) {
+        use rustix::fs::{CWD, FileType, Mode, mknodat};
+        mknodat(CWD, p, FileType::Fifo, Mode::from_raw_mode(0o600), 0).unwrap();
+    }
+
+    /// [`replay`] on a thread: its result if it returns within 10 s, `None`
+    /// if it blocked.
+    fn replay_within(f: &Fixture) -> Option<Replayed> {
+        let (runs, base) = (f.runs.clone(), f.base().to_owned());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(replay(&runs, &base, None).unwrap());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10)).ok()
+    }
+
+    fn is_fifo(p: &Path) -> bool {
+        use std::os::unix::fs::FileTypeExt as _;
+        fs::symlink_metadata(p).unwrap().file_type().is_fifo()
+    }
+
+    #[test]
+    fn a_fifo_planted_as_an_unpublished_journal_is_never_opened() {
+        let f = fixture();
+        let fifo = f.runs.join(format!("x.{NEW_EXT}"));
+        mkfifo(&fifo);
+        let done = replay_within(&f);
+        if done.is_none() {
+            // Lets the open blocked on the FIFO go before failing.
+            drop(rustix::fs::open(
+                &fifo,
+                rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK,
+                rustix::fs::Mode::empty(),
+            ));
+        }
+        assert_eq!(done, Some(Replayed::default()), "blocked on a FIFO");
+        // Not ranikust's: left in place, with a warning.
+        assert!(is_fifo(&fifo));
+    }
+
+    #[test]
+    fn a_fifo_planted_as_a_journal_is_never_opened() {
+        let f = fixture();
+        let fifo = f.runs.join("x.journal");
+        mkfifo(&fifo);
+        // Opened read-write, the FIFO would have its only writer in the
+        // replay itself, and the read would never end.
+        assert_eq!(
+            replay_within(&f),
+            Some(Replayed::default()),
+            "blocked on a FIFO"
+        );
+        assert!(is_fifo(&fifo));
+    }
+
+    #[test]
+    fn a_journal_larger_than_any_run_writes_is_left_unread() {
+        let f = fixture();
+        let big = f.runs.join("x.journal");
+        File::create(&big)
+            .unwrap()
+            .set_len(MAX_JOURNAL_BYTES + 1)
+            .unwrap();
+        assert_eq!(
+            replay(&f.runs, f.base(), None).unwrap(),
+            Replayed::default()
+        );
+        assert!(big.exists());
+    }
+
+    #[test]
+    fn a_journal_stops_growing_at_the_replay_bound() {
+        let f = fixture();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        let line = "x".repeat(usize::try_from(MAX_JOURNAL_BYTES).unwrap());
+        let err = j.append(&line).unwrap_err().to_string();
+        assert!(err.contains("too large"), "{err}");
+        let len = fs::metadata(f.runs.join("1.journal")).unwrap().len();
+        assert!(len < MAX_JOURNAL_BYTES, "{len}");
+        j.finish().unwrap();
+    }
+
+    /// A device node at a journal's name is never opened: as root, opening
+    /// one acts on the host's device. `c 1 3` is `/dev/null`.
+    #[test]
+    #[ignore = "T2: mknod of a device node as real root; run in the test VM only"]
+    fn a_device_node_planted_as_a_journal_is_never_opened() {
+        use rustix::fs::{CWD, FileType, Mode, OFlags, makedev, mknodat};
+        let f = fixture();
+        let nodes = [
+            f.runs.join("d.journal"),
+            f.runs.join(format!("e.{NEW_EXT}")),
+        ];
+        for node in &nodes {
+            mknodat(
+                CWD,
+                node,
+                FileType::CharacterDevice,
+                Mode::from_raw_mode(0o600),
+                makedev(1, 3),
+            )
+            .unwrap();
+            // Control: this filesystem lets a device node be opened, so the
+            // replay leaving it unopened is a result, not a mount option.
+            rustix::fs::open(node, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty())
+                .expect("the test directory must allow device nodes (not nodev)");
+        }
+        assert_eq!(
+            replay(&f.runs, f.base(), None).unwrap(),
+            Replayed::default()
+        );
+        for node in &nodes {
+            use std::os::unix::fs::FileTypeExt as _;
+            let ft = fs::symlink_metadata(node).unwrap().file_type();
+            assert!(ft.is_char_device(), "{}", node.display());
+        }
     }
 
     fn set_old_times(root: &RootPath, p: &str) -> FileTime {
