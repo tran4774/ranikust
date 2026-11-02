@@ -28,7 +28,9 @@ use crate::root::{Mounts, RootPath, open_name};
 /// difference stops the deletion with [`Error::Changed`]. Symlinks are
 /// unlinked, never followed. Depth is unlimited by `PATH_MAX`, but one fd is
 /// held per level: the caller raises `RLIMIT_NOFILE` for deep trees. Memory
-/// is linear in depth: one name per level, and one path buffer for the walk.
+/// is linear in the entries on the walk's stack (each level keeps its name
+/// and the names of its directory not yet visited) plus one path buffer, no
+/// longer quadratic in depth.
 ///
 /// # Errors
 ///

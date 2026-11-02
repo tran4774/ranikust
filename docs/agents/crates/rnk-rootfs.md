@@ -77,9 +77,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   outside the root are refused, and the last component of a replaced entry is
   never followed (threats T1, T2).
 - Every fd is `O_CLOEXEC` (T7). Directories are opened by `(parent fd, name)`,
-  never by a long path, so tree depth is unlimited. A walk keeps one fd and
-  one name per level and a single path buffer, never a path per level:
-  memory linear in depth (`tests/memory.rs`).
+  never by a long path, so tree depth is unlimited. A walk keeps one fd per
+  level, each level's name and the names of its directory not yet visited,
+  and a single path buffer, never a path per level: memory linear in the
+  entries on the stack, no longer quadratic in depth (`tests/memory.rs`).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
   from `statx` with the opened fd to catch a swap, `unlinkat` symlinks without
   following; keep ignore-list entries, entries with another `mnt_id` and
