@@ -526,7 +526,12 @@ Entry format:
   mounts, manifest pushes) still go through `oci-client`, which collects an
   error body whole with `Response::bytes()` before ranikust sees it. Those
   registries are the destinations the operator named, not ones a
-  Dockerfile names.
+  Dockerfile names. Two related push-side gaps: the existence `HEAD` inside
+  `push()` has no `registry-idle` bound (the public `blob_exists` has one),
+  and when `oci-client` declines to cache a bearer token the destination
+  sent (a three-part token whose payload does not decode), its push
+  requests authenticate again themselves: a new `GET /v2/`, a realm request
+  with the stored credential and a body read whole, with no idle bound.
 - **Options:** (a) leave it, the destination being the operator's choice;
   (b) send the push requests from `rnk-registry` as well, with the
   `registry-body` limit on error bodies.
