@@ -391,9 +391,9 @@ impl Extractor<'_> {
         // the link is then made from.
         let mut checked_target = TargetDir::Unchecked;
         if let Kind::Hardlink(t) = &kind
-            && self.live.is_some()
+            && let Some(live) = &self.live
         {
-            match self.live_target(t, &raw)? {
+            match self.live_target(live, t, &raw)? {
                 Some(dir) => checked_target = dir,
                 None => {
                     self.stats.ignored += 1;
@@ -560,6 +560,11 @@ impl Extractor<'_> {
         let tpfd = match checked {
             TargetDir::Checked(fd) => Some(fd),
             TargetDir::Missing => None,
+            // Never in a live root, where `entry` checks every hardlink
+            // with `live_target` first: refused rather than resolved anew.
+            TargetDir::Unchecked if self.live.is_some() => {
+                return Err(missing("was not checked in a live root"));
+            }
             TargetDir::Unchecked => match self.root.resolve_dir_in(&tparent, Mounts::Stay) {
                 Ok(fd) => Some(fd),
                 Err(e) if is_noent(&e) => None,
@@ -1051,15 +1056,12 @@ impl Extractor<'_> {
         Ok(Some((cur, path)))
     }
 
-    /// In a live root, the directory of the hardlink target `target`, as
-    /// checked: `None` when the target is ignored at its physical path or
-    /// on another mount, so the hardlink is skipped;
+    /// In the live root `live`, the directory of the hardlink target
+    /// `target`, as checked: `None` when the target is ignored at its
+    /// physical path or on another mount, so the hardlink is skipped;
     /// [`TargetDir::Missing`] when its directory is missing, left for
     /// [`Extractor::hardlink`] to report.
-    fn live_target(&self, target: &Path, raw: &Path) -> Result<Option<TargetDir>> {
-        let Some(live) = &self.live else {
-            return Ok(Some(TargetDir::Missing));
-        };
+    fn live_target(&self, live: &Live<'_>, target: &Path, raw: &Path) -> Result<Option<TargetDir>> {
         let (tparent, tname) = path::entry(target)?;
         let fd = match self.root.resolve_dir_in(&tparent, Mounts::Stay) {
             Ok(fd) => fd,
@@ -1122,7 +1124,9 @@ impl Extractor<'_> {
 
 /// A hardlink target's directory, as [`Extractor::hardlink`] gets it.
 enum TargetDir {
-    /// Not checked (not a live root): `hardlink` resolves it itself.
+    /// Not checked (not a live root): `hardlink` resolves it itself. In a
+    /// live root every hardlink is checked first, so `hardlink` refuses it
+    /// there instead of resolving it anew.
     Unchecked,
     /// Checked by [`Extractor::live_target`] and missing: left for
     /// `hardlink` to report.
