@@ -760,8 +760,9 @@ impl Runner {
                         .into(),
                 ));
             }
+            (Isolation::Full, Some(entry)) => entry,
             // Unused by `Direct`.
-            (_, entry) => entry.unwrap_or(RootEntry::PivotRoot),
+            (Isolation::Direct, entry) => entry.unwrap_or(RootEntry::PivotRoot),
         };
         let program = spec.argv[0].to_string_lossy().into_owned();
         let setup = if traced {
