@@ -113,7 +113,8 @@ impl Fence {
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        // Poisoned while waiting: the RUN that ended may have left processes.
+        // Poisoned while waiting (a RUN failed or the state directory
+        // changed): no name from now on.
         if state.poisoned {
             return Err(Error::Anonymous(POISONED));
         }
