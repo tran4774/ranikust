@@ -88,7 +88,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   entries on the stack, no longer quadratic in depth (`tests/memory.rs`).
   The copy walk does the same with one source and one destination buffer
   (`copying_a_deep_chain_takes_memory_linear_in_its_depth`: 64 MB before,
-  0.5 MB now, at 400 levels of 200-byte names).
+  0.5 MB now, at 400 levels of 200-byte names). A file with other names
+  whose path is past `PATH_MAX` is refused before it is copied, so the
+  map of first copies stays at about 4 KB a file
+  (`a_hardlinked_file_past_path_max_is_refused_by_the_copy`).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
   from `statx` with the opened fd to catch a swap, `unlinkat` symlinks without
   following; keep ignore-list entries, entries with another `mnt_id` and

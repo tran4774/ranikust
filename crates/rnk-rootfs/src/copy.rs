@@ -239,6 +239,14 @@ struct Stats {
 /// An inode: device major and minor, inode number.
 type Inode = (u32, u32, u64);
 
+/// The longest path below a root a path-based operation reaches
+/// (`PATH_MAX` less the NUL), as `rnk-snapshot`'s exporter and walk use.
+const PATH_MAX: usize = 4095;
+
+/// Why an entry past [`PATH_MAX`] is refused, in the words `rnk-snapshot`
+/// uses.
+const PATH_TOO_LONG: &str = "an entry's path is longer than PATH_MAX";
+
 struct Copier<'r> {
     dst: &'r RootPath,
     o: CopyOpts,
@@ -612,6 +620,18 @@ impl Copier<'_> {
             return Err(Error::InvalidPath {
                 path: to.to_owned(),
                 reason,
+            });
+        }
+        // The first copy of a file with other names is remembered by its
+        // path, for linking the later ones: past `PATH_MAX` that map would
+        // grow by up to a whole deep path per file (a `RUN` can make paths
+        // of 100 KB), and the link would fail with `ENAMETOOLONG` anyway.
+        // Refused before anything is written; the error names only the
+        // entry (T15).
+        if st.nlink > 1 && to.as_os_str().len() > PATH_MAX {
+            return Err(Error::InvalidPath {
+                path: PathBuf::from(name),
+                reason: PATH_TOO_LONG,
             });
         }
         match self.existing(pfd, name, to)? {

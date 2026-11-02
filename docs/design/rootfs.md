@@ -212,7 +212,10 @@ is `extract`.
   copy per level, so a deep chain a `RUN` made costs memory linear in its
   depth (400 levels of 200-byte names: 64 MB before, 0.5 MB now,
   `tests/memory.rs`), whichever way it is copied (a per-stage base from
-  its parent, `COPY --from`, a kept stage copied out).
+  its parent, `COPY --from`, a kept stage copied out). A file with other
+  names is remembered by the path of its first copy, to link the others,
+  so one past `PATH_MAX` is refused before it is written, keeping that map
+  at about 4 KB a file (the link would fail with `ENAMETOOLONG` anyway).
   Only a pinned regular file or directory is reopened, through ranikust's
   own `/proc/self/fd`, for reading; a FIFO or device node is recreated with
   `mknodat`, never opened; a symlink is copied with `readlinkat` on the
