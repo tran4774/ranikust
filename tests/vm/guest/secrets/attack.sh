@@ -9,13 +9,17 @@
 #   unseed   removes it from the root again
 #   spawn    leaves `sleep 3001 &`, a `setsid sleep 3002 &` and a
 #            double-forked `sleep 3003` behind
-#   V1..V10  the vectors (see secrets.sh)
+#   swap     replaces the --secret file with a symlink to /proc/self/comm
+#   V1..V12  the vectors (see secrets.sh)
 set -u
 MARK=MARKER-STATE-4242
 # REGISTRY_TOKEN's value, and DOCKER_AUTH_CONFIG's auth: base64 of
 # `user:tok-RNK-4242`.
 TOKENS=(tok-RNK-4242 dXNlcjp0b2stUk5LLTQyNDI)
 ARGV_SECRET=argv-secret-4242
+# The --secret file's content (secrets.sh), and where the container has it.
+FILE_SECRET=file-secret-RNK-5151
+SECRET_SRC=/ranikust/out/sec/s
 me=$$
 
 out() { echo "VEC $*"; }
@@ -42,6 +46,11 @@ mine() {
 case "${1:-}" in
 seed) echo "$MARK" >/seed-marker ;;
 unseed) rm -f /seed-marker ;;
+swap)
+  # The --secret file is on a volume this RUN may write: point it at a
+  # file ranikust would read as itself if it opened the path again.
+  rm -f "$SECRET_SRC" && ln -s /proc/self/comm "$SECRET_SRC"
+  ;;
 spawn)
   sleep 3001 &
   setsid sleep 3002 &
@@ -165,6 +174,33 @@ V10)
   done
   if [ -n "$hit" ]; then out V10 LEAK "$hit"; else out V10 blocked; fi
   ;;
-*) echo "usage: $0 seed|unseed|spawn|V1..V10" >&2 ;;
+V11)
+  # ranikust's own capabilities never exceed the RUN's (ADR-0078): with
+  # --cap-add SYS_PTRACE it would otherwise open paths a RUN planted with a
+  # capability the RUN was denied. /proc/<pid>/status is readable whatever
+  # PR_SET_DUMPABLE says.
+  pids=$(rnk_pids)
+  [ -n "$pids" ] || { out V11 INVALID "no ranikust process seen"; exit 0; }
+  hit=
+  for p in $pids; do
+    for k in CapInh CapPrm CapEff CapBnd CapAmb; do
+      a=$(sed -n "s/^$k:[[:space:]]*//p" "/proc/$p/status")
+      b=$(sed -n "s/^$k:[[:space:]]*//p" /proc/self/status)
+      [ -n "$a" ] || continue
+      [ $((0x$a & ~0x$b)) -eq 0 ] || hit="$hit $k ranikust=$a run=$b"
+    done
+  done
+  if [ -n "$hit" ]; then out V11 LEAK "$hit"; else out V11 blocked; fi
+  ;;
+V12)
+  # An earlier RUN (swap) replaced the --secret file with a symlink: this
+  # RUN must still get the bytes ranikust read at start-up.
+  case "${S-}" in
+    "$FILE_SECRET") out V12 blocked ;;
+    "") out V12 INVALID "no secret variable" ;;
+    *) out V12 LEAK "got $(printf %s "$S" | head -c 40 | tr -c '[:print:]' '?')" ;;
+  esac
+  ;;
+*) echo "usage: $0 seed|unseed|spawn|swap|V1..V12" >&2 ;;
 esac
 exit 0

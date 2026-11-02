@@ -18,6 +18,10 @@
 #       as PID 1; readable (expected) through the shell that started it
 #       in the `shell` scenario, ranikust warns
 #   V10 ranikust's memory: /proc/<ranikust>/mem
+#   V11 capabilities ranikust holds beyond the RUN's (ADR-0078): none,
+#       with --cap-add SYS_PTRACE too
+#   V12 a --secret file a RUN swapped for a symlink to /proc/self/comm: a
+#       later RUN still gets the bytes read at start-up (ADR-0078)
 #
 # Scenarios: `pid1` (ranikust is the container's PID 1), `ptrace` (the same
 # with --cap-add SYS_PTRACE: the RUN must not get it), `shell` (started by
@@ -49,7 +53,9 @@ ARG NPM_TOKEN
 COPY attack.sh /attack.sh
 RUN bash /attack.sh seed
 RUN bash /attack.sh unseed
-RUN for v in V1 V2 V3 V4 V6 V7 V8 V9 V10; do bash /attack.sh \$v; done
+RUN for v in V1 V2 V3 V4 V6 V7 V8 V9 V10 V11; do bash /attack.sh \$v; done
+RUN bash /attack.sh swap
+RUN --mount=type=secret,id=s,env=S bash /attack.sh V12
 RUN bash /attack.sh spawn
 RUN bash /attack.sh V5
 EOF
@@ -66,13 +72,15 @@ tmpfile="$(sudo docker run --rm "$IMAGE" perl -e "$probe" 2>&1 || true)"
 echo "kernel $(uname -r): O_TMPFILE on the container's overlayfs root: $tmpfile" | tee "$OUT/o_tmpfile.txt"
 
 ARGS=(--mode=kaniko --context /ranikust/ctx --no-push --oci-layout-path /ranikust/out/oci
-  --build-arg NPM_TOKEN=argv-secret-4242)
+  --build-arg NPM_TOKEN=argv-secret-4242 --secret id=s,src=/ranikust/out/sec/s)
 
 # scenario NAME [docker run options...]: builds, keeps the log, the exit.
 scenario() {
   local name="$1" o="$W/out-$1" rc=0
   shift
-  sudo rm -rf "$o" && sudo mkdir -m 755 "$o"
+  sudo rm -rf "$o" && sudo mkdir -m 755 "$o" "$o/sec"
+  # A file secret on a volume a RUN may write (V12).
+  printf file-secret-RNK-5151 | sudo tee "$o/sec/s" >/dev/null
   # ubuntu:24.04 has no CA certificates: the VM's, read-only.
   local common=(--rm -v "$RNK:/ranikust/bin/ranikust:ro" -v "$W/ctx:/ranikust/ctx:ro"
     -v "$o:/ranikust/out" -v /etc/ssl/certs:/etc/ssl/certs:ro
@@ -105,7 +113,7 @@ expect() {
 }
 
 status=0
-VECTORS=(V1 V2 V3 V4 V5 V6 V7 V8 V9 V10)
+VECTORS=(V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12)
 {
   printf '%-8s' scenario
   printf ' %-8s' "${VECTORS[@]}"
@@ -136,6 +144,8 @@ for s in pid1 ptrace shell; do
   fi
   grep -q -- '--build-arg NPM_TOKEN=' "$OUT/$s.log" ||
     { echo "error: scenario $s: no warning for the secret-looking --build-arg" >&2; status=1; }
+  grep -q -- '--secret id=s: .*every RUN can read' "$OUT/$s.log" ||
+    { echo "error: scenario $s: no warning that every RUN reads the --secret file" >&2; status=1; }
   if grep -q 'state in memory (memfd)' "$OUT/$s.log"; then
     echo "$s: state in memfd"
   elif grep -q 'made by a name unlinked at once' "$OUT/$s.log"; then

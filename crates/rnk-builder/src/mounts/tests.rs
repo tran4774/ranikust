@@ -347,6 +347,57 @@ fn a_secret_mounted_twice_is_read_once() {
     assert!(Arc::ptr_eq(&r.secrets[0].data, &r.secrets[1].data));
 }
 
+/// Red team (ADR-0078): a file secret is read once, at the start. A `RUN`
+/// that replaces the file with a symlink, or renames another file over it,
+/// changes nothing a later `RUN` gets: ranikust never opens the path again.
+#[test]
+fn a_file_secret_swapped_after_the_start_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let host = dir.path().join("token");
+    fs::write(&host, b"original").unwrap();
+    let other = dir.path().join("other");
+    fs::write(&other, b"planted").unwrap();
+    let secrets: BTreeMap<String, Secret> =
+        [("token".to_owned(), Secret::File(host.clone()))].into();
+    let mut m = mount(MountType::Secret);
+    m.cache_id = "token".into();
+    m.env = Some("TOKEN".into());
+    let first = run_mounts(
+        std::slice::from_ref(&m),
+        Path::new("/"),
+        &store,
+        &secrets,
+        &never,
+    )
+    .unwrap();
+    assert_eq!(first.env, vec![("TOKEN".into(), "original".into())]);
+    // A symlink in its place, then a file renamed over it.
+    fs::remove_file(&host).unwrap();
+    std::os::unix::fs::symlink(&other, &host).unwrap();
+    let swapped = run_mounts(
+        std::slice::from_ref(&m),
+        Path::new("/"),
+        &store,
+        &secrets,
+        &never,
+    )
+    .unwrap();
+    assert_eq!(swapped.env, vec![("TOKEN".into(), "original".into())]);
+    fs::remove_file(&host).unwrap();
+    fs::write(dir.path().join("new"), b"renamed").unwrap();
+    fs::rename(dir.path().join("new"), &host).unwrap();
+    let renamed = run_mounts(
+        std::slice::from_ref(&m),
+        Path::new("/"),
+        &store,
+        &secrets,
+        &never,
+    )
+    .unwrap();
+    assert_eq!(renamed.env, vec![("TOKEN".into(), "original".into())]);
+}
+
 /// A `Direct` `RUN` keeps a secret as a variable only and runs without its
 /// cache mounts; a secret file is refused (ADR-0057, Q-380, Q-381).
 #[test]
