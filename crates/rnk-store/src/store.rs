@@ -566,7 +566,7 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::AnonymousFile`] when the kernel has no randomness to give.
+    /// [`Error::Random`] when the kernel has no randomness to give.
     pub fn scratch_name(&self) -> Result<String> {
         anon::random_name()
     }

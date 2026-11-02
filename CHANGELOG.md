@@ -404,7 +404,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `RUN` closing the fence to names (ADR-0056) is no longer reported as a
   store that keeps nothing (ADR-0051). A failing `getrandom` is reported
   as such, not as a file that could not be made in a directory named
-  `getrandom`.
+  `getrandom`, and it now always fails the build: where the state
+  directory has no `O_TMPFILE`, a `getrandom` refused with `EPERM` (a
+  seccomp filter) used to keep state in memory (`memfd`) instead, as if
+  the directory took no file. Its `EPERM` says nothing about the
+  directory.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

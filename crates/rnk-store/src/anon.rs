@@ -178,6 +178,9 @@ impl AnonFiles {
 
     /// A file made by a random name and unlinked before the window closes.
     fn create_named(&self) -> Result<File> {
+        // No randomness ([`Error::Random`]) fails the file, never memory,
+        // even as `EPERM` (a seccomp filter): it says nothing about the
+        // state directory.
         let name = random_name()?;
         let window = self.fence.named()?;
         let fd = rustix::fs::openat(
@@ -257,6 +260,10 @@ pub(crate) fn fd_path(fd: &impl AsFd) -> PathBuf {
 
 /// [`PREFIX`] and 128 random bits in hex.
 pub(crate) fn random_name() -> Result<String> {
+    #[cfg(test)]
+    if tests::FAILING_RANDOM.get() {
+        return random_name_from(|_| Err(Errno::PERM));
+    }
     random_name_from(|rest| rustix::rand::getrandom(rest, rustix::rand::GetRandomFlags::empty()))
 }
 
@@ -448,6 +455,28 @@ mod tests {
             .collect();
         assert_eq!(left, [std::ffi::OsString::from("keep")]);
         assert!(Path::new("/etc").exists(), "the link is never followed");
+    }
+
+    thread_local! {
+        /// Makes [`random_name`] fail with `EPERM` on this thread, as a
+        /// seccomp filter refusing `getrandom` does.
+        pub(super) static FAILING_RANDOM: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
+    /// No randomness fails the file, even as `EPERM`: it says nothing about
+    /// the state directory, so it is no reason to keep state in memory.
+    #[test]
+    fn a_failing_random_source_does_not_fall_back_to_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let anon = files(dir.path());
+        anon.force(NAMED);
+        FAILING_RANDOM.set(true);
+        let made = anon.create();
+        FAILING_RANDOM.set(false);
+        assert!(matches!(made, Err(Error::Random(_))), "{made:?}");
+        assert!(!anon.in_memory(), "never falls back to memory for that");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
