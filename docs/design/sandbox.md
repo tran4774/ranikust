@@ -45,8 +45,14 @@ run in this single-threaded window: `ranikust` runs this crate's probes
 ## Per-`RUN` sequence
 
 The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
-`CLONE_NEWIPC`, plus `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`, plus
-`CLONE_NEWNET` for `--network=none`.
+`CLONE_NEWIPC`, plus `CLONE_NEWNET` for `--network=none` (`clone_flags` in
+`spawner.rs`; a `Direct` `RUN` is cloned with no namespace flag). It is never
+cloned with `CLONE_NEWUSER`: a `RUN` stays in the user namespace ranikust runs
+in, with the uid and gid of its `USER` as the image gives them. The only user
+namespace ranikust creates is the helper's for `--allow network.none-userns`,
+below. A user namespace for `RUN` (`--userns`, and rootless mode, which would
+add `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`) is planned for
+Phase 3; what follows marks the parts that belong to it as *planned*.
 
 `--network=none` needs `lo` up, which needs `CAP_NET_ADMIN` over the new
 network namespace. The first such `RUN` probes it once
@@ -79,9 +85,9 @@ rtnetlink first; the ADR lists them as residual risk.
    did not die before: `getppid()` is 0 in a new PID namespace, so the child
    reads the parent pid in its own `/proc/self/stat` of the outer procfs,
    opened before entering the root; a reparented child shows another pid.
-2. In a new user namespace, map the full id range available and allow
-   `setgroups`; otherwise `USER _apt` (used by apt-get) fails with
-   `setgroups: EPERM`.
+2. *Planned, Phase 3; not built, so no `RUN` runs this step today.* In a new
+   user namespace, map the full id range available and allow `setgroups`;
+   otherwise `USER _apt` (used by apt-get) fails with `setgroups: EPERM`.
 3. Mounts, in this order:
    1. Bind the root onto itself, recursively (required by `pivot_root`),
       and remount the bind `nodev`: Docker blocks device nodes with its
@@ -98,12 +104,14 @@ rtnetlink first; the ADR lists them as residual risk.
       (ADR-0060). An image built with the full sandbox can therefore hold a
       device node copied in; it opens in no `RUN`.
    2. A new `proc`. If `/proc` is masked and a new user namespace was created,
-      the kernel refuses (`EPERM`); fall back to an rbind of the existing
-      `/proc`.
+      the kernel refuses (`EPERM`); *planned, Phase 3*: fall back to an rbind
+      of the existing `/proc`. Today a refused `proc` mount fails the `RUN`
+      (`Step::MountProc`).
    3. A read-only `sysfs`. It needs privileges over the user namespace that
       owns the network namespace, so it fails with the host network plus a
-      new user namespace; fall back to an rbind of `/sys` remounted
-      read-only.
+      new user namespace; *planned, Phase 3*: fall back to an rbind of `/sys`
+      remounted read-only. Today a refused `sysfs` mount fails the `RUN`
+      (`Step::MountSys`).
    4. A `nodev` tmpfs on `/dev`, with `null`, `zero`, `full`, `random`,
       `urandom` and `tty` bind-mounted from the outer `/dev` (`mknod` needs
       `CAP_MKNOD` in the initial user namespace). Each bind is its own mount
@@ -229,12 +237,21 @@ own for the kaniko-mode walk; the child sets it right before `execve`.
 |---|---|
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root: the old root stays mounted underneath, and `..` stops at the moved root only then [inferred] ([Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape)) |
-| Rootless (user namespace) | Multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail |
+| Rootless (user namespace) | Planned, Phase 3: multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail. Today ranikust creates no user namespace; started inside one that something else made (rootless `podman run --privileged`), it runs the sequence above as written (T1, `just smoke`) |
 | kaniko mode, cannot mount | `Isolation::Direct`, no sandbox: `RUN` runs on `/` like kaniko, in its own session, whose process group is killed once the command exits ([kaniko-mode](kaniko-mode.md)). `Sandbox::start_direct` starts this variant: no directory, no journal (nothing is placed on `/`), and the process a child subreaper, so every process the `RUN` leaves, `setsid` ones included, becomes ranikust's child and is killed and reaped by pid once the command exits; the child drops every capability outside Docker's defaults from its bounding set, and a `RUN` that would keep `CAP_SYS_PTRACE` or `CAP_DAC_READ_SEARCH` (no `CAP_SETPCAP` to drop them) is refused ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)). On a root other than `/` (a host `--workdir`, only where the full sandbox cannot run) the child `chroot`s into it with Docker's default capabilities, with ranikust's `resolv.conf`, `hosts`, `hostname` and `/dev` nodes swapped in for the `RUN` and journaled, no `/proc` ([ADR-0043](../adr/0043-direct-run-on-a-workdir-chroots-with-placed-files.md)). `Direct` refuses mounts, secret files and `--network=none` (`Error::Direct`; `rnk-builder` leaves cache mounts out first, with a warning); a `#!` heredoc on `/` runs from a sealed memfd with `execveat`, read by its interpreter as `/dev/fd/<n>`; a container granting capabilities ranikust cannot drop is refused at `start_direct` ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)) |
 | `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
 ## Differences from Docker
 
+- A default `RUN` has no seccomp filter until `--seccomp` (Phase 3,
+  [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)); the
+  one filter that exists is the `--network=none` one of
+  [ADR-0033](../adr/0033-network-none-loopback-through-a-user-namespace.md).
+  Docker's default profile refuses what a `RUN` here can do: use root's user
+  and persistent keyrings, open `AF_VSOCK` and `AF_ALG` sockets, and, where
+  the host lets a process without `CAP_SYS_ADMIN` create one, make a user
+  namespace. See the accepted risks of the
+  [threat model](../security/threat-model.md#6-accepted-risks).
 - A `RUN` gets stdout and stderr as pipes of its own, owned by its user
   and copied by a thread to ranikust's streams, never ranikust's own
   descriptors: runc instead gives the container's own streams to the
@@ -248,6 +265,9 @@ own for the kaniko-mode walk; the child sets it right before `execve`.
   on them fail with `EROFS`.
 
 ## Optional hardening
+
+Planned for Phase 3 ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md));
+neither flag exists yet.
 
 - `--seccomp=default|unconfined|<file>`: a seccomp filter for `RUN`; profiles
   are generated per architecture.

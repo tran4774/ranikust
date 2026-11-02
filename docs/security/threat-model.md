@@ -134,9 +134,46 @@ These follow from decisions and are documented to users rather than fixed:
   can delete the marker, or replace the `ranikust` binary under
   `/ranikust`, which no build empties. Run each untrusted Dockerfile in a
   fresh container.
-- Until `--seccomp` (Phase 3), a root `RUN` in the full sandbox can use
-  uid 0's user and persistent keyrings, which Docker's seccomp profile
-  denies (T11).
+- Until `--seccomp` (Phase 3), ranikust installs no seccomp filter on a
+  default `RUN`: the only filter, [ADR-0033](../adr/0033-network-none-loopback-through-a-user-namespace.md)'s,
+  belongs to a `--network=none` `RUN` under `--allow network.none-userns`,
+  and refuses neither `AF_VSOCK` nor `AF_ALG` ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)).
+  A `RUN` in the full sandbox can therefore open `AF_VSOCK` sockets (the
+  host/guest transport, global across network namespaces unless the host
+  opts in) and `AF_ALG` sockets (the kernel's crypto API), and, where the
+  host lets a process without `CAP_SYS_ADMIN` create a user namespace (no
+  outer seccomp profile or AppArmor restriction in the way,
+  `user.max_user_namespaces` above 0), create its own and hold every
+  capability in it over the namespaces it makes, which opens the kernel
+  interfaces T20 lists; a root `RUN` can also use uid 0's user and persistent
+  keyrings (T11).
+  Docker's and BuildKit's default seccomp profile refuses all of these
+  **[external]**: it leaves `AF_ALG` and `AF_VSOCK` out of the socket domains
+  it allows (BuildKit `cd8ee24`, `vendor/github.com/moby/profiles/seccomp/default_linux.go`)
+  and allows `clone` with `CLONE_NEWUSER` only with `CAP_SYS_ADMIN`
+  ([experiment 03](../research/experiments/03-privilege-matrix.md)). A
+  `RUN` in kaniko mode on `/` has no filter of ranikust's either; the
+  container's own profile applies.
+- Until `--userns` (Phase 3), a distinct host account whose uid is the `USER`
+  of a non-root `RUN` can reach that `RUN` while it lives
+  ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by
+  [ADR-0074](../adr/0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md)).
+  In the full sandbox the `RUN` keeps the Dockerfile's raw uid and gid in the
+  host's user namespace (no `CLONE_NEWUSER`) and, once it has executed, is
+  dumpable **[inferred]**, so such an account passes the kernel's check for
+  `/proc/<pid>/environ` (every `env=` secret of that `RUN`) and
+  `/proc/<pid>/root`, which asks for matching ids and a dumpable target
+  (`ptrace(2)`, `proc_pid_root(5)`) **[external]**. Through the root it
+  reads and writes what that uid may in the root being built, a secret file
+  mounted with `uid=` that uid, and a cache mount that uid owns (T14). It
+  gains nothing over the state directory, which is root's `0700`, and no
+  privilege from a setuid file: the `RUN`'s mounts belong to its mount
+  namespace, which the kernel treats as `nosuid` for a process of another
+  one, and a hardlink out of that root fails with `EXDEV` **[inferred]**.
+  Docker without user-namespace remapping behaves the same. A `RUN` as root
+  is reachable only by host root, who is trusted; in kaniko mode on `/` the
+  `RUN` is an ordinary process of the container, and the container runtime's
+  boundary applies (section 3).
 - `RUN` shares the host network by default
   ([ADR-0010](../adr/0010-run-network-host-or-none.md)), as kaniko's does; it
   can reach services that listen on the host and the cloud metadata
@@ -147,6 +184,15 @@ These follow from decisions and are documented to users rather than fixed:
   denies the metadata addresses to the build pod, IMDSv2 with a hop limit
   of 1 so a container cannot reach it, workload identity instead of node
   credentials, or `--network=none` for builds that need no network.
+- The shared network namespace also holds the abstract `AF_UNIX` sockets
+  bound in it: network namespaces isolate them (`network_namespaces(7)`)
+  **[external]**, and no file permission guards them. A default `RUN`, and a
+  `RUN` in kaniko mode on `/`, which has no namespace of its own at all,
+  connects to those of the namespace ranikust runs in (the host's, when it
+  runs on a host), where a service sees the `RUN`'s real uid through
+  `SO_PEERCRED`: 0, or the `USER`'s raw uid. This is part of the shared
+  network that ADR-0010 accepts; builds running at once on one host share
+  the namespace too.
 - A registry listed with `--insecure-registry`, or a destination under
   `--insecure`, gets its credentials over plain HTTP, which a `RUN` sharing
   the host network could observe on the path; kaniko (go-containerregistry)
