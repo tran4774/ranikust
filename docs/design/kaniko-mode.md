@@ -330,7 +330,11 @@ that way since ADR-0059, its tests do, and `--parallel-stages` may.
   (4095 bytes) fails the walk with the overlay exporter's error. Each
   directory task and each change keeps its full path, so a chain a `RUN`
   made far deeper would make the walk's memory grow with the square of its
-  depth (T15); such a tree cannot be exported anyway.
+  depth (T15); such a tree cannot be exported anyway. On `/`, a stage kept
+  as a tar for `COPY --from` walks only below the kept paths
+  (`Walker::diff_below`), so a deep tree elsewhere does not stop it;
+  keeping the whole root, as an image stage does, refuses such a tree like
+  every layer walk.
 - **Mount guard**: an entry whose `stx_mnt_id` differs from the root's is
   skipped, a second line of defence after the ignore list.
 - **Hash**: content hash (xxh3 or HighwayHash; the choice barely matters)

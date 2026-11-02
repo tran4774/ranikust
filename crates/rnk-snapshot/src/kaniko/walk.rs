@@ -343,7 +343,7 @@ impl Walker {
     pub fn baseline(&mut self, root: &RootPath, ignore: &IgnoreList) -> Result<WalkStats> {
         let span = tracing::debug_span!("rnk_snapshot.baseline", entries = tracing::field::Empty);
         let _entered = span.enter();
-        let stats = self.run(root, ignore, false)?.stats;
+        let stats = self.run(root, ignore, false, None)?.stats;
         span.record("entries", stats.entries);
         Ok(stats)
     }
@@ -362,7 +362,25 @@ impl Walker {
     /// during the walk; [`Error::Rootfs`] when the root cannot be opened.
     /// After an error the previous walk is kept.
     pub fn diff(&mut self, root: &RootPath, ignore: &IgnoreList) -> Result<WalkDiff> {
-        self.run(root, ignore, true)
+        self.run(root, ignore, true, None)
+    }
+
+    /// [`Walker::diff`], walking only the entries at or below `below`
+    /// (paths relative to the root) and the directories that lead to them:
+    /// a tree elsewhere in the root, however deep, is never entered. The
+    /// walk kept for the next diff covers only those entries, so a walker
+    /// used this way is for one diff.
+    ///
+    /// # Errors
+    ///
+    /// As [`Walker::diff`].
+    pub fn diff_below(
+        &mut self,
+        root: &RootPath,
+        ignore: &IgnoreList,
+        below: &[PathBuf],
+    ) -> Result<WalkDiff> {
+        self.run(root, ignore, true, Some(below))
     }
 
     /// Forgets the previous walk, as after emptying the root: the next diff
@@ -371,7 +389,13 @@ impl Walker {
         self.prev = None;
     }
 
-    fn run(&mut self, root: &RootPath, ignore: &IgnoreList, want: bool) -> Result<WalkDiff> {
+    fn run(
+        &mut self,
+        root: &RootPath,
+        ignore: &IgnoreList,
+        want: bool,
+        below: Option<&[PathBuf]>,
+    ) -> Result<WalkDiff> {
         let span = tracing::debug_span!(
             "rnk_snapshot.walk",
             entries = tracing::field::Empty,
@@ -408,6 +432,7 @@ impl Walker {
             proc,
             seen: &seen,
             ignore,
+            below,
             root_mnt: root.mnt_id(),
             mode: self.opts.mode,
             racy_limit: FileTime {
@@ -534,6 +559,9 @@ struct Ctx<'a> {
     proc: Option<OwnedFd>,
     seen: &'a [AtomicU8],
     ignore: &'a IgnoreList,
+    /// [`Walker::diff_below`]'s paths: only entries at or below them, and
+    /// the directories leading to them, are walked.
+    below: Option<&'a [PathBuf]>,
     root_mnt: u64,
     mode: SnapshotMode,
     racy_limit: FileTime,
@@ -681,6 +709,14 @@ impl<'a> Ctx<'a> {
             };
             // `covers`, not `contains`: `--ignore-path` globs and kaniko's
             // below-only entries match names that are not literal entries.
+            if let Some(below) = self.below {
+                let p = as_path(&child_path);
+                if !below.iter().any(|b| p.starts_with(b) || b.starts_with(p)) {
+                    self.mark(prev_child, KEPT);
+                    self.skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
             if !self.ignore.is_empty() && self.ignore.covers(as_path(&child_path)) {
                 self.mark(prev_child, KEPT);
                 self.skipped.fetch_add(1, Ordering::Relaxed);

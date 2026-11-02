@@ -411,6 +411,30 @@ fn a_tree_deeper_than_path_max_is_refused() {
     }
 }
 
+/// `diff_below` walks only the paths asked for and the directories that
+/// lead to them.
+#[test]
+fn a_diff_below_some_paths_walks_only_them() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host.join("app/dist")).unwrap();
+    fs::create_dir_all(f.host.join("other")).unwrap();
+    f.write("app/dist/main.js", b"js");
+    f.write("app/src.ts", b"ts");
+    f.write("other/x", b"x");
+    let mut w = walker(SnapshotMode::Full, 2);
+    let d = w
+        .diff_below(&f.root, &none(), &[PathBuf::from("app/dist")])
+        .unwrap();
+    assert_eq!(
+        paths(&d),
+        [
+            ("app".to_owned(), Change::Added),
+            ("app/dist".to_owned(), Change::Added),
+            ("app/dist/main.js".to_owned(), Change::Added),
+        ]
+    );
+}
+
 #[test]
 fn the_tree_finds_children_by_name() {
     let f = Fixture::new();
