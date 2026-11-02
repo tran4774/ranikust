@@ -14,10 +14,18 @@ thread_local! {
     /// How many more marker creations on this thread fail with `ENOSPC`,
     /// as on a filesystem a `RUN` filled.
     static MARKER_CREATE_FAILS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// What the state directory held at each marker creation on this
+    /// thread: a `.ranikust-state`, and the forged `layers/`.
+    static MARKER_CREATE_SAW: std::cell::RefCell<Vec<(bool, bool)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The hook in `create_building_marker`: whether this creation fails.
-pub(super) fn marker_create_fails() -> bool {
+/// The hook in `create_building_marker`, given the state directory:
+/// records what it holds, and whether this creation fails.
+pub(super) fn marker_create_fails(dir: &OwnedFd) -> bool {
+    let holds =
+        |name: &str| rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).is_ok();
+    MARKER_CREATE_SAW.with(|s| s.borrow_mut().push((holds(MARKER), holds("layers"))));
     MARKER_CREATE_FAILS.with(|n| {
         let left = n.get();
         n.set(left.saturating_sub(1));
@@ -54,6 +62,23 @@ fn a_marker_the_close_cannot_make_at_first_is_made_once_the_directory_is_emptied
             .unwrap()
             .is_file()
     );
+}
+
+#[test]
+fn a_forged_state_marker_goes_before_the_marker_is_tried_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    forge_after_marker_removed(&state);
+    MARKER_CREATE_SAW.with(|s| s.borrow_mut().clear());
+    MARKER_CREATE_FAILS.with(|n| n.set(1));
+    store.close().unwrap();
+    let saw = MARKER_CREATE_SAW.with(|s| s.borrow().clone());
+    // The first try saw the forged store; the second came once
+    // `.ranikust-state` was gone, before the rest was emptied, so a kill
+    // during a long emptying leaves no store a persistent build would open.
+    assert_eq!(saw, [(true, true), (false, true)]);
 }
 
 #[test]

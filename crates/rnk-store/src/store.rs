@@ -1130,9 +1130,10 @@ impl Store {
     /// 2. its files go with their descriptors (on a filesystem that keeps
     ///    a name for an open removed file, the name goes with them);
     /// 3. the state directory is emptied of whatever a `RUN` wrote there,
-    ///    through descriptors, never following a link or crossing a mount;
-    ///    a marker step 1 could not make (a filesystem a `RUN` filled) is
-    ///    made now, once that space is free, and then stays;
+    ///    through descriptors, never following a link or crossing a mount,
+    ///    a forged `.ranikust-state` first; a marker step 1 could not make
+    ///    (a filesystem a `RUN` filled) is tried again right after that
+    ///    file goes and once more after the emptying, and then stays;
     /// 4. the marker goes only when nothing else is left and the build was
     ///    clean: no cut-short start, no `RUN` that may have left processes,
     ///    no marker a `RUN` changed;
@@ -1161,30 +1162,46 @@ impl Store {
             tampered,
             _lock: lock,
         } = anon;
-        let first = ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref());
+        let remark =
+            || ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref());
+        let first = remark();
         drop(entries);
         drop(files);
-        let emptied = empty_state_dir(&self.state, &self.state_path);
         // A `RUN` can keep the marker from being made (a filesystem it
-        // filled, whose inodes root has no reserve of): emptying frees what
-        // the `RUN` wrote, so it is tried again. A marker made only then
+        // filled, whose inodes root has no reserve of). A forged
+        // `.ranikust-state` then goes first, which frees an inode and
+        // leaves a directory no persistent store opens, and the marker is
+        // tried again before the rest is emptied, which can take long; and
+        // once more after, when that space is free. A marker made only then
         // stays, as one a `RUN` removed does.
-        let replaced = match first {
-            Ok(replaced) => replaced,
-            Err(_) => {
-                match ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref())
-                {
-                    Ok(_) => true,
-                    Err(e) => {
-                        drop(lock);
-                        return Err(Error::Unmarked {
-                            path: self.state_path.clone(),
-                            emptied: emptied.is_ok(),
-                            why: e.to_string(),
-                        });
-                    }
-                }
+        let early = match first {
+            Ok(replaced) => Some(replaced),
+            Err(e) => {
+                tracing::warn!(
+                    target: "rnk_store",
+                    "state directory {}: {BUILDING} cannot be made this build's ({e}); a RUN may \
+                     have filled the filesystem, so it is tried again while the directory is \
+                     emptied (ADR-0077)",
+                    self.state_path.display()
+                );
+                remove_state_marker(&self.state);
+                remark().ok().map(|_| true)
             }
+        };
+        let emptied = empty_state_dir(&self.state, &self.state_path);
+        let replaced = match early {
+            Some(replaced) => replaced,
+            None => match remark() {
+                Ok(_) => true,
+                Err(e) => {
+                    drop(lock);
+                    return Err(Error::Unmarked {
+                        path: self.state_path.clone(),
+                        emptied: emptied.is_ok(),
+                        why: e.to_string(),
+                    });
+                }
+            },
         };
         let keep = emptied.is_err()
             || replaced
@@ -1425,7 +1442,7 @@ fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>)
 /// name.
 fn create_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<bool> {
     #[cfg(test)]
-    if tests::marker_create_fails() {
+    if tests::marker_create_fails(dir) {
         return Err(building_marker_err(
             state_path,
             "create",
@@ -1520,6 +1537,7 @@ fn describe_foreign(names: &[OsString]) -> String {
 /// is left a `RUN` wrote (ADR-0077). An entry on another mount stays, and
 /// fails the call, as any entry that could not be removed does.
 fn empty_state_dir(state: &RootPath, state_path: &Path) -> Result<()> {
+    remove_state_marker(state);
     let left = |names: Vec<OsString>| -> Vec<OsString> {
         names.into_iter().filter(|n| n != BUILDING).collect()
     };
@@ -1550,6 +1568,21 @@ fn empty_state_dir(state: &RootPath, state_path: &Path) -> Result<()> {
             path: state_path.to_owned(),
             left: format!("{} (on another mount?)", shown_names(&left)),
         }),
+    }
+}
+
+/// Removes a regular [`MARKER`] a `RUN` forged in an anonymous store's state
+/// directory, before anything else there: without it, `check_marker` and
+/// `ranikust`'s state-directory check refuse a non-empty directory, so a
+/// persistent store never opens what is left if the build is killed while
+/// the rest is emptied. Anything else under the name, or a failure, is left
+/// to the general emptying.
+fn remove_state_marker(state: &RootPath) {
+    if state
+        .statx(MARKER)
+        .is_ok_and(|st| st.file_type() == FileType::Regular)
+    {
+        let _ = state.remove_file(MARKER);
     }
 }
 
