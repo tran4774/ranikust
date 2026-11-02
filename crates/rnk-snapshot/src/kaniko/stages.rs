@@ -47,7 +47,7 @@ use rnk_rootfs::{
 use rnk_store::Store;
 
 use super::root::{KanikoLayer, extract_blob};
-use super::walk::{WalkDiff, WalkOptions, Walker};
+use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
 use crate::stage::{Base, ExportLayer, LayerOpen, Snapshotter, StageRootfs};
@@ -435,12 +435,12 @@ impl KanikoStage {
 
     /// Walks the root as it is now, as the base of the next diff.
     fn baseline(&mut self) -> Result<()> {
-        let walker = match self.walker.as_mut() {
-            Some(w) => w,
-            None => self.walker.insert(Walker::new(self.shared.walk)?),
-        };
-        walker.forget();
-        walker.baseline(&self.root, &self.shared.ignore)?;
+        baseline_in(
+            &mut self.walker,
+            self.shared.walk,
+            &self.root,
+            &self.shared.ignore,
+        )?;
         self.walked = true;
         Ok(())
     }
@@ -489,11 +489,7 @@ impl StageRootfs for KanikoStage {
                 root: Arc::clone(&self.root),
             });
         }
-        let walker = self
-            .walker
-            .as_mut()
-            .ok_or(Error::State("no baseline walk before the layer"))?;
-        let diff = walker.diff(&self.root, &self.shared.ignore)?;
+        let diff = diff_in(&mut self.walker, &self.root, &self.shared.ignore)?;
         Ok(KanikoStageDiff {
             diff,
             root: Arc::clone(&self.root),
