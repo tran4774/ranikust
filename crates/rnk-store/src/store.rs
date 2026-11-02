@@ -448,6 +448,19 @@ impl Store {
                 found: describe_foreign(&foreign),
             });
         }
+        // A volume outlives the container: what a `RUN` writes there is
+        // emptied at the end, but a build that ends before then leaves it,
+        // and a `RUN` can end the build (ADR-0077).
+        if root.statx("/")?.mount_root {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {} is a volume: kaniko mode on / keeps nothing there and empties \
+                 it at the end, but a RUN can write it, and a build that ends early leaves what \
+                 the RUN wrote; never give this volume to overlay-mode or per-stage builds \
+                 (ADR-0077)",
+                state_path.display()
+            );
+        }
         let leftovers = anon::remove_leftovers(&root, &state_path)?;
         // A build that did not end cleanly here may have left `RUN`
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
