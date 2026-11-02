@@ -219,19 +219,29 @@ rtnetlink first; the ADR lists them as residual risk.
 
    Then the full sandbox's child becomes the `RUN`'s **init**
    ([ADR-0080](../adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)).
-   It starts a session of its own, sets every signal disposition to the
-   default and forks; the new process, PID 2, runs steps 6 to 8 and becomes
-   the command. The init keeps the death signal of step 1, which nothing
-   clears since it never changes its user or executes anything; it drops
-   every capability, sets itself not dumpable, names itself `ranikust-init`,
-   checks the death signal is still armed and the parent still alive, and
-   closes every descriptor but the write end of the status pipe (a failure
-   here kills the command and is reported as `Step::Init`). It then reaps
-   every process that reparents to it until the command exits, writes the
-   command's wait status on the status pipe, and exits. With the default
-   dispositions, the kernel drops every signal a process of the namespace
-   sends to its PID 1, so a `RUN` can neither stop nor trace it. `Direct`
-   has no init: its child runs steps 6 to 8 itself.
+   It sets itself not dumpable, zeroes its copy of the argument and
+   environment strings ranikust started with (`/proc/self/stat` fields 48
+   to 51; `/proc/1/cmdline` has no ptrace check), starts a session of its
+   own and forks; the new process, PID 2, waits on a close-on-exec go pipe,
+   then runs steps 6 to 8 and becomes the command. The init keeps the death
+   signal of step 1, which nothing clears since it never changes its user
+   or executes anything; it drops every capability, names itself
+   `ranikust-init`, checks the death signal is still armed and the parent
+   still alive, and closes every descriptor but the write end of the status
+   pipe, the go pipe's included, which lets the command go on (a failure
+   before that kills the command, which has not run, and is reported as
+   `Step::Init`). It then reaps every process that reparents to it until
+   the command exits or is killed, detaching from the command if it made
+   the init its tracer (`PTRACE_TRACEME`), writes the command's wait status
+   on the status pipe, and exits. Every child of ranikust sets every signal
+   disposition to the default first, with raw `rt_sigaction`, so the
+   init has no handler and the kernel drops every signal a process of the
+   namespace sends to it. A `RUN` cannot signal, stop, trace or read the
+   memory of its init (not dumpable, and no `CAP_SYS_PTRACE`); it can read
+   its zeroed `/proc/1/cmdline`, lower its scheduling priority or pin it to
+   a CPU (same uid), which slows its death but cannot stop it (threat-model
+   section 6), and make itself the init's tracee. `Direct` has no init: its
+   child runs steps 6 to 8 itself.
 6. `setsid`: no controlling terminal, so a `RUN` cannot read the
    operator's keys or push input into the operator's shell (`TIOCSTI`);
    stdin is `/dev/null` unless the caller says otherwise, as under Docker.

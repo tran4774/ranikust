@@ -114,6 +114,21 @@ These follow from decisions and are documented to users rather than fixed:
   and a running binary cannot be opened for writing (`ETXTBSY`) while
   ranikust runs. Re-executing from a sealed memfd, a read-only bind of the
   binary or a trampoline would close it [open: Q-422].
+- A full-sandbox `RUN`'s init (PID 1, ADR-0080) is a copy of ranikust: its
+  argument and environment strings are zeroed before the command starts, so
+  `/proc/1/cmdline`, which has no ptrace check, shows no `--build-arg`
+  value or `--secret` path, and `/proc/1/environ` stays closed (the init is
+  not dumpable). A root `RUN` can slow its init's death when ranikust dies,
+  but not stop it: as a process of the same uid it may make the init
+  `SCHED_IDLE` and pin it to one CPU without `CAP_SYS_NICE`, then keep that
+  CPU busy. Measured in the VM (kernel 6.8, EEVDF), the namespace died
+  0.9 to 1.8 ms after the death signal fired with no such tricks, 7.6 s
+  with 8 spinners pinned to the init's CPU and 30.6 s with 32: about 1 s per
+  spinner **[measured]** (`red_team_a_run_can_slow_its_inits_death_but_not_stop_it`),
+  so the delay is bounded only by the processes the `RUN` may start (the
+  outer cgroup's `pids.max`), during which its processes keep running. A
+  per-`RUN` cgroup killed with `cgroup.kill` would be a second line where a
+  writable, delegated cgroup exists; not built.
 - kaniko mode inside a container that forbids mounts has no isolation
   between `RUN` and the container ([ADR-0002](../adr/0002-two-snapshot-modes.md)).
   ranikust keeps its own state and credentials out of `RUN`'s reach (T21,

@@ -84,11 +84,16 @@ from `rnk-store`, secret file) and passes `--network`.
   The id switch clears the death signal (`commit_creds`), so `Direct`
   arms and checks it again after it. In the full sandbox the child stays
   as the `RUN`'s init, PID 1 of its PID namespace (`child::run_init`,
-  ADR-0080): it forks the command as PID 2, keeps the death signal (it
-  never changes its user or executes anything), drops every capability,
-  is not dumpable, keeps no descriptor but the status pipe, reaps orphans,
-  and writes the command's wait status on the status pipe before it
-  exits; `execute` reports that status. So the namespace dies with
+  ADR-0080): it zeroes its copy of ranikust's argument and environment
+  strings (`/proc/1/cmdline` has no ptrace check), forks the command as
+  PID 2, which waits on a go pipe until the init is done, keeps the death
+  signal (it never changes its user or executes anything), drops every
+  capability, is not dumpable, keeps no descriptor but the status pipe,
+  reaps orphans, detaches from a command that made it its tracer, and
+  writes the command's wait status on the status pipe before it exits;
+  `execute` reports that status, and refuses a stop record or an init
+  that exited 0 without one. Every child first resets every signal
+  disposition with raw `rt_sigaction` (`child::default_signals`). So the namespace dies with
   ranikust even when the command clears its own death signal or executes
   a set-id binary. Dropping the `Sandbox` ends the thread and kills every
   running `RUN`.
@@ -348,7 +353,14 @@ from `rnk-store`, secret file) and passes `--network`.
   and survives `kill -KILL 1` from the command; an exit code, a signal, an
   `execve` failure and a `WORKDIR` failure are reported as before.
   `the_inits_status_records_are_read_back` (T0): the status pipe's
-  record.
+  record, a stop refused. The PID-2 test also checks that `/proc/1/cmdline`
+  is all NUL, `/proc/1/environ` closed, and that a command that made the
+  init its tracer (`PTRACE_TRACEME`) still ends.
+  `red_team_a_run_can_slow_its_inits_death_but_not_stop_it` (T2, prints
+  the delays): the namespace dies 1 to 2 ms after the death signal without
+  tricks, 7.6 s with the init made `SCHED_IDLE` and pinned under 8
+  spinners (30.6 s under 32, a one-off run), nothing left
+  (threat-model section 6).
 
 ## Metrics
 

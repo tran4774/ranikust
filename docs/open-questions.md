@@ -619,6 +619,33 @@ Entry format:
 - **Interim:** (d): the barriers above, with the tests that pin them.
 - **Raised:** 2026-11-03
 
+### Q-451: Should a `RUN`'s init be a small executed binary instead of a copy of ranikust?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, memory
+- **Context:** the init of every full-sandbox `RUN`
+  ([ADR-0080](adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md))
+  is a copy-on-write copy of ranikust that lives as long as the `RUN`: it
+  keeps the pages ranikust had when it was cloned, so memory ranikust frees
+  or rewrites meanwhile stays charged to the build's cgroup once per live
+  init. Measured in the VM (kernel 6.8, overlay mode, 6 parallel stages,
+  each writing 24 MiB then sleeping 20 to 70 s, in a cgroup of its own):
+  the cgroup's anonymous memory peaked at 49.1 MiB against 45.7 MiB on main
+  (+3.3 MiB), and while inits lived it stayed 9 to 12 MiB above main's (with
+  5 inits at 24 s: 48.1 against 36.0 MiB); `memory.current` peaked at
+  207.8 against 204.0 MiB **[measured]**. The worst case is one copy of
+  ranikust's resident memory per live init, if ranikust rewrote all of it
+  **[inferred]**; ranikust was 40 to 53 MiB resident here.
+- **Options:** (a) keep the copy and its cost; (b) execute a small static
+  init (embedded and run from a sealed memfd) that holds no copy of
+  ranikust: the same mechanism as Q-422's option (c), so one design could
+  answer both; (c) have the init release its private writable mappings
+  (`madvise(MADV_DONTNEED)` over the ranges `/proc/self/maps` lists), which
+  needs a parse in the child and care for the stack it runs on.
+- **Recommendation:** (a) at these numbers; (b) together with Q-422 if
+  either needs it.
+- **Interim:** (a).
+- **Raised:** 2026-11-03
+
 ### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
 
 - **Blocks:** nothing yet (backlog); **Area:** `rnk-store`, `rnk-builder`
