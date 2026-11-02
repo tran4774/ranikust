@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::os::unix::ffi::OsStringExt as _;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{AtFlags, Mode, OFlags};
@@ -38,6 +38,11 @@ const MAX_SYMLINKS: usize = 40;
 /// How many temporary names [`OutputDir::write_atomically`] tries before it
 /// gives up: each is random, so a second try is already unlikely.
 const TMP_TRIES: usize = 16;
+
+/// Longest part of an output's name its temporary name keeps, so that
+/// `.<name>.<32 hex>.ranikust-tmp` stays within `NAME_MAX` (255 bytes)
+/// for any output name that fits itself.
+const TMP_NAME_PART: usize = 160;
 
 /// Why an output path is refused when it leads into the build context.
 const IN_CONTEXT: &str = "lies in the build context, whose owner controls every name in it; \
@@ -661,8 +666,10 @@ impl OutputDir {
     fn temporary(&self, name: &OsStr, mode: u32) -> Result<(OsString, File)> {
         let mut last = Errno::EXIST;
         for _ in 0..TMP_TRIES {
+            let bytes = name.as_bytes();
+            let part = bytes.get(..TMP_NAME_PART).unwrap_or(bytes);
             let mut tmp = OsString::from(".");
-            tmp.push(name);
+            tmp.push(OsStr::from_bytes(part));
             tmp.push(format!(".{}.ranikust-tmp", random_hex(&self.path)?));
             match root::open_name(
                 self.fd.as_fd(),

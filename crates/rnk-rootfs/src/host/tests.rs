@@ -267,6 +267,25 @@ fn an_output_is_written_where_the_filesystem_refuses_rename_noreplace() {
     fault::set(0);
 }
 
+/// An output name close to `NAME_MAX` still gets a temporary name that
+/// fits: the name's part in it is cut short.
+#[test]
+fn a_long_output_name_still_gets_a_temporary_name() {
+    let dir = private_dir();
+    let out = OutputDir::open(dir.path(), None, None).unwrap();
+    let name = "n".repeat(250);
+    out.write_atomically(OsStr::new(&name), 0o644, |f| {
+        f.write_all(b"LONG").map_err(|source| Error::Io {
+            op: "write",
+            path: dir.path().join(&name),
+            source,
+        })
+    })
+    .unwrap();
+    assert_eq!(fs::read(dir.path().join(&name)).unwrap(), b"LONG");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
 #[test]
 fn an_existing_file_is_opened_only_when_it_is_regular() {
     let dir = private_dir();
