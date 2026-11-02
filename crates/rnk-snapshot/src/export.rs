@@ -233,8 +233,12 @@ struct Walk<'a> {
 /// The longest path below a layer root the exporter walks to (`PATH_MAX`
 /// less the NUL): every entry is resolved again from the root, so a deeper
 /// tree, which a `RUN` can make, is refused with this error rather than an
-/// `ENAMETOOLONG` from the kernel.
-const PATH_MAX: usize = 4095;
+/// `ENAMETOOLONG` from the kernel. The kaniko-mode walk refuses at the same
+/// length, which also caps the paths it holds (T15).
+pub(crate) const PATH_MAX: usize = 4095;
+
+/// Why an entry past [`PATH_MAX`] is refused, by the exporter and the walk.
+pub(crate) const PATH_TOO_LONG: &str = "an entry's path is longer than PATH_MAX";
 
 /// The buffer size of the content comparison, as BuildKit's `bufPool`.
 const COMPARE_BUF: usize = 32 * 1024;
@@ -603,7 +607,7 @@ fn child(dir: &Path, name: &OsStr) -> Result<PathBuf> {
     if p.as_os_str().len() > PATH_MAX {
         return Err(Error::Export {
             path: dir.to_owned(),
-            reason: "an entry's path is longer than PATH_MAX",
+            reason: PATH_TOO_LONG,
         });
     }
     Ok(p)

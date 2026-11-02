@@ -40,6 +40,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::tree::{DirOut, ROOT, Tree};
 use crate::error::{Error, Result};
+use crate::export::{PATH_MAX, PATH_TOO_LONG};
 
 /// The walk's default worker count: 16 and 32 workers were slower than 8 on
 /// every hash measured (ADR-0039).
@@ -684,6 +685,18 @@ impl<'a> Ctx<'a> {
                 self.mark(prev_child, KEPT);
                 self.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
+            }
+            // A tree a `RUN` made past `PATH_MAX` cannot be exported (the
+            // exporter refuses it the same way), and each directory task and
+            // change holds its full path: refused here, so what the walk
+            // holds stays linear in its entries instead of growing with the
+            // square of a chain's depth (T15). The directory named is within
+            // the limit.
+            if child_path.len() > PATH_MAX {
+                return Err(Error::Export {
+                    path: as_path(&out.path).to_path_buf(),
+                    reason: PATH_TOO_LONG,
+                });
             }
             let Some(rec) = self.entry(s, &dir, name, &child_path, prev_child)? else {
                 continue;

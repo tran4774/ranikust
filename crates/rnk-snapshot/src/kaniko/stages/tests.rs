@@ -886,7 +886,8 @@ fn red_team_huge_xattrs_are_copied_whole() {
 /// 20,000 directories in seconds. A red-team finding: each entry's
 /// `IgnoreList::covers` used to hash every ancestor's full path, so both
 /// grew with its cube (3000 levels: 17 s in release); it now looks only at
-/// prefixes as long as the longest literal entry.
+/// prefixes as long as the longest literal entry. The depths stay within
+/// `PATH_MAX` (9 bytes a level), past which the walk refuses the tree.
 #[test]
 fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
     let time = |depth: usize| {
@@ -904,8 +905,8 @@ fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
         parent.release().unwrap();
         (copy.as_secs_f64(), walk.as_secs_f64())
     };
-    let (c1, w1) = time(300);
-    let (c4, w4) = time(1200);
+    let (c1, w1) = time(110);
+    let (c4, w4) = time(440);
     // Square: 16x; cube: 64x. 32x leaves room for noise.
     assert!(c4 < 32.0 * c1.max(0.01), "copy: {c1:.3} s -> {c4:.3} s");
     assert!(w4 < 32.0 * w1.max(0.01), "walk: {w1:.3} s -> {w4:.3} s");

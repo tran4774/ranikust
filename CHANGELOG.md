@@ -420,6 +420,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- The kaniko-mode walk refuses an entry whose path is longer than
+  `PATH_MAX`, as the overlay exporter does. Each directory it walks and
+  each change it reports held its full path, so a `RUN` that made a
+  chain of directories far deeper than `PATH_MAX` made the walk take
+  memory growing with the square of the chain's depth (33 MB for 400
+  levels of 200-byte names, several GB for thousands); such a tree
+  could not be exported anyway, and the build now fails with a short
+  error at the walk.
 - A registry named with an upper-case letter and no `.` or `:`
   (`LOCALDOMAIN/app`, `LOCALHOST/app`) is now reached for every request.
   The registry client parsed such a reference again by other rules and

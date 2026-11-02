@@ -381,8 +381,11 @@ fn xattrs_count_except_overlays() {
     assert_eq!(paths(&d), [("x".to_owned(), Change::Modified)]);
 }
 
+/// A tree a `RUN` made past `PATH_MAX` fails the walk with the exporter's
+/// refusal (T15): each directory and change would hold its full path. The
+/// directory the error names is within the limit.
 #[test]
-fn a_tree_deeper_than_path_max_is_walked() {
+fn a_tree_deeper_than_path_max_is_refused() {
     let f = Fixture::new();
     let name = "d".repeat(200);
     let mut dir =
@@ -398,9 +401,14 @@ fn a_tree_deeper_than_path_max_is_walked() {
         .unwrap();
     }
     let mut w = walker(SnapshotMode::Full, 4);
-    let d = w.diff(&f.root, &none()).unwrap();
-    assert_eq!(d.changed.len(), 30);
-    assert!(d.changed.last().unwrap().path.as_os_str().len() > 4096);
+    let e = w.diff(&f.root, &none()).unwrap_err();
+    match &e {
+        Error::Export { path, reason } => {
+            assert!(reason.contains("PATH_MAX"), "{e}");
+            assert!(path.as_os_str().len() <= 4095, "{}", path.as_os_str().len());
+        }
+        other => panic!("{other}"),
+    }
 }
 
 #[test]

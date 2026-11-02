@@ -324,9 +324,13 @@ that way since ADR-0059, its tests do, and `--parallel-stages` may.
 - **Parallel walk**: one task per directory on a `rayon` pool. A directory is
   opened relative to its parent's file descriptor (`openat2` with
   `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS` and
-  `RESOLVE_NO_XDEV`), never by a full path: trees deeper than `PATH_MAX`
-  otherwise fail with `ENAMETOOLONG`. Each entry gets
+  `RESOLVE_NO_XDEV`), never by a full path. Each entry gets
   `statx(dirfd, name, AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT)`.
+- **Depth**: an entry whose path below the root is longer than `PATH_MAX`
+  (4095 bytes) fails the walk with the overlay exporter's error. Each
+  directory task and each change keeps its full path, so a chain a `RUN`
+  made far deeper would make the walk's memory grow with the square of its
+  depth (T15); such a tree cannot be exported anyway.
 - **Mount guard**: an entry whose `stx_mnt_id` differs from the root's is
   skipped, a second line of defence after the ignore list.
 - **Hash**: content hash (xxh3 or HighwayHash; the choice barely matters)
