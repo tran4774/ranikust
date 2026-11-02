@@ -154,11 +154,13 @@ fn the_cut_short_warning_and_refusal_give_the_same_advice() {
     s.close().unwrap();
 }
 
-/// Characterization: `scratch_file` and `anonymous_file` take their files
-/// from the same place in each kind of store, and name nothing.
+/// `scratch_file` and `anonymous_file` make their files in the build
+/// directory of a persistent store and in the state directory of an
+/// anonymous one (`O_TMPFILE` here, so on disk), and name nothing there.
 #[test]
-fn scratch_and_anonymous_files_name_nothing_in_either_store() {
+fn scratch_and_anonymous_files_are_made_where_each_store_keeps_them() {
     use std::io::{Read as _, Seek as _, Write as _};
+    use std::os::fd::AsRawFd as _;
     let names = |d: &Path| -> Vec<std::ffi::OsString> {
         fs::read_dir(d)
             .unwrap()
@@ -172,7 +174,7 @@ fn scratch_and_anonymous_files_name_nothing_in_either_store() {
     let anonymous = Store::open_anonymous(&anon_dir).unwrap();
     for (s, shown) in [
         (&persistent, persistent.build_dir().to_owned()),
-        (&anonymous, anon_dir.clone()),
+        (&anonymous, fs::canonicalize(&anon_dir).unwrap()),
     ] {
         let before = names(&shown);
         let mut f = s.scratch_file().unwrap();
@@ -181,9 +183,13 @@ fn scratch_and_anonymous_files_name_nothing_in_either_store() {
         let mut back = String::new();
         f.read_to_string(&mut back).unwrap();
         assert_eq!(back, "scratch");
+        let target = fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())).unwrap();
+        assert!(target.starts_with(&shown), "{}", target.display());
         let (mut kept, path) = s.anonymous_file().unwrap();
         kept.write_all(b"kept").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"kept");
+        let target = fs::read_link(&path).unwrap();
+        assert!(target.starts_with(&shown), "{}", target.display());
         assert_eq!(before, names(&shown), "{}", shown.display());
     }
     anonymous.close().unwrap();
