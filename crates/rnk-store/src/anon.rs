@@ -381,6 +381,25 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
+    /// Characterization: a directory that takes no file at all (permission
+    /// refused) sends both the `O_TMPFILE` way and the named way to memory,
+    /// never to an error. Root ignores the permission, so there the files
+    /// stay on disk and the test only checks they are made.
+    #[test]
+    fn a_directory_that_takes_no_file_keeps_state_in_memory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = rustix::process::geteuid().is_root();
+        for way in [TMPFILE, NAMED] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+            let anon = files(dir.path());
+            anon.force(way);
+            drop(anon.create().unwrap());
+            assert_eq!(anon.in_memory(), !root, "way {way}");
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
     #[test]
     fn memfd_is_the_last_fallback() {
         let dir = tempfile::tempdir().unwrap();
