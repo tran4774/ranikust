@@ -183,6 +183,13 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   with both) and sends the mount with it, as go-containerregistry's
   `maybeUpdateScopes` does; open, basic and static-token registries keep
   `oci-client`'s path.
+- A registry's text reaches an error only as a 200-character excerpt
+  (`Error::Registry`'s `message`), so nothing is decided from it: whether
+  the registry refused access (the withheld-credential hint) is
+  `Error::Registry`'s `refused`, set from the status (401, 403) and the
+  envelope's `UNAUTHORIZED` and `DENIED` codes
+  (`a_refusal_is_decided_from_codes_and_status_not_the_excerpt`), as
+  `retryable` is.
 - The test fake answers `HEAD` and `GET` of a blob only in repositories
   that hold it, checks the source scope of a mount under bearer
   authentication, and stores a pushed manifest with its `Content-Type`:

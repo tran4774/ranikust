@@ -148,6 +148,7 @@ mod tests {
             target: "sha256:00".to_owned(),
             message: "HTTP 503".to_owned(),
             retryable: true,
+            refused: false,
         }
     }
 

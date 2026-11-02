@@ -57,6 +57,11 @@ pub enum Error {
         message: String,
         /// Whether trying again may succeed (network errors, 5xx, 429).
         retryable: bool,
+        /// Whether the registry refused access: a 401 or 403, or an
+        /// `UNAUTHORIZED` or `DENIED` code in its error envelope. Decided
+        /// from the status and codes, never from `message`, which holds only
+        /// an excerpt of what the registry said.
+        refused: bool,
     },
 
     /// Received content does not match the digest it was asked for.
@@ -160,7 +165,7 @@ pub(crate) struct Op<'a> {
 impl Op<'_> {
     /// Converts an `oci-client` error, classifying it as retryable or not.
     pub(crate) fn error(&self, err: OciDistributionError) -> Error {
-        let (message, retryable) = match err {
+        let (message, retryable, refused) = match err {
             OciDistributionError::DigestError(DigestError::VerificationError {
                 expected,
                 actual,
@@ -181,27 +186,33 @@ impl Op<'_> {
                 };
             }
             OciDistributionError::UnauthorizedError { .. } => {
-                ("401 unauthorized".to_owned(), false)
+                ("401 unauthorized".to_owned(), false, true)
             }
             OciDistributionError::ServerError { code, message, .. } => (
                 format!("HTTP {code}: {}", excerpt(&message)),
                 retryable_status(code),
+                refusal_status(code),
             ),
             OciDistributionError::RegistryError { envelope, .. } => {
                 let retryable = envelope
                     .errors
                     .iter()
                     .any(|e| matches!(e.code, OciErrorCode::Toomanyrequests));
-                (envelope_text(&envelope.errors), retryable)
+                let refused = envelope
+                    .errors
+                    .iter()
+                    .any(|e| matches!(e.code, OciErrorCode::Unauthorized | OciErrorCode::Denied));
+                (envelope_text(&envelope.errors), retryable, refused)
             }
             OciDistributionError::RequestError(e) => {
                 let retryable = e.is_connect() || e.is_timeout() || e.is_body() || e.is_request();
                 let status = e.status().map(|s| s.as_u16());
                 let retryable = retryable || status.is_some_and(retryable_status);
-                (request_error_message(&e), retryable)
+                let refused = status.is_some_and(refusal_status);
+                (request_error_message(&e), retryable, refused)
             }
-            OciDistributionError::IoError(e) => (format!("I/O: {e}"), false),
-            other => (excerpt(&other.to_string()), false),
+            OciDistributionError::IoError(e) => (format!("I/O: {e}"), false, false),
+            other => (excerpt(&other.to_string()), false, false),
         };
         Error::Registry {
             operation: self.operation,
@@ -209,6 +220,7 @@ impl Op<'_> {
             target: self.target.to_owned(),
             message,
             retryable,
+            refused,
         }
     }
 }
@@ -217,6 +229,23 @@ impl Op<'_> {
 /// 502, 503 and 504.
 pub(crate) fn retryable_status(code: u16) -> bool {
     matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+impl Op<'_> {
+    /// [`Op::error`] for an answer whose status is known: a 401 or 403 is a
+    /// refusal whatever its body said.
+    pub(crate) fn error_for_status(&self, status: u16, err: OciDistributionError) -> Error {
+        let mut e = self.error(err);
+        if let Error::Registry { refused, .. } = &mut e {
+            *refused |= refusal_status(status);
+        }
+        e
+    }
+}
+
+/// Whether `code` is a registry refusing access: 401 or 403.
+pub(crate) fn refusal_status(code: u16) -> bool {
+    matches!(code, 401 | 403)
 }
 
 /// A registry that sent nothing for the `registry-idle` limit, `idle`:
@@ -232,6 +261,7 @@ pub(crate) fn idle_error(ctx: &Op<'_>, idle: Option<std::time::Duration>) -> Err
              --limit registry-idle=<duration>"
         ),
         retryable: true,
+        refused: false,
     }
 }
 
