@@ -84,7 +84,8 @@ damage the machine or the design:
 
 Project skills: `dev-loop`, `kaniko-parity`, `buildkit-parity`, `vm-test`,
 `test`, `refactor` (the end-of-phase clean-up, when the maintainer asks),
-`/adr`, `/sync-docs`, vendored `security-audit` (milestones only).
+`/adr`, `/sync-docs`, vendored `security-audit` (milestones only; reports
+in `docs/security/audit/`).
 Subagents (`.claude/agents/`; when to use each: `docs/agents/workflow.md`):
 
 - `host-safety` (opus): any diff in `rnk-rootfs`, `rnk-sandbox`,
