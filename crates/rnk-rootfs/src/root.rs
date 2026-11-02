@@ -849,6 +849,11 @@ pub struct Pinned {
 }
 
 impl Pinned {
+    /// A pinned entry from its `O_PATH | O_NOFOLLOW` descriptor and `statx`.
+    pub(crate) fn new(fd: OwnedFd, stat: Stat, path: PathBuf) -> Self {
+        Self { fd, stat, path }
+    }
+
     /// What `statx` said of the pinned entry.
     #[must_use]
     pub fn stat(&self) -> &Stat {

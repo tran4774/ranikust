@@ -13,8 +13,9 @@ workspace = true
 
 [dependencies]
 # `system`: `uname` for the start-up probe's message (ADR-0028);
-# `process`: `geteuid`, the owner a directory just made must have.
-rustix = { workspace = true, features = ["process", "system"] }
+# `process`: `geteuid`, the owner a directory just made must have;
+# `rand`: `getrandom` for an output's temporary name (ADR-0076).
+rustix = { workspace = true, features = ["process", "rand", "system"] }
 tar.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
