@@ -513,9 +513,33 @@ fn parse_node(node: &Node) -> Result<Parsed, String> {
             }
             Instruction::Shell(args)
         }
-        _ => return Err(format!("unknown instruction: {}", node.keyword)),
+        _ => return Err(unknown_instruction(&node.keyword)),
     };
     Ok(located(i))
+}
+
+/// Longest unknown keyword the error shows.
+const SHOWN_KEYWORD: usize = 32;
+
+/// BuildKit's "unknown instruction", showing the keyword only when it looks
+/// like a mistyped one: at most 32 ASCII letters, digits, `_` or `-`. A file
+/// read as the Dockerfile that is not one (a token, a password file) must
+/// not reach the error, the log or the metrics report (ADR-0076).
+fn unknown_instruction(keyword: &str) -> String {
+    let word = !keyword.is_empty()
+        && keyword.len() <= SHOWN_KEYWORD
+        && keyword
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if word {
+        format!("unknown instruction: {keyword}")
+    } else {
+        format!(
+            "unknown instruction (a {}-byte word that is no keyword, not shown: is this file a \
+             Dockerfile?)",
+            keyword.len()
+        )
+    }
 }
 
 /// BuildKit's `parseKvps`: `ENV`/`LABEL` arguments come in triples.

@@ -47,6 +47,19 @@ const IN_CONTEXT: &str = "lies in the build context, whose owner controls every 
 const THROUGH_SYMLINK: &str = "is or passes through a symlink, and ranikust follows none in an \
      output path (ADR-0076); pass the path without symlinks, as `realpath` prints it";
 
+/// Why [`reach`] refuses a symlink outside the context.
+const UNTRUSTED_LINK: &str = "is a symlink owned by an account other than root and ranikust's \
+     own, which ranikust does not follow (ADR-0076); pass the path it points to";
+
+/// Whether [`reach`] follows the symlink `st` outside the context: only
+/// when root or ranikust's own user owns it. ranikust builds as root, so a
+/// link a lower-trust account made (in a directory it owns, beside or above
+/// a context it owns) is never followed; a link committed to a checkout
+/// root made is, which is why a parse error never shows a file's text.
+fn trusted_link(st: &Stat) -> bool {
+    st.uid == 0 || st.uid == rustix::process::geteuid().as_raw()
+}
+
 /// The build context's root directory, which an operator's host path must
 /// not lead into: the inode, so a bind mount of the context is the context
 /// too.
@@ -140,6 +153,12 @@ pub fn reach(path: &Path, fence: &Fence) -> Result<Reached> {
         let st = stat_of(fd.as_fd(), &here)?;
         match st.file_type() {
             FileType::Symlink => {
+                if !trusted_link(&st) {
+                    return Err(Error::InvalidPath {
+                        path: here,
+                        reason: UNTRUSTED_LINK,
+                    });
+                }
                 links += 1;
                 if links > MAX_SYMLINKS {
                     return Err(io_err("resolve", &abs, Errno::LOOP));

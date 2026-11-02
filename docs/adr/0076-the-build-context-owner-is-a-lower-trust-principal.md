@@ -85,9 +85,20 @@ with no new flag.
      written.
 2. **A Dockerfile path is read through the context once it enters it.**
    `rnk_rootfs::reach` walks `--dockerfile` from `/`.
-   - Outside the context, symlinks are followed: the path is the
-     operator's, and a Dockerfile mounted from a Kubernetes ConfigMap is a
-     chain of symlinks (`Dockerfile -> ..data/Dockerfile`).
+   - Outside the context, a symlink is followed only when root or
+     ranikust's own user owns it: the path is the operator's, and a
+     Dockerfile mounted from a Kubernetes ConfigMap is a chain of root's
+     symlinks (`Dockerfile -> ..data/Dockerfile`). A link a lower-trust
+     account made, for example beside a context it owns, is refused.
+   - A link committed to a checkout made by root is root's, and the walk
+     cannot tell it from the operator's. A monorepo job with
+     `--context=$CI_PROJECT_DIR/services/api` and
+     `--dockerfile=$CI_PROJECT_DIR/docker/api.Dockerfile` still follows a
+     committed `docker/api.Dockerfile` link. So the parse error shows an
+     unknown keyword only when it looks like one (at most 32 ASCII letters,
+     digits, `_` or `-`). Otherwise it gives only its length, so a file
+     that is no Dockerfile never reaches the error, the log or the metrics
+     report. Passing the checkout itself as `--context` closes the read too.
    - Once the walk takes a name inside the context, the rest is resolved
      through the context's `RootPath`, so a committed symlink never leaves
      it. This covers `$CI_PROJECT_DIR/Dockerfile`, the default `Dockerfile`

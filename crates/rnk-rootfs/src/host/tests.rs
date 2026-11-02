@@ -262,3 +262,33 @@ fn a_symlink_loop_is_refused() {
         Some(rustix::io::Errno::LOOP.raw_os_error())
     );
 }
+
+/// T2c (the VM or a default rootful Docker run): outside the context, a
+/// symlink another account owns is never followed, so a lower-trust
+/// account cannot point a `--dockerfile` outside its context at a host
+/// file; root's own links are (ADR-0076).
+#[test]
+#[ignore = "T2c: default: a symlink owned by another user needs root"]
+fn a_symlink_another_account_owns_is_not_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = dir.path().join("ctx");
+    fs::create_dir(&ctx).unwrap();
+    fs::write(dir.path().join("secret"), b"SECRET").unwrap();
+    symlink(dir.path().join("secret"), dir.path().join("theirs")).unwrap();
+    symlink(dir.path().join("secret"), dir.path().join("roots")).unwrap();
+    rustix::fs::chownat(
+        rustix::fs::CWD,
+        dir.path().join("theirs"),
+        Some(rustix::fs::Uid::from_raw(1000)),
+        Some(rustix::fs::Gid::from_raw(1000)),
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .unwrap();
+    let fence = Fence::of(&RootPath::open(&ctx).unwrap()).unwrap();
+    let e = reach(&dir.path().join("theirs"), &fence).unwrap_err();
+    assert!(invalid(&e).contains("symlink owned by"), "{e}");
+    assert!(matches!(
+        reach(&dir.path().join("roots"), &fence).unwrap(),
+        Reached::Outside(_)
+    ));
+}

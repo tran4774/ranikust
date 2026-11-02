@@ -356,6 +356,26 @@ fn simple_instructions() {
     );
 }
 
+/// An unknown keyword is shown only when it looks like a mistyped keyword:
+/// a file read as the Dockerfile that is not one (a token, a password
+/// file) must not reach the error in full (ADR-0076).
+#[test]
+fn an_unknown_keyword_that_is_no_word_is_not_shown() {
+    for text in [
+        "eyJhbGciOiJSUzI1NiJ9.c2VjcmV0LXBheWxvYWQ.c2lnbmF0dXJl\n",
+        "root:$6$saltsalt$hashhashhashhash:19000:0:99999:7:::\n",
+        "https://user:hunter2@git.example.com\n",
+        "AVERYLONGWORDTHATISNOKEYWORDATALLREALLYNOT x\n",
+        "BOGUS\u{1b}[31m x\n",
+    ] {
+        let message = err(text).message().to_owned();
+        assert!(message.starts_with("unknown instruction"), "{message}");
+        for secret in ["c2VjcmV0", "saltsalt", "hunter2", "REALLYNOT", "\u{1b}"] {
+            assert!(!message.contains(secret), "{text:?}: {message}");
+        }
+    }
+}
+
 #[test]
 fn onbuild() {
     let o = only("ONBUILD RUN echo hi");
