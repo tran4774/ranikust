@@ -641,6 +641,9 @@ pub(crate) struct Runner {
     /// [`Sandbox::start_direct`]: `Direct` on `/` only, which places nothing
     /// and so has no journal and no directory (ADR-0051).
     direct_only: bool,
+    /// Whether a full-sandbox child may use `open_tree` and `move_mount`;
+    /// `None` probes ([`mount_api_supported`]).
+    mount_api: Option<bool>,
 }
 
 /// Refuses a `root_dir` that is not the path the kernel gives its
@@ -696,6 +699,7 @@ impl Runner {
             nofile: None,
             shared_root: None,
             direct_only: false,
+            mount_api: None,
         })
     }
 
@@ -713,6 +717,7 @@ impl Runner {
             nofile: None,
             shared_root: None,
             direct_only: true,
+            mount_api: None,
         }
     }
 
@@ -730,6 +735,13 @@ impl Runner {
     #[cfg(test)]
     pub(crate) fn hold_networks(&self) {
         let _ = self.net_mode.set(NetMode::UserNs);
+    }
+
+    /// Makes the child bind and remount as where `open_tree` and
+    /// `move_mount` are refused, whatever the probe would find.
+    #[cfg(test)]
+    pub(crate) fn without_mount_api(&mut self) {
+        self.mount_api = Some(false);
     }
 
     /// Runs `spec`, cloning through `spawn`. With `running` (a
@@ -905,6 +917,9 @@ impl Runner {
         } else {
             None
         };
+        if !direct {
+            refuse_symlinked_kernel_dirs(&root, &spec.root_dir)?;
+        }
         let mut journal = Journal::create(&self.runs_dir, &self.next_id(), &spec.root_dir, root)?;
         if direct {
             return match place_direct(&mut journal)
@@ -1056,6 +1071,8 @@ impl Runner {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
             root_nodev_rec,
+            mount_api: spec.isolation == Isolation::Full
+                && self.mount_api.unwrap_or_else(mount_api_supported),
             mounts,
             secrets,
             dev_remount,
@@ -1135,6 +1152,30 @@ fn clone_flags(spec: &RunSpec) -> libc::c_int {
             flags
         }
     }
+}
+
+/// Refuses a full-sandbox root whose `/proc`, `/sys` or `/dev` is a
+/// symlink, before any stub is placed: `proc`, `sysfs` and the `/dev`
+/// tmpfs are mounted only on a directory of the root itself, as runc
+/// requires for `proc` and `sysfs`. Through a symlink, `proc` could land
+/// below a directory that a later mount hides, out of reach of the masks.
+/// The child checks again, without following any symlink.
+fn refuse_symlinked_kernel_dirs(root: &RootPath, root_dir: &Path) -> Result<()> {
+    for dir in [plan::PROC, plan::SYS, plan::DEV] {
+        match root.statx(dir) {
+            Ok(st) if FileType::from_raw_mode(st.mode) == FileType::Symlink => {
+                return Err(Error::InvalidSpec(format!(
+                    "{dir} in the root {} is a symbolic link; proc, sysfs and the /dev \
+                     tmpfs are mounted only on a real directory",
+                    root_dir.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Places the stubs and writes the `/etc` copies.
@@ -1229,6 +1270,49 @@ fn mount_setattr_supported() -> bool {
         };
         let errno = io::Error::last_os_error().raw_os_error();
         r != 0 && !matches!(errno, Some(libc::ENOSYS | libc::EPERM))
+    })
+}
+
+/// Whether the kernel has `open_tree` and `move_mount` (5.2) and lets this
+/// process call them, probed once as [`mount_setattr_supported`]: a call
+/// with no valid argument fails with `EBADF`, `EINVAL`, `EFAULT` or
+/// `ENOENT` where it is allowed, `ENOSYS` or `EPERM` (a seccomp profile, or
+/// no `CAP_SYS_ADMIN` over the mount namespace) where it is not.
+fn mount_api_supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let allowed = |r: libc::c_long| {
+            let errno = io::Error::last_os_error().raw_os_error();
+            r != 0 && !matches!(errno, Some(libc::ENOSYS | libc::EPERM))
+        };
+        // `OPEN_TREE_CLONE` of `<linux/mount.h>`: also checks the
+        // privilege a clone needs, before the arguments.
+        const OPEN_TREE_CLONE: libc::c_uint = 1;
+        // SAFETY: an invalid descriptor and null paths; the kernel fails
+        // before touching memory.
+        let open_tree = unsafe {
+            libc::syscall(
+                libc::SYS_open_tree,
+                -1,
+                std::ptr::null::<libc::c_char>(),
+                OPEN_TREE_CLONE,
+            )
+        };
+        if !allowed(open_tree) {
+            return false;
+        }
+        // SAFETY: as above.
+        let move_mount = unsafe {
+            libc::syscall(
+                libc::SYS_move_mount,
+                -1,
+                std::ptr::null::<libc::c_char>(),
+                -1,
+                std::ptr::null::<libc::c_char>(),
+                0u32,
+            )
+        };
+        allowed(move_mount)
     })
 }
 
@@ -3095,7 +3179,10 @@ mod tests {
     /// `/t/w -> /t`, and the cache's own `w`) keeps the bind `nodev`, and
     /// read-only when asked, and no other mount of the sandbox changes:
     /// neither the root, nor the read-only `sysfs`, nor the read-only bind
-    /// of the host's `/dev/null`.
+    /// of the host's `/dev/null`. Both with `open_tree` and `move_mount` and
+    /// as where they are refused (the symlinked target is then refused); in
+    /// both, a control with a plain target and a secret runs, its bind,
+    /// secret and `/proc/sys` read-only and `nodev`.
     #[test]
     #[ignore = "T2: mounts and mknod as real root in a private mount namespace; run in the test VM only"]
     fn red_team_a_symlinked_mount_target_keeps_its_bind_nodev() {
@@ -3113,7 +3200,7 @@ mod tests {
             fs::create_dir(root.join("t")).unwrap();
             std::os::unix::fs::symlink("/t", root.join("t/w")).unwrap();
             std::os::unix::fs::symlink("/t/w", root.join("c")).unwrap();
-            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            fs::create_dir(root.join("d")).unwrap();
             let parent = ParentPid::new().unwrap();
             // The mount options of `mountpoint` in a `/proc/self/mountinfo`
             // listing.
@@ -3123,77 +3210,165 @@ mod tests {
                     .find(|f| f.get(4) == Some(&mountpoint))
                     .and_then(|f| f.get(5).map(|o| (*o).to_owned()))
             };
+            let has = |o: &Option<String>, flag: &str| {
+                o.as_deref()
+                    .is_some_and(|o| o.split(',').any(|f| f == flag))
+            };
             let mut changed = Vec::new();
-            // (case, the cache's `w`, read-only, script)
-            for (i, (case, link, read_only, script)) in [
-                (
-                    "read-only cache",
-                    "/",
-                    true,
-                    "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
-                     echo OPENED; touch /t/rw && echo WROTE",
-                ),
-                (
-                    "read-write cache",
-                    "/",
-                    false,
-                    "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
-                     echo OPENED",
-                ),
-                ("sysfs", "/sys", false, "cat /proc/self/mountinfo"),
-                ("/dev/null", "/dev/null", false, "cat /proc/self/mountinfo"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let cache = top.join(format!("cache{i}"));
+            let mut controls = Vec::new();
+            for (n, mode) in ["mount API", "by path"].into_iter().enumerate() {
+                let mut runner =
+                    Runner::new(&top.join(format!("sandbox{n}")), Some(RootEntry::PivotRoot))
+                        .unwrap();
+                if mode == "by path" {
+                    runner.without_mount_api();
+                }
+                let cache = top.join(format!("control-cache{n}"));
                 fs::create_dir(&cache).unwrap();
-                std::os::unix::fs::symlink(link, cache.join("w")).unwrap();
-                let mut spec =
-                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                let mut spec = RunSpec::new(
+                    &root,
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "cat /proc/self/mountinfo; cat /run/secrets/s".into(),
+                    ],
+                );
                 spec.mounts.push(crate::BindMount {
                     source: cache,
-                    target: "/c".into(),
+                    target: "/d".into(),
                     kind: MountKind::Directory,
-                    read_only,
+                    read_only: true,
                 });
-                let out = top.join(format!("out{i}"));
+                spec.secrets.push(SecretFile {
+                    data: std::sync::Arc::from(&b"dummy-secret"[..]),
+                    target: "/run/secrets/s".into(),
+                    uid: 0,
+                    gid: 0,
+                    mode: 0o400,
+                });
+                let out = top.join(format!("control-out{n}"));
                 output_to(&out, &mut spec);
                 let r = runner.run(spec, None, |job| clone_child(job, parent));
                 let text = fs::read_to_string(&out).unwrap();
-                let (t, slash, sys, null) = (
-                    options(&text, "/t"),
-                    options(&text, "/"),
-                    options(&text, "/sys"),
-                    options(&text, "/dev/null"),
+                let (d, secret, procsys) = (
+                    options(&text, "/d"),
+                    options(&text, "/run/secrets/s"),
+                    options(&text, "/proc/sys"),
                 );
-                println!(
-                    "{case}: {r:?}; /t {t:?}, / {slash:?}, /sys {sys:?}, /dev/null {null:?}\n{text}"
-                );
-                let rw = |o: &Option<String>| o.as_deref().is_some_and(|o| o.starts_with("rw"));
-                if text.contains("OPENED") || text.contains("WROTE") {
-                    changed.push(format!("{case}: a node or file was written in /t"));
-                }
-                if t.as_deref()
-                    .is_some_and(|o| !o.split(',').any(|f| f == "nodev"))
+                let what = format!("{r:?}; /d {d:?}, secret {secret:?}, /proc/sys {procsys:?}");
+                println!("control ({mode}): {what}");
+                let ok = matches!(&r, Ok(st) if st.success())
+                    && text.contains("dummy-secret")
+                    && [&d, &secret, &procsys]
+                        .iter()
+                        .all(|o| has(o, "ro") && has(o, "nodev"));
+                controls.push((mode, ok, what));
+                // (case, the cache's `w`, read-only, script)
+                for (i, (case, link, read_only, script)) in [
+                    (
+                        "read-only cache",
+                        "/",
+                        true,
+                        "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
+                     echo OPENED; touch /t/rw && echo WROTE",
+                    ),
+                    (
+                        "read-write cache",
+                        "/",
+                        false,
+                        "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
+                     echo OPENED",
+                    ),
+                    ("sysfs", "/sys", false, "cat /proc/self/mountinfo"),
+                    ("/dev/null", "/dev/null", false, "cat /proc/self/mountinfo"),
+                ]
+                .into_iter()
+                .enumerate()
                 {
-                    changed.push(format!("{case}: /t is not nodev ({t:?})"));
-                }
-                if read_only && rw(&t) {
-                    changed.push(format!("{case}: /t is writable ({t:?})"));
-                }
-                if rw(&sys) || rw(&null) || slash.as_deref().is_some_and(|o| o.starts_with("ro")) {
-                    changed.push(format!(
+                    let case = format!("{case} ({mode})");
+                    let cache = top.join(format!("cache{n}-{i}"));
+                    fs::create_dir(&cache).unwrap();
+                    std::os::unix::fs::symlink(link, cache.join("w")).unwrap();
+                    let mut spec =
+                        RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                    spec.mounts.push(crate::BindMount {
+                        source: cache,
+                        target: "/c".into(),
+                        kind: MountKind::Directory,
+                        read_only,
+                    });
+                    let out = top.join(format!("out{n}-{i}"));
+                    output_to(&out, &mut spec);
+                    let r = runner.run(spec, None, |job| clone_child(job, parent));
+                    let text = fs::read_to_string(&out).unwrap();
+                    let (t, slash, sys, null) = (
+                        options(&text, "/t"),
+                        options(&text, "/"),
+                        options(&text, "/sys"),
+                        options(&text, "/dev/null"),
+                    );
+                    println!(
+                        "{case}: {r:?}; /t {t:?}, / {slash:?}, /sys {sys:?}, /dev/null {null:?}\n{text}"
+                    );
+                    let rw = |o: &Option<String>| o.as_deref().is_some_and(|o| o.starts_with("rw"));
+                    if text.contains("OPENED") || text.contains("WROTE") {
+                        changed.push(format!("{case}: a node or file was written in /t"));
+                    }
+                    if t.is_some() && !has(&t, "nodev") {
+                        changed.push(format!("{case}: /t is not nodev ({t:?})"));
+                    }
+                    if read_only && rw(&t) {
+                        changed.push(format!("{case}: /t is writable ({t:?})"));
+                    }
+                    if rw(&sys)
+                        || rw(&null)
+                        || slash.as_deref().is_some_and(|o| o.starts_with("ro"))
+                    {
+                        changed.push(format!(
                         "{case}: another mount changed: / {slash:?}, /sys {sys:?}, /dev/null {null:?}"
                     ));
+                    }
                 }
             }
             drop(mounts);
+            for (mode, ok, what) in &controls {
+                assert!(ok, "the control RUN ({mode}): {what}");
+            }
             assert!(
                 changed.is_empty(),
                 "a symlinked mount target misplaced the bind's remount: {changed:?}"
             );
         });
+    }
+
+    /// A full-sandbox root whose `/proc`, `/sys` or `/dev` is a symlink is
+    /// refused before any stub is placed or child cloned.
+    #[test]
+    fn a_symlinked_kernel_directory_in_the_root_is_refused() {
+        for dir in ["proc", "sys", "dev"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let top = tmp.path().canonicalize().unwrap();
+            let root = top.join("root");
+            fs::create_dir_all(root.join("elsewhere")).unwrap();
+            std::os::unix::fs::symlink("/elsewhere", root.join(dir)).unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
+            let r = runner.run(spec, None, |_| panic!("no child may be cloned"));
+            assert!(
+                matches!(&r, Err(Error::InvalidSpec(m)) if m.contains("symbolic link")),
+                "{dir}: {r:?}"
+            );
+            assert_eq!(fs::read_dir(top.join("sandbox/runs")).unwrap().count(), 0);
+            assert_eq!(fs::read_dir(root.join("elsewhere")).unwrap().count(), 0);
+        }
+    }
+
+    /// The probe of `open_tree` and `move_mount` answers the same every
+    /// time and never crashes where the syscalls are missing.
+    #[test]
+    fn the_mount_api_is_probed_once() {
+        let first = mount_api_supported();
+        assert_eq!(first, mount_api_supported());
     }
 
     #[test]
