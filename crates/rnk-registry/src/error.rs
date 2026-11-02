@@ -222,6 +222,22 @@ pub(crate) fn retryable_status(code: u16) -> bool {
     matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
 }
 
+/// A registry that sent nothing for the `registry-idle` limit, `idle`:
+/// retried, as any request that did not complete.
+pub(crate) fn idle_error(ctx: &Op<'_>, idle: Option<std::time::Duration>) -> Error {
+    let waited = idle.map_or_else(String::new, |d| format!(" for {} s", d.as_secs_f64()));
+    Error::Registry {
+        operation: ctx.operation,
+        host: ctx.host.to_owned(),
+        target: ctx.target.to_owned(),
+        message: format!(
+            "no data{waited} (limit \"registry-idle\"); raise it with \
+             --limit registry-idle=<duration>"
+        ),
+        retryable: true,
+    }
+}
+
 /// `bytes` as a size `--limit` accepts: `4 MiB`, `512 KiB` or `100 bytes`.
 pub(crate) fn size_text(bytes: u64) -> String {
     const UNITS: [(u64, &str); 3] = [(1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
@@ -238,10 +254,7 @@ fn request_error_message(e: &reqwest::Error) -> String {
     let kind = if e.is_connect() {
         "connection failed"
     } else if e.is_timeout() {
-        // Besides the connect timeout, only the read timeout is set: no data
-        // arrived for `registry-idle` (ADR-0079).
-        "timed out: no data within the \"registry-idle\" limit (raise it with \
-         --limit registry-idle=<duration>)"
+        "timed out"
     } else if e.is_body() || e.is_decode() {
         "response body failed"
     } else {

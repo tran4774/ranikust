@@ -8,6 +8,8 @@
 //! (`oci-client-0.18.0 src/client.rs:2214-2245`, `src/digest.rs:122-160`),
 //! so errors read as they did when `oci-client` sent these requests.
 
+use std::time::Duration;
+
 use bytes::{Bytes, BytesMut};
 use oci_client::errors::{DigestError, OciDistributionError, OciEnvelope};
 use sha2::Digest as _;
@@ -15,11 +17,45 @@ use sha2::Digest as _;
 /// The `Docker-Content-Digest` header.
 pub(crate) const DIGEST_HEADER: &str = "docker-content-digest";
 
+/// The bounds on a pull's reads: the `registry-body` limit and the
+/// `registry-idle` limit.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Bounds {
+    /// The largest token response, and how much of an error body is read.
+    pub(crate) max_body: u64,
+    /// How long a wait for the registry's next bytes may last.
+    pub(crate) idle: Option<Duration>,
+}
+
+/// The registry sent nothing for the `registry-idle` limit.
+#[derive(Debug)]
+pub(crate) struct Idle;
+
+/// Waits for `future`, a wait on the registry's socket (a response's
+/// headers or its next chunk), at most `idle`.
+///
+/// The idle bound is kept here rather than as `reqwest`'s read timeout:
+/// that one also runs while a request body uploads, capping a whole push
+/// (ADR-0079), and while the caller is busy writing what arrived, failing
+/// a pull whose sink is slow; this one counts only time spent waiting for
+/// the registry.
+pub(crate) async fn on_socket<T>(
+    idle: Option<Duration>,
+    future: impl Future<Output = T>,
+) -> Result<T, Idle> {
+    match idle {
+        None => Ok(future.await),
+        Some(limit) => tokio::time::timeout(limit, future).await.map_err(|_| Idle),
+    }
+}
+
 /// Why a bounded read stopped.
 #[derive(Debug)]
 pub(crate) enum ReadError {
     /// More than the limit arrived, or `Content-Length` announced more.
     TooLarge,
+    /// Nothing arrived for the `registry-idle` limit.
+    Idle,
     /// The connection failed or timed out.
     Request(reqwest::Error),
 }
@@ -28,12 +64,20 @@ pub(crate) enum ReadError {
 /// bytes: at once when `Content-Length` announces more, otherwise as soon
 /// as the bytes that arrived go past it. Memory stays at `max` plus one
 /// chunk.
-pub(crate) async fn capped(mut response: reqwest::Response, max: u64) -> Result<Bytes, ReadError> {
+pub(crate) async fn capped(
+    mut response: reqwest::Response,
+    max: u64,
+    idle: Option<Duration>,
+) -> Result<Bytes, ReadError> {
     if response.content_length().is_some_and(|n| n > max) {
         return Err(ReadError::TooLarge);
     }
     let mut body = BytesMut::new();
-    while let Some(chunk) = response.chunk().await.map_err(ReadError::Request)? {
+    while let Some(chunk) = on_socket(idle, response.chunk())
+        .await
+        .map_err(|Idle| ReadError::Idle)?
+        .map_err(ReadError::Request)?
+    {
         if len(&body).saturating_add(len(&chunk)) > max {
             return Err(ReadError::TooLarge);
         }
@@ -42,11 +86,13 @@ pub(crate) async fn capped(mut response: reqwest::Response, max: u64) -> Result<
     Ok(body.freeze())
 }
 
-/// At most `max` bytes of an error response's body; the rest is never
-/// read. Only an excerpt of it ever reaches a message.
-pub(crate) async fn error_body(mut response: reqwest::Response, max: u64) -> Bytes {
+/// At most `bounds.max_body` bytes of an error response's body; the rest
+/// is never read, and a registry that stops sending ends it. Only an
+/// excerpt of it ever reaches a message.
+pub(crate) async fn error_body(mut response: reqwest::Response, bounds: Bounds) -> Bytes {
+    let max = bounds.max_body;
     let mut body = BytesMut::new();
-    while let Ok(Some(chunk)) = response.chunk().await {
+    while let Ok(Ok(Some(chunk))) = on_socket(bounds.idle, response.chunk()).await {
         let room = usize::try_from(max.saturating_sub(len(&body))).unwrap_or(usize::MAX);
         body.extend_from_slice(&chunk[..chunk.len().min(room)]);
         if len(&body) >= max {

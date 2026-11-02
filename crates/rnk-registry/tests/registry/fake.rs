@@ -82,6 +82,10 @@ pub(crate) struct State {
     pub(crate) oversized: HashMap<String, (u16, usize)>,
     /// Bytes of `oversized` bodies handed to the connection so far.
     pub(crate) oversized_sent: Arc<std::sync::atomic::AtomicU64>,
+    /// A pause after each frame of a request body the fake reads.
+    pub(crate) slow_bodies: Option<std::time::Duration>,
+    /// Answer every token request with `307` to this URL.
+    pub(crate) token_redirect: Option<String>,
     /// Answer mounts with `202` and an upload session.
     pub(crate) refuse_mounts: bool,
     /// `METHOD path?query` of every request, in order.
@@ -268,12 +272,20 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let body = req
-        .into_body()
-        .collect()
-        .await
-        .map(|b| b.to_bytes())
-        .unwrap_or_default();
+    // `slow_bodies`: each frame of a request body is taken after a pause,
+    // as a slow registry reads an upload.
+    let pause = state.lock().unwrap().slow_bodies;
+    let mut incoming = req.into_body();
+    let mut collected = Vec::new();
+    while let Some(Ok(frame)) = incoming.frame().await {
+        if let Ok(data) = frame.into_data() {
+            collected.extend_from_slice(&data);
+        }
+        if let Some(pause) = pause {
+            tokio::time::sleep(pause).await;
+        }
+    }
+    let body = Bytes::from(collected);
 
     let stalled = {
         let mut state = state.lock().unwrap();
@@ -312,6 +324,11 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         return reply(fault.status, "injected failure");
     }
 
+    if path == "/token"
+        && let Some(location) = state.token_redirect.clone()
+    {
+        return with_header(reply(307, ""), header::LOCATION, &location);
+    }
     if path == "/token" {
         return token(&mut state, &method, &query, authorization.as_deref(), &body);
     }

@@ -25,7 +25,7 @@ use tracing::field::Empty;
 use tracing::{Instrument as _, debug_span};
 
 use crate::credentials::{Credential, Credentials};
-use crate::error::{Error, Op, excerpt, retryable_status};
+use crate::error::{Error, Op, excerpt, idle_error, retryable_status};
 use crate::fetch;
 use crate::io::{BlobBody, BlobSink, Bounded};
 use crate::platform::select_platform;
@@ -230,8 +230,11 @@ struct Host {
     /// Scopes (repository, operation) already authorized; for identity
     /// tokens, with the token.
     scopes: Mutex<BTreeMap<(String, RegistryOperation), Option<ScopeToken>>>,
-    /// The client for the identity-token exchange and mounts.
+    /// The client for pulls sent without `oci-client` and for mounts.
     http: reqwest::Client,
+    /// The client for token requests: it follows a redirect only within
+    /// one origin, so a credential in a form or a query never leaves it.
+    token_http: reqwest::Client,
     /// `<scheme>://<endpoint>`, for requests sent without `oci-client`.
     base_url: String,
     /// The `Bearer` challenge of `GET /v2/`, if the registry sent one.
@@ -593,7 +596,9 @@ impl Client {
                 })?;
             }
             let mut bounded = Bounded::new(&mut *out, blob.size);
-            let result = self.get_blob(&host, reference, digest, &mut bounded).await;
+            let result = self
+                .get_blob(&host, reference, digest, &mut bounded, &ctx)
+                .await;
             bytes_in += bounded.written();
             let size_error = |actual| Error::SizeMismatch {
                 host: host.name.clone(),
@@ -606,8 +611,8 @@ impl Client {
                 (Err(_), Some(received)) => Err(size_error(received)),
                 // A sink that took bytes it cannot give back is not retried:
                 // no wait, and this first error is the one reported.
-                (Err(e), None) if !out.can_restart() => Err(ctx.error(e).not_retryable()),
-                (Err(e), None) => Err(ctx.error(e)),
+                (Err(e), None) if !out.can_restart() => Err(e.not_retryable()),
+                (Err(e), None) => Err(e),
                 (Ok(()), _) if written != blob.size => Err(size_error(written)),
                 (Ok(()), _) => Ok(()),
             }
@@ -882,13 +887,12 @@ impl Client {
                 _,
             ) => {
                 let scopes = mount_scopes(repository, from_repository);
-                let max_body = self.options.max_body_bytes;
                 token::exchange(
-                    &host.http,
+                    &host.token_http,
                     challenge,
                     refresh_token,
                     &scopes.join(" "),
-                    max_body,
+                    self.bounds(),
                 )
                 .await
                 .map(|t| t.token)
@@ -935,15 +939,9 @@ impl Client {
         };
         let scopes = mount_scopes(repository, from_repository);
         let scopes: Vec<&str> = scopes.iter().map(String::as_str).collect();
-        let access = token::fetch(
-            &host.http,
-            challenge,
-            basic,
-            &scopes,
-            self.options.max_body_bytes,
-        )
-        .await
-        .ok()?;
+        let access = token::fetch(&host.token_http, challenge, basic, &scopes, self.bounds())
+            .await
+            .ok()?;
         cache.insert(key, (access.token.clone(), access.refresh_after));
         Some(access.token)
     }
@@ -1055,30 +1053,36 @@ impl Client {
     async fn connect(&self, registry: &str) -> Result<Host, Error> {
         let trust = self.trust_per_registry.get(registry).unwrap_or(&self.trust);
         let skip_verify = self.options.skip_tls_verify.contains(registry);
-        let mut http = reqwest::Client::builder()
-            .tls_certs_only(trust.to_reqwest()?)
-            .danger_accept_invalid_certs(skip_verify)
-            .user_agent(self.options.user_agent)
-            // `localhost` is loopback, whatever a resolver says: plain HTTP
-            // is chosen for it as a loopback address.
-            .resolve_to_addrs(
-                "localhost",
-                &[
-                    std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-                    std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
-                ],
-            );
-        if let Some(timeout) = self.options.connect_timeout {
-            http = http.connect_timeout(timeout);
-        }
-        if let Some(timeout) = self.options.read_timeout {
-            http = http.read_timeout(timeout);
-        }
-        let http = http
-            .build()
-            .map_err(|e| Error::Tls(format!("HTTP client for {registry}: {e}")))?;
+        // No read timeout on either client: `registry-idle` is kept around
+        // each wait for a pull's bytes (`fetch::on_socket`), never while a
+        // request body uploads (ADR-0079).
+        let client = |redirects: reqwest::redirect::Policy| -> Result<reqwest::Client, Error> {
+            let mut builder = reqwest::Client::builder()
+                .tls_certs_only(trust.to_reqwest()?)
+                .danger_accept_invalid_certs(skip_verify)
+                .user_agent(self.options.user_agent)
+                .redirect(redirects)
+                // `localhost` is loopback, whatever a resolver says: plain
+                // HTTP is chosen for it as a loopback address.
+                .resolve_to_addrs(
+                    "localhost",
+                    &[
+                        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+                        std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
+                    ],
+                );
+            if let Some(timeout) = self.options.connect_timeout {
+                builder = builder.connect_timeout(timeout);
+            }
+            builder
+                .build()
+                .map_err(|e| Error::Tls(format!("HTTP client for {registry}: {e}")))
+        };
+        let http = client(reqwest::redirect::Policy::default())?;
+        let token_http = client(same_origin_redirects())?;
 
         let endpoint = endpoint(registry);
+        let idle = self.options.read_timeout;
         let span = debug_span!("rnk_registry.auth", host = registry, requests = Empty);
         let mut requests = 0u64;
         let pinged = async {
@@ -1090,7 +1094,7 @@ impl Client {
             if !insecure && is_loopback(registry) {
                 let plain = retry(&self.options.retry, async |_| {
                     requests += 1;
-                    ping(&http, "http", endpoint, registry, false).await
+                    ping(&http, "http", endpoint, registry, false, idle).await
                 })
                 .await
                 .0?;
@@ -1098,7 +1102,7 @@ impl Client {
             }
             let https = retry(&self.options.retry, async |_| {
                 requests += 1;
-                ping(&http, "https", endpoint, registry, insecure).await
+                ping(&http, "https", endpoint, registry, insecure, idle).await
             })
             .await
             .0;
@@ -1106,7 +1110,7 @@ impl Client {
                 Err(_) if insecure => {
                     let plain = retry(&self.options.retry, async |_| {
                         requests += 1;
-                        ping(&http, "http", endpoint, registry, false).await
+                        ping(&http, "http", endpoint, registry, false, idle).await
                     })
                     .await
                     .0?;
@@ -1131,7 +1135,9 @@ impl Client {
             tls_certs_only: trust.to_oci(),
             platform_resolver: None,
             connect_timeout: self.options.connect_timeout,
-            read_timeout: self.options.read_timeout,
+            // Pushes go through `oci-client`: no read timeout, which would
+            // cap a whole upload (ADR-0079).
+            read_timeout: None,
             user_agent: self.options.user_agent,
             ..ClientConfig::default()
         };
@@ -1195,6 +1201,7 @@ impl Client {
             strategy,
             scopes: Mutex::new(BTreeMap::new()),
             http,
+            token_http,
             base_url: format!("{scheme}://{endpoint}"),
             challenge,
             mount_tokens: Mutex::new(BTreeMap::new()),
@@ -1230,6 +1237,28 @@ impl Client {
         }
     }
 
+    /// The `registry-body` and `registry-idle` limits.
+    fn bounds(&self) -> fetch::Bounds {
+        fetch::Bounds {
+            max_body: self.options.max_body_bytes,
+            idle: self.options.read_timeout,
+        }
+    }
+
+    /// `request`, sent, its response's headers awaited at most the
+    /// `registry-idle` limit.
+    async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+        ctx: &Op<'_>,
+    ) -> Result<reqwest::Response, Error> {
+        let idle = self.options.read_timeout;
+        fetch::on_socket(idle, request.send())
+            .await
+            .map_err(|fetch::Idle| idle_error(ctx, idle))?
+            .map_err(|e| ctx.error(OciDistributionError::RequestError(e)))
+    }
+
     /// `GET` of a manifest, refused once its body passes the `manifest`
     /// limit; its bytes and digest, checked as `oci-client` checks them.
     async fn get_manifest(
@@ -1260,25 +1289,28 @@ impl Client {
                 RegistryOperation::Pull,
             )
             .await;
-        let request_error = |e| ctx.error(OciDistributionError::RequestError(e));
-        let response = request.send().await.map_err(request_error)?;
+        let response = self.send(request, ctx).await?;
         let status = response.status();
         if status != reqwest::StatusCode::OK {
-            let body = fetch::error_body(response, self.options.max_body_bytes).await;
+            let body = fetch::error_body(response, self.bounds()).await;
             return Err(ctx.error(fetch::status_error(status, &body, &url)));
         }
         let header = fetch::digest_header(response.headers()).map_err(|e| ctx.error(e))?;
         let max = self.options.max_manifest_bytes;
-        let body = fetch::capped(response, max).await.map_err(|e| match e {
-            fetch::ReadError::TooLarge => Error::TooLarge {
-                what: "manifest",
-                host: host.name.clone(),
-                target: reference.to_string(),
-                limit: "manifest",
-                max,
-            },
-            fetch::ReadError::Request(e) => request_error(e),
-        })?;
+        let idle = self.options.read_timeout;
+        let body = fetch::capped(response, max, idle)
+            .await
+            .map_err(|e| match e {
+                fetch::ReadError::TooLarge => Error::TooLarge {
+                    what: "manifest",
+                    host: host.name.clone(),
+                    target: reference.to_string(),
+                    limit: "manifest",
+                    max,
+                },
+                fetch::ReadError::Idle => idle_error(ctx, idle),
+                fetch::ReadError::Request(e) => ctx.error(OciDistributionError::RequestError(e)),
+            })?;
         let digest = fetch::manifest_digest(
             &body,
             header.as_deref(),
@@ -1291,13 +1323,19 @@ impl Client {
     /// `GET` of the blob `digest` into `out`, checking its digest and the
     /// registry's `Docker-Content-Digest`, as `oci-client`'s `pull_blob`;
     /// of an error body, only the `registry-body` limit is read.
+    ///
+    /// The `registry-idle` limit runs only while the registry is awaited,
+    /// never while `out` takes a chunk: a slow sink (a pipe whose reader is
+    /// busy deleting a tree, a slow disk) does not fail the pull.
     async fn get_blob<W: AsyncWrite + Unpin>(
         &self,
         host: &Host,
         reference: &Reference,
         digest: &str,
         out: &mut W,
-    ) -> Result<(), OciDistributionError> {
+        ctx: &Op<'_>,
+    ) -> Result<(), Error> {
+        let oci = |e: OciDistributionError| ctx.error(e);
         let url = format!(
             "{}/v2/{}/blobs/{digest}",
             host.base_url,
@@ -1311,36 +1349,52 @@ impl Client {
                 RegistryOperation::Pull,
             )
             .await;
-        let mut response = request.send().await?;
+        let mut response = self.send(request, ctx).await?;
         let status = response.status();
         if !status.is_success() {
-            let body = fetch::error_body(response, self.options.max_body_bytes).await;
-            return Err(fetch::status_error(status, &body, &url));
+            let body = fetch::error_body(response, self.bounds()).await;
+            return Err(oci(fetch::status_error(status, &body, &url)));
         }
-        let header = fetch::digest_header(response.headers())?;
-        let mut header_digester = header.as_deref().map(fetch::Digester::new).transpose()?;
-        let mut digester = fetch::Digester::new(digest)?;
-        while let Some(chunk) = response.chunk().await? {
+        let header = fetch::digest_header(response.headers()).map_err(oci)?;
+        let mut header_digester = header
+            .as_deref()
+            .map(fetch::Digester::new)
+            .transpose()
+            .map_err(|e| oci(e.into()))?;
+        let mut digester = fetch::Digester::new(digest).map_err(|e| oci(e.into()))?;
+        let idle = self.options.read_timeout;
+        loop {
+            let chunk = fetch::on_socket(idle, response.chunk())
+                .await
+                .map_err(|fetch::Idle| idle_error(ctx, idle))?
+                .map_err(|e| oci(OciDistributionError::RequestError(e)))?;
+            let Some(chunk) = chunk else { break };
             if let Some(d) = header_digester.as_mut() {
                 d.update(&chunk);
             }
             digester.update(&chunk);
-            out.write_all(&chunk).await?;
+            out.write_all(&chunk)
+                .await
+                .map_err(|e| oci(OciDistributionError::IoError(e)))?;
         }
-        out.flush().await?;
+        out.flush()
+            .await
+            .map_err(|e| oci(OciDistributionError::IoError(e)))?;
         if let (Some(d), Some(expected)) = (header_digester, header) {
             let actual = d.finish();
             if actual != expected {
-                return Err(DigestError::VerificationError { expected, actual }.into());
+                return Err(oci(
+                    DigestError::VerificationError { expected, actual }.into()
+                ));
             }
         }
         let actual = digester.finish();
         if actual != digest {
-            return Err(DigestError::VerificationError {
+            return Err(oci(DigestError::VerificationError {
                 expected: digest.to_owned(),
                 actual,
             }
-            .into());
+            .into()));
         }
         Ok(())
     }
@@ -1384,7 +1438,7 @@ impl Client {
             RegistryOperation::Pull => format!("repository:{repository}:pull"),
             RegistryOperation::Push => format!("repository:{repository}:pull,push"),
         };
-        let max_body = self.options.max_body_bytes;
+        let bounds = self.bounds();
         let result = async {
             let fetched = match (&host.strategy, &host.challenge) {
                 (Strategy::None, _) => return Ok(()),
@@ -1403,9 +1457,15 @@ impl Client {
                     };
                     retry(&self.options.retry, async |_| {
                         requests += 1;
-                        token::fetch(&host.http, challenge, basic, &[scope.as_str()], max_body)
-                            .await
-                            .map_err(|e| exchange_error(&ctx, e, max_body))
+                        token::fetch(
+                            &host.token_http,
+                            challenge,
+                            basic,
+                            &[scope.as_str()],
+                            bounds,
+                        )
+                        .await
+                        .map_err(|e| exchange_error(&ctx, e, bounds))
                     })
                     .await
                     .0
@@ -1436,9 +1496,9 @@ impl Client {
                 ) => {
                     retry(&self.options.retry, async |_| {
                         requests += 1;
-                        token::exchange(&host.http, challenge, refresh_token, &scope, max_body)
+                        token::exchange(&host.token_http, challenge, refresh_token, &scope, bounds)
                             .await
-                            .map_err(|e| exchange_error(&ctx, e, max_body))
+                            .map_err(|e| exchange_error(&ctx, e, bounds))
                     })
                     .await
                     .0
@@ -1503,20 +1563,20 @@ async fn ping(
     endpoint: &str,
     registry: &str,
     quiet_tls: bool,
+    idle: Option<Duration>,
 ) -> Result<Ping, Error> {
     let ctx = Op {
         operation: "ping",
         host: registry,
         target: "/v2/",
     };
-    let response = http
-        .get(format!("{scheme}://{endpoint}/v2/"))
-        .send()
+    let sent = fetch::on_socket(idle, http.get(format!("{scheme}://{endpoint}/v2/")).send())
         .await
-        .map_err(|e| {
-            let err = ctx.error(OciDistributionError::RequestError(e));
-            if quiet_tls { not_retryable(err) } else { err }
-        })?;
+        .map_err(|fetch::Idle| idle_error(&ctx, idle))?;
+    let response = sent.map_err(|e| {
+        let err = ctx.error(OciDistributionError::RequestError(e));
+        if quiet_tls { not_retryable(err) } else { err }
+    })?;
     let status = response.status().as_u16();
     match status {
         200..=299 => Ok(Ping::Open),
@@ -1588,6 +1648,27 @@ fn strategy(
     })
 }
 
+/// A redirect policy for token requests: up to 10 redirects within one
+/// origin (scheme, host, port), stopping at the first that leaves it.
+/// `reqwest` drops `Authorization` across hosts but re-sends a `307` or
+/// `308` request's body, which for an identity-token exchange holds the
+/// refresh token.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let next = attempt.url();
+        let same = attempt.previous().last().is_some_and(|prev| {
+            prev.scheme() == next.scheme()
+                && prev.host_str() == next.host_str()
+                && prev.port_or_known_default() == next.port_or_known_default()
+        });
+        if same && attempt.previous().len() < 10 {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 /// Puts an access token into `oci-client`'s cache for one scope.
 async fn insert_bearer(
     oci: &oci_client::Client,
@@ -1601,15 +1682,16 @@ async fn insert_bearer(
     oci.tokens.insert(oci_ref, op, token).await;
 }
 
-fn exchange_error(ctx: &Op<'_>, err: ExchangeError, max_body: u64) -> Error {
+fn exchange_error(ctx: &Op<'_>, err: ExchangeError, bounds: fetch::Bounds) -> Error {
     match err {
         ExchangeError::TooLarge => Error::TooLarge {
             what: "token response for",
             host: ctx.host.to_owned(),
             target: ctx.target.to_owned(),
             limit: "registry-body",
-            max: max_body,
+            max: bounds.max_body,
         },
+        ExchangeError::Idle => idle_error(ctx, bounds.idle),
         ExchangeError::Request(e) => ctx.error(OciDistributionError::RequestError(e)),
         ExchangeError::Status(code) if retryable_status(code) => Error::Registry {
             operation: "token exchange",

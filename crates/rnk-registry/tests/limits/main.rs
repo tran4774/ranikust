@@ -16,8 +16,10 @@ use std::time::{Duration, Instant};
 
 use fake::{Auth, FakeRegistry};
 use rnk_oci::{Descriptor, Digest, MediaType};
-use rnk_registry::{Client, ClientOptions, Credentials, Error, TrustStore};
-use support::{add_image, descriptor, options, reference};
+use rnk_registry::{
+    BlobBody, BlobSink, Client, ClientOptions, Credentials, Error, PushOutcome, TrustStore,
+};
+use support::{add_image, client_with as client_with_config, descriptor, options, reference};
 
 struct Counting;
 
@@ -93,6 +95,9 @@ async fn limits_refuse_hostile_bodies_with_bounded_memory() {
     error_bodies_are_read_only_up_to_the_limit().await;
     a_config_over_the_limit_is_refused_before_any_request().await;
     a_stalled_blob_fails_after_the_idle_limit().await;
+    a_slow_upload_is_not_cut_by_the_idle_limit().await;
+    a_slow_sink_is_not_cut_by_the_idle_limit().await;
+    a_token_request_never_follows_a_redirect_to_another_host().await;
 }
 
 async fn a_manifest_over_the_limit_is_refused_while_it_arrives() {
@@ -282,4 +287,128 @@ async fn a_stalled_blob_fails_after_the_idle_limit() {
     // Each of the three attempts waits for the idle limit once.
     assert!(started.elapsed() >= Duration::from_millis(1500));
     assert_eq!(registry.count("GET /v2/app/blobs/"), 3);
+}
+
+async fn a_slow_upload_is_not_cut_by_the_idle_limit() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    // The registry takes each frame of the upload 100 ms apart: the whole
+    // PUT lasts far longer than the idle limit.
+    registry.state().slow_bodies = Some(Duration::from_millis(100));
+    let client = client_with(&registry, |o| {
+        o.read_timeout = Some(Duration::from_millis(300));
+    });
+    let layer = vec![7u8; 512 << 10];
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &layer);
+    let body = BlobBody::Bytes(bytes::Bytes::from(layer));
+    let started = Instant::now();
+    let outcome = client
+        .push_blob(&reference(&registry, "out:1"), &blob, &body)
+        .await
+        .unwrap();
+    assert_eq!(outcome, PushOutcome::Uploaded);
+    assert!(
+        started.elapsed() > Duration::from_millis(300),
+        "the upload outlasted the idle limit: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A sink that takes each write only after a pause, as a pipe whose reader
+/// is busy, or a slow disk.
+struct SlowSink {
+    bytes: Vec<u8>,
+    pause: Duration,
+    sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl tokio::io::AsyncWrite for SlowSink {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let pause = self.pause;
+        let sleep = self
+            .sleep
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(pause)));
+        if sleep.as_mut().poll(cx).is_pending() {
+            return std::task::Poll::Pending;
+        }
+        self.sleep = None;
+        self.bytes.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+impl BlobSink for SlowSink {
+    async fn reset(&mut self) -> std::io::Result<()> {
+        self.bytes.clear();
+        Ok(())
+    }
+}
+
+async fn a_slow_sink_is_not_cut_by_the_idle_limit() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let layer = vec![3u8; 256 << 10];
+    registry.add_blob("app", &layer);
+    let client = client_with(&registry, |o| {
+        o.read_timeout = Some(Duration::from_millis(200));
+        o.retry.attempts = 1;
+    });
+    // Each write waits twice the idle limit, while the registry has long
+    // sent everything.
+    let mut sink = SlowSink {
+        bytes: Vec::new(),
+        pause: Duration::from_millis(400),
+        sleep: None,
+    };
+    client
+        .pull_blob(
+            &reference(&registry, "app"),
+            &descriptor(MediaType::OCI_LAYER_GZIP, &layer),
+            &mut sink,
+        )
+        .await
+        .unwrap();
+    assert_eq!(sink.bytes, layer);
+}
+
+async fn a_token_request_never_follows_a_redirect_to_another_host() {
+    let elsewhere = FakeRegistry::start(Auth::Open).await;
+    let registry = FakeRegistry::start(Auth::Bearer {
+        user: "u".to_owned(),
+        password: "p".to_owned(),
+        refresh_token: "refresh-xyz".to_owned(),
+        anonymous_pull: false,
+    })
+    .await;
+    add_image(&registry, "app", "1", b"layer".to_vec());
+    registry.state().token_redirect = Some(format!("http://{}/token", elsewhere.host()));
+    let host = registry.host();
+    let client = client_with_config(
+        &registry,
+        &format!(r#"{{"auths":{{"{host}":{{"identitytoken":"refresh-xyz"}}}}}}"#),
+    );
+    let err = client
+        .pull_manifest(&reference(&registry, "app:1"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("307"), "{err}");
+    // The refresh token in the POST body never reached the other host.
+    assert_eq!(elsewhere.count("POST"), 0);
+    assert_eq!(elsewhere.count("GET"), 0);
 }
