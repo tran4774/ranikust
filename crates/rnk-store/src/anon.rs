@@ -127,8 +127,7 @@ impl AnonFiles {
                         );
                     }
                 }
-                // No file at all on this filesystem.
-                Err(e @ (Errno::ROFS | Errno::ACCESS | Errno::PERM)) => {
+                Err(e) if takes_no_file(e) => {
                     self.to_memory(&e.to_string());
                 }
                 // A full disk or quota, or anything else: an error.
@@ -144,10 +143,10 @@ impl AnonFiles {
                 match self.create_named() {
                     Ok(file) => return Ok(file),
                     Err(Error::AnonymousFile { source, .. })
-                        if matches!(
-                            source.raw_os_error().map(Errno::from_raw_os_error),
-                            Some(Errno::ROFS | Errno::ACCESS | Errno::PERM)
-                        ) =>
+                        if source
+                            .raw_os_error()
+                            .map(Errno::from_raw_os_error)
+                            .is_some_and(takes_no_file) =>
                     {
                         self.to_memory(&source.to_string());
                     }
@@ -242,6 +241,13 @@ impl AnonFiles {
     fn force(&self, way: u8) {
         self.way.store(way, Ordering::Relaxed);
     }
+}
+
+/// Whether `e` says the filesystem takes no file at all here (read-only, or
+/// permission refused): state then goes to memory, while a full disk, a
+/// quota or anything else stays an error.
+fn takes_no_file(e: Errno) -> bool {
+    matches!(e, Errno::ROFS | Errno::ACCESS | Errno::PERM)
 }
 
 /// `/proc/self/fd/<n>` of `fd`: its name for this process alone.
