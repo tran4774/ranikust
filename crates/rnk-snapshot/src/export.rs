@@ -527,10 +527,16 @@ impl<'a> Walk<'a> {
         }
         match st.file_type() {
             FileType::Symlink => Ok(self.upper.read_link(p)? == lower.layer.read_link(p)?),
-            _ if st.size == 0 => Ok(true),
-            FileType::Regular => self.same_content(st, lower.layer, l, p),
-            // A node or FIFO with a size: not something to read.
-            _ => Ok(false),
+            FileType::Regular if st.size != 0 => self.same_content(st, lower.layer, l, p),
+            // An empty entry has nothing more to compare. A node or FIFO
+            // with a size: not something to read.
+            FileType::Regular
+            | FileType::Directory
+            | FileType::CharDevice
+            | FileType::BlockDevice
+            | FileType::Fifo
+            | FileType::Socket
+            | FileType::Unknown => Ok(st.size == 0),
         }
     }
 
