@@ -166,9 +166,9 @@ Not covered, and why the operator's rule carries the weight:
 - A volume must be mounted at `--state-dir` itself. If it is mounted at a
   parent, a `RUN` can rename the state directory during the build and put
   a look-alike in its place. The store keeps marking the directory it
-  holds, and the build fails (`leave_run`), but the renamed directory is
-  then unmarked elsewhere on the volume. The message says to discard that
-  directory or volume.
+  holds, the renamed one, and the build fails (`leave_run`), but the
+  look-alike left at the `--state-dir` path holds no marker. The message
+  says to discard that directory or volume.
 - Writes before a refusal are benign. `Store::open` creates a missing
   state directory, empty, before it takes the lock, since the lock needs
   the directory. `ranikust::statedir` may set a marked directory to mode
