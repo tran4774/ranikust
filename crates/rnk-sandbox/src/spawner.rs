@@ -3174,6 +3174,84 @@ mod tests {
         });
     }
 
+    /// Red team (T2, the VM only; T7): a cache mounted over `/dev` whose
+    /// `null` is a symlink to `/proc/self/fd/1` does not hand the `RUN`
+    /// ranikust's own stdout as its stdin: a `RUN` with the default stdin
+    /// reads the sandbox's `/dev/null` (character device 1:3), in both ways
+    /// of binding.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_cache_over_dev_gets_no_stream_of_ranikusts() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let cache = top.join("cache");
+            fs::create_dir(&cache).unwrap();
+            std::os::unix::fs::symlink("/proc/self/fd/1", cache.join("null")).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let mut wrong = Vec::new();
+            for (n, mode) in ["mount API", "by path"].into_iter().enumerate() {
+                let mut runner =
+                    Runner::new(&top.join(format!("sandbox{n}")), Some(RootEntry::PivotRoot))
+                        .unwrap();
+                if mode == "by path" {
+                    runner.without_mount_api();
+                }
+                let mut spec = RunSpec::new(
+                    &root,
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "stat -L -c '%F %t:%T' /proc/self/fd/0".into(),
+                    ],
+                );
+                spec.mounts.push(crate::BindMount {
+                    source: cache.clone(),
+                    target: "/dev".into(),
+                    kind: MountKind::Directory,
+                    read_only: false,
+                });
+                // stdin stays the default, `Stdio::Null`.
+                let out = top.join(format!("out{n}"));
+                let file = File::create(&out).unwrap();
+                spec.stdout = Stdio::Fd(file.try_clone().unwrap().into());
+                spec.stderr = Stdio::Fd(file.into());
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap();
+                println!("{mode}: {r:?}: {text}");
+                if !matches!(&r, Ok(st) if st.success())
+                    || text.trim() != "character special file 1:3"
+                {
+                    wrong.push(format!("{mode}: {r:?}: {}", text.trim()));
+                }
+            }
+            drop(mounts);
+            assert!(
+                wrong.is_empty(),
+                "the RUN's stdin is not /dev/null: {wrong:?}"
+            );
+        });
+    }
+
+    /// T2 (the VM only), pins a barrier of the open `#!/proc/self/exe`
+    /// question (Q-422): a running binary cannot be opened for writing
+    /// through `/proc/<pid>/exe` (`ETXTBSY`), so a `RUN` that reaches
+    /// ranikust's binary cannot change it while ranikust runs. Nothing is
+    /// written: the open alone is refused.
+    #[test]
+    #[ignore = "T2: opens the running test binary for writing as root; run in the test VM only"]
+    fn a_running_binary_cannot_be_opened_for_writing() {
+        let exe = format!("/proc/{}/exe", std::process::id());
+        let r = rustix::fs::open(
+            exe.as_str(),
+            OFlags::WRONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        assert_eq!(r.err(), Some(Errno::TXTBSY), "{exe}");
+    }
+
     /// Red team (T2, the VM only; T18): a `RUN --mount` target reached
     /// through symlinks that the bind itself changes (`/c -> /t/w`,
     /// `/t/w -> /t`, and the cache's own `w`) keeps the bind `nodev`, and
