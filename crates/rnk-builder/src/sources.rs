@@ -65,13 +65,6 @@ impl ContextFiles {
         let mut entries = BTreeMap::new();
         for entry in context.walk(ignore) {
             let entry = entry?;
-            // The directories leading to a kept entry are kept too, as
-            // BuildKit's filtered walk reports them.
-            for a in entry.path.ancestors().skip(1) {
-                if !a.as_os_str().is_empty() {
-                    entries.insert(a.to_owned(), Kind::Dir);
-                }
-            }
             let kind = match entry.meta.file_type {
                 FileType::Directory => Kind::Dir,
                 FileType::Symlink => Kind::Symlink(context.root().read_link(&entry.path)?),
@@ -82,7 +75,7 @@ impl ContextFiles {
                 | FileType::Socket
                 | FileType::Unknown => Kind::Other,
             };
-            entries.insert(entry.path, kind);
+            add(&mut entries, entry.path, kind);
         }
         Ok(Self { entries })
     }
@@ -441,6 +434,31 @@ pub(crate) fn clean_source(source: &str) -> PathBuf {
     out
 }
 
+/// Adds the context entry `path` as `kind`, and the directories leading to
+/// it as [`Kind::Dir`], as BuildKit's filtered walk reports them; returns
+/// how many of those directories it looked at.
+///
+/// It stops at the first directory already there: every entry is added
+/// with all its directories, so that one's are there too. The walk reports
+/// a directory before what is in it (an excluded one held back until its
+/// first kept entry, outermost first), so this is one lookup per entry, not
+/// one per level: a deep context costs no more than its entries.
+fn add(entries: &mut BTreeMap<PathBuf, Kind>, path: PathBuf, kind: Kind) -> usize {
+    let mut looked = 0;
+    for a in path.ancestors().skip(1) {
+        if a.as_os_str().is_empty() {
+            break;
+        }
+        looked += 1;
+        if entries.contains_key(a) {
+            break;
+        }
+        entries.insert(a.to_owned(), Kind::Dir);
+    }
+    entries.insert(path, kind);
+    looked
+}
+
 fn not_found(source: &str) -> Error {
     Error::Invalid(format!(
         "source {source:?}: not found in the build context or stage"
@@ -472,6 +490,34 @@ mod tests {
         r.into_iter()
             .map(|r| (r.path.to_string_lossy().into_owned(), r.dir))
             .collect()
+    }
+
+    /// The walk reports a directory before what is in it, so each entry
+    /// finds its parent there and looks no further: the work per entry does
+    /// not grow with its depth. Directories it did not report are still
+    /// added, and a kind already there is kept.
+    #[test]
+    fn adding_an_entry_looks_at_its_directories_until_one_is_there() {
+        let mut e = BTreeMap::new();
+        let mut looked = 0;
+        let mut dir = PathBuf::new();
+        for _ in 0..2000 {
+            dir.push("d");
+            looked += add(&mut e, dir.clone(), Kind::Dir);
+        }
+        for i in 0..100 {
+            looked += add(&mut e, dir.join(format!("f{i}")), Kind::Other);
+        }
+        assert!(looked <= 2100, "{looked} directories looked at");
+        assert_eq!(e.len(), 2100);
+
+        add(&mut e, PathBuf::from("x/y/z"), Kind::Other);
+        assert_eq!(e.get(Path::new("x")), Some(&Kind::Dir));
+        assert_eq!(e.get(Path::new("x/y")), Some(&Kind::Dir));
+        assert_eq!(e.get(Path::new("x/y/z")), Some(&Kind::Other));
+        add(&mut e, PathBuf::from("l"), link("t"));
+        add(&mut e, PathBuf::from("x/w"), Kind::Other);
+        assert_eq!(e.get(Path::new("l")), Some(&link("t")));
     }
 
     #[test]

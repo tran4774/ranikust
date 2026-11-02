@@ -389,6 +389,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- Loading the build context's entries no longer looks at every
+  directory above each entry: in a deep context that took CPU growing
+  with the square of the depth before the first stage ran. It now stops
+  at the first directory already there.
 - Deleting a deep tree (a stage a `RUN` filled, the store's leftovers at
   start-up) took memory growing with the square of its depth: each level
   kept its full path. A `RUN` could make a chain deep enough to get the
