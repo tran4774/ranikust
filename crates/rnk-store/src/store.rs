@@ -143,11 +143,19 @@ fn hold_state_dir(lock: &OwnedFd, state_path: &Path) -> Result<()> {
     }
 }
 
+/// The advice of a store opened on the traces of a build cut short
+/// (ADR-0066), shared by [`CUT_SHORT`] and [`Store::named_window`]'s refusal
+/// so the two say the same thing.
+macro_rules! cut_short_advice {
+    () => {
+        "an earlier build in this container did not end cleanly and may have left RUN \
+         processes; run ranikust as the container's PID 1, or restart the container"
+    };
+}
+
 /// Why a store opened on the traces of a build cut short makes no name
 /// (ADR-0066).
-const CUT_SHORT: &str = "an earlier build in this container did not end cleanly and may have \
-     left RUN processes; run ranikust as the container's PID 1, or restart the container, to \
-     keep state on disk";
+const CUT_SHORT: &str = concat!(cut_short_advice!(), ", to keep state on disk");
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
@@ -631,12 +639,12 @@ impl Store {
     /// outside any fence (ADR-0066).
     pub fn named_window(&self) -> Result<NamedGuard> {
         if self.anon.as_ref().is_some_and(|a| a.tainted) {
-            return Err(Error::Anonymous(
+            return Err(Error::Anonymous(concat!(
                 "COPY --from a kept stage or an image, unpacked by name, after a build cut \
-                 short (an earlier build in this container did not end cleanly and may have \
-                 left RUN processes; run ranikust as the container's PID 1, or restart the \
-                 container),",
-            ));
+                 short (",
+                cut_short_advice!(),
+                "),"
+            )));
         }
         self.fence.named()
     }
