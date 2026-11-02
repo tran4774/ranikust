@@ -1,5 +1,5 @@
 use std::fs;
-use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 
 use super::*;
 
@@ -127,6 +127,44 @@ fn prepare_refuses_without_creating_anything() {
     let why = prepare(&link.join("state")).unwrap_err().0;
     assert!(why.contains("without following a symlink"), "{why}");
     assert!(!real.join("state").exists());
+}
+
+/// What another local user can do in a sticky `/tmp` after `prepare` found
+/// the nearest existing directory and before it creates the rest: plant a
+/// symlink, or a directory of their own, at the first missing name.
+#[test]
+fn missing_directories_are_made_below_the_checked_one_never_through_a_symlink() {
+    let tmp = private_tempdir();
+    let euid = rustix::process::geteuid().as_raw();
+    let victim = private_tempdir();
+    let at = || open_dir(tmp.path(), OFlags::PATH).unwrap();
+    symlink(victim.path(), tmp.path().join("a")).unwrap();
+    let state = tmp.path().join("a/b/state");
+    let why = create_missing(at(), tmp.path(), &state, euid)
+        .unwrap_err()
+        .0;
+    assert!(why.contains("without following a symlink"), "{why}");
+    assert_eq!(fs::read_dir(victim.path()).unwrap().count(), 0);
+    // A directory others may write, made in the meantime, is refused before
+    // anything is created in it.
+    let open = tmp.path().join("open");
+    fs::create_dir(&open).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    let why = create_missing(at(), tmp.path(), &open.join("b/state"), euid)
+        .unwrap_err()
+        .0;
+    assert!(why.contains("writable by group or others"), "{why}");
+    assert_eq!(fs::read_dir(&open).unwrap().count(), 0);
+    // Otherwise every missing directory is made, mode 0700.
+    let state = tmp.path().join("c/d/state");
+    let fd = create_missing(at(), tmp.path(), &state, euid).unwrap();
+    let st = rustix::fs::fstat(&fd).unwrap();
+    let new = fs::metadata(&state).unwrap();
+    assert_eq!((st.st_dev, st.st_ino), (new.dev(), new.ino()));
+    for dir in [tmp.path().join("c"), tmp.path().join("c/d"), state] {
+        let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & 0o077, 0, "{}", dir.display());
+    }
 }
 
 #[test]

@@ -7,8 +7,7 @@
 
 use std::fmt;
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::DirBuilderExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags};
 use rustix::io::Errno;
@@ -33,7 +32,8 @@ const PRIVATE_STATE: &str = "use the default /var/lib/ranikust, or a --state-dir
 /// 1. `/` is refused outright, by identity;
 /// 2. before anything is created, the nearest existing directory on its
 ///    path and every directory above it pass [`check_chain`]'s rule, walked
-///    by descriptor (`..`), never by path;
+///    by descriptor (`..`), never by path; what is missing is then made
+///    below that descriptor, one name at a time ([`create_missing`]);
 /// 3. the state directory, opened without following a symlink, must be
 ///    empty (just created, or empty already) or hold the store's regular
 ///    marker file [`rnk_store::STATE_MARKER`], and if unmarked must not be
@@ -62,21 +62,8 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
         refuse_slash(&fd, state_dir)?;
     }
     check_chain(&walk(&fd, existing)?, euid, is_state)?;
-    if is_state {
-        accept_existing(&open_dir(state_dir, OFlags::RDONLY)?, state_dir)?;
-    }
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(state_dir)
-        .map_err(|e| {
-            Refused(format!(
-                "cannot create the state directory {}: {e}",
-                state_dir.display()
-            ))
-        })?;
     // Readable, so it can be listed and its mode set through it.
-    let fd = open_dir(state_dir, OFlags::RDONLY)?;
+    let fd = create_missing(fd, existing, state_dir, euid)?;
     refuse_slash(&fd, state_dir)?;
     accept_existing(&fd, state_dir)?;
     check_chain(&walk(&fd, state_dir)?, euid, true)?;
@@ -94,6 +81,92 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
             state_dir.join("builds").display()
         ))),
     }
+}
+
+/// Creates what is missing of `state_dir` below `existing`, its nearest
+/// existing directory, open as `parent` and already checked; returns the
+/// state directory, opened for reading.
+///
+/// Each missing name is made with `mkdirat` in the directory opened before
+/// it, then opened from that descriptor, one name at a time, with no
+/// symlink followed and without entering another mount: no path is
+/// resolved again after the check, so a symlink another user plants at a
+/// missing name in a sticky `/tmp` makes nothing elsewhere. A name that
+/// appeared meanwhile is taken only if it passes [`check_chain`]'s rule for
+/// a parent.
+fn create_missing(
+    parent: OwnedFd,
+    existing: &Path,
+    state_dir: &Path,
+    euid: u32,
+) -> Result<OwnedFd, Refused> {
+    let rest = state_dir.strip_prefix(existing).map_err(|_| {
+        Refused(format!(
+            "{} is not below {}",
+            state_dir.display(),
+            existing.display()
+        ))
+    })?;
+    let mut names = Vec::new();
+    for c in rest.components() {
+        let Component::Normal(name) = c else {
+            return Err(Refused(format!(
+                "the state directory {} must be a plain absolute path, without . or ..",
+                state_dir.display()
+            )));
+        };
+        names.push(name);
+    }
+    if names.is_empty() {
+        // It exists: reopened from its checked descriptor, not by path.
+        return rustix::fs::openat(
+            &parent,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| stat_err(state_dir, e));
+    }
+    let mut at = parent;
+    let mut path = existing.to_path_buf();
+    for (i, name) in names.iter().enumerate() {
+        path.push(name);
+        match rustix::fs::mkdirat(&at, *name, Mode::from_raw_mode(0o700)) {
+            Ok(()) | Err(Errno::EXIST) => {}
+            Err(e) => {
+                return Err(Refused(format!(
+                    "cannot create the state directory {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+        let last = i + 1 == names.len();
+        let how = if last { OFlags::RDONLY } else { OFlags::PATH };
+        let next = rustix::fs::openat2(
+            &at,
+            *name,
+            how | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_XDEV,
+        )
+        .map_err(|e| {
+            Refused(format!(
+                "cannot open {} as a directory without following a symlink: {e}",
+                path.display()
+            ))
+        })?;
+        if !last {
+            let st = rustix::fs::fstat(&next).map_err(|e| stat_err(&path, e))?;
+            let dir = ChainDir {
+                path: path.clone(),
+                uid: st.st_uid,
+                mode: st.st_mode & 0o7777,
+            };
+            check_chain(std::slice::from_ref(&dir), euid, false)?;
+        }
+        at = next;
+    }
+    Ok(at)
 }
 
 /// Refuses `fd` when it is the root directory `/`: never a state directory,
