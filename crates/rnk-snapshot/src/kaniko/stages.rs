@@ -235,10 +235,7 @@ impl Snapshotter for KanikoStages {
         };
         let span = tracing::info_span!("rnk_snapshot.prepare", layers);
         let _entered = span.enter();
-        let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
-        // Made and opened on the same parent descriptor, checked empty and
-        // ours: a name swapped in between is refused, never followed.
-        let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+        let (name, dir) = new_stage_dir(shared)?;
         let root = match dir.create_sub_root("rootfs", 0o755) {
             Ok(root) => root,
             Err(e) => {
@@ -271,8 +268,7 @@ impl Snapshotter for KanikoStages {
         let shared = &self.shared;
         let span = tracing::info_span!("rnk_snapshot.prepare", layers = 0, handed_over = true);
         let _entered = span.enter();
-        let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
-        let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+        let (name, dir) = new_stage_dir(shared)?;
         match parent.hand_over(&dir) {
             Ok(root) => Ok(KanikoStage::new(shared, name, dir, root)),
             Err(e) => {
@@ -282,6 +278,15 @@ impl Snapshotter for KanikoStages {
             }
         }
     }
+}
+
+/// Makes the next stage directory in `builds/<id>/stages`, private, and
+/// opens it: made and opened on the same parent descriptor, checked empty
+/// and ours, so a name swapped in between is refused, never followed.
+fn new_stage_dir(shared: &StagesShared) -> Result<(String, RootPath)> {
+    let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
+    let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+    Ok((name, dir))
 }
 
 /// Deletes the stage directory `name` (opened as `dir`) and what it holds,
