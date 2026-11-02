@@ -122,10 +122,10 @@ impl Drop for Detach {
     }
 }
 
-/// Characterization (before the Phase 2 refactor): the advice given when an
-/// anonymous store opened on the traces of a build cut short, word for word.
+/// The advice given when an anonymous store opened on the traces of a build
+/// cut short, word for word, in its warning and in `named_window`'s refusal.
 #[test]
-fn the_cut_short_advice_is_worded_as_before() {
+fn the_cut_short_warning_and_refusal_give_the_same_advice() {
     assert_eq!(
         CUT_SHORT,
         "an earlier build in this container did not end cleanly and may have left RUN \
