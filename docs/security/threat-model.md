@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Design stage. No mitigation below is implemented yet; each is a requirement on the code. Evidence comes from the pre-code experiments. |
+| **Status** | Phase 2 code. The mitigations of T1 to T12 and T17 to T21 are built, except what is planned below; T14 is by design; T13, T15 and T16 are built in part (T13: digests, atomic renames and per-digest locks, but the versioned cache keys wait for the layer cache, Phase 4; T15: layers are streamed, tar extension headers are not bounded, Q-056; T16: property tests cover the parser, the ignore matcher and tar round trips, and `cargo fuzz` waits for Phase 6). The Evidence column of each row says how far it is shown. **Tested**, where the row names a test: T1, T2, T3 (path-level races; `RUN` and stage races are not yet tested), T11 (credential handling), T18, T20, T21. **No test named in the row**, resting on a pre-code experiment **[measured]** or on a review or inference **[inferred]**: T4 to T10, T12 to T17, T19. **Planned, not built**: `--seccomp` (the keyring denial of T11 and §6), `--userns` and rootless mode (Phase 3), and a hardened `chroot` for `--parallel-stages` (T12; the flag is refused). §7 lists what is still unverified. |
 | **Scope** | The `ranikust` binary, its state directory and store, the build roots it makes there (or `/` in a container), and the processes it starts for `RUN`. |
 | **Used by** | [`SECURITY.md`](../../SECURITY.md) (what is a vulnerability), reviewers and the `reviewer`, `host-safety` and `security-audit` agents (how severe a finding is). |
 | **Keep in sync** | Update this file in the same pull request as any change to isolation, privileges, paths written, credential handling or store sharing. |

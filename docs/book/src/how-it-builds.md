@@ -1,6 +1,8 @@
 # How ranikust builds
 
-> This page describes the design. None of it is implemented yet.
+> This page describes the design. Overlay mode as root and kaniko mode are
+> built; rootless overlay mode (Phase 3) is not yet, nor is the AppArmor
+> advice that goes with it ([status](status.md)).
 
 A Dockerfile build runs each instruction of each stage in a root filesystem
 and records what the instruction changed as an image layer. ranikust can do
@@ -25,8 +27,9 @@ programs land there.
 
 ## Overlay mode
 
-Used when ranikust may mount filesystems: as root on a host or VM, in a
-privileged container, or as a regular user who may create user namespaces.
+Used when ranikust may mount filesystems: as root on a host or VM, or in a
+privileged container. Planned for Phase 3, not built: also as a regular user
+who may create user namespaces (*rootless* overlay mode, below).
 
 - Each stage gets its own overlay filesystem inside the state directory. Each
   instruction writes into a fresh layer of it, so the changes are known
@@ -56,9 +59,10 @@ privileged container, or as a regular user who may create user namespaces.
 - Stages that do not depend on each other build in parallel, up to `--jobs`
   at a time, which defaults to the number of CPUs available to ranikust
   ([ADR-0013](https://github.com/tran4774/ranikust/blob/main/docs/adr/0013-jobs-default-available-parallelism.md)).
-- As a regular user, the same happens inside a user namespace: root inside
-  the build is your own user outside it. This is called *rootless* overlay
-  mode.
+- Planned for Phase 3, not built: as a regular user, the same would happen
+  inside a user namespace, where root inside the build is your own user
+  outside it. This is called *rootless* overlay mode. Until then a regular
+  user is refused (see *When no mode works*).
 - In a container, the state directory must be a volume: overlay cannot
   use the container's own overlay root as an upper directory, and
   ranikust says so (`-v ranikust-state:/var/lib/ranikust`).
@@ -189,7 +193,10 @@ As a regular user where user namespaces are restricted (the default on
 Ubuntu 24.04 and later), or in a pod that is neither root nor allowed user
 namespaces, ranikust cannot build. It stops before doing anything and says
 what would work: running as root, installing an AppArmor profile for the
-binary, or running inside a container.
+binary, or running inside a container. Today every regular user is refused,
+whatever user namespaces allow, and the message offers running as root or in
+a container; refusing only where user namespaces are restricted, and the
+AppArmor advice, come with rootless mode (Phase 3).
 
 ## Privilege levels at a glance
 
@@ -197,9 +204,9 @@ binary, or running inside a container.
 |---|---|---|
 | root on a host or VM | overlay | namespaces, a private root, reduced capabilities |
 | root in a privileged container | overlay | the same, inside the container |
-| a regular user allowed user namespaces | overlay, rootless | the same, inside a user namespace |
+| a regular user allowed user namespaces | overlay, rootless (planned, Phase 3) | the same, inside a user namespace |
 | root in a container that forbids mounts | kaniko | only the container |
-| a regular user without user namespaces | none | ranikust refuses to build |
+| a regular user without user namespaces | none | ranikust refuses to build (today also for a regular user who has them) |
 
 The [security policy](https://github.com/tran4774/ranikust/blob/main/SECURITY.md)
 and the [threat model](https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md)
