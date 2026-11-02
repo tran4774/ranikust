@@ -21,7 +21,8 @@ use rustix::io::Errno;
 
 use crate::child::{
     ChildArgs, ChildFds, ChildStdio, ExecPtrs, ParentCheck, arm_death_signal, check,
-    close_inherited, drop_capabilities, early_stdio, fail, switch_user_and_exec, trim_capabilities,
+    close_inherited, default_signals, drop_capabilities, early_stdio, fail, switch_user_and_exec,
+    trim_capabilities,
 };
 use crate::error::Step;
 
@@ -33,6 +34,8 @@ use crate::error::Step;
 /// `CLONE_VM`, right after it returned 0, with everything prepared before
 /// the clone.
 pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -> ! {
+    // First: ranikust's runtime handlers must not run in the child.
+    default_signals();
     let parent = ParentCheck::open(fds.err_w, fds.parent);
     arm_death_signal(fds.err_w, parent);
     // As in the full sandbox: a root other than `/` must not be left
@@ -85,5 +88,5 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     }
     // `setsid` there also makes the process group the parent kills once the
     // command exits, as kaniko does.
-    switch_user_and_exec(fds.err_w, parent, args, ptrs)
+    switch_user_and_exec(fds.err_w, Some(parent), args, ptrs)
 }

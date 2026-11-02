@@ -90,7 +90,7 @@ rtnetlink first; the ADR lists them as residual risk.
    reads the parent pid in its own `/proc/self/stat` of the outer procfs,
    opened before entering the root; a reparented child shows another pid.
    Then close every descriptor the clone copied from ranikust except
-   stdio, the error pipe, that `stat` file, the network namespace to join,
+   stdio, the error and status pipes, that `stat` file, the network namespace to join,
    the stdio sources and a `#!` script (`close_range` over the gaps, else
    the list in `/proc/self/fd`, else every number up to the hard limit),
    in `Isolation::Direct` too. ranikust holds directories outside the root
@@ -216,6 +216,33 @@ rtnetlink first; the ADR lists them as residual risk.
    set empty, as Docker since 20.10.14. A non-root user has no effective
    capabilities but a full bounding set, which a setuid binary in the image
    would regain.
+
+   Then the full sandbox's child becomes the `RUN`'s **init**
+   ([ADR-0080](../adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)).
+   It sets itself not dumpable, zeroes its copy of the argument and
+   environment strings ranikust started with (`/proc/self/stat` fields 48
+   to 51, refused as `Step::Init` if zero; `/proc/1/cmdline` has no ptrace
+   check), starts a session of its
+   own and forks; the new process, PID 2, waits on a close-on-exec go pipe,
+   then runs steps 6 to 8 and becomes the command. The init keeps the death
+   signal of step 1, which nothing clears since it never changes its user
+   or executes anything; it drops every capability, names itself
+   `ranikust-init`, checks the death signal is still armed and the parent
+   still alive, and closes every descriptor but the write end of the status
+   pipe, the go pipe's write end last, which lets the command go on (a failure
+   before that kills the command, which has not run, and is reported as
+   `Step::Init`). It then reaps every process that reparents to it until
+   the command exits or is killed, detaching from the command if it made
+   the init its tracer (`PTRACE_TRACEME`), writes the command's wait status
+   on the status pipe, and exits. Every child of ranikust sets every signal
+   disposition to the default first, with raw `rt_sigaction`, so the
+   init has no handler and the kernel drops every signal a process of the
+   namespace sends to it. A `RUN` cannot signal, stop, trace or read the
+   memory of its init (not dumpable, and no `CAP_SYS_PTRACE`); it can read
+   its zeroed `/proc/1/cmdline`, lower its scheduling priority or pin it to
+   a CPU (same uid), which slows its death but cannot stop it (threat-model
+   section 6), and make itself the init's tracee. `Direct` has no init: its
+   child runs steps 6 to 8 itself.
 6. `setsid`: no controlling terminal, so a `RUN` cannot read the
    operator's keys or push input into the operator's shell (`TIOCSTI`);
    stdin is `/dev/null` unless the caller says otherwise, as under Docker.
@@ -225,7 +252,10 @@ rtnetlink first; the ADR lists them as residual risk.
    `rnk-rootfs` looked up in the root's `/etc/passwd` and `/etc/group` before
    the fork [inferred]. A numeric uid with no passwd entry gets gid 0, as in
    Docker. A change of uid or gid clears the death signal, so it is armed
-   and checked again.
+   again: in `Direct` toward ranikust and checked, in the full sandbox's
+   command toward the init, only as a second line (the init's signal is what
+   ends the namespace with ranikust, whatever the command does to its own:
+   a set-id `execve` or `prctl(PR_SET_PDEATHSIG, 0)` clears it).
 8. Enter `WORKDIR`: resolve it in the root with
    `openat2(RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)` and `fchdir` to it
    (before the id switch, and again after if only root could traverse it),
@@ -249,13 +279,18 @@ makes system calls on arguments built before the clone: no allocation, no
 lock. A failing step writes the step and the errno to a close-on-exec pipe
 and exits 127; the parent reads end-of-file once `execve` succeeded.
 
-The parent waits for the child. The child is PID 1 of its namespace; when it
-exits, the kernel kills everything left in the namespace, so no `tini` and no
-process-group kill are needed. A cancel (`Sandbox::cancel`) sends that PID 1
-`SIGKILL`, as BuildKit kills the process on a cancel; the child is
+The parent waits for the child, in the full sandbox the init. When the
+command exits, the init reports its status and exits, and the kernel kills
+everything left in the namespace, so no `tini` and no process-group kill
+are needed; ranikust reads the command's status from the status pipe, so
+exit codes and signals read as they would from the command itself. A
+cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit kills the
+process on a cancel, which ends the namespace and the command; the child is
 forgotten only once it has exited and before it is reaped, so the kill
-never reaches a reused pid. A command running as PID 1 ignores `SIGTERM`
-unless it installs a handler, as under Docker and BuildKit.
+never reaches a reused pid. The command is PID 2, as under
+`docker run --init` and as kaniko's `RUN`, a child of its executor; it is
+not PID 1 as under BuildKit [inferred], so it gets the default signal
+semantics of any process.
 
 ## Stub mount points
 

@@ -269,6 +269,30 @@ for v in "${VARIANTS[@]}"; do
       no_secret_on_disk "after SIG$sig"
       echo "host: SIG$sig kills the running RUN ($((SECONDS - start)) s); the secret never reached a disk"
     done
+    # T8 (ADR-0080): a RUN that clears its own death signal still dies with
+    # a ranikust killed by SIGKILL. Its init, PID 1 of the RUN's namespace,
+    # keeps the signal; the command runs as PID 2 under it.
+    d="$W/host/deathsig"
+    sudo mkdir -m 700 -p "$d/ctx" "$d/w"
+    sudo tee "$d/ctx/Dockerfile" >/dev/null <<EOF
+FROM $IMAGE
+RUN python3 -c 'import ctypes, time; c = ctypes.CDLL(None); c.prctl(1, 0, 0, 0, 0); c.prctl(15, b"rnkdeath", 0, 0, 0); time.sleep(300)'
+EOF
+    dlog="$(mktemp)"
+    sudo "$RNK" --context "$d/ctx" --no-push --state-dir "$d/w" >"$dlog" 2>&1 &
+    for _ in $(seq 120); do pgrep -x rnkdeath >/dev/null && break; sleep 1; done
+    pgrep -x rnkdeath >/dev/null ||
+      { echo "error: the death-signal RUN never started" >&2; cat "$dlog" >&2; exit 1; }
+    [ "$(sudo awk '/^NSpid:/ {print $NF}' "/proc/$(pgrep -x rnkdeath)/status")" = 2 ] ||
+      { echo "error: the RUN's command is not PID 2 of its namespace" >&2; exit 1; }
+    sudo pkill -KILL -x ranikust
+    wait $! || true
+    for _ in $(seq 10); do pgrep -x rnkdeath >/dev/null || break; sleep 1; done
+    ! pgrep -x rnkdeath >/dev/null ||
+      { echo "error: a RUN that cleared its death signal outlived ranikust" >&2; sudo pkill -KILL -x rnkdeath; exit 1; }
+    ! pgrep -x ranikust-init >/dev/null ||
+      { echo "error: the RUN's init outlived ranikust" >&2; exit 1; }
+    echo "host: a RUN that cleared its death signal dies with ranikust (SIGKILL)"
   fi
   echo "$name: ok"
 done

@@ -288,6 +288,9 @@ pub(crate) struct Spawned {
     pid: Pid,
     /// Read end of the error pipe: end-of-file once `execve` succeeded.
     failures: OwnedFd,
+    /// The full sandbox: read end of the status pipe, on which the `RUN`'s
+    /// init writes the command's wait status before it exits (ADR-0080).
+    status: Option<OwnedFd>,
     /// The network namespace the child joined, closed once it is reaped.
     netns: Option<NetNs>,
 }
@@ -341,6 +344,16 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let (failures, err_w) =
         rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
     let err_w = above_stdio(err_w)?;
+    // The full sandbox's init reports the command's wait status here
+    // (ADR-0080); `Direct` has no init.
+    let status = match isolation {
+        Isolation::Full => {
+            let (r, w) =
+                rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
+            Some((r, above_stdio(w)?))
+        }
+        Isolation::Direct => None,
+    };
     // Last before the clone: nothing can fail between it and the clone
     // without ending it.
     let netns = if hold_network {
@@ -355,6 +368,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let fds = ChildFds {
         err_w: err_w.as_raw_fd(),
         parent: parent.0,
+        status_w: status.as_ref().map_or(-1, |(_, w)| w.as_raw_fd()),
     };
     let null: libc::c_long = 0;
     // SAFETY: `clone` without `CLONE_VM` and with a null stack duplicates the
@@ -390,6 +404,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     Ok(Spawned {
         pid,
         failures,
+        status: status.map(|(r, _w)| r),
         netns,
     })
 }
@@ -1652,9 +1667,9 @@ impl Running {
 }
 
 /// `SIGKILL` to a `RUN`, as BuildKit kills the process on a cancel
-/// (`executor/runcexecutor/executor.go`). A `Full` child is PID 1 of its
-/// namespace, so the kernel kills the rest; a `Direct` one leads its process
-/// group. Called only while the child is not reaped, so the pid is its own;
+/// (`executor/runcexecutor/executor.go`). A `Full` child is the `RUN`'s
+/// init, PID 1 of its namespace, so the kernel kills the rest, the command
+/// included (ADR-0080); a `Direct` one leads its process group. Called only while the child is not reaped, so the pid is its own;
 /// `ESRCH` (already gone) is no error.
 fn kill_run(pid: Pid, isolation: Isolation) {
     // Nothing to report: the RUN is gone either way, and the caller's reap
@@ -1694,6 +1709,7 @@ fn execute(
     let Spawned {
         pid,
         failures,
+        status: command_status,
         netns,
     } = spawn(job)?;
     if let Some(r) = running {
@@ -1729,8 +1745,8 @@ fn execute(
         // and so the build. Descendants that left the group (`setsid`) are
         // not swept on this path.
         (r @ Err(_), Isolation::Direct) => r,
-        // The child is PID 1 of its namespace: when it exits, the kernel
-        // kills the rest.
+        // The child is the init, PID 1 of its namespace: when it exits, once
+        // the command has, the kernel kills the rest.
         (r, Isolation::Full) => r,
     };
     let reaped = reap(pid);
@@ -1738,6 +1754,27 @@ fn execute(
     drop(netns);
     let (status, usage) = reaped?;
     killed?;
+    // A full-sandbox child is the `RUN`'s init: the command's own status is
+    // what it wrote, if it lived to write it (a cancel, or a set-up step
+    // that failed before the command was forked, leaves the init's own). An
+    // init that exited 0 always wrote one: without it, the command's end is
+    // unknown.
+    let status = match command_status {
+        Some(fd) => match read_status(&fd)? {
+            Some(raw) => ExitStatus::from_raw(raw),
+            None if status.code() == Some(0) => {
+                return Err(sys_err(
+                    "read the RUN's exit status",
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "the RUN's init exited without the command's status",
+                    ),
+                ));
+            }
+            None => status,
+        },
+        None => status,
+    };
     if cancelled {
         return Err(Error::Cancelled);
     }
@@ -1776,6 +1813,35 @@ fn read_failure(fd: &OwnedFd) -> Result<Option<(Step, i32)>> {
         8 => child::decode_failure(record)
             .map(Some)
             .ok_or_else(|| sys_err(OP, io::Error::from(io::ErrorKind::InvalidData))),
+        _ => Err(sys_err(OP, io::Error::from(io::ErrorKind::UnexpectedEof))),
+    }
+}
+
+/// The command's wait status the `RUN`'s init wrote, or `None` when it
+/// wrote nothing (end-of-file).
+fn read_status(fd: &OwnedFd) -> Result<Option<i32>> {
+    const OP: &str = "read the RUN's exit status";
+    let mut record = [0u8; child::STATUS_LEN];
+    let mut len = 0;
+    while let Some(rest) = record.get_mut(len..).filter(|r| !r.is_empty()) {
+        match rustix::io::read(fd, rest) {
+            Ok(0) => break,
+            Ok(n) => len += n,
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(sys_err(OP, e)),
+        }
+    }
+    match len {
+        0 => Ok(None),
+        child::STATUS_LEN => {
+            let raw = i32::from_le_bytes(record);
+            // Only an end: the init never reports a stop.
+            if libc::WIFEXITED(raw) || libc::WIFSIGNALED(raw) {
+                Ok(Some(raw))
+            } else {
+                Err(sys_err(OP, io::Error::from(io::ErrorKind::InvalidData)))
+            }
+        }
         _ => Err(sys_err(OP, io::Error::from(io::ErrorKind::UnexpectedEof))),
     }
 }
@@ -2057,6 +2123,46 @@ mod tests {
         rustix::io::write(&w, &rec[..3]).unwrap();
         drop(w);
         assert!(read_failure(&r).is_err());
+    }
+
+    /// The init's status record: none (it died or failed before writing),
+    /// a wait status kept bit for bit (an exit code, a signal), or a
+    /// truncated one, which is an error.
+    #[test]
+    fn the_inits_status_records_are_read_back() {
+        let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+        drop(w);
+        assert_eq!(read_status(&r).unwrap(), None);
+        for raw in [7 << 8, libc::SIGTERM, libc::SIGKILL | 0x80] {
+            let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+            rustix::io::write(&w, &raw.to_le_bytes()).unwrap();
+            drop(w);
+            let got = read_status(&r).unwrap().unwrap();
+            assert_eq!(got, raw);
+            let status = ExitStatus::from_raw(got);
+            assert_eq!(
+                (status.code(), status.signal()),
+                (
+                    ExitStatus::from_raw(raw).code(),
+                    ExitStatus::from_raw(raw).signal()
+                )
+            );
+        }
+        assert_eq!(ExitStatus::from_raw(7 << 8).code(), Some(7));
+        assert_eq!(
+            ExitStatus::from_raw(libc::SIGTERM).signal(),
+            Some(libc::SIGTERM)
+        );
+        let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+        rustix::io::write(&w, &[1, 2]).unwrap();
+        drop(w);
+        assert!(read_status(&r).is_err());
+        // A stop is no end: refused.
+        let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+        let stopped: i32 = (libc::SIGTRAP << 8) | 0x7f;
+        rustix::io::write(&w, &stopped.to_le_bytes()).unwrap();
+        drop(w);
+        assert!(read_status(&r).is_err());
     }
 
     #[test]
@@ -3707,6 +3813,107 @@ mod tests {
         killed
     }
 
+    /// T2, the VM only (ADR-0080): the command of a full-sandbox `RUN` is
+    /// PID 2 of its namespace, under an init named `ranikust-init` that
+    /// holds no capability, ignores what the command sends it, shows no
+    /// argument or environment string of ranikust's in `/proc/1/cmdline`
+    /// and keeps `/proc/1/environ` closed; ranikust sees the command's own
+    /// status, an exit code or a signal, a set-up or `execve` failure of the
+    /// command as before, and an end, by `SIGTRAP`, even for a command that
+    /// made the init its tracer (`PTRACE_TRACEME`, as `USER 1000`).
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn the_run_is_pid_2_under_an_init_that_reports_its_status() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let run_as = |user: &str, argv: Vec<std::ffi::OsString>, workdir: &str, out: &Path| {
+                let mut spec = RunSpec::new(&root, argv);
+                spec.user = user.into();
+                spec.workdir = workdir.into();
+                output_to(out, &mut spec);
+                runner.run(spec, None, |job| clone_child(job, parent))
+            };
+            let run = |argv, workdir: &str, out: &Path| run_as("", argv, workdir, out);
+            let sh = |script: &str| -> Vec<std::ffi::OsString> {
+                vec!["/bin/sh".into(), "-c".into(), script.into()]
+            };
+            let out = top.join("layout.out");
+            let status = run(
+                sh("echo pid=$$; echo init=$(cat /proc/1/comm); \
+                    grep -E '^Cap(Eff|Prm):' /proc/1/status; \
+                    echo cmdline=$(tr -d '\\000' </proc/1/cmdline | wc -c); \
+                    echo cmdline_bytes=$(wc -c </proc/1/cmdline); \
+                    if cat /proc/1/environ >/dev/null 2>&1; \
+                    then echo environ=readable; else echo environ=closed; fi; \
+                    kill -KILL 1; kill -TERM 1; echo survived; exit 7"),
+                "/",
+                &out,
+            )
+            .unwrap();
+            let text = fs::read_to_string(&out).unwrap();
+            assert_eq!(status.code(), Some(7), "{text}");
+            assert!(text.contains("pid=2\n"), "{text}");
+            assert!(text.contains("init=ranikust-init\n"), "{text}");
+            // ranikust's own command line (this test binary's) is not empty,
+            // so an area of zeros proves the strings were cleared.
+            assert!(text.contains("cmdline=0\n"), "{text}");
+            assert!(!text.contains("cmdline_bytes=0\n"), "{text}");
+            assert!(text.contains("environ=closed\n"), "{text}");
+            assert!(
+                text.contains("survived\n"),
+                "the command killed its init: {text}"
+            );
+            for line in text.lines().filter(|l| l.starts_with("Cap")) {
+                assert!(
+                    line.split_whitespace()
+                        .nth(1)
+                        .is_some_and(|v| v.bytes().all(|b| b == b'0')),
+                    "the init holds a capability: {line}"
+                );
+            }
+            let status = run(sh("kill -TERM $$"), "/", &top.join("signal.out")).unwrap();
+            assert_eq!(status.signal(), Some(libc::SIGTERM));
+            // The command makes the init its tracer, then `execve`s: the
+            // init's wait sees a stop, which is no end; it detaches and the
+            // command ends, its stop signal handed on. As `USER 1000`: a
+            // root command's permitted set is no subset of the init's empty
+            // one, so its `PTRACE_TRACEME` fails and no stop happens.
+            let traced = run_as(
+                "1000:1000",
+                vec![
+                    "/usr/bin/python3".into(),
+                    "-c".into(),
+                    "import ctypes, os\n\
+                     ctypes.CDLL(None).ptrace(0, 0, 0, 0)\n\
+                     os.execv('/bin/sh', ['sh', '-c', 'exit 5'])\n"
+                        .into(),
+                ],
+                "/",
+                &top.join("traced.out"),
+            )
+            .unwrap();
+            assert_eq!(traced.signal(), Some(libc::SIGTRAP), "{traced:?}");
+            let r = run(vec!["/no/such/program".into()], "/", &top.join("exec.out"));
+            assert!(matches!(r, Err(Error::Exec { .. })), "{r:?}");
+            let r = run(sh("true"), "/no/such/dir", &top.join("workdir.out"));
+            assert!(
+                matches!(
+                    r,
+                    Err(Error::Setup {
+                        step: Step::Workdir,
+                        ..
+                    })
+                ),
+                "{r:?}"
+            );
+        });
+    }
+
     /// Red team (T2, the VM only; T8): no `RUN` outlives the thread that
     /// cloned it, the parent thread `PR_SET_PDEATHSIG` names, which in a
     /// build is the spawner thread and dies with ranikust (a second
@@ -3723,10 +3930,7 @@ mod tests {
     /// still running 15 s after its parent thread ended is killed by the
     /// test and counted.
     #[test]
-    // Not `"T2: ..."` yet: vm.sh runs every test whose reason starts with
-    // `T2`, and this one fails until the stub PID 1 lands, which would stop
-    // the other T2 tests of this binary. Restore the T2 reason with ADR-0080.
-    #[ignore = "pending T2: fails until the stub PID 1 of ADR-0080 lands (fix/run-stub-init)"]
+    #[ignore = "T2: mounts, chown and setuid as real root in a private mount namespace; run in the test VM only"]
     fn red_team_no_run_outlives_the_thread_that_cloned_it() {
         in_private_mount_namespace(|| {
             use std::os::unix::fs::PermissionsExt as _;
@@ -3862,6 +4066,96 @@ mod tests {
                 outlived.is_empty(),
                 "a RUN outlived the thread that cloned it: {outlived:?}"
             );
+        });
+    }
+
+    /// Red team (T2, the VM only; T8, ADR-0080): a root `RUN` can slow its
+    /// init's death, not stop it. The command makes the init `SCHED_IDLE`
+    /// (`chrt -i -p 0 1`) and pins it to CPU 0 (`taskset -p 1 1`), both
+    /// allowed to a process of the same uid without `CAP_SYS_NICE`, then
+    /// starts eight spinners pinned to CPU 0; once ready, the thread that
+    /// cloned the init ends, so its death signal fires. The time from that
+    /// thread's end to the init's reap (which follows the death of every
+    /// process of the namespace) is printed for this case and for a control
+    /// without `chrt` and `taskset`; no process of either `RUN` may be left.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_run_can_slow_its_inits_death_but_not_stop_it() {
+        in_private_mount_namespace(|| {
+            use std::os::unix::fs::PermissionsExt as _;
+            use std::time::{Duration, Instant};
+
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            fs::create_dir(root.join("r")).unwrap();
+            fs::set_permissions(root.join("r"), Permissions::from_mode(0o777)).unwrap();
+            fs::copy("/usr/bin/yes", root.join("rnkspin")).unwrap();
+            fs::copy("/usr/bin/sleep", root.join("rnkslow")).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let cases = [
+                ("control", ""),
+                (
+                    "init idle and pinned under 8 spinners",
+                    "chrt -i -p 0 1 && taskset -p 1 1 >/dev/null && chrt -p 1 >/r/policy && ",
+                ),
+            ];
+            let mut report = Vec::new();
+            for (i, (case, frob)) in cases.into_iter().enumerate() {
+                let ready = root.join("r").join(format!("ready{i}"));
+                let script = format!(
+                    "{frob}for n in 1 2 3 4 5 6 7 8; do taskset -c 0 /rnkspin >/dev/null & done; \
+                     touch /r/ready{i}; exec /rnkslow 300"
+                );
+                let runner =
+                    Runner::new(&top.join(format!("sandbox{i}")), Some(RootEntry::PivotRoot))
+                        .unwrap();
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                output_to(&top.join(format!("slow{i}.out")), &mut spec);
+                let ended = std::sync::Mutex::new(None);
+                let r = runner.run(spec, None, |job| {
+                    let ready = ready.clone();
+                    let spawned = std::thread::spawn(move || {
+                        let spawned = clone_child(job, parent);
+                        let deadline = Instant::now() + Duration::from_secs(20);
+                        while !ready.exists() && Instant::now() < deadline {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        std::thread::sleep(Duration::from_millis(500));
+                        spawned
+                    })
+                    .join()
+                    .unwrap();
+                    *ended.lock().unwrap() = Some(Instant::now());
+                    spawned
+                });
+                let reaped = Instant::now();
+                let delay = reaped - ended.lock().unwrap().expect("the cloning thread ended");
+                let left = kill_named("rnkspin") + kill_named("rnkslow");
+                let text = fs::read_to_string(top.join(format!("slow{i}.out"))).unwrap_or_default();
+                println!(
+                    "{case}: namespace gone {delay:?} after the cloning thread ended; \
+                     {left} process(es) left; run: {r:?}; output {text:?}"
+                );
+                report.push((case, delay, left, ready.exists()));
+            }
+            let policy = fs::read_to_string(root.join("r/policy")).unwrap_or_default();
+            println!("the init's policy as the RUN set it: {policy:?}");
+            drop(mounts);
+            assert!(
+                policy.contains("SCHED_IDLE"),
+                "the RUN could not make its init idle: the test proves nothing ({policy:?})"
+            );
+            for (case, delay, left, ready) in report {
+                assert!(ready, "{case}: the RUN never got ready");
+                assert_eq!(left, 0, "{case}: a process of the RUN outlived its init");
+                assert!(
+                    delay < Duration::from_secs(60),
+                    "{case}: the namespace took {delay:?} to die"
+                );
+            }
         });
     }
 

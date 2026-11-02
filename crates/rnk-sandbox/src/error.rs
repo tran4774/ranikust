@@ -94,10 +94,13 @@ pub enum Step {
     FileLimit,
     /// Giving the command the `RLIMIT_CORE` ranikust started with.
     CoreLimit,
+    /// Starting the `RUN`'s init, PID 1 of its namespace, which forks the
+    /// command and gives up its own capabilities (ADR-0080).
+    Init,
 }
 
 impl Step {
-    const ALL: [Step; 40] = [
+    const ALL: [Step; 41] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -138,6 +141,7 @@ impl Step {
         Step::Chroot,
         Step::FileLimit,
         Step::CoreLimit,
+        Step::Init,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -198,6 +202,7 @@ impl Step {
             Step::Chroot => "chroot into the root",
             Step::FileLimit => "set RLIMIT_NOFILE",
             Step::CoreLimit => "set RLIMIT_CORE",
+            Step::Init => "start the RUN's init",
         }
     }
 }

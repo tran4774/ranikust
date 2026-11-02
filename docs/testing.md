@@ -616,7 +616,8 @@ reaches the host as root. It strings the finished crates together:
    diff ID (`rnk-layer`, `rnk-rootfs`);
 2. `enter_build_namespace`, the probe and three `RUN`s through
    `rnk-sandbox`: a file write, `apk add jq` (network and DNS through the
-   sandbox's `/etc` copies), and checks run inside the sandbox (PID 1, host
+   sandbox's `/etc` copies), and checks run inside the sandbox (PID 2 under
+   `ranikust-init`, which holds no capability, host
    name, Docker's bounding set `a80425fb`, read-only `/proc/sys`, stdin not
    a terminal);
 3. pack the root into one gzip layer and write an OCI layout

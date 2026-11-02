@@ -619,6 +619,64 @@ Entry format:
 - **Interim:** (d): the barriers above, with the tests that pin them.
 - **Raised:** 2026-11-03
 
+### Q-451: Should a `RUN`'s init be a small executed binary instead of a copy of ranikust?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, memory
+- **Context:** the init of every full-sandbox `RUN`
+  ([ADR-0080](adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md))
+  is a copy-on-write copy of ranikust that lives as long as the `RUN`: it
+  keeps the pages ranikust had when it was cloned, so memory ranikust frees
+  or rewrites meanwhile stays charged to the build's cgroup once per live
+  init. Measured in the VM (kernel 6.8, overlay mode, 6 parallel stages,
+  each writing 24 MiB then sleeping 20 to 70 s, in a cgroup of its own):
+  the cgroup's anonymous memory peaked at 49.1 MiB against 45.7 MiB on main
+  (+3.3 MiB), and while inits lived it stayed 9 to 12 MiB above main's (with
+  5 inits at 24 s: 48.1 against 36.0 MiB); `memory.current` peaked at
+  207.8 against 204.0 MiB **[measured]**. The worst case is one copy of
+  ranikust's resident memory per live init, if ranikust rewrote all of it
+  **[inferred]**; ranikust was 40 to 53 MiB resident here.
+- **Options:** (a) keep the copy and its cost; (b) execute a small static
+  init (embedded and run from a sealed memfd) that holds no copy of
+  ranikust: the same mechanism as Q-422's option (c), so one design could
+  answer both; (c) have the init release its private writable mappings
+  (`madvise(MADV_DONTNEED)` over the ranges `/proc/self/maps` lists), which
+  needs a parse in the child and care for the stack it runs on.
+- **Recommendation:** (a) at these numbers; (b) together with Q-422 if
+  either needs it.
+- **Interim:** (a).
+- **Raised:** 2026-11-03
+
+### Q-452: How is a root `RUN` kept from delaying its init's death?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, T8
+- **Context:** when ranikust dies, the init of a full-sandbox `RUN`
+  ([ADR-0080](adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md))
+  dies and the namespace with it, but a root `RUN` can delay that: as a
+  process of the init's uid it may make the init `SCHED_IDLE` and pin it to
+  one CPU without `CAP_SYS_NICE`, then keep that CPU busy. Measured in the
+  VM (kernel 6.8): 0.9 to 1.8 ms without that, 7.6 s with 8 spinners,
+  30.6 s with 32, about 1 s per spinner, bounded only by the outer cgroup's
+  `pids.max` **[measured]** (threat-model section 6,
+  `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`). The `RUN`'s
+  processes keep running meanwhile. Running the init under a uid of its own
+  does not help: a root `RUN` has `CAP_SETUID` among Docker's default
+  capabilities and switches to that uid, after which renicing and pinning
+  the init were allowed again **[measured]** (VM, 2026-11-03).
+- **Options:** (a) put the command in a cgroup of its own, apart from the
+  init's: group scheduling then gives the init's cgroup its share of the CPU
+  however many spinners the `RUN` starts **[inferred]**, and a write to the
+  `RUN` cgroup's `cgroup.kill` ends its whole tree as a second line; this
+  needs a writable, delegated cgroup v2 tree, which a default Docker
+  container or most pods do not give (ADR-0007: cgroups are only read
+  today); (b) with `--userns` (Phase 3), run the command in a user namespace
+  that does not map the init's uid, so that neither the same-owner rule nor
+  `CAP_SETUID` inside it reaches the init **[inferred]**; (c) keep the
+  documented residual.
+- **Recommendation:** (a) where a delegated cgroup exists; (b) with
+  Phase 3.
+- **Interim:** (c).
+- **Raised:** 2026-11-03
+
 ### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
 
 - **Blocks:** nothing yet (backlog); **Area:** `rnk-store`, `rnk-builder`

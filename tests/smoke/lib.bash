@@ -4,7 +4,8 @@
 # Checked inside the sandbox, one `RUN` each so that a failure names it.
 # Mount flags come from mountinfo: busybox `test -w` is always true for root.
 smoke_checks=(
-  'test "$$" = 1'                                                    # PID 1 of its namespace
+  'test "$$" = 2 && test "$(cat /proc/1/comm)" = ranikust-init'      # PID 2 under its init (ADR-0080)
+  '! grep -Eq "^Cap(Eff|Prm):[[:space:]]*0*[1-9a-f]" /proc/1/status'  # the init holds no capability
   'test "$(hostname)" = ranikust'
   'grep -q "^CapBnd:[[:space:]]*00000000a80425fb$" /proc/self/status' # Docker's 14 capabilities
   'grep -q "^CapInh:[[:space:]]*0*$" /proc/self/status'
