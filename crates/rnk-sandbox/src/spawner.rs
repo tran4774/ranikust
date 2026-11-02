@@ -1576,9 +1576,12 @@ fn execute(
             kill_leftovers(pid).and_then(|()| sweep::kill_run_tree(pid, &helpers))
         }
         (Ok(()), Isolation::Direct) => kill_leftovers(pid),
+        // A `Direct` child whose wait failed: the RUN fails with that error,
+        // as above.
+        (r @ Err(_), Isolation::Direct) => r,
         // The child is PID 1 of its namespace: when it exits, the kernel
         // kills the rest.
-        (r, _) => r,
+        (r, Isolation::Full) => r,
     };
     let reaped = reap(pid);
     // The child is reaped: its namespace can end with this descriptor.
