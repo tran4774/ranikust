@@ -743,7 +743,7 @@ impl Extractor<'_> {
             }
             Err(e) => return Err(e),
         };
-        if st.mnt_id != self.root.mnt_id() || st.mount_root {
+        if self.root.off_mount(&st) {
             return match self.live {
                 Some(_) => Ok(Room::Skip),
                 None => Err(crosses_mount(raw)),
@@ -889,7 +889,7 @@ impl Extractor<'_> {
                 match meta::statx_at(pfd.as_fd(), hidden, &target) {
                     Err(e) if is_noent(&e) => Ok(()),
                     Err(e) => Err(e),
-                    Ok(st) if st.mnt_id != self.root.mnt_id() || st.mount_root => match self.live {
+                    Ok(st) if self.root.off_mount(&st) => match self.live {
                         Some(_) => {
                             self.stats.ignored += 1;
                             Ok(())
@@ -1072,7 +1072,7 @@ impl Extractor<'_> {
             return Ok(None);
         }
         match meta::statx_at(fd.as_fd(), tname, &t) {
-            Ok(st) if st.mnt_id != self.root.mnt_id() || st.mount_root => Ok(None),
+            Ok(st) if self.root.off_mount(&st) => Ok(None),
             Ok(_) => Ok(Some(TargetDir::Checked(fd))),
             Err(e) if is_noent(&e) => Ok(Some(TargetDir::Checked(fd))),
             Err(e) => Err(e),

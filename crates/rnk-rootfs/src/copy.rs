@@ -575,7 +575,7 @@ impl Copier<'_> {
     /// point, is refused.
     fn existing(&self, pfd: BorrowedFd<'_>, name: &OsStr, to: &Path) -> Result<Option<Stat>> {
         match meta::statx_at(pfd, name, to) {
-            Ok(st) if st.mnt_id != self.dst.mnt_id() || st.mount_root => Err(crosses_mount(to)),
+            Ok(st) if self.dst.off_mount(&st) => Err(crosses_mount(to)),
             Ok(st) => Ok(Some(st)),
             Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(None),
             Err(e) => Err(e),

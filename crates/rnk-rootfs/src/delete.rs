@@ -232,7 +232,7 @@ fn prune_walk(
             }
             Err(e) => return Err(e),
         };
-        if st.mnt_id != root.mnt_id() || st.mount_root {
+        if root.off_mount(&st) {
             return Err(Error::InvalidPath {
                 path: child,
                 reason: "a mount below the root",
@@ -428,7 +428,7 @@ fn remove_below_seen(
             Err(e) => return Err(e),
         };
         seen(&st);
-        if st.mnt_id != root.mnt_id() || st.mount_root {
+        if root.off_mount(&st) {
             top.kept = true;
             counts.kept += 1;
             continue;
