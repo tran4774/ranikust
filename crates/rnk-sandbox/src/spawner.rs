@@ -3819,8 +3819,8 @@ mod tests {
     /// argument or environment string of ranikust's in `/proc/1/cmdline`
     /// and keeps `/proc/1/environ` closed; ranikust sees the command's own
     /// status, an exit code or a signal, a set-up or `execve` failure of the
-    /// command as before, and an end even for a command that made the init
-    /// its tracer (`PTRACE_TRACEME`).
+    /// command as before, and an end, by `SIGTRAP`, even for a command that
+    /// made the init its tracer (`PTRACE_TRACEME`, as `USER 1000`).
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn the_run_is_pid_2_under_an_init_that_reports_its_status() {
@@ -3831,12 +3831,14 @@ mod tests {
             root_with_usr(&mut mounts, &root);
             let parent = ParentPid::new().unwrap();
             let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
-            let run = |argv: Vec<std::ffi::OsString>, workdir: &str, out: &Path| {
+            let run_as = |user: &str, argv: Vec<std::ffi::OsString>, workdir: &str, out: &Path| {
                 let mut spec = RunSpec::new(&root, argv);
+                spec.user = user.into();
                 spec.workdir = workdir.into();
                 output_to(out, &mut spec);
                 runner.run(spec, None, |job| clone_child(job, parent))
             };
+            let run = |argv, workdir: &str, out: &Path| run_as("", argv, workdir, out);
             let sh = |script: &str| -> Vec<std::ffi::OsString> {
                 vec!["/bin/sh".into(), "-c".into(), script.into()]
             };
@@ -3878,8 +3880,11 @@ mod tests {
             assert_eq!(status.signal(), Some(libc::SIGTERM));
             // The command makes the init its tracer, then `execve`s: the
             // init's wait sees a stop, which is no end; it detaches and the
-            // command ends, its stop signal handed on.
-            let traced = run(
+            // command ends, its stop signal handed on. As `USER 1000`: a
+            // root command's permitted set is no subset of the init's empty
+            // one, so its `PTRACE_TRACEME` fails and no stop happens.
+            let traced = run_as(
+                "1000:1000",
                 vec![
                     "/usr/bin/python3".into(),
                     "-c".into(),
@@ -3892,10 +3897,7 @@ mod tests {
                 &top.join("traced.out"),
             )
             .unwrap();
-            assert!(
-                traced.code() == Some(5) || traced.signal() == Some(libc::SIGTRAP),
-                "{traced:?}"
-            );
+            assert_eq!(traced.signal(), Some(libc::SIGTRAP), "{traced:?}");
             let r = run(vec!["/no/such/program".into()], "/", &top.join("exec.out"));
             assert!(matches!(r, Err(Error::Exec { .. })), "{r:?}");
             let r = run(sh("true"), "/no/such/dir", &top.join("workdir.out"));

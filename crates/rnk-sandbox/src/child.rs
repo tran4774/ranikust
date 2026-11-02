@@ -606,10 +606,13 @@ fn run_init(
     drop(go_r);
     init_keep_nothing(err, parent, command);
     // Nothing is left to report on the error pipe: the command's own copy
-    // says whether it reached `execve`. Closing the go pipe's write end,
-    // with every other descriptor, lets the command go on.
-    let _ = go_w.into_raw_fd();
-    close_all_except(&[status_w]);
+    // says whether it reached `execve`. Every other descriptor goes first;
+    // closing the go pipe's write end last lets the command go on only
+    // once the init holds nothing but the status pipe.
+    let go_w = go_w.into_raw_fd();
+    close_all_except(&[go_w.min(status_w), go_w.max(status_w)]);
+    // SAFETY: closing a descriptor number this process holds.
+    unsafe { libc::close(go_w) };
     let status = reap_until(command);
     let bytes = status.to_le_bytes();
     // SAFETY: `status_w` is open in this process; the write is below
@@ -663,7 +666,9 @@ fn zero_args_and_environment(err: RawFd, parent: ParentCheck) {
 
 /// `(arg_start, arg_end)` and `(env_start, env_end)` from a
 /// `/proc/<pid>/stat` line: fields 48 to 51, counted after the name.
-/// `None` unless each area is non-inverted and below 64 MiB.
+/// `None` unless each area starts above zero, is non-inverted and is below
+/// 64 MiB: the kernel prints zeros where it withholds the addresses, and
+/// zeroing nothing must not pass for success.
 pub(crate) fn arg_and_env_regions(stat: &[u8]) -> Option<[(usize, usize); 2]> {
     let close = stat.iter().rposition(|&b| b == b')')?;
     // Field 3, the state, is the first after ") ".
@@ -691,7 +696,7 @@ pub(crate) fn arg_and_env_regions(stat: &[u8]) -> Option<[(usize, usize); 2]> {
     let regions = [(arg_start, arg_end), (env_start, env_end)];
     regions
         .iter()
-        .all(|&(s, e)| s <= e && e - s < (64 << 20))
+        .all(|&(s, e)| s != 0 && s <= e && e - s < (64 << 20))
         .then_some(regions)
 }
 
@@ -2413,6 +2418,10 @@ mod tests {
         let at = inverted.len() - b"1000 1010 1010 1100 0\n".len();
         inverted.splice(at.., b"1010 1000 1010 1100 0\n".iter().copied());
         assert_eq!(arg_and_env_regions(&inverted), None);
+        // Withheld: the kernel prints zeros for all four.
+        let mut withheld = line.clone();
+        withheld.splice(at.., b"0 0 0 0 0\n".iter().copied());
+        assert_eq!(arg_and_env_regions(&withheld), None);
         assert_eq!(arg_and_env_regions(b"7 (a) R 1 2"), None);
         let own = std::fs::read("/proc/self/stat").unwrap();
         let [(arg_start, arg_end), _] = arg_and_env_regions(&own).unwrap();

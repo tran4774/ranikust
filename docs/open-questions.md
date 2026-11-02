@@ -646,6 +646,37 @@ Entry format:
 - **Interim:** (a).
 - **Raised:** 2026-11-03
 
+### Q-452: How is a root `RUN` kept from delaying its init's death?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, T8
+- **Context:** when ranikust dies, the init of a full-sandbox `RUN`
+  ([ADR-0080](adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md))
+  dies and the namespace with it, but a root `RUN` can delay that: as a
+  process of the init's uid it may make the init `SCHED_IDLE` and pin it to
+  one CPU without `CAP_SYS_NICE`, then keep that CPU busy. Measured in the
+  VM (kernel 6.8): 0.9 to 1.8 ms without that, 7.6 s with 8 spinners,
+  30.6 s with 32, about 1 s per spinner, bounded only by the outer cgroup's
+  `pids.max` **[measured]** (threat-model section 6,
+  `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`). The `RUN`'s
+  processes keep running meanwhile. Running the init under a uid of its own
+  does not help: a root `RUN` has `CAP_SETUID` among Docker's default
+  capabilities and switches to that uid, after which renicing and pinning
+  the init were allowed again **[measured]** (VM, 2026-11-03).
+- **Options:** (a) put the command in a cgroup of its own, apart from the
+  init's: group scheduling then gives the init's cgroup its share of the CPU
+  however many spinners the `RUN` starts **[inferred]**, and a write to the
+  `RUN` cgroup's `cgroup.kill` ends its whole tree as a second line; this
+  needs a writable, delegated cgroup v2 tree, which a default Docker
+  container or most pods do not give (ADR-0007: cgroups are only read
+  today); (b) with `--userns` (Phase 3), run the command in a user namespace
+  that does not map the init's uid, so that neither the same-owner rule nor
+  `CAP_SETUID` inside it reaches the init **[inferred]**; (c) keep the
+  documented residual.
+- **Recommendation:** (a) where a delegated cgroup exists; (b) with
+  Phase 3.
+- **Interim:** (c).
+- **Raised:** 2026-11-03
+
 ### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
 
 - **Blocks:** nothing yet (backlog); **Area:** `rnk-store`, `rnk-builder`

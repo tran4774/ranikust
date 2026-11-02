@@ -61,15 +61,17 @@ namespace, which runs the command as PID 2 (the maintainer, 2026-11-03).
   its copy of the argument and environment strings ranikust started with
   (`/proc/self/stat` fields 48 to 51: `/proc/1/cmdline` has no ptrace check,
   and those strings hold `--build-arg` values, `--secret` paths and a
-  `DOCKER_AUTH_CONFIG`), starts a new session, and forks: the new process,
-  PID 2, waits on a close-on-exec go pipe, then does what the child did last
+  `DOCKER_AUTH_CONFIG`; a zero address, which the kernel prints where it
+  withholds them, fails `Step::Init`), starts a new session, and forks: the
+  new process, PID 2, waits on a close-on-exec go pipe, then does what the
+  child did last
   (`setsid`, the session keyring, `WORKDIR`, the `USER` ids, the
   exec-candidate checks, `execve`). It arms its own death signal again
   after `setresuid`, toward the init, only as a second line.
 - Meanwhile the init drops every capability, is named `ranikust-init`
   (`/proc/1/comm`), checks its death signal is still armed and ranikust
   still its parent, and closes every descriptor but the write end of a new
-  status pipe; closing the go pipe's write end lets the command go on, so a
+  status pipe, the go pipe's write end last, which lets the command go on, so a
   failure of these steps (`Step::Init`, the command killed) always comes
   before the command ran. It installs no signal handler, so the kernel drops
   every signal a process of the namespace sends it; ranikust's `SIGKILL`
@@ -112,8 +114,11 @@ namespace, which runs the command as PID 2 (the maintainer, 2026-11-03).
   it to one CPU, then keep that CPU busy. Measured in the VM (kernel 6.8):
   0.9 to 1.8 ms without that, 7.6 s with 8 spinners on the init's CPU,
   30.6 s with 32, about 1 s per spinner **[measured]**; bounded only by the
-  processes the `RUN` may start (threat-model section 6). A per-`RUN`
-  `cgroup.kill` would be a second line; not built.
+  processes the `RUN` may start (threat-model section 6). An init under a
+  uid of its own does not help, since a root `RUN` holds `CAP_SETUID` and
+  switches to it **[measured]**; a cgroup for the command apart from the
+  init's, with `cgroup.kill` as a second line, or a user namespace that does
+  not map the init's uid (`--userns`) would; not built [open: Q-452].
 - Neutral, because the command is no longer PID 1: `$$` is 2, and a command
   that expects to be PID 1 (to reap, or for PID 1's signal semantics) runs as
   under `docker run --init`. kaniko's `RUN` is a child of the executor, never

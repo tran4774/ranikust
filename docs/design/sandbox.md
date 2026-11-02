@@ -221,14 +221,15 @@ rtnetlink first; the ADR lists them as residual risk.
    ([ADR-0080](../adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)).
    It sets itself not dumpable, zeroes its copy of the argument and
    environment strings ranikust started with (`/proc/self/stat` fields 48
-   to 51; `/proc/1/cmdline` has no ptrace check), starts a session of its
+   to 51, refused as `Step::Init` if zero; `/proc/1/cmdline` has no ptrace
+   check), starts a session of its
    own and forks; the new process, PID 2, waits on a close-on-exec go pipe,
    then runs steps 6 to 8 and becomes the command. The init keeps the death
    signal of step 1, which nothing clears since it never changes its user
    or executes anything; it drops every capability, names itself
    `ranikust-init`, checks the death signal is still armed and the parent
    still alive, and closes every descriptor but the write end of the status
-   pipe, the go pipe's included, which lets the command go on (a failure
+   pipe, the go pipe's write end last, which lets the command go on (a failure
    before that kills the command, which has not run, and is reported as
    `Step::Init`). It then reaps every process that reparents to it until
    the command exits or is killed, detaching from the command if it made

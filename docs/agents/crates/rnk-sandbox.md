@@ -355,7 +355,9 @@ from `rnk-store`, secret file) and passes `--network`.
   `the_inits_status_records_are_read_back` (T0): the status pipe's
   record, a stop refused. The PID-2 test also checks that `/proc/1/cmdline`
   is all NUL, `/proc/1/environ` closed, and that a command that made the
-  init its tracer (`PTRACE_TRACEME`) still ends.
+  init its tracer (`PTRACE_TRACEME`, as `USER 1000`: a root command's is
+  refused, its permitted set no subset of the init's empty one) is
+  detached and ends by `SIGTRAP`.
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it` (T2, prints
   the delays): the namespace dies 1 to 2 ms after the death signal without
   tricks, 7.6 s with the init made `SCHED_IDLE` and pinned under 8

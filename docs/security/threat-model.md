@@ -126,9 +126,13 @@ These follow from decisions and are documented to users rather than fixed:
   with 8 spinners pinned to the init's CPU and 30.6 s with 32: about 1 s per
   spinner **[measured]** (`red_team_a_run_can_slow_its_inits_death_but_not_stop_it`),
   so the delay is bounded only by the processes the `RUN` may start (the
-  outer cgroup's `pids.max`), during which its processes keep running. A
-  per-`RUN` cgroup killed with `cgroup.kill` would be a second line where a
-  writable, delegated cgroup exists; not built.
+  outer cgroup's `pids.max`), during which its processes keep running. An
+  init under a uid of its own would not help: a root `RUN` holds
+  `CAP_SETUID` and switches to that uid **[measured]**. A cgroup for the
+  command apart from the init's, killed with `cgroup.kill` as a second line
+  where a writable, delegated cgroup exists, or a user namespace that does
+  not map the init's uid (`--userns`, Phase 3) would close it; not built
+  [open: Q-452].
 - kaniko mode inside a container that forbids mounts has no isolation
   between `RUN` and the container ([ADR-0002](../adr/0002-two-snapshot-modes.md)).
   ranikust keeps its own state and credentials out of `RUN`'s reach (T21,
