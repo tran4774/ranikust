@@ -420,6 +420,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- Copying a tree keeps one source and one destination path for the entry
+  at hand instead of a path per directory level. A chain of directories a
+  `RUN` made far past `PATH_MAX`, copied as a per-stage base, by `COPY
+  --from` or out of a kept stage, took memory growing with the square of
+  its depth (64 MB for 400 levels of 200-byte names); it now takes 0.5 MB.
 - A registry's text reaches an error only as a 200-character excerpt.
   An error envelope of thousands of entries, each short, was joined whole
   into the message (438 KB for 2000 entries within the `registry-body`

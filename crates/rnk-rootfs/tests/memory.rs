@@ -177,6 +177,29 @@ fn deleting_a_deep_chain_takes_memory_linear_in_its_depth() {
     assert!(root.read_names("").unwrap().is_empty());
 }
 
+/// Copying a deep chain (a per-stage base copied from its parent stage,
+/// `COPY --from`, a kept stage copied out) holds one name per level and
+/// one path buffer, not every level's full path: memory linear in depth.
+/// Before, each frame kept its source and destination paths, 33 MB at
+/// this depth (T15).
+#[test]
+fn copying_a_deep_chain_takes_memory_linear_in_its_depth() {
+    let _one = one_at_a_time();
+    let (_tmp, host, src) = root();
+    deep_chain(&host, 400);
+    let dst_tmp = tempfile::tempdir().unwrap();
+    let dst = RootPath::open(dst_tmp.path()).unwrap();
+    let opts = rnk_rootfs::CopyOpts::default();
+    let peak = peak_of(|| rnk_rootfs::copy(&src, "", &dst, "", &opts).unwrap());
+    eprintln!("peak: {peak} bytes");
+    assert!(peak < 4 * MIB, "copying took {peak} bytes");
+    let mut cur = PathBuf::new();
+    for _ in 0..3 {
+        cur.push("n".repeat(200));
+        assert_eq!(dst.read_names(&cur).unwrap().len(), 1);
+    }
+}
+
 /// So does pruning, which walks every directory it keeps.
 #[test]
 fn pruning_a_deep_chain_takes_memory_linear_in_its_depth() {

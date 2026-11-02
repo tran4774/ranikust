@@ -289,7 +289,10 @@ impl SkippedSpecial {
 }
 
 /// One source directory being copied. One frame per level holds two fds,
-/// so a deep tree needs a raised `RLIMIT_NOFILE`, as deletion does.
+/// so a deep tree needs a raised `RLIMIT_NOFILE`, as deletion does. Its
+/// paths are not kept: the walk shares one source and one destination path
+/// that grow by a name on entering a frame and shrink when it is done, so
+/// memory is linear in the tree's depth, not in the sum of its paths (T15).
 struct Frame {
     /// The source directory, `O_RDONLY | O_DIRECTORY`.
     src: OwnedFd,
@@ -301,9 +304,6 @@ struct Frame {
     /// is done, so that its entries neither move the mtime nor hit a
     /// read-only directory; `None` leaves an existing destination as it is.
     pending: Option<Meta>,
-    /// Their paths inside their roots, for messages and bookkeeping.
-    from: PathBuf,
-    to: PathBuf,
     /// Names still to copy, last first.
     names: Vec<OsString>,
 }
@@ -374,96 +374,119 @@ impl Copier<'_> {
             stat: src_stat,
             dst,
             pending,
-            from: from.to_owned(),
-            to: to.to_owned(),
             names,
         }];
+        // The paths of the entry at hand, shared by every frame: a name is
+        // pushed for each entry and popped when it is done, or, for a
+        // directory, when its frame is.
+        let mut from = from.to_owned();
+        let mut to = to.to_owned();
         while let Some(top) = stack.last_mut() {
             let Some(name) = top.names.pop() else {
                 // Its entries are done: the directory's own mode and times,
                 // through the fd it was written through, deepest first.
-                if let Some(frame) = stack.pop()
-                    && let Some(m) = &frame.pending
-                {
-                    let h = Handle::Path {
-                        fd: frame.dst.as_fd(),
-                        file_type: FileType::Directory,
-                        parent: None,
-                    };
-                    meta::apply_lenient(&h, m, &frame.to, &self.skipped)?;
+                if let Some(frame) = stack.pop() {
+                    if let Some(m) = &frame.pending {
+                        let h = Handle::Path {
+                            fd: frame.dst.as_fd(),
+                            file_type: FileType::Directory,
+                            parent: None,
+                        };
+                        meta::apply_lenient(&h, m, &to, &self.skipped)?;
+                    }
+                    // The first frame is the directory given, never pushed.
+                    if !stack.is_empty() {
+                        from.pop();
+                        to.pop();
+                    }
                 }
                 continue;
             };
-            let from = top.from.join(&name);
-            let to = top.to.join(&name);
-            // Below the source given, never into another mount: a live
-            // `/proc` or `/sys` there would be read as files. A mount point
-            // that `keep` refuses (kaniko mode copying its root out, with
-            // the mounts on its ignore list) is left out instead.
-            let pin = match root::open_name(
-                top.src.as_fd(),
-                &name,
-                OFlags::PATH | OFlags::NOFOLLOW,
-                0,
-                true,
-                &from,
-            ) {
-                Ok(pin) => pin,
-                Err(e)
-                    if e.raw_os_error() == Some(Errno::XDEV.raw_os_error())
-                        && !(self.keep)(&from, true) =>
-                {
-                    continue;
-                }
-                Err(e) => return Err(on_mount(e, &from)),
-            };
-            let st = meta::statx_at(pin.as_fd(), OsStr::new(""), &from)?;
-            if !(self.keep)(&from, st.file_type() == FileType::Directory) {
-                continue;
-            }
-            if self.o.skip_special && special(st.file_type()) {
-                self.special.add(&from);
-                continue;
-            }
-            match st.file_type() {
-                FileType::Directory => {
-                    self.check_not_inside(&st, &from)?;
-                    let s = meta::reopen(pin.as_fd(), OFlags::RDONLY | OFlags::DIRECTORY, &from)?;
-                    let (d, mut m) = self.dir_entry(top.dst.as_fd(), &name, &to, &st)?;
-                    m.xattrs = meta::read_xattrs_lenient(
-                        s.as_fd(),
-                        FileType::Directory,
-                        None,
-                        &from,
-                        &self.skipped,
-                    )?;
-                    let names = sorted_names(s.as_fd(), &from)?;
-                    stack.push(Frame {
-                        src: s,
-                        stat: st,
-                        dst: d,
-                        pending: Some(m),
-                        from,
-                        to,
-                        names,
-                    });
-                }
-                _ => {
-                    let dir = top.stat;
-                    let sparent = Some((top.src.as_fd(), name.as_os_str()));
-                    self.node(
-                        pin.as_fd(),
-                        &st,
-                        sparent,
-                        Some(&dir),
-                        top.dst.as_fd(),
-                        &name,
-                        &to,
-                    )?;
+            from.push(&name);
+            to.push(&name);
+            let entered = self.entry(top, &name, &from, &to)?;
+            match entered {
+                Some(frame) => stack.push(frame),
+                None => {
+                    from.pop();
+                    to.pop();
                 }
             }
         }
         Ok(())
+    }
+
+    /// One entry `name` of the directory `top`, at `from` and `to`: a
+    /// directory gives the frame that copies its entries; anything else is
+    /// copied (or left out) here.
+    fn entry(
+        &mut self,
+        top: &Frame,
+        name: &OsStr,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Option<Frame>> {
+        // Below the source given, never into another mount: a live `/proc`
+        // or `/sys` there would be read as files. A mount point that `keep`
+        // refuses (kaniko mode copying its root out, with the mounts on its
+        // ignore list) is left out instead.
+        let pin = match root::open_name(
+            top.src.as_fd(),
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW,
+            0,
+            true,
+            from,
+        ) {
+            Ok(pin) => pin,
+            Err(e)
+                if e.raw_os_error() == Some(Errno::XDEV.raw_os_error())
+                    && !(self.keep)(from, true) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(on_mount(e, from)),
+        };
+        let st = meta::statx_at(pin.as_fd(), OsStr::new(""), from)?;
+        if !(self.keep)(from, st.file_type() == FileType::Directory) {
+            return Ok(None);
+        }
+        if self.o.skip_special && special(st.file_type()) {
+            self.special.add(from);
+            return Ok(None);
+        }
+        if st.file_type() == FileType::Directory {
+            self.check_not_inside(&st, from)?;
+            let s = meta::reopen(pin.as_fd(), OFlags::RDONLY | OFlags::DIRECTORY, from)?;
+            let (d, mut m) = self.dir_entry(top.dst.as_fd(), name, to, &st)?;
+            m.xattrs = meta::read_xattrs_lenient(
+                s.as_fd(),
+                FileType::Directory,
+                None,
+                from,
+                &self.skipped,
+            )?;
+            let names = sorted_names(s.as_fd(), from)?;
+            return Ok(Some(Frame {
+                src: s,
+                stat: st,
+                dst: d,
+                pending: Some(m),
+                names,
+            }));
+        }
+        let dir = top.stat;
+        let sparent = Some((top.src.as_fd(), name));
+        self.node(
+            pin.as_fd(),
+            &st,
+            sparent,
+            Some(&dir),
+            top.dst.as_fd(),
+            name,
+            to,
+        )?;
+        Ok(None)
     }
 
     /// The destination directory of a directory's contents, and its
