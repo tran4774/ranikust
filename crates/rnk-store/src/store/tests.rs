@@ -119,6 +119,40 @@ fn a_marker_name_held_by_what_a_run_made_is_named_in_the_error() {
 }
 
 #[test]
+fn a_marker_a_run_kept_from_being_made_is_made_after_its_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    forge_after_marker_removed(&state);
+    // The RUN filled the filesystem: the first try fails.
+    MARKER_CREATE_FAILS.with(|n| n.set(1));
+    store.leave_run(run, true).unwrap();
+    assert!(!state.join(MARKER).exists(), "the forged store marker goes");
+    assert!(
+        fs::symlink_metadata(state.join(BUILDING))
+            .unwrap()
+            .is_file()
+    );
+    drop(store);
+}
+
+#[test]
+fn an_empty_marker_is_this_containers() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A marker made but left empty, its text unwritten (a full filesystem).
+    fs::write(state.join(BUILDING), b"").unwrap();
+    let root = RootPath::open(&state).unwrap();
+    assert_eq!(
+        read_building_marker(&root, &state, Some("pid:[1] boot:x")).unwrap(),
+        Marker::Ours
+    );
+}
+
+#[test]
 fn a_marker_the_close_can_never_make_fails_it_and_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");

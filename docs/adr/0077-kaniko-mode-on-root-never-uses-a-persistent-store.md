@@ -105,7 +105,10 @@ empty at its end.
     no persistent store opens (`check_marker` and `ranikust`'s check refuse
     a non-empty one without it), and the marker is tried again right
     then, before the rest, which can take long. It is tried once more
-    after the emptying, which frees what the `RUN` wrote, and stays. If it still cannot
+    after the emptying, which frees what the `RUN` wrote, and stays. The
+    marker written back after each `RUN` is retried the same way, once a
+    forged `.ranikust-state` is gone. An empty marker, one whose text
+    could not be written, counts as this container's. If it still cannot
     be made, the close fails with `Error::Unmarked`, which says that
     nothing marks the directory, or that what holds the marker's name is
     something a `RUN` made, and that the directory must be deleted; no

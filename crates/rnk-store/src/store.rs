@@ -635,12 +635,24 @@ impl Store {
     /// [`ensure_own_marker`] for an anonymous store; a marker not this
     /// build's poisons the fence and stays at the end.
     fn keep_own_marker(&self, anon: &Anon) -> Result<()> {
-        let replaced = ensure_own_marker(
-            &self.state,
-            &anon.marker_dir,
-            &self.state_path,
-            anon.mark.as_deref(),
-        )?;
+        let remark = || {
+            ensure_own_marker(
+                &self.state,
+                &anon.marker_dir,
+                &self.state_path,
+                anon.mark.as_deref(),
+            )
+        };
+        // A `RUN` that filled the filesystem can keep the marker from being
+        // made; no `RUN` runs now, so a forged `.ranikust-state` goes, which
+        // frees an inode, and it is tried once more.
+        let replaced = match remark() {
+            Ok(replaced) => replaced,
+            Err(_) => {
+                remove_state_marker(&self.state);
+                remark()?
+            }
+        };
         if replaced {
             anon.tampered.store(true, Ordering::Relaxed);
             self.fence.poison();
@@ -1177,6 +1189,7 @@ impl Store {
         let early = match first {
             Ok(replaced) => Some(replaced),
             Err(e) => {
+                remove_state_marker(&self.state);
                 tracing::warn!(
                     target: "rnk_store",
                     "state directory {}: {BUILDING} cannot be made this build's ({e}); a RUN may \
@@ -1184,7 +1197,6 @@ impl Store {
                      emptied (ADR-0077)",
                     self.state_path.display()
                 );
-                remove_state_marker(&self.state);
                 remark().ok().map(|_| true)
             }
         };
@@ -1198,7 +1210,13 @@ impl Store {
                     return Err(Error::Unmarked {
                         path: self.state_path.clone(),
                         emptied: emptied.is_ok(),
-                        held: self.state.statx(BUILDING).is_ok(),
+                        // ranikust's own marker, made empty when its text
+                        // could not be written, is not what a `RUN` made.
+                        held: match marker_text(&self.state, &self.state_path, 1) {
+                            Ok(None) => false,
+                            Ok(Some(Some(h))) => !h.is_empty(),
+                            _ => true,
+                        },
                         why: e.to_string(),
                     });
                 }
@@ -1404,7 +1422,11 @@ fn read_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>) 
     Ok(match marker_text(root, state_path, 256)? {
         None => Marker::Absent,
         Some(None) => Marker::Ours,
-        Some(Some(held)) if mark.is_none_or(|m| held == m.as_bytes()) => Marker::Ours,
+        // An empty one is a marker this process made whose text could not
+        // be written (a full filesystem).
+        Some(Some(held)) if held.is_empty() || mark.is_none_or(|m| held == m.as_bytes()) => {
+            Marker::Ours
+        }
         Some(Some(_)) => Marker::Theirs,
     })
 }
