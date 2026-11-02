@@ -427,6 +427,12 @@ fn kaniko(
     let setup = tracing::debug_span!("ranikust.setup")
         .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile))
         .map_err(|refusal| Failure::error(refusal.to_string()))?;
+    if on_slash {
+        // After the set-up gave ranikust only what a `RUN` keeps: the
+        // environments it reads now are exactly those a `RUN` reads
+        // (ADR-0078).
+        exposure::warn_credential_holders(&exposure::secret_variables(config));
+    }
     let setup::KanikoSetup {
         store,
         sandbox,
@@ -498,8 +504,9 @@ fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Resu
         }
     }
     // What ranikust cannot close itself (ADR-0051, B4 and B5; ADR-0078).
+    // The processes holding credentials are looked for after the set-up,
+    // with the capabilities a `RUN` keeps (`kaniko`).
     exposure::warn_build_args(&config.build_args);
-    exposure::warn_credential_holders(&exposure::secret_variables(config));
     for warning in exposure::file_secret_warnings(&config.secrets) {
         tracing::warn!("{warning}");
     }
