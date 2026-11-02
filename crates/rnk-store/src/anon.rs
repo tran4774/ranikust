@@ -178,6 +178,9 @@ impl AnonFiles {
 
     /// A file made by a random name and unlinked before the window closes.
     fn create_named(&self) -> Result<File> {
+        // No randomness ([`Error::Random`]) fails the file, never memory,
+        // even as `EPERM` (a seccomp filter): it says nothing about the
+        // state directory.
         let name = random_name()?;
         let window = self.fence.named()?;
         let fd = rustix::fs::openat(
@@ -257,19 +260,26 @@ pub(crate) fn fd_path(fd: &impl AsFd) -> PathBuf {
 
 /// [`PREFIX`] and 128 random bits in hex.
 pub(crate) fn random_name() -> Result<String> {
+    #[cfg(test)]
+    if tests::FAILING_RANDOM.get() {
+        return random_name_from(|_| Err(Errno::PERM));
+    }
+    random_name_from(|rest| rustix::rand::getrandom(rest, rustix::rand::GetRandomFlags::empty()))
+}
+
+/// [`random_name`] with the bits from `fill`, which may fill less than
+/// asked or be interrupted, as `getrandom(2)`.
+fn random_name_from(
+    mut fill: impl FnMut(&mut [u8]) -> rustix::io::Result<usize>,
+) -> Result<String> {
     let mut bytes = [0_u8; 16];
     let mut filled = 0;
     while filled < bytes.len() {
         let rest = bytes.get_mut(filled..).unwrap_or_default();
-        match rustix::rand::getrandom(rest, rustix::rand::GetRandomFlags::empty()) {
+        match fill(rest) {
             Ok(n) => filled += n,
             Err(Errno::INTR) => {}
-            Err(e) => {
-                return Err(Error::AnonymousFile {
-                    path: PathBuf::from("getrandom"),
-                    source: e.into(),
-                });
-            }
+            Err(e) => return Err(Error::Random(e.into())),
         }
     }
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -366,7 +376,7 @@ mod tests {
         let anon = files(dir.path());
         anon.force(NAMED);
         let _run = anon.fence.enter_run().unwrap();
-        assert!(matches!(anon.create(), Err(Error::Anonymous(_))));
+        assert!(matches!(anon.create(), Err(Error::Anonymous { .. })));
         assert!(!anon.in_memory(), "never falls back to memory for that");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
@@ -445,6 +455,55 @@ mod tests {
             .collect();
         assert_eq!(left, [std::ffi::OsString::from("keep")]);
         assert!(Path::new("/etc").exists(), "the link is never followed");
+    }
+
+    thread_local! {
+        /// Makes [`random_name`] fail with `EPERM` on this thread, as a
+        /// seccomp filter refusing `getrandom` does.
+        pub(super) static FAILING_RANDOM: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
+    /// No randomness fails the file, even as `EPERM`: it says nothing about
+    /// the state directory, so it is no reason to keep state in memory.
+    #[test]
+    fn a_failing_random_source_does_not_fall_back_to_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let anon = files(dir.path());
+        anon.force(NAMED);
+        FAILING_RANDOM.set(true);
+        let made = anon.create();
+        FAILING_RANDOM.set(false);
+        assert!(matches!(made, Err(Error::Random(_))), "{made:?}");
+        assert!(!anon.in_memory(), "never falls back to memory for that");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_failing_random_source_is_named_as_such() {
+        let e = random_name_from(|_| Err(Errno::NOSYS)).unwrap_err();
+        assert!(matches!(e, Error::Random(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "drawing a random name with getrandom: {}",
+                std::io::Error::from(Errno::NOSYS)
+            )
+        );
+        // An interrupted call is retried, a short one continued.
+        let mut calls = 0;
+        let name = random_name_from(|rest| {
+            calls += 1;
+            match calls {
+                1 => Err(Errno::INTR),
+                _ => {
+                    rest[0] = 0xab;
+                    Ok(1)
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!(name, format!("{PREFIX}{}", "ab".repeat(16)));
     }
 
     #[test]

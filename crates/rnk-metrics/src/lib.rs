@@ -38,6 +38,7 @@
 //!   `--log-timestamp`, which `ranikust` parses (ADR-0036).
 
 mod collector;
+mod escape;
 mod layer;
 mod logfmt;
 mod report;
@@ -57,6 +58,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::{Layer as _, Registry};
 
 use crate::collector::Collector;
+pub use crate::escape::terminal_text;
 use crate::layer::{MetricsLayer, Shared, is_metric_span};
 pub use crate::report::{Outcome, SCHEMA};
 use crate::resources::HostPaths;
@@ -272,7 +274,10 @@ fn install_panic_hook(collector: Arc<Collector>) {
 /// A warning about metrics themselves: straight to stderr, since it may come
 /// from the panic hook or after the subscriber is gone.
 pub(crate) fn warn(message: &str) {
-    to_stderr(&format!("ranikust: warning: metrics: {message}\n"));
+    to_stderr(&format!(
+        "ranikust: warning: metrics: {}\n",
+        terminal_text(message)
+    ));
 }
 
 /// Writes to stderr without panicking: `eprint!` panics when stderr is a

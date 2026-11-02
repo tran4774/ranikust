@@ -20,6 +20,9 @@ never reaches the image.
 - The report (`ranikust.metrics/v1`, canonical JSON), its atomic write, the
   human summary, and the panic hook that writes it before an abort.
 - `Capture`, the test helper other crates use to check their spans.
+- Escaping what reaches the terminal: `terminal_text` for the colored log
+  format and `ranikust`'s fatal error line, `\uXXXX` for DEL, C1, U+2028,
+  U+2029 and bidi controls in the text and JSON formats (`design/metrics.md#turning-it-on`).
 
 ## Must not
 
@@ -42,12 +45,16 @@ pub fn init(config: Config) -> Telemetry;                  // once, first thing 
 pub struct Telemetry;  // is_enabled(), set_meta(key, impl Into<Value>), finish(&Outcome): first call writes
 pub struct Outcome;    // success() | error(code, message); panics are reported by the hook
 pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sections only
+pub fn terminal_text(text: &str) -> Cow<'_, str>; // controls, U+2028/9 and bidi controls escaped as \n, \u{1b}
 ```
 
 The binary's `--metrics-file` fills `Config::file` after `from_env`.
 
 ## Invariants
 
+- Nothing a log line or the fatal error line carries can drive the
+  terminal or start a line: the formatter's own colors are the only
+  escape sequences written; libraries' error text stays as it is.
 - Disabled: no metrics layer, no panic hook, no file; the global level hint
   stays the log layer's `INFO`, so `debug_span!` costs one comparison.
 - The exit code never depends on the report; a write failure is a warning.

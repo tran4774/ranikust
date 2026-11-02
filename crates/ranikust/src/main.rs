@@ -72,7 +72,12 @@ const EXIT_USAGE: u8 = 2;
 #[derive(Debug)]
 struct Failure {
     code: u8,
+    /// What failed. It may carry names ranikust does not choose (a base
+    /// image's tar entry, a context file), so [`report_to`] escapes it.
     message: String,
+    /// What to do instead, ranikust's own text, printed on a line of its
+    /// own after the message; empty when there is none.
+    guidance: &'static str,
 }
 
 impl Failure {
@@ -80,6 +85,7 @@ impl Failure {
         Self {
             code: EXIT_USAGE,
             message: message.into(),
+            guidance: "",
         }
     }
 
@@ -87,6 +93,26 @@ impl Failure {
         Self {
             code: 1,
             message: message.into(),
+            guidance: "",
+        }
+    }
+
+    /// The set-up refused: its reason, then its guidance.
+    fn refused(refusal: setup::Refusal) -> Self {
+        Self::error(refusal.reason).with_guidance(refusal.guidance)
+    }
+
+    fn with_guidance(self, guidance: &'static str) -> Self {
+        Self { guidance, ..self }
+    }
+
+    /// The message and the guidance as one text, for the metrics report:
+    /// what a refusal's `Display` gives.
+    fn text(&self) -> String {
+        if self.guidance.is_empty() {
+            self.message.clone()
+        } else {
+            format!("{}\n  {}", self.message, self.guidance)
         }
     }
 }
@@ -100,14 +126,14 @@ fn main() -> ExitCode {
     if let Err(e) =
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
     {
-        report(&format!("prctl(PR_SET_DUMPABLE, 0): {e}"));
+        report(&format!("prctl(PR_SET_DUMPABLE, 0): {e}"), "");
         return ExitCode::from(1);
     }
     // No core file of ranikust either, whatever `core_pattern` and
     // `suid_dumpable` say: its memory holds the credentials. Every `RUN`
     // gets the original soft limit back.
     if let Err(e) = rnk_sandbox::forbid_core_dumps() {
-        report(&format!("setrlimit(RLIMIT_CORE, 0): {e}"));
+        report(&format!("setrlimit(RLIMIT_CORE, 0): {e}"), "");
         return ExitCode::from(1);
     }
     let (command, metrics_file) = match cli::parse(std::env::args_os()) {
@@ -123,7 +149,7 @@ fn main() -> ExitCode {
         }
         Err(ParseError::Refused(lines)) => {
             for line in &lines {
-                report(line);
+                report(line, "");
             }
             return ExitCode::from(EXIT_USAGE);
         }
@@ -135,7 +161,7 @@ fn main() -> ExitCode {
     if !matches!(command, Command::Version)
         && let Err(err) = startup::check_kernel(fault.as_deref())
     {
-        report(&err.to_string());
+        report(&err.to_string(), "");
         return ExitCode::from(1);
     }
 
@@ -163,10 +189,10 @@ fn main() -> ExitCode {
     let (code, outcome) = match &result {
         Ok(()) => (0, Outcome::success()),
         Err(failure) => {
-            report(&failure.message);
+            report(&failure.message, failure.guidance);
             (
                 failure.code,
-                Outcome::error(i32::from(failure.code), &failure.message),
+                Outcome::error(i32::from(failure.code), failure.text()),
             )
         }
     };
@@ -174,10 +200,22 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-/// Writes `ranikust: error: …` to stderr. `eprintln!` would panic, and
-/// abort, on a closed stderr.
-fn report(message: &str) {
-    let _ = writeln!(std::io::stderr(), "ranikust: error: {message}");
+/// Writes `ranikust: error: …` to stderr, then the guidance, if any.
+/// `eprintln!` would panic, and abort, on a closed stderr.
+fn report(message: &str, guidance: &str) {
+    let _ = report_to(&mut std::io::stderr(), message, guidance);
+}
+
+/// The fatal error line, with `message` escaped
+/// ([`rnk_metrics::terminal_text`]): nothing in it can drive the terminal
+/// or start a line that looks like ranikust's own. The guidance, ranikust's
+/// own text, follows indented on its own line. One write.
+fn report_to(out: &mut impl std::io::Write, message: &str, guidance: &str) -> std::io::Result<()> {
+    let mut text = format!("ranikust: error: {}\n", rnk_metrics::terminal_text(message));
+    if !guidance.is_empty() {
+        text.push_str(&format!("  {guidance}\n"));
+    }
+    out.write_all(text.as_bytes())
 }
 
 /// The metrics settings: the report path from `--metrics-file` only
@@ -253,7 +291,7 @@ fn build(
             // One span for the whole set-up: the namespace, then the rest.
             let span = tracing::debug_span!("ranikust.setup");
             span.in_scope(setup::enter_namespace)
-                .map_err(|refusal| Failure::error(refusal.to_string()))?;
+                .map_err(Failure::refused)?;
             overlay(&config, &span)
         }
         // Whether root may mount decides, before anything is written
@@ -290,13 +328,13 @@ fn build(
                     };
                     let runtime = container::detect(&container::Real);
                     match setup::route(&refusal, runtime.is_some()) {
-                        setup::Route::Refuse => Err(Failure::error(refusal.to_string())),
-                        setup::Route::RefuseInContainer => Err(Failure::error(format!(
-                            "{}\n  in a container where root may mount, ranikust builds in \
-                             overlay mode only (ADR-0054): mount a volume at the state \
-                             directory",
-                            refusal.reason
-                        ))),
+                        setup::Route::Refuse => Err(Failure::refused(refusal)),
+                        setup::Route::RefuseInContainer => Err(Failure::error(refusal.reason)
+                            .with_guidance(
+                                "in a container where root may mount, ranikust builds in \
+                                 overlay mode only (ADR-0054): mount a volume at the state \
+                                 directory",
+                            )),
                         setup::Route::KanikoStages => {
                             let why = refusal.reason;
                             tracing::info!(
@@ -313,7 +351,7 @@ fn build(
                     let runtime = container::detect(&container::Real);
                     kaniko(&config, "--mode=auto", false, runtime, metrics_file)
                 }
-                Err(refusal) => Err(Failure::error(refusal.to_string())),
+                Err(refusal) => Err(Failure::refused(refusal)),
             }
         }
     }
@@ -334,7 +372,7 @@ fn overlay_flags(args: &BuildArgs) -> Result<(), Failure> {
 fn overlay(config: &BuildConfig, span: &tracing::Span) -> Result<(), Failure> {
     let setup = span
         .in_scope(|| setup::set_up(&config.state_dir, config.allow_network_none_userns))
-        .map_err(|refusal| Failure::error(refusal.to_string()))?;
+        .map_err(Failure::refused)?;
     overlay_built(config, setup)
 }
 
@@ -426,7 +464,7 @@ fn kaniko(
     }
     let setup = tracing::debug_span!("ranikust.setup")
         .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile))
-        .map_err(|refusal| Failure::error(refusal.to_string()))?;
+        .map_err(Failure::refused)?;
     let setup::KanikoSetup {
         store,
         sandbox,
@@ -766,6 +804,54 @@ mod tests {
             panic!("expected build");
         };
         BuildConfig::from_args(&args).unwrap()
+    }
+
+    fn reported(failure: &Failure) -> String {
+        let mut out = Vec::new();
+        report_to(&mut out, &failure.message, failure.guidance).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// A base image's tar entry name, as rnk-rootfs refuses it and the
+    /// scheduler wraps it, reaches the fatal error line escaped: one line,
+    /// nothing a terminal acts on, nothing that starts a line of its own.
+    #[test]
+    fn the_error_line_escapes_untrusted_names() {
+        let name = "../\x1b]0;RNK\x07\n\x1b[36mINFO\x1b[0m[0001] built image sha256:0\u{9b}2J\r";
+        let entry = rnk_rootfs::Error::Entry {
+            path: name.into(),
+            reason: "the name leaves the root".to_owned(),
+        };
+        let failure = Failure::error(format!("stage base: preparing: {entry}"));
+        let out = reported(&failure);
+        assert_eq!(
+            out,
+            "ranikust: error: stage base: preparing: tar entry \
+             ../\\u{1b}]0;RNK\\u{7}\\n\\u{1b}[36mINFO\\u{1b}[0m[0001] built image \
+             sha256:0\\u{9b}2J\\r: the name leaves the root\n"
+        );
+        assert!(!out.trim_end().chars().any(char::is_control), "{out:?}");
+        // The metrics report keeps the message itself; JSON escapes it.
+        assert_eq!(failure.text(), failure.message);
+    }
+
+    /// A refusal's guidance is ranikust's own text: it keeps its line,
+    /// while a line feed in the reason is escaped. The metrics report gets
+    /// what the refusal's `Display` gives, as before.
+    #[test]
+    fn guidance_keeps_its_own_line() {
+        let refusal = setup::Refusal {
+            reason: "probe of /x\ny failed".to_owned(),
+            guidance: "pass --state-dir on a local filesystem",
+            kind: setup::Kind::Other,
+        };
+        let shown = refusal.to_string();
+        let failure = Failure::refused(refusal);
+        assert_eq!(
+            reported(&failure),
+            "ranikust: error: probe of /x\\ny failed\n  pass --state-dir on a local filesystem\n"
+        );
+        assert_eq!(failure.text(), shown);
     }
 
     /// Kaniko mode on `/` refuses in a fixed order: root that may mount

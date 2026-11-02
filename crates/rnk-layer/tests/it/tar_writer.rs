@@ -339,6 +339,34 @@ fn content_must_match_the_announced_size() {
     );
 }
 
+/// sha256 of the layer in `control_bytes_in_names_are_written_as_they_are`,
+/// pinned when the escaping of printed names came in (the writer itself
+/// unchanged). A change here means a name's bytes changed in layers.
+const CONTROL_NAMES_TAR_SHA256: &str =
+    "509487ed79da23a4c2e085f448ba056f51da17bba5dab63c7d2a3e49c91132c7";
+
+/// ranikust escapes untrusted names only where it prints them
+/// (`rnk_metrics::terminal_text`), never where it writes them: a layer keeps
+/// every byte of a name, controls and invalid UTF-8 included, and its digest
+/// with them.
+#[test]
+fn control_bytes_in_names_are_written_as_they_are() {
+    let raw: &[u8] = b"e\x1b]0;x\x07\r\n\x7f\xc2\x9b\xe2\x80\xae\xff";
+    let mut t = Tree::default();
+    let mut e = entry("x", EntryKind::File { size: 1 });
+    e.path = rnk_layer::EntryPath::new(raw).unwrap();
+    t.source.files.insert(e.path.clone(), b"x".to_vec());
+    t.add(e);
+    let bytes = t.encode(plain()).unwrap();
+    // Not read back with the `tar` crate: it splits PAX records at line
+    // feeds, where the format counts their length.
+    assert!(
+        bytes.windows(raw.len()).any(|w| w == raw),
+        "the name's bytes"
+    );
+    assert_eq!(sha256_hex(&bytes), CONTROL_NAMES_TAR_SHA256);
+}
+
 #[test]
 fn source_errors_name_the_entry() {
     let mut t = Tree::default();

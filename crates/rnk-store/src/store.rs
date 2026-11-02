@@ -58,6 +58,9 @@ macro_rules! cut_short_advice {
 /// Why a store opened on the traces of a build cut short makes no name
 /// (ADR-0066).
 const CUT_SHORT: &str = concat!(cut_short_advice!(), ", to keep state on disk");
+/// Why an anonymous store gives no path in the state directory.
+const KEEPS_NOTHING: &str =
+    "the store keeps nothing in the state directory a RUN could reach (ADR-0051)";
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
@@ -549,12 +552,10 @@ impl Store {
     /// outside any fence (ADR-0066).
     pub fn named_window(&self) -> Result<NamedGuard> {
         if self.anon.as_ref().is_some_and(|a| a.tainted) {
-            return Err(Error::Anonymous(concat!(
-                "COPY --from a kept stage or an image, unpacked by name, after a build cut \
-                 short (",
-                cut_short_advice!(),
-                "),"
-            )));
+            return Err(Error::Anonymous {
+                what: "COPY --from a kept stage or an image, which unpacks it by name",
+                why: concat!(cut_short_advice!(), " (ADR-0066)"),
+            });
         }
         self.fence.named()
     }
@@ -565,7 +566,7 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::AnonymousFile`] when the kernel has no randomness to give.
+    /// [`Error::Random`] when the kernel has no randomness to give.
     pub fn scratch_name(&self) -> Result<String> {
         anon::random_name()
     }
@@ -710,7 +711,10 @@ impl Store {
         E: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         if matches!(key, EntryKey::Layer(_)) {
-            return Err(Error::Anonymous("an extracted layer in the store"));
+            return Err(Error::Anonymous {
+                what: "an extracted layer in the store",
+                why: KEEPS_NOTHING,
+            });
         }
         let (_held, _) = self.held.acquire(&key.lock_path());
         if let Some((path, size)) = anon.entry(key) {
@@ -728,7 +732,10 @@ impl Store {
             source: e.into(),
         })?;
         let Some(file) = entry.file else {
-            return Err(Error::Anonymous("a blob without its file"));
+            return Err(Error::Anonymous {
+                what: "a blob whose filler took its file",
+                why: "an anonymous store keeps a blob only as its open file (ADR-0051)",
+            });
         };
         let path = anon.files.keep(file);
         anon.entries
@@ -749,7 +756,10 @@ impl Store {
     /// [`Error::Anonymous`] in an anonymous store.
     pub fn cache_dir(&self, id: &str) -> Result<PathBuf> {
         if self.anon.is_some() {
-            return Err(Error::Anonymous("RUN --mount=type=cache"));
+            return Err(Error::Anonymous {
+                what: "RUN --mount=type=cache",
+                why: KEEPS_NOTHING,
+            });
         }
         let hash: [u8; 32] = Sha256::digest(id.as_bytes()).into();
         let rel = Path::new("caches").join(Digest::from_sha256_bytes(&hash).encoded());
@@ -793,7 +803,10 @@ impl Store {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<CacheLease> {
         if self.anon.is_some() {
-            return Err(Error::Anonymous("RUN --mount=type=cache"));
+            return Err(Error::Anonymous {
+                what: "RUN --mount=type=cache",
+                why: KEEPS_NOTHING,
+            });
         }
         let hash: [u8; 32] = Sha256::digest(key.as_bytes()).into();
         let base = Digest::from_sha256_bytes(&hash).encoded().to_owned();

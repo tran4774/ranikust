@@ -71,7 +71,7 @@ impl Store {
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, Q-150) [open: Q-015]; digest() -> &Digest
-pub enum Error { NotAStateDir, NoFlock, Io, BadEntry, Cancelled, Rootfs, Fill }
+pub enum Error { NotAStateDir, NoFlock, Busy, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, Rootfs, Fill }
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a

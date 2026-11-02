@@ -35,7 +35,13 @@ use crate::error::{Error, Result};
 pub(crate) const WAIT_FOR_NAMES: Duration = Duration::from_secs(60);
 
 /// The refusal of a name once the fence is poisoned ([`Fence::poison`]).
-const POISONED: &str = "named state after a RUN whose processes may still live";
+const POISONED: Error = Error::Anonymous {
+    what: "named state for the rest of the build",
+    why: "a RUN may have left processes behind, or the state directory changed under it \
+          (ADR-0056)",
+};
+/// Why a name and a `RUN` are never alive at once.
+const APART: &str = "a RUN never runs beside a name in the state directory (ADR-0056)";
 
 #[derive(Debug, Default)]
 struct State {
@@ -79,7 +85,10 @@ impl Fence {
         while state.names > 0 {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(Error::Anonymous("a RUN while named state is still on disk"));
+                return Err(Error::Anonymous {
+                    what: "a RUN while a name has lived over a minute",
+                    why: APART,
+                });
             }
             state = inner
                 .changed
@@ -102,11 +111,14 @@ impl Fence {
         let me = std::thread::current().id();
         let mut state = lock(inner);
         if state.poisoned {
-            return Err(Error::Anonymous(POISONED));
+            return Err(POISONED);
         }
         while !state.runs.is_empty() {
             if state.runs.contains(&me) {
-                return Err(Error::Anonymous("named state made during a RUN"));
+                return Err(Error::Anonymous {
+                    what: "named state from inside a RUN",
+                    why: APART,
+                });
             }
             state = inner
                 .changed
@@ -116,7 +128,7 @@ impl Fence {
         // Poisoned while waiting (a RUN failed or the state directory
         // changed): no name from now on.
         if state.poisoned {
-            return Err(Error::Anonymous(POISONED));
+            return Err(POISONED);
         }
         state.names += 1;
         Ok(NamedGuard {
@@ -239,7 +251,7 @@ mod tests {
         let f = Fence::closed();
         f.poison();
         assert!(f.is_poisoned());
-        assert!(matches!(f.named(), Err(Error::Anonymous(_))));
+        assert!(matches!(f.named(), Err(Error::Anonymous { .. })));
         // RUNs still run: their state is anonymous.
         let _run = f.enter_run().unwrap();
     }
@@ -248,6 +260,6 @@ mod tests {
     fn a_name_inside_a_run_on_the_same_thread_fails_closed() {
         let f = Fence::closed();
         let _run = f.enter_run().unwrap();
-        assert!(matches!(f.named(), Err(Error::Anonymous(_))));
+        assert!(matches!(f.named(), Err(Error::Anonymous { .. })));
     }
 }

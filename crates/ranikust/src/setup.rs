@@ -3,9 +3,12 @@
 //! spawner thread (`design/sandbox.md#process-set-up-once-per-build`,
 //! `design/modes-and-detection.md#probe-order---modeauto`).
 //!
-//! Overlay mode as root is the one outcome built so far. `--mode=auto`
-//! enters the namespace first ([`enter_namespace`]): where root may not
-//! mount, the binary picks kaniko mode instead (ADR-0040); every other
+//! The outcomes built so far, all as root: overlay mode, and kaniko mode
+//! on a container's `/` (ADR-0050) or with a directory per stage
+//! (ADR-0059). `--mode=auto` enters the namespace first
+//! ([`enter_namespace`]): where root may not mount, the binary picks kaniko
+//! mode instead (ADR-0040); where overlayfs refuses the state directory
+//! outside a container, kaniko mode with a directory per stage; every other
 //! environment is refused with the probe's diagnosis.
 
 use std::fmt;
@@ -127,11 +130,11 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// Guidance where the build needs root: only overlay mode as root exists in
-/// Phase 1.
-const NEEDS_ROOT: &str = "ranikust builds as root only for now (rootless overlay mode comes in \
-     Phase 3, kaniko mode in Phase 2): run it with sudo, or in a container started with \
-     --privileged";
+/// Guidance where a user other than root builds: every mode built so far
+/// needs root.
+const NEEDS_ROOT: &str = "ranikust builds as root only (rootless overlay mode is planned for \
+     Phase 3): run it with sudo, or as root in a container, which builds in kaniko mode, or \
+     in overlay mode when the container is started with --privileged";
 
 /// Guidance where root may not mount: the outcome that would run here is
 /// kaniko mode. Shown only with a forced `--mode=overlay`: `--mode=auto`

@@ -400,6 +400,27 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `[fc00::1]:5000/app`) was refused with "invalid reference format" after
   the first request to it; it now works, including the loopback `[::1]`
   over plain HTTP.
+- Names ranikust does not choose (a base image's tar entry names and media
+  types, build-context names, registry text) no longer reach the terminal
+  raw in ranikust's own output. The fatal `ranikust: error:` line and the
+  colored log format escape control characters (line feeds, carriage
+  returns, escape sequences, DEL, C1), the Unicode line and paragraph
+  separators and bidi controls as `\n` or `\u{1b}`, so a name cannot set
+  the terminal's title or clipboard, or print a line that looks like
+  ranikust's own; the text and JSON log formats also escape DEL, C1, the
+  separators and bidi controls now. A refusal's advice
+  keeps its own indented line. Layers, digests and the metrics report are
+  unchanged; a `RUN`'s own output is still copied as it is.
+- The refusals of kaniko mode on `/` that keep state out of a `RUN`'s
+  reach now say what is refused and why, with the decision: a failed
+  `RUN` closing the fence to names (ADR-0056) is no longer reported as a
+  store that keeps nothing (ADR-0051). A failing `getrandom` is reported
+  as such, not as a file that could not be made in a directory named
+  `getrandom`, and it now always fails the build: where the state
+  directory has no `O_TMPFILE`, a `getrandom` refused with `EPERM` (a
+  seccomp filter) used to keep state in memory (`memfd`) instead, as if
+  the directory took no file. Its `EPERM` says nothing about the
+  directory.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

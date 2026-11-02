@@ -49,6 +49,22 @@ kaniko's `--log-format` and `--log-timestamp` write it, other crates at
 `INFO` at most ([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)). Each
 layer has its own filter, so the log level never hides a metric span.
 
+Messages carry names ranikust does not choose: a base image's tar entry
+names, build-context names, registry text. What ranikust writes to stderr
+itself is escaped where it is written, never in the libraries' errors,
+whose text programs read too: the colored format, kaniko's default, writes
+the message with every control character (line feed, carriage return,
+tab, escape, DEL, C1), Unicode line and paragraph separator (U+2028,
+U+2029) and bidi control as Rust writes it in a string (`\n`, `\u{1b}`,
+`rnk_metrics::terminal_text`); the text and JSON formats quote values as
+JSON, with DEL, C1, the separators and bidi controls as `\uXXXX` too; and
+`ranikust`'s fatal `ranikust: error:` line escapes its message the same
+way, with a refusal's advice, ranikust's own text, on an indented line of
+its own. So a name can neither set the terminal's title or clipboard nor
+print a line that looks like ranikust's own. A backslash is not escaped:
+`\n` in a line is never a line break. A `RUN`'s output is the `RUN`'s,
+copied as it is (`threat-model.md`, T7), and the metrics report is JSON.
+
 ## Emitting spans
 
 The rules every crate follows; `rules.md` repeats the short form.

@@ -144,12 +144,35 @@ fn the_cut_short_warning_and_refusal_give_the_same_advice() {
     let e = s.named_window().unwrap_err();
     assert_eq!(
         e.to_string(),
-        Error::Anonymous(
-            "COPY --from a kept stage or an image, unpacked by name, after a build cut short (an \
-             earlier build in this container did not end cleanly and may have left RUN \
-             processes; run ranikust as the container's PID 1, or restart the container),"
-        )
-        .to_string()
+        "kaniko mode on / refuses COPY --from a kept stage or an image, which unpacks it by \
+         name: an earlier build in this container did not end cleanly and may have left RUN \
+         processes; run ranikust as the container's PID 1, or restart the container (ADR-0066)"
+    );
+    s.close().unwrap();
+}
+
+/// Each refusal of an anonymous store says what it refuses and why, with
+/// its decision: a failed `RUN`'s fence (ADR-0056) is not a store that keeps
+/// nothing (ADR-0051).
+#[test]
+fn anonymous_refusals_say_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open_anonymous(dir.path()).unwrap();
+    let never = || false;
+    let e = s
+        .cache_lease("k", crate::CacheSharing::Shared, None, &never)
+        .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "kaniko mode on / refuses RUN --mount=type=cache: the store keeps nothing in the state \
+         directory a RUN could reach (ADR-0051)"
+    );
+    let run = s.enter_run().unwrap();
+    s.leave_run(run, false).unwrap();
+    assert_eq!(
+        s.named_window().unwrap_err().to_string(),
+        "kaniko mode on / refuses named state for the rest of the build: a RUN may have left \
+         processes behind, or the state directory changed under it (ADR-0056)"
     );
     s.close().unwrap();
 }

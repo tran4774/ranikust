@@ -80,13 +80,22 @@ pub enum Error {
     #[error("cancelled while waiting for a locked cache mount")]
     Cancelled,
 
-    /// What the caller asked for needs a path in the state directory, and
-    /// the store keeps nothing there (kaniko mode on `/`, ADR-0051).
-    #[error(
-        "{0} is not available in kaniko mode on /: the store keeps nothing a RUN could \
-         reach (ADR-0051)"
-    )]
-    Anonymous(&'static str),
+    /// An anonymous store (kaniko mode on `/`) refuses what the caller
+    /// asked: a path in the state directory a `RUN` could reach (ADR-0051),
+    /// or a name while the fence between `RUN`s and names forbids one
+    /// (ADR-0056, ADR-0066).
+    #[error("kaniko mode on / refuses {what}: {why}")]
+    Anonymous {
+        /// What was asked, for example `RUN --mount=type=cache`.
+        what: &'static str,
+        /// Why, with the decision behind it.
+        why: &'static str,
+    },
+
+    /// The kernel's random source failed, so no random name could be drawn
+    /// for an anonymous file.
+    #[error("drawing a random name with getrandom: {0}")]
+    Random(#[source] io::Error),
 
     /// An anonymous file could not be made: neither `O_TMPFILE` in the state
     /// directory nor `memfd_create`.
