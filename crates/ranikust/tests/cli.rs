@@ -357,6 +357,9 @@ fn the_report_path_comes_from_the_flag_only() {
     let from_flag = tmp.path().join("flag.json");
     let from_env = tmp.path().join("env.json");
     let flag = format!("--metrics-file={}", from_flag.display());
+    // A report needs a build context that opens, to be kept out of it
+    // (ADR-0076).
+    fs::create_dir(tmp.path().join("ctx")).expect("context");
     let out = ranikust(
         tmp.path(),
         &[
@@ -364,6 +367,7 @@ fn the_report_path_comes_from_the_flag_only() {
             "registry.example/team/app:1",
             "--jobs=2",
             "--mode=overlay",
+            "--context=ctx",
             &flag,
         ],
         &[(
@@ -408,13 +412,39 @@ fn a_relative_metrics_file_is_relative_to_the_working_directory() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context");
     let out = ranikust(
         tmp.path(),
-        &["--no-push", "--mode=overlay", "--metrics-file=out/m.json"],
+        &[
+            "--no-push",
+            "--mode=overlay",
+            "--context=ctx",
+            "--metrics-file=out/m.json",
+        ],
         &[],
     );
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(tmp.path().join("out/m.json").is_file());
+}
+
+/// A report asked for a build whose context cannot be opened is refused
+/// before anything is set up: without the context's fence the report could
+/// not be kept out of it (ADR-0076).
+#[test]
+fn a_metrics_file_needs_a_build_context_that_opens() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context=missing", "--metrics-file=m.json"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot be opened"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!tmp.path().join("m.json").exists());
 }
 
 /// kaniko's logging flags (ADR-0036), on a run that stops at the set-up (a
