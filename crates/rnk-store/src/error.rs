@@ -60,15 +60,35 @@ pub enum Error {
     /// persistent store, or files ranikust did not leave there. A `Direct`
     /// `RUN` could change them for the builds that trust them (ADR-0077).
     #[error(
-        "the state directory {} is not empty: it holds a persistent store or files ranikust \
-         did not leave there; kaniko mode on / builds with a temporary store only, since a RUN \
-         there could change what later builds reuse (ADR-0077); pass an empty or new \
-         --state-dir, and keep persistent stores for overlay mode and per-stage builds",
+        "the state directory {} is not empty: it holds {found}; kaniko mode on / builds with a \
+         temporary store only, since a RUN there could change what later builds reuse \
+         (ADR-0077); pass an empty or new --state-dir, and keep persistent stores for overlay \
+         mode and per-stage builds",
         path.display()
     )]
     StateNotEmpty {
         /// The state directory.
         path: PathBuf,
+        /// What it holds, in words, with the names quoted.
+        found: String,
+    },
+
+    /// An anonymous store could not empty its state directory at its end
+    /// ([`crate::Store::close`]): an entry on another mount, or one that
+    /// could not be removed. The directory keeps `.ranikust-building`, so no
+    /// persistent store opens there (ADR-0077).
+    #[error(
+        "the state directory {} still holds {left} after a kaniko-mode build on /, which \
+         ranikust could not remove; a RUN may have written it, so the directory keeps \
+         .ranikust-building and no persistent store opens there: do not give this directory or \
+         its volume to another build (ADR-0077)",
+        path.display()
+    )]
+    NotEmptied {
+        /// The state directory.
+        path: PathBuf,
+        /// What is left, with the names quoted.
+        left: String,
     },
 
     /// A persistent store was opened on a state directory holding the

@@ -8,7 +8,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
@@ -231,8 +231,38 @@ struct Anon {
     /// Opened on traces of a build cut short: the [`BUILDING`] marker stays
     /// at the end, so later builds keep their state in memory too.
     tainted: bool,
+    /// The state directory (`O_PATH`), for the marker.
+    marker_dir: OwnedFd,
+    /// What this build's marker holds ([`building_mark`]).
+    mark: Option<String>,
+    /// A `RUN` removed or changed the marker: it stays at the end.
+    tampered: AtomicBool,
     /// The exclusive `flock` on the state directory, held to the end.
     _lock: OwnedFd,
+}
+
+/// Writes an anonymous store's [`BUILDING_MARKER`] again from outside the
+/// store, where the process ends before [`Store::close`] (a second signal,
+/// a store still in use): the directory then keeps a marker, so no
+/// persistent store opens on what a `RUN` wrote there (ADR-0077).
+#[derive(Debug)]
+pub struct MarkerKeeper {
+    dir: OwnedFd,
+    mark: Option<String>,
+    state_path: PathBuf,
+}
+
+impl MarkerKeeper {
+    /// Creates the marker if nothing is under its name. Anything there
+    /// already, whatever it is, is left: a persistent store refuses the
+    /// directory for it all the same.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the marker cannot be created.
+    pub fn keep(&self) -> Result<()> {
+        create_building_marker(&self.dir, &self.state_path, self.mark.as_deref()).map(drop)
+    }
 }
 
 impl Anon {
@@ -408,8 +438,15 @@ impl Store {
         // the lock and before anything is removed or written: a persistent
         // store's entries would be in a `Direct` `RUN`'s reach (ADR-0077).
         let own = |n: &OsString| n == BUILDING || anon::is_leftover(n);
-        if !list(&root, Path::new("."))?.iter().all(own) {
-            return Err(Error::StateNotEmpty { path: state_path });
+        let foreign: Vec<OsString> = list(&root, Path::new("."))?
+            .into_iter()
+            .filter(|n| !own(n))
+            .collect();
+        if !foreign.is_empty() {
+            return Err(Error::StateNotEmpty {
+                path: state_path,
+                found: describe_foreign(&foreign),
+            });
         }
         let leftovers = anon::remove_leftovers(&root, &state_path)?;
         // A build that did not end cleanly here may have left `RUN`
@@ -424,10 +461,15 @@ impl Store {
             // by an older ranikust.
             Marker::Absent => leftovers,
         };
-        // Written unless this container's marker is kept as it is; made
-        // anew when names were left with none, so later builds heed it.
+        // Written unless this container's marker is kept: made anew when
+        // names were left with none, so later builds heed it, and replaced
+        // by a fresh file when what is kept is not a regular file holding
+        // this container's mark (a directory a `RUN` filled, say).
+        let marker_dir = dir.try_clone().map_err(|e| host_err("duplicate", e))?;
         match marker {
-            Marker::Ours => {}
+            Marker::Ours => {
+                ensure_own_marker(&root, &marker_dir, &state_path, mark.as_deref())?;
+            }
             // A stale marker (a dead build's, the directory being locked) is
             // replaced by a new file, never written through.
             Marker::Theirs => {
@@ -452,6 +494,9 @@ impl Store {
                 files,
                 entries: Mutex::default(),
                 tainted: tainted.is_some(),
+                marker_dir,
+                mark,
+                tampered: AtomicBool::new(false),
                 _lock: lock,
             }),
             state: root,
@@ -527,20 +572,27 @@ impl Store {
     /// name is made for the rest of the build (its processes may live). In
     /// an anonymous store the state directory must still be the one opened
     /// (a `RUN` may have moved it, or made `/var/lib` a link): checked by
-    /// device, inode and mount, without following a link.
+    /// device, inode and mount, without following a link. Its marker must
+    /// still be the one this build wrote: a `RUN` that removed or changed it
+    /// gets it written again, through the directory held, and the build
+    /// then makes no more names and keeps the marker at its end (ADR-0077).
     ///
     /// # Errors
     ///
     /// [`Error::BadEntry`] when the state directory changed; the fence is
-    /// then closed to names too.
+    /// then closed to names too. [`Error::Io`] or [`Error::Rootfs`] when
+    /// the marker cannot be written again.
     pub fn leave_run(&self, guard: RunGuard, swept: bool) -> Result<()> {
         if !swept {
             self.fence.poison();
         }
-        let checked = if self.anon.is_some() {
-            self.same_state_dir()
-        } else {
-            Ok(())
+        let checked = match &self.anon {
+            Some(anon) => {
+                let same = self.same_state_dir();
+                let marked = self.keep_own_marker(anon);
+                same.and(marked)
+            }
+            None => Ok(()),
         };
         if checked.is_err() {
             self.fence.poison();
@@ -549,12 +601,59 @@ impl Store {
         checked
     }
 
+    /// [`ensure_own_marker`] for an anonymous store; a marker not this
+    /// build's poisons the fence and stays at the end.
+    fn keep_own_marker(&self, anon: &Anon) -> Result<()> {
+        let replaced = ensure_own_marker(
+            &self.state,
+            &anon.marker_dir,
+            &self.state_path,
+            anon.mark.as_deref(),
+        )?;
+        if replaced {
+            anon.tampered.store(true, Ordering::Relaxed);
+            self.fence.poison();
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {}: a RUN removed or changed {BUILDING}; it is written again and \
+                 stays at the end, and this build makes no more names (ADR-0077)",
+                self.state_path.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// The [`MarkerKeeper`] of an anonymous store; `None` for a persistent
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the state directory's descriptor cannot be
+    /// duplicated.
+    pub fn marker_keeper(&self) -> Result<Option<MarkerKeeper>> {
+        let Some(anon) = &self.anon else {
+            return Ok(None);
+        };
+        let dir = anon.marker_dir.try_clone().map_err(|source| Error::Io {
+            op: "duplicate",
+            path: self.state_path.clone(),
+            source,
+        })?;
+        Ok(Some(MarkerKeeper {
+            dir,
+            mark: anon.mark.clone(),
+            state_path: self.state_path.clone(),
+        }))
+    }
+
     /// Whether the state directory's path still leads, with no link, to the
     /// directory this store holds.
     fn same_state_dir(&self) -> Result<()> {
         let changed = || Error::BadEntry {
             path: self.state_path.clone(),
-            reason: "the state directory changed during a RUN",
+            reason: "the state directory changed during a RUN (moved, or a link put on its \
+                     path): what is now at that path is not the directory this build marked, so \
+                     discard that directory or volume; never give it to another build",
         };
         let now = RootPath::open(&self.state_path).map_err(|_| changed())?;
         let (a, b) = (now.statx("/")?, self.state.statx("/")?);
@@ -991,65 +1090,61 @@ impl Store {
     /// Ends the build: removes `builds/<build-id>` and `tmp/<build-id>`,
     /// then releases the build's lock.
     ///
-    /// An anonymous store first empties the state directory of whatever a
-    /// `RUN` wrote there (ADR-0077): through descriptors, never following a
-    /// link or crossing a mount, keeping only [`BUILDING_MARKER`] when it
-    /// stays. It stays after a build cut short or a `RUN` that may have
-    /// left processes, and when something could not be removed, so that no
-    /// persistent store opens there.
+    /// An anonymous store ends in this order (ADR-0077):
+    ///
+    /// 1. its marker is made this build's again, first, so that whatever
+    ///    happens next the directory keeps one: anything else under its
+    ///    name (removed, another type, another build's text) is replaced,
+    ///    and then stays at the end;
+    /// 2. its files go with their descriptors (on a filesystem that keeps
+    ///    a name for an open removed file, the name goes with them);
+    /// 3. the state directory is emptied of whatever a `RUN` wrote there,
+    ///    through descriptors, never following a link or crossing a mount;
+    /// 4. the marker goes only when nothing else is left and the build was
+    ///    clean: no cut-short start, no `RUN` that may have left processes,
+    ///    no marker a `RUN` changed;
+    /// 5. the lock on the state directory goes last.
     ///
     /// # Errors
     ///
     /// [`Error::Rootfs`] or [`Error::BadEntry`] when a directory cannot be
     /// removed, for example because a mount is still inside it or on it;
-    /// the next start retries.
+    /// the next start retries. For an anonymous store, [`Error::NotEmptied`]
+    /// when the state directory keeps anything but its marker: the caller
+    /// must fail the build, since that directory must not serve another
+    /// one.
     pub fn close(self) -> Result<()> {
-        if let Some(anon) = &self.anon {
-            // The files go with their descriptors. The marker of a build in
-            // progress goes only after a clean build: a poisoned fence or a
-            // tainted start may have left `RUN` processes in the container.
-            let emptied = self.empty_state_dir();
-            if emptied.is_ok() && !anon.tainted && !self.fence.is_poisoned() {
-                self.state.remove_file(BUILDING)?;
-            }
-            return emptied;
-        }
-        remove_build(&self.state, &self.id)?;
-        Ok(())
-    }
-
-    /// Removes everything in an anonymous store's state directory but
-    /// [`BUILDING`]: nothing there is the store's own at its end, so
-    /// whatever is left a `RUN` wrote (ADR-0077). An entry on another mount
-    /// stays, and fails the call.
-    fn empty_state_dir(&self) -> Result<()> {
-        let left = |names: Vec<OsString>| -> Vec<OsString> {
-            names.into_iter().filter(|n| n != BUILDING).collect()
-        };
-        let found = left(list(&self.state, Path::new("."))?);
-        if found.is_empty() {
+        let Some(anon) = self.anon else {
+            remove_build(&self.state, &self.id)?;
             return Ok(());
+        };
+        let Anon {
+            files,
+            entries,
+            tainted,
+            marker_dir,
+            mark,
+            tampered,
+            _lock: lock,
+        } = anon;
+        let replaced =
+            ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref())?;
+        drop(entries);
+        drop(files);
+        let emptied = empty_state_dir(&self.state, &self.state_path);
+        let keep = emptied.is_err()
+            || replaced
+            || tainted
+            || tampered.load(Ordering::Relaxed)
+            || self.fence.is_poisoned();
+        if !keep {
+            match self.state.remove_file(BUILDING) {
+                Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {}
+                r => r?,
+            }
         }
-        let mut keep = IgnoreList::new();
-        keep.insert(BUILDING)?;
-        delete_contents(&self.state, &keep)?;
-        tracing::warn!(
-            target: "rnk_store",
-            "state directory {}: removed {} entries a RUN left there ({}); kaniko mode on / \
-             keeps nothing there between builds (ADR-0077)",
-            self.state_path.display(),
-            found.len(),
-            shown_names(&found),
-        );
-        match left(list(&self.state, Path::new("."))?).first() {
-            None => Ok(()),
-            Some(name) => Err(Error::BadEntry {
-                path: PathBuf::from(name),
-                reason: "left in the state directory of kaniko mode on / and not removed \
-                         (a mount?); the directory keeps .ranikust-building, so no persistent \
-                         store opens there",
-            }),
-        }
+        drop(lock);
+        emptied
     }
 
     /// Removes the `tmp/` and `builds/` directories of every build that no
@@ -1271,6 +1366,154 @@ fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>)
     let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
     io::Write::write_all(&mut f, mark.unwrap_or_default().as_bytes())
         .map_err(|e| building_marker_err(state_path, "write", e))
+}
+
+/// Creates [`BUILDING`] holding `mark` through the directory descriptor
+/// `dir`, never following a link; `false` when something already holds the
+/// name.
+fn create_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<bool> {
+    let fd = match rustix::fs::openat(
+        dir,
+        BUILDING,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0o600),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::EXIST) => return Ok(false),
+        Err(e) => return Err(building_marker_err(state_path, "create", e.into())),
+    };
+    io::Write::write_all(&mut File::from(fd), mark.unwrap_or_default().as_bytes())
+        .map_err(|e| building_marker_err(state_path, "write", e))?;
+    Ok(true)
+}
+
+/// Whether [`BUILDING`] is a regular file holding exactly `mark`, read as
+/// [`read_building_marker`] does: no link followed, no FIFO blocked on.
+fn marker_is_mine(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<Option<bool>> {
+    let fd = match rustix::fs::openat(
+        dir,
+        BUILDING,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::NOCTTY
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::NOENT) => return Ok(None),
+        Err(Errno::LOOP) => return Ok(Some(false)),
+        Err(e) => return Err(building_marker_err(state_path, "open", e.into())),
+    };
+    let st =
+        rustix::fs::fstat(&fd).map_err(|e| building_marker_err(state_path, "stat", e.into()))?;
+    if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
+        return Ok(Some(false));
+    }
+    let mut held = Vec::new();
+    io::Read::take(File::from(fd), 257)
+        .read_to_end(&mut held)
+        .map_err(|e| building_marker_err(state_path, "read", e))?;
+    Ok(Some(held == mark.unwrap_or_default().as_bytes()))
+}
+
+/// Makes [`BUILDING`] this build's marker: a regular file holding `mark`.
+/// Anything else under the name (nothing, a link, a FIFO, a directory a
+/// `RUN` filled, another build's text) is removed through `rnk-rootfs`,
+/// never followed, and a new file made. Returns whether it had to: the
+/// marker was not the one this build wrote (ADR-0077).
+fn ensure_own_marker(
+    root: &RootPath,
+    dir: &OwnedFd,
+    state_path: &Path,
+    mark: Option<&str>,
+) -> Result<bool> {
+    // A `RUN` process left behind could race the replacement: a few tries,
+    // then the error.
+    for _ in 0..3 {
+        match marker_is_mine(dir, state_path, mark)? {
+            Some(true) => return Ok(false),
+            Some(false) => {
+                remove_tree(root, Path::new(BUILDING))?;
+            }
+            None => {}
+        }
+        if create_building_marker(dir, state_path, mark)? {
+            return Ok(true);
+        }
+    }
+    Err(building_marker_err(
+        state_path,
+        "replace",
+        io::Error::other("something keeps taking its name"),
+    ))
+}
+
+/// What an anonymous store found in a state directory besides its own
+/// names, for [`Error::StateNotEmpty`].
+fn describe_foreign(names: &[OsString]) -> String {
+    let has = |prefix: &str| {
+        names
+            .iter()
+            .any(|n| n.as_encoded_bytes().starts_with(prefix.as_bytes()))
+    };
+    if names.iter().any(|n| n == MARKER) {
+        format!(
+            "a persistent store ({MARKER}, among {})",
+            shown_names(names)
+        )
+    } else if has(".nfs") || has(".fuse_hidden") {
+        format!(
+            "{}: names NFS or FUSE give a file removed while open; such a state directory is \
+             not supported, and ranikust left them there itself only if an earlier build ran on \
+             it",
+            shown_names(names)
+        )
+    } else {
+        format!("{}, which ranikust did not leave there", shown_names(names))
+    }
+}
+
+/// Removes everything in an anonymous store's state directory but
+/// [`BUILDING`]: nothing there is the store's own at its end, so whatever
+/// is left a `RUN` wrote (ADR-0077). An entry on another mount stays, and
+/// fails the call, as any entry that could not be removed does.
+fn empty_state_dir(state: &RootPath, state_path: &Path) -> Result<()> {
+    let left = |names: Vec<OsString>| -> Vec<OsString> {
+        names.into_iter().filter(|n| n != BUILDING).collect()
+    };
+    let found = left(list(state, Path::new("."))?);
+    if found.is_empty() {
+        return Ok(());
+    }
+    let mut keep = IgnoreList::new();
+    keep.insert(BUILDING)?;
+    let deleted = delete_contents(state, &keep);
+    tracing::warn!(
+        target: "rnk_store",
+        "state directory {}: {} entries a RUN left there ({}){}; kaniko mode on / keeps nothing \
+         there between builds (ADR-0077)",
+        state_path.display(),
+        found.len(),
+        shown_names(&found),
+        if deleted.is_ok() { " removed" } else { "" },
+    );
+    let left = left(list(state, Path::new("."))?);
+    match (left.is_empty(), deleted) {
+        (true, Ok(())) => Ok(()),
+        (_, Err(e)) => Err(Error::NotEmptied {
+            path: state_path.to_owned(),
+            left: format!("{} (removing them failed: {e})", shown_names(&left)),
+        }),
+        (false, Ok(())) => Err(Error::NotEmptied {
+            path: state_path.to_owned(),
+            left: format!("{} (on another mount?)", shown_names(&left)),
+        }),
+    }
 }
 
 /// An [`Error::Io`] on the [`BUILDING`] marker.
