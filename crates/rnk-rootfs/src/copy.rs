@@ -49,26 +49,50 @@ pub struct CopyOpts {
     /// into a root a `RUN` enters without `nodev`, `Isolation::Direct`
     /// (ADR-0060). What is left out is warned about once per copy.
     pub skip_special: bool,
-    /// The build context's owner, for a copy out of the context (ADR-0076):
-    /// a regular file with more than one link and another owner is refused.
-    /// It is a hardlink to a file from outside the context, which only
-    /// `fs.protected_hardlinks=0` lets an account make to a file it cannot
-    /// read; ranikust reads as root, so the copy would carry it into the
-    /// image. Same-owner hardlinks (a pnpm store) are copied as before.
-    /// `None` for a copy between roots (`COPY --from`, stage directories).
-    pub link_owner: Option<u32>,
+    /// A copy out of the build context (ADR-0076): each regular file is
+    /// checked against the directory it was found in ([`context_refusal`]),
+    /// since ranikust reads as root and the copy would otherwise carry a
+    /// file the directory's owner cannot read into the image. `false` for a
+    /// copy between roots (`COPY --from`, stage directories).
+    pub from_context: bool,
 }
 
-/// Why [`CopyOpts::link_owner`] refuses a file.
-pub(crate) const PLANTED_LINK: &str = "its source in the build context is a hardlink owned by another \
-     account than the context's, as one made to a file from outside the context is; it is not \
-     copied (ADR-0076)";
+/// Why a context file is refused: a hardlink from outside the context.
+const PLANTED_LINK: &str = "its source in the build context is a hardlink owned by another \
+     account than the directory it is in, as one made to a file from outside the context is; \
+     it is not read (ADR-0076)";
 
-/// Whether the source `st` is a regular file with other links and an owner
-/// other than `owner`: a hardlink planted from outside the context.
-#[must_use]
-pub fn planted_link(st: &Stat, owner: u32) -> bool {
-    st.file_type() == FileType::Regular && st.nlink > 1 && st.uid != owner
+/// Why a context file is refused: its directory's owner cannot read it.
+const UNREADABLE: &str = "its source in the build context is a file the owner of the directory \
+     it is in could not read by its mode bits (a root-only file linked in from outside the \
+     context); it is not read (ADR-0076)";
+
+/// Whether the regular file `st`, found in the directory `dir` of a build
+/// context, is refused, and why (ADR-0076). It is refused when it has
+/// other links and another owner than the directory's (a hardlink planted
+/// from outside, which `fs.protected_hardlinks=0` allows), or when the
+/// directory's owner could not read it by its mode bits: owner bits when
+/// the owner is the file's, group bits when the directory's group is the
+/// file's, else the bits for others. Group membership beyond the
+/// directory's own group is not looked up, so such a file is refused
+/// (fail closed). A directory root owns reads anything, as root does.
+/// Same-owner hardlinks (a pnpm store) pass.
+pub(crate) fn context_refusal(st: &Stat, dir: &Stat) -> Option<&'static str> {
+    if st.file_type() != FileType::Regular {
+        return None;
+    }
+    if st.nlink > 1 && st.uid != dir.uid {
+        return Some(PLANTED_LINK);
+    }
+    let readable = dir.uid == 0
+        || if st.uid == dir.uid {
+            st.mode & 0o400 != 0
+        } else if st.gid == dir.gid {
+            st.mode & 0o040 != 0
+        } else {
+            st.mode & 0o004 != 0
+        };
+    (!readable).then_some(UNREADABLE)
 }
 
 /// Whether `t` is a node [`CopyOpts::skip_special`] leaves out.
@@ -245,6 +269,8 @@ impl SkippedSpecial {
 struct Frame {
     /// The source directory, `O_RDONLY | O_DIRECTORY`.
     src: OwnedFd,
+    /// What `statx` said of it: the directory its entries were found in.
+    stat: Stat,
     /// The destination directory, `O_PATH | O_DIRECTORY`.
     dst: OwnedFd,
     /// The destination's mode and times, set through `dst` when the frame
@@ -271,16 +297,33 @@ impl Copier<'_> {
                 let sfd = meta::reopen(pinned.as_fd(), OFlags::RDONLY | OFlags::DIRECTORY, from)?;
                 let (dfd, pending) = self.top_dir(&to, &st)?;
                 self.check_not_inside(&st, from)?;
-                self.walk(sfd, dfd, pending, from, &to)
+                self.walk(sfd, st, dfd, pending, from, &to)
             }
             t if self.o.skip_special && special(t) => {
                 self.special.add(from);
                 Ok(())
             }
             _ => {
+                // The directory it was found in, for a context's rule: the
+                // builder hands over context paths with no symlink left.
+                let dir = if self.o.from_context {
+                    let (sparent, _) = path::entry(from)?;
+                    let dfd = src.resolve_dir(&sparent)?;
+                    Some(meta::statx_at(dfd.as_fd(), OsStr::new(""), &sparent)?)
+                } else {
+                    None
+                };
                 let (parent, name) = path::entry(&to)?;
                 let pfd = self.parents(&parent)?;
-                self.node(pinned.as_fd(), &st, None, pfd.as_fd(), name, &to)
+                self.node(
+                    pinned.as_fd(),
+                    &st,
+                    None,
+                    dir.as_ref(),
+                    pfd.as_fd(),
+                    name,
+                    &to,
+                )
             }
         }
     }
@@ -288,6 +331,7 @@ impl Copier<'_> {
     fn walk(
         &mut self,
         src: OwnedFd,
+        src_stat: Stat,
         dst: OwnedFd,
         pending: Option<Meta>,
         from: &Path,
@@ -296,6 +340,7 @@ impl Copier<'_> {
         let names = sorted_names(src.as_fd(), from)?;
         let mut stack = vec![Frame {
             src,
+            stat: src_stat,
             dst,
             pending,
             from: from.to_owned(),
@@ -364,6 +409,7 @@ impl Copier<'_> {
                     let names = sorted_names(s.as_fd(), &from)?;
                     stack.push(Frame {
                         src: s,
+                        stat: st,
                         dst: d,
                         pending: Some(m),
                         from,
@@ -372,8 +418,17 @@ impl Copier<'_> {
                     });
                 }
                 _ => {
+                    let dir = top.stat;
                     let sparent = Some((top.src.as_fd(), name.as_os_str()));
-                    self.node(pin.as_fd(), &st, sparent, top.dst.as_fd(), &name, &to)?;
+                    self.node(
+                        pin.as_fd(),
+                        &st,
+                        sparent,
+                        Some(&dir),
+                        top.dst.as_fd(),
+                        &name,
+                        &to,
+                    )?;
                 }
             }
         }
@@ -483,21 +538,26 @@ impl Copier<'_> {
 
     /// Copies the non-directory `pin` (`st`) to `name` in `pfd`, or links
     /// it to an earlier copy of the same inode.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a source (fd, stat, parent, directory) and a destination (fd, name, path)"
+    )]
     fn node(
         &mut self,
         pin: BorrowedFd<'_>,
         st: &Stat,
         sparent: Option<(BorrowedFd<'_>, &OsStr)>,
+        dir: Option<&Stat>,
         pfd: BorrowedFd<'_>,
         name: &OsStr,
         to: &Path,
     ) -> Result<()> {
-        if let Some(owner) = self.o.link_owner
-            && planted_link(st, owner)
+        if self.o.from_context
+            && let Some(reason) = dir.and_then(|dir| context_refusal(st, dir))
         {
             return Err(Error::InvalidPath {
                 path: to.to_owned(),
-                reason: PLANTED_LINK,
+                reason,
             });
         }
         match self.existing(pfd, name, to)? {

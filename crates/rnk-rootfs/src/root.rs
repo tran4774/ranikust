@@ -314,23 +314,24 @@ impl RootPath {
     /// [`Error::InvalidPath`] when `p` is not a regular file; [`Error::Io`]
     /// as [`RootPath::open_at`].
     pub fn open_regular(&self, p: impl AsRef<Path>) -> Result<OwnedFd> {
-        self.open_regular_checked(p.as_ref(), None)
+        self.open_regular_checked(p.as_ref(), false)
     }
 
-    /// [`RootPath::open_regular`] for a file of a build context owned by
-    /// `owner`: a hardlink owned by another account is refused, as
-    /// [`crate::CopyOpts::link_owner`] refuses it (ADR-0076). Checked on the
-    /// pinned inode, the one then read.
+    /// [`RootPath::open_regular`] for a file of a build context (the
+    /// Dockerfile, an ignore file, an archive `ADD` looks at): refused as
+    /// [`crate::CopyOpts::from_context`] refuses it (ADR-0076), against the
+    /// directory `p` names it in, on the pinned inode that is then read.
     ///
     /// # Errors
     ///
-    /// As [`RootPath::open_regular`], and [`Error::InvalidPath`] for such a
-    /// hardlink.
-    pub fn open_context_file(&self, p: impl AsRef<Path>, owner: u32) -> Result<OwnedFd> {
-        self.open_regular_checked(p.as_ref(), Some(owner))
+    /// As [`RootPath::open_regular`], and [`Error::InvalidPath`] for a
+    /// hardlink planted from outside or a file the directory's owner could
+    /// not read.
+    pub fn open_context_file(&self, p: impl AsRef<Path>) -> Result<OwnedFd> {
+        self.open_regular_checked(p.as_ref(), true)
     }
 
-    fn open_regular_checked(&self, p: &Path, link_owner: Option<u32>) -> Result<OwnedFd> {
+    fn open_regular_checked(&self, p: &Path, context: bool) -> Result<OwnedFd> {
         let pinned = self.resolve(p, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
         let st = meta::statx_at(pinned.as_fd(), OsStr::new(""), p)?;
         if st.file_type() != FileType::Regular {
@@ -339,13 +340,16 @@ impl RootPath {
                 reason: "not a regular file",
             });
         }
-        if let Some(owner) = link_owner
-            && crate::copy::planted_link(&st, owner)
-        {
-            return Err(Error::InvalidPath {
-                path: p.to_owned(),
-                reason: crate::copy::PLANTED_LINK,
-            });
+        if context {
+            let (parent, _) = path::entry(p)?;
+            let dfd = self.resolve_dir(&parent)?;
+            let dir = meta::statx_at(dfd.as_fd(), OsStr::new(""), &parent)?;
+            if let Some(reason) = crate::copy::context_refusal(&st, &dir) {
+                return Err(Error::InvalidPath {
+                    path: p.to_owned(),
+                    reason,
+                });
+            }
         }
         let proc = meta::proc_fd_dir(p)?;
         let num = pinned.as_raw_fd().to_string();

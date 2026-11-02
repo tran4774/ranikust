@@ -927,7 +927,6 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
         let skip_special = copy_skips_special(self.cx.isolation);
         let chown = c.chown.clone();
         let files = cx.context_files;
-        let context_owner = cx.context.owner();
         let contents = c.contents;
         self.layer(&text, |_, root| {
             let owner = if chown.is_empty() {
@@ -941,9 +940,10 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 owner,
                 chmod: chmod.clone(),
                 skip_special,
-                // A hardlink planted into the context from outside it is
-                // refused (ADR-0076).
-                link_owner: from_context.then_some(context_owner),
+                // A hardlink planted into the context from outside it, or a
+                // file its directory's owner could not read, is refused
+                // (ADR-0076).
+                from_context,
             };
             // An existing directory, or a symlink to one inside the root, as
             // BuildKit follows it: the copy goes inside.

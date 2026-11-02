@@ -544,9 +544,19 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-11-01
 
+## Answered
+
 ### Q-438: Does ranikust refuse a context file its owner could not read?
 
-- **Blocks:** nothing yet; **Area:** `rnk-context`, `rnk-rootfs` (security)
+- **Answer (2026-11-03):** option (a), settled in the host-safety fix loop
+  of ADR-0076: a context file the owner of the directory it is in could not
+  read by its mode bits is refused (owner bits for the directory's owner,
+  group bits for the directory's group, else other bits; root's
+  directories read anything); other group memberships are not looked up,
+  so such a file is refused. Recorded in
+  [ADR-0076](adr/0076-the-build-context-owner-is-a-lower-trust-principal.md);
+  (b) can follow with Phase 5's context reader.
+- **Area:** `rnk-context`, `rnk-rootfs` (security)
 - **Context:** ranikust reads context files as root, so `COPY` would copy
   a file the context's owner cannot read. ADR-0076 refuses the case an
   unprivileged owner can set up: a hardlink to a file from outside, with
@@ -566,8 +576,6 @@ Entry format:
   (Phase 5's remote contexts); until then (c).
 - **Interim:** (c), ADR-0076's hardlink rule.
 - **Raised:** 2026-11-02
-
-## Answered
 
 ### Q-033: Which performance conditions are still unmeasured?
 

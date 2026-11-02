@@ -36,22 +36,26 @@ fn open_refuses_symlinked_host_path_and_missing_dir() {
     ));
 }
 
-/// A context file that is a hardlink owned by another account than the
-/// context's is refused; a single-link file, or the owner's own hardlink,
-/// is read (ADR-0076). Unprivileged, the "other account" is an owner that
-/// is not the test's uid.
+/// A context file is judged by the directory it is in (ADR-0076): the
+/// owner's own hardlink is read, a file the owner could not read by its
+/// mode bits is refused. The foreign-hardlink case needs another account:
+/// `rnk-context`'s T2c test.
 #[test]
-fn a_context_file_planted_as_a_foreign_hardlink_is_refused() {
+fn a_context_file_its_directory_owner_could_not_read_is_refused() {
     let f = Fixture::new();
-    let (me, _) = f.ids();
-    fs::write(f.host("df"), b"FROM scratch\n").unwrap();
-    fs::hard_link(f.host("df"), f.host("df-link")).unwrap();
-    fs::write(f.host("single"), b"one\n").unwrap();
-    let other = me.wrapping_add(4242);
-    let e = f.root.open_context_file("df", other).unwrap_err();
-    assert!(e.to_string().contains("hardlink"), "{e}");
-    assert!(f.root.open_context_file("df", me).is_ok());
-    assert!(f.root.open_context_file("single", other).is_ok());
+    fs::create_dir(f.host("sub")).unwrap();
+    fs::write(f.host("sub/df"), b"FROM scratch\n").unwrap();
+    fs::hard_link(f.host("sub/df"), f.host("sub/df-link")).unwrap();
+    fs::write(f.host("sub/locked"), b"no\n").unwrap();
+    fs::set_permissions(f.host("sub/locked"), fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(f.root.open_context_file("sub/df").is_ok());
+    assert!(f.root.open_context_file("sub/df-link").is_ok());
+    // As root the directory's owner reads anything; else the rule refuses
+    // before the kernel's own check would.
+    if f.ids().0 != 0 {
+        let e = f.root.open_context_file("sub/locked").unwrap_err();
+        assert!(e.to_string().contains("could not read"), "{e}");
+    }
 }
 
 #[test]

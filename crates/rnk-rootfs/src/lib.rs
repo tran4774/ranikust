@@ -44,7 +44,7 @@ mod support;
 mod test_util;
 mod user;
 
-pub use copy::{CopyOpts, copy, copy_filtered, planted_link};
+pub use copy::{CopyOpts, copy, copy_filtered};
 pub use delete::{Pruned, delete_contents, prune};
 pub use error::{Error, Result};
 pub use extract::{

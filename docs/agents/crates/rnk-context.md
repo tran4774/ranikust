@@ -43,7 +43,7 @@ impl Context {
     pub fn origin(&self) -> &Path;                    // the directory (no symlink in it), for messages
     pub fn fence(&self) -> &Fence;                    // the context's directory, which no output may lead into (ADR-0076)
     pub fn owner(&self) -> u32;                       // the context directory's owner: a principal of its own (ADR-0076)
-    pub fn open_file(&self, rel) -> rnk_rootfs::Result<OwnedFd>; // a regular file, symlinks followed inside only; a hardlink owned by another account refused (ADR-0076)
+    pub fn open_file(&self, rel) -> rnk_rootfs::Result<OwnedFd>; // a regular file, symlinks followed inside only; the context rule of open_context_file (ADR-0076)
     pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context>;  // --context-sub-path, fetched contexts only; `..` clamped (Q-081, ADR-0032, ADR-0053); keeps the fence
     pub fn find_dockerignore(&self, dockerfile: Option<DockerfileAt>) -> Result<Option<IgnoreFile>>; // DockerfileAt::Host(path): the file beside it, a symlink refused; DockerfileAt::Context(rel): read through the context
     pub fn matcher(&self, ignore: &IgnoreFile) -> Result<rnk_ignore::Matcher>;

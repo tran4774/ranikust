@@ -493,10 +493,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   - **`--context`.** The context was resolved with `canonicalize` as root;
     it is now opened without following any symlink, and one in the path is
     refused.
-  - **Hardlinks.** `COPY`, `ADD` and the Dockerfile read refuse a context
-    file that is a hardlink owned by another account than the context's,
-    the form a root-only file takes when an account links it into its
-    context with `fs.protected_hardlinks=0`.
+  - **Planted files.** `COPY`, `ADD` and the Dockerfile read judge a
+    context file against the directory it is in. They refuse a hardlink
+    owned by another account than the directory's, the form a root-only
+    file takes when an account links it into its context with
+    `fs.protected_hardlinks=0`. They also refuse a file the directory's
+    owner could not read by its mode bits, which a stale link like that
+    becomes.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

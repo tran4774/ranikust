@@ -114,17 +114,30 @@ with no new flag.
    - Following only symlinks whose target lies below the link's own
      directory fails in sticky shared directories (`/tmp/ctx -> root-0700`),
      and needs a resolver of its own.
-4. **A hardlink planted into the context is never read.** A context file
-   that is a regular file with more than one link, owned by an account other
-   than the context directory's owner, is refused.
-   - `COPY` and `ADD` from the context check it through
-     `CopyOpts::link_owner`. The Dockerfile and the ignore files in the
-     context check it through `RootPath::open_context_file`.
-   - The check is made on the pinned inode that is then read.
+4. **A file planted into the context from outside is never read.** A
+   context file is judged against the directory it was found in, the one
+   the walk pinned, and refused when it is a regular file that:
+   - has more than one link and an owner other than the directory's (a
+     hardlink planted from outside, which `fs.protected_hardlinks=0`
+     allows); or
+   - the directory's owner could not read by its mode bits. That means the
+     owner bits when the owner is the file's, the group bits when the
+     directory's group is the file's, else the bits for others. This also
+     catches a stale planted link, one whose other name is gone.
+
+   Details of the rule:
+   - Group membership beyond the directory's own group is not looked up, so
+     such a file is refused (fail closed). ACLs are not read.
+   - A directory root owns reads anything, as root does, so a root-made
+     checkout and a directory `sudo` made in one are unchanged.
    - Same-owner hardlinks, which a pnpm store makes, are copied as before.
-   - Refusing every file the context's owner could not read would close the
-     rest. It needs the owner's groups and ACLs, so it is not exact enough
-     yet [open: Q-438].
+   - `COPY` and `ADD` from the context check this through
+     `CopyOpts::from_context`. The Dockerfile, the ignore files and the
+     archive check of `ADD` check it through `RootPath::open_context_file`.
+     The check is made on the pinned inode that is then read.
+   - This settles Q-438 with option (a), mode bits, judged against the
+     directory rather than the owner's groups. Reading as the owner's
+     credentials (option (b)) can come with Phase 5's context reader.
 
 Not covered:
 
@@ -151,8 +164,10 @@ Not covered:
   refused: git-sync's `/git/repo` link, Fedora Silverblue's
   `/home -> /var/home`, `/var/run -> /run`. The real path works, and the
   message says so.
-- Bad, because a context file owned by another account is still read if
-  it has a single link. Q-438 tracks closing that.
+- Bad, because a context file readable only through a group the
+  directory's owner belongs to, other than the directory's own, is refused:
+  ranikust does not look the owner's groups up. Such files are rare in a
+  context, and the message says why.
 - Neutral, because `rnk-rootfs` now also reaches operator output paths on
   the host (`OutputDir`, `reach`). That is still "every filesystem access"
   through descriptors, and still never by joining strings onto a host path.
@@ -173,8 +188,8 @@ Not covered:
   - `rnk-builder` `an_output_never_goes_through_a_symlinked_directory`;
   - `rnk-context` `a_context_path_through_a_symlink_is_refused`.
 - Tests written with the change:
-  - `rnk-rootfs` `host::tests`, `a_context_file_planted_as_a_foreign_hardlink_is_refused`
-    and `a_hardlink_owned_by_another_account_is_not_copied_out_of_the_context`;
+  - `rnk-rootfs` `host::tests`, `a_context_file_its_directory_owner_could_not_read_is_refused`
+    and `the_context_rule_judges_a_file_by_the_directory_it_is_in`;
   - `ranikust` `outputs_in_the_build_context_are_refused`,
     `a_dockerfile_in_the_context_never_follows_a_link_out_of_it`,
     `a_dockerfile_outside_the_context_follows_the_operators_links` and

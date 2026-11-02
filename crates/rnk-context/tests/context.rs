@@ -74,23 +74,42 @@ fn a_root_only_file_hardlinked_into_the_context_is_never_read() {
         )
         .unwrap();
     }
+    // A stale planted link: one name left, still root's and root-only.
+    fs::write(ctx_path.join("stale"), b"DUMMY-STALE\n").unwrap();
+    fs::set_permissions(ctx_path.join("stale"), fs::Permissions::from_mode(0o600)).unwrap();
+    // A directory root made in the context (`sudo make` in a checkout):
+    // judged against its own owner, so its root-only files are copied.
+    fs::create_dir(ctx_path.join("rootdir")).unwrap();
+    fs::write(ctx_path.join("rootdir/out"), b"built\n").unwrap();
+    fs::set_permissions(
+        ctx_path.join("rootdir/out"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     let ctx = DirSource::new(&ctx_path).open().unwrap();
     assert_eq!(ctx.owner(), 1000);
     let e = ctx.open_file("s").unwrap_err();
     assert!(e.to_string().contains("hardlink"), "{e}");
+    let e = ctx.open_file("stale").unwrap_err();
+    assert!(e.to_string().contains("could not read"), "{e}");
     assert!(ctx.open_file("own").is_ok());
+    assert!(ctx.open_file("rootdir/out").is_ok());
 
     let dst = ctx_dir();
     let dst_root = rnk_rootfs::RootPath::open(dst.path()).unwrap();
     let opts = rnk_rootfs::CopyOpts {
-        link_owner: Some(ctx.owner()),
+        from_context: true,
         ..rnk_rootfs::CopyOpts::default()
     };
     let e = rnk_rootfs::copy(ctx.root(), "s", &dst_root, "s", &opts).unwrap_err();
     assert!(e.to_string().contains("hardlink"), "{e}");
+    let e = rnk_rootfs::copy(ctx.root(), "stale", &dst_root, "stale", &opts).unwrap_err();
+    assert!(e.to_string().contains("could not read"), "{e}");
     let e = rnk_rootfs::copy(ctx.root(), "", &dst_root, "all", &opts).unwrap_err();
-    assert!(e.to_string().contains("hardlink"), "{e}");
-    assert!(!dst.path().join("s").exists());
+    assert!(e.to_string().contains("build context"), "{e}");
+    assert!(!dst.path().join("s").exists() && !dst.path().join("stale").exists());
+    rnk_rootfs::copy(ctx.root(), "rootdir", &dst_root, "rootdir", &opts).unwrap();
+    rnk_rootfs::copy(ctx.root(), "own", &dst_root, "own", &opts).unwrap();
 }
 
 #[test]
