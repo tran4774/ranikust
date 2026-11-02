@@ -141,3 +141,4 @@ when new measurements contradict its evidence.
 | [0067](0067-the-cli-crate-orchestrates-the-build.md) | The CLI crate orchestrates the build across the library crates | Accepted | 2026-11-02 | maintainer; refactor of `ranikust` |
 | [0070](0070-registry-references-reach-oci-client-built-from-parts.md) | Registry references reach `oci-client` built from their parts, and a request fails if it would address another host | Accepted | 2026-11-02 | security hardening; refines ADR-0026 |
 | [0074](0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md) | Through `/proc/<pid>/root` of a full-sandbox `RUN`, setuid files are `nosuid`; corrects ADR-0047 | Proposed | 2026-11-02 | source review; corrects a Consequence of ADR-0047 |
+| [0075](0075-layer-trusted-xattrs-are-never-set.md) | A layer's `trusted.*` xattrs are never set | Accepted | 2026-11-02 | BuildKit (containerd `archive.Apply`), follows ADR-0049 |

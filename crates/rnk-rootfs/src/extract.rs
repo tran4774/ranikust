@@ -4,9 +4,10 @@
 //! records); every filesystem change goes through `RootPath`. Its `unpack`
 //! family, which joins entry names onto a host path, is never used.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
+use std::ops::Bound;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,10 @@ use crate::ignore::IgnoreList;
 use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat, Xattrs};
 use crate::path;
 use crate::root::{self, Mounts, RootPath};
+
+mod created;
+
+use created::{Created, Mark};
 
 /// How OCI whiteouts in a layer are written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,6 +59,9 @@ const AUFS_META_PREFIX: &[u8] = b".wh..wh.";
 const OVERLAY_XATTR: &[u8] = b"user.overlay.";
 const OVERLAY_OPAQUE: &str = "user.overlay.opaque";
 const PAX_XATTR: &[u8] = b"SCHILY.xattr.";
+/// Xattrs a layer never sets (`ADR-0075`), from its tar or copied up from a
+/// lower layer ([`meta::Xattrs::Layer`]).
+const SKIPPED_XATTR: &[u8] = meta::LAYER_SKIPPED_XATTR;
 /// Mode of a directory until its own mode is set at the end.
 const DIR_PENDING_MODE: u32 = 0o700;
 /// Mode of missing parent directories the layer does not list.
@@ -67,7 +75,9 @@ const PARENT_MODE: u32 = 0o755;
 /// layer cannot redirect an entry outside it. Ownership is the numeric uid
 /// and gid of the header; modes are the raw bits (setuid, setgid, sticky);
 /// times come from the header or its PAX records; xattrs from
-/// `SCHILY.xattr.*` records. An existing entry is replaced, never followed;
+/// `SCHILY.xattr.*` records, except `trusted.*`, which is never set
+/// (`ADR-0075`), only counted and warned about once per layer. An existing
+/// entry is replaced, never followed;
 /// an existing directory meets a directory entry by merging. Directory modes
 /// and times are set last, deepest first.
 ///
@@ -191,6 +201,7 @@ fn extract_with(
         hardlinks_copied = tracing::field::Empty,
         nodes = tracing::field::Empty,
         nodes_skipped = tracing::field::Empty,
+        xattrs_skipped = tracing::field::Empty,
         whiteouts = tracing::field::Empty,
         ignored = tracing::field::Empty,
         bytes_in = tracing::field::Empty,
@@ -207,15 +218,24 @@ fn extract_with(
         lowers,
         live,
         dirs: BTreeMap::new(),
-        created: HashSet::new(),
-        ancestors: HashSet::new(),
+        created: Created::default(),
         copied: HashMap::new(),
+        copy_names: BTreeMap::new(),
         stats: Stats::default(),
+        first_skipped: None,
     };
     let mut tar = Counting { inner: tar, n: 0 };
     let r = ex.run(&mut tar);
     ex.stats.bytes_in = tar.n;
     ex.stats.record(&span);
+    if let Some((path, name)) = &ex.first_skipped {
+        tracing::warn!(
+            "{} trusted.* xattr(s) of the layer not set, as BuildKit leaves them out; the first: {}: {}",
+            ex.stats.xattrs_skipped,
+            path.display(),
+            name.to_string_lossy().escape_debug()
+        );
+    }
     r?;
     Ok(Extracted {
         root_set: ex.dirs.contains_key(Path::new("")),
@@ -246,6 +266,7 @@ struct Stats {
     hardlinks_copied: u64,
     nodes: u64,
     nodes_skipped: u64,
+    xattrs_skipped: u64,
     whiteouts: u64,
     ignored: u64,
     bytes_in: u64,
@@ -262,6 +283,7 @@ impl Stats {
         span.record("hardlinks_copied", self.hardlinks_copied);
         span.record("nodes", self.nodes);
         span.record("nodes_skipped", self.nodes_skipped);
+        span.record("xattrs_skipped", self.xattrs_skipped);
         span.record("whiteouts", self.whiteouts);
         span.record("ignored", self.ignored);
         span.record("bytes_in", self.bytes_in);
@@ -277,19 +299,29 @@ struct Extractor<'r> {
     /// [`extract_live`]: the ignore list and physical paths.
     live: Option<Live<'r>>,
     /// Lower inodes copied for a hardlink, by index in `lowers`, device and
-    /// inode, and where the copy is, so that every further link to any of
-    /// their names links to it.
-    copied: HashMap<(usize, u32, u32, u64), PathBuf>,
+    /// inode, and where the copy is with its `statx`, so that every further
+    /// link to any of their names links to it while it is still there.
+    copied: HashMap<LowerInode, (PathBuf, Stat)>,
+    /// The same copies by name: a copy the layer removes or replaces is
+    /// forgotten ([`Extractor::forget_copies`]).
+    copy_names: BTreeMap<PathBuf, LowerInode>,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
     dirs: BTreeMap<PathBuf, Meta>,
-    /// [`Whiteouts::Apply`]: entries this layer created, and their
-    /// ancestors, which an opaque whiteout must not remove.
-    created: HashSet<PathBuf>,
-    ancestors: HashSet<PathBuf>,
+    /// [`Whiteouts::Apply`]: entries this layer created and still has, and
+    /// their ancestors, which an opaque whiteout must not remove. Each name
+    /// is kept once, and what the layer deletes is forgotten, so this grows
+    /// with what the layer leaves on disk, not with its entries.
+    created: Created,
     stats: Stats,
+    /// The first xattr left out ([`SKIPPED_XATTR`]): the entry's name in
+    /// the layer and the xattr's, for the one warning per layer.
+    first_skipped: Option<(PathBuf, OsString)>,
 }
+
+/// A lower layer's inode: its index in `lowers`, device and inode number.
+type LowerInode = (usize, u32, u32, u64);
 
 /// What a tar entry asks for, after cleaning.
 enum Kind {
@@ -486,13 +518,13 @@ impl Extractor<'_> {
                 root::set_meta_at(pfd.as_fd(), &name, &meta, None, &path)?;
             }
         }
-        self.mark_created(path);
+        self.mark_created(&path);
         Ok(())
     }
 
     /// Ownership, xattrs, raw mode and times from the header and its PAX
-    /// records.
-    fn header_meta<R: Read>(&self, entry: &mut tar::Entry<'_, R>, raw: &Path) -> Result<Meta> {
+    /// records. Xattrs named [`SKIPPED_XATTR`] are left out and counted.
+    fn header_meta<R: Read>(&mut self, entry: &mut tar::Entry<'_, R>, raw: &Path) -> Result<Meta> {
         let refuse = |reason: String| Error::Entry {
             path: raw.to_owned(),
             reason,
@@ -515,6 +547,14 @@ impl Extractor<'_> {
                 let ext = ext.map_err(Error::Tar)?;
                 let key = ext.key_bytes();
                 if let Some(name) = key.strip_prefix(PAX_XATTR) {
+                    if name.starts_with(SKIPPED_XATTR) {
+                        self.stats.xattrs_skipped += 1;
+                        if self.first_skipped.is_none() {
+                            self.first_skipped =
+                                Some((raw.to_owned(), OsStr::from_bytes(name).to_owned()));
+                        }
+                        continue;
+                    }
                     xattrs.push((self.xattr_name(name), ext.value_bytes().to_vec()));
                 } else if key == b"mtime" {
                     mtime = pax_time(ext.value_bytes())
@@ -620,16 +660,32 @@ impl Extractor<'_> {
         // keyed by path, a layer linking each of a lower file's many names
         // would copy its content once per name.
         let key = (layer, st.dev_major, st.dev_minor, st.ino);
-        if let Some(copy) = self.copied.get(&key) {
+        if let Some((copy, copy_st)) = self.copied.get(&key) {
             let (cparent, cname) = path::entry(copy)?;
-            let cpfd = self
-                .root
-                .resolve_dir_in(&cparent, Mounts::Stay)
-                .map_err(|e| on_mount(e, raw))?;
-            rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
-                .map_err(|e| io_err("link", path, e))?;
-            self.stats.hardlinks += 1;
-            return Ok(());
+            // A copy the layer whited out or replaced since is forgotten
+            // ([`Extractor::forget_copies`]); one it removed by another name
+            // (through a symlink) is found here: its directory gone, or
+            // something else at its name. Then the lower file is copied
+            // again rather than what is there now linked, or the extraction
+            // failed.
+            let cpfd = match self.root.resolve_dir_in(&cparent, Mounts::Stay) {
+                Ok(fd) => Some(fd),
+                Err(e) if is_gone(&e) => None,
+                Err(e) => return Err(on_mount(e, raw)),
+            };
+            if let Some(cpfd) = cpfd {
+                let still = match meta::statx_at(cpfd.as_fd(), cname, copy) {
+                    Ok(now) => is_same_copy(&now, copy_st),
+                    Err(e) if is_gone(&e) => false,
+                    Err(e) => return Err(e),
+                };
+                if still {
+                    rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
+                        .map_err(|e| io_err("link", path, e))?;
+                    self.stats.hardlinks += 1;
+                    return Ok(());
+                }
+            }
         }
         let m = Meta {
             uid: Some(st.uid),
@@ -652,7 +708,9 @@ impl Extractor<'_> {
             path,
         )?;
         self.stats.hardlinks_copied += 1;
-        self.copied.insert(key, path.to_owned());
+        let copy_st = meta::statx_at(pfd, name, path)?;
+        self.copied.insert(key, (path.to_owned(), copy_st));
+        self.copy_names.insert(path.to_owned(), key);
         Ok(())
     }
 
@@ -768,6 +826,7 @@ impl Extractor<'_> {
         } else {
             rustix::fs::unlinkat(pfd, name, AtFlags::empty())
                 .map_err(|e| io_err("unlink", path, e))?;
+            self.forget_copies(path);
         }
         Ok(Room::Free)
     }
@@ -794,6 +853,30 @@ impl Extractor<'_> {
         let all = delete::remove_below(self.root, start, path, &mut decide, &mut counts)?;
         if !all {
             self.stats.ignored += counts.kept;
+            // What is left below it is only what the deletion kept: ignored
+            // paths, which this layer never wrote, and the directories
+            // leading to them. Pending metadata goes with the directories
+            // the walk removed, as found on disk: the ignore list only says
+            // what might have been kept.
+            self.created.clear_below(path);
+            self.forget_copies(path);
+            for p in self.pending_below(path) {
+                if p == path {
+                    continue;
+                }
+                match self.root.statx(&p) {
+                    Err(e)
+                        if matches!(
+                            e.raw_os_error().map(Errno::from_raw_os_error),
+                            Some(Errno::NOENT | Errno::NOTDIR)
+                        ) =>
+                    {
+                        self.dirs.remove(&p);
+                    }
+                    // Still there, or unknown: `finish` checks it.
+                    Ok(_) | Err(_) => {}
+                }
+            }
             return match self.live {
                 Some(_) => Ok(false),
                 None => Err(Error::Entry {
@@ -804,8 +887,42 @@ impl Extractor<'_> {
         }
         rustix::fs::unlinkat(pfd, name, AtFlags::REMOVEDIR)
             .map_err(|e| io_err("rmdir", path, e))?;
-        self.dirs.retain(|p, _| !p.starts_with(path));
+        self.created.remove(path);
+        self.forget_copies(path);
+        for p in self.pending_below(path) {
+            self.dirs.remove(&p);
+        }
         Ok(true)
+    }
+
+    /// Forgets the hardlink copies at or below `path`, which the layer just
+    /// removed: a later link to their lower inode copies it again.
+    fn forget_copies(&mut self, path: &Path) {
+        let gone: Vec<PathBuf> = self
+            .copy_names
+            .range::<Path, _>((Bound::Included(path), Bound::Unbounded))
+            .map(|(p, _)| p)
+            .take_while(|p| p.starts_with(path))
+            .cloned()
+            .collect();
+        for p in gone {
+            if let Some(key) = self.copy_names.remove(&p)
+                && self.copied.get(&key).is_some_and(|(at, _)| *at == p)
+            {
+                self.copied.remove(&key);
+            }
+        }
+    }
+
+    /// The directories with pending metadata at or below `path`: one range
+    /// of `dirs`, as paths sort component by component.
+    fn pending_below(&self, path: &Path) -> Vec<PathBuf> {
+        self.dirs
+            .range::<Path, _>((Bound::Included(path), Bound::Unbounded))
+            .map(|(p, _)| p)
+            .take_while(|p| p.starts_with(path))
+            .cloned()
+            .collect()
     }
 
     fn whiteout(&mut self, path: &Path, name: &[u8], raw: &Path) -> Result<()> {
@@ -904,8 +1021,13 @@ impl Extractor<'_> {
                     Ok(st) if st.file_type() == FileType::Directory => self
                         .remove_dir_tree(&target, pfd.as_fd(), hidden, &st)
                         .map(drop),
-                    Ok(_) => rustix::fs::unlinkat(&pfd, hidden, AtFlags::empty())
-                        .map_err(|e| io_err("unlink", &target, e)),
+                    Ok(_) => {
+                        rustix::fs::unlinkat(&pfd, hidden, AtFlags::empty())
+                            .map_err(|e| io_err("unlink", &target, e))?;
+                        self.created.remove(&target);
+                        self.forget_copies(&target);
+                        Ok(())
+                    }
                 }
             }
         }
@@ -944,7 +1066,7 @@ impl Extractor<'_> {
             }
             None => (dir, None),
         };
-        let (created, ancestors) = (&self.created, &self.ancestors);
+        let created = &self.created;
         let mut decide = |p: &Path, t: FileType| {
             if let Some(keep) = keep {
                 if keep.covers(p) {
@@ -954,16 +1076,11 @@ impl Extractor<'_> {
                     return Keep::Descend;
                 }
             }
-            if created.contains(p) {
-                if t == FileType::Directory {
-                    Keep::Descend
-                } else {
-                    Keep::Whole
-                }
-            } else if ancestors.contains(p) {
-                Keep::Descend
-            } else {
-                Keep::Remove
+            match created.lookup(p) {
+                Mark::Created if t == FileType::Directory => Keep::Descend,
+                Mark::Created => Keep::Whole,
+                Mark::Ancestor => Keep::Descend,
+                Mark::None => Keep::Remove,
             }
         };
         // Pending directory metadata needs no cleanup: it belongs to
@@ -1082,18 +1199,10 @@ impl Extractor<'_> {
     }
 
     /// Records `path` as created by this layer, for opaque whiteouts.
-    fn mark_created(&mut self, path: PathBuf) {
-        if self.wh != Whiteouts::Apply {
-            return;
+    fn mark_created(&mut self, path: &Path) {
+        if self.wh == Whiteouts::Apply {
+            self.created.insert(path);
         }
-        let mut a = path.parent();
-        while let Some(p) = a {
-            if p.as_os_str().is_empty() || !self.ancestors.insert(p.to_owned()) {
-                break;
-            }
-            a = p.parent();
-        }
-        self.created.insert(path);
     }
 
     /// Directory modes and times, deepest first.
@@ -1284,6 +1393,25 @@ fn is_whiteout(st: &Stat) -> bool {
 
 fn is_noent(e: &Error) -> bool {
     e.raw_os_error() == Some(Errno::NOENT.raw_os_error())
+}
+
+/// The name, or a directory on the way to it, is no longer there.
+fn is_gone(e: &Error) -> bool {
+    matches!(
+        e.raw_os_error().map(Errno::from_raw_os_error),
+        Some(Errno::NOENT | Errno::NOTDIR)
+    )
+}
+
+/// Whether `now` is still the hardlink copy `copy` described when it was
+/// made: the same inode, and a regular file of the same size and mtime, so
+/// neither an inode number the filesystem reused for a new file nor a
+/// whiteout device passes.
+fn is_same_copy(now: &Stat, copy: &Stat) -> bool {
+    now.same_inode(copy)
+        && now.file_type() == copy.file_type()
+        && now.size == copy.size
+        && now.mtime == copy.mtime
 }
 
 /// The error for an entry on or below a mount point inside the root.

@@ -421,6 +421,41 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   seccomp filter) used to keep state in memory (`memfd`) instead, as if
   the directory took no file. Its `EPERM` says nothing about the
   directory.
+- In overlay mode, a layer that whited out or replaced its copy of a
+  file from a lower layer, then hardlinked another name of the same lower
+  file, linked whatever had taken the copy's place (the whiteout, or the
+  layer's new file). It now copies the lower file again.
+- Loading the build context's entries no longer looks at every
+  directory above each entry: in a deep context that took CPU growing
+  with the square of the depth before the first stage ran. It now stops
+  at the first directory already there.
+- Deleting a deep tree (a stage a `RUN` filled, the store's leftovers at
+  start-up) took memory growing with the square of its depth: each level
+  kept its full path. A `RUN` could make a chain deep enough to get the
+  build killed for memory, again at every later start-up cleanup. Memory
+  now grows with the entries on the walk's stack, no longer with the
+  square of the depth, for the deletion and for kaniko mode's prune.
+- Kaniko mode's extraction of a base layer or `COPY --from` image no
+  longer keeps the path of every entry the layer created until it ends.
+  A layer that kept creating and whiting out the same deep tree, or wrote
+  many entries through a symlink to a deep directory, made ranikust's
+  memory grow while the disk stayed flat. Each name is now kept once, and
+  what the layer deletes is forgotten. Replacing a directory that holds an
+  ignored path (kept in place, as kaniko) no longer fails the extraction
+  on the subdirectories the layer had listed in it and that were deleted.
+- Extracting a layer never sets its `trusted.*` xattrs, as BuildKit: a
+  filesystem may give them a meaning it leaves the privileged writer to
+  check (XFS keeps raw ACLs there), so a hostile base image could leave
+  directories that not even root can delete. They are counted as
+  `xattrs_skipped` in the metrics, with one warning per layer; `user.*`,
+  `security.*` and `system.*` are set as before. Overlay mode's copy of a
+  hardlink target from a lower layer leaves them out too. Extracted layers
+  now live in `layers/v3/` of the state directory, so layers extracted
+  before this change are extracted again rather than reused. The old
+  `layers/v2/` stays on disk until it is removed by hand, so base layers
+  take twice the space until a prune exists. The new layout stops reuse
+  but does not repair a `layers/v2/` tree that a crafted XFS ACL already
+  damaged: root must remove it.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

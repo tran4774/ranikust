@@ -130,7 +130,7 @@ fn a_layer_is_published_as_a_directory() {
         p,
         store
             .state_dir()
-            .join("layers/v2/sha256")
+            .join("layers/v3/sha256")
             .join(digest(2).encoded())
     );
     assert!(p.join("etc").is_dir());
@@ -409,7 +409,7 @@ fn a_symlink_planted_as_an_entry_is_refused_not_followed() {
         let kind = if matches!(key, EntryKey::Blob(_)) {
             "blobs"
         } else {
-            "layers/v2"
+            "layers/v3"
         };
         let p = state.join(kind).join("sha256").join(digest(8).encoded());
         fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -427,13 +427,36 @@ fn a_symlink_planted_as_an_entry_is_refused_not_followed() {
     assert_eq!(fs::read(&outside).unwrap(), b"host");
 }
 
+/// Layers extracted under an earlier layout are never reused: version 2
+/// may hold `trusted.*` xattrs from the image, which extraction no longer
+/// sets (`ADR-0075`); version 1 named layers by diff ID.
+#[test]
+fn a_layer_of_an_earlier_layout_is_not_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    for old in ["layers/sha256", "layers/v2/sha256"] {
+        let p = store.state_dir().join(old).join(digest(10).encoded());
+        fs::create_dir_all(p.join("etc")).unwrap();
+    }
+    assert_eq!(store.get(&EntryKey::Layer(digest(10))).unwrap(), None);
+    let p = store
+        .fill(&EntryKey::Layer(digest(10)), |_| -> io::Result<u64> {
+            Ok(0)
+        })
+        .unwrap();
+    assert!(
+        p.starts_with(store.state_dir().join("layers/v3/sha256")),
+        "{p:?}"
+    );
+}
+
 #[test]
 fn a_layer_of_the_wrong_type_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&paths(dir.path())).unwrap();
     let p = store
         .state_dir()
-        .join("layers/v2/sha256")
+        .join("layers/v3/sha256")
         .join(digest(9).encoded());
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(&p, "not a directory").unwrap();

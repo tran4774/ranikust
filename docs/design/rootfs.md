@@ -117,7 +117,11 @@ never called. A hand-written reader would repeat that parsing for no gain.
   PAX headers are read whole into memory by the `tar` crate, with no bound
   for now (Q-056, answered: revisit with fuzzing in Phase 6).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
-  included), raw mode bits, PAX `SCHILY.xattr.*`, PAX `mtime`/`atime` with
+  included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
+  set, in every mode, as BuildKit's containerd extraction: a filesystem may
+  leave its checks to the privileged caller, as XFS does for the raw ACLs
+  `trusted.SGI_ACL_*`; counted as `xattrs_skipped`, one warning per layer,
+  `ADR-0075`), PAX `mtime`/`atime` with
   nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
   the order of [Metadata](#metadata); a regular file gets them through its
   open fd. Directories are created `0700` and get their mode and times last,
@@ -137,10 +141,15 @@ never called. A hand-written reader would repeat that parsing for no gain.
   opaque directory hides what its layer lacks. The copy is a regular file
   (or symlink, FIFO, device node) with the lower inode's owner, mode, times
   and xattrs as stored, overlay's own (`trusted.overlay.*`,
-  `user.overlay.*` but the escaped `user.overlay.overlay.*`) left behind,
+  `user.overlay.*` but the escaped `user.overlay.overlay.*`) and every
+  other `trusted.*` (`ADR-0075`) left behind,
   which splits the hardlink as overlay's copy-up does (`ADR-0012`). Copies
   are keyed by lower layer and inode: later links to any name of the same
-  lower inode link to that copy, so the bytes written stay bounded by the
+  lower inode link to that copy while it is still there (a copy the layer
+  whites out or replaces is forgotten, and one it removed by another name
+  is found gone, its directory or name missing or holding another inode,
+  type, size or mtime, so a later link copies it again rather than linking
+  what took its place), so the bytes written stay bounded by the
   lower layers' size, however many names a layer links. Only the
   `user.overlay.opaque=y` form ranikust writes is recognised
   ((Q-121)). A target in no layer, hidden, or a directory is an
@@ -156,9 +165,19 @@ never called. A hand-written reader would repeat that parsing for no gain.
 - **`Whiteouts::Apply`** (a live root, kaniko mode): `.wh.<name>` removes
   `<name>`; `.wh..wh..opq` removes everything in its directory that this
   layer did not create, keeping this layer's entries and the directories
-  leading to them, at the point the marker appears in the stream. Writing
-  into a live root, mount points included, is Phase 2
-  ([kaniko mode](kaniko-mode.md)).
+  leading to them, at the point the marker appears in the stream. "This
+  layer's entries" are those it still has: what it created is kept as a
+  tree of names, each name once however long the (physical) paths through
+  it, and a whiteout or a replacement that deletes an entry forgets it with
+  everything below, so the memory follows what the layer leaves on disk,
+  not how many entries it had (T15). Writing into a live root, mount points
+  included, is Phase 2 ([kaniko mode](kaniko-mode.md)). A directory the
+  layer listed and a later entry deleted gets no metadata at the end; when
+  that deletion had to keep an ignored path, the directories below it that
+  are still on disk keep theirs, whatever the ignore list says might have
+  been kept. A directory that led to an entry the layer created stays the
+  layer's when that entry goes, as it stays on disk: an opaque marker
+  later keeps it, as overlay's merged view does.
 - Other `.wh..wh.*` names (AUFS bookkeeping) are skipped; global PAX
   headers are ignored; unknown entry types are refused. Device nodes need
   `CAP_MKNOD` (T2); foreign owners need root or a user namespace (T1).
@@ -263,9 +282,14 @@ host's.
 [safe deletion](kaniko-mode.md#safe-deletion); the same walker removes a
 directory an extracted entry replaces, and applies OCI whiteouts.
 
-- Iterative, one frame per directory level holding an `O_RDONLY` fd: no
-  recursion, no `PATH_MAX` limit, one fd per level (a 3,004-level tree in
-  T0). Names are read before any is removed.
+- Iterative, one frame per directory level holding an `O_RDONLY` fd and
+  its own name: no recursion, no `PATH_MAX` limit, one fd per level (a
+  3,004-level tree in T0). The path of the entry at hand is one buffer the
+  walk extends and shortens, never a copy per level, so memory is linear
+  in the entries on the stack (each level's name and the names of its
+  directory not yet visited), no longer quadratic in depth (a 400-level chain of 200-byte names: 32 MB before, 0.4 MB
+  now, `tests/memory.rs`; `prune` alike). Names are read before any is
+  removed.
 - Each entry gets `statx(AT_SYMLINK_NOFOLLOW)`. Another mount id or
   `STATX_ATTR_MOUNT_ROOT` keeps it untouched. A directory is opened with
   `O_DIRECTORY | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, and its `ino`, device and

@@ -141,6 +141,44 @@ fn a_file_capability_that_cannot_be_set_fails_the_extraction() {
     assert!(text.contains("setxattr") && text.contains("ping"), "{text}");
 }
 
+/// A layer's `trusted.*` xattrs are never set, in any mode: a filesystem
+/// may give them a meaning it leaves the privileged caller to check (XFS
+/// keeps its raw on-disk ACLs as `trusted.SGI_ACL_FILE` and
+/// `trusted.SGI_ACL_DEFAULT`), as containerd's `archive.Apply` refuses
+/// them before the syscall. Other namespaces are still set. Unprivileged,
+/// an attempt would fail the strict extraction with `EPERM`; as root it
+/// would leave the xattr there, which the check reads back.
+#[test]
+fn trusted_xattrs_from_a_layer_are_never_set() {
+    for mode in ["Overlay", "Apply", "Literal", "Live"] {
+        let f = Fixture::new();
+        let mut t = Tar::new(&f);
+        t.pax(&[
+            ("SCHILY.xattr.trusted.SGI_ACL_FILE", b"\x00\x00\x00\x05"),
+            ("SCHILY.xattr.user.app", b"d"),
+        ])
+        .dir("d/", 0o775)
+        .pax(&[
+            ("SCHILY.xattr.trusted.x", b"t"),
+            ("SCHILY.xattr.user.app", b"f"),
+        ])
+        .file("d/f", 0o644, b"x");
+        let tar = t.bytes();
+        match mode {
+            "Overlay" => extract(&f.root, tar.as_slice(), Whiteouts::Overlay),
+            "Apply" => extract(&f.root, tar.as_slice(), Whiteouts::Apply),
+            "Literal" => extract(&f.root, tar.as_slice(), Whiteouts::Literal),
+            _ => extract_live(&f.root, tar.as_slice(), &IgnoreList::new()),
+        }
+        .unwrap_or_else(|e| panic!("{mode}: {e}"));
+        assert_eq!(xattr(&f.host("d"), "trusted.SGI_ACL_FILE"), None, "{mode}");
+        assert_eq!(xattr(&f.host("d/f"), "trusted.x"), None, "{mode}");
+        assert_eq!(xattr(&f.host("d"), "user.app").unwrap(), b"d", "{mode}");
+        assert_eq!(xattr(&f.host("d/f"), "user.app").unwrap(), b"f", "{mode}");
+        assert_eq!(mode_of(&f.host("d")), 0o775, "{mode}");
+    }
+}
+
 #[test]
 fn regular_layer_keeps_raw_modes_times_and_links() {
     let f = Fixture::new();
@@ -390,6 +428,61 @@ fn applied_whiteouts_hide_lower_entries_only() {
     .collect();
     assert_eq!(left, expect);
     assert_eq!(snapshot(&out), before);
+}
+
+/// What a layer deletes again is no longer its own: an opaque whiteout
+/// after it keeps only what the layer still has, a name it made again
+/// included, and the directories leading there.
+#[test]
+fn an_opaque_whiteout_keeps_what_the_layer_still_has() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("d")).unwrap();
+    fs::write(f.host("d/lower"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.file("d/gone/x/f", 0o644, b"")
+        .file("d/.wh.gone", 0o644, b"")
+        .file("d/again", 0o644, b"")
+        .file("d/.wh.again", 0o644, b"")
+        .file("d/again/deep/f", 0o644, b"")
+        .file("d/kept/f", 0o644, b"")
+        .file("d/kept/.wh.f", 0o644, b"")
+        .file("d/kept/g", 0o644, b"")
+        .file("d/.wh..wh..opq", 0o644, b"");
+    extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap();
+    let left = crate::test_util::tree(&f.host);
+    let expect: std::collections::BTreeSet<PathBuf> = [
+        "d",
+        "d/again",
+        "d/again/deep",
+        "d/again/deep/f",
+        "d/kept",
+        "d/kept/g",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect();
+    assert_eq!(left, expect);
+}
+
+/// A directory that led to an entry the layer created stays the layer's
+/// when that entry goes: it is still on disk, and overlay's merged view
+/// keeps it under an opaque marker (the layer's own copy of it, holding
+/// only the whiteout), so applying the layer keeps it too, empty.
+#[test]
+fn an_opaque_whiteout_keeps_a_directory_whose_created_entry_went() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("d/x")).unwrap();
+    fs::write(f.host("d/x/lower"), b"").unwrap();
+    fs::write(f.host("d/y"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.file("d/x/f", 0o644, b"")
+        .file("d/x/.wh.f", 0o644, b"")
+        .file("d/.wh..wh..opq", 0o644, b"");
+    extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap();
+    let left = crate::test_util::tree(&f.host);
+    let expect: std::collections::BTreeSet<PathBuf> =
+        ["d", "d/x"].into_iter().map(PathBuf::from).collect();
+    assert_eq!(left, expect);
 }
 
 #[test]
@@ -757,6 +850,26 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
     assert_eq!(snapshot(&lower.host), before);
 }
 
+/// A copy-up from a lower layer gets none of the lower inode's `trusted.*`
+/// (a layer extracted before they were left out, or a filesystem that
+/// lists its own to root), as the layer's own entries get none
+/// (`ADR-0075`).
+#[test]
+#[ignore = "T2c: sysadmin: setting trusted.* needs CAP_SYS_ADMIN"]
+fn a_hardlink_copied_from_a_lower_layer_gets_no_trusted_xattrs() {
+    let lower = Fixture::new();
+    fs::write(lower.host("dash"), b"#!dash").unwrap();
+    for (n, v) in [("trusted.x", &b"t"[..]), ("user.app", b"u")] {
+        rustix::fs::setxattr(lower.host("dash"), n, v, rustix::fs::XattrFlags::empty()).unwrap();
+    }
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("sh", "dash");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    assert_eq!(xattr(&f.host("sh"), "trusted.x"), None);
+    assert_eq!(xattr(&f.host("sh"), "user.app").unwrap(), b"u");
+}
+
 #[test]
 fn every_name_of_a_lower_inode_shares_one_copy() {
     // A lower file with many names, and a layer linking each name: one
@@ -787,6 +900,59 @@ fn every_name_of_a_lower_inode_shares_one_copy() {
     }
     // Overlay's own xattrs stay in the lower layer.
     assert_eq!(xattr(&f.host("a"), "user.overlay.origin"), None);
+}
+
+/// A copy the layer then whited out or replaced is not the copy any more:
+/// a later link to another name of the same lower inode copies it again
+/// instead of linking whatever is at the old copy's name.
+#[test]
+fn a_copy_the_layer_removed_is_not_linked_again() {
+    let lower = Fixture::new();
+    fs::write(lower.host("big"), b"content").unwrap();
+    for n in ["n1", "n2"] {
+        fs::hard_link(lower.host("big"), lower.host(n)).unwrap();
+    }
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("a", "big")
+        .file(".wh.a", 0o644, b"")
+        .hardlink("b", "n1")
+        .file("b", 0o644, b"replaced")
+        .hardlink("c", "n2");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    // `a` is overlay's whiteout now, `b` the layer's own file.
+    assert!(
+        fs::symlink_metadata(f.host("a"))
+            .unwrap()
+            .file_type()
+            .is_char_device()
+    );
+    assert_eq!(fs::read(f.host("b")).unwrap(), b"replaced");
+    let c = fs::symlink_metadata(f.host("c")).unwrap();
+    assert!(c.is_file());
+    assert_eq!(fs::read(f.host("c")).unwrap(), b"content");
+    assert_eq!(c.nlink(), 1);
+}
+
+/// A copy made through a symlink, whose directory the layer then whited out
+/// by its other name: the copy's directory is gone (a whiteout device
+/// stands there), so a later link copies the lower file again instead of
+/// failing the extraction.
+#[test]
+fn a_copy_whose_directory_went_by_another_name_is_copied_again() {
+    let lower = Fixture::new();
+    fs::write(lower.host("big"), b"content").unwrap();
+    fs::hard_link(lower.host("big"), lower.host("n1")).unwrap();
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.dir("d/", 0o755)
+        .symlink("s", "d")
+        .hardlink("s/a", "big")
+        .file(".wh.d", 0o644, b"")
+        .hardlink("c", "n1");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    assert_eq!(fs::read(f.host("c")).unwrap(), b"content");
+    assert_eq!(fs::metadata(f.host("c")).unwrap().nlink(), 1);
 }
 
 #[test]
@@ -1005,6 +1171,40 @@ fn live_whiteouts_leave_ignored_paths_alone() {
     assert_eq!(fs::read(f.host("etc/mtab")).unwrap(), b"m");
     assert!(!f.host("etc/old").exists());
     assert!(f.host("etc/new").exists());
+}
+
+/// A directory the layer listed, then deleted with the directory around it
+/// when a later entry replaced that one, gets no metadata at the end: only
+/// what the deletion kept is still there.
+#[test]
+fn a_replaced_directory_holding_an_ignored_path_leaves_no_pending_metadata() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("var/run")).unwrap();
+    fs::write(f.host("var/run/sock"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.dir("var/x/", 0o755)
+        .dir("var/x/y/", 0o755)
+        .file("var", 0o644, b"");
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    assert!(f.host("var/run/sock").exists());
+    assert!(!f.host("var/x").exists());
+}
+
+/// The same with an ignore-list entry below the deleted directory that is
+/// not on disk: the list says something may be kept below it, the walk
+/// removed it all the same.
+#[test]
+fn a_replaced_directory_whose_ignored_path_is_absent_leaves_no_pending_metadata() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("var/run")).unwrap();
+    fs::write(f.host("var/run/sock"), b"").unwrap();
+    let mut keep = live_keep();
+    keep.insert("/var/cache/apt").unwrap();
+    let mut t = Tar::new(&f);
+    t.dir("var/cache/", 0o755).file("var", 0o644, b"");
+    extract_live(&f.root, t.bytes().as_slice(), &keep).unwrap();
+    assert!(f.host("var/run/sock").exists());
+    assert!(!f.host("var/cache").exists());
 }
 
 #[test]

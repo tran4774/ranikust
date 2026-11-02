@@ -77,7 +77,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   outside the root are refused, and the last component of a replaced entry is
   never followed (threats T1, T2).
 - Every fd is `O_CLOEXEC` (T7). Directories are opened by `(parent fd, name)`,
-  never by a long path, so tree depth is unlimited.
+  never by a long path, so tree depth is unlimited. A walk keeps one fd per
+  level, each level's name and the names of its directory not yet visited,
+  and a single path buffer, never a path per level: memory linear in the
+  entries on the stack, no longer quadratic in depth (`tests/memory.rs`).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
   from `statx` with the opened fd to catch a swap, `unlinkat` symlinks without
   following; keep ignore-list entries, entries with another `mnt_id` and
@@ -86,6 +89,13 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 - Modes are raw `st_mode` bits (sticky, setuid, setgid survive). In overlay
   form, content xattrs `user.overlay.*` become `user.overlay.overlay.*`
   (kernel ≥ 6.7).
+- A layer's `trusted.*` xattrs are never set, in any mode, before any
+  syscall (`meta::LAYER_SKIPPED_XATTR`, ADR-0075, as BuildKit's containerd
+  extraction): counted as `xattrs_skipped`, one warning per layer. The
+  copy-up of a hardlink from a lower layer leaves them out too
+  (`Xattrs::Layer`); `COPY` (`Xattrs::Copy`) keeps them. The other
+  namespaces are set strictly. `rnk-store` keeps extracted layers in
+  `layers/v3/`, so none extracted before this rule is reused.
 - Identity is compared by `(dev, ino)` (and mount id), never by string;
   the store's `.ranikust-state` marker is a regular file.
 
@@ -171,7 +181,7 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 ## Metrics
 
 - `rnk_rootfs.extract` per layer (`mode`: `Apply`, `Overlay` or `Live`;
-  `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`, `hardlinks`, `bytes_in`,
+  `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`, `xattrs_skipped`, `hardlinks`, `bytes_in`,
   `bytes_written`), `rnk_rootfs.copy` per `COPY`
   source set, `rnk_rootfs.delete` per tree, `rnk_rootfs.prune` per
   pruned root (`entries`, `files`, `dirs`, `kept`) ([rows](../../design/metrics.md#rnk-rootfs)).

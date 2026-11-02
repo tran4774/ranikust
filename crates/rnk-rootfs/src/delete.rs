@@ -27,7 +27,10 @@ use crate::root::{Mounts, RootPath, open_name};
 /// and mount id are compared with the `statx` taken before opening it; any
 /// difference stops the deletion with [`Error::Changed`]. Symlinks are
 /// unlinked, never followed. Depth is unlimited by `PATH_MAX`, but one fd is
-/// held per level: the caller raises `RLIMIT_NOFILE` for deep trees.
+/// held per level: the caller raises `RLIMIT_NOFILE` for deep trees. Memory
+/// is linear in the entries on the walk's stack (each level keeps its name
+/// and the names of its directory not yet visited) plus one path buffer, no
+/// longer quadratic in depth.
 ///
 /// # Errors
 ///
@@ -172,11 +175,12 @@ impl Links {
     }
 }
 
-/// One directory [`prune`] walks.
+/// One directory [`prune`] walks. Its path is the walk's one path buffer,
+/// not the frame's: a frame per level holding its full path would take
+/// memory quadratic in depth.
 struct PruneFrame {
     /// `O_RDONLY | O_DIRECTORY` fd: `futimens` needs an open file.
     fd: OwnedFd,
-    path: PathBuf,
     /// Its `statx` before anything in it was deleted.
     st: Stat,
     names: Vec<OsString>,
@@ -203,11 +207,13 @@ fn prune_walk(
     let names = read_names(start.as_fd(), Path::new(""))?;
     let mut stack = vec![PruneFrame {
         fd: start,
-        path: PathBuf::new(),
         st,
         names,
         changed: false,
     }];
+    // The path of the directory on top of the stack, then, while an entry
+    // of it is handled, of that entry.
+    let mut cur = PathBuf::new();
     while let Some(top) = stack.last_mut() {
         let Some(name) = top.names.pop() else {
             if let Some(done) = stack.pop()
@@ -217,77 +223,74 @@ fn prune_walk(
                     last_access: done.st.atime.to_timespec(),
                     last_modification: done.st.mtime.to_timespec(),
                 };
-                rustix::fs::futimens(&done.fd, &times)
-                    .map_err(|e| io_err("utimensat", &done.path, e))?;
+                rustix::fs::futimens(&done.fd, &times).map_err(|e| io_err("utimensat", &cur, e))?;
             }
+            cur.pop();
             continue;
         };
-        let child = top.path.join(&name);
+        cur.push(&name);
         // Nothing else writes the root while it is pruned: an entry that
         // goes meanwhile is a change, not something to skip.
-        let st = match meta::statx_at(top.fd.as_fd(), &name, &child) {
+        let st = match meta::statx_at(top.fd.as_fd(), &name, &cur) {
             Ok(st) => st,
             Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
-                return Err(Error::Changed { path: child });
+                return Err(Error::Changed { path: cur });
             }
             Err(e) => return Err(e),
         };
         if root.off_mount(&st) {
             return Err(Error::InvalidPath {
-                path: child,
+                path: cur,
                 reason: "a mount below the root",
             });
         }
         links.saw(&st);
         let file_type = st.file_type();
         let is_dir = file_type == FileType::Directory;
-        if !remove(&child, file_type) {
+        if !remove(&cur, file_type) {
             if is_dir {
-                let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
-                meta::strip_overlay_own(fd.as_fd(), file_type, None, &child)?;
-                let names = read_names(fd.as_fd(), &child)?;
+                let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &cur)?;
+                meta::strip_overlay_own(fd.as_fd(), file_type, None, &cur)?;
+                let names = read_names(fd.as_fd(), &cur)?;
+                // `cur` stays this directory's path while it is walked.
                 stack.push(PruneFrame {
                     fd,
-                    path: child,
                     st,
                     names,
                     changed: false,
                 });
-            } else {
-                let pin = pin_checked(top.fd.as_fd(), &name, &st, &child)?;
-                meta::strip_overlay_own(
-                    pin.as_fd(),
-                    file_type,
-                    Some((top.fd.as_fd(), &name)),
-                    &child,
-                )?;
-                links.keep(&st);
-                counts.kept += 1;
+                continue;
             }
+            let pin = pin_checked(top.fd.as_fd(), &name, &st, &cur)?;
+            meta::strip_overlay_own(pin.as_fd(), file_type, Some((top.fd.as_fd(), &name)), &cur)?;
+            links.keep(&st);
+            counts.kept += 1;
+            cur.pop();
             continue;
         }
         top.changed = true;
         if is_dir {
-            let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
+            let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &cur)?;
             let mut all = |_: &Path, _: FileType| Keep::Remove;
             let mut seen = |st: &Stat| links.saw(st);
             // Entries on another mount are kept by `remove_below`, which
             // then cannot remove the directory: refused below as a change.
-            remove_below_seen(root, fd, &child, &mut all, counts, &mut seen)?;
+            remove_below_seen(root, fd, &cur, &mut all, counts, &mut seen)?;
             match rustix::fs::unlinkat(&top.fd, &name, AtFlags::REMOVEDIR) {
                 Ok(()) => counts.dirs += 1,
                 Err(Errno::NOTDIR | Errno::NOTEMPTY | Errno::NOENT) => {
-                    return Err(Error::Changed { path: child });
+                    return Err(Error::Changed { path: cur });
                 }
-                Err(e) => return Err(io_err("rmdir", &child, e)),
+                Err(e) => return Err(io_err("rmdir", &cur, e)),
             }
         } else {
             match rustix::fs::unlinkat(&top.fd, &name, AtFlags::empty()) {
                 Ok(()) => counts.files += 1,
-                Err(Errno::NOENT | Errno::ISDIR) => return Err(Error::Changed { path: child }),
-                Err(e) => return Err(io_err("unlink", &child, e)),
+                Err(Errno::NOENT | Errno::ISDIR) => return Err(Error::Changed { path: cur }),
+                Err(e) => return Err(io_err("unlink", &cur, e)),
             }
         }
+        cur.pop();
     }
     Ok(())
 }
@@ -332,12 +335,13 @@ impl Counts {
     }
 }
 
-/// One directory being emptied.
+/// One directory being emptied. Its path is the walk's one path buffer,
+/// not the frame's: a frame per level holding its full path would take
+/// memory quadratic in depth, and a `RUN` can make a tree as deep as it
+/// likes.
 struct Frame {
     /// `O_RDONLY | O_DIRECTORY` fd.
     fd: OwnedFd,
-    /// Its path inside the root, cleaned and relative (`""` for the root).
-    path: PathBuf,
     /// Its name in the parent frame.
     name: OsString,
     /// Entries still to visit.
@@ -385,12 +389,14 @@ fn remove_below_seen(
     let names = read_names(fd.as_fd(), dir)?;
     let mut stack = vec![Frame {
         fd,
-        path: dir.to_owned(),
         name: OsString::new(),
         names,
         kept: false,
         keep_self: true,
     }];
+    // The path of the directory on top of the stack, then, while an entry
+    // of it is handled, of that entry.
+    let mut cur = dir.to_owned();
 
     loop {
         let Some(top) = stack.last_mut() else {
@@ -413,28 +419,33 @@ fn remove_below_seen(
                     // just emptied (a swap), something was added to it, or
                     // it was removed meanwhile.
                     Err(Errno::NOTDIR | Errno::NOTEMPTY | Errno::NOENT) => {
-                        return Err(Error::Changed { path: done.path });
+                        return Err(Error::Changed { path: cur });
                     }
-                    Err(e) => return Err(io_err("rmdir", &done.path, e)),
+                    Err(e) => return Err(io_err("rmdir", &cur, e)),
                 }
             }
+            cur.pop();
             continue;
         };
-        let child = top.path.join(&name);
-        let st = match meta::statx_at(top.fd.as_fd(), &name, &child) {
+        cur.push(&name);
+        let st = match meta::statx_at(top.fd.as_fd(), &name, &cur) {
             Ok(st) => st,
             // Gone already: nothing to delete.
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => continue,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                cur.pop();
+                continue;
+            }
             Err(e) => return Err(e),
         };
         seen(&st);
         if root.off_mount(&st) {
             top.kept = true;
             counts.kept += 1;
+            cur.pop();
             continue;
         }
         let file_type = st.file_type();
-        let action = decide(&child, file_type);
+        let action = decide(&cur, file_type);
         match (action, file_type == FileType::Directory) {
             (Keep::Whole, _) | (Keep::Descend, false) => {
                 top.kept = true;
@@ -445,23 +456,25 @@ fn remove_below_seen(
                     Ok(()) => counts.files += 1,
                     // Gone already: nothing to delete.
                     Err(Errno::NOENT) => {}
-                    Err(Errno::ISDIR) => return Err(Error::Changed { path: child }),
-                    Err(e) => return Err(io_err("unlink", &child, e)),
+                    Err(Errno::ISDIR) => return Err(Error::Changed { path: cur }),
+                    Err(e) => return Err(io_err("unlink", &cur, e)),
                 }
             }
             (Keep::Remove | Keep::Descend, true) => {
-                let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &child)?;
-                let names = read_names(fd.as_fd(), &child)?;
+                let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &cur)?;
+                let names = read_names(fd.as_fd(), &cur)?;
+                // `cur` stays this directory's path while it is emptied.
                 stack.push(Frame {
                     fd,
-                    path: child,
                     name,
                     names,
                     kept: false,
                     keep_self: action == Keep::Descend,
                 });
+                continue;
             }
         }
+        cur.pop();
     }
 }
 

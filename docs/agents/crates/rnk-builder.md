@@ -129,7 +129,7 @@ impl SourceRoot<R> { pub fn keep(&self, need: &KeepNeed) -> Result<()>; } // kan
 pub enum KeepNeed { All, Sources(Vec<String>) }          // COPY --from sources: their entries + links on the way,
                                                          // checked to resolve the same in the copy, else All
 pub struct ImageSource<R, L> { pub image: Arc<PulledImage<L>>, pub root: SourceRoot<R> }  // COPY --from=<image>
-pub struct ContextFiles;                                 // ContextFiles::load(&Context, Option<&Matcher>)
+pub struct ContextFiles;                                 // ContextFiles::load(&Context, Option<&Matcher>): an entry's directories added until one is there (one lookup per entry, whatever its depth)
 pub async fn pull_image<S>(client: &Arc<Client>, store: &Arc<Store>, snapshotter: &Arc<S>,
     reference: &str, platform: &Platform, keep_blobs: bool) -> Result<PulledImage<S::Layer>>;
     // blobs into the store, base layers by the snapshotter; unless keep_blobs (a file output), a
