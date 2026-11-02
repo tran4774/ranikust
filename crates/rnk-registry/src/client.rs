@@ -1811,6 +1811,13 @@ mod tests {
             "1".to_owned(),
         );
         assert!(same_target(&lower, &reference).is_err());
+        // The right host but another repository is refused as well.
+        let other_repository = oci_client::Reference::with_tag(
+            "LOCALDOMAIN".into(),
+            "library/debian".into(),
+            "1".into(),
+        );
+        assert!(same_target(&other_repository, &reference).is_err());
         assert!(same_target(&oci_reference(&reference).unwrap(), &reference).is_ok());
     }
 }
