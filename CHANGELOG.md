@@ -393,10 +393,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   types, build-context names, registry text) no longer reach the terminal
   raw in ranikust's own output. The fatal `ranikust: error:` line and the
   colored log format escape control characters (line feeds, carriage
-  returns, escape sequences, DEL, C1) and bidi controls as `\n` or
-  `\u{1b}`, so a name cannot set the terminal's title or clipboard, or
-  print a line that looks like ranikust's own; the text and JSON log
-  formats also escape DEL, C1 and bidi controls now. A refusal's advice
+  returns, escape sequences, DEL, C1), the Unicode line and paragraph
+  separators and bidi controls as `\n` or `\u{1b}`, so a name cannot set
+  the terminal's title or clipboard, or print a line that looks like
+  ranikust's own; the text and JSON log formats also escape DEL, C1, the
+  separators and bidi controls now. A refusal's advice
   keeps its own indented line. Layers, digests and the metrics report are
   unchanged; a `RUN`'s own output is still copied as it is.
 - The refusals of kaniko mode on `/` that keep state out of a `RUN`'s

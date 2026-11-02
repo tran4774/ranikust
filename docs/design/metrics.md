@@ -54,9 +54,10 @@ names, build-context names, registry text. What ranikust writes to stderr
 itself is escaped where it is written, never in the libraries' errors,
 whose text programs read too: the colored format, kaniko's default, writes
 the message with every control character (line feed, carriage return,
-tab, escape, DEL, C1) and bidi control as Rust writes it in a string
-(`\n`, `\u{1b}`, `rnk_metrics::terminal_text`); the text and JSON formats
-quote values as JSON, with DEL, C1 and bidi controls as `\uXXXX` too; and
+tab, escape, DEL, C1), Unicode line and paragraph separator (U+2028,
+U+2029) and bidi control as Rust writes it in a string (`\n`, `\u{1b}`,
+`rnk_metrics::terminal_text`); the text and JSON formats quote values as
+JSON, with DEL, C1, the separators and bidi controls as `\uXXXX` too; and
 `ranikust`'s fatal `ranikust: error:` line escapes its message the same
 way, with a refusal's advice, ranikust's own text, on an indented line of
 its own. So a name can neither set the terminal's title or clipboard nor

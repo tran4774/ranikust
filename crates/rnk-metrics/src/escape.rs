@@ -12,11 +12,21 @@
 use std::borrow::Cow;
 
 /// Whether a terminal or a log viewer could act on `c`: a control character
-/// (C0 with line feed, carriage return and tab, DEL, C1) or a bidi control,
-/// which reorders what is shown.
+/// (C0 with line feed, carriage return and tab, DEL, C1), the Unicode line
+/// and paragraph separators (U+2028, U+2029: a line break to some viewers),
+/// or a bidi control, which reorders what is shown.
 pub(crate) fn needs_escape(c: char) -> bool {
     c.is_control()
-        || matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        || matches!(
+            c,
+            '\u{61c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
 }
 
 /// `text` with every character [`needs_escape`] names written as Rust
@@ -78,6 +88,7 @@ mod tests {
             ("a\r\nb\tc", r"a\r\nb\tc"),
             ("\x00\x7f", r"\u{0}\u{7f}"),
             ("\u{9b}31m", r"\u{9b}31m"),
+            ("a\u{2028}b\u{2029}c", r"a\u{2028}b\u{2029}c"),
             (
                 "\u{202e}\u{2066}\u{61c}\u{200f}",
                 r"\u{202e}\u{2066}\u{61c}\u{200f}",
@@ -90,9 +101,9 @@ mod tests {
 
     #[test]
     fn json_keeps_its_value() {
-        let value = "a\u{7f}\u{85}\u{9b}\u{202e}b\n";
+        let value = "a\u{7f}\u{85}\u{9b}\u{202e}b\n\u{2028}\u{2029}";
         let line = json_text(serde_json::Value::String(value.to_owned()).to_string());
-        assert_eq!(line, r#""a\u007f\u0085\u009b\u202eb\n""#);
+        assert_eq!(line, r#""a\u007f\u0085\u009b\u202eb\n\u2028\u2029""#);
         assert_eq!(serde_json::from_str::<String>(&line).unwrap(), value);
     }
 }
