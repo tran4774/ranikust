@@ -389,6 +389,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- Deleting a deep tree (a stage a `RUN` filled, the store's leftovers at
+  start-up) took memory growing with the square of its depth: each level
+  kept its full path. A `RUN` could make a chain deep enough to get the
+  build killed for memory, again at every later start-up cleanup. Memory
+  is now linear in depth, for the deletion and for kaniko mode's prune.
 - Kaniko mode's extraction of a base layer or `COPY --from` image no
   longer keeps the path of every entry the layer created until it ends.
   A layer that kept creating and whiting out the same deep tree, or wrote

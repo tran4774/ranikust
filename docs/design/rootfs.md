@@ -274,9 +274,13 @@ host's.
 [safe deletion](kaniko-mode.md#safe-deletion); the same walker removes a
 directory an extracted entry replaces, and applies OCI whiteouts.
 
-- Iterative, one frame per directory level holding an `O_RDONLY` fd: no
-  recursion, no `PATH_MAX` limit, one fd per level (a 3,004-level tree in
-  T0). Names are read before any is removed.
+- Iterative, one frame per directory level holding an `O_RDONLY` fd and
+  its own name: no recursion, no `PATH_MAX` limit, one fd per level (a
+  3,004-level tree in T0). The path of the entry at hand is one buffer the
+  walk extends and shortens, never a copy per level, so memory is linear
+  in depth (a 400-level chain of 200-byte names: 32 MB before, 0.4 MB
+  now, `tests/memory.rs`; `prune` alike). Names are read before any is
+  removed.
 - Each entry gets `statx(AT_SYMLINK_NOFOLLOW)`. Another mount id or
   `STATX_ATTR_MOUNT_ROOT` keeps it untouched. A directory is opened with
   `O_DIRECTORY | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, and its `ino`, device and

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use rnk_rootfs::{IgnoreList, RootPath, Whiteouts, extract, extract_live};
+use rnk_rootfs::{IgnoreList, RootPath, Whiteouts, delete_contents, extract, extract_live, prune};
 
 /// The system allocator, counting the bytes allocated now and their peak.
 struct Counting;
@@ -148,4 +148,44 @@ fn a_live_extraction_keeps_each_created_name_once() {
     eprintln!("peak: {peak} bytes");
     assert!(peak < 2 * MIB, "extraction took {peak} bytes");
     assert_eq!(root.read_names(&chain).unwrap().len(), 2000);
+}
+
+/// A chain of `depth` directories with 200-byte names below `host`, made by
+/// descriptor: its path is far past `PATH_MAX`, as a `RUN` can make one.
+fn deep_chain(host: &std::path::Path, depth: usize) {
+    use rustix::fs::{Mode, OFlags};
+    let name = "n".repeat(200);
+    let dir = OFlags::PATH | OFlags::DIRECTORY;
+    let mut cur = rustix::fs::open(host, dir, Mode::empty()).unwrap();
+    for _ in 0..depth {
+        rustix::fs::mkdirat(&cur, name.as_str(), Mode::from_raw_mode(0o755)).unwrap();
+        cur = rustix::fs::openat(&cur, name.as_str(), dir, Mode::empty()).unwrap();
+    }
+}
+
+/// Deleting a deep chain holds one name per level, not the path to it:
+/// memory linear in depth.
+#[test]
+fn deleting_a_deep_chain_takes_memory_linear_in_its_depth() {
+    let _one = one_at_a_time();
+    let (_tmp, host, root) = root();
+    deep_chain(&host, 400);
+    let keep = IgnoreList::new();
+    let peak = peak_of(|| delete_contents(&root, &keep).unwrap());
+    eprintln!("peak: {peak} bytes");
+    assert!(peak < 4 * MIB, "deletion took {peak} bytes");
+    assert!(root.read_names("").unwrap().is_empty());
+}
+
+/// So does pruning, which walks every directory it keeps.
+#[test]
+fn pruning_a_deep_chain_takes_memory_linear_in_its_depth() {
+    let _one = one_at_a_time();
+    let (_tmp, host, root) = root();
+    deep_chain(&host, 400);
+    let peak = peak_of(|| {
+        prune(&root, &|_, _| false).unwrap();
+    });
+    eprintln!("peak: {peak} bytes");
+    assert!(peak < 4 * MIB, "pruning took {peak} bytes");
 }
