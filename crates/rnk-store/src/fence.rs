@@ -34,6 +34,9 @@ use crate::error::{Error, Result};
 /// reads it; longer means one outlived its instruction, a bug.
 pub(crate) const WAIT_FOR_NAMES: Duration = Duration::from_secs(60);
 
+/// The refusal of a name once the fence is poisoned ([`Fence::poison`]).
+const POISONED: &str = "named state after a RUN whose processes may still live";
+
 #[derive(Debug, Default)]
 struct State {
     /// Threads inside a `RUN`, one entry per guard.
@@ -99,9 +102,7 @@ impl Fence {
         let me = std::thread::current().id();
         let mut state = lock(inner);
         if state.poisoned {
-            return Err(Error::Anonymous(
-                "named state after a RUN whose processes may still live",
-            ));
+            return Err(Error::Anonymous(POISONED));
         }
         while !state.runs.is_empty() {
             if state.runs.contains(&me) {
@@ -112,10 +113,10 @@ impl Fence {
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
+        // Poisoned while waiting (a RUN failed or the state directory
+        // changed): no name from now on.
         if state.poisoned {
-            return Err(Error::Anonymous(
-                "named state after a RUN whose processes may still live",
-            ));
+            return Err(Error::Anonymous(POISONED));
         }
         state.names += 1;
         Ok(NamedGuard {

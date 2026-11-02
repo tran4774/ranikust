@@ -47,6 +47,32 @@ fn fill_counts_written_and_reused_bytes() {
     assert_eq!(report["phases"]["rnk_store.cleanup"]["count"], 1);
 }
 
+/// Characterization: an anonymous store's fills report the same fields.
+#[test]
+fn an_anonymous_fill_counts_written_and_reused_bytes() {
+    let capture = Capture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let store = capture.run(|| Store::open_anonymous(dir.path()).unwrap());
+    let key = EntryKey::Blob(Digest::from_sha256_bytes(&[2; 32]));
+    capture.run(|| {
+        for _ in 0..2 {
+            store
+                .fill(&key, |e| -> io::Result<u64> {
+                    e.file().unwrap().write_all(b"1234567")?;
+                    Ok(7)
+                })
+                .unwrap();
+        }
+    });
+    let report = capture.report();
+    let fill = &report["phases"]["rnk_store.fill"];
+    assert_eq!(fill["count"], 2);
+    assert_eq!(fill["reused"], 1);
+    assert_eq!(fill["bytes_written"], 7);
+    assert_eq!(fill["bytes_reused"], 7);
+    store.close().unwrap();
+}
+
 #[test]
 fn a_waiting_lock_is_contended() {
     let capture = Capture::new();
