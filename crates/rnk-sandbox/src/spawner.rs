@@ -3531,6 +3531,312 @@ mod tests {
         });
     }
 
+    /// Red team (T2, the VM only; T7): a `RUN` with every kind of mount the
+    /// child makes (a read-write and a read-only cache directory, a file
+    /// bind, two secrets on the secrets tmpfs, `--network=none`) and stdin,
+    /// stdout and stderr from files holds no descriptor but its stdio when
+    /// it starts: the `open_tree` descriptors, the `proc`, `sysfs` and
+    /// `/dev` descriptors, the mount sources, the parent check and the
+    /// error pipe are all closed by `execve`. With `open_tree` and as where
+    /// it is refused. `ls` itself opens one descriptor, the directory it
+    /// lists, which is told apart by its target.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_run_with_every_mount_holds_only_its_stdio() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            for d in ["c1", "c2"] {
+                fs::create_dir(root.join(d)).unwrap();
+            }
+            fs::write(root.join("f"), b"").unwrap();
+            let parent = ParentPid::new().unwrap();
+            let mut leaked = Vec::new();
+            for (n, mode) in ["mount API", "by path"].into_iter().enumerate() {
+                let mut runner =
+                    Runner::new(&top.join(format!("sandbox{n}")), Some(RootEntry::PivotRoot))
+                        .unwrap();
+                if mode == "by path" {
+                    runner.without_mount_api();
+                }
+                let (c1, c2) = (
+                    top.join(format!("cache{n}a")),
+                    top.join(format!("cache{n}b")),
+                );
+                fs::create_dir(&c1).unwrap();
+                fs::create_dir(&c2).unwrap();
+                let file = top.join(format!("file{n}"));
+                fs::write(&file, b"dummy").unwrap();
+                let mut spec = RunSpec::new(
+                    &root,
+                    vec!["/bin/ls".into(), "-l".into(), "/proc/self/fd/".into()],
+                );
+                spec.network = Network::None;
+                for (source, target, kind, read_only) in [
+                    (c1, "/c1", MountKind::Directory, false),
+                    (c2, "/c2", MountKind::Directory, true),
+                    (file, "/f", MountKind::File, true),
+                ] {
+                    spec.mounts.push(crate::BindMount {
+                        source,
+                        target: target.into(),
+                        kind,
+                        read_only,
+                    });
+                }
+                for target in ["/run/secrets/a", "/run/secrets/b"] {
+                    spec.secrets.push(SecretFile {
+                        data: std::sync::Arc::from(&b"dummy-secret"[..]),
+                        target: target.into(),
+                        uid: 0,
+                        gid: 0,
+                        mode: 0o400,
+                    });
+                }
+                let out = top.join(format!("out{n}"));
+                output_to(&out, &mut spec);
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap();
+                println!("{mode}: {r:?}\n{text}");
+                assert!(
+                    matches!(&r, Ok(st) if st.success()),
+                    "{mode}: {r:?}\n{text}"
+                );
+                for line in text.lines() {
+                    let Some((left, target)) = line.split_once(" -> ") else {
+                        continue;
+                    };
+                    let Some(fd) = left
+                        .split_whitespace()
+                        .last()
+                        .and_then(|f| f.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    // `ls`'s own: the directory it lists.
+                    let own = target.starts_with("/proc/") && target.ends_with("/fd");
+                    if fd > 2 && !own {
+                        leaked.push(format!("{mode}: {line}"));
+                    }
+                }
+            }
+            drop(mounts);
+            assert!(leaked.is_empty(), "descriptors a RUN holds: {leaked:?}");
+        });
+    }
+
+    /// Red team (T2, the VM only; T18, threat model section 7): a root `RUN`
+    /// cannot change the host's device nodes bound into its `/dev`: `chmod`
+    /// and `chown` of each fail (read-only binds), `/dev/null` still
+    /// writes, and the host's nodes keep their mode and owner.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_run_cannot_change_the_hosts_dev_nodes() {
+        in_private_mount_namespace(|| {
+            use std::os::unix::fs::MetadataExt as _;
+            let nodes = ["null", "zero", "full", "random", "urandom", "tty"];
+            let before: Vec<(u32, u32, u32)> = nodes
+                .iter()
+                .map(|n| {
+                    let m = fs::metadata(format!("/dev/{n}")).unwrap();
+                    (m.mode(), m.uid(), m.gid())
+                })
+                .collect();
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let script = nodes
+                .iter()
+                .map(|n| {
+                    format!(
+                        "chmod 0600 /dev/{n} && echo CHMOD-{n}; chown 1000:1000 /dev/{n} && \
+                         echo CHOWN-{n}; "
+                    )
+                })
+                .collect::<String>()
+                + "echo x > /dev/null && echo NULL-WRITES";
+            let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+            let out = top.join("out");
+            output_to(&out, &mut spec);
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let r = runner.run(spec, None, |job| clone_child(job, parent));
+            let text = fs::read_to_string(&out).unwrap();
+            drop(mounts);
+            let after: Vec<(u32, u32, u32)> = nodes
+                .iter()
+                .map(|n| {
+                    let m = fs::metadata(format!("/dev/{n}")).unwrap();
+                    (m.mode(), m.uid(), m.gid())
+                })
+                .collect();
+            println!("{r:?}\n{text}");
+            assert_eq!(before, after, "a host device node changed");
+            assert!(
+                !text.contains("CHMOD-") && !text.contains("CHOWN-"),
+                "a RUN changed a /dev node: {text}"
+            );
+            assert!(text.contains("NULL-WRITES"), "control: {text}");
+        });
+    }
+
+    /// SIGKILLs every process whose `comm` is `name`; how many there were.
+    fn kill_named(name: &str) -> usize {
+        let want = format!("({name})");
+        let mut killed = 0;
+        for entry in fs::read_dir("/proc").unwrap().flatten() {
+            let Ok(stat) = fs::read(entry.path().join("stat")) else {
+                continue;
+            };
+            if !stat.windows(want.len()).any(|w| w == want.as_bytes()) {
+                continue;
+            }
+            if let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|p| p.parse::<i32>().ok())
+                .and_then(Pid::from_raw)
+                && rustix::process::kill_process(pid, Signal::KILL).is_ok()
+            {
+                killed += 1;
+            }
+        }
+        killed
+    }
+
+    /// Red team (T2, the VM only; T8): no `RUN` outlives the thread that
+    /// cloned it, the parent thread `PR_SET_PDEATHSIG` names, which in a
+    /// build is the spawner thread and dies with ranikust (a second
+    /// `SIGINT`, a `SIGKILL`, the OOM killer). Each `RUN` here is cloned on
+    /// a thread that ends once the `RUN`'s shell has `exec`ed a copy of
+    /// `sleep 300` under a name of its own; the `RUN` must then be killed,
+    /// not left running in its namespaces. Cases: a plain binary as root
+    /// (the control), as `USER 1000:1000` (the death signal armed again
+    /// after `setresuid`, which clears it), and as root through a copy
+    /// that is setuid or setgid to 65534, whose `execve` changes the
+    /// credentials and so clears the death signal again, after the child
+    /// last armed it. A `RUN` still running 15 s after its parent thread
+    /// ended is killed by the test and counted.
+    #[test]
+    #[ignore = "T2: mounts, chown and setuid as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_no_run_outlives_the_thread_that_cloned_it() {
+        in_private_mount_namespace(|| {
+            use std::os::unix::fs::PermissionsExt as _;
+            use std::time::{Duration, Instant};
+
+            use rustix::fs::StatVfsMountFlags;
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let st = rustix::fs::statvfs(&top).unwrap();
+            assert!(
+                !st.f_flag.contains(StatVfsMountFlags::NOSUID),
+                "the test directory's mount is nosuid: the test would prove nothing"
+            );
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            fs::create_dir(root.join("r")).unwrap();
+            fs::set_permissions(root.join("r"), Permissions::from_mode(0o777)).unwrap();
+            // (case, the sleeper's name, USER, its owner, its mode)
+            let cases = [
+                ("control: root, a plain binary", "rnkt8plain", "", 0, 0o755),
+                (
+                    "USER 1000:1000, a plain binary",
+                    "rnkt8user",
+                    "1000:1000",
+                    0,
+                    0o755,
+                ),
+                (
+                    "root, a binary setuid to 65534",
+                    "rnkt8suid",
+                    "",
+                    65534,
+                    0o4755,
+                ),
+                (
+                    "root, a binary setgid to 65534",
+                    "rnkt8sgid",
+                    "",
+                    65534,
+                    0o2755,
+                ),
+            ];
+            for (_, name, _, owner, mode) in cases {
+                let bin = root.join(name);
+                fs::copy("/usr/bin/sleep", &bin).unwrap();
+                let id = Some(rustix::fs::Uid::from_raw(owner));
+                let gid = Some(rustix::fs::Gid::from_raw(owner));
+                rustix::fs::chown(&bin, id, gid).unwrap();
+                // After the `chown`, which clears the set-id bits.
+                fs::set_permissions(&bin, Permissions::from_mode(mode)).unwrap();
+            }
+            let parent = ParentPid::new().unwrap();
+            let mut outlived = Vec::new();
+            let mut control_died = false;
+            for (i, (case, name, user, _, _)) in cases.into_iter().enumerate() {
+                let runner =
+                    Runner::new(&top.join(format!("sandbox{i}")), Some(RootEntry::PivotRoot))
+                        .unwrap();
+                let ready = root.join("r").join(format!("{name}.ready"));
+                let script = format!("touch /r/{name}.ready; exec /{name} 300");
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                spec.user = user.into();
+                let out = top.join(format!("{name}.out"));
+                output_to(&out, &mut spec);
+                let (tx, rx) = std::sync::mpsc::channel();
+                let start = Instant::now();
+                let verdict = std::thread::scope(|s| {
+                    s.spawn(|| {
+                        let r = runner.run(spec, None, |job| {
+                            let ready = ready.clone();
+                            // The parent thread: it ends once the shell has
+                            // replaced itself with the sleeper.
+                            std::thread::spawn(move || {
+                                let spawned = clone_child(job, parent);
+                                let deadline = Instant::now() + Duration::from_secs(20);
+                                while !ready.exists() && Instant::now() < deadline {
+                                    std::thread::sleep(Duration::from_millis(10));
+                                }
+                                std::thread::sleep(Duration::from_millis(500));
+                                spawned
+                            })
+                            .join()
+                            .unwrap()
+                        });
+                        let _ = tx.send(r);
+                    });
+                    match rx.recv_timeout(Duration::from_secs(15)) {
+                        Ok(r) => format!("ended after {:?}: {r:?}", start.elapsed()),
+                        Err(_) => {
+                            let killed = kill_named(name);
+                            outlived
+                                .push(format!("{case} ({killed} process(es) killed by the test)"));
+                            format!("still running after {:?}", start.elapsed())
+                        }
+                    }
+                });
+                let text = fs::read_to_string(&out).unwrap_or_default();
+                println!("{case}: {verdict}; output {text:?}");
+                if i == 0 {
+                    control_died = verdict.starts_with("ended");
+                }
+            }
+            drop(mounts);
+            assert!(
+                control_died,
+                "the control RUN outlived its parent thread: the test proves nothing"
+            );
+            assert!(
+                outlived.is_empty(),
+                "a RUN outlived the thread that cloned it: {outlived:?}"
+            );
+        });
+    }
+
     /// A full-sandbox root whose `/proc`, `/sys` or `/dev` is a symlink is
     /// refused before any stub is placed or child cloned.
     #[test]
