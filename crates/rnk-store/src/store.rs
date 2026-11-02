@@ -514,10 +514,7 @@ impl Store {
     ///
     /// [`Error::AnonymousFile`] when neither kind of file can be made.
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)> {
-        let files = match &self.anon {
-            Some(anon) => &anon.files,
-            None => self.persistent_files()?,
-        };
+        let files = self.files()?;
         let file = files.create()?;
         let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
             path: self.state_path.clone(),
@@ -537,11 +534,8 @@ impl Store {
     ///
     /// As [`Store::anonymous_file`].
     pub fn scratch_file(&self) -> Result<File> {
-        match &self.anon {
-            Some(anon) => anon.files.create(),
-            // Not kept by the store either: gone with the caller's file.
-            None => self.persistent_files()?.create(),
-        }
+        // Not kept by the store: gone with the caller's file.
+        self.files()?.create()
     }
 
     /// Counts a `RUN` in: in an anonymous store, waits until no named file
@@ -633,6 +627,15 @@ impl Store {
     /// [`Error::AnonymousFile`] when the kernel has no randomness to give.
     pub fn scratch_name(&self) -> Result<String> {
         anon::random_name()
+    }
+
+    /// Where this store makes its anonymous files: the state directory of an
+    /// anonymous store, the build directory of a persistent one.
+    fn files(&self) -> Result<&AnonFiles> {
+        match &self.anon {
+            Some(anon) => Ok(&anon.files),
+            None => self.persistent_files(),
+        }
     }
 
     /// The anonymous files of a persistent store, in its build directory:
