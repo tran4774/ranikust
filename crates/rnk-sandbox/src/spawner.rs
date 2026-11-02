@@ -2930,8 +2930,11 @@ mod tests {
 
     /// A file outside the root for a `RUN`'s stdout and stderr, so that
     /// what it prints survives a root it made read-only.
+    /// Its stdin is the host's `/dev/null`, so that a `RUN` whose own
+    /// `/dev/null` no longer opens still starts.
     fn output_to(path: &Path, spec: &mut RunSpec) {
         let file = File::create(path).unwrap();
+        spec.stdin = Stdio::Fd(File::open("/dev/null").unwrap().into());
         spec.stdout = Stdio::Fd(file.try_clone().unwrap().into());
         spec.stderr = Stdio::Fd(file.into());
     }
@@ -2954,9 +2957,9 @@ mod tests {
             let outside = top.join("outside");
             fs::create_dir(&outside).unwrap();
             fs::write(outside.join("rnk-canary"), b"dummy").unwrap();
-            let probe = outside.join("rnk-probe");
-            fs::write(&probe, b"#!/bin/sh\necho ran > /verdict-exec\n").unwrap();
-            fs::set_permissions(&probe, Permissions::from_mode(0o755)).unwrap();
+            // A binary, not a script: an interpreter would reopen a script
+            // by its path once `execve` closed the descriptor.
+            fs::copy("/usr/bin/touch", outside.join("rnk-probe")).unwrap();
             let held = rustix::fs::open(
                 &outside,
                 OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -2994,16 +2997,17 @@ mod tests {
                         escaped.push(format!("{entry:?}: WORKDIR {workdir}"));
                     }
                 }
-                let mut spec = RunSpec::new(&root, vec!["rnk-probe".into()]);
+                let mut spec =
+                    RunSpec::new(&root, vec!["rnk-probe".into(), "/verdict-exec".into()]);
                 spec.env.push((
                     "PATH".into(),
                     format!("/proc/self/fd/{n}:/dev/fd/{n}:/w:/usr/bin").into(),
                 ));
                 let r = runner.run(spec, None, |job| clone_child(job, parent));
-                let ran = fs::read_to_string(root.join("verdict-exec")).unwrap_or_default();
+                let ran = root.join("verdict-exec").exists();
                 let _ = fs::remove_file(root.join("verdict-exec"));
-                println!("{entry:?}, PATH through descriptor {n}: {r:?}, ran {ran:?}");
-                if ran.trim() == "ran" {
+                println!("{entry:?}, PATH through descriptor {n}: {r:?}, ran {ran}");
+                if ran {
                     escaped.push(format!("{entry:?}: PATH through descriptor {n}"));
                 }
             }
