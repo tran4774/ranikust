@@ -44,33 +44,75 @@ impl Secret {
     /// [`Error::Invalid`] when it is not a regular file or the secret is
     /// too large.
     pub fn load(&self, id: &str) -> Result<SecretValue> {
-        let data = match self {
+        // Every buffer the bytes pass through is wiped when it is dropped,
+        // on error paths too; none is grown, so none leaves an old block
+        // behind.
+        let raw = match self {
             Self::File(path) => {
-                let f = open_secret(id, path)?;
-                let mut data = Vec::new();
+                let mut f = open_secret(id, path)?;
                 // One byte more than the limit tells a file that grew since
-                // its size was read.
-                f.take(MAX_SECRET_SIZE + 1)
-                    .read_to_end(&mut data)
-                    .map_err(Error::io("read the secret", path))?;
-                data
+                // its size was read. A plain read loop into this buffer: no
+                // other buffer holds the bytes.
+                let mut buf = Wiped(vec![
+                    0u8;
+                    usize::try_from(MAX_SECRET_SIZE + 1)
+                        .unwrap_or(usize::MAX)
+                ]);
+                let mut n = 0;
+                while n < buf.0.len() {
+                    match f.read(&mut buf.0[n..]) {
+                        Ok(0) => break,
+                        Ok(k) => n += k,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(Error::io("read the secret", path)(e)),
+                    }
+                }
+                buf.0.truncate(n);
+                buf
             }
-            Self::Env(name) => std::env::var_os(name).unwrap_or_default().into_vec(),
+            Self::Env(name) => Wiped(std::env::var_os(name).unwrap_or_default().into_vec()),
         };
-        let value = SecretValue { bytes: data.into() };
-        if u64::try_from(value.bytes.len()).unwrap_or(u64::MAX) > MAX_SECRET_SIZE {
+        if u64::try_from(raw.0.len()).unwrap_or(u64::MAX) > MAX_SECRET_SIZE {
             return Err(Error::Invalid(format!(
                 "secret {id:?} is larger than {MAX_SECRET_SIZE} bytes"
             )));
         }
-        Ok(value)
+        Ok(SecretValue {
+            bytes: Arc::<[u8]>::from(raw.0.as_slice()),
+        })
+    }
+}
+
+/// Overwrites `bytes` with zeros in a way the compiler keeps: the memory is
+/// about to be freed, so plain stores could be dropped.
+fn wipe(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        // SAFETY: `b` is a valid, aligned, exclusive reference to a byte.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A buffer holding a secret's bytes, wiped when dropped: its whole
+/// allocation, the part past its length included.
+struct Wiped(Vec<u8>);
+
+impl Drop for Wiped {
+    fn drop(&mut self) {
+        let len = self.0.capacity();
+        // Zero-filling up to the capacity never reallocates.
+        self.0.resize(len, 0);
+        wipe(&mut self.0);
     }
 }
 
 /// A secret's bytes, read once by [`Secret::load`] and shared by every
-/// `RUN` that mounts it. `Debug` never shows them; when the last holder
-/// drops them they are overwritten with zeros. Copies made for a `RUN` (its
-/// variable, the file on its tmpfs) are not ([open: Q-444]).
+/// `RUN` that mounts it. `Debug` never shows them. When the last holder
+/// drops them they are overwritten with zeros, as is every buffer
+/// [`Secret::load`] read them through. Not wiped: the copies made for a
+/// `RUN` (its variable, the file on its tmpfs), and the value itself when
+/// the build ends with another thread still holding it, which never drops
+/// it ([open: Q-444]).
 pub struct SecretValue {
     bytes: Arc<[u8]>,
 }
@@ -109,13 +151,7 @@ impl Drop for SecretValue {
         // Only the last holder can write: a `RUN`'s mount still holding the
         // allocation keeps it until it drops it.
         if let Some(bytes) = Arc::get_mut(&mut self.bytes) {
-            for b in bytes.iter_mut() {
-                // SAFETY: `b` is a valid, aligned, exclusive reference to a
-                // byte; the volatile write keeps the compiler from dropping
-                // a store to memory about to be freed.
-                unsafe { std::ptr::write_volatile(b, 0) };
-            }
-            std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+            wipe(bytes);
         }
     }
 }

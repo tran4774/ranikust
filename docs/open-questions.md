@@ -425,13 +425,22 @@ Entry format:
 ### Q-444: How are secrets wiped from ranikust's memory?
 
 - **Blocks:** nothing yet; **Area:** `rnk-builder`, `rnk-sandbox`
-- **Context:** ADR-0078 reads each `--secret` once into memory. The one
-  copy the build holds (`SecretValue`) is overwritten with zeros when its
-  last holder drops it. Other copies are not wiped: the variable handed to
-  a `RUN` (an `OsString`, then its `envp`), the sandbox's tmpfs file
-  write, a registry credential (`Credentials`). Wiping every one needs a
-  type of its own through `rnk-sandbox`'s `RunSpec`, or a crate such as
-  `zeroize`, and adding a crate is the maintainer's call.
+- **Context:** ADR-0078 reads each `--secret` once into memory. The
+  buffers `Secret::load` reads it through (one fixed buffer for a file,
+  the variable's copy for `env=`) are overwritten with zeros when dropped,
+  on error paths too. So is the one copy the build holds (`SecretValue`),
+  when its last holder drops it. Not wiped:
+  - the variable handed to a `RUN` (an `OsString`, then its `envp`);
+  - the sandbox's tmpfs file write;
+  - a registry credential (`Credentials`);
+  - the held copy itself when the build ends with a stage thread still
+    holding the build (`Arc::into_inner` gives `None` in `run_with`, and
+    the warning "a stage thread still holds the build"): it is never
+    dropped before the process exits.
+
+  Wiping every one needs a type of its own through `rnk-sandbox`'s
+  `RunSpec`, or a crate such as `zeroize`. Adding a crate is the
+  maintainer's call.
 - **Options:** (a) keep the single-copy wipe; (b) `zeroize` (with
   `secrecy`) for every secret and credential type, through `RunSpec`;
   (c) (b) plus `mlock` for the held copy, so it never reaches swap.

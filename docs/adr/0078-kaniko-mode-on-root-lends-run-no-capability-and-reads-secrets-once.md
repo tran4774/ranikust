@@ -148,3 +148,10 @@ its "no constraint on ranikust's own threads" no longer holds on `/`. Its
 the threat is T21 of the [threat model](../security/threat-model.md).
 Open: Q-444 (wiping every copy of a secret), Q-445 (refusing `--secret
 src=` files on `/`), Q-446 (the resolver files).
+
+What "overwritten with zeros" covers, exactly: the buffers `Secret::load`
+reads a secret through, one fixed buffer of `MAX_SECRET_SIZE + 1` bytes
+for a file and the variable's copy for `env=`, wiped when dropped,
+error paths included; and the held copy, when its last holder drops it.
+A build that ends with a stage thread still holding it never drops it.
+The copies made for a `RUN` are not wiped (Q-444).
