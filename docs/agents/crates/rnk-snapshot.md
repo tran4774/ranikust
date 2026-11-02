@@ -350,6 +350,14 @@ impl WalkDiff {
   `tests/keep.rs`). To do: a benchmark of `--snapshot-mode=redo|time`
   against `full` on W1–W3: they skip content reads and can miss a change,
   so they stay only if significantly faster (ADR-0023 kept, ADR-0049).
+  Failing, a red-team finding (T15): `tests/memory.rs`
+  `red_team_walking_a_deep_chain_takes_memory_linear_in_its_depth`: the
+  kaniko walk of a chain of 400 directories with 200-byte names, which a
+  `RUN` makes with `mkdir` and `cd`, holds 33 MB at its peak for a diff
+  and 17 MB for a baseline, 8.6 MB and 4.5 MB at depth 200: the square of
+  the depth (each `DirOut` and each `Changed` keeps its full path), where
+  deletion and pruning of the same chain hold under 4 MiB, and nothing
+  caps the depth as the overlay exporter's `PATH_MAX` does.
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
 - **T2** (VM only): overlay as real root; kernel 5.15 fallback; kaniko mode
