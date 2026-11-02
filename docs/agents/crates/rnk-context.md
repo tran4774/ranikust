@@ -93,6 +93,10 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
   (`tests/walk_golden.rs`); order, symlinks in and out, a FIFO, a non-UTF-8
   name, held-back directories, ignore-file precedence and symlink
   confinement, sub-contexts, an unreadable directory (`tests/context.rs`);
+  red team (ADR-0076): `--context` through a magic link (`/proc/self/cwd`,
+  `/proc/thread-self/cwd`, `/proc/self/root/...`, `/proc/self/fd/<n>`,
+  `/dev/fd/<n>`) is refused as a symlink, held
+  (`red_team_a_context_through_a_magic_link_is_refused`);
   span totals (`tests/metrics.rs`, alone in its binary because `tracing`
   caches callsite interest per process).
 - To do: compare with kaniko's `integration_with_context_test.go` and

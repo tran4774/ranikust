@@ -177,6 +177,69 @@ fn deleting_a_deep_chain_takes_memory_linear_in_its_depth() {
     assert!(root.read_names("").unwrap().is_empty());
 }
 
+/// Copying a deep chain (a per-stage base copied from its parent stage,
+/// `COPY --from`, a kept stage copied out) holds one name per level and
+/// one path buffer, not every level's full path: memory linear in depth.
+/// Before, each frame kept its source and destination paths, 33 MB at
+/// this depth (T15).
+#[test]
+fn copying_a_deep_chain_takes_memory_linear_in_its_depth() {
+    let _one = one_at_a_time();
+    let (_tmp, host, src) = root();
+    deep_chain(&host, 400);
+    let dst_tmp = tempfile::tempdir().unwrap();
+    let dst = RootPath::open(dst_tmp.path()).unwrap();
+    let opts = rnk_rootfs::CopyOpts::default();
+    let peak = peak_of(|| rnk_rootfs::copy(&src, "", &dst, "", &opts).unwrap());
+    eprintln!("peak: {peak} bytes");
+    assert!(peak < 4 * MIB, "copying took {peak} bytes");
+    let mut cur = PathBuf::new();
+    for _ in 0..3 {
+        cur.push("n".repeat(200));
+        assert_eq!(dst.read_names(&cur).unwrap().len(), 1);
+    }
+}
+
+/// A file with other names at the bottom of a chain past `PATH_MAX` is
+/// refused by the copy, before anything of it is written: its path would
+/// otherwise be remembered whole for linking its other names, so many such
+/// files under a deep enough chain would hold gigabytes (T15). The error
+/// names only the entry.
+#[test]
+fn a_hardlinked_file_past_path_max_is_refused_by_the_copy() {
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    let _one = one_at_a_time();
+    let (_tmp, host, src) = root();
+    deep_chain(&host, 30);
+    let mut cur = rustix::fs::open(&host, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    let name = "n".repeat(200);
+    for _ in 0..30 {
+        cur = rustix::fs::openat(
+            &cur,
+            name.as_str(),
+            OFlags::PATH | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+    }
+    let f = rustix::fs::openat(
+        &cur,
+        "a",
+        OFlags::WRONLY | OFlags::CREATE,
+        Mode::from_raw_mode(0o644),
+    )
+    .unwrap();
+    drop(f);
+    rustix::fs::linkat(&cur, "a", &cur, "b", AtFlags::empty()).unwrap();
+    let dst_tmp = tempfile::tempdir().unwrap();
+    let dst = RootPath::open(dst_tmp.path()).unwrap();
+    let opts = rnk_rootfs::CopyOpts::default();
+    let e = rnk_rootfs::copy(&src, "", &dst, "", &opts).unwrap_err();
+    let text = e.to_string();
+    assert!(text.contains("PATH_MAX"), "{text}");
+    assert!(text.len() < 200, "the error names only the entry: {text}");
+}
+
 /// So does pruning, which walks every directory it keeps.
 #[test]
 fn pruning_a_deep_chain_takes_memory_linear_in_its_depth() {

@@ -420,6 +420,25 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- Copying a tree keeps one source and one destination path for the entry
+  at hand instead of a path per directory level. A chain of directories a
+  `RUN` made far past `PATH_MAX`, copied as a per-stage base, by `COPY
+  --from` or out of a kept stage, took memory growing with the square of
+  its depth (64 MB for 400 levels of 200-byte names); it now takes 0.5 MB.
+- A registry's text reaches an error only as a 200-character excerpt.
+  An error envelope of thousands of entries, each short, was joined whole
+  into the message (438 KB for 2000 entries within the `registry-body`
+  limit), and a `Docker-Content-Digest` header that did not match was
+  shown at any length; the envelope now gives one excerpt and its entry
+  count, and a digest is shown whole only when it is well formed.
+- The kaniko-mode walk refuses an entry whose path is longer than
+  `PATH_MAX`, as the overlay exporter does. Each directory it walks and
+  each change it reports held its full path, so a `RUN` that made a
+  chain of directories far deeper than `PATH_MAX` made the walk take
+  memory growing with the square of the chain's depth (33 MB for 400
+  levels of 200-byte names, several GB for thousands); such a tree
+  could not be exported anyway, and the build now fails with a short
+  error at the walk.
 - A registry named with an upper-case letter and no `.` or `:`
   (`LOCALDOMAIN/app`, `LOCALHOST/app`) is now reached for every request.
   The registry client parsed such a reference again by other rules and

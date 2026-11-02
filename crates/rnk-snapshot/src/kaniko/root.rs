@@ -775,7 +775,12 @@ fn tar_out(shared: &Shared, what: &Keep, store: &Store) -> Result<File> {
         workers: shared.walk.workers,
         mode: SnapshotMode::Time,
     })?;
-    let mut diff = walker.diff(&shared.root, &shared.ignore)?;
+    // Only below the kept paths: a tree a `RUN` left elsewhere, past
+    // `PATH_MAX`, which the walk refuses, is never entered for them.
+    let mut diff = match &paths {
+        None => walker.diff(&shared.root, &shared.ignore)?,
+        Some(paths) => walker.diff_below(&shared.root, &shared.ignore, paths)?,
+    };
     match &paths {
         None => {
             span.record("paths", 0_u64);

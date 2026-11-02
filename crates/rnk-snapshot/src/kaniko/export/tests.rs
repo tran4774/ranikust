@@ -95,6 +95,53 @@ fn names(bytes: &[u8]) -> Vec<String> {
     tar_entries(bytes).into_iter().map(|e| e.0).collect()
 }
 
+/// Below the root, 20 directories of 200-byte names and a file whose name
+/// makes the file's relative path exactly `len` bytes long, made by
+/// descriptor (the host path is past `PATH_MAX`).
+fn file_at_length(f: &Fixture, len: usize) {
+    use rustix::fs::{Mode, OFlags};
+    let dir = "d".repeat(200);
+    let mut cur =
+        rustix::fs::open(&f.host, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    for _ in 0..20 {
+        rustix::fs::mkdirat(&cur, dir.as_str(), Mode::from_raw_mode(0o755)).unwrap();
+        cur = rustix::fs::openat(
+            &cur,
+            dir.as_str(),
+            OFlags::PATH | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+    }
+    let prefix = 20 * 200 + 20;
+    let name = "f".repeat(len - prefix);
+    let fd = rustix::fs::openat(
+        &cur,
+        name.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
+        Mode::from_raw_mode(0o644),
+    )
+    .unwrap();
+    rustix::io::write(&fd, b"edge").unwrap();
+}
+
+/// The walk's limit is exact: a relative path of 4095 bytes (`PATH_MAX`
+/// less the NUL) is walked and exported, one of 4096 is refused.
+#[test]
+fn a_path_of_exactly_path_max_less_one_is_exported_and_one_more_is_refused() {
+    let f = Fixture::new();
+    let d = diff_after(&f, |f| file_at_length(f, 4095));
+    let (out, _, _) = layer(&f, &d);
+    let longest = names(&out).into_iter().map(|n| n.len()).max().unwrap();
+    assert_eq!(longest, 4095);
+    let g = Fixture::new();
+    let mut w = walker(4);
+    w.baseline(&g.root, &IgnoreList::new()).unwrap();
+    file_at_length(&g, 4096);
+    let e = w.diff(&g.root, &IgnoreList::new()).unwrap_err();
+    assert!(e.to_string().contains("PATH_MAX"), "{e}");
+}
+
 #[test]
 fn an_unchanged_root_gives_an_empty_layer() {
     let f = Fixture::new();

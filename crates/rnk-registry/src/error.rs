@@ -57,6 +57,11 @@ pub enum Error {
         message: String,
         /// Whether trying again may succeed (network errors, 5xx, 429).
         retryable: bool,
+        /// Whether the registry refused access: a 401 or 403, or an
+        /// `UNAUTHORIZED` or `DENIED` code in its error envelope. Decided
+        /// from the status and codes, never from `message`, which holds only
+        /// an excerpt of what the registry said.
+        refused: bool,
     },
 
     /// Received content does not match the digest it was asked for.
@@ -160,16 +165,18 @@ pub(crate) struct Op<'a> {
 impl Op<'_> {
     /// Converts an `oci-client` error, classifying it as retryable or not.
     pub(crate) fn error(&self, err: OciDistributionError) -> Error {
-        let (message, retryable) = match err {
+        let (message, retryable, refused) = match err {
             OciDistributionError::DigestError(DigestError::VerificationError {
                 expected,
                 actual,
             }) => {
+                // `expected` may be a registry's `Docker-Content-Digest`, of
+                // any length: shown whole only when it is a digest.
                 return Error::DigestMismatch {
                     host: self.host.to_owned(),
                     target: self.target.to_owned(),
-                    expected,
-                    actual,
+                    expected: shown_digest(&expected),
+                    actual: shown_digest(&actual),
                 };
             }
             OciDistributionError::AuthenticationFailure(reason) => {
@@ -179,32 +186,33 @@ impl Op<'_> {
                 };
             }
             OciDistributionError::UnauthorizedError { .. } => {
-                ("401 unauthorized".to_owned(), false)
+                ("401 unauthorized".to_owned(), false, true)
             }
             OciDistributionError::ServerError { code, message, .. } => (
                 format!("HTTP {code}: {}", excerpt(&message)),
                 retryable_status(code),
+                refusal_status(code),
             ),
             OciDistributionError::RegistryError { envelope, .. } => {
                 let retryable = envelope
                     .errors
                     .iter()
                     .any(|e| matches!(e.code, OciErrorCode::Toomanyrequests));
-                let codes: Vec<String> = envelope
+                let refused = envelope
                     .errors
                     .iter()
-                    .map(|e| format!("{:?}: {}", e.code, excerpt(&e.message)))
-                    .collect();
-                (codes.join("; "), retryable)
+                    .any(|e| matches!(e.code, OciErrorCode::Unauthorized | OciErrorCode::Denied));
+                (envelope_text(&envelope.errors), retryable, refused)
             }
             OciDistributionError::RequestError(e) => {
                 let retryable = e.is_connect() || e.is_timeout() || e.is_body() || e.is_request();
                 let status = e.status().map(|s| s.as_u16());
                 let retryable = retryable || status.is_some_and(retryable_status);
-                (request_error_message(&e), retryable)
+                let refused = status.is_some_and(refusal_status);
+                (request_error_message(&e), retryable, refused)
             }
-            OciDistributionError::IoError(e) => (format!("I/O: {e}"), false),
-            other => (excerpt(&other.to_string()), false),
+            OciDistributionError::IoError(e) => (format!("I/O: {e}"), false, false),
+            other => (excerpt(&other.to_string()), false, false),
         };
         Error::Registry {
             operation: self.operation,
@@ -212,6 +220,7 @@ impl Op<'_> {
             target: self.target.to_owned(),
             message,
             retryable,
+            refused,
         }
     }
 }
@@ -220,6 +229,23 @@ impl Op<'_> {
 /// 502, 503 and 504.
 pub(crate) fn retryable_status(code: u16) -> bool {
     matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+impl Op<'_> {
+    /// [`Op::error`] for an answer whose status is known: a 401 or 403 is a
+    /// refusal whatever its body said.
+    pub(crate) fn error_for_status(&self, status: u16, err: OciDistributionError) -> Error {
+        let mut e = self.error(err);
+        if let Error::Registry { refused, .. } = &mut e {
+            *refused |= refusal_status(status);
+        }
+        e
+    }
+}
+
+/// Whether `code` is a registry refusing access: 401 or 403.
+pub(crate) fn refusal_status(code: u16) -> bool {
+    matches!(code, 401 | 403)
 }
 
 /// A registry that sent nothing for the `registry-idle` limit, `idle`:
@@ -235,6 +261,7 @@ pub(crate) fn idle_error(ctx: &Op<'_>, idle: Option<std::time::Duration>) -> Err
              --limit registry-idle=<duration>"
         ),
         retryable: true,
+        refused: false,
     }
 }
 
@@ -272,9 +299,55 @@ fn request_error_message(e: &reqwest::Error) -> String {
     message
 }
 
+/// A registry's error envelope as one excerpt: its entries, `code: message`,
+/// joined until the excerpt's 200 characters are used, then the number of
+/// entries. A registry can send thousands of entries within the
+/// `registry-body` limit; only the excerpt reaches a message.
+fn envelope_text(errors: &[oci_client::errors::OciError]) -> String {
+    let mut joined = String::new();
+    for e in errors {
+        if joined.chars().count() > EXCERPT_CHARS {
+            break;
+        }
+        if !joined.is_empty() {
+            joined.push_str("; ");
+        }
+        joined.push_str(&format!("{:?}: {}", e.code, excerpt(&e.message)));
+    }
+    let text = excerpt(&joined);
+    if errors.len() > 1 {
+        format!("{text} ({} errors)", errors.len())
+    } else {
+        text
+    }
+}
+
+/// A digest as a message shows it: whole when it is `<algorithm>:<hex>` of
+/// a length a digest has, else an excerpt (a registry's
+/// `Docker-Content-Digest` header can be of any length).
+fn shown_digest(text: &str) -> String {
+    let well_formed = text.split_once(':').is_some_and(|(algorithm, hex)| {
+        let len = match algorithm {
+            "sha256" => 64,
+            "sha384" => 96,
+            "sha512" => 128,
+            _ => return false,
+        };
+        hex.len() == len && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    });
+    if well_formed {
+        text.to_owned()
+    } else {
+        excerpt(text)
+    }
+}
+
+/// How many characters of an untrusted message reach an error.
+const EXCERPT_CHARS: usize = 200;
+
 /// At most 200 characters of an untrusted message, on one line.
 pub(crate) fn excerpt(text: &str) -> String {
-    const MAX: usize = 200;
+    const MAX: usize = EXCERPT_CHARS;
     let single: String = text
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -337,5 +410,34 @@ mod tests {
         let long = "x".repeat(500);
         assert_eq!(excerpt(&long).chars().count(), 201);
         assert_eq!(excerpt("a\nb\r\tc"), "a b  c");
+    }
+
+    #[test]
+    fn an_envelope_of_many_entries_is_one_excerpt_and_a_count() {
+        let one = format!(r#"{{"code":"UNKNOWN","message":"{}"}}"#, "m".repeat(199));
+        let many: Vec<oci_client::errors::OciError> =
+            serde_json::from_str(&format!("[{}]", vec![one; 2000].join(","))).unwrap();
+        let text = envelope_text(&many);
+        assert!(text.chars().count() < 240, "{}", text.len());
+        assert!(text.ends_with("(2000 errors)"), "{text}");
+        let single = envelope_text(&many[..1]);
+        assert!(single.contains(": mmm"), "{single}");
+        assert!(!single.contains("errors)"), "{single}");
+    }
+
+    #[test]
+    fn a_digest_is_shown_whole_only_when_well_formed() {
+        let good = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(shown_digest(&good), good);
+        let long = format!("sha256:{}", "e".repeat(300_000));
+        assert_eq!(shown_digest(&long).chars().count(), 201);
+        assert_eq!(shown_digest("md5:abc"), "md5:abc");
+        let err = op().error(OciDistributionError::DigestError(
+            DigestError::VerificationError {
+                expected: long,
+                actual: good,
+            },
+        ));
+        assert!(err.to_string().len() < 400, "{}", err.to_string().len());
     }
 }

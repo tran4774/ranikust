@@ -320,6 +320,25 @@ from `rnk-store`, secret file) and passes `--network`.
   fail; `USER nobody` + `SIGKILL` of ranikust leaves nothing; no
   controlling terminal; the probe matrix of `docs/testing.md`; no fake file
   in any layer on the bare-`chroot` path.
+  Red team of the hardening pass [measured: VM, Ubuntu 24.04, kernel 6.8,
+  2026-11-03]: held:
+  `red_team_a_run_with_every_mount_holds_only_its_stdio` (two cache
+  directories, a file bind, two secrets, `--network=none`, stdio from
+  files, with `open_tree` and by path: `ls -l /proc/self/fd` shows 0 to 2
+  and its own directory only) and
+  `red_team_a_run_cannot_change_the_hosts_dev_nodes` (`chmod` and `chown`
+  of `/dev/null`, `zero`, `full`, `random`, `urandom` and `tty` fail, the
+  host's nodes unchanged). Broken (a finding, open, T8):
+  `red_team_no_run_outlives_the_thread_that_cloned_it`: a `RUN` cloned on
+  a thread that then ends is killed by `PR_SET_PDEATHSIG` as root and as
+  `USER 1000:1000` (the re-arm after `setresuid` holds, 0.5 s), but one
+  whose shell `exec`s a copy of `sleep` setuid or setgid to 65534, or a
+  `python3` that calls `prctl(PR_SET_PDEATHSIG, 0)` itself, is still
+  running 15 s later: the credential change of that `execve` clears the
+  death signal after the child last armed it, and any process may clear
+  its own. Marked `pending T2` so the VM suite skips it until the stub
+  PID 1 of ADR-0080 (`fix/run-stub-init`) lands; restore its `T2` reason
+  then.
 
 ## Metrics
 

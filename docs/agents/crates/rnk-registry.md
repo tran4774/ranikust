@@ -120,6 +120,21 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   `oci-client`'s own, and a push carries the same credential
   (`basic_authentication`; `rnk-builder` `tests/stall.rs` runs it inside
   the store's locked fill).
+- T0, `tests/red_team/`: a registry scripted byte for byte on loopback.
+  Held: a manifest or blob `GET` redirected to another origin arrives
+  there without the basic credential the registry's own requests carry
+  (`red_team_a_redirect_off_the_registry_carries_no_credential`); a token
+  holding CR LF, NUL, a space or non-ASCII is refused, never sent
+  (`red_team_a_token_that_would_break_a_header_is_refused`); a
+  registry's text reaches an error only as an excerpt
+  (`red_team_a_registrys_text_reaches_an_error_only_as_an_excerpt`): an
+  error envelope of 2000 entries (each under 200 characters, 438 KB in
+  all, within `registry-body`) becomes one 200-character excerpt and the
+  entry count, a 300 KB `Docker-Content-Digest` that does not match the
+  body is cut the same way in `Error::DigestMismatch` (a well-formed
+  digest is shown whole), and a plain error body is cut to 200
+  characters; each error stays under 400 bytes. It held 438 KB and
+  300 KB before.
 - T0, `tests/registry/`: an in-process fake registry (hand-written on
   `hyper`, which the tree already has; it keeps blobs, manifests and upload
   sessions, which a request-matching mock would have to script): open,
@@ -168,6 +183,13 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   with both) and sends the mount with it, as go-containerregistry's
   `maybeUpdateScopes` does; open, basic and static-token registries keep
   `oci-client`'s path.
+- A registry's text reaches an error only as a 200-character excerpt
+  (`Error::Registry`'s `message`), so nothing is decided from it: whether
+  the registry refused access (the withheld-credential hint) is
+  `Error::Registry`'s `refused`, set from the status (401, 403) and the
+  envelope's `UNAUTHORIZED` and `DENIED` codes
+  (`a_refusal_is_decided_from_codes_and_status_not_the_excerpt`), as
+  `retryable` is.
 - The test fake answers `HEAD` and `GET` of a blob only in repositories
   that hold it, checks the source scope of a mount under bearer
   authentication, and stores a pushed manifest with its `Content-Type`:

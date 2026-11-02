@@ -729,6 +729,58 @@ fn on_slash_a_kept_stage_is_a_tar_with_no_name_unpacked_only_for_its_reader() {
     a.release().unwrap();
 }
 
+/// A chain of directories past `PATH_MAX` that a `RUN` left elsewhere in
+/// the root does not stop keeping some paths on `/`: the walk of the kept
+/// paths never enters it. Keeping the whole root is refused, since such a
+/// tree cannot be exported.
+#[test]
+fn on_slash_keeping_some_paths_never_walks_a_deep_tree_elsewhere() {
+    use rustix::fs::{Mode, OFlags};
+    let (f, _store) = Fixture::tars();
+    let mut a = f.kaniko.prepare(Base::Scratch).unwrap();
+    a.set_layers_needed(false);
+    a.begin_layer().unwrap();
+    fs::create_dir_all(f.host.join("app/dist")).unwrap();
+    fs::write(f.host.join("app/dist/main.js"), b"js").unwrap();
+    drop(a.end_layer().unwrap());
+    let name = "n".repeat(200);
+    let mut cur =
+        rustix::fs::open(&f.host, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    for _ in 0..30 {
+        rustix::fs::mkdirat(&cur, name.as_str(), Mode::from_raw_mode(0o755)).unwrap();
+        cur = rustix::fs::openat(
+            &cur,
+            name.as_str(),
+            OFlags::PATH | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+    }
+    a.keep(&Keep::Paths(vec![PathBuf::from("app/dist")]))
+        .unwrap();
+    assert_eq!(read(a.view().unwrap(), "app/dist/main.js"), "js");
+    a.release().unwrap();
+    let mut b = f.kaniko.prepare(Base::Scratch).unwrap();
+    b.set_layers_needed(false);
+    b.begin_layer().unwrap();
+    let mut cur =
+        rustix::fs::open(&f.host, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    for _ in 0..30 {
+        rustix::fs::mkdirat(&cur, name.as_str(), Mode::from_raw_mode(0o755)).unwrap();
+        cur = rustix::fs::openat(
+            &cur,
+            name.as_str(),
+            OFlags::PATH | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+    }
+    drop(b.end_layer().unwrap());
+    let e = b.keep(&Keep::All).unwrap_err();
+    assert!(e.to_string().contains("PATH_MAX"), "{e}");
+    b.release().unwrap();
+}
+
 #[test]
 fn on_slash_a_stage_built_from_a_kept_tar_starts_from_it() {
     let (f, _store) = Fixture::tars();

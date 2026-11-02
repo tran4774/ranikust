@@ -86,6 +86,12 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   level, each level's name and the names of its directory not yet visited,
   and a single path buffer, never a path per level: memory linear in the
   entries on the stack, no longer quadratic in depth (`tests/memory.rs`).
+  The copy walk does the same with one source and one destination buffer
+  (`copying_a_deep_chain_takes_memory_linear_in_its_depth`: 64 MB before,
+  0.5 MB now, at 400 levels of 200-byte names). A file with other names
+  whose path is past `PATH_MAX` is refused before it is copied, so the
+  map of first copies stays at about 4 KB a file
+  (`a_hardlinked_file_past_path_max_is_refused_by_the_copy`).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
   from `statx` with the opened fd to catch a swap, `unlinkat` symlinks without
   following; keep ignore-list entries, entries with another `mnt_id` and
@@ -175,6 +181,24 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   10 stars against 255 characters well under 0.5 s in a debug build.
   `the_linear_matcher_agrees_with_every_split` (proptest, 4000 cases)
   checks it against the old matcher, kept as the oracle.
+  Red team of the hardening pass (ADR-0076, ADR-0079):
+  `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
+  (`src/extract/limit/tests.rs`, proptest, 2048 cases, 200,000 run once)
+  lays blocks out with no regard for the framing: headers where data
+  goes, a well-formed 1 GiB long name inside data, PAX record sets with
+  lying, unparsable, repeated, binary-keyed or empty `size` records, v7
+  headers typed `L`, `K`, `x`, unknown typeflags, early zero blocks.
+  Unbounded, `Framed` changes nothing the `tar` crate hands on and fails
+  no archive the crate reads; bounded (1 to 1500 bytes), no entry handed
+  on carries a name, link name or attached PAX record over the bound. Two
+  hand-made mutations of `Framed` (a `size` taken after a malformed
+  record, a `size` given to an extension header) each fail it.
+  `red_team_names_swapped_during_an_output_never_redirect_it`
+  (`src/host/tests.rs`): a thread exchanging (`RENAME_EXCHANGE`) the
+  output directory with a symlink to a victim directory, the tar with a
+  symlink to a victim file, the digest with a symlink and with a hard
+  link to another, while `OutputDir` opens and writes 3000 times: the
+  victim's files keep their text and no name appears there.
 - **T1** (written, `#[ignore]`): foreign owners and setuid in `extract`.
 - **T2** (VM only, `just test-vm unit`): exp-09's D2,
   `mounts_inside_the_root_survive`: a bind mount of a directory on the

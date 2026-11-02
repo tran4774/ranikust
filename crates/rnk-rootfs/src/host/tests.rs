@@ -507,3 +507,109 @@ fn a_symlink_another_account_owns_is_not_followed() {
         Reached::Outside(_)
     ));
 }
+
+/// Red team (T22, T3, ADR-0076): the owner of an output's directory swaps
+/// names under ranikust while it writes, each swap one atomic
+/// `RENAME_EXCHANGE`: the output directory with a symlink to a victim
+/// directory, the tar with a symlink to a victim file, the digest file
+/// with a symlink to another and with a hard link to it. Whatever moment
+/// each swap lands at, nothing reaches the victim directory: its two files
+/// keep their dummy text and no name appears there. Some writes succeed
+/// meanwhile, so the race was run, not refused outright.
+#[test]
+fn red_team_names_swapped_during_an_output_never_redirect_it() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use rustix::fs::{Mode, OFlags, RenameFlags, renameat_with};
+
+    let dir = private_dir();
+    let top = dir.path().canonicalize().unwrap();
+    let victim = top.join("victim");
+    fs::create_dir(&victim).unwrap();
+    fs::write(victim.join("out.tar"), b"dummy-victim-tar").unwrap();
+    fs::write(victim.join("digest"), b"dummy-victim-digest").unwrap();
+    let out = top.join("out");
+    fs::create_dir(&out).unwrap();
+    symlink(&victim, top.join("outlink")).unwrap();
+    fs::write(out.join("out.tar"), b"old").unwrap();
+    fs::write(out.join("digest"), b"old").unwrap();
+    symlink(victim.join("out.tar"), out.join("tarlink")).unwrap();
+    symlink(victim.join("digest"), out.join("digestlink")).unwrap();
+    fs::hard_link(victim.join("digest"), out.join("digesthard")).unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let top_fd = rustix::fs::open(&top, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    // The real output directory, wherever its name is at the moment.
+    let out_fd = rustix::fs::open(&out, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    let swapper = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut swaps = 0_u64;
+            let pairs = [
+                ("out.tar", "tarlink"),
+                ("digest", "digestlink"),
+                ("digest", "digesthard"),
+            ];
+            while !stop.load(Ordering::Relaxed) {
+                for (a, b) in pairs {
+                    if renameat_with(&out_fd, a, &out_fd, b, RenameFlags::EXCHANGE).is_ok() {
+                        swaps += 1;
+                    }
+                }
+                if renameat_with(&top_fd, "out", &top_fd, "outlink", RenameFlags::EXCHANGE).is_ok()
+                {
+                    swaps += 1;
+                }
+            }
+            swaps
+        })
+    };
+    let mut written = 0_u32;
+    let mut refused = 0_u32;
+    for _ in 0..3000 {
+        let Ok(dir) = OutputDir::open(&out, Some(0o700), None) else {
+            refused += 1;
+            continue;
+        };
+        let tar = dir.write_atomically(OsStr::new("out.tar"), 0o644, |f| {
+            f.write_all(b"rnk-output").map_err(|source| Error::Io {
+                op: "write",
+                path: "out.tar".into(),
+                source,
+            })
+        });
+        let digest = dir.write_in_place(OsStr::new("digest"), 0o644, b"rnk-digest");
+        if tar.is_ok() && digest.is_ok() {
+            written += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    let swaps = swapper.join().unwrap();
+    println!("{written} written, {refused} refused, {swaps} swaps");
+    assert_eq!(
+        fs::read(victim.join("out.tar")).unwrap(),
+        b"dummy-victim-tar"
+    );
+    assert_eq!(
+        fs::read(victim.join("digest")).unwrap(),
+        b"dummy-victim-digest"
+    );
+    let mut names: Vec<_> = fs::read_dir(&victim)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["digest", "out.tar"],
+        "a name appeared in the victim"
+    );
+    assert!(written > 0, "no write got through: the race proved nothing");
+    assert!(
+        refused > 0,
+        "no swap was ever seen: the race proved nothing"
+    );
+}

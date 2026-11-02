@@ -558,6 +558,7 @@ Tests that stay T2 (the VM only), and why:
 | `a_mount_below_the_root_is_nodev_in_the_run`, `red_team_no_mount_of_the_root_tree_lets_a_device_node_open` | `rnk-sandbox` | (2)/(3) the full sandbox takes Docker's no-`pivot_root` fallback there, and the device cgroup also refuses most nodes, so `nodev` is not what is proven |
 | `probe_reaches_exec_as_root`, `a_run_joins_a_held_network_namespace` | `rnk-sandbox` | (3) both require `RootEntry::PivotRoot`, which Docker's seccomp profile refuses |
 | `direct_runs_in_a_chroot_with_placed_files_as_root` | `rnk-sandbox` | (3) raises the `RLIMIT_CORE` hard limit, which needs `CAP_SYS_RESOURCE` |
+| `red_team_a_run_with_every_mount_holds_only_its_stdio`, `red_team_a_run_cannot_change_the_hosts_dev_nodes`, `red_team_no_run_outlives_the_thread_that_cloned_it` | `rnk-sandbox` | (3) they require `RootEntry::PivotRoot`, which Docker's seccomp profile refuses |
 
 ## aarch64 under qemu-user
 

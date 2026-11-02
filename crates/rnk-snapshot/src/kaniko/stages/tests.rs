@@ -789,12 +789,17 @@ fn red_team_a_swap_in_the_parent_during_the_copy_never_leaves_it() {
 /// A chain of `depth` directories `dddddddd` below `p`, made by
 /// descriptors, with a file `leaf` holding `deep` at its end.
 fn chain(p: &Path, depth: usize) {
+    chain_named(p, depth, "dddddddd");
+}
+
+/// [`chain`] with directories named `name`.
+fn chain_named(p: &Path, depth: usize, name: &str) {
     let mut fd = rustix::fs::open(p, rustix::fs::OFlags::PATH, rustix::fs::Mode::empty()).unwrap();
     for _ in 0..depth {
-        rustix::fs::mkdirat(&fd, "dddddddd", rustix::fs::Mode::from_raw_mode(0o755)).unwrap();
+        rustix::fs::mkdirat(&fd, name, rustix::fs::Mode::from_raw_mode(0o755)).unwrap();
         fd = rustix::fs::openat(
             &fd,
-            "dddddddd",
+            name,
             rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY,
             rustix::fs::Mode::empty(),
         )
@@ -886,12 +891,14 @@ fn red_team_huge_xattrs_are_copied_whole() {
 /// 20,000 directories in seconds. A red-team finding: each entry's
 /// `IgnoreList::covers` used to hash every ancestor's full path, so both
 /// grew with its cube (3000 levels: 17 s in release); it now looks only at
-/// prefixes as long as the longest literal entry.
+/// prefixes as long as the longest literal entry. One-byte names keep
+/// 1200 levels within `PATH_MAX` (2 bytes a level), past which the walk
+/// refuses the tree.
 #[test]
 fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
     let time = |depth: usize| {
         let f = Fixture::new();
-        let parent = unwalked(&f, |p| chain(p, depth));
+        let parent = unwalked(&f, |p| chain_named(p, depth, "d"));
         let t0 = std::time::Instant::now();
         let mut child = f.stages.prepare(Base::Stage(&parent)).unwrap();
         let copy = t0.elapsed();

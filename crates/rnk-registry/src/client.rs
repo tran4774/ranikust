@@ -25,7 +25,7 @@ use tracing::field::Empty;
 use tracing::{Instrument as _, debug_span};
 
 use crate::credentials::{Credential, Credentials};
-use crate::error::{Error, Op, excerpt, idle_error, retryable_status};
+use crate::error::{Error, Op, excerpt, idle_error, refusal_status, retryable_status};
 use crate::fetch;
 use crate::io::{BlobBody, BlobSink, Bounded};
 use crate::platform::select_platform;
@@ -349,16 +349,12 @@ fn withheld_because(
 }
 
 /// Whether `e` is a registry refusing access: an authentication failure,
-/// or 401/403 and the distribution codes for them.
+/// or 401/403 and the distribution codes for them, as the error recorded
+/// them from the status and codes, never from its message text.
 fn is_refusal(e: &Error) -> bool {
     match e {
         Error::Auth { .. } => true,
-        Error::Registry { message, .. } => {
-            message.contains("401")
-                || message.contains("403")
-                || message.contains("Unauthorized")
-                || message.contains("Denied")
-        }
+        Error::Registry { refused, .. } => *refused,
         Error::Tls(_)
         | Error::Credentials { .. }
         | Error::Reference { .. }
@@ -470,7 +466,7 @@ impl Client {
             raw_manifest(body, &digest).map_err(|reason| Error::Manifest {
                 host: host.name.clone(),
                 target: target.clone(),
-                reason,
+                reason: excerpt(&reason),
             })
         })
         .instrument(span.clone())
@@ -511,7 +507,8 @@ impl Client {
             target: reference.to_string(),
             reason,
         };
-        let index = ImageIndex::from_json(top.bytes()).map_err(|e| fail(e.to_string()))?;
+        let index =
+            ImageIndex::from_json(top.bytes()).map_err(|e| fail(excerpt(&e.to_string())))?;
         let entry = select_platform(&index, platform).ok_or_else(|| {
             let variant = platform
                 .variant
@@ -1303,7 +1300,9 @@ impl Client {
         let status = response.status();
         if status != reqwest::StatusCode::OK {
             let body = fetch::error_body(response, self.bounds()).await;
-            return Err(ctx.error(fetch::status_error(status, &body, &url)));
+            return Err(
+                ctx.error_for_status(status.as_u16(), fetch::status_error(status, &body, &url))
+            );
         }
         let header = fetch::digest_header(response.headers()).map_err(|e| ctx.error(e))?;
         let max = self.options.max_manifest_bytes;
@@ -1363,7 +1362,9 @@ impl Client {
         let status = response.status();
         if !status.is_success() {
             let body = fetch::error_body(response, self.bounds()).await;
-            return Err(oci(fetch::status_error(status, &body, &url)));
+            return Err(
+                ctx.error_for_status(status.as_u16(), fetch::status_error(status, &body, &url))
+            );
         }
         let header = fetch::digest_header(response.headers()).map_err(oci)?;
         let mut header_digester = header
@@ -1632,6 +1633,7 @@ async fn ping(
             target: "/v2/".to_owned(),
             message: format!("HTTP {status}"),
             retryable: retryable_status(status),
+            refused: refusal_status(status),
         }),
     }
 }
@@ -1736,6 +1738,7 @@ fn exchange_error(ctx: &Op<'_>, err: ExchangeError, bounds: fetch::Bounds) -> Er
             target: ctx.target.to_owned(),
             message: format!("HTTP {code}"),
             retryable: true,
+            refused: false,
         },
         ExchangeError::Status(code) => Error::Auth {
             host: ctx.host.to_owned(),
@@ -1755,6 +1758,7 @@ fn not_retryable(err: Error) -> Error {
             host,
             target,
             message,
+            refused,
             ..
         } => Error::Registry {
             operation,
@@ -1762,6 +1766,7 @@ fn not_retryable(err: Error) -> Error {
             target,
             message,
             retryable: false,
+            refused,
         },
         other => other,
     }
@@ -1872,6 +1877,48 @@ fn raw_manifest(body: Bytes, digest: &str) -> Result<RawManifest, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refusal is read from the status and the codes, not from the
+    /// message, which is only an excerpt: a `DENIED` code past the excerpt
+    /// still counts, a message that says `401` does not.
+    #[test]
+    fn a_refusal_is_decided_from_codes_and_status_not_the_excerpt() {
+        let ctx = Op {
+            operation: "pull manifest",
+            host: "r.example",
+            target: "app:1",
+        };
+        let envelope = |codes: &[(&str, &str)]| {
+            let errors: Vec<String> = codes
+                .iter()
+                .map(|(c, m)| format!(r#"{{"code":"{c}","message":"{m}"}}"#))
+                .collect();
+            let json = format!(r#"{{"errors":[{}]}}"#, errors.join(","));
+            OciDistributionError::RegistryError {
+                envelope: serde_json::from_str(&json).unwrap(),
+                url: "https://r.example/v2/".to_owned(),
+            }
+        };
+        let long = "m".repeat(199);
+        let mut late: Vec<(&str, &str)> = vec![("UNKNOWN", long.as_str()); 5];
+        late.push(("DENIED", "no"));
+        let e = ctx.error(envelope(&late));
+        assert!(!e.to_string().contains("Denied"), "past the excerpt: {e}");
+        assert!(is_refusal(&e));
+        let e = ctx.error(envelope(&[(
+            "UNKNOWN",
+            "error 401 403 Unauthorized Denied",
+        )]));
+        assert!(!is_refusal(&e));
+        let e = ctx.error_for_status(403, envelope(&[("UNKNOWN", "x")]));
+        assert!(is_refusal(&e));
+        let e = ctx.error(OciDistributionError::ServerError {
+            code: 403,
+            url: String::new(),
+            message: String::new(),
+        });
+        assert!(is_refusal(&e));
+    }
 
     #[test]
     fn credentials_are_withheld_from_plain_http_and_unverified_tls_as_configured() {
