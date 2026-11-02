@@ -644,9 +644,19 @@ fn apply_with(
                         reason: "a symlink root has no parent to set xattrs through",
                     });
                 };
+                // A symlink is set by name: the name is checked to still be
+                // the pinned symlink before the sets and again after them.
+                // That detects a swap and narrows the window, but does not
+                // prevent the write: an entry swapped in between a check
+                // and a set gets the xattr (one in the same pinned parent,
+                // never through a symlink). `setxattrat(2)` (Linux 6.13)
+                // with `AT_EMPTY_PATH` on the `O_PATH` fd would set it
+                // race-free.
+                target.check_still_pinned(path)?;
                 for (name, value) in &m.xattrs {
                     xattr_result(target.set(name, value), name, skipped, path)?;
                 }
+                target.check_still_pinned(path)?;
             }
             if let Some(mode) = mode
                 && file_type != FileType::Symlink
@@ -743,5 +753,23 @@ mod tests {
         );
         assert!(read.unwrap().is_empty());
         strip_overlay_own(fd.as_fd(), FileType::Symlink, None, Path::new("l")).unwrap();
+    }
+
+    /// Setting a symlink's xattrs by name checks first that the name still
+    /// is the pinned symlink: nothing is set on an entry swapped in.
+    #[test]
+    fn apply_xattrs_to_a_symlink_whose_name_was_swapped_is_changed() {
+        let (_dir, parent, fd) = swapped_symlink();
+        let h = Handle::Path {
+            fd: fd.as_fd(),
+            file_type: FileType::Symlink,
+            parent: Some((parent.as_fd(), OsStr::new("l"))),
+        };
+        let m = Meta {
+            xattrs: vec![(OsString::from("user.x"), b"y".to_vec())],
+            ..Meta::default()
+        };
+        let e = apply(&h, &m, Path::new("l")).unwrap_err();
+        assert!(matches!(e, Error::Changed { .. }), "{e:?}");
     }
 }

@@ -74,7 +74,12 @@ anything, then applies, in this order:
 exactly the pinned inode, as glibc's `fchmodat(AT_SYMLINK_NOFOLLOW)` does.
 `/proc/self/fd` is checked to be procfs first. A symlink's xattrs are set
 with `lsetxattr` on `/proc/self/fd/<parent>/<name>`, which never follows the
-last name. Regular files being written use plain `fchown`, `fsetxattr`,
+last name; the name is checked to still be the pinned symlink (same inode)
+before the sets and after them, as reading and stripping xattrs check it.
+That detects a swap but cannot prevent a write to an entry swapped in
+between (one in the same pinned parent); `setxattrat(2)` (Linux 6.13) with
+`AT_EMPTY_PATH` on the `O_PATH` fd would close the window. Regular files
+being written use plain `fchown`, `fsetxattr`,
 `fchmod` and `futimens` on their open fd.
 
 ## Extraction
