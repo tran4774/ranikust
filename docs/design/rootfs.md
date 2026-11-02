@@ -113,9 +113,14 @@ never called. A hand-written reader would repeat that parsing for no gain.
   entries fail with `Error::Entry`. Skipping them, as kaniko's ignore list
   does, waits for the ignore list in `extract` (Phase 2, kaniko mode).
 - **Bombs.** GNU sparse entries are refused: the `tar` crate writes their
-  holes as zeros, so a tiny entry could claim 2^62 bytes. GNU long names and
-  PAX headers are read whole into memory by the `tar` crate, with no bound
-  for now (Q-056, answered: revisit with fuzzing in Phase 6).
+  holes as zeros, so a tiny entry could claim 2^62 bytes. GNU long names,
+  long links and PAX record sets, which the `tar` crate reads whole into
+  memory, are bounded by the `tar-header` limit (1 MiB by default,
+  `--limit`, ADR-0079): a reader in front of the `tar` crate follows the
+  block framing as it does, PAX `size` included, and fails at the header of
+  a larger one, before its body is read. The limit is the crate's only
+  process-wide setting (`set_extension_header_limit`). Fuzzing the
+  extractor stays a Phase 6 task (Q-056).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

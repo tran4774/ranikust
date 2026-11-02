@@ -113,7 +113,9 @@ docker-save tarball and an OCI layout; `rnk-builder` writes the files
 
 ### `rnk-registry`
 
-Client for the OCI distribution API over `oci-client`: credentials from
+Client for the OCI distribution API, pushes over `oci-client` and pulls
+sent itself with bounded reads (the `--limit` limits,
+[ADR-0079](docs/adr/0079-resource-limits-with-a-limit-flag.md)): credentials from
 docker `config.json` and credential helpers, TLS with rustls and `ring`
 trusting the host's CAs plus embedded roots and `--registry-certificate`
 ([ADR-0024](docs/adr/0024-tls-rustls-ring.md)), mirrors, streamed pulls into

@@ -53,6 +53,21 @@ pub enum Error {
     #[error("reading the tar stream: {0}")]
     Tar(#[source] io::Error),
 
+    /// A tar extension header (GNU long name or link, PAX records) is
+    /// larger than the `tar-header` limit (ADR-0079); refused before its
+    /// body is read.
+    #[error(
+        "a tar extension header of {size} bytes is larger than {} (limit \"tar-header\"); \
+         raise it with --limit tar-header=<size>",
+        size_text(*max)
+    )]
+    ExtensionHeader {
+        /// The size its header declares.
+        size: u64,
+        /// The limit, in bytes.
+        max: u64,
+    },
+
     /// A tar entry is refused, for example because its name or hardlink
     /// target leaves the root.
     #[error("tar entry {}: {reason}", path.display())]
@@ -96,6 +111,7 @@ impl Error {
                 Some(source)
             }
             Self::InvalidPath { .. }
+            | Self::ExtensionHeader { .. }
             | Self::Entry { .. }
             | Self::Changed { .. }
             | Self::User(_)
@@ -108,6 +124,17 @@ impl Error {
     pub fn raw_os_error(&self) -> Option<i32> {
         self.io_error().and_then(io::Error::raw_os_error)
     }
+}
+
+/// `bytes` as a size `--limit` accepts: `1 MiB`, `512 KiB` or `100 bytes`.
+fn size_text(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
+    for (unit, name) in UNITS {
+        if bytes >= unit && bytes.is_multiple_of(unit) {
+            return format!("{} {name}", bytes / unit);
+        }
+    }
+    format!("{bytes} bytes")
 }
 
 /// The result type of `rnk-rootfs`.

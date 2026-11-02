@@ -40,6 +40,7 @@ mod cli;
 mod config;
 mod container;
 mod exposure;
+mod limits;
 mod setup;
 mod startup;
 mod statedir;
@@ -269,6 +270,9 @@ fn build(
         state_dir = %config.state_dir.display(),
         "build settings validated"
     );
+    // Before any extraction; the registry limits go to the client.
+    config.limits.set_process_wide();
+    tracing::debug!(limits = %config.limits.text(), "limits in force");
     match config.mode {
         config::Mode::Kaniko => {
             // Whether root may mount picks how `RUN` is isolated on a root

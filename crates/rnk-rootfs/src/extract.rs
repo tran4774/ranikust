@@ -25,8 +25,10 @@ use crate::path;
 use crate::root::{self, Mounts, RootPath};
 
 mod created;
+mod limit;
 
 use created::{Created, Mark};
+pub use limit::{DEFAULT_EXTENSION_HEADER_LIMIT, set_extension_header_limit};
 
 /// How OCI whiteouts in a layer are written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -334,9 +336,10 @@ enum Kind {
 
 impl Extractor<'_> {
     fn run(&mut self, tar: impl Read) -> Result<()> {
+        let tar = limit::Framed::new(tar, limit::extension_header_limit());
         let mut archive = tar::Archive::new(tar);
-        for entry in archive.entries().map_err(Error::Tar)? {
-            let mut entry = entry.map_err(Error::Tar)?;
+        for entry in archive.entries().map_err(tar_error)? {
+            let mut entry = entry.map_err(tar_error)?;
             self.stats.entries += 1;
             self.entry(&mut entry)?;
         }
@@ -353,6 +356,12 @@ impl Extractor<'_> {
             path: raw.clone(),
             reason: reason.to_owned(),
         };
+        // Before anything else, a whiteout name included: `limit::Framed`
+        // stops following the framing at a sparse entry, so nothing after
+        // one may be read.
+        if etype == EntryType::GNUSparse {
+            return Err(refuse("GNU sparse entries are not supported"));
+        }
         let path = path::clean(&raw).ok_or_else(|| refuse("the name leaves the root"))?;
 
         if let Some(name) = path.file_name()
@@ -367,8 +376,8 @@ impl Extractor<'_> {
             EntryType::Regular | EntryType::Continuous => Kind::File,
             EntryType::GNUSparse => {
                 // The `tar` crate fills holes with zeros, so a tiny entry could
-                // claim 2^62 bytes and fill the disk. Extension headers stay
-                // unbounded for now (Q-056).
+                // claim 2^62 bytes and fill the disk. Refused above already,
+                // before the whiteout names.
                 return Err(refuse("GNU sparse entries are not supported"));
             }
             EntryType::Symlink | EntryType::Link => {
@@ -1317,6 +1326,21 @@ fn dup(fd: BorrowedFd<'_>, at: &Path) -> Result<OwnedFd> {
 }
 
 /// The `mode` of the extraction span.
+/// An error of the `tar` crate's reads: [`Error::ExtensionHeader`] when the
+/// `tar-header` limit stopped it, else [`Error::Tar`].
+fn tar_error(e: std::io::Error) -> Error {
+    match e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<limit::TooLarge>())
+    {
+        Some(too_large) => Error::ExtensionHeader {
+            size: too_large.size,
+            max: too_large.max,
+        },
+        None => Error::Tar(e),
+    }
+}
+
 fn mode_name(wh: Whiteouts) -> &'static str {
     match wh {
         Whiteouts::Apply => "Apply",

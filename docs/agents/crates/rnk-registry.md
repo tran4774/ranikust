@@ -66,6 +66,7 @@ impl Client {
     pub async fn pull_manifest(&self, r: &Reference) -> Result<RawManifest, Error>;
     pub async fn pull_image_manifest(&self, r: &Reference, p: &Platform) -> Result<ImageManifests, Error>;
     pub async fn pull_blob(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>;
+    pub async fn pull_config(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>; // the `config` limit first (ADR-0079)
     pub async fn blob_exists(&self, r: &Reference, d: &Digest) -> Result<bool, Error>;
     pub async fn push_blob(&self, r: &Reference, d: &Descriptor, body: &BlobBody) -> Result<PushOutcome, Error>;
     pub async fn mount_or_push(&self, r: &Reference, from: &Reference, d: &Descriptor, body: &BlobBody) -> Result<PushOutcome, Error>;
@@ -111,6 +112,14 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 
 ## Tests
 
+- T0, `tests/limits/`: the `--limit` limits against hostile bodies (64 MiB
+  manifests, token responses and error bodies the fake streams), memory
+  measured by a counting allocator, a config refused before any request,
+  and a stalled body failing after `registry-idle` (ADR-0079); a pull
+  under basic authentication sends one `GET /v2/` only, never
+  `oci-client`'s own, and a push carries the same credential
+  (`basic_authentication`; `rnk-builder` `tests/stall.rs` runs it inside
+  the store's locked fill).
 - T0, `tests/registry/`: an in-process fake registry (hand-written on
   `hyper`, which the tree already has; it keeps blobs, manifests and upload
   sessions, which a request-matching mock would have to script): open,
@@ -169,10 +178,23 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   with non-header characters are refused. A hostile token from the
   ordinary token flow can still abort the process.
 - `oci-client` keeps the first authorization stored per registry and reads
-  manifest bodies whole: one client per registry host, and manifests over
-  4 MiB are rejected only after reading. Identity tokens go into its token
-  cache per scope; a token that outlives `oci-client`'s 60 s guess is put
-  back before each operation.
+  every body whole (`Response::bytes()`/`text()`), so pulls do not go
+  through it: manifest and blob `GET`s and anonymous or basic token
+  requests are sent by `fetch.rs`/`token.rs` with bounded reads, the
+  `manifest` and `registry-body` limits (ADR-0079), with `oci-client`'s
+  status and digest handling copied. It keeps the push side, whose error
+  bodies it still reads whole (Q-449). Tokens go into its token cache per
+  scope; a token that outlives `oci-client`'s 60 s guess is put back
+  before each operation.
+- `ClientOptions` carries the `--limit` values and defaults to them
+  (`MAX_MANIFEST_BYTES`, `MAX_BODY_BYTES`, `MAX_CONFIG_BYTES`,
+  `READ_TIMEOUT`): a library user is bounded too. `pull_config` checks the
+  config's descriptor before the request. `read_timeout` is an idle bound
+  kept by `fetch::on_socket` around each wait for a pull's bytes, never
+  set as `reqwest`'s read timeout (which would cap a whole upload) and
+  never running while the sink writes; it is not a deadline: a registry
+  dripping bytes still holds a pull (Q-448). Token requests use their own
+  client, which follows redirects only within one origin.
 - Without a stored authorization `oci-client` sends no credentials, and
   with one it pings `/v2/` again before each token: the client probes
   `/v2/` once per registry and stores nothing for open registries.

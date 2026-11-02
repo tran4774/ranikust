@@ -518,6 +518,40 @@ Entry format:
 - **Interim:** (a).
 - **Raised:** 2026-11-02
 
+### Q-449: Should push-side error bodies be bounded too?
+
+- **Blocks:** nothing yet; **Area:** `rnk-registry`
+- **Context:** ADR-0079 bounds every body ranikust reads when it pulls,
+  by sending those requests itself. Pushes (blob existence, uploads,
+  mounts, manifest pushes) still go through `oci-client`, which collects an
+  error body whole with `Response::bytes()` before ranikust sees it. Those
+  registries are the destinations the operator named, not ones a
+  Dockerfile names.
+- **Options:** (a) leave it, the destination being the operator's choice;
+  (b) send the push requests from `rnk-registry` as well, with the
+  `registry-body` limit on error bodies.
+- **Recommendation:** none.
+- **Interim:** (a).
+- **Raised:** 2026-11-02
+
+### Q-448: Should a pull have an overall deadline or minimum rate?
+
+- **Blocks:** nothing yet; **Area:** `rnk-registry`, `rnk-store`
+- **Context:** ADR-0079's `registry-idle` limit ends a request that
+  receives nothing for its duration, so a stalled registry cannot hold the
+  store's per-digest lock forever. A registry that sends one byte just
+  inside each interval still holds a blob pull, and the lock other builds
+  on the same state directory wait for, as long as the declared size lasts.
+  The maintainer chose no overall deadline, since a large layer on a slow
+  link is legitimate.
+- **Options:** (a) leave it; (b) a minimum transfer rate after a grace
+  period; (c) download outside the cross-process lock and lock only to
+  publish; (d) bound the wait for the lock, after which the waiter
+  downloads itself.
+- **Recommendation:** none.
+- **Interim:** (a).
+- **Raised:** 2026-11-02
+
 ### Q-421: Which performance conditions does Phase 6 measure?
 
 - **Blocks:** Phase 6; **Area:** performance
@@ -1010,6 +1044,10 @@ Entry format:
 - **Answer (2026-10-30):** no bound for now; GNU sparse entries stay
   refused. Revisit with `cargo fuzz` on `extract` in Phase 6
   ([rootfs](design/rootfs.md)).
+- **Revised (2026-11-02):** bounded at 1 MiB by default, the `tar-header`
+  limit of `--limit` ([ADR-0079](adr/0079-resource-limits-with-a-limit-flag.md)),
+  checked before the `tar` crate reads a body. Fuzzing `extract` stays a
+  Phase 6 task.
 
 ### Q-052: How does zstd reach the static musl build?
 

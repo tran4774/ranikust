@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::fetch;
+
 /// A `Bearer` challenge from `WWW-Authenticate`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Challenge {
@@ -48,10 +50,10 @@ pub(crate) struct AccessToken {
 /// How long a token is used when the response gives no `expires_in`: the
 /// distribution token specification's default.
 const DEFAULT_EXPIRES_IN: u64 = 60;
+/// The longest lifetime a token is trusted for, whatever the realm says.
+const MAX_EXPIRES_IN: u64 = 24 * 60 * 60;
 /// Tokens are refreshed this long before they expire.
 const MARGIN: Duration = Duration::from_secs(10);
-/// Upper bound on a token response body.
-const MAX_BODY: usize = 1 << 20;
 /// The `client_id` sent with token requests.
 const CLIENT_ID: &str = "ranikust";
 
@@ -65,6 +67,7 @@ pub(crate) async fn exchange(
     challenge: &Challenge,
     refresh_token: &str,
     scope: &str,
+    bounds: fetch::Bounds,
 ) -> Result<AccessToken, ExchangeError> {
     let mut form = vec![
         ("grant_type", "refresh_token"),
@@ -76,13 +79,11 @@ pub(crate) async fn exchange(
         form.push(("service", service));
     }
     let started = Instant::now();
-    let response = http
-        .post(&challenge.realm)
-        .form(&form)
-        .send()
+    let response = fetch::on_socket(bounds.idle, http.post(&challenge.realm).form(&form).send())
         .await
+        .map_err(|fetch::Idle| ExchangeError::Idle)?
         .map_err(ExchangeError::Request)?;
-    access_token(response, started).await
+    access_token(response, started, bounds).await
 }
 
 /// Asks the realm for one access token covering every scope in `scopes`,
@@ -97,6 +98,7 @@ pub(crate) async fn fetch(
     challenge: &Challenge,
     basic: Option<(&str, &str)>,
     scopes: &[&str],
+    bounds: fetch::Bounds,
 ) -> Result<AccessToken, ExchangeError> {
     let mut query: Vec<(&str, &str)> = scopes.iter().map(|s| ("scope", *s)).collect();
     if let Some(service) = &challenge.service {
@@ -107,27 +109,32 @@ pub(crate) async fn fetch(
         request = request.basic_auth(user, Some(password));
     }
     let started = Instant::now();
-    let response = request.send().await.map_err(ExchangeError::Request)?;
-    access_token(response, started).await
+    let response = fetch::on_socket(bounds.idle, request.send())
+        .await
+        .map_err(|fetch::Idle| ExchangeError::Idle)?
+        .map_err(ExchangeError::Request)?;
+    access_token(response, started, bounds).await
 }
 
 /// The access token of a token endpoint's `response`, requested at
-/// `started`.
+/// `started`; a body over the `registry-body` limit is refused while it
+/// arrives, and a realm that sends nothing for `registry-idle` fails.
 async fn access_token(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     started: Instant,
+    bounds: fetch::Bounds,
 ) -> Result<AccessToken, ExchangeError> {
     let status = response.status();
     if !status.is_success() {
         return Err(ExchangeError::Status(status.as_u16()));
     }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(ExchangeError::Request)? {
-        if body.len() + chunk.len() > MAX_BODY {
-            return Err(ExchangeError::Invalid("token response larger than 1 MiB"));
-        }
-        body.extend_from_slice(&chunk);
-    }
+    let body = fetch::capped(response, bounds.max_body, bounds.idle)
+        .await
+        .map_err(|e| match e {
+            fetch::ReadError::TooLarge => ExchangeError::TooLarge,
+            fetch::ReadError::Idle => ExchangeError::Idle,
+            fetch::ReadError::Request(e) => ExchangeError::Request(e),
+        })?;
     let parsed: TokenResponse = serde_json::from_slice(&body)
         .map_err(|_| ExchangeError::Invalid("token response is not JSON"))?;
     let token = parsed
@@ -142,11 +149,20 @@ async fn access_token(
             "the token has characters a header cannot carry",
         ));
     }
-    let lifetime = Duration::from_secs(parsed.expires_in.unwrap_or(DEFAULT_EXPIRES_IN));
     Ok(AccessToken {
         token,
-        refresh_after: started + lifetime.saturating_sub(MARGIN),
+        refresh_after: refresh_after(started, parsed.expires_in),
     })
+}
+
+/// When to stop using a token that the realm says lives `expires_in`
+/// seconds from `started`: the registry's number is clamped to a day, and
+/// a time past what `Instant` can hold means "now", so a hostile
+/// `expires_in` can neither overflow nor keep a token forever.
+fn refresh_after(started: Instant, expires_in: Option<u64>) -> Instant {
+    let seconds = expires_in.unwrap_or(DEFAULT_EXPIRES_IN).min(MAX_EXPIRES_IN);
+    let lifetime = Duration::from_secs(seconds).saturating_sub(MARGIN);
+    started.checked_add(lifetime).unwrap_or(started)
 }
 
 /// Why an exchange failed; never holds the token.
@@ -156,6 +172,10 @@ pub(crate) enum ExchangeError {
     Request(reqwest::Error),
     /// The realm answered with this status.
     Status(u16),
+    /// The answer was larger than the `registry-body` limit.
+    TooLarge,
+    /// The realm sent nothing for the `registry-idle` limit.
+    Idle,
     /// The response was not a usable token.
     Invalid(&'static str),
 }
@@ -173,6 +193,24 @@ struct TokenResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hostile_expires_in_neither_overflows_nor_lasts() {
+        let now = Instant::now();
+        // `Instant + Duration::from_secs(u64::MAX)` would panic.
+        let at = refresh_after(now, Some(u64::MAX));
+        assert_eq!(
+            at,
+            now + Duration::from_secs(MAX_EXPIRES_IN) - MARGIN,
+            "clamped to a day"
+        );
+        assert_eq!(
+            refresh_after(now, None),
+            now + Duration::from_secs(DEFAULT_EXPIRES_IN) - MARGIN
+        );
+        // Shorter than the margin: refreshed at once.
+        assert_eq!(refresh_after(now, Some(3)), now);
+    }
 
     #[test]
     fn bearer_challenges_are_parsed() {

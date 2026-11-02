@@ -72,6 +72,24 @@ pub(crate) struct State {
     pub(crate) cut: HashMap<String, usize>,
     /// Requests whose path contains one of these are never answered.
     pub(crate) stalled: Vec<String>,
+    /// `GET /v2/` is answered this many times, then never again.
+    pub(crate) pings_answered: Option<usize>,
+    /// `GET /v2/` requests seen so far.
+    pings: usize,
+    /// Requests whose path contains one of these get `200`, the full
+    /// length announced, 1 KiB of the body and then nothing, the
+    /// connection held open.
+    pub(crate) stalled_bodies: Vec<String>,
+    /// Requests whose path contains the key are answered with the status
+    /// and that many bytes of `x`, made as they are sent (no
+    /// `Content-Length`), so the fake holds none of them.
+    pub(crate) oversized: HashMap<String, (u16, usize)>,
+    /// Bytes of `oversized` bodies handed to the connection so far.
+    pub(crate) oversized_sent: Arc<std::sync::atomic::AtomicU64>,
+    /// A pause after each frame of a request body the fake reads.
+    pub(crate) slow_bodies: Option<std::time::Duration>,
+    /// Answer every token request with `307` to this URL.
+    pub(crate) token_redirect: Option<String>,
     /// Answer mounts with `202` and an upload session.
     pub(crate) refuse_mounts: bool,
     /// `METHOD path?query` of every request, in order.
@@ -202,6 +220,39 @@ fn with_header(mut response: Reply, name: header::HeaderName, value: &str) -> Re
     response
 }
 
+/// `bytes` of `x` in 64 KiB frames made as the client reads them, without
+/// `Content-Length`; `sent` counts the bytes handed over.
+fn lazy_body(status: u16, bytes: usize, sent: Arc<std::sync::atomic::AtomicU64>) -> Reply {
+    use futures_util::StreamExt as _;
+    const FRAME: usize = 64 << 10;
+    let frames = futures_util::stream::iter((0..bytes).step_by(FRAME)).map(move |at| {
+        let n = FRAME.min(bytes - at);
+        sent.fetch_add(
+            u64::try_from(n).unwrap(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok::<_, std::convert::Infallible>(hyper::body::Frame::data(Bytes::from(vec![b'x'; n])))
+    });
+    let mut response = Response::new(BodyExt::boxed(StreamBody::new(frames)));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap();
+    response
+}
+
+/// `200` announcing 1 MiB, 1 KiB of it, then nothing while the client
+/// waits.
+fn stalled_body() -> Reply {
+    use futures_util::StreamExt as _;
+    let first = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(
+        hyper::body::Frame::data(Bytes::from(vec![0u8; 1024])),
+    )]);
+    let never = futures_util::stream::pending();
+    let mut response = Response::new(BodyExt::boxed(StreamBody::new(first.chain(never))));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, HeaderValue::from_static("1048576"));
+    response
+}
+
 fn error_envelope(status: u16, code: &str) -> Reply {
     let body = format!(r#"{{"errors":[{{"code":"{code}","message":"{code}"}}]}}"#);
     with_header(
@@ -225,16 +276,28 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let body = req
-        .into_body()
-        .collect()
-        .await
-        .map(|b| b.to_bytes())
-        .unwrap_or_default();
+    // `slow_bodies`: each frame of a request body is taken after a pause,
+    // as a slow registry reads an upload.
+    let pause = state.lock().unwrap().slow_bodies;
+    let mut incoming = req.into_body();
+    let mut collected = Vec::new();
+    while let Some(Ok(frame)) = incoming.frame().await {
+        if let Ok(data) = frame.into_data() {
+            collected.extend_from_slice(&data);
+        }
+        if let Some(pause) = pause {
+            tokio::time::sleep(pause).await;
+        }
+    }
+    let body = Bytes::from(collected);
 
     let stalled = {
         let mut state = state.lock().unwrap();
-        let stalled = state.stalled.iter().any(|s| path.contains(s.as_str()));
+        let mut stalled = state.stalled.iter().any(|s| path.contains(s.as_str()));
+        if path == "/v2/" {
+            stalled |= state.pings_answered.is_some_and(|n| state.pings >= n);
+            state.pings += 1;
+        }
         if stalled {
             state.log.push(format!("{method} {path}?{query}"));
         }
@@ -245,6 +308,21 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
     }
     let mut state = state.lock().unwrap();
     state.log.push(format!("{method} {path}?{query}"));
+    if let Some(&(status, bytes)) = state
+        .oversized
+        .iter()
+        .find(|(p, _)| path.contains(p.as_str()))
+        .map(|(_, v)| v)
+    {
+        return lazy_body(status, bytes, Arc::clone(&state.oversized_sent));
+    }
+    if state
+        .stalled_bodies
+        .iter()
+        .any(|s| path.contains(s.as_str()))
+    {
+        return stalled_body();
+    }
     let fault = state
         .faults
         .iter_mut()
@@ -254,6 +332,11 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         return reply(fault.status, "injected failure");
     }
 
+    if path == "/token"
+        && let Some(location) = state.token_redirect.clone()
+    {
+        return with_header(reply(307, ""), header::LOCATION, &location);
+    }
     if path == "/token" {
         return token(&mut state, &method, &query, authorization.as_deref(), &body);
     }

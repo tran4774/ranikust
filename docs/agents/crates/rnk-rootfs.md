@@ -57,6 +57,7 @@ pub struct Pinned;                                      // built: stat(), read_l
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // built: kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // built: as extract_live with Whiteouts::Literal (a kept kaniko-mode stage, ADR-0056): `.wh.*` names are files
+pub fn set_extension_header_limit(bytes: u64); // built: the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB), the crate's only process-wide setting; Error::ExtensionHeader past it (ADR-0079)
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused ("changed while it was copied"), never cut short
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore; kaniko's ignore list, a refused mount point skipped, not an error)
@@ -134,7 +135,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   replaces the link first. `copy_data` (ADR-0059): sparse, empty and
   dense files, a source holding more than its size refused, and one cut
   short between `SEEK_DATA` calls refused rather than zero-filled (a
-  red-team finding, fixed). Still to do: `cargo fuzz` on `extract`.
+  red-team finding, fixed). `tests/limits.rs`: a 64 MiB GNU long name,
+  long link or PAX set refused at its header with under 2 MiB held, a
+  control without the bound, and a raised limit (ADR-0079). Still to do:
+  `cargo fuzz` on `extract`.
   Red team of ADR-0060: `skip_special` leaves FIFOs, sockets and (`0:0`)
   device nodes out at every depth, hardlinked, behind a symlinked
   directory and named as the source; a file swapped for a FIFO during the

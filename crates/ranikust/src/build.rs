@@ -668,6 +668,7 @@ fn client_options(config: &BuildConfig, graph: &StageGraph) -> Result<ClientOpti
         options.skip_tls_verify.extend(pulled);
     }
     options.manifest_retries = config.image_download_retry.unwrap_or(0);
+    config.limits.apply(&mut options);
     Ok(options)
 }
 

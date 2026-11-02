@@ -109,7 +109,30 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--metrics-file=PATH` | Write the metrics report there when ranikust exits, also after an error; works with `version` too. The only way to ask for it: `RANIKUST_METRICS_FILE` is not read (a warning says so). |
 | `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. Read once, at the start of the build, and kept in memory: a change to the file during the build is not seen. Kept out of every layer, the config and the logs; at most 500 KiB. In kaniko mode on a container's `/`, every `RUN` can read a file secret: pass it in the environment there. kaniko's and buildctl's syntax. Repeat for several. |
 | `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
+| `--limit=NAME=VALUE` | Changes a bound on what a registry or an image can make ranikust hold or wait for; see [Limits](#limits). Repeat for several; the last of one name wins. ranikust's own. |
 | `--allow=network.none-userns` | Where ranikust lacks `CAP_NET_ADMIN` (a container with only `SYS_ADMIN` added), lets `RUN --network=none` get loopback through a user namespace; without it such a `RUN` is refused. A root `RUN` there holds `CAP_NET_ADMIN` over its own network namespace, and a seccomp filter closes: joining or creating user namespaces, `io_uring`, PF_KEY, netlink other than route, sock_diag, audit and uevent (nf_tables, xfrm, generic netlink), the iptables, ip6tables, arptables, ebtables, IPVS, IPsec-policy and multicast-routing socket options, and `TCP_REPAIR`. Everything else `CAP_NET_ADMIN` allows in that namespace stays open, rtnetlink included: `ip link add type <kind>` can load a kernel module on the host ([ADR-0033](https://github.com/tran4774/ranikust/blob/main/docs/adr/0033-network-none-loopback-through-a-user-namespace.md)). ranikust's own. |
+
+### Limits
+
+A registry or an image a Dockerfile names could otherwise make ranikust
+hold gigabytes in memory or wait forever. These bounds apply by default;
+`--limit NAME=VALUE` changes one. Sizes are a number of bytes, or a number
+with `KiB`, `MiB` or `GiB`; durations a number with `s`, `m` or `h`. A
+value must be above 0 and at most `1GiB` (sizes) or `24h` (durations), and
+there is no "unlimited": name a larger number within that.
+
+| Name | Default | Bounds |
+|---|---|---|
+| `tar-header` | `1MiB` | each GNU long name, GNU long link or PAX record set in a layer, as Go's `archive/tar` (kaniko, BuildKit) |
+| `manifest` | `4MiB` | a manifest or index, refused while it arrives (distribution's own limit) |
+| `registry-body` | `1MiB` | a token response; an error body is read no further |
+| `config` | `8MiB` | an image config, checked before it is pulled |
+| `registry-idle` | `2m` | how long a registry may send nothing before the request fails; it is then retried. A slow but steady transfer is never cut off. |
+
+A build that hits a limit fails with a message that names it, for example
+`manifest ... is larger than 4 MiB (limit "manifest"); raise it with
+--limit manifest=<size>`. The limits in force are in the metrics report,
+under `options.limits`.
 
 ## kaniko flags it refuses
 
