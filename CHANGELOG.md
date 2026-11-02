@@ -536,6 +536,45 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   - a state directory on a volume gets a warning never to give that volume
     to other builds, and one inside a volume mounted at a parent a warning
     to mount the volume at `--state-dir` itself.
+- The build context's owner (a merge request's author, a third-party
+  repository, an account whose directory root builds) can no longer steer
+  ranikust's own host reads and writes (ADR-0076):
+  - **Outputs.** The digest files, `--tar-path`, `--oci-layout-path` and
+    `--metrics-file` followed a symlink at the leaf or a parent, so a
+    committed `digest -> /etc/...` made root truncate a host file. They are
+    now reached from `/` without following any symlink. The digest files
+    are written in place only into a regular file with one link; the other
+    outputs replace only a regular file, by rename, and never a device
+    node or a FIFO (`--tar-path=/dev/stdout` is refused), also on NFS and
+    9p, which refuse `RENAME_NOREPLACE`.
+  - **Outputs in the context.** An output in the build context, or one
+    reached through a symlink, is refused before the build, exit code 2 for
+    `--metrics-file`, which is also refused when the build context cannot
+    be opened.
+  - **`--dockerfile`.** A path leading into the context
+    (`$CI_PROJECT_DIR/Dockerfile`, or the default `Dockerfile` run from the
+    checkout) was read on the host through a committed symlink, and the
+    target's first token was printed in the parse error. It is now read
+    through the context. Outside the context, a symlink is followed only
+    when root owns it and its directory and no other account may write
+    that directory (a root-owned directory on a read-only mount counts as
+    not writable, so a ConfigMap mount is expected to keep working, and
+    `subPath` always does); only a regular file
+    is read, judged as a context file is. The parse error shows an unknown
+    keyword only when it is within two edits of an instruction ("did you
+    mean"), and nothing of any other, so a file that is no Dockerfile never
+    reaches the error.
+  - **`--context`.** The context was resolved with `canonicalize` as root;
+    it is now opened without following any symlink, and one in the path is
+    refused.
+  - **Planted files.** `COPY`, `ADD` and the Dockerfile read judge a
+    context file against the directory it is in. They refuse a hardlink
+    owned by another account than the directory's, the form a root-only
+    file takes when an account links it into its context with
+    `fs.protected_hardlinks=0`. They also refuse a file the directory's
+    owner could not read by its mode bits, which a stale link like that
+    becomes. In a directory root owns that its group or others may write,
+    a file must have one link and be readable by others.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

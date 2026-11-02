@@ -29,7 +29,9 @@ digests. If a rule blocks the task, stop and ask.
 From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the [threat model](../security/threat-model.md#5-threats-and-mitigations) (T-ids).
 
 - Write only to the build root ranikust picked, the state directory or
-  store, and the outputs.
+  store, and the outputs. An output is reached through
+  `rnk_rootfs::OutputDir`: never through a symlink, never into the build
+  context, whose owner is a principal of their own (ADR-0076, T22).
 - Delete by file descriptor, never following symlinks or crossing a mount
   point (mount id, never `st_dev` alone; T4).
 - No user-supplied build root (`ADR-0050`): `/` only in a container

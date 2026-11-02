@@ -940,6 +940,10 @@ impl<S: Snapshotter> Builder<'_, '_, S> {
                 owner,
                 chmod: chmod.clone(),
                 skip_special,
+                // A hardlink planted into the context from outside it, or a
+                // file its directory's owner could not read, is refused
+                // (ADR-0076).
+                from_context,
             };
             // An existing directory, or a symlink to one inside the root, as
             // BuildKit follows it: the copy goes inside.
@@ -1270,7 +1274,9 @@ fn is_remote(source: &str) -> bool {
 
 /// Whether a context file starts like an archive `ADD` would extract.
 fn is_archive(root: &RootPath, path: &Path) -> Result<bool> {
-    let mut f = std::fs::File::from(root.open_regular(path)?);
+    // A context file: the context rule applies before a byte is read
+    // (ADR-0076), as for the copy that would follow.
+    let mut f = std::fs::File::from(root.open_context_file(path)?);
     let mut head = [0u8; 262];
     let mut n = 0;
     while n < head.len() {
@@ -1347,6 +1353,27 @@ mod tests {
 
     /// `COPY` keeps device nodes and FIFOs only where the `RUN` that may
     /// open them enters the root `nodev` (ADR-0060).
+    /// `ADD`'s look at a context file's first bytes keeps to the context
+    /// rule (ADR-0076): a file its directory's owner could not read is not
+    /// read even to tell whether it is an archive.
+    #[test]
+    fn the_archive_check_keeps_to_the_context_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.tar.gz"), [0x1f, 0x8b, 8, 0]).unwrap();
+        std::fs::write(tmp.path().join("locked"), [0x1f, 0x8b, 8, 0]).unwrap();
+        std::fs::set_permissions(
+            tmp.path().join("locked"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o000),
+        )
+        .unwrap();
+        let root = RootPath::open(tmp.path()).unwrap();
+        assert!(is_archive(&root, Path::new("a.tar.gz")).unwrap());
+        if rustix::process::geteuid().as_raw() != 0 {
+            let e = is_archive(&root, Path::new("locked")).unwrap_err();
+            assert!(e.to_string().contains("could not read"), "{e}");
+        }
+    }
+
     #[test]
     fn copy_leaves_special_files_out_unless_the_root_is_entered_nodev() {
         assert!(!copy_skips_special(Isolation::Full));

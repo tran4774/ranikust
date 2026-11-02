@@ -215,12 +215,14 @@ fn without_root_the_set_up_refuses_before_touching_the_state_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = tmp.path().join("state");
     fs::create_dir(&state).expect("state dir");
+    // The report goes beside the context, never into it (ADR-0076).
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
     let out = ranikust(
         tmp.path(),
         &[
             "--no-push",
             "--context",
-            ".",
+            "ctx",
             "--state-dir=state",
             "--metrics-file=m.json",
         ],
@@ -355,6 +357,9 @@ fn the_report_path_comes_from_the_flag_only() {
     let from_flag = tmp.path().join("flag.json");
     let from_env = tmp.path().join("env.json");
     let flag = format!("--metrics-file={}", from_flag.display());
+    // A report needs a build context that opens, to be kept out of it
+    // (ADR-0076).
+    fs::create_dir(tmp.path().join("ctx")).expect("context");
     let out = ranikust(
         tmp.path(),
         &[
@@ -362,6 +367,7 @@ fn the_report_path_comes_from_the_flag_only() {
             "registry.example/team/app:1",
             "--jobs=2",
             "--mode=overlay",
+            "--context=ctx",
             &flag,
         ],
         &[(
@@ -385,19 +391,60 @@ fn the_report_path_comes_from_the_flag_only() {
     );
 }
 
+/// `--metrics-file` in the build context is refused before the report is
+/// set up, so nothing is written there (ADR-0076).
+#[test]
+fn a_metrics_file_in_the_context_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context=.", "--metrics-file=out/m.json"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("build context"), "{}", stderr(&out));
+    assert!(!tmp.path().join("out").exists());
+}
+
 #[test]
 fn a_relative_metrics_file_is_relative_to_the_working_directory() {
     if skip_as_root() {
         return;
     }
     let tmp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context");
     let out = ranikust(
         tmp.path(),
-        &["--no-push", "--mode=overlay", "--metrics-file=out/m.json"],
+        &[
+            "--no-push",
+            "--mode=overlay",
+            "--context=ctx",
+            "--metrics-file=out/m.json",
+        ],
         &[],
     );
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(tmp.path().join("out/m.json").is_file());
+}
+
+/// A report asked for a build whose context cannot be opened is refused
+/// before anything is set up: without the context's fence the report could
+/// not be kept out of it (ADR-0076).
+#[test]
+fn a_metrics_file_needs_a_build_context_that_opens() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context=missing", "--metrics-file=m.json"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot be opened"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!tmp.path().join("m.json").exists());
 }
 
 /// kaniko's logging flags (ADR-0036), on a run that stops at the set-up (a

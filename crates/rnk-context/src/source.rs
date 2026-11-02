@@ -3,11 +3,10 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read as _};
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use rnk_ignore::Matcher;
-use rnk_rootfs::RootPath;
+use rnk_rootfs::{Fence, HostFile, RootPath};
 
 use crate::spec::ContextSpec;
 use crate::walk::Walk;
@@ -41,18 +40,50 @@ impl DirSource {
 
 impl ContextSource for DirSource {
     fn open(&self) -> Result<Context> {
-        // The user's own argument: resolving its symlinks on the host is
-        // fine, and `RootPath::open` wants a path without any.
-        let canonical = std::fs::canonicalize(&self.path).map_err(|source| Error::Dir {
+        // The operator types the path, but the build context's owner may
+        // control a symlink in it: one committed to the checkout
+        // (`services/api -> /root/.docker`), or a component they own. So
+        // none is followed (`RESOLVE_NO_SYMLINKS`, ADR-0076); `..` is then
+        // the same physically and lexically.
+        let dir_err = |source| Error::Dir {
             path: self.path.clone(),
             source,
+        };
+        let abs = std::path::absolute(&self.path).map_err(dir_err)?;
+        let root = RootPath::open(&abs).map_err(|e| match e {
+            rnk_rootfs::Error::Io { source, .. }
+                if source.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) =>
+            {
+                Error::Symlink {
+                    path: self.path.clone(),
+                }
+            }
+            rnk_rootfs::Error::Io { source, .. } => dir_err(source),
+            e => e.into(),
         })?;
-        let root = RootPath::open(&canonical)?;
+        let fence = Fence::of(&root)?;
         Ok(Context {
             root,
-            origin: canonical,
+            origin: clean(&abs),
+            fence,
         })
     }
+}
+
+/// `path` (absolute) with `.` dropped and `..` taken back, lexically: the
+/// physical path once no component is a symlink.
+fn clean(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Opens the source a parsed `--context` names.
@@ -87,12 +118,27 @@ pub fn open(spec: &ContextSpec) -> Result<Context> {
 pub struct Context {
     root: RootPath,
     origin: PathBuf,
+    /// The directory the context was opened from, which an output must not
+    /// lead into, and its owner (ADR-0076).
+    fence: Fence,
+}
+
+/// Where the Dockerfile was read from, for the ignore file beside it.
+#[derive(Clone, Copy, Debug)]
+pub enum DockerfileAt<'a> {
+    /// A host file outside the context, the operator's own: the Dockerfile
+    /// as `rnk_rootfs::reach` pinned it, with its directory.
+    Host(&'a HostFile),
+    /// A path inside the context, relative to its root: what its owner
+    /// put there, reached through the context's root (ADR-0076).
+    Context(&'a Path),
 }
 
 /// Where the ignore file was found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IgnoreSource {
-    /// `<Dockerfile>.dockerignore`, beside the Dockerfile on the host.
+    /// `<Dockerfile>.dockerignore`, beside the Dockerfile (its host path,
+    /// for messages).
     Dockerfile(PathBuf),
     /// `.dockerignore` at the root of the context.
     ContextRoot,
@@ -118,6 +164,19 @@ impl Context {
         &self.origin
     }
 
+    /// The context's directory as a [`Fence`]: an operator's output path
+    /// must not lead into it, since its owner controls every name in it
+    /// (ADR-0076).
+    pub fn fence(&self) -> &Fence {
+        &self.fence
+    }
+
+    /// The owner of the context's directory: the principal whose files the
+    /// context holds (ADR-0076).
+    pub fn owner(&self) -> u32 {
+        self.fence.owner()
+    }
+
     /// The directory `sub` inside this context as a context of its own
     /// (`--context-sub-path`; which contexts the CLI applies it to: ADR-0032).
     /// `sub` cannot lead outside the context.
@@ -127,9 +186,11 @@ impl Context {
     /// [`Error::Rootfs`] when `sub` is missing or not a directory.
     pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context> {
         let sub = sub.as_ref();
+        // The whole context stays its owner's: the fence is not moved.
         Ok(Context {
             root: self.root.sub_root(sub)?,
             origin: self.origin.join(sub),
+            fence: self.fence,
         })
     }
 
@@ -137,40 +198,80 @@ impl Context {
     /// `.dockerignore` at the context root, as kaniko
     /// (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1195-1204`) and BuildKit do.
     ///
-    /// `dockerfile` is the host path of the Dockerfile, the user's own
-    /// argument. A `<dockerfile>.dockerignore` that is a symlink or not a
-    /// regular file is refused rather than followed.
+    /// Beside a Dockerfile on the host (the operator's own path), a
+    /// `<dockerfile>.dockerignore` that is a symlink or not a regular file
+    /// is refused rather than followed. Beside a Dockerfile in the context,
+    /// it is read through the context's root like `.dockerignore`, so a
+    /// symlink there never leaves the context (ADR-0076).
     ///
     /// # Errors
     ///
     /// [`Error::IgnoreFile`] when the file beside the Dockerfile cannot be
-    /// read, [`Error::Rootfs`] when the context's `.dockerignore` exists but
+    /// read, [`Error::Rootfs`] when an ignore file in the context exists but
     /// is not a readable regular file.
-    pub fn find_dockerignore(&self, dockerfile: Option<&Path>) -> Result<Option<IgnoreFile>> {
-        if let Some(dockerfile) = dockerfile {
-            let mut beside = OsString::from(dockerfile.as_os_str());
+    pub fn find_dockerignore(
+        &self,
+        dockerfile: Option<DockerfileAt<'_>>,
+    ) -> Result<Option<IgnoreFile>> {
+        let beside = |p: &Path| {
+            let mut beside = OsString::from(p.as_os_str());
             beside.push(".dockerignore");
-            let beside = PathBuf::from(beside);
-            if let Some(contents) = read_beside_dockerfile(&beside)? {
-                return Ok(Some(IgnoreFile {
-                    source: IgnoreSource::Dockerfile(beside),
-                    contents,
-                }));
+            PathBuf::from(beside)
+        };
+        match dockerfile {
+            Some(DockerfileAt::Host(dockerfile)) => {
+                let beside = beside(dockerfile.path());
+                if let Some(contents) = read_beside_dockerfile(dockerfile, &beside)? {
+                    return Ok(Some(IgnoreFile {
+                        source: IgnoreSource::Dockerfile(beside),
+                        contents,
+                    }));
+                }
             }
+            Some(DockerfileAt::Context(rel)) => {
+                let rel = beside(rel);
+                if let Some(contents) = self.read_ignore(&rel)? {
+                    return Ok(Some(IgnoreFile {
+                        source: IgnoreSource::Dockerfile(self.origin.join(&rel)),
+                        contents,
+                    }));
+                }
+            }
+            None => {}
         }
-        match self.root.open_regular(".dockerignore") {
+        Ok(self
+            .read_ignore(Path::new(".dockerignore"))?
+            .map(|contents| IgnoreFile {
+                source: IgnoreSource::ContextRoot,
+                contents,
+            }))
+    }
+
+    /// Opens the regular file `rel` of the context for reading, following
+    /// symlinks inside the context only, and refusing a hardlink planted
+    /// from outside or a file the owner of its directory could not read, as
+    /// `COPY` refuses them ([`rnk_rootfs::CopyOpts::from_context`],
+    /// ADR-0076).
+    ///
+    /// # Errors
+    ///
+    /// As [`RootPath::open_context_file`].
+    pub fn open_file(&self, rel: impl AsRef<Path>) -> rnk_rootfs::Result<std::os::fd::OwnedFd> {
+        self.root.open_context_file(rel)
+    }
+
+    /// The ignore file `rel` in the context, `None` when it is missing.
+    fn read_ignore(&self, rel: &Path) -> Result<Option<Vec<u8>>> {
+        match self.open_file(rel) {
             Ok(fd) => {
                 let mut contents = Vec::new();
                 File::from(fd)
                     .read_to_end(&mut contents)
                     .map_err(|source| Error::IgnoreFile {
-                        path: self.origin.join(".dockerignore"),
+                        path: self.origin.join(rel),
                         source,
                     })?;
-                Ok(Some(IgnoreFile {
-                    source: IgnoreSource::ContextRoot,
-                    contents,
-                }))
+                Ok(Some(contents))
             }
             Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => Ok(None),
             Err(e) => Err(e.into()),
@@ -200,37 +301,22 @@ impl Context {
 }
 
 /// Reads `<Dockerfile>.dockerignore` without following a final symlink.
-/// `None` when it does not exist.
-fn read_beside_dockerfile(path: &Path) -> Result<Option<Vec<u8>>> {
+/// Reads `<Dockerfile>.dockerignore` beside a host Dockerfile, reached from
+/// the Dockerfile's own pinned directory, without following it: a symlink,
+/// a FIFO or a device node there is refused, never opened. `None` when it
+/// does not exist.
+fn read_beside_dockerfile(dockerfile: &HostFile, path: &Path) -> Result<Option<Vec<u8>>> {
     let err = |source| Error::IgnoreFile {
         path: path.to_owned(),
         source,
     };
-    // `O_NOFOLLOW` refuses a final symlink; `O_NONBLOCK` keeps a FIFO from
-    // blocking the open, and the type check below refuses it.
-    let flags = (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits();
-    let flags = i32::try_from(flags).map_err(|_| {
-        err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "open flags out of range",
-        ))
-    })?;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(flags)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(err(e)),
+    let name = path.file_name().unwrap_or_default();
+    let fd = match dockerfile.open_beside(name) {
+        Ok(Some(fd)) => fd,
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(err(io::Error::other(e))),
     };
-    if !file.metadata().map_err(err)?.file_type().is_file() {
-        return Err(err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        )));
-    }
     let mut contents = Vec::new();
-    (&file).read_to_end(&mut contents).map_err(err)?;
+    File::from(fd).read_to_end(&mut contents).map_err(err)?;
     Ok(Some(contents))
 }

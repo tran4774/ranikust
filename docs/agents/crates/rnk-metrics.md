@@ -40,7 +40,9 @@ never reaches the image.
 ```rust
 pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY"; // [design]
 pub const SCHEMA: &str = "ranikust.metrics/v1";            // [decided]
-pub struct Config { pub file: Option<PathBuf>, pub summary: bool }  // from_env(), is_enabled()
+pub struct Config { pub file: Option<PathBuf>, pub summary: bool, pub logs: LogOptions,
+                    pub write_file: Option<WriteFile> }  // from_env(), is_enabled()
+pub struct WriteFile(pub Arc<WriteFn>);  // a closure: the binary's carries the build context's fence, follows no symlink (ADR-0076); None: temporary file + rename
 pub fn init(config: Config) -> Telemetry;                  // once, first thing in main, single-threaded
 pub struct Telemetry;  // is_enabled(), set_meta(key, impl Into<Value>), finish(&Outcome): first call writes
 pub struct Outcome;    // success() | error(code, message); panics are reported by the hook
@@ -48,7 +50,9 @@ pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sec
 pub fn terminal_text(text: &str) -> Cow<'_, str>; // controls, U+2028/9 and bidi controls escaped as \n, \u{1b}
 ```
 
-The binary's `--metrics-file` fills `Config::file` after `from_env`.
+The binary's `--metrics-file` fills `Config::file` after `from_env`, and
+its writer `Config::write_file`, which reaches the directory through
+`rnk_rootfs::OutputDir` (ADR-0076).
 
 ## Invariants
 

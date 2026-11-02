@@ -68,7 +68,7 @@ use crate::resources::HostPaths;
 pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY";
 
 /// What to collect and where to write it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct Config {
     /// Where to write the JSON report; `None` writes no file.
     pub file: Option<PathBuf>,
@@ -76,6 +76,32 @@ pub struct Config {
     pub summary: bool,
     /// How logs are written.
     pub logs: LogOptions,
+    /// How the report file is written; `None` writes it through a temporary
+    /// file in its directory, made if missing, renamed into place. The
+    /// binary passes its own, which reaches the directory without following
+    /// a symlink (ADR-0076).
+    pub write_file: Option<WriteFile>,
+}
+
+/// Writes the report's bytes to its file ([`Config::write_file`]): a
+/// closure, so the binary's can carry what it checks against (the build
+/// context, ADR-0076). Called at exit, and by the panic hook.
+#[derive(Clone)]
+pub struct WriteFile(pub Arc<WriteFn>);
+
+/// The function a [`WriteFile`] calls.
+pub type WriteFn = dyn Fn(&std::path::Path, &[u8]) -> std::io::Result<()> + Send + Sync;
+
+impl std::fmt::Debug for WriteFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WriteFile(..)")
+    }
+}
+
+impl WriteFile {
+    fn write(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        (self.0)(path, bytes)
+    }
 }
 
 /// The log layer's settings: kaniko's `--verbosity`, `--log-format` and
@@ -128,6 +154,7 @@ impl Config {
             file: None,
             summary,
             logs: LogOptions::default(),
+            write_file: None,
         }
     }
 
@@ -248,7 +275,11 @@ fn build(config: &Config, paths: HostPaths) -> (Dispatch, Option<Arc<Collector>>
     if !config.is_enabled() {
         return (Dispatch::new(logs_only(config.logs)), None);
     }
-    let collector = Arc::new(Collector::new(config.file.clone(), config.summary, paths));
+    let mut collector = Collector::new(config.file.clone(), config.summary, paths);
+    if let Some(write_file) = &config.write_file {
+        collector.write_file = write_file.clone();
+    }
+    let collector = Arc::new(collector);
     let metrics =
         MetricsLayer::new(Arc::clone(&collector.shared)).with_filter(filter_fn(is_metric_span));
     let subscriber = Registry::default().with(logs(config.logs)).with(metrics);

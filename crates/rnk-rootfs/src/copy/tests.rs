@@ -58,6 +58,102 @@ fn source() -> Fixture {
     s
 }
 
+/// The context rule (ADR-0076), against the directory a file was found in:
+/// a hardlink of another owner is refused, and so is a file the
+/// directory's owner could not read by owner, group or other bits; a
+/// directory root owns reads anything. Unprivileged, the other accounts are
+/// played by changed fields of a real `statx`.
+#[test]
+fn the_context_rule_judges_a_file_by_the_directory_it_is_in() {
+    let s = source();
+    let dir = s.root.statx("a").unwrap();
+    let file = s.root.statx("a/ro/inside").unwrap();
+    let (me, my_group) = (dir.uid, dir.gid);
+    let with = |uid: u32, gid: u32, mode: u32, nlink: u32| Stat {
+        uid,
+        gid,
+        mode: (file.mode & !0o7777) | mode,
+        nlink,
+        ..file
+    };
+    let other = me.wrapping_add(4242);
+    let other_group = my_group.wrapping_add(4242);
+    // Planted hardlinks, whatever the mode.
+    assert!(
+        context_refusal(&with(0, 0, 0o644, 2), &dir)
+            .unwrap()
+            .contains("hardlink")
+    );
+    assert!(context_refusal(&with(other, other_group, 0o644, 3), &dir).is_some());
+    // The owner's own hardlinks (a pnpm store) pass.
+    assert_eq!(context_refusal(&with(me, my_group, 0o644, 2), &dir), None);
+    // A stale planted link (one name left): unreadable by the directory's
+    // owner, refused.
+    assert!(
+        context_refusal(&with(0, 0, 0o600, 1), &dir)
+            .unwrap()
+            .contains("could not read")
+    );
+    // Readable through the bits that apply to the directory's owner.
+    assert_eq!(
+        context_refusal(&with(me, other_group, 0o400, 1), &dir),
+        None
+    );
+    assert!(context_refusal(&with(me, other_group, 0o044, 1), &dir).is_some());
+    assert_eq!(
+        context_refusal(&with(other, my_group, 0o040, 1), &dir),
+        None
+    );
+    assert!(context_refusal(&with(other, my_group, 0o404, 1), &dir).is_some());
+    assert_eq!(
+        context_refusal(&with(other, other_group, 0o004, 1), &dir),
+        None
+    );
+    assert!(context_refusal(&with(other, other_group, 0o440, 1), &dir).is_some());
+    // A directory root owns reads anything.
+    let root_dir = Stat {
+        uid: 0,
+        gid: 0,
+        ..dir
+    };
+    assert_eq!(
+        context_refusal(&with(other, other_group, 0o000, 1), &root_dir),
+        None
+    );
+    // Unless its group or others may write it: then a file must have one
+    // link and be readable by others, whoever owns it.
+    for writable in [0o020, 0o002, 0o1777] {
+        let shared = Stat {
+            mode: root_dir.mode | writable,
+            ..root_dir
+        };
+        assert!(
+            context_refusal(&with(0, 0, 0o644, 2), &shared)
+                .unwrap()
+                .contains("hardlink")
+        );
+        assert!(
+            context_refusal(&with(0, 0, 0o640, 1), &shared)
+                .unwrap()
+                .contains("could not read")
+        );
+        assert_eq!(context_refusal(&with(0, 0, 0o644, 1), &shared), None);
+        assert_eq!(
+            context_refusal(&with(other, other_group, 0o604, 1), &shared),
+            None
+        );
+    }
+    // A copy out of the context with the owner's own files: copied, links kept.
+    let d = Fixture::new();
+    let o = CopyOpts {
+        from_context: true,
+        ..CopyOpts::default()
+    };
+    copy(&s.root, "a", &d.root, "mine", &o).unwrap();
+    assert_eq!(fs::metadata(d.host("mine/hl")).unwrap().nlink(), 2);
+    copy(&s.root, "a/f", &d.root, "f", &o).unwrap();
+}
+
 #[test]
 fn a_directory_copies_its_contents_with_raw_modes_times_and_links() {
     let s = source();
@@ -98,6 +194,7 @@ fn chown_and_chmod_apply_to_every_entry_but_symlink_modes() {
         owner: Some(Owner { uid, gid }),
         chmod: Some(Chmod::Octal(0o750)),
         skip_special: false,
+        from_context: false,
     };
     copy(&s.root, "a", &d.root, "deep/er/app", &o).unwrap();
     for p in ["deep/er/app/f", "deep/er/app/ro", "deep/er/app/fifo"] {
@@ -395,6 +492,7 @@ fn device_nodes_and_foreign_owners_are_copied() {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
         skip_special: false,
+        from_context: false,
     };
     copy(&s.root, "a", &d.root, "root", &o).unwrap();
     let owned = d.root.statx("root/owned").unwrap();
@@ -413,6 +511,7 @@ fn foreign_owners_fail_cleanly_unprivileged() {
         owner: Some(Owner { uid: 0, gid: 0 }),
         chmod: None,
         skip_special: false,
+        from_context: false,
     };
     let e = copy(&s.root, "a/f", &d.root, "f", &o).unwrap_err();
     assert_eq!(errno(&e), Some(Errno::PERM), "{e}");

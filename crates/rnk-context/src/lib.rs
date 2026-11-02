@@ -13,7 +13,8 @@
 //! ```no_run
 //! # fn main() -> Result<(), rnk_context::Error> {
 //! let ctx = rnk_context::open(&rnk_context::parse_spec("app")?)?;
-//! let ignore = ctx.find_dockerignore(Some("app/Dockerfile".as_ref()))?;
+//! let dockerfile = rnk_context::DockerfileAt::Context("Dockerfile".as_ref());
+//! let ignore = ctx.find_dockerignore(Some(dockerfile))?;
 //! let matcher = ignore.map(|f| ctx.matcher(&f)).transpose()?;
 //! for entry in ctx.walk(matcher.as_ref()) {
 //!     let entry = entry?;
@@ -38,7 +39,7 @@ mod walk;
 
 use std::path::PathBuf;
 
-pub use source::{Context, ContextSource, DirSource, IgnoreFile, IgnoreSource, open};
+pub use source::{Context, ContextSource, DirSource, DockerfileAt, IgnoreFile, IgnoreSource, open};
 pub use spec::{ContextSpec, parse_spec};
 pub use walk::{Entry, EntryMeta, Walk, WalkStats};
 
@@ -82,6 +83,19 @@ pub enum Error {
         /// The cause.
         #[source]
         source: std::io::Error,
+    },
+    /// The local context directory is, or passes through, a symlink, which
+    /// ranikust does not follow: the build context's owner could point it
+    /// anywhere (ADR-0076).
+    #[error(
+        "build context directory {}: it is or passes through a symlink, which ranikust does \
+         not follow since the context's owner could point it anywhere (ADR-0076); pass the \
+         path without symlinks, as `realpath` prints it",
+        path.display()
+    )]
+    Symlink {
+        /// The directory as given.
+        path: PathBuf,
     },
     /// The ignore file cannot be read.
     #[error("ignore file {}: {source}", path.display())]

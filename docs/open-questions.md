@@ -654,6 +654,40 @@ Entry format:
 
 ## Answered
 
+### Q-438: Does ranikust refuse a context file its owner could not read?
+
+- **Answer (2026-11-03):** option (a), settled in the host-safety fix loop
+  of ADR-0076: a context file the owner of the directory it is in could not
+  read by its mode bits is refused (owner bits for the directory's owner,
+  group bits for the directory's group, else other bits; root's
+  directories read anything unless their group or others may write them).
+  It is an approximation: supplementary groups are not looked up and ACLs
+  are not read, so it fails closed in the usual direction only (a file
+  readable through another group or an ACL grant is refused) and can pass
+  a file an ACL deny entry or a group-excluding mode would deny. Recorded
+  in [ADR-0076](adr/0076-the-build-context-owner-is-a-lower-trust-principal.md);
+  (b) can follow with Phase 5's context reader.
+- **Area:** `rnk-context`, `rnk-rootfs` (security)
+- **Context:** ranikust reads context files as root, so `COPY` would copy
+  a file the context's owner cannot read. ADR-0076 refuses the case an
+  unprivileged owner can set up: a hardlink to a file from outside, with
+  another owner, where `fs.protected_hardlinks=0`. A single-link file of
+  another owner in the context (one root put there) is still read.
+  BuildKit reads the context as the invoking user, so such a file is not
+  readable there.
+- **Options:**
+  - (a) Refuse a file the owner's uid, gid and supplementary groups could
+    not read by its mode bits. Exact only without ACLs, and the groups come
+    from the host's NSS.
+  - (b) Read context files with the owner's filesystem credentials
+    (`setfsuid`/`setfsgid` and supplementary groups on a dedicated thread),
+    as BuildKit's client reads them.
+  - (c) Keep the hardlink rule only.
+- **Recommendation:** (b) when the context reader gets its own thread
+  (Phase 5's remote contexts); until then (c).
+- **Interim:** (c), ADR-0076's hardlink rule.
+- **Raised:** 2026-11-02
+
 ### Q-033: Which performance conditions are still unmeasured?
 
 - **Answer (2026-11-01):** "5. theo ý bạn": closed with what Phases 1

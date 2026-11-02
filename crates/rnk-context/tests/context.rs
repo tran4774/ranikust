@@ -6,7 +6,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 
-use rnk_context::{ContextSource as _, ContextSpec, DirSource, Error, IgnoreSource};
+use rnk_context::{ContextSource as _, ContextSpec, DirSource, DockerfileAt, Error, IgnoreSource};
 use rnk_rootfs::FileType;
 
 fn ctx_dir() -> tempfile::TempDir {
@@ -17,8 +17,107 @@ fn walk_paths(ctx: &rnk_context::Context, m: Option<&rnk_ignore::Matcher>) -> Ve
     ctx.walk(m).map(|e| e.unwrap().path).collect()
 }
 
+/// The host Dockerfile at `path`, outside `ctx`, as the binary pins it.
+fn host_file(path: &Path, ctx: &rnk_context::Context) -> rnk_rootfs::HostFile {
+    match rnk_rootfs::reach(path, ctx.fence()).unwrap() {
+        rnk_rootfs::Reached::Outside(file) => file,
+        rnk_rootfs::Reached::Inside(rest) => panic!("inside the context: {}", rest.display()),
+    }
+}
+
 fn p(s: &str) -> PathBuf {
     PathBuf::from(s)
+}
+
+/// `--context` is never resolved through a symlink (ADR-0076): one committed
+/// to a checkout (`services/api -> /root/.docker`), or a component a
+/// lower-trust account owns, would make a root-only directory the context.
+#[test]
+fn a_context_path_through_a_symlink_is_refused() {
+    let secret_dir = ctx_dir();
+    fs::write(secret_dir.path().join("token"), b"DUMMY-TOKEN\n").unwrap();
+    let checkout = ctx_dir();
+    fs::create_dir(checkout.path().join("services")).unwrap();
+    symlink(secret_dir.path(), checkout.path().join("services/api")).unwrap();
+    symlink(checkout.path(), checkout.path().join("services/up")).unwrap();
+    for path in [
+        checkout.path().join("services/api"),
+        checkout.path().join("services/up/services"),
+    ] {
+        let err = DirSource::new(&path).open().unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("symlink") && text.contains("realpath"),
+            "{}: {text}",
+            path.display()
+        );
+    }
+    // The same directory by its real path, `..` included, is fine.
+    let real = checkout.path().join("services/../services");
+    let ctx = DirSource::new(&real).open().unwrap();
+    assert_eq!(ctx.origin(), checkout.path().join("services"));
+}
+
+/// T2c (the VM or a default rootful Docker run): a root-only file
+/// hardlinked into a context another account owns, as that account can do
+/// where `fs.protected_hardlinks=0`, is neither read as the Dockerfile nor
+/// copied, though ranikust reads as root (ADR-0076). Root makes the link
+/// here, standing in for the account.
+#[test]
+#[ignore = "T2c: default: chown to another user and a root-only file need root"]
+fn a_root_only_file_hardlinked_into_the_context_is_never_read() {
+    let tmp = ctx_dir();
+    let secret = tmp.path().join("secret");
+    fs::write(&secret, b"DUMMY-ROOT-ONLY-7f3a\n").unwrap();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+    let ctx_path = tmp.path().join("ctx");
+    fs::create_dir(&ctx_path).unwrap();
+    fs::hard_link(&secret, ctx_path.join("s")).unwrap();
+    fs::write(ctx_path.join("own"), b"mine\n").unwrap();
+    for p in [ctx_path.clone(), ctx_path.join("own")] {
+        rustix::fs::chown(
+            &p,
+            Some(rustix::fs::Uid::from_raw(1000)),
+            Some(rustix::fs::Gid::from_raw(1000)),
+        )
+        .unwrap();
+    }
+    // A stale planted link: one name left, still root's and root-only.
+    fs::write(ctx_path.join("stale"), b"DUMMY-STALE\n").unwrap();
+    fs::set_permissions(ctx_path.join("stale"), fs::Permissions::from_mode(0o600)).unwrap();
+    // A directory root made in the context (`sudo make` in a checkout):
+    // judged against its own owner, so its root-only files are copied.
+    fs::create_dir(ctx_path.join("rootdir")).unwrap();
+    fs::write(ctx_path.join("rootdir/out"), b"built\n").unwrap();
+    fs::set_permissions(
+        ctx_path.join("rootdir/out"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let ctx = DirSource::new(&ctx_path).open().unwrap();
+    assert_eq!(ctx.owner(), 1000);
+    let e = ctx.open_file("s").unwrap_err();
+    assert!(e.to_string().contains("hardlink"), "{e}");
+    let e = ctx.open_file("stale").unwrap_err();
+    assert!(e.to_string().contains("could not read"), "{e}");
+    assert!(ctx.open_file("own").is_ok());
+    assert!(ctx.open_file("rootdir/out").is_ok());
+
+    let dst = ctx_dir();
+    let dst_root = rnk_rootfs::RootPath::open(dst.path()).unwrap();
+    let opts = rnk_rootfs::CopyOpts {
+        from_context: true,
+        ..rnk_rootfs::CopyOpts::default()
+    };
+    let e = rnk_rootfs::copy(ctx.root(), "s", &dst_root, "s", &opts).unwrap_err();
+    assert!(e.to_string().contains("hardlink"), "{e}");
+    let e = rnk_rootfs::copy(ctx.root(), "stale", &dst_root, "stale", &opts).unwrap_err();
+    assert!(e.to_string().contains("could not read"), "{e}");
+    let e = rnk_rootfs::copy(ctx.root(), "", &dst_root, "all", &opts).unwrap_err();
+    assert!(e.to_string().contains("hardlink"), "{e}");
+    assert!(!dst.path().join("s").exists() && !dst.path().join("stale").exists());
+    rnk_rootfs::copy(ctx.root(), "rootdir", &dst_root, "rootdir", &opts).unwrap();
+    rnk_rootfs::copy(ctx.root(), "own", &dst_root, "own", &opts).unwrap();
 }
 
 #[test]
@@ -111,9 +210,9 @@ fn dockerignore_beside_the_dockerfile_wins() {
     fs::write(root.join(".dockerignore"), b"root\n").unwrap();
     fs::write(root.join("Dockerfile.dockerignore"), b"beside\n").unwrap();
     let ctx = DirSource::new(root).open().unwrap();
-    let dockerfile = root.join("Dockerfile");
+    let dockerfile = Some(DockerfileAt::Context(Path::new("Dockerfile")));
 
-    let found = ctx.find_dockerignore(Some(&dockerfile)).unwrap().unwrap();
+    let found = ctx.find_dockerignore(dockerfile).unwrap().unwrap();
     assert_eq!(
         found.source,
         IgnoreSource::Dockerfile(root.join("Dockerfile.dockerignore"))
@@ -121,31 +220,70 @@ fn dockerignore_beside_the_dockerfile_wins() {
     assert_eq!(found.contents, b"beside\n");
 
     fs::remove_file(root.join("Dockerfile.dockerignore")).unwrap();
-    let found = ctx.find_dockerignore(Some(&dockerfile)).unwrap().unwrap();
+    let found = ctx.find_dockerignore(dockerfile).unwrap().unwrap();
     assert_eq!(found.source, IgnoreSource::ContextRoot);
     assert_eq!(found.contents, b"root\n");
 
     fs::remove_file(root.join(".dockerignore")).unwrap();
-    assert!(ctx.find_dockerignore(Some(&dockerfile)).unwrap().is_none());
+    assert!(ctx.find_dockerignore(dockerfile).unwrap().is_none());
     assert!(ctx.find_dockerignore(None).unwrap().is_none());
+
+    // Beside a Dockerfile on the host, outside the context.
+    let host = ctx_dir();
+    fs::write(host.path().join("Dockerfile.dockerignore"), b"host\n").unwrap();
+    fs::write(host.path().join("Dockerfile"), b"FROM scratch\n").unwrap();
+    let dockerfile = host_file(&host.path().join("Dockerfile"), &ctx);
+    let found = ctx
+        .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.contents, b"host\n");
 }
 
 #[test]
 fn dockerignore_symlink_beside_the_dockerfile_is_refused() {
     let outside = ctx_dir();
     fs::write(outside.path().join("secret"), b"top secret\n").unwrap();
+    // On the host: refused rather than followed.
+    let host = ctx_dir();
+    symlink(
+        outside.path().join("secret"),
+        host.path().join("Dockerfile.dockerignore"),
+    )
+    .unwrap();
     let tmp = ctx_dir();
     let root = tmp.path();
+    let ctx = DirSource::new(root).open().unwrap();
+    fs::write(host.path().join("Dockerfile"), b"FROM scratch\n").unwrap();
+    let dockerfile = host_file(&host.path().join("Dockerfile"), &ctx);
+    let err = ctx
+        .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
+        .unwrap_err();
+    assert!(matches!(err, Error::IgnoreFile { .. }), "{err:?}");
+    // A FIFO beside it is refused without being opened, so it never blocks.
+    fs::remove_file(host.path().join("Dockerfile.dockerignore")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        host.path().join("Dockerfile.dockerignore"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let err = ctx
+        .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
+        .unwrap_err();
+    assert!(err.to_string().contains("not a regular file"), "{err}");
+    // In the context: resolved inside it, where the target does not exist.
     symlink(
         outside.path().join("secret"),
         root.join("Dockerfile.dockerignore"),
     )
     .unwrap();
-    let ctx = DirSource::new(root).open().unwrap();
-    let err = ctx
-        .find_dockerignore(Some(&root.join("Dockerfile")))
-        .unwrap_err();
-    assert!(matches!(err, Error::IgnoreFile { .. }), "{err:?}");
+    let found = ctx
+        .find_dockerignore(Some(DockerfileAt::Context(Path::new("Dockerfile"))))
+        .unwrap();
+    assert!(found.is_none(), "{found:?}");
 }
 
 #[test]

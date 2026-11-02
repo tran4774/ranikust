@@ -28,6 +28,10 @@ pub(crate) enum Mounts {
     Stay,
 }
 
+/// Most symlinks [`RootPath::pin_with_dir`] follows for one path, as the
+/// kernel's `MAXSYMLINKS`.
+const MAX_LINKS: usize = 40;
+
 /// How a single name is opened inside an already resolved directory: no
 /// traversal at all.
 const ONE_NAME: ResolveFlags = ResolveFlags::BENEATH
@@ -314,13 +318,44 @@ impl RootPath {
     /// [`Error::InvalidPath`] when `p` is not a regular file; [`Error::Io`]
     /// as [`RootPath::open_at`].
     pub fn open_regular(&self, p: impl AsRef<Path>) -> Result<OwnedFd> {
-        let p = p.as_ref();
-        let pinned = self.resolve(p, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
-        let file_type = meta::statx_at(pinned.as_fd(), OsStr::new(""), p)?.file_type();
-        if file_type != FileType::Regular {
+        self.open_regular_checked(p.as_ref(), false)
+    }
+
+    /// [`RootPath::open_regular`] for a file of a build context (the
+    /// Dockerfile, an ignore file, an archive `ADD` looks at): refused as
+    /// [`crate::CopyOpts::from_context`] refuses it (ADR-0076), against the
+    /// directory `p` names it in, on the pinned inode that is then read.
+    ///
+    /// # Errors
+    ///
+    /// As [`RootPath::open_regular`], and [`Error::InvalidPath`] for a
+    /// hardlink planted from outside or a file the directory's owner could
+    /// not read.
+    pub fn open_context_file(&self, p: impl AsRef<Path>) -> Result<OwnedFd> {
+        self.open_regular_checked(p.as_ref(), true)
+    }
+
+    fn open_regular_checked(&self, p: &Path, context: bool) -> Result<OwnedFd> {
+        let (pinned, st, dir) = if context {
+            let (pinned, st, dir) = self.pin_with_dir(p)?;
+            (pinned, st, Some(dir))
+        } else {
+            let pinned = self.resolve(p, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
+            let st = meta::statx_at(pinned.as_fd(), OsStr::new(""), p)?;
+            (pinned, st, None)
+        };
+        if st.file_type() != FileType::Regular {
             return Err(Error::InvalidPath {
                 path: p.to_owned(),
                 reason: "not a regular file",
+            });
+        }
+        if let Some(dir) = dir
+            && let Some(reason) = crate::copy::context_refusal(&st, &dir)
+        {
+            return Err(Error::InvalidPath {
+                path: p.to_owned(),
+                reason,
             });
         }
         let proc = meta::proc_fd_dir(p)?;
@@ -332,6 +367,53 @@ impl RootPath {
             Mode::empty(),
         )
         .map_err(|e| io_err("open", p, e))
+    }
+
+    /// The entry `p` and the directory it is in, both pinned by descriptor
+    /// (ADR-0076): the parent is resolved inside the root (symlinks
+    /// followed, clamped to it), the last name opened relative to that
+    /// directory without following it (`O_PATH | O_NOFOLLOW`), and both
+    /// are `statx`ed on their descriptors. So the directory a build
+    /// context's rule judges is the one the entry was found in: a parent
+    /// swapped for a symlink between two lookups cannot have one directory
+    /// judged and an entry of another read. A final symlink is resolved the
+    /// same way, its target from the link's own directory, at most
+    /// [`MAX_LINKS`] times.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] for the root itself or a target that names no
+    /// entry; [`Error::Io`] with `ELOOP` past [`MAX_LINKS`] links.
+    pub(crate) fn pin_with_dir(&self, p: &Path) -> Result<(OwnedFd, Stat, Stat)> {
+        let mut cur = p.to_owned();
+        for _ in 0..=MAX_LINKS {
+            let (parent, name) = path::entry(&cur)?;
+            let name = name.to_owned();
+            let dfd = self.resolve_dir(&parent)?;
+            let leaf = open_name(
+                dfd.as_fd(),
+                &name,
+                OFlags::PATH | OFlags::NOFOLLOW,
+                0,
+                false,
+                &cur,
+            )?;
+            let st = meta::statx_at(leaf.as_fd(), OsStr::new(""), &cur)?;
+            if st.file_type() == FileType::Symlink {
+                let target = rustix::fs::readlinkat(&leaf, "", Vec::new())
+                    .map_err(|e| io_err("readlink", &cur, e))?;
+                let target = PathBuf::from(OsString::from_vec(target.into_bytes()));
+                cur = if target.is_absolute() {
+                    target
+                } else {
+                    parent.join(target)
+                };
+                continue;
+            }
+            let dir = meta::statx_at(dfd.as_fd(), OsStr::new(""), &parent)?;
+            return Ok((leaf, st, dir));
+        }
+        Err(io_err("resolve", p, Errno::LOOP))
     }
 
     /// Pins the entry `p` with an `O_PATH | O_NOFOLLOW` descriptor, reached
@@ -849,10 +931,22 @@ pub struct Pinned {
 }
 
 impl Pinned {
+    /// A pinned entry from its `O_PATH | O_NOFOLLOW` descriptor and `statx`.
+    pub(crate) fn new(fd: OwnedFd, stat: Stat, path: PathBuf) -> Self {
+        Self { fd, stat, path }
+    }
+
     /// What `statx` said of the pinned entry.
     #[must_use]
     pub fn stat(&self) -> &Stat {
         &self.stat
+    }
+
+    /// The path the entry was pinned at, for messages and for names beside
+    /// it.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The target of the pinned symlink (`readlinkat(fd, "")`).

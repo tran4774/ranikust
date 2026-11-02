@@ -57,8 +57,8 @@ fn assemble_and_outputs_count_bytes_and_layers() {
     let image = capture.run(|| image(dir.path(), &base, &support::time(), Compression::Gzip));
     let tar = dir.path().join("image.tar");
     capture.run(|| {
-        rnk_builder::write_docker_tar(&image, &["r.example/a:1".to_owned()], &tar).unwrap();
-        rnk_builder::write_oci_layout(&image, &dir.path().join("layout")).unwrap();
+        rnk_builder::write_docker_tar(&image, &["r.example/a:1".to_owned()], &tar, None).unwrap();
+        rnk_builder::write_oci_layout(&image, &dir.path().join("layout"), None).unwrap();
     });
     let report = capture.report();
     let assemble = &report["phases"]["rnk_builder.assemble"];

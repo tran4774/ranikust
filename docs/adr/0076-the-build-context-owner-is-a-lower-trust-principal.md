@@ -1,0 +1,263 @@
+---
+status: accepted
+date: 2026-11-02
+decision-makers: Tran Nguyen (maintainer)
+---
+
+# ADR-0076: The build context's owner is a principal of its own, trusted less than the operator
+
+## Context and Problem Statement
+
+The threat model (§3) trusted every path the operator types: `--context`,
+`--dockerfile` and the outputs (`--digest-file`, `--image-name-with-digest-file`,
+`--image-name-tag-with-digest-file`, `--tar-path`, `--oci-layout-path`,
+`--metrics-file`). It distrusted only the context's *content*. But a path
+the operator types can run through objects someone else controls. A root CI
+runner builds a merge request's checkout, and a build service builds a
+third-party repository. On a shared host, root builds a directory an
+unprivileged account owns.
+
+Whoever commits to that checkout or owns that directory controls every
+name in it, symlinks and hardlinks included. ranikust resolved these paths
+on the host as root, by name, so that principal could steer root's reads
+and writes:
+
+- A committed `digest -> /etc/...` made root truncate a host file.
+- A committed `out -> /some/dir` sent the tar, the OCI layout and the
+  metrics report there.
+- `--dockerfile=$CI_PROJECT_DIR/Dockerfile` (kaniko's GitLab form), and the
+  default `Dockerfile` run from the checkout, were read on the host through
+  a committed symlink, and the target's first token was printed in the
+  parse error.
+- `std::fs::canonicalize` of `--context` followed a committed
+  `services/api -> /root/.docker`, so `COPY .` copied root's registry
+  credentials into the image.
+- `COPY` read context files as root, so a root-only file hardlinked into
+  an account's context (`fs.protected_hardlinks=0`) entered the image.
+
+BuildKit does not have the problem by construction: the client reads the
+context with the invoking user's authority and sends it over the session.
+kaniko resolves every one of these paths by name, as ranikust did.
+
+The question: is the context's owner a principal distinct from the
+operator, and if so, which rules keep root's reads and writes out of their
+reach?
+
+## Considered Options
+
+- **A. The context's owner is a principal of its own, trusted less than
+  the operator.** ranikust never lets a name the context's owner controls
+  steer one of its own host reads or writes.
+- **B. Keep trusting operator paths.** Document instead that an operator
+  must not point an output, the Dockerfile or the context at, or through, a
+  directory someone less trusted controls.
+
+B leaves the most common CI form, a Dockerfile and outputs in the checkout,
+exploitable by a merge request. The maintainer ranks security before
+compatibility.
+
+## Decision Outcome
+
+Chosen option: **A**, decided by the maintainer on 2026-11-02 ("1: chốt A").
+Threat-model §3 lists the build context's owner as a principal of its own.
+Four rules follow, each enforced through file descriptors in `rnk-rootfs`,
+with no new flag.
+
+1. **Outputs never follow a symlink and never lead into the context.**
+   Every output is written in an `rnk_rootfs::OutputDir`.
+   - Its directory is reached from `/` one name at a time. A symlink
+     anywhere on the way is refused, with a hint to pass the `realpath`
+     form.
+   - Missing directories are made by `mkdirat` below the last one reached,
+     then opened again without following a symlink.
+   - A path that reaches the context's directory is refused, even one that
+     leaves it again with `..`. The context is told by its inode, so a bind
+     mount of it counts too.
+   - The digest files are still written in place, as kaniko writes them, so
+     a file mounted there (a Kubernetes termination log) keeps its inode.
+     The existing entry is pinned first, and must be a regular file with one
+     link: a symlink, a hardlink, a FIFO or a device is refused, never
+     opened.
+   - The other outputs replace their name through an exclusive temporary
+     file renamed into place: over a regular file only, else with
+     `RENAME_NOREPLACE`, so a device node, a FIFO, a socket or a symlink
+     there (`/dev/null`, `/dev/stdout`) is refused. Where the filesystem
+     refuses `RENAME_NOREPLACE` (NFS, 9p, FUSE without `rename2`), the
+     temporary file is hard-linked into place, which never replaces, and
+     where hard links are refused too the name is looked at again and the
+     file renamed over it.
+   - The paths are checked before the build (`--metrics-file` before its
+     report is set up, so nothing is written there) and again as they are
+     written, against the context the build itself opened: the metrics
+     report's writer takes that fence from the build, not from a second
+     open of `--context`. A build that asks for a report and whose context
+     cannot be opened is refused, so a report is never written unfenced.
+2. **A Dockerfile path is read through the context once it enters it.**
+   `rnk_rootfs::reach` walks `--dockerfile` from `/`.
+   - Outside the context, a symlink is followed only when root or
+     ranikust's own user owns both the link and the directory it is in,
+     that directory is not writable by its group or others, and the link
+     has no other name. A root-owned directory on a read-only mount counts
+     as not writable, whatever its mode bits. A link a lower-trust account
+     made, or could have placed or moved (in a directory it owns or may
+     write, or hard-linked in from elsewhere), is refused.
+   - The path is the operator's, and a Dockerfile mounted from a Kubernetes
+     ConfigMap is a chain of root's symlinks
+     (`Dockerfile -> ..data/Dockerfile`). kubelet makes the volume's root
+     `0777`, root's, and mounts it read-only, so the read-only exception
+     lets the chain be followed **[inferred]**: read from kubelet's source,
+     not yet run on a cluster. Mounting the Dockerfile itself with
+     `subPath` gives a plain file and needs no link at all; it is the
+     stable alternative where a volume does not meet the rule.
+   - A link committed to a checkout made by root is root's, in root's
+     directories, and the walk cannot tell it from the operator's. A
+     monorepo job with `--context=$CI_PROJECT_DIR/services/api` and
+     `--dockerfile=$CI_PROJECT_DIR/docker/api.Dockerfile` still follows a
+     committed `docker/api.Dockerfile` link. So the parse error shows an
+     unknown keyword only when it is within two edits of an instruction,
+     with BuildKit's "did you mean" suggestion: a mistyped instruction. Any
+     other keyword is not shown at all, not even its length, so a file
+     that is no Dockerfile (a token, a password file, an API key shaped
+     like a word) never reaches the error, the log or the metrics report.
+     Passing the checkout itself as `--context` closes the read too.
+   - Once the walk takes a name inside the context, the rest is resolved
+     through the context's `RootPath`, so a committed symlink never leaves
+     it. This covers `$CI_PROJECT_DIR/Dockerfile`, the default `Dockerfile`
+     from the checkout, and an operator's symlink into the context.
+   - A host Dockerfile is read only when it is a regular file, and is
+     judged by rule 4 against the directory it is in, held since the walk.
+     A Dockerfile in a checkout a lower-trust account owns outside the
+     context is therefore no way to read a root-only file hardlinked
+     there.
+   - `<Dockerfile>.dockerignore` is read from where the Dockerfile was:
+     pinned from that held directory, never followed, and judged by rule 4
+     the same way.
+3. **`--context` is never resolved through a symlink.** The directory is
+   opened with `RESOLVE_NO_SYMLINKS`, and a symlink in any component is
+   refused with a hint to pass the real path.
+   - Narrower rules were weighed and rejected. Following only root-owned
+     symlinks fails for a checkout root made: `git` creates the committed
+     link as root.
+   - Following only symlinks whose target lies below the link's own
+     directory fails in sticky shared directories (`/tmp/ctx -> root-0700`),
+     and needs a resolver of its own.
+4. **A file planted into the context from outside is never read.** A
+   context file is judged against the directory it was found in, pinned by
+   descriptor together with it: in a directory walk, the directory the
+   walk holds; for a single file (a single-file `COPY` or `ADD` source, the
+   Dockerfile, an ignore file, the archive check of `ADD`), its parent
+   resolved to a descriptor and the name opened relative to it without
+   following it, a final symlink resolved the same way from its own
+   directory. It is refused when it is a regular file that:
+   - has more than one link and an owner other than the directory's (a
+     hardlink planted from outside, which `fs.protected_hardlinks=0`
+     allows); or
+   - the directory's owner could not read by its mode bits. That means the
+     owner bits when the owner is the file's, the group bits when the
+     directory's group is the file's, else the bits for others. This also
+     catches a stale planted link, one whose other name is gone.
+
+   Details of the rule:
+   - The rule is an approximation of what the directory's owner may read.
+     It does not look the owner's supplementary groups up, and it does not
+     read ACLs. It fails closed in the usual direction only: a file the
+     owner could read through another of their groups, or through an ACL
+     grant, is refused. In the other direction it can pass a file the owner
+     could not read: an ACL deny entry, or a group-excluding mode (`0604`)
+     whose group the owner belongs to as a supplementary group, or a
+     directory group (inherited from a setgid parent, or set by root) the
+     owner is not in.
+   - A directory root owns reads anything, as root does, so a root-made
+     checkout and a directory `sudo` made in one are unchanged. The
+     exception is a root-owned directory its group or others may write (a
+     context root made `root:ci 0775`, a checked-in `tmp/` at `1777`):
+     there any of those accounts could have planted a root-owned hardlink,
+     so a file must have one link and be readable by others.
+   - Same-owner hardlinks, which a pnpm store makes, are copied as before.
+   - `COPY` and `ADD` from the context check this through
+     `CopyOpts::from_context`. The Dockerfile, the ignore files and the
+     archive check of `ADD` check it through `RootPath::open_context_file`.
+     The check is made on the pinned inode that is then read.
+   - This settles Q-438 with option (a), mode bits, judged against the
+     directory rather than the owner's groups. Reading as the owner's
+     credentials (option (b)) can come with Phase 5's context reader.
+
+Not covered:
+
+- Kaniko mode on a container's `/` (`Isolation::Direct`), where a `RUN`
+  reaches the operator's paths itself (ADR-0078).
+- Secrets and registry certificates (ADR-0078).
+- A directory outside the context that the same lower-trust account owns.
+  Only rules 1 and 4 still apply to an output there: no symlink is
+  followed, and nothing is written through another hard link. Choosing to
+  write into such a directory is the operator's decision.
+
+### Consequences
+
+- Good, because every redirection above is closed by descriptor, not by a
+  check on a path string.
+- Good, because a Dockerfile anywhere else outside the context keeps
+  working, and one mounted from a ConfigMap is expected to **[inferred]**
+  (`subPath` works for certain).
+- Good, because the rules add no flag.
+- Bad, because an output in the context is refused. GitLab's habit of
+  writing `--digest-file=$CI_PROJECT_DIR/digest` with
+  `--context=$CI_PROJECT_DIR` must move the digest or the context, for
+  example `--context=$CI_PROJECT_DIR/app`.
+- Bad, because a `--context` or an output reached through a symlink is
+  refused: git-sync's `/git/repo` link, Fedora Silverblue's
+  `/home -> /var/home`, `/var/run -> /run`. The real path works, and the
+  message says so.
+- Bad, because a context file readable only through a group the
+  directory's owner belongs to, other than the directory's own, or through
+  an ACL grant, is refused: ranikust does not look the owner's groups or
+  ACLs up. Such files are rare in a context, and the message says why.
+- Bad, because the readability rule is an approximation, not the kernel's
+  answer: an ACL deny entry or a group-excluding mode can let through a
+  file the owner could not read. Reading as the owner (Q-438's option (b))
+  closes that with Phase 5's context reader.
+- Neutral, because `rnk-rootfs` now also reaches operator output paths on
+  the host (`OutputDir`, `reach`). That is still "every filesystem access"
+  through descriptors, and still never by joining strings onto a host path.
+
+## More Information
+
+- Follow-up, not done here: other `rnk-dockerfile` parse errors still echo
+  text from the line, so a non-Dockerfile reached through a followed link
+  can still show some of its text there. The unknown-keyword error no
+  longer does. The remaining ones:
+  - `ENV` and `LABEL` without `=`: "can't find = in …"
+    (`crates/rnk-dockerfile/src/parser.rs` ~648-651);
+  - an invalid `escape` directive value (~276);
+  - the heredoc lexing error, which prints the rest of the line (~781).
+
+  They should get the same rule: show text only when the line is
+  recognisably a Dockerfile's.
+
+## Evidence
+
+- Source review of the operator paths, 2026-11-02:
+  - `write_digest_files` opened with `O_CREAT|O_TRUNC` and no `O_NOFOLLOW`;
+  - the layout, tar and metrics writers used `create_dir_all`/`tempfile_in`
+    on the parent;
+  - `dockerfile_source` sent any path that exists as given to
+    `std::fs::File::open`;
+  - `DirSource::open` called `std::fs::canonicalize`;
+  - `copy_node` reopened every pinned source as root with no owner or
+    link-count check.
+- Tests, each failing on the code before:
+  - `ranikust` `digest_files_never_follow_a_planted_name`;
+  - `rnk-builder` `an_output_never_goes_through_a_symlinked_directory`;
+  - `rnk-context` `a_context_path_through_a_symlink_is_refused`.
+- Tests written with the change:
+  - `rnk-rootfs` `host::tests`, `a_context_file_its_directory_owner_could_not_read_is_refused`
+    and `the_context_rule_judges_a_file_by_the_directory_it_is_in`;
+  - `ranikust` `outputs_in_the_build_context_are_refused`,
+    `a_dockerfile_in_the_context_never_follows_a_link_out_of_it`,
+    `a_dockerfile_outside_the_context_follows_the_operators_links` and
+    `the_metrics_file_stays_out_of_the_context_and_off_symlinks`;
+  - the CLI test `a_metrics_file_in_the_context_is_refused`;
+  - the T2c test `a_root_only_file_hardlinked_into_the_context_is_never_read`.
+- BuildKit reads the context through the client session, as the invoking
+  user. kaniko resolves `--dockerfile`, `--context` and its digest files by
+  name (`pkg/executor/push.go`, `cmd/executor/cmd/root.go`).

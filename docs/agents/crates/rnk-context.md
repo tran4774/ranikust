@@ -36,13 +36,16 @@ pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // tar://, git://, https:/
 pub trait ContextSource {                             // [decided] open trait, ADR-0008
     fn open(&self) -> Result<Context>;                // sync for now [open: Q-027]
 }
-pub struct DirSource;                                 // DirSource::new(path): canonicalized, used in place
+pub struct DirSource;                                 // DirSource::new(path): opened with RESOLVE_NO_SYMLINKS, a symlink anywhere refused (Error::Symlink, ADR-0076), used in place
 pub fn open(spec: &ContextSpec) -> Result<Context>;   // Dir only; Tar, Git, Https -> Error::Unsupported until Phase 5
 impl Context {
     pub fn root(&self) -> &RootPath;                  // unfiltered: ignored files are reachable through it
-    pub fn origin(&self) -> &Path;                    // the canonical directory, for messages
-    pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context>;  // --context-sub-path, fetched contexts only; `..` clamped (Q-081, ADR-0032, ADR-0053)
-    pub fn find_dockerignore(&self, dockerfile: Option<&Path>) -> Result<Option<IgnoreFile>>;
+    pub fn origin(&self) -> &Path;                    // the directory (no symlink in it), for messages
+    pub fn fence(&self) -> &Fence;                    // the context's directory, which no output may lead into (ADR-0076)
+    pub fn owner(&self) -> u32;                       // the context directory's owner: a principal of its own (ADR-0076)
+    pub fn open_file(&self, rel) -> rnk_rootfs::Result<OwnedFd>; // a regular file, symlinks followed inside only; the context rule of open_context_file (ADR-0076)
+    pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context>;  // --context-sub-path, fetched contexts only; `..` clamped (Q-081, ADR-0032, ADR-0053); keeps the fence
+    pub fn find_dockerignore(&self, dockerfile: Option<DockerfileAt>) -> Result<Option<IgnoreFile>>; // DockerfileAt::Host(&HostFile): the file beside it, from the pinned directory, pinned and type-checked first (a symlink, FIFO or device refused unopened); DockerfileAt::Context(rel): read through the context
     pub fn matcher(&self, ignore: &IgnoreFile) -> Result<rnk_ignore::Matcher>;
     pub fn walk<'c>(&'c self, ignore: Option<&'c Matcher>) -> Walk<'c>;  // Iterator<Item = Result<Entry>>
 }
