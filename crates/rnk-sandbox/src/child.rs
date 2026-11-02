@@ -228,6 +228,10 @@ pub(crate) struct ChildFds {
     /// The pid of the process that cloned the child, as the outer procfs
     /// numbers it (its `/proc/self/stat`).
     pub(crate) parent: i32,
+    /// The full sandbox: write end of the status pipe (close-on-exec), on
+    /// which the `RUN`'s init ([`run_init`]) reports the command's wait
+    /// status. `-1` for `Isolation::Direct`, which has no init.
+    pub(crate) status_w: RawFd,
 }
 
 /// What the child checks its parent with: its own `stat` file in the outer
@@ -509,7 +513,180 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     }
 
     drop_capabilities(err, args);
-    switch_user_and_exec(err, parent, args, ptrs)
+    run_init(err, parent, fds.status_w, args, ptrs)
+}
+
+/// The command's wait status, as `waitpid` gave it to the init, on the
+/// status pipe: four bytes, little-endian.
+pub(crate) const STATUS_LEN: usize = 4;
+
+/// The name the init shows in `/proc/1/comm` (at most 15 bytes).
+pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
+
+/// From here on this process is the `RUN`'s init, PID 1 of its namespace,
+/// until the command ends (ADR-0080). It forks the command, which becomes
+/// PID 2 and finishes the sequence ([`switch_user_and_exec`]); the init
+/// itself never changes its user and never executes anything, so the death
+/// signal armed at the start stays: when ranikust dies, the init dies, and
+/// the kernel kills every process of the namespace. A command that clears
+/// its own death signal, or executes a set-id binary (which clears it too),
+/// can no longer outlive ranikust.
+///
+/// The init then keeps only what it needs to wait: no capability, no
+/// descriptor but the status pipe's write end, no signal handler (the
+/// kernel drops every signal a process of the namespace sends to its PID 1
+/// whose disposition is the default), not dumpable, in a session of its own
+/// so that no terminal signal reaches it. It reaps every process that
+/// reparents to it; when the command exits, it writes the command's wait
+/// status on the status pipe and exits, and the kernel kills the rest, as
+/// when the command was PID 1 itself.
+fn run_init(
+    err: RawFd,
+    parent: ParentCheck,
+    status_w: RawFd,
+    args: &ChildArgs,
+    ptrs: &ExecPtrs<'_>,
+) -> ! {
+    // Before the fork, so the command inherits neither: it starts its own
+    // session and resets its own state.
+    check(err, Step::Init, rustix::process::setsid().map(drop));
+    default_signals();
+    // A plain `fork`: no `CLONE_VM`, a null stack, the child continues on a
+    // copy of this stack, as the spawner's clone.
+    let null: libc::c_long = 0;
+    // SAFETY: a raw `clone` with integer arguments; the child continues
+    // below with its own copy of memory and touches only what was built
+    // before the first clone.
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_clone,
+            libc::c_long::from(libc::SIGCHLD),
+            null,
+            null,
+            null,
+            null,
+        )
+    };
+    if ret < 0 {
+        fail(err, Step::Init, last_errno());
+    }
+    if ret == 0 {
+        // The command: the status pipe is the init's alone.
+        // SAFETY: closing a descriptor number this process holds.
+        unsafe { libc::close(status_w) };
+        switch_user_and_exec(err, None, args, ptrs);
+    }
+    let Ok(command) = libc::pid_t::try_from(ret) else {
+        fail(err, Step::Init, Errno::INVAL)
+    };
+    init_keep_nothing(err, parent, command);
+    // Nothing is left to report on the error pipe: the command's own copy
+    // says whether it reached `execve`.
+    close_all_except(&[status_w]);
+    let status = reap_until(command);
+    let bytes = status.to_le_bytes();
+    // SAFETY: `status_w` is open in this process; the write is below
+    // PIPE_BUF, so atomic. If ranikust is gone, no one reads it.
+    let _ = rustix::io::write(unsafe { BorrowedFd::borrow_raw(status_w) }, &bytes);
+    // SAFETY: `_exit` ends the process at once; the kernel then kills what
+    // is left of the namespace.
+    unsafe { libc::_exit(0) }
+}
+
+/// The init gives up what the command still needs: every capability, its
+/// dump flag, its name. It checks its death signal is still armed and
+/// ranikust still alive. On a failure the command is killed, and the
+/// failure reported as a set-up step.
+fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t) {
+    let fail_init = |e: Errno| -> ! {
+        // SAFETY: a plain `kill` of this process's own child.
+        unsafe { libc::kill(command, libc::SIGKILL) };
+        fail(err, Step::Init, e)
+    };
+    // A cosmetic name for `ps` in the `RUN`; refused only for a bad name.
+    let _ = rustix::thread::set_name(INIT_NAME);
+    if let Err(e) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        fail_init(e);
+    }
+    // Lowering capabilities keeps the death signal: `commit_creds` clears
+    // it only for a new uid or gid, or a gain of capabilities.
+    let none = CapabilitySets {
+        effective: CapabilitySet::empty(),
+        permitted: CapabilitySet::empty(),
+        inheritable: CapabilitySet::empty(),
+    };
+    if let Err(e) = rustix::thread::set_capabilities(None, none) {
+        fail_init(e);
+    }
+    // Armed at the start; checked again, with ranikust still the parent.
+    match rustix::process::parent_process_death_signal() {
+        Ok(Some(Signal::KILL)) => {}
+        Ok(_) => fail_init(Errno::INVAL),
+        Err(e) => fail_init(e),
+    }
+    if !parent_alive(parent) {
+        fail_init(Errno::SRCH);
+    }
+}
+
+/// Whether the process that cloned this one is still its parent, from the
+/// outer `stat` file [`ParentCheck`] holds.
+fn parent_alive(parent: ParentCheck) -> bool {
+    // SAFETY: `stat` is open in this process until it is closed below.
+    let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
+    let mut buf = [0u8; 256];
+    let len = loop {
+        match rustix::io::pread(stat, &mut buf, 0) {
+            Ok(n) => break n,
+            Err(Errno::INTR) => {}
+            Err(_) => return false,
+        }
+    };
+    matches!(buf.get(..len).and_then(stat_pid_and_ppid), Some((_, ppid)) if ppid == parent.parent)
+}
+
+/// Every signal to its default disposition and none blocked. An init
+/// inherits ranikust's handlers (a signal handler of the runtime would run
+/// its code here) and, in kaniko mode on `/`, its blocked stop signals.
+/// With the default disposition, the kernel drops a signal a process of the
+/// namespace sends to its PID 1; one from outside (ranikust's `SIGKILL`)
+/// still acts. `SIGCHLD`'s default keeps children waitable.
+fn default_signals() {
+    // SAFETY: `sigaction` to `SIG_DFL` with an empty mask and no flags, and
+    // `sigprocmask`, are async-signal-safe; numbers the kernel refuses
+    // (`SIGKILL`, `SIGSTOP`, unused real-time ones) fail with EINVAL.
+    unsafe {
+        let mut dfl: libc::sigaction = std::mem::zeroed();
+        dfl.sa_sigaction = libc::SIG_DFL;
+        // 64 is the last signal number on every architecture Linux runs
+        // ranikust on (`_NSIG` - 1).
+        for sig in 1..=64 {
+            libc::sigaction(sig, &raw const dfl, std::ptr::null_mut());
+        }
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut none);
+        libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut());
+    }
+}
+
+/// Reaps every child until `command` has exited, and returns its wait
+/// status. Ends the init (status 125, nothing reported) if it has no child
+/// left without having reaped the command, which cannot happen.
+fn reap_until(command: libc::pid_t) -> i32 {
+    loop {
+        let mut status: libc::c_int = 0;
+        // SAFETY: `waitpid` writes the status, which lives across the call.
+        let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::__WALL) };
+        if pid == command {
+            return status;
+        }
+        if pid < 0 && last_errno() != Errno::INTR {
+            // SAFETY: `_exit` ends the process at once.
+            unsafe { libc::_exit(125) }
+        }
+    }
 }
 
 /// Arms `PR_SET_PDEATHSIG(SIGKILL)`, then checks that the process that
@@ -556,9 +733,15 @@ pub(crate) fn stat_pid_and_ppid(stat: &[u8]) -> Option<(i32, i32)> {
 
 /// A new session and session keyring, `WORKDIR`, the `USER` ids, the death
 /// signal again, stdio, process state, then `execve`.
+///
+/// `rearm` is the `Direct` child's parent check: the switch cleared the
+/// death signal, so it is armed again and the parent checked alive. The
+/// full sandbox's command (PID 2) passes `None`: its init keeps the death
+/// signal for the whole namespace ([`run_init`]), and this process arms its
+/// own again, toward the init, only as a second line.
 pub(crate) fn switch_user_and_exec(
     err: RawFd,
-    parent: ParentCheck,
+    rearm: Option<ParentCheck>,
     args: &ChildArgs,
     ptrs: &ExecPtrs<'_>,
 ) -> ! {
@@ -606,7 +789,14 @@ pub(crate) fn switch_user_and_exec(
         check(err, Step::Workdir, enter_workdir(workdir));
     }
     // A change of uid or gid cleared the death signal (`commit_creds`).
-    arm_death_signal(err, parent);
+    match rearm {
+        Some(parent) => arm_death_signal(err, parent),
+        None => check(
+            err,
+            Step::DeathSignal,
+            rustix::process::set_parent_process_death_signal(Some(Signal::KILL)),
+        ),
+    }
 
     reset_process_state();
     // After the close-on-exec pass, which may count descriptors up to the
@@ -1511,7 +1701,7 @@ fn close_all_but(keep: RawFd) {
 }
 
 /// Closes, right after the clone, every descriptor the child copied from
-/// ranikust but those it uses: stdio, the error pipe, the parent check's
+/// ranikust but those it uses: stdio, the error and status pipes, the parent check's
 /// `stat` file, the network namespace to join, the stdio sources and a
 /// `#!` script. ranikust holds directories outside the root (the state
 /// directory, the build context, stage roots); left open until `execve`,
@@ -1524,11 +1714,12 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
         ChildStdio::Fd(fd) => fd,
         ChildStdio::Inherit | ChildStdio::Null => -1,
     });
-    let mut keep: [RawFd; 10] = [
+    let mut keep: [RawFd; 11] = [
         0,
         1,
         2,
         fds.err_w,
+        fds.status_w,
         parent.stat,
         args.netns.unwrap_or(-1),
         s0,
@@ -1536,7 +1727,7 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
         s2,
         args.script.unwrap_or(-1),
     ];
-    // Ascending, for `close_all_except`: ten entries, no allocation.
+    // Ascending, for `close_all_except`: eleven entries, no allocation.
     for i in 1..keep.len() {
         let mut j = i;
         while j > 0 && keep[j - 1] > keep[j] {

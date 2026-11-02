@@ -288,6 +288,9 @@ pub(crate) struct Spawned {
     pid: Pid,
     /// Read end of the error pipe: end-of-file once `execve` succeeded.
     failures: OwnedFd,
+    /// The full sandbox: read end of the status pipe, on which the `RUN`'s
+    /// init writes the command's wait status before it exits (ADR-0080).
+    status: Option<OwnedFd>,
     /// The network namespace the child joined, closed once it is reaped.
     netns: Option<NetNs>,
 }
@@ -341,6 +344,16 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let (failures, err_w) =
         rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
     let err_w = above_stdio(err_w)?;
+    // The full sandbox's init reports the command's wait status here
+    // (ADR-0080); `Direct` has no init.
+    let status = match isolation {
+        Isolation::Full => {
+            let (r, w) =
+                rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
+            Some((r, above_stdio(w)?))
+        }
+        Isolation::Direct => None,
+    };
     // Last before the clone: nothing can fail between it and the clone
     // without ending it.
     let netns = if hold_network {
@@ -355,6 +368,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     let fds = ChildFds {
         err_w: err_w.as_raw_fd(),
         parent: parent.0,
+        status_w: status.as_ref().map_or(-1, |(_, w)| w.as_raw_fd()),
     };
     let null: libc::c_long = 0;
     // SAFETY: `clone` without `CLONE_VM` and with a null stack duplicates the
@@ -390,6 +404,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
     Ok(Spawned {
         pid,
         failures,
+        status: status.map(|(r, _w)| r),
         netns,
     })
 }
@@ -1652,9 +1667,9 @@ impl Running {
 }
 
 /// `SIGKILL` to a `RUN`, as BuildKit kills the process on a cancel
-/// (`executor/runcexecutor/executor.go`). A `Full` child is PID 1 of its
-/// namespace, so the kernel kills the rest; a `Direct` one leads its process
-/// group. Called only while the child is not reaped, so the pid is its own;
+/// (`executor/runcexecutor/executor.go`). A `Full` child is the `RUN`'s
+/// init, PID 1 of its namespace, so the kernel kills the rest, the command
+/// included (ADR-0080); a `Direct` one leads its process group. Called only while the child is not reaped, so the pid is its own;
 /// `ESRCH` (already gone) is no error.
 fn kill_run(pid: Pid, isolation: Isolation) {
     // Nothing to report: the RUN is gone either way, and the caller's reap
@@ -1694,6 +1709,7 @@ fn execute(
     let Spawned {
         pid,
         failures,
+        status: command_status,
         netns,
     } = spawn(job)?;
     if let Some(r) = running {
@@ -1729,8 +1745,8 @@ fn execute(
         // and so the build. Descendants that left the group (`setsid`) are
         // not swept on this path.
         (r @ Err(_), Isolation::Direct) => r,
-        // The child is PID 1 of its namespace: when it exits, the kernel
-        // kills the rest.
+        // The child is the init, PID 1 of its namespace: when it exits, once
+        // the command has, the kernel kills the rest.
         (r, Isolation::Full) => r,
     };
     let reaped = reap(pid);
@@ -1738,6 +1754,13 @@ fn execute(
     drop(netns);
     let (status, usage) = reaped?;
     killed?;
+    // A full-sandbox child is the `RUN`'s init: the command's own status is
+    // what it wrote, if it lived to write it (a cancel, or a set-up step
+    // that failed before the command was forked, leaves the init's own).
+    let status = match command_status {
+        Some(fd) => read_status(&fd)?.map_or(status, ExitStatus::from_raw),
+        None => status,
+    };
     if cancelled {
         return Err(Error::Cancelled);
     }
@@ -1776,6 +1799,27 @@ fn read_failure(fd: &OwnedFd) -> Result<Option<(Step, i32)>> {
         8 => child::decode_failure(record)
             .map(Some)
             .ok_or_else(|| sys_err(OP, io::Error::from(io::ErrorKind::InvalidData))),
+        _ => Err(sys_err(OP, io::Error::from(io::ErrorKind::UnexpectedEof))),
+    }
+}
+
+/// The command's wait status the `RUN`'s init wrote, or `None` when it
+/// wrote nothing (end-of-file).
+fn read_status(fd: &OwnedFd) -> Result<Option<i32>> {
+    const OP: &str = "read the RUN's exit status";
+    let mut record = [0u8; child::STATUS_LEN];
+    let mut len = 0;
+    while let Some(rest) = record.get_mut(len..).filter(|r| !r.is_empty()) {
+        match rustix::io::read(fd, rest) {
+            Ok(0) => break,
+            Ok(n) => len += n,
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(sys_err(OP, e)),
+        }
+    }
+    match len {
+        0 => Ok(None),
+        child::STATUS_LEN => Ok(Some(i32::from_le_bytes(record))),
         _ => Err(sys_err(OP, io::Error::from(io::ErrorKind::UnexpectedEof))),
     }
 }
@@ -2057,6 +2101,40 @@ mod tests {
         rustix::io::write(&w, &rec[..3]).unwrap();
         drop(w);
         assert!(read_failure(&r).is_err());
+    }
+
+    /// The init's status record: none (it died or failed before writing),
+    /// a wait status kept bit for bit (an exit code, a signal), or a
+    /// truncated one, which is an error.
+    #[test]
+    fn the_inits_status_records_are_read_back() {
+        let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+        drop(w);
+        assert_eq!(read_status(&r).unwrap(), None);
+        for raw in [7 << 8, libc::SIGTERM, libc::SIGKILL | 0x80] {
+            let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+            rustix::io::write(&w, &raw.to_le_bytes()).unwrap();
+            drop(w);
+            let got = read_status(&r).unwrap().unwrap();
+            assert_eq!(got, raw);
+            let status = ExitStatus::from_raw(got);
+            assert_eq!(
+                (status.code(), status.signal()),
+                (
+                    ExitStatus::from_raw(raw).code(),
+                    ExitStatus::from_raw(raw).signal()
+                )
+            );
+        }
+        assert_eq!(ExitStatus::from_raw(7 << 8).code(), Some(7));
+        assert_eq!(
+            ExitStatus::from_raw(libc::SIGTERM).signal(),
+            Some(libc::SIGTERM)
+        );
+        let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+        rustix::io::write(&w, &[1, 2]).unwrap();
+        drop(w);
+        assert!(read_status(&r).is_err());
     }
 
     #[test]
@@ -3705,6 +3783,73 @@ mod tests {
             }
         }
         killed
+    }
+
+    /// T2, the VM only (ADR-0080): the command of a full-sandbox `RUN` is
+    /// PID 2 of its namespace, under an init named `ranikust-init` that
+    /// holds no capability and ignores what the command sends it; ranikust
+    /// sees the command's own status, an exit code or a signal, and a
+    /// set-up or `execve` failure of the command as before.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn the_run_is_pid_2_under_an_init_that_reports_its_status() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let run = |argv: Vec<std::ffi::OsString>, workdir: &str, out: &Path| {
+                let mut spec = RunSpec::new(&root, argv);
+                spec.workdir = workdir.into();
+                output_to(out, &mut spec);
+                runner.run(spec, None, |job| clone_child(job, parent))
+            };
+            let sh = |script: &str| -> Vec<std::ffi::OsString> {
+                vec!["/bin/sh".into(), "-c".into(), script.into()]
+            };
+            let out = top.join("layout.out");
+            let status = run(
+                sh("echo pid=$$; echo init=$(cat /proc/1/comm); \
+                    grep -E '^Cap(Eff|Prm):' /proc/1/status; \
+                    kill -KILL 1; kill -TERM 1; echo survived; exit 7"),
+                "/",
+                &out,
+            )
+            .unwrap();
+            let text = fs::read_to_string(&out).unwrap();
+            assert_eq!(status.code(), Some(7), "{text}");
+            assert!(text.contains("pid=2\n"), "{text}");
+            assert!(text.contains("init=ranikust-init\n"), "{text}");
+            assert!(
+                text.contains("survived\n"),
+                "the command killed its init: {text}"
+            );
+            for line in text.lines().filter(|l| l.starts_with("Cap")) {
+                assert!(
+                    line.split_whitespace()
+                        .nth(1)
+                        .is_some_and(|v| v.bytes().all(|b| b == b'0')),
+                    "the init holds a capability: {line}"
+                );
+            }
+            let status = run(sh("kill -TERM $$"), "/", &top.join("signal.out")).unwrap();
+            assert_eq!(status.signal(), Some(libc::SIGTERM));
+            let r = run(vec!["/no/such/program".into()], "/", &top.join("exec.out"));
+            assert!(matches!(r, Err(Error::Exec { .. })), "{r:?}");
+            let r = run(sh("true"), "/no/such/dir", &top.join("workdir.out"));
+            assert!(
+                matches!(
+                    r,
+                    Err(Error::Setup {
+                        step: Step::Workdir,
+                        ..
+                    })
+                ),
+                "{r:?}"
+            );
+        });
     }
 
     /// Red team (T2, the VM only; T8): no `RUN` outlives the thread that
