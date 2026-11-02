@@ -166,6 +166,17 @@ pub enum Stdio {
     Fd(OwnedFd),
 }
 
+/// What identifies a root directory: device, inode and mount id.
+pub(crate) type RootId = (u32, u32, u64, u64);
+
+/// The identity of the directory `root` holds open: what
+/// [`RunSpec::expect_root`] records and the spawner compares the reopened
+/// root with.
+pub(crate) fn root_id(root: &rnk_rootfs::RootPath) -> Result<RootId> {
+    let st = root.statx("/")?;
+    Ok((st.dev_major, st.dev_minor, st.ino, st.mnt_id))
+}
+
 /// One `RUN` command and its environment. Its `Debug` shows environment
 /// names only: a value may be a secret (`RUN --mount=type=secret,env=`).
 #[non_exhaustive]
@@ -284,8 +295,7 @@ impl RunSpec {
     ///
     /// When `root` cannot be stat'ed.
     pub fn expect_root(&mut self, root: &rnk_rootfs::RootPath) -> crate::Result<()> {
-        let st = root.statx("/")?;
-        self.root_id = Some((st.dev_major, st.dev_minor, st.ino, st.mnt_id));
+        self.root_id = Some(root_id(root)?);
         Ok(())
     }
 

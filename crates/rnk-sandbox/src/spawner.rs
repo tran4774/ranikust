@@ -37,7 +37,9 @@ use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
 use crate::relay::Relay;
 use crate::seccomp;
-use crate::spec::{DEFAULT_HOSTNAME, Isolation, MountKind, Network, RunSpec, SecretFile, Stdio};
+use crate::spec::{
+    DEFAULT_HOSTNAME, Isolation, MountKind, Network, RootId, RunSpec, SecretFile, Stdio, root_id,
+};
 use crate::sweep;
 
 /// Runs `RUN` commands.
@@ -641,9 +643,6 @@ pub(crate) struct Runner {
     direct_only: bool,
 }
 
-/// What identifies a root directory: device, inode and mount id.
-type RootId = (u32, u32, u64, u64);
-
 /// Refuses a `root_dir` that is not the path the kernel gives its
 /// directory (`/proc/thread-self/fd/<n>`): a symlink on the way, or a
 /// directory since moved or removed. The root is compared with mount points
@@ -676,11 +675,6 @@ fn refuse_unresolved(root_dir: &Path, root: &RootPath) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-fn root_id(root: &RootPath) -> Result<RootId> {
-    let st = root.statx("/")?;
-    Ok((st.dev_major, st.dev_minor, st.ino, st.mnt_id))
 }
 
 impl Runner {
