@@ -12,19 +12,21 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use oci_client::RegistryOperation;
 use oci_client::client::{ClientConfig, ClientProtocol};
-use oci_client::errors::OciDistributionError;
+use oci_client::errors::{DigestError, OciDistributionError};
 use oci_client::secrets::RegistryAuth;
 use oci_client::token_cache::{RegistryToken, RegistryTokenType};
 use rnk_oci::{Descriptor, Digest, ImageIndex, MediaType, Platform, Reference};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use sha2::Digest as _;
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::Mutex;
 use tracing::field::Empty;
 use tracing::{Instrument as _, debug_span};
 
 use crate::credentials::{Credential, Credentials};
 use crate::error::{Error, Op, excerpt, retryable_status};
+use crate::fetch;
 use crate::io::{BlobBody, BlobSink, Bounded};
 use crate::platform::select_platform;
 use crate::retry::{RetryPolicy, retry};
@@ -39,9 +41,6 @@ const ACCEPTED_MANIFESTS: [&str; 4] = [
     "application/vnd.docker.distribution.manifest.v2+json",
     "application/vnd.docker.distribution.manifest.list.v2+json",
 ];
-
-/// The largest manifest accepted: distribution's own limit.
-const MAX_MANIFEST_BYTES: usize = 4 << 20;
 
 /// Settings for a [`Client`], filled from kaniko's registry flags.
 #[derive(Clone, Debug)]
@@ -85,8 +84,20 @@ pub struct ClientOptions {
     pub manifest_retries: u32,
     /// Bound on establishing a connection; Go's default dialer uses 30 s.
     pub connect_timeout: Option<Duration>,
-    /// Bound on waiting for data on an open connection.
+    /// Bound on waiting for data on an open connection: the
+    /// `registry-idle` limit. A request that receives nothing for this
+    /// long fails and is retried; there is no deadline on the whole
+    /// transfer (ADR-0079).
     pub read_timeout: Option<Duration>,
+    /// The largest manifest or index read: the `manifest` limit, enforced
+    /// while the body arrives.
+    pub max_manifest_bytes: u64,
+    /// The largest token response, and how much of an error body is read:
+    /// the `registry-body` limit.
+    pub max_body_bytes: u64,
+    /// The largest image config [`Client::pull_config`] accepts: the
+    /// `config` limit, checked against the descriptor before the request.
+    pub max_config_bytes: u64,
     /// The `User-Agent` header.
     pub user_agent: &'static str,
 }
@@ -102,10 +113,24 @@ impl Default for ClientOptions {
             retry: RetryPolicy::default(),
             manifest_retries: 0,
             connect_timeout: Some(Duration::from_secs(30)),
-            read_timeout: None,
+            read_timeout: Some(Self::READ_TIMEOUT),
+            max_manifest_bytes: Self::MAX_MANIFEST_BYTES,
+            max_body_bytes: Self::MAX_BODY_BYTES,
+            max_config_bytes: Self::MAX_CONFIG_BYTES,
             user_agent: concat!("ranikust/", env!("CARGO_PKG_VERSION")),
         }
     }
+}
+
+impl ClientOptions {
+    /// The default `manifest` limit: distribution's own.
+    pub const MAX_MANIFEST_BYTES: u64 = 4 << 20;
+    /// The default `registry-body` limit.
+    pub const MAX_BODY_BYTES: u64 = 1 << 20;
+    /// The default `config` limit.
+    pub const MAX_CONFIG_BYTES: u64 = 8 << 20;
+    /// The default `registry-idle` limit.
+    pub const READ_TIMEOUT: Duration = Duration::from_secs(120);
 }
 
 /// A manifest or index exactly as stored in the registry.
@@ -336,6 +361,7 @@ fn is_refusal(e: &Error) -> bool {
         | Error::DigestMismatch { .. }
         | Error::SizeMismatch { .. }
         | Error::Manifest { .. }
+        | Error::TooLarge { .. }
         | Error::Io { .. } => false,
     }
 }
@@ -435,12 +461,7 @@ impl Client {
         );
         let mut bytes_in = 0u64;
         let (result, retries) = retry(&self.options.retry, async |_| {
-            // The authorization stored by `authorize` wins over this one.
-            let (body, digest) = host
-                .oci
-                .pull_manifest_raw(&oci_ref, &RegistryAuth::Anonymous, &ACCEPTED_MANIFESTS)
-                .await
-                .map_err(|e| ctx.error(e))?;
+            let (body, digest) = self.get_manifest(&host, reference, &ctx).await?;
             bytes_in += u64::try_from(body.len()).unwrap_or(u64::MAX);
             raw_manifest(body, &digest).map_err(|reason| Error::Manifest {
                 host: host.name.clone(),
@@ -572,7 +593,7 @@ impl Client {
                 })?;
             }
             let mut bounded = Bounded::new(&mut *out, blob.size);
-            let result = host.oci.pull_blob(&oci_ref, digest, &mut bounded).await;
+            let result = self.get_blob(&host, reference, digest, &mut bounded).await;
             bytes_in += bounded.written();
             let size_error = |actual| Error::SizeMismatch {
                 host: host.name.clone(),
@@ -597,6 +618,33 @@ impl Client {
         span.record("retries", retries);
         span.record("bytes_in", bytes_in);
         result
+    }
+
+    /// Pulls an image config into `out`, as [`Client::pull_blob`], after
+    /// checking that its descriptor's size is within the `config` limit:
+    /// the config is held in memory, and its size is the registry's word.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TooLarge`] before any request when the descriptor says more
+    /// than the limit; otherwise as [`Client::pull_blob`].
+    pub async fn pull_config(
+        &self,
+        reference: &Reference,
+        config: &Descriptor,
+        out: &mut impl BlobSink,
+    ) -> Result<(), Error> {
+        let max = self.options.max_config_bytes;
+        if config.size > max {
+            return Err(Error::TooLarge {
+                what: "image config",
+                host: reference.registry().to_owned(),
+                target: config.digest.to_string(),
+                limit: "config",
+                max,
+            });
+        }
+        self.pull_blob(reference, config, out).await
     }
 
     /// Opens the blob `blob` of `reference`'s repository for blocking reads
@@ -834,10 +882,17 @@ impl Client {
                 _,
             ) => {
                 let scopes = mount_scopes(repository, from_repository);
-                token::exchange(&host.http, challenge, refresh_token, &scopes.join(" "))
-                    .await
-                    .map(|t| t.token)
-                    .ok()
+                let max_body = self.options.max_body_bytes;
+                token::exchange(
+                    &host.http,
+                    challenge,
+                    refresh_token,
+                    &scopes.join(" "),
+                    max_body,
+                )
+                .await
+                .map(|t| t.token)
+                .ok()
             }
         };
         let Some(token) = token else {
@@ -880,9 +935,15 @@ impl Client {
         };
         let scopes = mount_scopes(repository, from_repository);
         let scopes: Vec<&str> = scopes.iter().map(String::as_str).collect();
-        let access = token::fetch(&host.http, challenge, basic, &scopes)
-            .await
-            .ok()?;
+        let access = token::fetch(
+            &host.http,
+            challenge,
+            basic,
+            &scopes,
+            self.options.max_body_bytes,
+        )
+        .await
+        .ok()?;
         cache.insert(key, (access.token.clone(), access.refresh_after));
         Some(access.token)
     }
@@ -1112,11 +1173,21 @@ impl Client {
             Ping::Open | Ping::Basic => None,
         };
         let strategy = strategy(registry, scheme, ping, credential)?;
-        if matches!(strategy, Strategy::Identity { .. }) {
-            // `oci-client` consults its token cache only for registries with
-            // a stored authorization; the tokens are inserted per scope.
-            oci.store_auth_if_needed(endpoint, &RegistryAuth::Anonymous)
-                .await;
+        // `oci-client` consults its token cache only for registries with a
+        // stored authorization; the tokens `authorize` fetches are inserted
+        // per scope.
+        match (&strategy, &challenge) {
+            (Strategy::Identity { .. }, _) => {
+                oci.store_auth_if_needed(endpoint, &RegistryAuth::Anonymous)
+                    .await;
+            }
+            (
+                Strategy::Oci(auth @ (RegistryAuth::Anonymous | RegistryAuth::Basic(..))),
+                Some(_),
+            ) => {
+                oci.store_auth_if_needed(endpoint, auth).await;
+            }
+            _ => {}
         }
         Ok(Host {
             name: registry.to_owned(),
@@ -1129,6 +1200,149 @@ impl Client {
             mount_tokens: Mutex::new(BTreeMap::new()),
             withheld,
         })
+    }
+
+    /// `request` with the authorization [`Client::authorize`] obtained for
+    /// `repository` and `op`, for the requests sent without `oci-client`.
+    /// `reqwest` drops it on a redirect to another host, as `oci-client`
+    /// does for blobs (CVE-2020-15157).
+    async fn with_auth(
+        &self,
+        host: &Host,
+        request: reqwest::RequestBuilder,
+        repository: &str,
+        op: RegistryOperation,
+    ) -> reqwest::RequestBuilder {
+        match (&host.strategy, &host.challenge) {
+            (Strategy::None, _) => request,
+            (Strategy::Oci(RegistryAuth::Bearer(token)), _) => request.bearer_auth(token),
+            (Strategy::Oci(RegistryAuth::Basic(user, password)), None) => {
+                request.basic_auth(user, Some(password))
+            }
+            (Strategy::Oci(RegistryAuth::Anonymous), None) => request,
+            (Strategy::Oci(_) | Strategy::Identity { .. }, _) => {
+                let scopes = host.scopes.lock().await;
+                match scopes.get(&(repository.to_owned(), op)) {
+                    Some(Some((token, _))) => request.bearer_auth(token),
+                    Some(None) | None => request,
+                }
+            }
+        }
+    }
+
+    /// `GET` of a manifest, refused once its body passes the `manifest`
+    /// limit; its bytes and digest, checked as `oci-client` checks them.
+    async fn get_manifest(
+        &self,
+        host: &Host,
+        reference: &Reference,
+        ctx: &Op<'_>,
+    ) -> Result<(Bytes, String), Error> {
+        let target = match (reference.digest(), reference.tag()) {
+            (Some(digest), _) => digest.as_str(),
+            (None, Some(tag)) => tag,
+            (None, None) => "latest",
+        };
+        let url = format!(
+            "{}/v2/{}/manifests/{target}",
+            host.base_url,
+            reference.repository()
+        );
+        let request = host
+            .http
+            .get(&url)
+            .header(reqwest::header::ACCEPT, ACCEPTED_MANIFESTS.join(", "));
+        let request = self
+            .with_auth(
+                host,
+                request,
+                reference.repository(),
+                RegistryOperation::Pull,
+            )
+            .await;
+        let request_error = |e| ctx.error(OciDistributionError::RequestError(e));
+        let response = request.send().await.map_err(request_error)?;
+        let status = response.status();
+        if status != reqwest::StatusCode::OK {
+            let body = fetch::error_body(response, self.options.max_body_bytes).await;
+            return Err(ctx.error(fetch::status_error(status, &body, &url)));
+        }
+        let header = fetch::digest_header(response.headers()).map_err(|e| ctx.error(e))?;
+        let max = self.options.max_manifest_bytes;
+        let body = fetch::capped(response, max).await.map_err(|e| match e {
+            fetch::ReadError::TooLarge => Error::TooLarge {
+                what: "manifest",
+                host: host.name.clone(),
+                target: reference.to_string(),
+                limit: "manifest",
+                max,
+            },
+            fetch::ReadError::Request(e) => request_error(e),
+        })?;
+        let digest = fetch::manifest_digest(
+            &body,
+            header.as_deref(),
+            reference.digest().map(Digest::as_str),
+        )
+        .map_err(|e| ctx.error(e.into()))?;
+        Ok((body, digest))
+    }
+
+    /// `GET` of the blob `digest` into `out`, checking its digest and the
+    /// registry's `Docker-Content-Digest`, as `oci-client`'s `pull_blob`;
+    /// of an error body, only the `registry-body` limit is read.
+    async fn get_blob<W: AsyncWrite + Unpin>(
+        &self,
+        host: &Host,
+        reference: &Reference,
+        digest: &str,
+        out: &mut W,
+    ) -> Result<(), OciDistributionError> {
+        let url = format!(
+            "{}/v2/{}/blobs/{digest}",
+            host.base_url,
+            reference.repository()
+        );
+        let request = self
+            .with_auth(
+                host,
+                host.http.get(&url),
+                reference.repository(),
+                RegistryOperation::Pull,
+            )
+            .await;
+        let mut response = request.send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = fetch::error_body(response, self.options.max_body_bytes).await;
+            return Err(fetch::status_error(status, &body, &url));
+        }
+        let header = fetch::digest_header(response.headers())?;
+        let mut header_digester = header.as_deref().map(fetch::Digester::new).transpose()?;
+        let mut digester = fetch::Digester::new(digest)?;
+        while let Some(chunk) = response.chunk().await? {
+            if let Some(d) = header_digester.as_mut() {
+                d.update(&chunk);
+            }
+            digester.update(&chunk);
+            out.write_all(&chunk).await?;
+        }
+        out.flush().await?;
+        if let (Some(d), Some(expected)) = (header_digester, header) {
+            let actual = d.finish();
+            if actual != expected {
+                return Err(DigestError::VerificationError { expected, actual }.into());
+            }
+        }
+        let actual = digester.finish();
+        if actual != digest {
+            return Err(DigestError::VerificationError {
+                expected: digest.to_owned(),
+                actual,
+            }
+            .into());
+        }
+        Ok(())
     }
 
     /// Makes sure requests for `repository` and `op` carry an authorization.
@@ -1166,10 +1380,37 @@ impl Client {
             host: &host.name,
             target: repository,
         };
+        let scope = match op {
+            RegistryOperation::Pull => format!("repository:{repository}:pull"),
+            RegistryOperation::Push => format!("repository:{repository}:pull,push"),
+        };
+        let max_body = self.options.max_body_bytes;
         let result = async {
-            match &host.strategy {
-                Strategy::None => Ok(()),
-                Strategy::Oci(auth) => {
+            let fetched = match (&host.strategy, &host.challenge) {
+                (Strategy::None, _) => return Ok(()),
+                // Anonymous or basic access to a token service: the token is
+                // fetched here, since `oci-client` reads the realm's whole
+                // answer into memory (ADR-0079).
+                (
+                    Strategy::Oci(auth @ (RegistryAuth::Anonymous | RegistryAuth::Basic(..))),
+                    Some(challenge),
+                ) => {
+                    let basic = match auth {
+                        RegistryAuth::Basic(user, password) => {
+                            Some((user.as_str(), password.as_str()))
+                        }
+                        RegistryAuth::Anonymous | RegistryAuth::Bearer(_) => None,
+                    };
+                    retry(&self.options.retry, async |_| {
+                        requests += 1;
+                        token::fetch(&host.http, challenge, basic, &[scope.as_str()], max_body)
+                            .await
+                            .map_err(|e| exchange_error(&ctx, e, max_body))
+                    })
+                    .await
+                    .0
+                }
+                (Strategy::Oci(auth), _) => {
                     let (result, _) = retry(&self.options.retry, async |_| {
                         let token = host.oci.auth(oci_ref, auth, op).await;
                         // `GET /v2/`, then the realm when a token came back;
@@ -1184,39 +1425,38 @@ impl Client {
                     .await;
                     result?;
                     scopes.insert(key, None);
-                    Ok(())
+                    return Ok(());
                 }
-                Strategy::Identity {
-                    refresh_token,
-                    challenge,
-                } => {
-                    let scope = match op {
-                        RegistryOperation::Pull => format!("repository:{repository}:pull"),
-                        RegistryOperation::Push => format!("repository:{repository}:pull,push"),
-                    };
-                    let (result, _) = retry(&self.options.retry, async |_| {
+                (
+                    Strategy::Identity {
+                        refresh_token,
+                        challenge,
+                    },
+                    _,
+                ) => {
+                    retry(&self.options.retry, async |_| {
                         requests += 1;
-                        token::exchange(&host.http, challenge, refresh_token, &scope)
+                        token::exchange(&host.http, challenge, refresh_token, &scope, max_body)
                             .await
-                            .map_err(|e| exchange_error(&ctx, e))
+                            .map_err(|e| exchange_error(&ctx, e, max_body))
                     })
-                    .await;
-                    let access = result?;
-                    insert_bearer(&host.oci, oci_ref, op, &access.token).await;
-                    if op == RegistryOperation::Push {
-                        // A push token also allows pulls, which a push makes
-                        // to check whether a blob exists.
-                        insert_bearer(&host.oci, oci_ref, RegistryOperation::Pull, &access.token)
-                            .await;
-                        scopes.insert(
-                            (repository.to_owned(), RegistryOperation::Pull),
-                            Some((access.token.clone(), access.refresh_after)),
-                        );
-                    }
-                    scopes.insert(key, Some((access.token, access.refresh_after)));
-                    Ok(())
+                    .await
+                    .0
                 }
+            };
+            let access = fetched?;
+            insert_bearer(&host.oci, oci_ref, op, &access.token).await;
+            if op == RegistryOperation::Push {
+                // A push token also allows pulls, which a push makes to
+                // check whether a blob exists.
+                insert_bearer(&host.oci, oci_ref, RegistryOperation::Pull, &access.token).await;
+                scopes.insert(
+                    (repository.to_owned(), RegistryOperation::Pull),
+                    Some((access.token.clone(), access.refresh_after)),
+                );
             }
+            scopes.insert(key, Some((access.token, access.refresh_after)));
+            Ok(())
         }
         .instrument(span.clone())
         .await;
@@ -1361,8 +1601,15 @@ async fn insert_bearer(
     oci.tokens.insert(oci_ref, op, token).await;
 }
 
-fn exchange_error(ctx: &Op<'_>, err: ExchangeError) -> Error {
+fn exchange_error(ctx: &Op<'_>, err: ExchangeError, max_body: u64) -> Error {
     match err {
+        ExchangeError::TooLarge => Error::TooLarge {
+            what: "token response for",
+            host: ctx.host.to_owned(),
+            target: ctx.target.to_owned(),
+            limit: "registry-body",
+            max: max_body,
+        },
         ExchangeError::Request(e) => ctx.error(OciDistributionError::RequestError(e)),
         ExchangeError::Status(code) if retryable_status(code) => Error::Registry {
             operation: "token exchange",
@@ -1373,7 +1620,7 @@ fn exchange_error(ctx: &Op<'_>, err: ExchangeError) -> Error {
         },
         ExchangeError::Status(code) => Error::Auth {
             host: ctx.host.to_owned(),
-            reason: format!("the token service refused the identity token (HTTP {code})"),
+            reason: format!("the token service refused access (HTTP {code})"),
         },
         ExchangeError::Invalid(reason) => Error::Auth {
             host: ctx.host.to_owned(),
@@ -1473,9 +1720,6 @@ struct Shape {
 
 /// A pulled body and the digest `oci-client` verified, as a [`RawManifest`].
 fn raw_manifest(body: Bytes, digest: &str) -> Result<RawManifest, String> {
-    if body.len() > MAX_MANIFEST_BYTES {
-        return Err(format!("larger than {MAX_MANIFEST_BYTES} bytes"));
-    }
     let digest = Digest::parse(digest).map_err(|e| e.to_string())?;
     let shape: Shape = serde_json::from_slice(&body).map_err(|e| format!("not JSON: {e}"))?;
     if shape.schema_version != Some(2) {

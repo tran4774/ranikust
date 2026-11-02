@@ -98,6 +98,26 @@ pub enum Error {
         reason: String,
     },
 
+    /// A response, or the size a manifest declares for a blob, is larger
+    /// than one of the `--limit` limits (ADR-0079); never retried.
+    #[error(
+        "{what} {target} from {host} is larger than {} (limit \"{limit}\"); \
+         raise it with --limit {limit}=<size>",
+        size_text(*max)
+    )]
+    TooLarge {
+        /// What was read: `manifest`, `image config`, `token response`.
+        what: &'static str,
+        /// The registry host.
+        host: String,
+        /// The manifest reference, blob digest or repository.
+        target: String,
+        /// The limit's name, as `--limit` spells it.
+        limit: &'static str,
+        /// The limit, in bytes.
+        max: u64,
+    },
+
     /// Reading a blob to push, or writing a pulled one, failed locally.
     #[error("{what}: {source}")]
     Io {
@@ -202,12 +222,26 @@ pub(crate) fn retryable_status(code: u16) -> bool {
     matches!(code, 408 | 429 | 500 | 502 | 503 | 504)
 }
 
+/// `bytes` as a size `--limit` accepts: `4 MiB`, `512 KiB` or `100 bytes`.
+pub(crate) fn size_text(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
+    for (unit, name) in UNITS {
+        if bytes >= unit && bytes.is_multiple_of(unit) {
+            return format!("{} {name}", bytes / unit);
+        }
+    }
+    format!("{bytes} bytes")
+}
+
 /// A `reqwest` error without its URL, which may carry a pre-signed query.
 fn request_error_message(e: &reqwest::Error) -> String {
     let kind = if e.is_connect() {
         "connection failed"
     } else if e.is_timeout() {
-        "timed out"
+        // Besides the connect timeout, only the read timeout is set: no data
+        // arrived for `registry-idle` (ADR-0079).
+        "timed out: no data within the \"registry-idle\" limit (raise it with \
+         --limit registry-idle=<duration>)"
     } else if e.is_body() || e.is_decode() {
         "response body failed"
     } else {

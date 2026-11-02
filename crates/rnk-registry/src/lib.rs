@@ -4,7 +4,9 @@
 //! and the `ring` provider, trusting the host's CA bundle together with the
 //! embedded webpki roots and any `--registry-certificate`; mirrors; streamed
 //! blob pulls into the store and pushes; cross-repository mounts with a
-//! fallback to a regular upload; retries. A thin layer over `oci-client`.
+//! fallback to a regular upload; retries. Pushes go through `oci-client`;
+//! manifest and blob pulls and token requests are sent here, so that every
+//! body read is bounded while it arrives (the `--limit` limits, ADR-0079).
 //!
 //! Phase 1 has the trust store, `config.json` credentials without helpers,
 //! manifest, index and blob pulls, blob and manifest pushes, mounts and
@@ -26,6 +28,7 @@
 mod client;
 mod credentials;
 mod error;
+mod fetch;
 mod io;
 mod platform;
 mod retry;

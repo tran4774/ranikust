@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::fetch;
+
 /// A `Bearer` challenge from `WWW-Authenticate`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Challenge {
@@ -50,8 +52,6 @@ pub(crate) struct AccessToken {
 const DEFAULT_EXPIRES_IN: u64 = 60;
 /// Tokens are refreshed this long before they expire.
 const MARGIN: Duration = Duration::from_secs(10);
-/// Upper bound on a token response body.
-const MAX_BODY: usize = 1 << 20;
 /// The `client_id` sent with token requests.
 const CLIENT_ID: &str = "ranikust";
 
@@ -65,6 +65,7 @@ pub(crate) async fn exchange(
     challenge: &Challenge,
     refresh_token: &str,
     scope: &str,
+    max_body: u64,
 ) -> Result<AccessToken, ExchangeError> {
     let mut form = vec![
         ("grant_type", "refresh_token"),
@@ -82,7 +83,7 @@ pub(crate) async fn exchange(
         .send()
         .await
         .map_err(ExchangeError::Request)?;
-    access_token(response, started).await
+    access_token(response, started, max_body).await
 }
 
 /// Asks the realm for one access token covering every scope in `scopes`,
@@ -97,6 +98,7 @@ pub(crate) async fn fetch(
     challenge: &Challenge,
     basic: Option<(&str, &str)>,
     scopes: &[&str],
+    max_body: u64,
 ) -> Result<AccessToken, ExchangeError> {
     let mut query: Vec<(&str, &str)> = scopes.iter().map(|s| ("scope", *s)).collect();
     if let Some(service) = &challenge.service {
@@ -108,26 +110,27 @@ pub(crate) async fn fetch(
     }
     let started = Instant::now();
     let response = request.send().await.map_err(ExchangeError::Request)?;
-    access_token(response, started).await
+    access_token(response, started, max_body).await
 }
 
 /// The access token of a token endpoint's `response`, requested at
-/// `started`.
+/// `started`; a body over `max_body` bytes (the `registry-body` limit) is
+/// refused while it arrives.
 async fn access_token(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     started: Instant,
+    max_body: u64,
 ) -> Result<AccessToken, ExchangeError> {
     let status = response.status();
     if !status.is_success() {
         return Err(ExchangeError::Status(status.as_u16()));
     }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(ExchangeError::Request)? {
-        if body.len() + chunk.len() > MAX_BODY {
-            return Err(ExchangeError::Invalid("token response larger than 1 MiB"));
-        }
-        body.extend_from_slice(&chunk);
-    }
+    let body = fetch::capped(response, max_body)
+        .await
+        .map_err(|e| match e {
+            fetch::ReadError::TooLarge => ExchangeError::TooLarge,
+            fetch::ReadError::Request(e) => ExchangeError::Request(e),
+        })?;
     let parsed: TokenResponse = serde_json::from_slice(&body)
         .map_err(|_| ExchangeError::Invalid("token response is not JSON"))?;
     let token = parsed
@@ -156,6 +159,8 @@ pub(crate) enum ExchangeError {
     Request(reqwest::Error),
     /// The realm answered with this status.
     Status(u16),
+    /// The answer was larger than the `registry-body` limit.
+    TooLarge,
     /// The response was not a usable token.
     Invalid(&'static str),
 }
