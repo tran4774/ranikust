@@ -127,8 +127,10 @@ from `rnk-store`, secret file) and passes `--network`.
   `move_mount` and remounted through that mount's own descriptor
   (`bind_remount`); where a seccomp profile refuses those calls (probed
   once, `mount_api_supported`) its target may not pass through a symlink
-  and the mount found again must show the source's inode on a new mount
-  id. Sources are opened by the child in
+  and the mount found again must show the source's inode on a mount id
+  that is new and not one of the binds the child made before (`MadeMounts`,
+  room sized by the parent); such a target through a symlink then fails
+  with `ELOOP`. Sources are opened by the child in
   its own mount namespace (`O_PATH`, no symlink as the last component, type
   checked; a parent's descriptor would be refused); remounts
   keep the source's locked flags. The `nodev` remount covers the root's top

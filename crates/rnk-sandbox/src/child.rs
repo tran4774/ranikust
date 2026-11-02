@@ -136,6 +136,9 @@ pub(crate) struct ChildArgs {
     /// pass through a symlink, and the mount found again must be the new
     /// bind ([`bind_remount`]).
     pub(crate) mount_api: bool,
+    /// Without `mount_api`, room for the mount id of every bind the child
+    /// remounts, sized by the parent.
+    pub(crate) made: MadeMounts,
     pub(crate) mounts: Vec<ChildMount>,
     /// `None` without secrets.
     pub(crate) secrets: Option<ChildSecrets>,
@@ -456,7 +459,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         None => {}
     }
     if let Some(s) = &args.secrets {
-        mount_secrets(err, root.as_fd(), s, args.mount_api);
+        mount_secrets(err, root.as_fd(), s, args);
     }
     // Under the `proc` and `sysfs` just mounted, by descriptor: a later
     // mount or a symlink of the root cannot hide a path from them.
@@ -753,6 +756,7 @@ fn mount_one(
                 t.as_fd(),
                 *remount,
                 args.mount_api,
+                &args.made,
                 &|| resolve_target(err, root, target, false),
             );
             None
@@ -816,7 +820,14 @@ fn fs_is(err: RawFd, step: Step, fd: &OwnedFd, magic: FsWord) {
 ///
 /// Without, the mount `again` finds (the target resolved without symlinks)
 /// must show the source's inode on a mount other than the one `target` was
-/// on, or the step fails.
+/// on, and must not be a mount this child bound before (`made`): one source
+/// may be bound at two targets (a cache key mounted twice, a secret, the
+/// `/dev/null` masks), and a rename by a parallel stage in a shared cache
+/// could lead the lookup to the earlier bind. Else the step fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the mount, its flags and the fallback's lookup and record"
+)]
 fn bind_remount(
     err: RawFd,
     step: Step,
@@ -824,6 +835,7 @@ fn bind_remount(
     target: BorrowedFd<'_>,
     flags: MountFlags,
     mount_api: bool,
+    made: &MadeMounts,
     again: &dyn Fn() -> OwnedFd,
 ) {
     if mount_api {
@@ -865,14 +877,51 @@ fn bind_remount(
     );
     let bind = again();
     let got = mount_identity(err, Step::Remount, bind.as_fd());
-    if got.inode != want.inode || got.mount == below.mount {
+    if got.inode != want.inode || got.mount == below.mount || made.contains(got.mount) {
         fail(err, Step::Remount, Errno::XDEV);
+    }
+    if !made.push(got.mount) {
+        fail(err, Step::Remount, Errno::NOSPC);
     }
     check(
         err,
         Step::Remount,
         rustix::mount::mount_remount(fd_path(err, &bind).path(), flags, c""),
     );
+}
+
+/// The mount ids of the binds a child made without the mount API
+/// ([`bind_remount`]), in room the parent sized before the clone: the child
+/// only writes into it, never allocates.
+#[derive(Debug, Default)]
+pub(crate) struct MadeMounts {
+    ids: Vec<std::cell::Cell<u64>>,
+    len: std::cell::Cell<usize>,
+}
+
+impl MadeMounts {
+    /// Room for `n` mount ids.
+    pub(crate) fn with_room(n: usize) -> Self {
+        Self {
+            ids: vec![std::cell::Cell::new(0); n],
+            len: std::cell::Cell::new(0),
+        }
+    }
+
+    fn contains(&self, id: u64) -> bool {
+        self.ids.iter().take(self.len.get()).any(|c| c.get() == id)
+    }
+
+    /// Records `id`; `false` when there is no room left.
+    fn push(&self, id: u64) -> bool {
+        let n = self.len.get();
+        let Some(slot) = self.ids.get(n) else {
+            return false;
+        };
+        slot.set(id);
+        self.len.set(n + 1);
+        true
+    }
 }
 
 /// Which inode a descriptor names and on which mount.
@@ -908,7 +957,8 @@ fn mount_identity(err: RawFd, step: Step, fd: BorrowedFd<'_>) -> MountIdentity {
 /// the tmpfs is detached, kept alive by the binds alone. The bytes never
 /// reach a disk, and the tmpfs vanishes with the `RUN`'s mount namespace
 /// whatever happens to ranikust.
-fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets, mount_api: bool) {
+fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets, args: &ChildArgs) {
+    let mount_api = args.mount_api;
     let step = Step::Secret;
     let dir = secrets.dir.as_c_str();
     check(
@@ -967,6 +1017,7 @@ fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets, mount
                     | MountFlags::NODEV
                     | MountFlags::NOEXEC,
                 mount_api,
+                &args.made,
                 &|| resolve_target(err, root, target, false),
             );
         }
@@ -1030,6 +1081,7 @@ fn protect_kernel_files(err: RawFd, proc: &OwnedFd, sys: &OwnedFd, args: &ChildA
                 | MountFlags::NODEV
                 | MountFlags::NOEXEC,
             args.mount_api,
+            &args.made,
             &|| beneath(err, step, fs, rest).unwrap_or_else(|| fail(err, step, Errno::NOENT)),
         );
     }
@@ -1077,6 +1129,7 @@ fn protect_kernel_files(err: RawFd, proc: &OwnedFd, sys: &OwnedFd, args: &ChildA
             t.as_fd(),
             args.dev_remount[DEV_NULL],
             args.mount_api,
+            &args.made,
             &|| beneath(err, step, fs, rest).unwrap_or_else(|| fail(err, step, Errno::NOENT)),
         );
     }
@@ -2020,6 +2073,21 @@ mod tests {
         }
     }
 
+    /// The record of binds made by path holds what fits and says so.
+    #[test]
+    fn made_mounts_record_ids_up_to_their_room() {
+        let made = MadeMounts::with_room(2);
+        assert!(!made.contains(7));
+        assert!(made.push(7));
+        assert!(made.contains(7));
+        assert!(!made.contains(0), "unused room is not an id");
+        assert!(made.push(9));
+        assert!(!made.push(11), "full");
+        assert!(made.contains(9) && !made.contains(11));
+        let none = MadeMounts::default();
+        assert!(!none.push(1));
+    }
+
     #[test]
     fn failure_records_round_trip() {
         let rec = encode_failure(Step::PivotRoot, libc::EPERM);
@@ -2034,6 +2102,7 @@ mod tests {
             root_remount: MountFlags::BIND,
             root_nodev_rec: false,
             mount_api: false,
+            made: MadeMounts::default(),
             mounts: Vec::new(),
             secrets: None,
             dev_remount: [MountFlags::BIND; DEV_NODES.len()],

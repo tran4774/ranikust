@@ -28,7 +28,7 @@ use tracing::field::Empty;
 use crate::caps;
 use crate::child::{
     self, ChildArgs, ChildFds, ChildMount, ChildSecret, ChildSecrets, ChildStdio, ExecPtrs,
-    RootEntry,
+    MadeMounts, RootEntry,
 };
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
@@ -1071,12 +1071,25 @@ impl Runner {
         } else {
             None
         };
+        let mount_api =
+            spec.isolation == Isolation::Full && self.mount_api.unwrap_or_else(mount_api_supported);
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
             root_nodev_rec,
-            mount_api: spec.isolation == Isolation::Full
-                && self.mount_api.unwrap_or_else(mount_api_supported),
+            mount_api,
+            made: if mount_api {
+                MadeMounts::default()
+            } else {
+                // Every bind `bind_remount` makes: the `RUN --mount`s, each
+                // secret's targets, the read-only and masked kernel paths.
+                MadeMounts::with_room(
+                    spec.mounts.len()
+                        + spec.secrets.len()
+                        + plan::READONLY_PATHS.len()
+                        + plan::MASKED_PATHS.len(),
+                )
+            },
             mounts,
             secrets,
             dev_remount,
@@ -3300,6 +3313,7 @@ mod tests {
             std::os::unix::fs::symlink("/t", root.join("t/w")).unwrap();
             std::os::unix::fs::symlink("/t/w", root.join("c")).unwrap();
             fs::create_dir(root.join("d")).unwrap();
+            fs::create_dir(root.join("e")).unwrap();
             let parent = ParentPid::new().unwrap();
             // The mount options of `mountpoint` in a `/proc/self/mountinfo`
             // listing.
@@ -3332,12 +3346,16 @@ mod tests {
                         "cat /proc/self/mountinfo; cat /run/secrets/s".into(),
                     ],
                 );
-                spec.mounts.push(crate::BindMount {
-                    source: cache,
-                    target: "/d".into(),
-                    kind: MountKind::Directory,
-                    read_only: true,
-                });
+                // One cache at two targets, as one key mounted twice: each
+                // bind is remounted, neither in the other's place.
+                for target in ["/d", "/e"] {
+                    spec.mounts.push(crate::BindMount {
+                        source: cache.clone(),
+                        target: target.into(),
+                        kind: MountKind::Directory,
+                        read_only: true,
+                    });
+                }
                 spec.secrets.push(SecretFile {
                     data: std::sync::Arc::from(&b"dummy-secret"[..]),
                     target: "/run/secrets/s".into(),
@@ -3349,16 +3367,18 @@ mod tests {
                 output_to(&out, &mut spec);
                 let r = runner.run(spec, None, |job| clone_child(job, parent));
                 let text = fs::read_to_string(&out).unwrap();
-                let (d, secret, procsys) = (
+                let (d, e, secret, procsys) = (
                     options(&text, "/d"),
+                    options(&text, "/e"),
                     options(&text, "/run/secrets/s"),
                     options(&text, "/proc/sys"),
                 );
-                let what = format!("{r:?}; /d {d:?}, secret {secret:?}, /proc/sys {procsys:?}");
+                let what =
+                    format!("{r:?}; /d {d:?}, /e {e:?}, secret {secret:?}, /proc/sys {procsys:?}");
                 println!("control ({mode}): {what}");
                 let ok = matches!(&r, Ok(st) if st.success())
                     && text.contains("dummy-secret")
-                    && [&d, &secret, &procsys]
+                    && [&d, &e, &secret, &procsys]
                         .iter()
                         .all(|o| has(o, "ro") && has(o, "nodev"));
                 controls.push((mode, ok, what));

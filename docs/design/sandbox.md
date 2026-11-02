@@ -175,7 +175,16 @@ rtnetlink first; the ADR lists them as residual risk.
       and missed the bind. Where a seccomp profile refuses those calls
       (probed once), the target may not pass through a symlink, and the
       mount found again must show the source's inode on a mount other
-      than the one below.
+      than the one below and must not be a bind the child made before
+      (their mount ids are recorded, in room the parent sizes before the
+      clone): one source may be bound at two targets (a cache key mounted
+      twice, a secret, the `/dev/null` masks), and a rename by a parallel
+      stage in a shared cache could lead the lookup to the earlier bind.
+      In this mode a `RUN --mount` or secret target that passes through a
+      symlink (`/var/run -> /run`, a usrmerge `/lib -> usr/lib`, a
+      symlinked directory above the target) fails the `RUN` with `ELOOP`
+      rather than be followed: fail-closed, and rare, as only a seccomp
+      profile older than these calls refuses them.
       The child opens each source in its own mount namespace (`O_PATH`,
       no symlink as the last component, type checked) and binds it through
       `/proc/self/fd`: a bind refuses (`EINVAL`) a source opened in another
