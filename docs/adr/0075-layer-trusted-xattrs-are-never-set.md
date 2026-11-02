@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-02
 decision-makers: Tran Nguyen (maintainer), by the rule to follow BuildKit where security does not say otherwise (ADR-0049)
 ---
