@@ -151,8 +151,11 @@ from `rnk-store`, secret file) and passes `--network`.
   descriptors the child keeps are numbered 3 or higher; stdin is
   `/dev/null` by default; umask 022, `SIGPIPE` default, empty signal mask.
   `PATH` is searched after entering the root and switching user; a
-  candidate reached through a magic link (`/proc/self/fd/<n>`,
-  `/proc/self/exe`) is refused (`ELOOP`) before `execve`.
+  candidate whose path goes through a magic link (`/proc/self/fd/<n>`,
+  `/proc/self/exe`) is refused (`ELOOP`) before `execve`. Not covered: a
+  `#!/proc/self/exe` line, which the kernel opens itself, or a symlink
+  swapped after the check; ranikust's binary then runs in the sandbox and
+  refuses its arguments [open: Q-422].
 - `Direct`: no namespace, mount or capability change; the command gets its
   own session, whose process group is killed with `SIGKILL` once the
   command exits (waited with `WNOWAIT`, so the group id cannot be reused),

@@ -226,6 +226,11 @@ rtnetlink first; the ADR lists them as residual risk.
    `pivot_root` and **after** `setuid`, each candidate resolved first with
    `RESOLVE_NO_MAGICLINKS` (until `execve` the child is a copy of
    ranikust, so `/proc/self/exe` is ranikust's binary on the host); `execve`.
+   The check covers the candidate's path only: the kernel opens a `#!`
+   script's interpreter itself, so a `#!/proc/self/exe` line, or a symlink
+   swapped between the check and `execve`, still runs ranikust's binary in
+   the sandbox, which then refuses its arguments (threat-model section 6)
+   [open: Q-422].
 
 Between `clone` and `execve` the child of a multi-threaded process only
 makes system calls on arguments built before the clone: no allocation, no

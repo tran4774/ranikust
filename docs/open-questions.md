@@ -544,6 +544,42 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-11-01
 
+### Q-422: How is ranikust's own binary kept out of a `RUN`'s reach before `execve`?
+
+- **Blocks:** nothing yet; **Area:** `rnk-sandbox`, security (T7)
+- **Context:** until `execve`, the `RUN` child is a copy of ranikust, so
+  `/proc/self/exe` is ranikust's binary on the host. The child refuses an
+  exec candidate reached through a magic link, but the kernel opens a
+  script's interpreter itself: a command whose `#!` line names
+  `/proc/self/exe` runs ranikust's binary in the sandbox, with the script
+  as its first argument (runc's CVE-2019-5736 vector), and so does a
+  symlink swapped between the child's check and `execve` (a cache a
+  parallel stage writes). Barriers today, pinned by tests: ranikust is
+  non-dumpable from its first line, so another process of the `RUN`
+  cannot open `/proc/<pid>/exe` of that copy; its command line refuses the
+  script path as a subcommand and exits 2 (quick case `self-exe`); and the
+  kernel refuses to open a running binary for writing, `ETXTBSY`
+  (`a_running_binary_cannot_be_opened_for_writing`), which holds while
+  ranikust runs. An `ETXTBSY` that a future kernel drops would leave only
+  the first two.
+- **Options:** (a) at start-up, copy the binary into a sealed memfd and
+  re-exec from it, as runc does: `/proc/self/exe` then names a file no one
+  can write; costs one copy of the binary (11.6 MiB, static musl, x86_64)
+  in memory for the process's life and one `execve` at start-up, a few
+  milliseconds; (b) bind the binary read-only over itself in the build's
+  mount namespace, as runc 1.2 does with an overlay: one mount at start-up
+  (well under a millisecond, no copy), only where ranikust may mount,
+  which is where the full sandbox runs; `Direct` on `/` would stay as
+  today; (c) a small static trampoline the child execs first, which then
+  runs the command: one more `execve` per `RUN` (about a millisecond) and a
+  second binary to ship or embed, with no change at start-up; (d) keep the
+  barriers above and document the residual.
+- **Recommendation:** (b) where ranikust may mount, with (d) for `Direct`
+  on `/`, where a `RUN` already shares the container with ranikust;
+  (a) if one mechanism should cover every mode.
+- **Interim:** (d): the barriers above, with the tests that pin them.
+- **Raised:** 2026-11-02
+
 ## Answered
 
 ### Q-033: Which performance conditions are still unmeasured?
