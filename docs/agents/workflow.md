@@ -47,7 +47,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just test-aarch64 [args]` | static aarch64 musl release build (no loader, no `NEEDED`; runs `ranikust version`), then the T0 tests: natively on an aarch64 host (CI's `ubuntu-24.04-arm`), else under qemu-user through cargo's target runner, skipping three tests qemu cannot pass and, without a binfmt entry, ranikust's `cli` and `metrics` tests ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` |
 | `just deny` | `cargo deny --locked check` | `deny` |
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |
-| `just changelog [args]` | `git cliff --unreleased`, a draft to stdout | |
+| `just changelog [args]` | `git cliff --unreleased`, a draft to stdout (only the bare form is allowlisted; with arguments it asks) | |
 | `just smoke [image]` | T1 smoke test until `rnk-builder` exists: the `smoke-build` example pulls, extracts, runs `RUN`s in the sandbox inside rootless `podman run --privileged` and writes a one-layer image podman then runs ([testing](../testing.md#smoke-test-until-the-builder-exists-tier-t1)) | |
 | `just registry-up`, `just registry-down` | the HTTP and HTTPS test registries on the host's loopback, data in `tests/registry/_data` ([testing](../testing.md#test-registries)) | |
 | `just smoke-case [name]...` | T1: the quick smoke cases of `tests/smoke/cases` (small Dockerfiles, one concern each) built by the `ranikust` binary in rootless podman; the default for a smoke test or proof of concept ([testing](../testing.md#quick-smoke-cases)) | |
@@ -146,9 +146,23 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 | Milestones only | vendored `security-audit` (spawns many agents) |
 | End of a phase, when the maintainer asks | `refactor` skill: behaviour-preserving clean-up, one crate per branch, digests held fixed |
 
-`.claude/settings.json` denies `sudo`, `mount`, `unshare` and the like, and
-asks before `cargo add`/`install`/`run`, `docker`, `podman`, `git commit`,
-`git push`.
+`.claude/settings.json` allows the check loop (`cargo` build, test and lint
+commands, the `just` check recipes, read-only and local `git`, `rg`) and
+denies `sudo`, `mount`, `unshare` and the like, plus the options that turn an
+allowed command into code execution, a host-file write or read, or egress:
+`cargo --config`/`--manifest-path`/`-Z`/`--logfile` (also through `just
+test`), `git fetch`/`pull --upload-pack`, `git diff`/`log`/`show`/`stash
+--output` and `--ext-diff`, `git diff --no-index`, `git commit` reading a
+message or template from outside the repository, and `rg` on credential
+files. `git fetch` and `git pull --ff-only` are allowed only against
+`origin`, and `just changelog` only without arguments. The justfile passes
+recipe arguments as positional parameters (`"$@"`), never spliced into shell
+text. Everything else is left to the session's permission mode.
+
+These rules match command text, so they are guardrails, not a boundary
+(rules.md): a quoted or reordered spelling (`--'config'`, `git -C . fetch
+<url>`) slips past them. A real boundary needs the Claude Code sandbox or a
+`PreToolUse` hook that parses argv; that is a follow-up for the maintainer.
 
 Models: `haiku` to locate code; `sonnet` to read, summarise, record or
 measure (`upstream-oracle`, `scribe`, `poc-runner`, `bench-runner`); `opus`
