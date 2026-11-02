@@ -363,7 +363,8 @@ if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
 fi
 set -e
 
-sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep '^localhost/rnk-case:' |
+# No image at all when only cases whose builds must fail ran (self-exe).
+sudo docker images --format '{{.Repository}}:{{.Tag}}' | { grep '^localhost/rnk-case:' || true; } |
   xargs -r sudo docker rmi -f >/dev/null
 ! grep -qF " $W" /proc/self/mountinfo || { echo "error: mounts left under $W" >&2; exit 1; }
 ! pgrep -x ranikust >/dev/null || { echo "error: ranikust processes left" >&2; exit 1; }

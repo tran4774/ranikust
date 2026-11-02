@@ -90,7 +90,18 @@ from `rnk-store`, secret file) and passes `--network`.
 - Between `clone` and `execve` the child only makes system calls (rustix's
   raw backend, a few `libc` calls) on arguments built before the clone. A
   failing step writes `(step, errno)` to a close-on-exec pipe and exits
-  127; end-of-file on the pipe means `execve` succeeded.
+  127; end-of-file on the pipe means `execve` succeeded. Right after the
+  clone, before any lookup, the child closes every descriptor it copied
+  from ranikust but stdio, the error pipe, the parent check's `stat` file,
+  the network namespace, the stdio sources and a `#!` script
+  (`close_inherited`, `Full` and `Direct` alike): ranikust holds
+  directories outside the root, which `/proc/self/fd/<n>` would reach.
+  The stdio sources then go on 0–2 at once (`early_stdio`). `/dev/null` is
+  never opened by name in the child: `Full` opens the `null` node of its
+  fresh `/dev` tmpfs by descriptor before any `RUN --mount` (a read-only
+  bind, so a root `RUN` cannot change the host's node through its stdin);
+  `Direct` gets the host's from the parent (`host_null`: no symlink, char
+  device 1:3).
 - Namespaces: mount, PID, UTS, IPC (plus user without `CAP_SYS_ADMIN`
   [design, Phase 3], network for `--network=none`, with `lo` up: the
   clone's own; where `CAP_NET_ADMIN` is missing, refused, or with
@@ -105,8 +116,21 @@ from `rnk-store`, secret file) and passes `--network`.
   outer `/dev`, `devpts`, `shm`, symlinks), writable copies of
   `resolv.conf`, `hosts`, `hostname`, `RUN --mount` remounted `nodev`, then
   Docker's read-only `/proc` paths and masked `/proc` and `/sys` paths. Every
-  target is resolved with `openat2(RESOLVE_IN_ROOT)` from the bound root and
-  mounted through `/proc/self/fd/<n>`; sources are opened by the child in
+  target is resolved with `openat2(RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)`
+  from the bound root and mounted through `/proc/self/fd/<n>`; `/proc`,
+  `/sys` and `/dev` must be real directories of the root, no symlink on the
+  way (refused before any stub, checked again in the child), and the
+  read-only and masked paths are found under the new `proc` and `sysfs`
+  mounts' descriptors (`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`), never by
+  name from the root. A bind that is remounted (`RUN --mount`, secrets, the
+  kernel paths) is made with `open_tree(OPEN_TREE_CLONE)`, attached with
+  `move_mount` and remounted through that mount's own descriptor
+  (`bind_remount`); where a seccomp profile refuses those calls (probed
+  once, `mount_api_supported`) its target may not pass through a symlink
+  and the mount found again must show the source's inode on a mount id
+  that is new and not one of the binds the child made before (`MadeMounts`,
+  room sized by the parent); such a target through a symlink then fails
+  with `ELOOP`. Sources are opened by the child in
   its own mount namespace (`O_PATH`, no symlink as the last component, type
   checked; a parent's descriptor would be refused); remounts
   keep the source's locked flags. The `nodev` remount covers the root's top
@@ -121,12 +145,19 @@ from `rnk-store`, secret file) and passes `--network`.
   stay reachable until `--seccomp`, Phase 3; Docker's profile denies
   `keyctl`), and `setgroups`, `setresgid`,
   `setresuid` to the ids `rnk-rootfs` resolved in the root; `WORKDIR` is
-  entered before the switch and again after if only root could.
+  resolved in the root without magic links and entered with `fchdir`,
+  before the switch and again after if only root could, and `getcwd` must
+  then show it below the root (runc since CVE-2024-21626).
 - Only stdio crosses `execve` (threat T7): every other descriptor becomes
   close-on-exec (`close_range`, or the `/proc/self/fd` list before 5.11);
   descriptors the child keeps are numbered 3 or higher; stdin is
   `/dev/null` by default; umask 022, `SIGPIPE` default, empty signal mask.
-  `PATH` is searched after entering the root and switching user.
+  `PATH` is searched after entering the root and switching user; a
+  candidate whose path goes through a magic link (`/proc/self/fd/<n>`,
+  `/proc/self/exe`) is refused (`ELOOP`) before `execve`. Not covered: a
+  `#!/proc/self/exe` line, which the kernel opens itself, or a symlink
+  swapped after the check; ranikust's binary then runs in the sandbox and
+  refuses its arguments [open: Q-422].
 - `Direct`: no namespace, mount or capability change; the command gets its
   own session, whose process group is killed with `SIGKILL` once the
   command exits (waited with `WNOWAIT`, so the group id cannot be reused),

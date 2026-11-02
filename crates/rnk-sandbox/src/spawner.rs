@@ -28,7 +28,7 @@ use tracing::field::Empty;
 use crate::caps;
 use crate::child::{
     self, ChildArgs, ChildFds, ChildMount, ChildSecret, ChildSecrets, ChildStdio, ExecPtrs,
-    RootEntry,
+    MadeMounts, RootEntry,
 };
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
@@ -641,6 +641,9 @@ pub(crate) struct Runner {
     /// [`Sandbox::start_direct`]: `Direct` on `/` only, which places nothing
     /// and so has no journal and no directory (ADR-0051).
     direct_only: bool,
+    /// Whether a full-sandbox child may use `open_tree` and `move_mount`;
+    /// `None` probes ([`mount_api_supported`]).
+    mount_api: Option<bool>,
 }
 
 /// Refuses a `root_dir` that is not the path the kernel gives its
@@ -696,6 +699,7 @@ impl Runner {
             nofile: None,
             shared_root: None,
             direct_only: false,
+            mount_api: None,
         })
     }
 
@@ -713,6 +717,7 @@ impl Runner {
             nofile: None,
             shared_root: None,
             direct_only: true,
+            mount_api: None,
         }
     }
 
@@ -730,6 +735,13 @@ impl Runner {
     #[cfg(test)]
     pub(crate) fn hold_networks(&self) {
         let _ = self.net_mode.set(NetMode::UserNs);
+    }
+
+    /// Makes the child bind and remount as where `open_tree` and
+    /// `move_mount` are refused, whatever the probe would find.
+    #[cfg(test)]
+    pub(crate) fn without_mount_api(&mut self) {
+        self.mount_api = Some(false);
     }
 
     /// Runs `spec`, cloning through `spawn`. With `running` (a
@@ -905,6 +917,9 @@ impl Runner {
         } else {
             None
         };
+        if !direct {
+            refuse_symlinked_kernel_dirs(&root, &spec.root_dir)?;
+        }
         let mut journal = Journal::create(&self.runs_dir, &self.next_id(), &spec.root_dir, root)?;
         if direct {
             return match place_direct(&mut journal)
@@ -960,9 +975,13 @@ impl Runner {
         let env = plan::environment(&spec.env, &user.home);
         let candidates = plan::exec_candidates(&spec.argv[0], plan::path_var(&env));
         let mut keep = Vec::new();
-        // In a `chroot`, `/dev/null` is the image's entry, or missing where
-        // `mknod` is refused: the host's is opened here instead.
-        let stdio = if chroot.is_some() {
+        // `Direct`: the root's `/dev/null` is the image's entry (missing
+        // where `mknod` is refused), or on `/` one an earlier `RUN` may have
+        // replaced, so the host's is opened here and checked instead. The
+        // full sandbox's child opens the read-only bind of it in its own
+        // `/dev`: a descriptor of the host's node would let a root `RUN`
+        // change its mode through `/proc/self/fd/0`.
+        let stdio = if spec.isolation == Isolation::Direct {
             stdio.map(|s| match s {
                 Stdio::Null => host_null().map(Stdio::Fd),
                 s => Ok(s),
@@ -973,9 +992,9 @@ impl Runner {
         let [stdin, stdout, stderr] = stdio;
         let (stdin, stdout, stderr) = (stdin?, stdout?, stderr?);
         let stdio = [
-            child_stdio(stdin, &mut keep)?,
-            child_stdio(stdout, &mut keep)?,
-            child_stdio(stderr, &mut keep)?,
+            child_stdio(stdin, 0, &mut keep)?,
+            child_stdio(stdout, 1, &mut keep)?,
+            child_stdio(stderr, 2, &mut keep)?,
         ];
         let mounts = mounts.into_iter().map(child_mount).collect::<Result<_>>()?;
         let (root_remount, dev_remount) = match spec.isolation {
@@ -1052,10 +1071,25 @@ impl Runner {
         } else {
             None
         };
+        let mount_api =
+            spec.isolation == Isolation::Full && self.mount_api.unwrap_or_else(mount_api_supported);
         let args = ChildArgs {
             root_dir: cstring(&spec.root_dir)?,
             root_remount,
             root_nodev_rec,
+            mount_api,
+            made: if mount_api {
+                MadeMounts::default()
+            } else {
+                // Every bind `bind_remount` makes: the `RUN --mount`s, each
+                // secret's targets, the read-only and masked kernel paths.
+                MadeMounts::with_room(
+                    spec.mounts.len()
+                        + spec.secrets.len()
+                        + plan::READONLY_PATHS.len()
+                        + plan::MASKED_PATHS.len(),
+                )
+            },
             mounts,
             secrets,
             dev_remount,
@@ -1137,6 +1171,30 @@ fn clone_flags(spec: &RunSpec) -> libc::c_int {
     }
 }
 
+/// Refuses a full-sandbox root whose `/proc`, `/sys` or `/dev` is a
+/// symlink, before any stub is placed: `proc`, `sysfs` and the `/dev`
+/// tmpfs are mounted only on a directory of the root itself, as runc
+/// requires for `proc` and `sysfs`. Through a symlink, `proc` could land
+/// below a directory that a later mount hides, out of reach of the masks.
+/// The child checks again, without following any symlink.
+fn refuse_symlinked_kernel_dirs(root: &RootPath, root_dir: &Path) -> Result<()> {
+    for dir in [plan::PROC, plan::SYS, plan::DEV] {
+        match root.statx(dir) {
+            Ok(st) if FileType::from_raw_mode(st.mode) == FileType::Symlink => {
+                return Err(Error::InvalidSpec(format!(
+                    "{dir} in the root {} is a symbolic link; proc, sysfs and the /dev \
+                     tmpfs are mounted only on a real directory",
+                    root_dir.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 /// Places the stubs and writes the `/etc` copies.
 fn place(journal: &mut Journal, spec: &RunSpec) -> Result<EtcFiles> {
     for (target, kind) in plan::mount_targets(spec) {
@@ -1195,11 +1253,28 @@ fn place_direct(journal: &mut Journal) -> Result<()> {
     journal.commit()
 }
 
-/// The host's `/dev/null`, read-write, close-on-exec.
+/// The host's `/dev/null`, read-write, close-on-exec: reached without any
+/// symlink or magic link and checked to be the null device (1:3). On `/` a
+/// `Direct` `RUN` can replace it, say with a link to `/proc/self/fd/1`, which
+/// would hand the next `RUN` ranikust's stdout.
 fn host_null() -> Result<OwnedFd> {
     let p = Path::new("/dev/null");
-    rustix::fs::open(p, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())
-        .map_err(|e| io_err("open", p, e.into()))
+    let fd = rustix::fs::openat2(
+        rustix::fs::CWD,
+        p,
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+        rustix::fs::ResolveFlags::NO_SYMLINKS | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(|e| io_err("open", p, e.into()))?;
+    let st = rustix::fs::fstat(&fd).map_err(|e| io_err("stat", p, e.into()))?;
+    let rdev = (rustix::fs::major(st.st_rdev), rustix::fs::minor(st.st_rdev));
+    if FileType::from_raw_mode(st.st_mode) != FileType::CharacterDevice || rdev != (1, 3) {
+        return Err(Error::InvalidSpec(
+            "/dev/null is not the null device (character device 1:3)".into(),
+        ));
+    }
+    Ok(fd)
 }
 
 /// The remount of the root's bind: `nodev`, the root mount's flags kept.
@@ -1229,6 +1304,49 @@ fn mount_setattr_supported() -> bool {
         };
         let errno = io::Error::last_os_error().raw_os_error();
         r != 0 && !matches!(errno, Some(libc::ENOSYS | libc::EPERM))
+    })
+}
+
+/// Whether the kernel has `open_tree` and `move_mount` (5.2) and lets this
+/// process call them, probed once as [`mount_setattr_supported`]: a call
+/// with no valid argument fails with `EBADF`, `EINVAL`, `EFAULT` or
+/// `ENOENT` where it is allowed, `ENOSYS` or `EPERM` (a seccomp profile, or
+/// no `CAP_SYS_ADMIN` over the mount namespace) where it is not.
+fn mount_api_supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let allowed = |r: libc::c_long| {
+            let errno = io::Error::last_os_error().raw_os_error();
+            r != 0 && !matches!(errno, Some(libc::ENOSYS | libc::EPERM))
+        };
+        // `OPEN_TREE_CLONE` of `<linux/mount.h>`: also checks the
+        // privilege a clone needs, before the arguments.
+        const OPEN_TREE_CLONE: libc::c_uint = 1;
+        // SAFETY: an invalid descriptor and null paths; the kernel fails
+        // before touching memory.
+        let open_tree = unsafe {
+            libc::syscall(
+                libc::SYS_open_tree,
+                -1,
+                std::ptr::null::<libc::c_char>(),
+                OPEN_TREE_CLONE,
+            )
+        };
+        if !allowed(open_tree) {
+            return false;
+        }
+        // SAFETY: as above.
+        let move_mount = unsafe {
+            libc::syscall(
+                libc::SYS_move_mount,
+                -1,
+                std::ptr::null::<libc::c_char>(),
+                -1,
+                std::ptr::null::<libc::c_char>(),
+                0u32,
+            )
+        };
+        allowed(move_mount)
     })
 }
 
@@ -1373,13 +1491,26 @@ fn check_source(p: &Path, kind: MountKind) -> Result<rustix::fs::StatVfs> {
     rustix::fs::fstatvfs(&fd).map_err(|e| io_err("statvfs", p, e.into()))
 }
 
-/// A caller's stream for the child: a descriptor is duplicated to 3 or
-/// higher, close-on-exec, and kept open in `keep` until the clone.
-fn child_stdio(s: Stdio, keep: &mut Vec<OwnedFd>) -> Result<ChildStdio> {
+/// A caller's stream `target` (0, 1 or 2) for the child: a descriptor is
+/// duplicated to 3 or higher, close-on-exec, and kept open in `keep` until
+/// the clone. A descriptor, or ranikust's own stream for `Inherit`, must
+/// not be a directory or an `O_PATH` descriptor ([`check_stream`]).
+fn child_stdio(s: Stdio, target: RawFd, keep: &mut Vec<OwnedFd>) -> Result<ChildStdio> {
     Ok(match s {
-        Stdio::Inherit => ChildStdio::Inherit,
+        Stdio::Inherit => {
+            // SAFETY: `F_GETFL` on a descriptor number; a closed one fails
+            // with EBADF.
+            if unsafe { libc::fcntl(target, libc::F_GETFL) } >= 0 {
+                // SAFETY: open, as just checked, and never closed by this
+                // process: it is one of its standard streams.
+                let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(target) };
+                check_stream(fd, target)?;
+            }
+            ChildStdio::Inherit
+        }
         Stdio::Null => ChildStdio::Null,
         Stdio::Fd(fd) => {
+            check_stream(std::os::fd::AsFd::as_fd(&fd), target)?;
             let dup = rustix::io::fcntl_dupfd_cloexec(&fd, 3)
                 .map_err(|e| sys_err("duplicate a stdio descriptor", e))?;
             let raw: RawFd = dup.as_raw_fd();
@@ -1387,6 +1518,29 @@ fn child_stdio(s: Stdio, keep: &mut Vec<OwnedFd>) -> Result<ChildStdio> {
             ChildStdio::Fd(raw)
         }
     })
+}
+
+/// Refuses a `RUN` stream that is a directory or an `O_PATH` descriptor: it
+/// crosses `execve`, and `/proc/self/fd/<n>` or `openat` from it would let
+/// the `RUN` look up paths outside its root.
+fn check_stream(fd: std::os::fd::BorrowedFd<'_>, target: RawFd) -> Result<()> {
+    let name = ["stdin", "stdout", "stderr"]
+        .get(usize::try_from(target).unwrap_or(usize::MAX))
+        .copied()
+        .unwrap_or("stream");
+    let flags = rustix::fs::fcntl_getfl(fd).map_err(|e| sys_err("fcntl(F_GETFL)", e))?;
+    if flags.contains(OFlags::PATH) {
+        return Err(Error::InvalidSpec(format!(
+            "the RUN's {name} is an O_PATH descriptor"
+        )));
+    }
+    let st = rustix::fs::fstat(fd).map_err(|e| sys_err("fstat a stdio descriptor", e))?;
+    if FileType::from_raw_mode(st.st_mode) == FileType::Directory {
+        return Err(Error::InvalidSpec(format!(
+            "the RUN's {name} is a directory"
+        )));
+    }
+    Ok(())
 }
 
 fn read_host_file(p: &Path) -> Result<Option<Vec<u8>>> {
@@ -1909,15 +2063,50 @@ mod tests {
     fn stdio_descriptors_are_moved_above_two() {
         let mut keep = Vec::new();
         let (r, _w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
-        let s = child_stdio(Stdio::Fd(r), &mut keep).unwrap();
+        let s = child_stdio(Stdio::Fd(r), 0, &mut keep).unwrap();
         let ChildStdio::Fd(fd) = s else {
             panic!("{s:?}")
         };
         assert!(fd >= 3);
         assert_eq!(keep.len(), 1);
         assert_eq!(
-            child_stdio(Stdio::Null, &mut keep).unwrap(),
+            child_stdio(Stdio::Null, 0, &mut keep).unwrap(),
             ChildStdio::Null
+        );
+    }
+
+    /// A directory or an `O_PATH` descriptor is refused as a `RUN` stream:
+    /// it would cross `execve` as a way out of the root.
+    #[test]
+    fn a_directory_or_path_descriptor_is_no_stream() {
+        let mut keep = Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        fs::write(&file, b"x").unwrap();
+        let opened = |p: &Path, flags: OFlags| {
+            rustix::fs::open(p, flags | OFlags::CLOEXEC, Mode::empty()).unwrap()
+        };
+        for (what, fd) in [
+            (
+                "a directory",
+                opened(dir.path(), OFlags::RDONLY | OFlags::DIRECTORY),
+            ),
+            ("an O_PATH directory", opened(dir.path(), OFlags::PATH)),
+            ("an O_PATH file", opened(&file, OFlags::PATH)),
+        ] {
+            let r = child_stdio(Stdio::Fd(fd), 1, &mut keep);
+            assert!(
+                matches!(&r, Err(Error::InvalidSpec(m)) if m.contains("stdout")),
+                "{what}: {r:?}"
+            );
+        }
+        assert!(keep.is_empty());
+        let ok = child_stdio(Stdio::Fd(opened(&file, OFlags::RDONLY)), 1, &mut keep);
+        assert!(matches!(ok, Ok(ChildStdio::Fd(_))), "{ok:?}");
+        // The test process's own streams are no directory.
+        assert_eq!(
+            child_stdio(Stdio::Inherit, 2, &mut keep).unwrap(),
+            ChildStdio::Inherit
         );
     }
 
@@ -2889,6 +3078,487 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// Runs `body` as a T2 test does: on a thread of its own, in a new
+    /// mount namespace with every mount private, so that nothing it mounts
+    /// reaches another namespace.
+    fn in_private_mount_namespace(body: impl FnOnce() + Send + 'static) {
+        std::thread::spawn(|| {
+            use rustix::mount::MountPropagationFlags;
+            use rustix::thread::UnshareFlags;
+            // SAFETY: this thread shares nothing that the unshared
+            // filesystem attributes or mount namespace would break; it ends
+            // with the test.
+            unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+                .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+            rustix::mount::mount_change(
+                "/",
+                MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+            )
+            .expect("make every mount private");
+            body();
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// A root at `root` that runs `/bin/sh`: the host's `/usr` bound
+    /// read-only, so that neither a `RUN` nor a removal reaches it, and the
+    /// `bin`, `lib`, `lib64`, `sbin` symlinks into it.
+    fn root_with_usr(mounts: &mut TestMounts, root: &Path) {
+        fs::create_dir_all(root.join("usr")).unwrap();
+        for l in ["bin", "lib", "lib64", "sbin"] {
+            std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).unwrap();
+        }
+        rustix::mount::mount_bind("/usr", root.join("usr")).expect("bind /usr");
+        mounts.add(root.join("usr"));
+        rustix::mount::mount_remount(root.join("usr"), MountFlags::BIND | MountFlags::RDONLY, c"")
+            .expect("remount the /usr bind read-only");
+    }
+
+    /// A file outside the root for a `RUN`'s stdout and stderr, so that
+    /// what it prints survives a root it made read-only.
+    /// Its stdin is the host's `/dev/null`, so that a `RUN` whose own
+    /// `/dev/null` no longer opens still starts.
+    fn output_to(path: &Path, spec: &mut RunSpec) {
+        let file = File::create(path).unwrap();
+        spec.stdin = Stdio::Fd(File::open("/dev/null").unwrap().into());
+        spec.stdout = Stdio::Fd(file.try_clone().unwrap().into());
+        spec.stderr = Stdio::Fd(file.into());
+    }
+
+    /// Red team (T2, the VM only; T1, T7): a descriptor of a directory
+    /// outside the root, open in ranikust as the state directory and the
+    /// build context are during a build, gives a `RUN` no way out: not a
+    /// `WORKDIR` spelled `/proc/self/fd/<n>` or `/dev/fd/<n>`, not an image
+    /// symlink to one, not a `PATH` entry through one, whichever way the
+    /// child enters the root. A `RUN` that starts outside finds the dummy
+    /// canary in its working directory.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_an_inherited_descriptor_gives_a_run_no_way_out() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let outside = top.join("outside");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("rnk-canary"), b"dummy").unwrap();
+            // A binary, not a script: an interpreter would reopen a script
+            // by its path once `execve` closed the descriptor.
+            fs::copy("/usr/bin/touch", outside.join("rnk-probe")).unwrap();
+            let held = rustix::fs::open(
+                &outside,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            let n = held.as_raw_fd();
+            std::os::unix::fs::symlink(format!("/proc/self/fd/{n}"), root.join("w")).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let mut escaped = Vec::new();
+            for entry in [RootEntry::PivotRoot, RootEntry::MoveMount] {
+                let runner =
+                    Runner::new(&top.join(format!("sandbox-{entry:?}")), Some(entry)).unwrap();
+                for workdir in [
+                    format!("/proc/self/fd/{n}"),
+                    format!("/dev/fd/{n}"),
+                    "/w".to_owned(),
+                ] {
+                    let mut spec = RunSpec::new(
+                        &root,
+                        vec![
+                            "/bin/sh".into(),
+                            "-c".into(),
+                            "if test -e rnk-canary; then echo outside; else echo inside; fi \
+                             > /verdict"
+                                .into(),
+                        ],
+                    );
+                    spec.workdir = workdir.clone().into();
+                    let r = runner.run(spec, None, |job| clone_child(job, parent));
+                    let verdict = fs::read_to_string(root.join("verdict")).unwrap_or_default();
+                    let _ = fs::remove_file(root.join("verdict"));
+                    println!("{entry:?}, WORKDIR {workdir}: {r:?}, verdict {verdict:?}");
+                    if verdict.trim() == "outside" {
+                        escaped.push(format!("{entry:?}: WORKDIR {workdir}"));
+                    }
+                }
+                let mut spec =
+                    RunSpec::new(&root, vec!["rnk-probe".into(), "/verdict-exec".into()]);
+                spec.env.push((
+                    "PATH".into(),
+                    format!("/proc/self/fd/{n}:/dev/fd/{n}:/w:/usr/bin").into(),
+                ));
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let ran = root.join("verdict-exec").exists();
+                let _ = fs::remove_file(root.join("verdict-exec"));
+                println!("{entry:?}, PATH through descriptor {n}: {r:?}, ran {ran}");
+                if ran {
+                    escaped.push(format!("{entry:?}: PATH through descriptor {n}"));
+                }
+            }
+            drop(held);
+            drop(mounts);
+            assert!(
+                escaped.is_empty(),
+                "a RUN started outside its root through an inherited descriptor: {escaped:?}"
+            );
+        });
+    }
+
+    /// Red team (T2, the VM only; T17): a root whose `/proc` is a symlink
+    /// through a directory a later mount hides (`/sys` or `/dev`) does not
+    /// get a `proc` without its read-only and masked paths: the `RUN` either
+    /// fails or finds `/proc/sys` read-only, as in a root with an ordinary
+    /// `/proc` (the control). Only `kernel.hostname` is written, which
+    /// belongs to the `RUN`'s own UTS namespace.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_symlinked_proc_keeps_its_kernel_files_protected() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let mut unprotected = Vec::new();
+            let mut control = None;
+            // (case, the directory the symlink goes through, where proc is
+            // in the RUN)
+            for (i, (case, hop, proc_at)) in [
+                ("through /sys", Some("sys"), "/realproc"),
+                ("through /dev", Some("dev"), "/realproc"),
+                ("control", None, "/proc"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let root = top.join(format!("root{i}"));
+                root_with_usr(&mut mounts, &root);
+                if let Some(hop) = hop {
+                    fs::create_dir(root.join("realproc")).unwrap();
+                    fs::create_dir(root.join(hop)).unwrap();
+                    std::os::unix::fs::symlink("/", root.join(hop).join("up")).unwrap();
+                    std::os::unix::fs::symlink(format!("/{hop}/up/realproc"), root.join("proc"))
+                        .unwrap();
+                }
+                let script = format!(
+                    "grep -E ' {proc_at}(/sys)? ' {proc_at}/self/mountinfo; \
+                     if [ -w {proc_at}/sys/kernel/hostname ]; then echo WRITABLE; fi; \
+                     echo rnk-test > {proc_at}/sys/kernel/hostname && echo WROTE"
+                );
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                let out = top.join(format!("out{i}"));
+                output_to(&out, &mut spec);
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap();
+                println!("{case}: {r:?}\n{text}");
+                if hop.is_some() {
+                    let left = fs::read_dir(root.join("realproc")).unwrap().count();
+                    assert_eq!(left, 0, "{case}: the RUN left files in /realproc");
+                }
+                if text.contains("WROTE") || text.contains("WRITABLE") {
+                    unprotected.push(case);
+                }
+                if hop.is_none() {
+                    control = Some(r);
+                }
+            }
+            drop(mounts);
+            assert!(
+                matches!(control, Some(Ok(_))),
+                "the control RUN ran: {control:?}"
+            );
+            assert!(
+                unprotected.is_empty(),
+                "a writable /proc/sys reached the RUN: {unprotected:?}"
+            );
+        });
+    }
+
+    /// Red team (T2, the VM only; T7): a cache mounted over `/dev` whose
+    /// `null` is a symlink to `/proc/self/fd/1` does not hand the `RUN`
+    /// ranikust's own stdout as its stdin: a `RUN` with the default stdin
+    /// reads the sandbox's `/dev/null` (character device 1:3), in both ways
+    /// of binding.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_cache_over_dev_gets_no_stream_of_ranikusts() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let cache = top.join("cache");
+            fs::create_dir(&cache).unwrap();
+            std::os::unix::fs::symlink("/proc/self/fd/1", cache.join("null")).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let mut wrong = Vec::new();
+            for (n, mode) in ["mount API", "by path"].into_iter().enumerate() {
+                let mut runner =
+                    Runner::new(&top.join(format!("sandbox{n}")), Some(RootEntry::PivotRoot))
+                        .unwrap();
+                if mode == "by path" {
+                    runner.without_mount_api();
+                }
+                let mut spec = RunSpec::new(
+                    &root,
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "stat -L -c '%F %t:%T' /proc/self/fd/0".into(),
+                    ],
+                );
+                spec.mounts.push(crate::BindMount {
+                    source: cache.clone(),
+                    target: "/dev".into(),
+                    kind: MountKind::Directory,
+                    read_only: false,
+                });
+                // stdin stays the default, `Stdio::Null`.
+                let out = top.join(format!("out{n}"));
+                let file = File::create(&out).unwrap();
+                spec.stdout = Stdio::Fd(file.try_clone().unwrap().into());
+                spec.stderr = Stdio::Fd(file.into());
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap();
+                println!("{mode}: {r:?}: {text}");
+                if !matches!(&r, Ok(st) if st.success())
+                    || text.trim() != "character special file 1:3"
+                {
+                    wrong.push(format!("{mode}: {r:?}: {}", text.trim()));
+                }
+            }
+            drop(mounts);
+            assert!(
+                wrong.is_empty(),
+                "the RUN's stdin is not /dev/null: {wrong:?}"
+            );
+        });
+    }
+
+    /// T2 (the VM only), pins a barrier of the open `#!/proc/self/exe`
+    /// question (Q-422): a running binary cannot be opened for writing
+    /// through `/proc/<pid>/exe` (`ETXTBSY`), so a `RUN` that reaches
+    /// ranikust's binary cannot change it while ranikust runs. Nothing is
+    /// written: the open alone is refused.
+    #[test]
+    #[ignore = "T2: opens the running test binary for writing as root; run in the test VM only"]
+    fn a_running_binary_cannot_be_opened_for_writing() {
+        let exe = format!("/proc/{}/exe", std::process::id());
+        let r = rustix::fs::open(
+            exe.as_str(),
+            OFlags::WRONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        assert_eq!(r.err(), Some(Errno::TXTBSY), "{exe}");
+    }
+
+    /// Red team (T2, the VM only; T18): a `RUN --mount` target reached
+    /// through symlinks that the bind itself changes (`/c -> /t/w`,
+    /// `/t/w -> /t`, and the cache's own `w`) keeps the bind `nodev`, and
+    /// read-only when asked, and no other mount of the sandbox changes:
+    /// neither the root, nor the read-only `sysfs`, nor the read-only bind
+    /// of the host's `/dev/null`. Both with `open_tree` and `move_mount` and
+    /// as where they are refused (the symlinked target is then refused); in
+    /// both, a control with a plain target and a secret runs, its bind,
+    /// secret and `/proc/sys` read-only and `nodev`.
+    #[test]
+    #[ignore = "T2: mounts and mknod as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_symlinked_mount_target_keeps_its_bind_nodev() {
+        in_private_mount_namespace(|| {
+            use rustix::fs::StatVfsMountFlags;
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let st = rustix::fs::statvfs(&top).unwrap();
+            assert!(
+                !st.f_flag.contains(StatVfsMountFlags::NODEV),
+                "the test directory's mount is nodev: the test would prove nothing"
+            );
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            fs::create_dir(root.join("t")).unwrap();
+            std::os::unix::fs::symlink("/t", root.join("t/w")).unwrap();
+            std::os::unix::fs::symlink("/t/w", root.join("c")).unwrap();
+            fs::create_dir(root.join("d")).unwrap();
+            fs::create_dir(root.join("e")).unwrap();
+            let parent = ParentPid::new().unwrap();
+            // The mount options of `mountpoint` in a `/proc/self/mountinfo`
+            // listing.
+            let options = |text: &str, mountpoint: &str| -> Option<String> {
+                text.lines()
+                    .map(|l| l.split(' ').collect::<Vec<_>>())
+                    .find(|f| f.get(4) == Some(&mountpoint))
+                    .and_then(|f| f.get(5).map(|o| (*o).to_owned()))
+            };
+            let has = |o: &Option<String>, flag: &str| {
+                o.as_deref()
+                    .is_some_and(|o| o.split(',').any(|f| f == flag))
+            };
+            let mut changed = Vec::new();
+            let mut controls = Vec::new();
+            for (n, mode) in ["mount API", "by path"].into_iter().enumerate() {
+                let mut runner =
+                    Runner::new(&top.join(format!("sandbox{n}")), Some(RootEntry::PivotRoot))
+                        .unwrap();
+                if mode == "by path" {
+                    runner.without_mount_api();
+                }
+                let cache = top.join(format!("control-cache{n}"));
+                fs::create_dir(&cache).unwrap();
+                let mut spec = RunSpec::new(
+                    &root,
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "cat /proc/self/mountinfo; cat /run/secrets/s".into(),
+                    ],
+                );
+                // One cache at two targets, as one key mounted twice: each
+                // bind is remounted, neither in the other's place.
+                for target in ["/d", "/e"] {
+                    spec.mounts.push(crate::BindMount {
+                        source: cache.clone(),
+                        target: target.into(),
+                        kind: MountKind::Directory,
+                        read_only: true,
+                    });
+                }
+                spec.secrets.push(SecretFile {
+                    data: std::sync::Arc::from(&b"dummy-secret"[..]),
+                    target: "/run/secrets/s".into(),
+                    uid: 0,
+                    gid: 0,
+                    mode: 0o400,
+                });
+                let out = top.join(format!("control-out{n}"));
+                output_to(&out, &mut spec);
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap();
+                let (d, e, secret, procsys) = (
+                    options(&text, "/d"),
+                    options(&text, "/e"),
+                    options(&text, "/run/secrets/s"),
+                    options(&text, "/proc/sys"),
+                );
+                let what =
+                    format!("{r:?}; /d {d:?}, /e {e:?}, secret {secret:?}, /proc/sys {procsys:?}");
+                println!("control ({mode}): {what}");
+                let ok = matches!(&r, Ok(st) if st.success())
+                    && text.contains("dummy-secret")
+                    && [&d, &e, &secret, &procsys]
+                        .iter()
+                        .all(|o| has(o, "ro") && has(o, "nodev"));
+                controls.push((mode, ok, what));
+                // (case, the cache's `w`, read-only, script)
+                for (i, (case, link, read_only, script)) in [
+                    (
+                        "read-only cache",
+                        "/",
+                        true,
+                        "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
+                     echo OPENED; touch /t/rw && echo WROTE",
+                    ),
+                    (
+                        "read-write cache",
+                        "/",
+                        false,
+                        "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
+                     echo OPENED",
+                    ),
+                    ("sysfs", "/sys", false, "cat /proc/self/mountinfo"),
+                    ("/dev/null", "/dev/null", false, "cat /proc/self/mountinfo"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let case = format!("{case} ({mode})");
+                    let cache = top.join(format!("cache{n}-{i}"));
+                    fs::create_dir(&cache).unwrap();
+                    std::os::unix::fs::symlink(link, cache.join("w")).unwrap();
+                    let mut spec =
+                        RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                    spec.mounts.push(crate::BindMount {
+                        source: cache,
+                        target: "/c".into(),
+                        kind: MountKind::Directory,
+                        read_only,
+                    });
+                    let out = top.join(format!("out{n}-{i}"));
+                    output_to(&out, &mut spec);
+                    let r = runner.run(spec, None, |job| clone_child(job, parent));
+                    let text = fs::read_to_string(&out).unwrap();
+                    let (t, slash, sys, null) = (
+                        options(&text, "/t"),
+                        options(&text, "/"),
+                        options(&text, "/sys"),
+                        options(&text, "/dev/null"),
+                    );
+                    println!(
+                        "{case}: {r:?}; /t {t:?}, / {slash:?}, /sys {sys:?}, /dev/null {null:?}\n{text}"
+                    );
+                    let rw = |o: &Option<String>| o.as_deref().is_some_and(|o| o.starts_with("rw"));
+                    if text.contains("OPENED") || text.contains("WROTE") {
+                        changed.push(format!("{case}: a node or file was written in /t"));
+                    }
+                    if t.is_some() && !has(&t, "nodev") {
+                        changed.push(format!("{case}: /t is not nodev ({t:?})"));
+                    }
+                    if read_only && rw(&t) {
+                        changed.push(format!("{case}: /t is writable ({t:?})"));
+                    }
+                    if rw(&sys)
+                        || rw(&null)
+                        || slash.as_deref().is_some_and(|o| o.starts_with("ro"))
+                    {
+                        changed.push(format!(
+                        "{case}: another mount changed: / {slash:?}, /sys {sys:?}, /dev/null {null:?}"
+                    ));
+                    }
+                }
+            }
+            drop(mounts);
+            for (mode, ok, what) in &controls {
+                assert!(ok, "the control RUN ({mode}): {what}");
+            }
+            assert!(
+                changed.is_empty(),
+                "a symlinked mount target misplaced the bind's remount: {changed:?}"
+            );
+        });
+    }
+
+    /// A full-sandbox root whose `/proc`, `/sys` or `/dev` is a symlink is
+    /// refused before any stub is placed or child cloned.
+    #[test]
+    fn a_symlinked_kernel_directory_in_the_root_is_refused() {
+        for dir in ["proc", "sys", "dev"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let top = tmp.path().canonicalize().unwrap();
+            let root = top.join("root");
+            fs::create_dir_all(root.join("elsewhere")).unwrap();
+            std::os::unix::fs::symlink("/elsewhere", root.join(dir)).unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
+            let r = runner.run(spec, None, |_| panic!("no child may be cloned"));
+            assert!(
+                matches!(&r, Err(Error::InvalidSpec(m)) if m.contains("symbolic link")),
+                "{dir}: {r:?}"
+            );
+            assert_eq!(fs::read_dir(top.join("sandbox/runs")).unwrap().count(), 0);
+            assert_eq!(fs::read_dir(root.join("elsewhere")).unwrap().count(), 0);
+        }
+    }
+
+    /// The probe of `open_tree` and `move_mount` answers the same every
+    /// time and never crashes where the syscalls are missing.
+    #[test]
+    fn the_mount_api_is_probed_once() {
+        let first = mount_api_supported();
+        assert_eq!(first, mount_api_supported());
     }
 
     #[test]

@@ -37,6 +37,15 @@ and the
 [mode selection chapter](https://github.com/tran4774/ranikust/blob/main/docs/research/survey/06-overlay-and-parallelism.md).
 Real Kubernetes clusters have not been tested yet.
 
+Where `RUN` gets the full sandbox (overlay mode, kaniko mode off `/`) but a
+seccomp profile refuses `open_tree` and `move_mount` (Linux 5.2; a profile
+older than those calls), each `RUN --mount` and secret file is bound and
+remounted by path instead, and its target may not pass through a symbolic
+link: a target under `/var/run` (a link to `/run` in many images), under a
+usrmerge `/lib` or below any linked directory fails that `RUN` with "Too
+many levels of symbolic links". Name the target by its real path, or allow
+those two calls in the profile.
+
 ## Picking an environment
 
 - **Fastest builds:** an environment that gets overlay mode: root on a host
