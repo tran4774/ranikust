@@ -91,6 +91,30 @@ pub enum Error {
         left: String,
     },
 
+    /// An anonymous store could not write `.ranikust-building` at its end
+    /// ([`crate::Store::close`]), not even once the state directory was
+    /// emptied: a `RUN` may have written there what a persistent store
+    /// would reuse, and nothing marks the directory (ADR-0077).
+    #[error(
+        "the state directory {} got no .ranikust-building marker after a kaniko-mode build on \
+         / ({why}); {}: delete this directory, or its volume, before any other build uses it \
+         (ADR-0077)",
+        path.display(),
+        if *emptied {
+            "it was emptied, but nothing marks it"
+        } else {
+            "it still holds what a RUN may have written there, and nothing marks it"
+        }
+    )]
+    Unmarked {
+        /// The state directory.
+        path: PathBuf,
+        /// Whether everything a `RUN` left there was removed.
+        emptied: bool,
+        /// Why the marker could not be written.
+        why: String,
+    },
+
     /// A persistent store was opened on a state directory holding the
     /// marker of a kaniko-mode build on `/` (`.ranikust-building`): that
     /// build ended badly or is unknown, and its `RUN` may have written what

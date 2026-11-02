@@ -493,7 +493,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   - a `RUN`'s `SIGINT` or `SIGTERM` no longer stops the build, since only
     the kernel's, those from outside the container's PID namespace and
     those from ranikust's parent count;
-  - a close that leaves anything in the state directory fails the build;
+  - a close that leaves anything in the state directory fails the build,
+    and one that cannot write the marker at all, even after emptying the
+    directory a `RUN` filled, fails it saying that nothing marks the
+    directory and it must be deleted;
   - a state directory on a volume gets a warning never to give that volume
     to other builds.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,

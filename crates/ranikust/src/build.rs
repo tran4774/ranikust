@@ -398,20 +398,31 @@ fn close_store(store: Arc<Store>) -> Result<(), String> {
     }
     let keeper = store.marker_keeper();
     match Arc::into_inner(store) {
+        // Both say themselves whether the directory keeps its marker.
         Some(store) => store.close().map_err(|e| match e {
-            rnk_store::Error::NotEmptied { .. } => format!("closing the store: {e}"),
+            rnk_store::Error::NotEmptied { .. } | rnk_store::Error::Unmarked { .. } => {
+                format!("closing the store: {e}")
+            }
             e => format!("closing the store: {e}; {DO_NOT_REUSE}"),
         }),
         None => {
-            if let Ok(Some(keeper)) = keeper
-                && let Err(e) = keeper.keep()
-            {
-                tracing::warn!("writing the state directory's marker back: {e}");
-            }
-            Err(format!(
-                "the store is still in use at the end of the build, so it was not closed; \
-                 {DO_NOT_REUSE}"
-            ))
+            let kept = match keeper {
+                Ok(Some(keeper)) => keeper.keep().map_err(|e| e.to_string()),
+                Ok(None) => Err("the store has no marker".to_owned()),
+                Err(e) => Err(e.to_string()),
+            };
+            Err(match kept {
+                Ok(()) => format!(
+                    "the store is still in use at the end of the build, so it was not closed; \
+                     {DO_NOT_REUSE}"
+                ),
+                Err(why) => format!(
+                    "the store is still in use at the end of the build, so it was not closed, \
+                     and its state directory's marker could not be written back ({why}): \
+                     nothing marks that directory, so delete it, or its volume, before any \
+                     other build uses it (ADR-0077)"
+                ),
+            })
         }
     }
 }
@@ -1116,10 +1127,16 @@ fn obey_operator_signals(
                     cancel.cancel();
                 } else {
                     tracing::warn!("stopping at once");
-                    if let Some(keeper) = &keeper
-                        && let Err(e) = keeper.keep()
-                    {
-                        tracing::warn!("writing the state directory's marker back: {e}");
+                    let kept = match &keeper {
+                        Some(keeper) => keeper.keep().map_err(|e| e.to_string()),
+                        None => Err("it cannot be written back".to_owned()),
+                    };
+                    if let Err(why) = kept {
+                        tracing::warn!(
+                            "the state directory's marker could not be written back ({why}): \
+                             nothing marks that directory, so delete it, or its volume, before \
+                             any other build uses it (ADR-0077)"
+                        );
                     }
                     std::process::exit(130);
                 }

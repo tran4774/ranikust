@@ -98,6 +98,13 @@ empty at its end.
     not to give the directory or its volume to another build. A store
     still in use at the end, which cannot be closed, fails the build the
     same way, after its marker is written back.
+  - A `RUN` can keep the marker from being made at the start of the close,
+    by filling the filesystem (root has no reserve of inodes). The close
+    then goes on: once the directory is emptied, which frees what the
+    `RUN` wrote, the marker is made again and stays. If it still cannot
+    be made, the close fails with `Error::Unmarked`, which says that
+    nothing marks the directory and that it must be deleted; no message
+    then claims the marker is there.
 - **A `RUN` cannot stop the build.** A `Direct` `RUN` shares ranikust's PID
   namespace. As the container's PID 1, ranikust gets only the signals it
   handles, and it handles `SIGINT` and `SIGTERM` to stop a build, so a

@@ -1113,6 +1113,8 @@ impl Store {
     ///    a name for an open removed file, the name goes with them);
     /// 3. the state directory is emptied of whatever a `RUN` wrote there,
     ///    through descriptors, never following a link or crossing a mount;
+    ///    a marker step 1 could not make (a filesystem a `RUN` filled) is
+    ///    made now, once that space is free, and then stays;
     /// 4. the marker goes only when nothing else is left and the build was
     ///    clean: no cut-short start, no `RUN` that may have left processes,
     ///    no marker a `RUN` changed;
@@ -1123,9 +1125,10 @@ impl Store {
     /// [`Error::Rootfs`] or [`Error::BadEntry`] when a directory cannot be
     /// removed, for example because a mount is still inside it or on it;
     /// the next start retries. For an anonymous store, [`Error::NotEmptied`]
-    /// when the state directory keeps anything but its marker: the caller
-    /// must fail the build, since that directory must not serve another
-    /// one.
+    /// when the state directory keeps anything but its marker, and
+    /// [`Error::Unmarked`] when no marker can be written even after the
+    /// emptying: the caller must fail the build, since that directory must
+    /// not serve another one.
     pub fn close(self) -> Result<()> {
         let Some(anon) = self.anon else {
             remove_build(&self.state, &self.id)?;
@@ -1140,11 +1143,31 @@ impl Store {
             tampered,
             _lock: lock,
         } = anon;
-        let replaced =
-            ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref())?;
+        let first = ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref());
         drop(entries);
         drop(files);
         let emptied = empty_state_dir(&self.state, &self.state_path);
+        // A `RUN` can keep the marker from being made (a filesystem it
+        // filled, whose inodes root has no reserve of): emptying frees what
+        // the `RUN` wrote, so it is tried again. A marker made only then
+        // stays, as one a `RUN` removed does.
+        let replaced = match first {
+            Ok(replaced) => replaced,
+            Err(_) => {
+                match ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref())
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        drop(lock);
+                        return Err(Error::Unmarked {
+                            path: self.state_path.clone(),
+                            emptied: emptied.is_ok(),
+                            why: e.to_string(),
+                        });
+                    }
+                }
+            }
+        };
         let keep = emptied.is_err()
             || replaced
             || tainted
@@ -1385,6 +1408,14 @@ fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>)
 /// `dir`, never following a link; `false` when something already holds the
 /// name.
 fn create_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<bool> {
+    #[cfg(test)]
+    if tests::marker_create_fails() {
+        return Err(building_marker_err(
+            state_path,
+            "create",
+            Errno::NOSPC.into(),
+        ));
+    }
     let fd = match rustix::fs::openat(
         dir,
         BUILDING,

@@ -86,7 +86,10 @@ the scheduler runs one stage at a time) or a private directory per stage
     every `RUN` and at the end: whatever a `RUN` put under its name is
     replaced, the build then makes no more names, and the marker stays.
     The state directory is emptied after the store's files are closed,
-    and a close that leaves anything fails the build. A `RUN` cannot stop
+    and a close that leaves anything fails the build. A marker the close
+    cannot make at first (a filesystem a `RUN` filled) is made once the
+    directory is emptied; if it still cannot be, the build fails with
+    `Error::Unmarked`, saying the directory must be deleted. A `RUN` cannot stop
     the build with `SIGINT` or `SIGTERM`: both are blocked before any
     thread starts and read through a `signalfd`
     (`rnk_sandbox::block_stop_signals`). Only the kernel's, those sent
