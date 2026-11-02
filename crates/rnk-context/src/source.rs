@@ -94,10 +94,22 @@ pub struct Context {
     fence: Fence,
 }
 
+/// Where the Dockerfile was read from, for the ignore file beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DockerfileAt<'a> {
+    /// A host path outside the context, the operator's own: the path the
+    /// Dockerfile was found at, symlinks resolved.
+    Host(&'a Path),
+    /// A path inside the context, relative to its root: what its owner
+    /// put there, reached through the context's root (ADR-0076).
+    Context(&'a Path),
+}
+
 /// Where the ignore file was found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IgnoreSource {
-    /// `<Dockerfile>.dockerignore`, beside the Dockerfile on the host.
+    /// `<Dockerfile>.dockerignore`, beside the Dockerfile (its host path,
+    /// for messages).
     Dockerfile(PathBuf),
     /// `.dockerignore` at the root of the context.
     ContextRoot,
@@ -157,40 +169,67 @@ impl Context {
     /// `.dockerignore` at the context root, as kaniko
     /// (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1195-1204`) and BuildKit do.
     ///
-    /// `dockerfile` is the host path of the Dockerfile, the user's own
-    /// argument. A `<dockerfile>.dockerignore` that is a symlink or not a
-    /// regular file is refused rather than followed.
+    /// Beside a Dockerfile on the host (the operator's own path), a
+    /// `<dockerfile>.dockerignore` that is a symlink or not a regular file
+    /// is refused rather than followed. Beside a Dockerfile in the context,
+    /// it is read through the context's root like `.dockerignore`, so a
+    /// symlink there never leaves the context (ADR-0076).
     ///
     /// # Errors
     ///
     /// [`Error::IgnoreFile`] when the file beside the Dockerfile cannot be
-    /// read, [`Error::Rootfs`] when the context's `.dockerignore` exists but
+    /// read, [`Error::Rootfs`] when an ignore file in the context exists but
     /// is not a readable regular file.
-    pub fn find_dockerignore(&self, dockerfile: Option<&Path>) -> Result<Option<IgnoreFile>> {
-        if let Some(dockerfile) = dockerfile {
-            let mut beside = OsString::from(dockerfile.as_os_str());
+    pub fn find_dockerignore(
+        &self,
+        dockerfile: Option<DockerfileAt<'_>>,
+    ) -> Result<Option<IgnoreFile>> {
+        let beside = |p: &Path| {
+            let mut beside = OsString::from(p.as_os_str());
             beside.push(".dockerignore");
-            let beside = PathBuf::from(beside);
-            if let Some(contents) = read_beside_dockerfile(&beside)? {
-                return Ok(Some(IgnoreFile {
-                    source: IgnoreSource::Dockerfile(beside),
-                    contents,
-                }));
+            PathBuf::from(beside)
+        };
+        match dockerfile {
+            Some(DockerfileAt::Host(dockerfile)) => {
+                let beside = beside(dockerfile);
+                if let Some(contents) = read_beside_dockerfile(&beside)? {
+                    return Ok(Some(IgnoreFile {
+                        source: IgnoreSource::Dockerfile(beside),
+                        contents,
+                    }));
+                }
             }
+            Some(DockerfileAt::Context(rel)) => {
+                let rel = beside(rel);
+                if let Some(contents) = self.read_ignore(&rel)? {
+                    return Ok(Some(IgnoreFile {
+                        source: IgnoreSource::Dockerfile(self.origin.join(&rel)),
+                        contents,
+                    }));
+                }
+            }
+            None => {}
         }
-        match self.root.open_regular(".dockerignore") {
+        Ok(self
+            .read_ignore(Path::new(".dockerignore"))?
+            .map(|contents| IgnoreFile {
+                source: IgnoreSource::ContextRoot,
+                contents,
+            }))
+    }
+
+    /// The ignore file `rel` in the context, `None` when it is missing.
+    fn read_ignore(&self, rel: &Path) -> Result<Option<Vec<u8>>> {
+        match self.root.open_regular(rel) {
             Ok(fd) => {
                 let mut contents = Vec::new();
                 File::from(fd)
                     .read_to_end(&mut contents)
                     .map_err(|source| Error::IgnoreFile {
-                        path: self.origin.join(".dockerignore"),
+                        path: self.origin.join(rel),
                         source,
                     })?;
-                Ok(Some(IgnoreFile {
-                    source: IgnoreSource::ContextRoot,
-                    contents,
-                }))
+                Ok(Some(contents))
             }
             Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => Ok(None),
             Err(e) => Err(e.into()),

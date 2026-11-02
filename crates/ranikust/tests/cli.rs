@@ -215,12 +215,14 @@ fn without_root_the_set_up_refuses_before_touching_the_state_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = tmp.path().join("state");
     fs::create_dir(&state).expect("state dir");
+    // The report goes beside the context, never into it (ADR-0076).
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
     let out = ranikust(
         tmp.path(),
         &[
             "--no-push",
             "--context",
-            ".",
+            "ctx",
             "--state-dir=state",
             "--metrics-file=m.json",
         ],
@@ -383,6 +385,21 @@ fn the_report_path_comes_from_the_flag_only() {
         !text.contains("registry.example"),
         "destination leaked: {text}"
     );
+}
+
+/// `--metrics-file` in the build context is refused before the report is
+/// set up, so nothing is written there (ADR-0076).
+#[test]
+fn a_metrics_file_in_the_context_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context=.", "--metrics-file=out/m.json"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("build context"), "{}", stderr(&out));
+    assert!(!tmp.path().join("out").exists());
 }
 
 #[test]

@@ -860,6 +860,13 @@ impl Pinned {
         &self.stat
     }
 
+    /// The path the entry was pinned at, for messages and for names beside
+    /// it.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The target of the pinned symlink (`readlinkat(fd, "")`).
     ///
     /// # Errors

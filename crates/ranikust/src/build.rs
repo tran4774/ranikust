@@ -393,12 +393,7 @@ where
     let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
         .map_err(|e| format!("opening the build context: {e}"))?;
     check_output_paths(config, &context)?;
-    let source = dockerfile_source(&config.dockerfile);
-    let text = read_dockerfile(&source, &context)?;
-    let dockerfile_path = match &source {
-        DockerfileSource::Host(p) => p.clone(),
-        DockerfileSource::Context(rel) => context.origin().join(rel),
-    };
+    let (text, dockerfile_at) = read_dockerfile(&config.dockerfile, &context)?;
     let dockerfile = rnk_dockerfile::parse(&text).map_err(|e| e.to_string())?;
     let (os, arch) = config
         .platform
@@ -425,8 +420,12 @@ where
     let graph = rnk_dockerfile::stage_graph(&dockerfile, &options).map_err(|e| e.to_string())?;
     refuse_bare_copy_from(&graph)?;
 
+    let beside = match &dockerfile_at {
+        DockerfileAt::Host(p) => rnk_context::DockerfileAt::Host(p),
+        DockerfileAt::Context(rel) => rnk_context::DockerfileAt::Context(rel),
+    };
     let ignore = context
-        .find_dockerignore(Some(&dockerfile_path))
+        .find_dockerignore(Some(beside))
         .map_err(|e| e.to_string())?;
     let matcher = ignore
         .as_ref()
@@ -548,25 +547,67 @@ where
     })
 }
 
-/// Where the Dockerfile is read from.
+/// Where the Dockerfile was read from.
 #[derive(Debug, PartialEq, Eq)]
-enum DockerfileSource {
-    /// A path the operator gave that exists as given: read on the host.
+enum DockerfileAt {
+    /// Outside the build context, on the host: the path walked, symlinks
+    /// resolved.
     Host(PathBuf),
-    /// Inside the context, relative to its root: read through it, so a
-    /// symlink there never leaves the context.
+    /// Inside the build context, relative to its root.
     Context(PathBuf),
 }
 
-/// kaniko's `--dockerfile`: as given when it exists, else inside the
-/// context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go` `resolveDockerfilePath`).
-fn dockerfile_source(dockerfile: &Path) -> DockerfileSource {
-    if dockerfile.is_absolute() || dockerfile.exists() {
-        return DockerfileSource::Host(
-            std::path::absolute(dockerfile).unwrap_or_else(|_| dockerfile.to_owned()),
-        );
-    }
-    DockerfileSource::Context(rnk_dockerfile_rel(dockerfile))
+/// Reads the Dockerfile. kaniko's `--dockerfile`: as given when it exists,
+/// else inside the context (`kaniko@44aa7ddc0 cmd/executor/cmd/root.go`
+/// `resolveDockerfilePath`).
+///
+/// "As given" is walked from `/` (ADR-0076): symlinks are followed while
+/// the walk is outside the build context, which keeps a Dockerfile mounted
+/// from a Kubernetes ConfigMap (`..data` links) working; once the path
+/// enters the context (`$CI_PROJECT_DIR/Dockerfile`, or the default
+/// `Dockerfile` run from the checkout), the rest is read through the
+/// context's root, so a symlink its owner committed never leaves it. A host
+/// file is read only when it is a regular file: a FIFO or a device node is
+/// never opened.
+fn read_dockerfile(dockerfile: &Path, context: &Context) -> Result<(String, DockerfileAt), String> {
+    use std::io::Read as _;
+    let rel = match rnk_rootfs::reach(dockerfile, context.fence()) {
+        Ok(rnk_rootfs::Reached::Inside(rel)) => rel,
+        Ok(rnk_rootfs::Reached::Outside(pinned)) => {
+            let path = pinned.path().to_owned();
+            let mut text = String::new();
+            pinned
+                .open_regular()
+                .map(std::fs::File::from)
+                .map_err(|e| e.to_string())
+                .and_then(|mut f| f.read_to_string(&mut text).map_err(|e| e.to_string()))
+                .map_err(|e| format!("reading the Dockerfile {}: {e}", path.display()))?;
+            return Ok((text, DockerfileAt::Host(path)));
+        }
+        Err(e)
+            if !dockerfile.is_absolute()
+                && e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) =>
+        {
+            rnk_dockerfile_rel(dockerfile)
+        }
+        Err(e) => {
+            return Err(format!(
+                "reading the Dockerfile {}: {e}",
+                dockerfile.display()
+            ));
+        }
+    };
+    let mut text = String::new();
+    let fd = context.root().open_regular(&rel).map_err(|e| {
+        format!(
+            "reading the Dockerfile {} in the context: {e}",
+            rel.display()
+        )
+    })?;
+    std::fs::File::from(fd)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("reading the Dockerfile {}: {e}", rel.display()))?;
+    Ok((text, DockerfileAt::Context(rel)))
 }
 
 /// A relative Dockerfile path inside the context, `..` clamped.
@@ -584,29 +625,6 @@ fn rnk_dockerfile_rel(p: &Path) -> PathBuf {
         }
     }
     out
-}
-
-/// The Dockerfile's text.
-fn read_dockerfile(source: &DockerfileSource, context: &Context) -> Result<String, String> {
-    use std::io::Read as _;
-    let mut text = String::new();
-    match source {
-        DockerfileSource::Host(p) => std::fs::File::open(p)
-            .and_then(|mut f| f.read_to_string(&mut text))
-            .map_err(|e| format!("reading the Dockerfile {}: {e}", p.display()))?,
-        DockerfileSource::Context(rel) => {
-            let fd = context.root().open_regular(rel).map_err(|e| {
-                format!(
-                    "reading the Dockerfile {} in the context: {e}",
-                    rel.display()
-                )
-            })?;
-            std::fs::File::from(fd)
-                .read_to_string(&mut text)
-                .map_err(|e| format!("reading the Dockerfile {}: {e}", rel.display()))?
-        }
-    };
-    Ok(text)
 }
 
 /// An environment variable: `None` when unset, an error when not Unicode.
@@ -1980,27 +1998,75 @@ mod tests {
 
     #[test]
     fn a_dockerfile_not_found_as_given_is_read_inside_the_context() {
-        assert_eq!(
-            dockerfile_source(Path::new("no-such-dir/../x/Dockerfile")),
-            DockerfileSource::Context(PathBuf::from("x/Dockerfile"))
-        );
-        assert_eq!(
-            dockerfile_source(Path::new("/abs/Dockerfile")),
-            DockerfileSource::Host(PathBuf::from("/abs/Dockerfile"))
-        );
         let ctx = tempfile::tempdir().unwrap();
-        std::fs::write(ctx.path().join("Dockerfile"), "FROM scratch\n").unwrap();
-        let outside = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(outside.path(), "SECRET first line\n").unwrap();
-        std::os::unix::fs::symlink(outside.path(), ctx.path().join("escape")).unwrap();
+        std::fs::create_dir(ctx.path().join("x")).unwrap();
+        std::fs::write(ctx.path().join("x/Dockerfile"), "FROM scratch\n").unwrap();
         let context = rnk_context::open(&ContextSpec::Dir(ctx.path().to_owned())).unwrap();
-        let ok = DockerfileSource::Context(PathBuf::from("Dockerfile"));
-        assert_eq!(read_dockerfile(&ok, &context).unwrap(), "FROM scratch\n");
-        // A symlink in the context resolves inside it: the host file is
-        // never read.
-        let link = DockerfileSource::Context(PathBuf::from("escape"));
-        let e = read_dockerfile(&link, &context).unwrap_err();
+        // Relative and missing from the current directory: inside the
+        // context, `..` clamped.
+        let (text, at) =
+            read_dockerfile(Path::new("no-such-dir/../x/Dockerfile"), &context).unwrap();
+        assert_eq!(text, "FROM scratch\n");
+        assert_eq!(at, DockerfileAt::Context(PathBuf::from("x/Dockerfile")));
+        // Absolute and missing: an error, as kaniko's.
+        assert!(read_dockerfile(Path::new("/no-such-dir/Dockerfile"), &context).is_err());
+    }
+
+    /// A Dockerfile path that leads into the context, as kaniko's GitLab
+    /// form `--dockerfile=$CI_PROJECT_DIR/Dockerfile` does, is read through
+    /// the context's root: a symlink its owner committed never reaches a
+    /// host file, and the host file's text never reaches an error
+    /// (ADR-0076).
+    #[test]
+    fn a_dockerfile_in_the_context_never_follows_a_link_out_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = dir.path().join("ctx");
+        std::fs::create_dir(&ctx).unwrap();
+        std::fs::write(ctx.join("Dockerfile"), "FROM scratch\n").unwrap();
+        let secret = dir.path().join("secret");
+        std::fs::write(&secret, "SECRET-TOKEN first line\n").unwrap();
+        std::os::unix::fs::symlink(&secret, ctx.join("escape")).unwrap();
+        let context = rnk_context::open(&ContextSpec::Dir(ctx.clone())).unwrap();
+
+        let (text, at) = read_dockerfile(&ctx.join("Dockerfile"), &context).unwrap();
+        assert_eq!(text, "FROM scratch\n");
+        assert_eq!(at, DockerfileAt::Context(PathBuf::from("Dockerfile")));
+        let e = read_dockerfile(&ctx.join("escape"), &context).unwrap_err();
         assert!(!e.contains("SECRET"), "{e}");
+        // Through an operator's own symlink into the context: the same.
+        std::os::unix::fs::symlink(&ctx, dir.path().join("alias")).unwrap();
+        let e = read_dockerfile(&dir.path().join("alias/escape"), &context).unwrap_err();
+        assert!(!e.contains("SECRET"), "{e}");
+    }
+
+    /// Outside the context, the path is the operator's: symlinks are
+    /// followed (a Dockerfile mounted from a Kubernetes ConfigMap), but only
+    /// a regular file is read, so a FIFO never blocks the build.
+    #[test]
+    fn a_dockerfile_outside_the_context_follows_the_operators_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = dir.path().join("ctx");
+        std::fs::create_dir(&ctx).unwrap();
+        let cm = dir.path().join("cm");
+        std::fs::create_dir_all(cm.join("..2026_11_02")).unwrap();
+        std::fs::write(cm.join("..2026_11_02/Dockerfile"), "FROM scratch\n").unwrap();
+        std::os::unix::fs::symlink("..2026_11_02", cm.join("..data")).unwrap();
+        std::os::unix::fs::symlink("..data/Dockerfile", cm.join("Dockerfile")).unwrap();
+        let context = rnk_context::open(&ContextSpec::Dir(ctx)).unwrap();
+        let (text, at) = read_dockerfile(&cm.join("Dockerfile"), &context).unwrap();
+        assert_eq!(text, "FROM scratch\n");
+        assert_eq!(at, DockerfileAt::Host(cm.join("..2026_11_02/Dockerfile")));
+
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            dir.path().join("fifo"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let e = read_dockerfile(&dir.path().join("fifo"), &context).unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
     }
 
     fn config_of(flags: &[&str]) -> BuildConfig {

@@ -6,7 +6,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 
-use rnk_context::{ContextSource as _, ContextSpec, DirSource, Error, IgnoreSource};
+use rnk_context::{ContextSource as _, ContextSpec, DirSource, DockerfileAt, Error, IgnoreSource};
 use rnk_rootfs::FileType;
 
 fn ctx_dir() -> tempfile::TempDir {
@@ -111,9 +111,9 @@ fn dockerignore_beside_the_dockerfile_wins() {
     fs::write(root.join(".dockerignore"), b"root\n").unwrap();
     fs::write(root.join("Dockerfile.dockerignore"), b"beside\n").unwrap();
     let ctx = DirSource::new(root).open().unwrap();
-    let dockerfile = root.join("Dockerfile");
+    let dockerfile = Some(DockerfileAt::Context(Path::new("Dockerfile")));
 
-    let found = ctx.find_dockerignore(Some(&dockerfile)).unwrap().unwrap();
+    let found = ctx.find_dockerignore(dockerfile).unwrap().unwrap();
     assert_eq!(
         found.source,
         IgnoreSource::Dockerfile(root.join("Dockerfile.dockerignore"))
@@ -121,31 +121,54 @@ fn dockerignore_beside_the_dockerfile_wins() {
     assert_eq!(found.contents, b"beside\n");
 
     fs::remove_file(root.join("Dockerfile.dockerignore")).unwrap();
-    let found = ctx.find_dockerignore(Some(&dockerfile)).unwrap().unwrap();
+    let found = ctx.find_dockerignore(dockerfile).unwrap().unwrap();
     assert_eq!(found.source, IgnoreSource::ContextRoot);
     assert_eq!(found.contents, b"root\n");
 
     fs::remove_file(root.join(".dockerignore")).unwrap();
-    assert!(ctx.find_dockerignore(Some(&dockerfile)).unwrap().is_none());
+    assert!(ctx.find_dockerignore(dockerfile).unwrap().is_none());
     assert!(ctx.find_dockerignore(None).unwrap().is_none());
+
+    // Beside a Dockerfile on the host, outside the context.
+    let host = ctx_dir();
+    fs::write(host.path().join("Dockerfile.dockerignore"), b"host\n").unwrap();
+    let dockerfile = host.path().join("Dockerfile");
+    let found = ctx
+        .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.contents, b"host\n");
 }
 
 #[test]
 fn dockerignore_symlink_beside_the_dockerfile_is_refused() {
     let outside = ctx_dir();
     fs::write(outside.path().join("secret"), b"top secret\n").unwrap();
+    // On the host: refused rather than followed.
+    let host = ctx_dir();
+    symlink(
+        outside.path().join("secret"),
+        host.path().join("Dockerfile.dockerignore"),
+    )
+    .unwrap();
     let tmp = ctx_dir();
     let root = tmp.path();
+    let ctx = DirSource::new(root).open().unwrap();
+    let dockerfile = host.path().join("Dockerfile");
+    let err = ctx
+        .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
+        .unwrap_err();
+    assert!(matches!(err, Error::IgnoreFile { .. }), "{err:?}");
+    // In the context: resolved inside it, where the target does not exist.
     symlink(
         outside.path().join("secret"),
         root.join("Dockerfile.dockerignore"),
     )
     .unwrap();
-    let ctx = DirSource::new(root).open().unwrap();
-    let err = ctx
-        .find_dockerignore(Some(&root.join("Dockerfile")))
-        .unwrap_err();
-    assert!(matches!(err, Error::IgnoreFile { .. }), "{err:?}");
+    let found = ctx
+        .find_dockerignore(Some(DockerfileAt::Context(Path::new("Dockerfile"))))
+        .unwrap();
+    assert!(found.is_none(), "{found:?}");
 }
 
 #[test]
