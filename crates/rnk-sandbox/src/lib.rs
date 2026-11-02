@@ -21,7 +21,8 @@
 //! While the process is single-threaded: [`enter_build_namespace`], then
 //! [`probe`]. Then [`Sandbox::start`], which replays the stub journals of
 //! dead builds and starts the spawner thread, and [`Sandbox::run`] per `RUN`.
-//! Kaniko mode on `/` calls [`trim_to_run_capabilities`] instead, still
+//! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only
+//! says root may not mount), then [`trim_to_run_capabilities`], still
 //! single-threaded, then [`Sandbox::start_direct`] (ADR-0078).
 //!
 //! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
