@@ -84,10 +84,11 @@ pub struct ClientOptions {
     pub manifest_retries: u32,
     /// Bound on establishing a connection; Go's default dialer uses 30 s.
     pub connect_timeout: Option<Duration>,
-    /// Bound on waiting for data on an open connection: the
-    /// `registry-idle` limit. A request that receives nothing for this
-    /// long fails and is retried; there is no deadline on the whole
-    /// transfer (ADR-0079).
+    /// The `registry-idle` limit: how long a pull waits for the registry's
+    /// next bytes (a response's headers, the next chunk) before the request
+    /// fails and is retried. Not a deadline on the whole transfer, not
+    /// counted while the sink takes a chunk, and not applied to pushes
+    /// (ADR-0079).
     pub read_timeout: Option<Duration>,
     /// The largest manifest or index read: the `manifest` limit, enforced
     /// while the body arrives.

@@ -185,8 +185,12 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 - `ClientOptions` carries the `--limit` values and defaults to them
   (`MAX_MANIFEST_BYTES`, `MAX_BODY_BYTES`, `MAX_CONFIG_BYTES`,
   `READ_TIMEOUT`): a library user is bounded too. `pull_config` checks the
-  config's descriptor before the request. `read_timeout` is an idle bound,
-  not a deadline: a registry dripping bytes still holds a pull (Q-448).
+  config's descriptor before the request. `read_timeout` is an idle bound
+  kept by `fetch::on_socket` around each wait for a pull's bytes, never
+  set as `reqwest`'s read timeout (which would cap a whole upload) and
+  never running while the sink writes; it is not a deadline: a registry
+  dripping bytes still holds a pull (Q-448). Token requests use their own
+  client, which follows redirects only within one origin.
 - Without a stored authorization `oci-client` sends no credentials, and
   with one it pings `/v2/` again before each token: the client probes
   `/v2/` once per registry and stores nothing for open registries.

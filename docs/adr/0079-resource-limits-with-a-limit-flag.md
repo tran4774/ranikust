@@ -98,10 +98,17 @@ How each bound is kept:
 - **`config`.** `Client::pull_config` refuses a descriptor larger than the
   limit before any request; the existing size bound then holds the read to
   the descriptor's size.
-- **`registry-idle`.** The read timeout of every `reqwest` client
-  ranikust builds, and of `oci-client`'s. A stalled pull fails, is retried
+- **`registry-idle`.** A timer around each wait for a pull's bytes: the
+  `/v2/` ping, token requests, a manifest's or blob's headers and every
+  chunk. It never runs while the sink takes a chunk, so a slow disk or a
+  busy pipe reader does not fail a pull, and pushes have none: `reqwest`'s
+  own read timeout, set on no client, would also run while a request
+  body uploads and cap a whole push. A stalled pull fails, is retried
   under the retry policy, and ends with an error; the store's fill then
   releases the per-digest lock through its error path.
+- Token requests follow a redirect only within one origin: `reqwest`
+  drops `Authorization` across hosts but re-sends a `307`/`308` body,
+  which for an identity-token exchange holds the refresh token.
 
 This overrides Q-056's answer ("no bound for now; revisit with `cargo fuzz`
 in Phase 6") for extension headers. Fuzzing the extractor stays a Phase 6
