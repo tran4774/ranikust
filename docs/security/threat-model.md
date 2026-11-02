@@ -184,6 +184,15 @@ These follow from decisions and are documented to users rather than fixed:
   denies the metadata addresses to the build pod, IMDSv2 with a hop limit
   of 1 so a container cannot reach it, workload identity instead of node
   credentials, or `--network=none` for builds that need no network.
+- `--network=none` isolates the `RUN` only. ranikust's own registry
+  requests still leave from the network namespace ranikust runs in. That
+  includes the anonymous token realm and the redirects a registry names. A
+  registry named by the Dockerfile can therefore make ranikust send a `GET`
+  to any http(s) URL, internal addresses and the metadata service included.
+  A token-shaped `200` body is used as a token, and a 200-character excerpt
+  of an error body can reach the build's error message. The maintainer
+  accepted this on 2026-11-02 until a fix is chosen [open: Q-447]. Without
+  `--network=none` a `RUN` reaches the same addresses anyway (ADR-0010).
 - The shared network namespace also holds the abstract `AF_UNIX` sockets
   bound in it: network namespaces isolate them (`network_namespaces(7)`)
   **[external]**, and no file permission guards them. A default `RUN`, and a

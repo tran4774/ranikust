@@ -422,6 +422,34 @@ Entry format:
 - **Interim:** refused in every mode (Phase 5).
 - **Raised:** 2026-11-01
 
+### Q-447: Should `--network=none` also keep ranikust's own registry requests off internal addresses?
+
+- **Blocks:** nothing yet; **Area:** `rnk-registry`, network
+- **Context:** `--network=none` gives only the `RUN` a new network
+  namespace (ADR-0010). ranikust's own registry requests leave from the
+  namespace it runs in. For anonymous access they include the token realm
+  that the registry names in its `WWW-Authenticate` challenge, and any
+  redirect it answers with. A registry named by the Dockerfile (`FROM`,
+  `COPY --from`) can therefore make ranikust send a `GET` to any http(s)
+  URL, internal addresses and the metadata service included. A token-shaped
+  `200` body is then used as a token, and a 200-character excerpt of an
+  error body can reach the build's error message. With the default host
+  network a `RUN` already reaches all of this (ADR-0010), so the question
+  matters only for builds run with `--network=none`. Kaniko mode on a
+  container's `/` refuses `--network=none` (ADR-0057).
+  [Threat model, section 6](security/threat-model.md#6-accepted-risks).
+- **Options:** (a) restrict realms and redirects for anonymous access: refuse
+  loopback, link-local and private addresses unless the registry is there
+  too, checked on the connected address, not only the name, so DNS
+  rebinding does not pass; (b) state that `--network=none` covers the `RUN`
+  only, as BuildKit's daemon also resolves images on its own network and
+  follows the realm a registry names **[inferred]**; (c) (b) plus refusing
+  link-local realm and redirect targets.
+- **Recommendation:** none.
+- **Interim:** (b). The maintainer chose on 2026-11-02 to document the
+  limit and to decide on a fix later.
+- **Raised:** 2026-11-02
+
 ### Q-421: Which performance conditions does Phase 6 measure?
 
 - **Blocks:** Phase 6; **Area:** performance
