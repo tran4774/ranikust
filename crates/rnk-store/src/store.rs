@@ -45,122 +45,6 @@ fn building_mark() -> Option<String> {
     Some(format!("{} {}\n", ns.to_str()?, boot.trim()))
 }
 
-/// What [`read_building_marker`] found in the state directory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Marker {
-    /// No [`BUILDING`] marker.
-    Absent,
-    /// This container's marker (or anything but a regular file): a build
-    /// here was cut short.
-    Ours,
-    /// A marker from another PID namespace or boot: no process of its build
-    /// is left here.
-    Theirs,
-}
-
-/// The [`BUILDING`] marker in the state directory `dir` (shown as
-/// `state_path`), `mark` being what this build would write
-/// ([`building_mark`]). A marker from another PID namespace or boot (a state
-/// directory on a volume, an earlier boot) is [`Marker::Theirs`]. Opened
-/// before its type is checked, on the descriptor, without following a link
-/// or blocking on a FIFO a leftover process put there; anything but a
-/// regular file counts as this container's.
-fn read_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<Marker> {
-    let fd = match rustix::fs::openat(
-        dir,
-        BUILDING,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::NONBLOCK
-            | rustix::fs::OFlags::NOCTTY
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    ) {
-        Ok(fd) => fd,
-        Err(Errno::NOENT) => return Ok(Marker::Absent),
-        Err(Errno::LOOP) => return Ok(Marker::Ours),
-        Err(e) => return Err(building_marker_err(state_path, "open", e.into())),
-    };
-    let st =
-        rustix::fs::fstat(&fd).map_err(|e| building_marker_err(state_path, "stat", e.into()))?;
-    if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
-        return Ok(Marker::Ours);
-    }
-    let mut held = Vec::new();
-    io::Read::take(File::from(fd), 256)
-        .read_to_end(&mut held)
-        .map_err(|e| building_marker_err(state_path, "read", e))?;
-    Ok(if mark.is_none_or(|m| held == m.as_bytes()) {
-        Marker::Ours
-    } else {
-        Marker::Theirs
-    })
-}
-
-/// Creates this build's [`BUILDING`] marker, holding `mark`, as a new file.
-fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<()> {
-    let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
-    io::Write::write_all(&mut f, mark.unwrap_or_default().as_bytes())
-        .map_err(|e| building_marker_err(state_path, "write", e))
-}
-
-/// An [`Error::Io`] on the [`BUILDING`] marker.
-fn building_marker_err(state_path: &Path, op: &'static str, source: io::Error) -> Error {
-    Error::Io {
-        op,
-        path: state_path.join(BUILDING),
-        source,
-    }
-}
-
-/// Checks that `/proc/self/fd`, through which the names an anonymous store
-/// hands out resolve, is procfs, not something mounted over `/proc` (a
-/// `RUN` could only do that with `CAP_SYS_ADMIN`, which kaniko mode on `/`
-/// never leaves it).
-fn check_proc_fd() -> Result<()> {
-    let proc_fd = Path::new("/proc/self/fd");
-    let proc_err = |e: io::Error| Error::Io {
-        op: "check",
-        path: proc_fd.to_owned(),
-        source: e,
-    };
-    let fs = rustix::fs::statfs(proc_fd).map_err(|e| proc_err(e.into()))?;
-    if fs.f_type != rustix::fs::PROC_SUPER_MAGIC {
-        return Err(proc_err(io::Error::other("not procfs")));
-    }
-    Ok(())
-}
-
-/// Records on an `rnk_store.fill` span that the entry was there already,
-/// `size` bytes.
-fn record_reused(span: &tracing::Span, size: u64) {
-    span.record("reused", true);
-    span.record("bytes_written", 0);
-    span.record("bytes_reused", size);
-}
-
-/// Records on an `rnk_store.fill` span that the filler wrote `bytes`.
-fn record_written(span: &tracing::Span, bytes: u64) {
-    span.record("reused", false);
-    span.record("bytes_written", bytes);
-    span.record("bytes_reused", 0);
-}
-
-/// Takes the exclusive `flock` on the state directory `state_path` through
-/// `fd`, its descriptor, without waiting.
-fn lock_state_dir(fd: &OwnedFd, state_path: &Path) -> Result<()> {
-    match lock::try_lock(fd) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(Error::Busy {
-            path: state_path.to_owned(),
-        }),
-        Err(source) => Err(Error::NoFlock {
-            path: state_path.to_owned(),
-            source,
-        }),
-    }
-}
-
 /// The advice of a store opened on the traces of a build cut short
 /// (ADR-0066), shared by [`CUT_SHORT`] and [`Store::named_window`]'s refusal
 /// so the two say the same thing.
@@ -1246,6 +1130,122 @@ fn list(state: &RootPath, rel: &Path) -> Result<Vec<OsString>> {
         }
     }
     Ok(names)
+}
+
+/// What [`read_building_marker`] found in the state directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Marker {
+    /// No [`BUILDING`] marker.
+    Absent,
+    /// This container's marker (or anything but a regular file): a build
+    /// here was cut short.
+    Ours,
+    /// A marker from another PID namespace or boot: no process of its build
+    /// is left here.
+    Theirs,
+}
+
+/// The [`BUILDING`] marker in the state directory `dir` (shown as
+/// `state_path`), `mark` being what this build would write
+/// ([`building_mark`]). A marker from another PID namespace or boot (a state
+/// directory on a volume, an earlier boot) is [`Marker::Theirs`]. Opened
+/// before its type is checked, on the descriptor, without following a link
+/// or blocking on a FIFO a leftover process put there; anything but a
+/// regular file counts as this container's.
+fn read_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<Marker> {
+    let fd = match rustix::fs::openat(
+        dir,
+        BUILDING,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::NOCTTY
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::NOENT) => return Ok(Marker::Absent),
+        Err(Errno::LOOP) => return Ok(Marker::Ours),
+        Err(e) => return Err(building_marker_err(state_path, "open", e.into())),
+    };
+    let st =
+        rustix::fs::fstat(&fd).map_err(|e| building_marker_err(state_path, "stat", e.into()))?;
+    if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
+        return Ok(Marker::Ours);
+    }
+    let mut held = Vec::new();
+    io::Read::take(File::from(fd), 256)
+        .read_to_end(&mut held)
+        .map_err(|e| building_marker_err(state_path, "read", e))?;
+    Ok(if mark.is_none_or(|m| held == m.as_bytes()) {
+        Marker::Ours
+    } else {
+        Marker::Theirs
+    })
+}
+
+/// Creates this build's [`BUILDING`] marker, holding `mark`, as a new file.
+fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<()> {
+    let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
+    io::Write::write_all(&mut f, mark.unwrap_or_default().as_bytes())
+        .map_err(|e| building_marker_err(state_path, "write", e))
+}
+
+/// An [`Error::Io`] on the [`BUILDING`] marker.
+fn building_marker_err(state_path: &Path, op: &'static str, source: io::Error) -> Error {
+    Error::Io {
+        op,
+        path: state_path.join(BUILDING),
+        source,
+    }
+}
+
+/// Checks that `/proc/self/fd`, through which the names an anonymous store
+/// hands out resolve, is procfs, not something mounted over `/proc` (a
+/// `RUN` could only do that with `CAP_SYS_ADMIN`, which kaniko mode on `/`
+/// never leaves it).
+fn check_proc_fd() -> Result<()> {
+    let proc_fd = Path::new("/proc/self/fd");
+    let proc_err = |e: io::Error| Error::Io {
+        op: "check",
+        path: proc_fd.to_owned(),
+        source: e,
+    };
+    let fs = rustix::fs::statfs(proc_fd).map_err(|e| proc_err(e.into()))?;
+    if fs.f_type != rustix::fs::PROC_SUPER_MAGIC {
+        return Err(proc_err(io::Error::other("not procfs")));
+    }
+    Ok(())
+}
+
+/// Records on an `rnk_store.fill` span that the entry was there already,
+/// `size` bytes.
+fn record_reused(span: &tracing::Span, size: u64) {
+    span.record("reused", true);
+    span.record("bytes_written", 0);
+    span.record("bytes_reused", size);
+}
+
+/// Records on an `rnk_store.fill` span that the filler wrote `bytes`.
+fn record_written(span: &tracing::Span, bytes: u64) {
+    span.record("reused", false);
+    span.record("bytes_written", bytes);
+    span.record("bytes_reused", 0);
+}
+
+/// Takes the exclusive `flock` on the state directory `state_path` through
+/// `fd`, its descriptor, without waiting.
+fn lock_state_dir(fd: &OwnedFd, state_path: &Path) -> Result<()> {
+    match lock::try_lock(fd) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Error::Busy {
+            path: state_path.to_owned(),
+        }),
+        Err(source) => Err(Error::NoFlock {
+            path: state_path.to_owned(),
+            source,
+        }),
+    }
 }
 
 /// Refuses a non-empty state directory without a regular-file marker, and
