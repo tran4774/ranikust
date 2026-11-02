@@ -128,6 +128,21 @@ fn check_proc_fd() -> Result<()> {
     Ok(())
 }
 
+/// Records on an `rnk_store.fill` span that the entry was there already,
+/// `size` bytes.
+fn record_reused(span: &tracing::Span, size: u64) {
+    span.record("reused", true);
+    span.record("bytes_written", 0);
+    span.record("bytes_reused", size);
+}
+
+/// Records on an `rnk_store.fill` span that the filler wrote `bytes`.
+fn record_written(span: &tracing::Span, bytes: u64) {
+    span.record("reused", false);
+    span.record("bytes_written", bytes);
+    span.record("bytes_reused", 0);
+}
+
 /// Takes the exclusive `flock` on the state directory `state_path` through
 /// `lock`, its descriptor, without waiting.
 fn hold_state_dir(lock: &OwnedFd, state_path: &Path) -> Result<()> {
@@ -755,9 +770,7 @@ impl Store {
         let _lock = self.lock(key)?;
         let rel = key.path();
         if let Some(size) = self.published(key)? {
-            span.record("reused", true);
-            span.record("bytes_written", 0);
-            span.record("bytes_reused", size);
+            record_reused(&span, size);
             return Ok(self.host(&rel));
         }
         self.state.create_dir_all(key.parent(), DIR_MODE)?;
@@ -778,9 +791,7 @@ impl Store {
         };
         match published {
             Ok(bytes) => {
-                span.record("reused", false);
-                span.record("bytes_written", bytes);
-                span.record("bytes_reused", 0);
+                record_written(&span, bytes);
                 Ok(self.host(&rel))
             }
             Err(e) => {
@@ -808,9 +819,7 @@ impl Store {
         }
         let (_held, _) = self.held.acquire(&key.lock_path());
         if let Some((path, size)) = anon.entry(key) {
-            span.record("reused", true);
-            span.record("bytes_written", 0);
-            span.record("bytes_reused", size);
+            record_reused(span, size);
             return Ok(path);
         }
         let file = anon.files.create()?;
@@ -831,9 +840,7 @@ impl Store {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(key.clone(), (path.clone(), bytes));
-        span.record("reused", false);
-        span.record("bytes_written", bytes);
-        span.record("bytes_reused", 0);
+        record_written(span, bytes);
         Ok(path)
     }
 
