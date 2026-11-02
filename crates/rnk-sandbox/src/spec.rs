@@ -171,7 +171,8 @@ pub(crate) type RootId = (u32, u32, u64, u64);
 
 /// The identity of the directory `root` holds open: what
 /// [`RunSpec::expect_root`] records and the spawner compares the reopened
-/// root with.
+/// root with, and the shared root's identity, recorded at the start and
+/// checked for every `RUN`.
 pub(crate) fn root_id(root: &rnk_rootfs::RootPath) -> Result<RootId> {
     let st = root.statx("/")?;
     Ok((st.dev_major, st.dev_minor, st.ino, st.mnt_id))

@@ -1570,8 +1570,10 @@ fn execute(
             kill_leftovers(pid).and_then(|()| sweep::kill_run_tree(pid, &helpers))
         }
         (Ok(()), Isolation::Direct) => kill_leftovers(pid),
-        // A `Direct` child whose wait failed: the RUN fails with that error,
-        // as above.
+        // A `Direct` child whose wait failed: `kill_run` already killed its
+        // group, unless the pid is no longer ours (`ECHILD`); the RUN fails,
+        // and so the build. Descendants that left the group (`setsid`) are
+        // not swept on this path.
         (r @ Err(_), Isolation::Direct) => r,
         // The child is PID 1 of its namespace: when it exits, the kernel
         // kills the rest.
