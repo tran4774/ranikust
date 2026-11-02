@@ -100,7 +100,8 @@ the scheduler runs one stage at a time) or a private directory per stage
     can still end ranikust (`SIGKILL` where it is not PID 1, the OOM
     killer), and leave what it wrote. A state volume used here therefore
     never serves overlay or per-stage builds later, is mounted at
-    `--state-dir` itself, and gets a warning when it is a mount root;
+    `--state-dir` itself, and gets a warning when it is a mount root, or
+    a directory of a volume mounted at a parent;
   - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
     need `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers);
   - the `RUN` child drops every capability outside Docker's defaults from

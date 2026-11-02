@@ -451,6 +451,10 @@ impl Store {
         // A volume outlives the container: what a `RUN` writes there is
         // emptied at the end, but a build that ends before then leaves it,
         // and a `RUN` can end the build (ADR-0077).
+        // On another mount than `/` but not its root, the volume is mounted
+        // at a parent: a `RUN` can rename the state directory and leave a
+        // look-alike, unmarked, at its path.
+        let slash = RootPath::open("/")?;
         if root.statx("/")?.mount_root {
             tracing::warn!(
                 target: "rnk_store",
@@ -458,6 +462,15 @@ impl Store {
                  it at the end, but a RUN can write it, and a build that ends early leaves what \
                  the RUN wrote; never give this volume to overlay-mode or per-stage builds \
                  (ADR-0077)",
+                state_path.display()
+            );
+        } else if root.mnt_id() != slash.mnt_id() {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {} is a directory of a volume mounted at one of its parents: a \
+                 RUN can write it, and can rename it and leave a look-alike at its path that no \
+                 marker covers; mount the volume at --state-dir itself, and never give this \
+                 volume to overlay-mode or per-stage builds (ADR-0077)",
                 state_path.display()
             );
         }

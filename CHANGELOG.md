@@ -499,7 +499,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
     directory a `RUN` filled, fails it saying that nothing marks the
     directory and it must be deleted;
   - a state directory on a volume gets a warning never to give that volume
-    to other builds.
+    to other builds, and one inside a volume mounted at a parent a warning
+    to mount the volume at `--state-dir` itself.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

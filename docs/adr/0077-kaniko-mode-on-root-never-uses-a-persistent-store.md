@@ -127,7 +127,10 @@ empty at its end.
     `Store::close` never runs then.
 - **A volume is warned about.** A state directory that is a mount root (a
   volume) gets a warning that it must never serve overlay-mode or
-  per-stage builds.
+  per-stage builds. One on another mount than `/` without being its root
+  (a volume mounted at a parent, where a `RUN` can rename it and leave a
+  look-alike) gets a warning to mount the volume at `--state-dir`
+  itself.
 - **Persistent stores keep off it.** `Store::open` refuses a state
   directory holding `.ranikust-building` in any form, with
   `Error::UsedOnSlash`. A kaniko-mode build on `/` used it and did not end
