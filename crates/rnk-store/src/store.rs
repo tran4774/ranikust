@@ -79,16 +79,17 @@ fn read_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) ->
         Ok(fd) => fd,
         Err(Errno::NOENT) => return Ok(Marker::Absent),
         Err(Errno::LOOP) => return Ok(Marker::Ours),
-        Err(e) => return Err(marker_err(state_path, "open", e.into())),
+        Err(e) => return Err(building_marker_err(state_path, "open", e.into())),
     };
-    let st = rustix::fs::fstat(&fd).map_err(|e| marker_err(state_path, "stat", e.into()))?;
+    let st =
+        rustix::fs::fstat(&fd).map_err(|e| building_marker_err(state_path, "stat", e.into()))?;
     if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
         return Ok(Marker::Ours);
     }
     let mut held = Vec::new();
     io::Read::take(File::from(fd), 256)
         .read_to_end(&mut held)
-        .map_err(|e| marker_err(state_path, "read", e))?;
+        .map_err(|e| building_marker_err(state_path, "read", e))?;
     Ok(if mark.is_none_or(|m| held == m.as_bytes()) {
         Marker::Ours
     } else {
@@ -100,11 +101,11 @@ fn read_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) ->
 fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<()> {
     let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
     io::Write::write_all(&mut f, mark.unwrap_or_default().as_bytes())
-        .map_err(|e| marker_err(state_path, "write", e))
+        .map_err(|e| building_marker_err(state_path, "write", e))
 }
 
 /// An [`Error::Io`] on the [`BUILDING`] marker.
-fn marker_err(state_path: &Path, op: &'static str, source: io::Error) -> Error {
+fn building_marker_err(state_path: &Path, op: &'static str, source: io::Error) -> Error {
     Error::Io {
         op,
         path: state_path.join(BUILDING),
@@ -146,9 +147,9 @@ fn record_written(span: &tracing::Span, bytes: u64) {
 }
 
 /// Takes the exclusive `flock` on the state directory `state_path` through
-/// `lock`, its descriptor, without waiting.
-fn hold_state_dir(lock: &OwnedFd, state_path: &Path) -> Result<()> {
-    match lock::try_lock(lock) {
+/// `fd`, its descriptor, without waiting.
+fn lock_state_dir(fd: &OwnedFd, state_path: &Path) -> Result<()> {
+    match lock::try_lock(fd) {
         Ok(true) => Ok(()),
         Ok(false) => Err(Error::Busy {
             path: state_path.to_owned(),
@@ -488,7 +489,7 @@ impl Store {
             rustix::fs::Mode::empty(),
         )
         .map_err(|e| host_err("open", e.into()))?;
-        hold_state_dir(&lock, &state_path)?;
+        lock_state_dir(&lock, &state_path)?;
         let leftovers = anon::remove_leftovers(&root, &state_path)?;
         // A build that did not end cleanly here may have left `RUN`
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
@@ -570,7 +571,7 @@ impl Store {
     ///
     /// [`Error::AnonymousFile`] when neither kind of file can be made.
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)> {
-        let files = self.files()?;
+        let files = self.anonymous_files()?;
         let file = files.create()?;
         let kept = file.try_clone().map_err(|e| Error::AnonymousFile {
             path: self.state_path.clone(),
@@ -591,7 +592,7 @@ impl Store {
     /// As [`Store::anonymous_file`].
     pub fn scratch_file(&self) -> Result<File> {
         // Not kept by the store: gone with the caller's file.
-        self.files()?.create()
+        self.anonymous_files()?.create()
     }
 
     /// Counts a `RUN` in: in an anonymous store, waits until no named file
@@ -687,7 +688,7 @@ impl Store {
 
     /// Where this store makes its anonymous files: the state directory of an
     /// anonymous store, the build directory of a persistent one.
-    fn files(&self) -> Result<&AnonFiles> {
+    fn anonymous_files(&self) -> Result<&AnonFiles> {
         match &self.anon {
             Some(anon) => Ok(&anon.files),
             None => self.persistent_files(),
