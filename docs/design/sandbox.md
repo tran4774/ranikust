@@ -89,6 +89,16 @@ rtnetlink first; the ADR lists them as residual risk.
    did not die before: `getppid()` is 0 in a new PID namespace, so the child
    reads the parent pid in its own `/proc/self/stat` of the outer procfs,
    opened before entering the root; a reparented child shows another pid.
+   Then close every descriptor the clone copied from ranikust except
+   stdio, the error pipe, that `stat` file, the network namespace to join,
+   the stdio sources and a `#!` script (`close_range` over the gaps, else
+   the list in `/proc/self/fd`, else every number up to the hard limit),
+   in `Isolation::Direct` too. ranikust holds directories outside the root
+   (the state directory, the build context, stage roots), and
+   close-on-exec acts only at `execve`: until then `/proc/self/fd/<n>` of
+   the `RUN`'s `proc` would lead a `WORKDIR`, a `PATH` entry or a mount
+   target to them (runc's CVE-2024-21626). None of those kept is a
+   directory.
 2. *Planned, Phase 3; not built, so no `RUN` runs this step today.* In a new
    user namespace, map the full id range available and allow `setgroups`;
    otherwise `USER _apt` (used by apt-get) fails with `setgroups: EPERM`.
@@ -110,7 +120,12 @@ rtnetlink first; the ADR lists them as residual risk.
    2. A new `proc`. If `/proc` is masked and a new user namespace was created,
       the kernel refuses (`EPERM`); *planned, Phase 3*: fall back to an rbind
       of the existing `/proc`. Today a refused `proc` mount fails the `RUN`
-      (`Step::MountProc`).
+      (`Step::MountProc`). `proc`, `sysfs` (3) and the `/dev` tmpfs (4) go only on a
+      real directory of the root: `/proc`, `/sys` or `/dev` as a symlink is
+      refused before any stub is placed, and the child resolves them again
+      with `RESOLVE_NO_SYMLINKS`, as runc requires for `proc` and `sysfs`.
+      Through a symlink, `proc` could land below a directory a later mount
+      hides, out of reach of step 7.
    3. A read-only `sysfs`. It needs privileges over the user namespace that
       owns the network namespace, so it fails with the host network plus a
       new user namespace; *planned, Phase 3*: fall back to an rbind of `/sys`
@@ -141,7 +156,16 @@ rtnetlink first; the ADR lists them as residual risk.
       target and detaches the tmpfs. The secret never reaches a disk and
       dies with the `RUN`'s mount namespace. A secret with `env=` is a
       variable of that `RUN` instead. Every bind is remounted `nodev`
-      (ADR-0032).
+      (ADR-0032), through the new mount itself: the bind is made detached
+      with `open_tree(OPEN_TREE_CLONE)`, attached at the target with
+      `move_mount`, and remounted by its own descriptor. Looking the
+      target up again by name would cross into the new bind and could
+      follow symlinks inside it (a cache's contents), so that `nodev` and
+      read-only reached another mount (the root's, `sysfs`, a `/dev` node)
+      and missed the bind. Where a seccomp profile refuses those calls
+      (probed once), the target may not pass through a symlink, and the
+      mount found again must show the source's inode on a mount other
+      than the one below.
       The child opens each source in its own mount namespace (`O_PATH`,
       no symlink as the last component, type checked) and binds it through
       `/proc/self/fd`: a bind refuses (`EINVAL`) a source opened in another
@@ -152,8 +176,12 @@ rtnetlink first; the ADR lists them as residual risk.
       a sysctl such as `kernel/core_pattern` needs only uid 0 and reaches
       the host kernel; `kcore`, `keys`, `timer_list`, `sched_debug`,
       `/sys/firmware` and the rest are masked, a file by a read-only bind of
-      `/dev/null`, a directory by an empty read-only tmpfs. A path the
-      kernel lacks is skipped.
+      `/dev/null`, a directory by an empty read-only tmpfs, each bind made
+      and remounted as in step 6. Each path is found under the descriptor
+      of the `proc` or `sysfs` mount made in steps 2 and 3, without any
+      symlink, never by its name from the root, which the image's symlinks
+      and later mounts could lead elsewhere. A path missing there is one the
+      kernel lacks, and is skipped.
    8. `pivot_root(".", ".")`, then `umount2(".", MNT_DETACH)`. Where seccomp
       blocks `pivot_root` (Docker's default profile, even with
       `CAP_SYS_ADMIN`, `EPERM`) and `/` is a mount root:
@@ -176,12 +204,18 @@ rtnetlink first; the ADR lists them as residual risk.
    the fork [inferred]. A numeric uid with no passwd entry gets gid 0, as in
    Docker. A change of uid or gid clears the death signal, so it is armed
    and checked again.
-8. `chdir` to `WORKDIR` (before the id switch, and again after if only root
-   could traverse it); make every descriptor but stdio close-on-exec
+8. Enter `WORKDIR`: resolve it in the root with
+   `openat2(RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)` and `fchdir` to it
+   (before the id switch, and again after if only root could traverse it),
+   then check with `getcwd` that the working directory is below the root,
+   as runc since CVE-2024-21626; make every descriptor but stdio
+   close-on-exec
    (`close_range`, or the list in `/proc/self/fd` before Linux 5.11), set
    the umask to 022, reset `SIGPIPE` (Rust ignores it, and ignored signals
    survive `execve`) and the signal mask; search `PATH` **after**
-   `pivot_root` and **after** `setuid`; `execve`.
+   `pivot_root` and **after** `setuid`, each candidate resolved first with
+   `RESOLVE_NO_MAGICLINKS` (until `execve` the child is a copy of
+   ranikust, so `/proc/self/exe` is ranikust's binary on the host); `execve`.
 
 Between `clone` and `execve` the child of a multi-threaded process only
 makes system calls on arguments built before the clone: no allocation, no

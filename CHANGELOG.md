@@ -472,6 +472,26 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   take twice the space until a prune exists. The new layout stops reuse
   but does not repair a `layers/v2/` tree that a crafted XFS ACL already
   damaged: root must remove it.
+- A `RUN` in the full sandbox (overlay mode, kaniko mode off `/`) can no
+  longer start outside its root. A `WORKDIR` (from the Dockerfile, the base
+  image or a parent stage), an image symlink or a `PATH` entry spelled
+  `/proc/self/fd/<n>` used to reach a directory ranikust held open (the
+  state directory, the build context, a stage root): the `RUN` child now
+  closes every descriptor it does not use before it looks up any path,
+  enters `WORKDIR` without magic links and checks that it is below the
+  root, and refuses an exec candidate reached through a magic link. This
+  applies to kaniko mode on `/` too.
+- A stage root whose `/proc`, `/sys` or `/dev` is a symlink is refused:
+  through one, `proc` could be mounted where a later mount hid it from the
+  read-only and masked paths, and a `RUN` got a writable `/proc/sys`. Those
+  paths are now found under the new `proc` and `sysfs` mounts themselves.
+- A `RUN --mount` (or secret) whose target is reached through symlinks the
+  bind itself changes now stays `nodev`, and read-only when asked: the
+  remount used to find its target again by name, which could land on
+  another mount (the root, `sysfs`, the `/dev/null` bind) and leave the
+  bind able to open device nodes. Each bind is now remounted through its
+  own descriptor (`open_tree`, `move_mount`); where a seccomp profile
+  refuses those calls, such a target is refused instead.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name
