@@ -389,6 +389,15 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
+  before and after, that the symlink's name still holds the symlink
+  ranikust pinned, as reading and stripping them already did. A name
+  swapped meanwhile stops with "changed" instead of the xattrs going to
+  the entry swapped in (one in the same directory, never through a
+  symlink). This detects a swap and narrows the window but cannot close
+  it, and a swap undone before the second check is not seen.
+  `setxattrat(2)` (Linux 6.13) on the pinned fd might close it, if the
+  kernel accepts an `O_PATH` fd there (unverified).
 - In kaniko mode on `/`, a registry refusal after ranikust held the
   credentials back (plain HTTP or an unverified certificate) now says
   that they go only over verified TLS there, instead of advising

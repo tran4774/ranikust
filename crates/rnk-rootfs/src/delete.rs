@@ -232,7 +232,7 @@ fn prune_walk(
             }
             Err(e) => return Err(e),
         };
-        if st.mnt_id != root.mnt_id() || st.mount_root {
+        if root.off_mount(&st) {
             return Err(Error::InvalidPath {
                 path: child,
                 reason: "a mount below the root",
@@ -428,7 +428,7 @@ fn remove_below_seen(
             Err(e) => return Err(e),
         };
         seen(&st);
-        if st.mnt_id != root.mnt_id() || st.mount_root {
+        if root.off_mount(&st) {
             top.kept = true;
             counts.kept += 1;
             continue;
@@ -483,9 +483,7 @@ fn pin_checked(dirfd: BorrowedFd<'_>, name: &OsStr, st: &Stat, path: &Path) -> R
         Err(e) => return Err(e),
     };
     let now = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?;
-    if (now.ino, now.dev_major, now.dev_minor, now.mnt_id)
-        != (st.ino, st.dev_major, st.dev_minor, st.mnt_id)
-    {
+    if !now.same_entry(st) {
         return Err(Error::Changed {
             path: path.to_owned(),
         });
@@ -523,9 +521,7 @@ pub(crate) fn open_dir_checked(
         Err(e) => return Err(e),
     };
     let now = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?;
-    let same = (now.ino, now.dev_major, now.dev_minor, now.mnt_id)
-        == (st.ino, st.dev_major, st.dev_minor, st.mnt_id);
-    if !same || now.mount_root {
+    if !now.same_entry(st) || now.mount_root {
         return Err(Error::Changed {
             path: path.to_owned(),
         });
