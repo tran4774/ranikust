@@ -176,7 +176,7 @@ attempts.
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_rootfs.extract` | `mode`, `entries`, `files`, `whiteouts`, `ignored`, `hardlinks`, `bytes_in`, `bytes_written` | One layer into a directory: kaniko's `layer.extract` (bytes = tar content, items = entries). `mode` `Live` is kaniko mode's extraction into the root, where `ignored` counts the entries skipped for the ignore list or a mount and `nodes_skipped` the device nodes and FIFOs not created (ADR-0041). |
+| `rnk_rootfs.extract` | `mode`, `entries`, `files`, `whiteouts`, `ignored`, `hardlinks`, `xattrs_skipped`, `bytes_in`, `bytes_written` | One layer into a directory: kaniko's `layer.extract` (bytes = tar content, items = entries). `mode` `Live` is kaniko mode's extraction into the root, where `ignored` counts the entries skipped for the ignore list or a mount and `nodes_skipped` the device nodes and FIFOs not created (ADR-0041). `xattrs_skipped` counts the layer's `trusted.*` xattrs, never set in any mode (ADR-0075). |
 | `rnk_rootfs.copy` | `files`, `dirs`, `bytes` | One `COPY`/`ADD` source set into a root. |
 | `rnk_rootfs.delete` | `entries` | One safe deletion of a tree: kaniko's `fs.delete`; `exp-09`. |
 | `rnk_rootfs.prune` | `entries`, `files`, `dirs`, `kept` | One root pruned in place of what a stage copy leaves out, directory times set back (ADR-0061); no kaniko equivalent. |

@@ -54,6 +54,13 @@ const AUFS_META_PREFIX: &[u8] = b".wh..wh.";
 const OVERLAY_XATTR: &[u8] = b"user.overlay.";
 const OVERLAY_OPAQUE: &str = "user.overlay.opaque";
 const PAX_XATTR: &[u8] = b"SCHILY.xattr.";
+/// Xattrs a layer never sets (`ADR-0075`): a filesystem may give them a
+/// meaning it leaves to the privileged caller to check, such as XFS's raw
+/// on-disk ACLs `trusted.SGI_ACL_FILE` and `trusted.SGI_ACL_DEFAULT`.
+/// containerd's `archive.Apply`, BuildKit's layer extraction, refuses the
+/// same prefix before the syscall (`buildkit@cd8ee244
+/// vendor/github.com/containerd/containerd/v2/pkg/archive/tar_unix.go:146-152`).
+const SKIPPED_XATTR: &[u8] = b"trusted.";
 /// Mode of a directory until its own mode is set at the end.
 const DIR_PENDING_MODE: u32 = 0o700;
 /// Mode of missing parent directories the layer does not list.
@@ -67,7 +74,9 @@ const PARENT_MODE: u32 = 0o755;
 /// layer cannot redirect an entry outside it. Ownership is the numeric uid
 /// and gid of the header; modes are the raw bits (setuid, setgid, sticky);
 /// times come from the header or its PAX records; xattrs from
-/// `SCHILY.xattr.*` records. An existing entry is replaced, never followed;
+/// `SCHILY.xattr.*` records, except `trusted.*`, which is never set
+/// (`ADR-0075`), only counted and warned about once per layer. An existing
+/// entry is replaced, never followed;
 /// an existing directory meets a directory entry by merging. Directory modes
 /// and times are set last, deepest first.
 ///
@@ -191,6 +200,7 @@ fn extract_with(
         hardlinks_copied = tracing::field::Empty,
         nodes = tracing::field::Empty,
         nodes_skipped = tracing::field::Empty,
+        xattrs_skipped = tracing::field::Empty,
         whiteouts = tracing::field::Empty,
         ignored = tracing::field::Empty,
         bytes_in = tracing::field::Empty,
@@ -211,11 +221,20 @@ fn extract_with(
         ancestors: HashSet::new(),
         copied: HashMap::new(),
         stats: Stats::default(),
+        first_skipped: None,
     };
     let mut tar = Counting { inner: tar, n: 0 };
     let r = ex.run(&mut tar);
     ex.stats.bytes_in = tar.n;
     ex.stats.record(&span);
+    if let Some((path, name)) = &ex.first_skipped {
+        tracing::warn!(
+            "{} trusted.* xattr(s) of the layer not set, as BuildKit leaves them out; the first: {}: {}",
+            ex.stats.xattrs_skipped,
+            path.display(),
+            name.to_string_lossy().escape_debug()
+        );
+    }
     r?;
     Ok(Extracted {
         root_set: ex.dirs.contains_key(Path::new("")),
@@ -246,6 +265,7 @@ struct Stats {
     hardlinks_copied: u64,
     nodes: u64,
     nodes_skipped: u64,
+    xattrs_skipped: u64,
     whiteouts: u64,
     ignored: u64,
     bytes_in: u64,
@@ -262,6 +282,7 @@ impl Stats {
         span.record("hardlinks_copied", self.hardlinks_copied);
         span.record("nodes", self.nodes);
         span.record("nodes_skipped", self.nodes_skipped);
+        span.record("xattrs_skipped", self.xattrs_skipped);
         span.record("whiteouts", self.whiteouts);
         span.record("ignored", self.ignored);
         span.record("bytes_in", self.bytes_in);
@@ -289,6 +310,9 @@ struct Extractor<'r> {
     created: HashSet<PathBuf>,
     ancestors: HashSet<PathBuf>,
     stats: Stats,
+    /// The first xattr left out ([`SKIPPED_XATTR`]): the entry's name in
+    /// the layer and the xattr's, for the one warning per layer.
+    first_skipped: Option<(PathBuf, OsString)>,
 }
 
 /// What a tar entry asks for, after cleaning.
@@ -491,8 +515,8 @@ impl Extractor<'_> {
     }
 
     /// Ownership, xattrs, raw mode and times from the header and its PAX
-    /// records.
-    fn header_meta<R: Read>(&self, entry: &mut tar::Entry<'_, R>, raw: &Path) -> Result<Meta> {
+    /// records. Xattrs named [`SKIPPED_XATTR`] are left out and counted.
+    fn header_meta<R: Read>(&mut self, entry: &mut tar::Entry<'_, R>, raw: &Path) -> Result<Meta> {
         let refuse = |reason: String| Error::Entry {
             path: raw.to_owned(),
             reason,
@@ -515,6 +539,14 @@ impl Extractor<'_> {
                 let ext = ext.map_err(Error::Tar)?;
                 let key = ext.key_bytes();
                 if let Some(name) = key.strip_prefix(PAX_XATTR) {
+                    if name.starts_with(SKIPPED_XATTR) {
+                        self.stats.xattrs_skipped += 1;
+                        if self.first_skipped.is_none() {
+                            self.first_skipped =
+                                Some((raw.to_owned(), OsStr::from_bytes(name).to_owned()));
+                        }
+                        continue;
+                    }
                     xattrs.push((self.xattr_name(name), ext.value_bytes().to_vec()));
                 } else if key == b"mtime" {
                     mtime = pax_time(ext.value_bytes())

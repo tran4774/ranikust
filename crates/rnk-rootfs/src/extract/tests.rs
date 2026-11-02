@@ -141,6 +141,44 @@ fn a_file_capability_that_cannot_be_set_fails_the_extraction() {
     assert!(text.contains("setxattr") && text.contains("ping"), "{text}");
 }
 
+/// A layer's `trusted.*` xattrs are never set, in any mode: a filesystem
+/// may give them a meaning it leaves the privileged caller to check (XFS
+/// keeps its raw on-disk ACLs as `trusted.SGI_ACL_FILE` and
+/// `trusted.SGI_ACL_DEFAULT`), as containerd's `archive.Apply` refuses
+/// them before the syscall. Other namespaces are still set. Unprivileged,
+/// an attempt would fail the strict extraction with `EPERM`; as root it
+/// would leave the xattr there, which the check reads back.
+#[test]
+fn trusted_xattrs_from_a_layer_are_never_set() {
+    for mode in ["Overlay", "Apply", "Literal", "Live"] {
+        let f = Fixture::new();
+        let mut t = Tar::new(&f);
+        t.pax(&[
+            ("SCHILY.xattr.trusted.SGI_ACL_FILE", b"\x00\x00\x00\x05"),
+            ("SCHILY.xattr.user.app", b"d"),
+        ])
+        .dir("d/", 0o775)
+        .pax(&[
+            ("SCHILY.xattr.trusted.x", b"t"),
+            ("SCHILY.xattr.user.app", b"f"),
+        ])
+        .file("d/f", 0o644, b"x");
+        let tar = t.bytes();
+        match mode {
+            "Overlay" => extract(&f.root, tar.as_slice(), Whiteouts::Overlay),
+            "Apply" => extract(&f.root, tar.as_slice(), Whiteouts::Apply),
+            "Literal" => extract(&f.root, tar.as_slice(), Whiteouts::Literal),
+            _ => extract_live(&f.root, tar.as_slice(), &IgnoreList::new()),
+        }
+        .unwrap_or_else(|e| panic!("{mode}: {e}"));
+        assert_eq!(xattr(&f.host("d"), "trusted.SGI_ACL_FILE"), None, "{mode}");
+        assert_eq!(xattr(&f.host("d/f"), "trusted.x"), None, "{mode}");
+        assert_eq!(xattr(&f.host("d"), "user.app").unwrap(), b"d", "{mode}");
+        assert_eq!(xattr(&f.host("d/f"), "user.app").unwrap(), b"f", "{mode}");
+        assert_eq!(mode_of(&f.host("d")), 0o775, "{mode}");
+    }
+}
+
 #[test]
 fn regular_layer_keeps_raw_modes_times_and_links() {
     let f = Fixture::new();

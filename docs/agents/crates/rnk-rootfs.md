@@ -86,6 +86,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 - Modes are raw `st_mode` bits (sticky, setuid, setgid survive). In overlay
   form, content xattrs `user.overlay.*` become `user.overlay.overlay.*`
   (kernel ≥ 6.7).
+- A layer's `trusted.*` xattrs are never set, in any mode, before any
+  syscall (`SKIPPED_XATTR`, ADR-0075, as BuildKit's containerd extraction):
+  counted as `xattrs_skipped`, one warning per layer. The other namespaces
+  are set strictly.
 - Identity is compared by `(dev, ino)` (and mount id), never by string;
   the store's `.ranikust-state` marker is a regular file.
 
@@ -171,7 +175,7 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 ## Metrics
 
 - `rnk_rootfs.extract` per layer (`mode`: `Apply`, `Overlay` or `Live`;
-  `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`, `hardlinks`, `bytes_in`,
+  `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`, `xattrs_skipped`, `hardlinks`, `bytes_in`,
   `bytes_written`), `rnk_rootfs.copy` per `COPY`
   source set, `rnk_rootfs.delete` per tree, `rnk_rootfs.prune` per
   pruned root (`entries`, `files`, `dirs`, `kept`) ([rows](../../design/metrics.md#rnk-rootfs)).

@@ -117,7 +117,11 @@ never called. A hand-written reader would repeat that parsing for no gain.
   PAX headers are read whole into memory by the `tar` crate, with no bound
   for now (Q-056, answered: revisit with fuzzing in Phase 6).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
-  included), raw mode bits, PAX `SCHILY.xattr.*`, PAX `mtime`/`atime` with
+  included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
+  set, in every mode, as BuildKit's containerd extraction: a filesystem may
+  leave its checks to the privileged caller, as XFS does for the raw ACLs
+  `trusted.SGI_ACL_*`; counted as `xattrs_skipped`, one warning per layer,
+  `ADR-0075`), PAX `mtime`/`atime` with
   nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
   the order of [Metadata](#metadata); a regular file gets them through its
   open fd. Directories are created `0700` and get their mode and times last,

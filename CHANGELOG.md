@@ -389,6 +389,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- Extracting a layer never sets its `trusted.*` xattrs, as BuildKit: a
+  filesystem may give them a meaning it leaves the privileged writer to
+  check (XFS keeps raw ACLs there), so a hostile base image could leave
+  directories that not even root can delete. They are counted as
+  `xattrs_skipped` in the metrics, with one warning per layer; `user.*`,
+  `security.*` and `system.*` are set as before.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

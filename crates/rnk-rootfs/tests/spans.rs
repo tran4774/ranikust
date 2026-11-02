@@ -100,6 +100,33 @@ fn delete_counts_entries() {
 }
 
 #[test]
+fn extract_counts_the_trusted_xattrs_it_leaves_out() {
+    let capture = Capture::new();
+    let (_tmp, _host, root) = root();
+    let mut b = tar::Builder::new(Vec::new());
+    let mut h = tar::Header::new_ustar();
+    h.set_entry_type(tar::EntryType::Regular);
+    h.set_mode(0o644);
+    h.set_uid(rustix::process::getuid().as_raw().into());
+    h.set_gid(rustix::process::getgid().as_raw().into());
+    h.set_mtime(0);
+    h.set_size(0);
+    b.append_pax_extensions([
+        (
+            "SCHILY.xattr.trusted.SGI_ACL_FILE",
+            &b"\x00\x00\x00\x05"[..],
+        ),
+        ("SCHILY.xattr.trusted.x", &b"t"[..]),
+    ])
+    .unwrap();
+    b.append_data(&mut h, "f", &b""[..]).unwrap();
+    let tar = b.into_inner().unwrap();
+    capture.run(|| extract(&root, tar.as_slice(), Whiteouts::Apply).unwrap());
+    let report = capture.report();
+    assert_eq!(report["phases"]["rnk_rootfs.extract"]["xattrs_skipped"], 2);
+}
+
+#[test]
 fn a_live_extraction_counts_ignored_entries_and_skipped_nodes() {
     let capture = Capture::new();
     let (_tmp, _host, root) = root();
