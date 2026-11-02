@@ -333,22 +333,23 @@ impl WalkDiff {
   listed and never opened, a FIFO or another file swapped in for a regular
   file refused on the pinned fd, the read bounded by `statx`'s size
   (`/dev/zero` included), 3,000 subdirectories in one directory, arena
-  offsets beyond `u32`; T2 (VM): a device node swapped in is never opened (passed, kernel 6.8, 2026-10-31);
-  `tests/spans.rs` the walk spans, and a kaniko stage directory's
-  `prepare` and `release` (its baseline waits for the first layer). kaniko exporter built
-  (`src/kaniko/export/tests.rs`): an unchanged root gives an empty tar, a
-  deleted directory one whiteout under its parents, a deep new file its
-  unchanged parents read from the root, a link into a lower layer a
-  regular file, links within the layer tar hardlinks (a `chmod` of a
-  linked inode writes every name), symlinks and FIFOs written never
-  followed or opened, a file or FIFO swapped in since the walk refused, 1
-  against 8 walk workers the same digest, and the property `apply(base
-  layer, diff layer) == tree` on random trees (proptest, 48 cases; 3,000
-  passed once); `tests/spans.rs` its spans. An unchanged step adds no
-  layer (ADR-0058, `rnk-builder` `tests/keep.rs`). To do: a benchmark of
-  `--snapshot-mode=redo|time` against `full` on W1–W3: they skip content
-  reads and can miss a change, so they stay only if significantly faster
-  (ADR-0023 kept, ADR-0049).
+  offsets beyond `u32`; T2 (VM): a device node swapped in is never opened
+  (passed, kernel 6.8, 2026-10-31); `tests/spans.rs` the walk spans, and a
+  kaniko stage directory's `prepare` and `release` (its baseline waits for
+  the first layer). kaniko exporter built (`src/kaniko/export/tests.rs`):
+  an unchanged root gives an empty tar, a deleted directory one whiteout
+  under its parents, a deep new file its unchanged parents read from the
+  root, a link into a lower layer a regular file, links within the layer
+  tar hardlinks (a `chmod` of a linked inode writes every name), symlinks
+  and FIFOs written never followed or opened, a file or FIFO swapped in
+  since the walk refused, a directory's or FIFO's new times since the walk
+  passed and a file's or symlink's refused, 1 against 8 walk workers the
+  same digest, and the property `apply(base layer, diff layer) == tree` on
+  random trees (proptest, 48 cases; 3,000 passed once); `tests/spans.rs`
+  its spans. An unchanged step adds no layer (ADR-0058, `rnk-builder`
+  `tests/keep.rs`). To do: a benchmark of `--snapshot-mode=redo|time`
+  against `full` on W1–W3: they skip content reads and can miss a change,
+  so they stay only if significantly faster (ADR-0023 kept, ADR-0049).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
 - **T2** (VM only): overlay as real root; kernel 5.15 fallback; kaniko mode

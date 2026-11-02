@@ -53,7 +53,7 @@ use rnk_rootfs::{
 use rnk_store::{NamedGuard, Store};
 use rustix::io::Errno;
 
-use super::walk::{SnapshotMode, WalkDiff, WalkOptions, Walker};
+use super::walk::{SnapshotMode, WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
 use crate::stage::{Base, ExportLayer, Keep, LayerOpen, Snapshotter, StageRootfs};
@@ -370,10 +370,7 @@ fn check_marker_dir_opened(
     root_mnt: u64,
     opened_mnt: u64,
 ) -> Result<()> {
-    if opened_mnt != root_mnt
-        || (made.dev_major, made.dev_minor, made.ino)
-            != (opened.dev_major, opened.dev_minor, opened.ino)
-    {
+    if opened_mnt != root_mnt || !same_inode(made, opened) {
         return Err(Error::State(
             "/ranikust changed between its look-up and its opening",
         ));
@@ -441,6 +438,12 @@ fn clear_views(shared: &Shared) -> Result<()> {
 /// Device, inode and mount of `st`.
 fn identity(st: &rnk_rootfs::Stat) -> (u32, u32, u64, u64) {
     (st.dev_major, st.dev_minor, st.ino, st.mnt_id)
+}
+
+/// Whether `a` and `b` are the same inode (device and inode number): what a
+/// name showed is what was opened. The mount is checked apart.
+fn same_inode(a: &rnk_rootfs::Stat, b: &rnk_rootfs::Stat) -> bool {
+    (a.dev_major, a.dev_minor, a.ino) == (b.dev_major, b.dev_minor, b.ino)
 }
 
 /// Deletes `view`'s directory, only if the name still leads, without
@@ -702,15 +705,15 @@ impl Kept {
     }
 }
 
+/// The directory's name, the directory opened, and its identity
+/// ([`identity`]).
+type Made = (String, RootPath, (u32, u32, u64, u64));
+
 /// A new, empty directory `name` of the keep area. It is opened by name,
 /// which follows a symlink, so the directory opened must be the one just
 /// made (type, device, inode and mount, not following a link): a name
 /// swapped for a link to `.` would otherwise make its removal empty the
 /// whole keep area.
-/// The directory's name, the directory opened, and its identity
-/// ([`identity`]).
-type Made = (String, RootPath, (u32, u32, u64, u64));
-
 fn make_dir(shared: &Shared, name: &str) -> Result<Made> {
     shared.kept.create_dir(name, 0o700)?;
     let opened = shared.kept.statx(name).and_then(|made| {
@@ -721,8 +724,7 @@ fn make_dir(shared: &Shared, name: &str) -> Result<Made> {
     match opened {
         Ok((made, st, root))
             if made.file_type() == FileType::Directory
-                && (made.dev_major, made.dev_minor, made.ino)
-                    == (st.dev_major, st.dev_minor, st.ino)
+                && same_inode(&made, &st)
                 && root.mnt_id() == shared.kept.mnt_id() =>
         {
             Ok((name.to_owned(), root, identity(&st)))
@@ -1117,12 +1119,12 @@ impl KanikoRoot {
 
     /// Walks the root as it is now, as the base of the next diff.
     fn baseline(&self, hold: &mut Hold) -> Result<()> {
-        let walker = match hold.walker.as_mut() {
-            Some(w) => w,
-            None => hold.walker.insert(Walker::new(self.shared.walk)?),
-        };
-        walker.forget();
-        walker.baseline(&self.shared.root, &self.shared.ignore)?;
+        baseline_in(
+            &mut hold.walker,
+            self.shared.walk,
+            &self.shared.root,
+            &self.shared.ignore,
+        )?;
         hold.walked = true;
         Ok(())
     }
@@ -1177,11 +1179,7 @@ impl StageRootfs for KanikoRoot {
                 shared: Arc::clone(&self.shared),
             });
         }
-        let walker = hold
-            .walker
-            .as_mut()
-            .ok_or(Error::State("no baseline walk before the layer"))?;
-        let diff = walker.diff(&self.shared.root, &self.shared.ignore)?;
+        let diff = diff_in(&mut hold.walker, &self.shared.root, &self.shared.ignore)?;
         Ok(KanikoDiff {
             diff,
             shared: Arc::clone(&self.shared),

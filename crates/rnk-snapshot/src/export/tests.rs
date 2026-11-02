@@ -338,6 +338,20 @@ fn symlinks_compare_targets_and_empty_files_are_equal() {
 }
 
 #[test]
+fn an_unchanged_copied_up_fifo_is_dropped() {
+    // Whole seconds, so the comparison reaches the file type: a FIFO has
+    // size 0 and nothing to read.
+    let f = Fixture::new();
+    for side in ["l1", "upper"] {
+        let p = f.p(&format!("{side}/p"));
+        rustix::fs::mknodat(CWD, &p, RawType::Fifo, Mode::from_raw_mode(0o644), 0).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        f.mtime(&format!("{side}/p"), 1_000, 0);
+    }
+    assert!(f.entries().is_empty(), "{:?}", f.entries());
+}
+
+#[test]
 fn a_changed_type_or_mode_is_kept() {
     let f = Fixture::new();
     f.pair("mode", b"abc", b"abc", 1_000, 0);

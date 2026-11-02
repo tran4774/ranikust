@@ -273,6 +273,51 @@ fn a_fifo_swapped_in_for_a_file_is_never_opened() {
     assert!(d.export(&f.root, options(), Vec::new()).is_err());
 }
 
+/// Between the walk and the export, a directory's or a FIFO's times are not
+/// compared, only its type, device and inode; a regular file's or a
+/// symlink's times are.
+#[test]
+fn a_directorys_or_fifos_new_times_pass_a_files_or_symlinks_do_not() {
+    use rustix::fs::{AtFlags, CWD, Timespec, Timestamps, utimensat};
+    let then = Timespec {
+        tv_sec: 1,
+        tv_nsec: 0,
+    };
+    let old = Timestamps {
+        last_access: then,
+        last_modification: then,
+    };
+    // A root walked with a file, a FIFO and a symlink added in `d`, then
+    // exported after `rels` got old times.
+    let export_after_touching = |rels: &[&str]| {
+        let f = Fixture::new();
+        let d = diff_after(&f, |f| {
+            f.write("d/f", b"x");
+            rustix::fs::mknodat(
+                CWD,
+                f.p("d/p"),
+                rustix::fs::FileType::Fifo,
+                rustix::fs::Mode::from_raw_mode(0o644),
+                0,
+            )
+            .unwrap();
+            symlink("f", f.p("d/l")).unwrap();
+        });
+        for rel in rels {
+            utimensat(CWD, f.p(rel), &old, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        }
+        d.export(&f.root, options(), Vec::new())
+    };
+    export_after_touching(&["d", "d/p"]).unwrap();
+    for rel in ["d/f", "d/l"] {
+        let e = export_after_touching(&[rel]).unwrap_err();
+        assert!(
+            e.to_string().contains("changed between the walk"),
+            "{rel}: {e}"
+        );
+    }
+}
+
 #[test]
 fn a_parent_swapped_for_a_symlink_is_never_followed() {
     let f = Fixture::new();

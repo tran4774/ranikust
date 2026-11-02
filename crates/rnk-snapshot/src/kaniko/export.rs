@@ -303,7 +303,12 @@ fn same_stat(st: &Stat, meta: &EntryMeta) -> bool {
                 st.size == meta.size && st.mtime == meta.mtime && st.ctime == meta.ctime
             }
             FileType::Symlink => st.mtime == meta.mtime && st.ctime == meta.ctime,
-            _ => true,
+            FileType::Directory
+            | FileType::CharDevice
+            | FileType::BlockDevice
+            | FileType::Fifo
+            | FileType::Socket
+            | FileType::Unknown => true,
         }
 }
 

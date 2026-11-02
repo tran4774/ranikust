@@ -490,6 +490,35 @@ impl Walker {
     }
 }
 
+/// Walks `root` as it is now, as the base of a stage's next diff, with the
+/// stage's walker in `slot`, made at its first walk (it owns a thread pool).
+/// Shared by both kinds of kaniko-mode stage root.
+pub(super) fn baseline_in(
+    slot: &mut Option<Walker>,
+    opts: WalkOptions,
+    root: &RootPath,
+    ignore: &IgnoreList,
+) -> Result<()> {
+    let walker = match slot.as_mut() {
+        Some(w) => w,
+        None => slot.insert(Walker::new(opts)?),
+    };
+    walker.forget();
+    walker.baseline(root, ignore)?;
+    Ok(())
+}
+
+/// The diff of `root` since the baseline the stage's walker in `slot` took.
+pub(super) fn diff_in(
+    slot: &mut Option<Walker>,
+    root: &RootPath,
+    ignore: &IgnoreList,
+) -> Result<WalkDiff> {
+    slot.as_mut()
+        .ok_or(Error::State("no baseline walk before the layer"))?
+        .diff(root, ignore)
+}
+
 /// A mutex's value; a panicked worker aborts the release build, so a
 /// poisoned lock only carries what was there.
 fn into_inner<T>(m: Mutex<T>) -> T {

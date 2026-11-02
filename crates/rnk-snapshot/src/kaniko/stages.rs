@@ -47,7 +47,7 @@ use rnk_rootfs::{
 use rnk_store::Store;
 
 use super::root::{KanikoLayer, extract_blob};
-use super::walk::{WalkDiff, WalkOptions, Walker};
+use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
 use crate::stage::{Base, ExportLayer, LayerOpen, Snapshotter, StageRootfs};
@@ -235,10 +235,7 @@ impl Snapshotter for KanikoStages {
         };
         let span = tracing::info_span!("rnk_snapshot.prepare", layers);
         let _entered = span.enter();
-        let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
-        // Made and opened on the same parent descriptor, checked empty and
-        // ours: a name swapped in between is refused, never followed.
-        let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+        let (name, dir) = new_stage_dir(shared)?;
         let root = match dir.create_sub_root("rootfs", 0o755) {
             Ok(root) => root,
             Err(e) => {
@@ -271,8 +268,7 @@ impl Snapshotter for KanikoStages {
         let shared = &self.shared;
         let span = tracing::info_span!("rnk_snapshot.prepare", layers = 0, handed_over = true);
         let _entered = span.enter();
-        let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
-        let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+        let (name, dir) = new_stage_dir(shared)?;
         match parent.hand_over(&dir) {
             Ok(root) => Ok(KanikoStage::new(shared, name, dir, root)),
             Err(e) => {
@@ -284,12 +280,27 @@ impl Snapshotter for KanikoStages {
     }
 }
 
-/// Deletes a stage directory whose root could not be made.
+/// Makes the next stage directory in `builds/<id>/stages`, private, and
+/// opens it: made and opened on the same parent descriptor, checked empty
+/// and ours, so a name swapped in between is refused, never followed.
+fn new_stage_dir(shared: &StagesShared) -> Result<(String, RootPath)> {
+    let name = shared.next.fetch_add(1, Ordering::Relaxed).to_string();
+    let dir = shared.stages.create_sub_root(&name, PRIVATE)?;
+    Ok((name, dir))
+}
+
+/// Deletes the stage directory `name` (opened as `dir`) and what it holds,
+/// through descriptors, crossing no mount.
+fn delete_stage_dir(shared: &StagesShared, name: &str, dir: &RootPath) -> Result<()> {
+    delete_contents(dir, &IgnoreList::new())?;
+    shared.stages.remove_dir(name)?;
+    Ok(())
+}
+
+/// Deletes a stage directory whose root could not be made or handed over;
+/// a failure is logged, the caller returns its own error.
 fn remove_stage_dir(shared: &StagesShared, name: &str, dir: &RootPath) {
-    let r = delete_contents(dir, &IgnoreList::new())
-        .map_err(Error::from)
-        .and_then(|()| shared.stages.remove_dir(name).map_err(Error::from));
-    if let Err(r) = r {
+    if let Err(r) = delete_stage_dir(shared, name, dir) {
         tracing::warn!("removing the stage directory {name}: {r}");
     }
 }
@@ -425,19 +436,17 @@ impl KanikoStage {
     fn remove(&self) -> Result<()> {
         let span = tracing::info_span!("rnk_snapshot.release");
         let _entered = span.enter();
-        delete_contents(&self.dir, &IgnoreList::new())?;
-        self.shared.stages.remove_dir(&self.name)?;
-        Ok(())
+        delete_stage_dir(&self.shared, &self.name, &self.dir)
     }
 
     /// Walks the root as it is now, as the base of the next diff.
     fn baseline(&mut self) -> Result<()> {
-        let walker = match self.walker.as_mut() {
-            Some(w) => w,
-            None => self.walker.insert(Walker::new(self.shared.walk)?),
-        };
-        walker.forget();
-        walker.baseline(&self.root, &self.shared.ignore)?;
+        baseline_in(
+            &mut self.walker,
+            self.shared.walk,
+            &self.root,
+            &self.shared.ignore,
+        )?;
         self.walked = true;
         Ok(())
     }
@@ -486,11 +495,7 @@ impl StageRootfs for KanikoStage {
                 root: Arc::clone(&self.root),
             });
         }
-        let walker = self
-            .walker
-            .as_mut()
-            .ok_or(Error::State("no baseline walk before the layer"))?;
-        let diff = walker.diff(&self.root, &self.shared.ignore)?;
+        let diff = diff_in(&mut self.walker, &self.root, &self.shared.ignore)?;
         Ok(KanikoStageDiff {
             diff,
             root: Arc::clone(&self.root),
