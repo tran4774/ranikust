@@ -24,6 +24,9 @@
 //! - Does not decompress layers: the caller chains `rnk-layer`'s decoder into
 //!   the extraction, and this crate never depends on `rnk-layer`.
 //! - Does not mount, create namespaces or run processes (`rnk-sandbox`).
+//! - Keeps one process-wide setting: the `tar-header` limit on extension
+//!   headers ([`set_extension_header_limit`], ADR-0079), set by the binary
+//!   before any build.
 
 mod copy;
 mod delete;
@@ -43,7 +46,8 @@ pub use copy::{CopyOpts, copy, copy_filtered};
 pub use delete::{Pruned, delete_contents, prune};
 pub use error::{Error, Result};
 pub use extract::{
-    Extracted, Whiteouts, extract, extract_live, extract_live_literal, extract_overlay,
+    DEFAULT_EXTENSION_HEADER_LIMIT, Extracted, Whiteouts, extract, extract_live,
+    extract_live_literal, extract_overlay, set_extension_header_limit,
 };
 pub use ignore::IgnoreList;
 pub use meta::{FileTime, FileType, Meta, Stat, is_overlay_own};
