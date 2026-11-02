@@ -552,9 +552,12 @@ Entry format:
   of ADR-0076: a context file the owner of the directory it is in could not
   read by its mode bits is refused (owner bits for the directory's owner,
   group bits for the directory's group, else other bits; root's
-  directories read anything); other group memberships are not looked up,
-  so such a file is refused. Recorded in
-  [ADR-0076](adr/0076-the-build-context-owner-is-a-lower-trust-principal.md);
+  directories read anything unless their group or others may write them).
+  It is an approximation: supplementary groups are not looked up and ACLs
+  are not read, so it fails closed in the usual direction only (a file
+  readable through another group or an ACL grant is refused) and can pass
+  a file an ACL deny entry or a group-excluding mode would deny. Recorded
+  in [ADR-0076](adr/0076-the-build-context-owner-is-a-lower-trust-principal.md);
   (b) can follow with Phase 5's context reader.
 - **Area:** `rnk-context`, `rnk-rootfs` (security)
 - **Context:** ranikust reads context files as root, so `COPY` would copy

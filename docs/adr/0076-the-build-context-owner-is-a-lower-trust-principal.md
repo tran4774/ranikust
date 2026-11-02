@@ -153,8 +153,15 @@ with no new flag.
      catches a stale planted link, one whose other name is gone.
 
    Details of the rule:
-   - Group membership beyond the directory's own group is not looked up, so
-     such a file is refused (fail closed). ACLs are not read.
+   - The rule is an approximation of what the directory's owner may read.
+     It does not look the owner's supplementary groups up, and it does not
+     read ACLs. It fails closed in the usual direction only: a file the
+     owner could read through another of their groups, or through an ACL
+     grant, is refused. In the other direction it can pass a file the owner
+     could not read: an ACL deny entry, or a group-excluding mode (`0604`)
+     whose group the owner belongs to as a supplementary group, or a
+     directory group (inherited from a setgid parent, or set by root) the
+     owner is not in.
    - A directory root owns reads anything, as root does, so a root-made
      checkout and a directory `sudo` made in one are unchanged. The
      exception is a root-owned directory its group or others may write (a
@@ -196,9 +203,13 @@ Not covered:
   `/home -> /var/home`, `/var/run -> /run`. The real path works, and the
   message says so.
 - Bad, because a context file readable only through a group the
-  directory's owner belongs to, other than the directory's own, is refused:
-  ranikust does not look the owner's groups up. Such files are rare in a
-  context, and the message says why.
+  directory's owner belongs to, other than the directory's own, or through
+  an ACL grant, is refused: ranikust does not look the owner's groups or
+  ACLs up. Such files are rare in a context, and the message says why.
+- Bad, because the readability rule is an approximation, not the kernel's
+  answer: an ACL deny entry or a group-excluding mode can let through a
+  file the owner could not read. Reading as the owner (Q-438's option (b))
+  closes that with Phase 5's context reader.
 - Neutral, because `rnk-rootfs` now also reaches operator output paths on
   the host (`OutputDir`, `reach`). That is still "every filesystem access"
   through descriptors, and still never by joining strings onto a host path.
