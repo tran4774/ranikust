@@ -216,12 +216,17 @@ first. Where the kernel does not report whether `/` is a mount root
 ground and does not fall back to `MS_MOVE`.
 
 Rootless overlay mode and the guidance above that belongs to it are planned
-for Phase 3. Today root that may not mount takes kaniko mode (a forced
-`--mode=overlay` is told to), and only a process that is not root, or a
-failed probe step, gets a refusal: the failing step with its errno and the
-way out (`sudo` or a `--privileged` container for a process that is not
-root). A host-side failure such as an unwritable state directory is
-reported as it is, with nothing extra (`crates/ranikust/src/setup.rs`).
+for Phase 3. Today root that may not mount takes kaniko mode in a container
+and is refused on a host (ADR-0050; a forced `--mode=overlay` is told to use
+kaniko mode). Refusals also come from a process that is not root, a failed
+probe step, kaniko mode on `/` where `refuse_unsafe_slash` stops it (root
+may mount, `--network=none`, a writable `/proc/sys`, ADR-0054) and a
+container where root may mount but overlayfs is unusable
+(`Route::RefuseInContainer`). A refusal gives the failing step with its
+errno and the way out (`sudo` or a `--privileged` container for a process
+that is not root). A host-side failure such as an unwritable state
+directory is reported as it is, with nothing extra
+(`crates/ranikust/src/setup.rs`).
 
 ## Failure handling
 

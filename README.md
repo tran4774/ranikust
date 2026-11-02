@@ -56,23 +56,25 @@ uses the fastest strategy available:
 ```mermaid
 flowchart LR
     build(["ranikust build"]) --> probe{"Probe what the<br/>environment allows"}
-    probe -- "may mount<br/>(root, privileged, rootless userns)" --> overlay["<b>overlay mode</b><br/>per-instruction overlay layers<br/>parallel stages<br/>isolated RUN"]
+    probe -- "may mount<br/>(root, privileged)" --> overlay["<b>overlay mode</b><br/>per-instruction overlay layers<br/>parallel stages<br/>isolated RUN"]
     probe -- "root, may not mount<br/>(default Docker, most pods)" --> kaniko["<b>kaniko mode</b><br/>parallel walk + hash<br/>stages in sequence<br/>like kaniko"]
     probe -- "neither" --> refuse["<b>refuse</b><br/>with concrete guidance"]
 ```
 
-The probe performs each step for real (create a namespace, write the uid
-map, mount an overlay, mount `/proc`, `pivot_root`) instead of guessing from
-kernel versions, because many environments allow the first step and block a
-later one. See [ADR-0002](docs/adr/0002-two-snapshot-modes.md) and
+The probe performs each step for real (enter a mount namespace, mount an
+overlay, mount `/proc`, `pivot_root`) instead of guessing from kernel
+versions, because many environments allow the first step and block a later
+one. Writing a uid map, for rootless mode, comes in Phase 3. See
+[ADR-0002](docs/adr/0002-two-snapshot-modes.md) and
 [ADR-0004](docs/adr/0004-support-every-privilege-level.md).
 
 | Where you run it | Mode |
 |---|---|
 | Host or VM as root, privileged container | overlay |
-| Rootless podman, regular user on Debian, Fedora or RHEL | overlay (rootless) |
 | Default Docker container, ordinary Kubernetes pod, GKE Autopilot | kaniko |
-| Regular user on Ubuntu 24.04+ without an AppArmor profile, PSS-restricted pod | refuses, explains what to change |
+| Rootless podman (default options) | kaniko (rootless overlay planned, Phase 3) |
+| Regular user on Debian, Fedora or RHEL | refuses: run as root or in a container (rootless overlay planned, Phase 3) |
+| Regular user on Ubuntu 24.04+, PSS-restricted pod | refuses; for Ubuntu 24.04+ an AppArmor profile is the planned remedy, with rootless overlay (Phase 3) |
 
 ## How it compares
 
@@ -134,7 +136,9 @@ buildable from day one. ranikust requires Linux 5.8 or later
       export, push to registries, `RUN --mount=type=cache|secret`
 - [ ] **Phase 2, kaniko mode:** parallel walk and hash, safe workdir handling
 - [ ] **Phase 3, rootless and probing:** user-namespace overlay, automatic
-      mode selection, a test matrix across privilege levels
+      mode selection, a test matrix across privilege levels (in part:
+      automatic mode selection and refusing with guidance are built; the
+      user-namespace overlay, `--seccomp` and `--userns` are not)
 - [ ] **Phase 4, cache:** versioned cache keys, registry-backed layer cache
 - [ ] **Phase 5, feature parity:** `ADD` from URLs and git, bind mounts,
       `ONBUILD`, `COPY --link`, registry mirrors, credential helpers
