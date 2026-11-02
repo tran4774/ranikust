@@ -114,7 +114,7 @@ fn a_root_only_file_hardlinked_into_the_context_is_never_read() {
     let e = rnk_rootfs::copy(ctx.root(), "stale", &dst_root, "stale", &opts).unwrap_err();
     assert!(e.to_string().contains("could not read"), "{e}");
     let e = rnk_rootfs::copy(ctx.root(), "", &dst_root, "all", &opts).unwrap_err();
-    assert!(e.to_string().contains("build context"), "{e}");
+    assert!(e.to_string().contains("hardlink"), "{e}");
     assert!(!dst.path().join("s").exists() && !dst.path().join("stale").exists());
     rnk_rootfs::copy(ctx.root(), "rootdir", &dst_root, "rootdir", &opts).unwrap();
     rnk_rootfs::copy(ctx.root(), "own", &dst_root, "own", &opts).unwrap();
