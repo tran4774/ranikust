@@ -41,20 +41,50 @@ impl DirSource {
 
 impl ContextSource for DirSource {
     fn open(&self) -> Result<Context> {
-        // The user's own argument: resolving its symlinks on the host is
-        // fine, and `RootPath::open` wants a path without any.
-        let canonical = std::fs::canonicalize(&self.path).map_err(|source| Error::Dir {
+        // The operator types the path, but the build context's owner may
+        // control a symlink in it: one committed to the checkout
+        // (`services/api -> /root/.docker`), or a component they own. So
+        // none is followed (`RESOLVE_NO_SYMLINKS`, ADR-0076); `..` is then
+        // the same physically and lexically.
+        let dir_err = |source| Error::Dir {
             path: self.path.clone(),
             source,
+        };
+        let abs = std::path::absolute(&self.path).map_err(dir_err)?;
+        let root = RootPath::open(&abs).map_err(|e| match e {
+            rnk_rootfs::Error::Io { source, .. }
+                if source.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) =>
+            {
+                Error::Symlink {
+                    path: self.path.clone(),
+                }
+            }
+            rnk_rootfs::Error::Io { source, .. } => dir_err(source),
+            e => e.into(),
         })?;
-        let root = RootPath::open(&canonical)?;
         let fence = Fence::of(&root)?;
         Ok(Context {
             root,
-            origin: canonical,
+            origin: clean(&abs),
             fence,
         })
     }
+}
+
+/// `path` (absolute) with `.` dropped and `..` taken back, lexically: the
+/// physical path once no component is a symlink.
+fn clean(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Opens the source a parsed `--context` names.

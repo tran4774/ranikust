@@ -21,6 +21,35 @@ fn p(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// `--context` is never resolved through a symlink (ADR-0076): one committed
+/// to a checkout (`services/api -> /root/.docker`), or a component a
+/// lower-trust account owns, would make a root-only directory the context.
+#[test]
+fn a_context_path_through_a_symlink_is_refused() {
+    let secret_dir = ctx_dir();
+    fs::write(secret_dir.path().join("token"), b"DUMMY-TOKEN\n").unwrap();
+    let checkout = ctx_dir();
+    fs::create_dir(checkout.path().join("services")).unwrap();
+    symlink(secret_dir.path(), checkout.path().join("services/api")).unwrap();
+    symlink(checkout.path(), checkout.path().join("services/up")).unwrap();
+    for path in [
+        checkout.path().join("services/api"),
+        checkout.path().join("services/up/services"),
+    ] {
+        let err = DirSource::new(&path).open().unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("symlink") && text.contains("realpath"),
+            "{}: {text}",
+            path.display()
+        );
+    }
+    // The same directory by its real path, `..` included, is fine.
+    let real = checkout.path().join("services/../services");
+    let ctx = DirSource::new(&real).open().unwrap();
+    assert_eq!(ctx.origin(), checkout.path().join("services"));
+}
+
 #[test]
 fn walks_in_buildkit_order_without_following_symlinks() {
     let outside = ctx_dir();

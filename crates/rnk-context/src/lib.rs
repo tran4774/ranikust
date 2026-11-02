@@ -84,6 +84,19 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    /// The local context directory is, or passes through, a symlink, which
+    /// ranikust does not follow: the build context's owner could point it
+    /// anywhere (ADR-0076).
+    #[error(
+        "build context directory {}: it is or passes through a symlink, which ranikust does \
+         not follow since the context's owner could point it anywhere (ADR-0076); pass the \
+         path without symlinks, as `realpath` prints it",
+        path.display()
+    )]
+    Symlink {
+        /// The directory as given.
+        path: PathBuf,
+    },
     /// The ignore file cannot be read.
     #[error("ignore file {}: {source}", path.display())]
     IgnoreFile {
