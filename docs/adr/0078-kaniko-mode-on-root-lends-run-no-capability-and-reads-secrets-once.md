@@ -120,10 +120,18 @@ one in kaniko mode on `/`. Whether to refuse such files is Q-445.
 
 ## Evidence
 
-- VM suite `secrets`, rootful Docker, Ubuntu 24.04 [measured]: vector V11
-  (ranikust's capability sets beyond the `RUN`'s) and V12 (a `--secret`
-  file swapped for a symlink to `/proc/self/comm` by an earlier `RUN`).
-  The results before and after this change are in the branch's report.
+- VM suite `secrets`, 2026-11-02, rootful Docker, Ubuntu 24.04 (kernel
+  6.8) [measured]:
+  - **V11:** compares ranikust's capability sets with the `RUN`'s.
+    Before this change, in the `--cap-add SYS_PTRACE` scenario, ranikust
+    held `CapPrm`, `CapEff` and `CapBnd` `a80c25fb` against the `RUN`'s
+    `a80425fb`, the difference being `CAP_SYS_PTRACE`. After it, ranikust
+    holds nothing beyond the `RUN`'s in any scenario.
+  - **V12:** an earlier `RUN` swapped a `--secret` file for a symlink to
+    `/proc/self/comm`. Before this change, the later `RUN`'s variable held
+    `ranikust`, ranikust's own name, in all three scenarios. After it,
+    the variable held the original bytes.
+  - V1 to V10 are unchanged.
 - T0 `a_file_secret_swapped_after_the_start_changes_nothing`
   (`rnk-builder`) [measured]: before this change, a later `RUN` got the
   planted file's bytes.
