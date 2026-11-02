@@ -257,19 +257,22 @@ pub(crate) fn fd_path(fd: &impl AsFd) -> PathBuf {
 
 /// [`PREFIX`] and 128 random bits in hex.
 pub(crate) fn random_name() -> Result<String> {
+    random_name_from(|rest| rustix::rand::getrandom(rest, rustix::rand::GetRandomFlags::empty()))
+}
+
+/// [`random_name`] with the bits from `fill`, which may fill less than
+/// asked or be interrupted, as `getrandom(2)`.
+fn random_name_from(
+    mut fill: impl FnMut(&mut [u8]) -> rustix::io::Result<usize>,
+) -> Result<String> {
     let mut bytes = [0_u8; 16];
     let mut filled = 0;
     while filled < bytes.len() {
         let rest = bytes.get_mut(filled..).unwrap_or_default();
-        match rustix::rand::getrandom(rest, rustix::rand::GetRandomFlags::empty()) {
+        match fill(rest) {
             Ok(n) => filled += n,
             Err(Errno::INTR) => {}
-            Err(e) => {
-                return Err(Error::AnonymousFile {
-                    path: PathBuf::from("getrandom"),
-                    source: e.into(),
-                });
-            }
+            Err(e) => return Err(Error::Random(e.into())),
         }
     }
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -366,7 +369,7 @@ mod tests {
         let anon = files(dir.path());
         anon.force(NAMED);
         let _run = anon.fence.enter_run().unwrap();
-        assert!(matches!(anon.create(), Err(Error::Anonymous(_))));
+        assert!(matches!(anon.create(), Err(Error::Anonymous { .. })));
         assert!(!anon.in_memory(), "never falls back to memory for that");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
@@ -445,6 +448,33 @@ mod tests {
             .collect();
         assert_eq!(left, [std::ffi::OsString::from("keep")]);
         assert!(Path::new("/etc").exists(), "the link is never followed");
+    }
+
+    #[test]
+    fn a_failing_random_source_is_named_as_such() {
+        let e = random_name_from(|_| Err(Errno::NOSYS)).unwrap_err();
+        assert!(matches!(e, Error::Random(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "drawing a random name with getrandom: {}",
+                std::io::Error::from(Errno::NOSYS)
+            )
+        );
+        // An interrupted call is retried, a short one continued.
+        let mut calls = 0;
+        let name = random_name_from(|rest| {
+            calls += 1;
+            match calls {
+                1 => Err(Errno::INTR),
+                _ => {
+                    rest[0] = 0xab;
+                    Ok(1)
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!(name, format!("{PREFIX}{}", "ab".repeat(16)));
     }
 
     #[test]

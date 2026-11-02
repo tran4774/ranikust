@@ -13,7 +13,9 @@
 //!   keys sorted as Go's encoding of a map.
 //!
 //! Differences from logrus: times are UTC (`Z`), not the local zone; field
-//! values are their `Debug` or `Display` text, not Go's `%v`.
+//! values are their `Debug` or `Display` text, not Go's `%v`; the colored
+//! message is escaped (`crate::escape`), where logrus writes it as it is,
+//! so a name in it cannot drive the terminal or start a line.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -26,6 +28,7 @@ use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
 
 use crate::LogFormat;
+use crate::escape::{json_text, terminal_text};
 use crate::time::rfc3339_seconds;
 
 /// The event formatter of the log layer.
@@ -69,10 +72,11 @@ impl Logrus {
         } else {
             format!("{:04}", self.start.elapsed().as_secs())
         };
+        // The only escape sequences in the line are the formatter's own.
         let mut line = format!(
             "\x1b[{color}m{}\x1b[0m[{when}] {:<44} ",
             prefix(level),
-            f.message
+            terminal_text(&f.message)
         );
         for (k, v) in &f.fields {
             line.push_str(&format!(" \x1b[{color}m{k}\x1b[0m={}", quoted(v)));
@@ -151,8 +155,9 @@ fn quoted(value: &str) -> String {
     if plain {
         value.to_owned()
     } else {
-        // JSON string escaping is Go's `%q` for printable text.
-        serde_json::Value::String(value.to_owned()).to_string()
+        // JSON string escaping is Go's `%q` for printable text; DEL, C1
+        // and bidi controls escaped too, as `%q` does.
+        json_text(serde_json::Value::String(value.to_owned()).to_string())
     }
 }
 
@@ -179,7 +184,7 @@ fn json(level: Level, f: &Fields) -> String {
     object.insert("level".to_owned(), name(level).into());
     object.insert("msg".to_owned(), f.message.clone().into());
     object.insert("time".to_owned(), rfc3339_seconds(SystemTime::now()).into());
-    serde_json::Value::Object(object).to_string()
+    json_text(serde_json::Value::Object(object).to_string())
 }
 
 #[cfg(test)]
@@ -242,5 +247,37 @@ mod tests {
         assert_eq!(quoted("plain-1.2/x@y"), "plain-1.2/x@y");
         assert_eq!(quoted("two words"), r#""two words""#);
         assert_eq!(quoted(""), r#""""#);
+    }
+
+    /// A tar entry name from a base image, as a message and as a field:
+    /// an OSC title, a bell, a forged log line, DEL, a C1 CSI and a bidi
+    /// override.
+    const HOSTILE: &str = "a\x1b]0;x\x07\r\nINFO[0001] built\t\u{7f}\u{9b}31m\u{202e}z";
+
+    fn raw_controls(line: &str) -> Vec<char> {
+        line.chars()
+            .filter(|&c| crate::escape::needs_escape(c))
+            .collect()
+    }
+
+    #[test]
+    fn untrusted_text_reaches_no_format_raw() {
+        let hostile = fields(HOSTILE, &[("path", HOSTILE)]);
+        for line in [text(Level::WARN, &hostile), json(Level::WARN, &hostile)] {
+            assert_eq!(raw_controls(&line), [], "{line:?}");
+        }
+        let f = Logrus {
+            format: LogFormat::Color,
+            full_timestamp: false,
+            start: Instant::now(),
+        };
+        let line = f.colored(Level::WARN, &hostile);
+        assert!(line.contains(r"a\u{1b}]0;x\u{7}\r\nINFO"), "{line:?}");
+        // Only the formatter's own colors are left: level, key, resets.
+        let own = line.replace("\x1b[33m", "").replace("\x1b[0m", "");
+        assert_eq!(raw_controls(&own), [], "{line:?}");
+        // JSON escapes, it does not change the text.
+        let v: serde_json::Value = serde_json::from_str(&json(Level::WARN, &hostile)).unwrap();
+        assert_eq!((&v["msg"], &v["path"]), (&HOSTILE.into(), &HOSTILE.into()));
     }
 }
