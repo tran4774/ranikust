@@ -27,6 +27,12 @@ struct Row {
     set: fn(&mut Limits, u64),
 }
 
+/// The largest size any limit takes: every one bounds what is held in
+/// memory, and the extraction reserves nothing near it up front.
+const MAX_SIZE: u64 = 1 << 30;
+/// The longest `registry-idle`, in milliseconds: a day.
+const MAX_DURATION: u64 = 24 * 3_600_000;
+
 /// Every limit, in the order `--help` and errors list them.
 const LIMITS: [Row; 5] = [
     Row {
@@ -210,7 +216,16 @@ pub(crate) fn parse_limit(arg: &str) -> Result<LimitArg, String> {
         Unit::Size => parse_size(value),
         Unit::Duration => parse_duration(value),
     };
+    let max = match row.unit {
+        Unit::Size => MAX_SIZE,
+        Unit::Duration => MAX_DURATION,
+    };
     match parsed {
+        Some(v) if v > max => Err(format!(
+            "{name}={value:?}: at most {}; a bound past that would let one \
+             input take the machine",
+            show(row.unit, max)
+        )),
         Some(v) if v > 0 => Ok(LimitArg {
             name: row.name,
             value: v,
@@ -325,5 +340,18 @@ mod tests {
             let err = parse_limit(bad).unwrap_err();
             assert!(err.contains("above 0"), "{bad}: {err}");
         }
+        // Each limit has a ceiling: 1 GiB for sizes, a day for durations.
+        for over in [
+            "tar-header=1025MiB",
+            "manifest=2GiB",
+            "registry-body=1073741825",
+            "config=8GiB",
+            "registry-idle=25h",
+        ] {
+            let err = parse_limit(over).unwrap_err();
+            assert!(err.contains("at most"), "{over}: {err}");
+        }
+        assert!(parse_limit("tar-header=1GiB").is_ok());
+        assert!(parse_limit("registry-idle=24h").is_ok());
     }
 }

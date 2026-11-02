@@ -405,8 +405,9 @@ pub(crate) struct BuildArgs {
 
     /// Raises or lowers a bound on what a registry or an image can make
     /// ranikust hold or wait for (ADR-0079): sizes in bytes or with KiB,
-    /// MiB, GiB; durations with s, m, h; above 0. Repeat for several; the
-    /// last of one name wins. Limits and defaults: tar-header=1MiB,
+    /// MiB, GiB, at most 1 GiB; durations with s, m, h, at most 24h; above
+    /// 0. Repeat for several; the last of one name wins. Limits and
+    /// defaults: tar-header=1MiB,
     /// manifest=4MiB, registry-body=1MiB (token responses; error bodies
     /// are read no further), config=8MiB, registry-idle=2m (no data for
     /// that long fails the request, which is retried).

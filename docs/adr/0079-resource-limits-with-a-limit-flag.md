@@ -57,10 +57,11 @@ wins) changes a bound.
 | `registry-idle` | `2m` | how long a registry may send nothing before the request fails and is retried |
 
 - Sizes are a number of bytes, or a number with `KiB`, `MiB` or `GiB`;
-  durations a number with `s`, `m` or `h`. A value must be above 0, and
-  there is no `unlimited`: an operator who needs more names a larger
-  number. An unknown name or a bad value is refused at start-up with every
-  name, its default and what it bounds.
+  durations a number with `s`, `m` or `h`. A value must be above 0 and at
+  most 1 GiB (sizes) or 24 h (durations), and there is no `unlimited`: an
+  operator who needs more names a larger number within the ceiling. An
+  unknown name or a bad value is refused at start-up with every name, its
+  default and what it bounds.
 - A limit hit fails the build with an error that names the limit and how
   to raise it, for example `manifest ... is larger than 4 MiB (limit
   "manifest"); raise it with --limit manifest=<size>`. It is not retried.

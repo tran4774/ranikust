@@ -118,7 +118,8 @@ A registry or an image a Dockerfile names could otherwise make ranikust
 hold gigabytes in memory or wait forever. These bounds apply by default;
 `--limit NAME=VALUE` changes one. Sizes are a number of bytes, or a number
 with `KiB`, `MiB` or `GiB`; durations a number with `s`, `m` or `h`. A
-value must be above 0, and there is no "unlimited": name a larger number.
+value must be above 0 and at most `1GiB` (sizes) or `24h` (durations), and
+there is no "unlimited": name a larger number within that.
 
 | Name | Default | Bounds |
 |---|---|---|
