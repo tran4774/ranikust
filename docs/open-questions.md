@@ -431,9 +431,11 @@ Entry format:
   that the registry names in its `WWW-Authenticate` challenge, and any
   redirect it answers with. A registry named by the Dockerfile (`FROM`,
   `COPY --from`) can therefore make ranikust send a `GET` to any http(s)
-  URL, internal addresses and the metadata service included. A token-shaped
-  `200` body is then used as a token, and a 200-character excerpt of an
-  error body can reach the build's error message. With the default host
+  URL, internal addresses and the metadata service included. A `200` body
+  with a JSON `token` or `access_token` of printable ASCII is accepted as a
+  token and sent back to that registry as its bearer token **[inferred]**,
+  and a 200-character excerpt of an error body can reach the build's error
+  message. With the default host
   network a `RUN` already reaches all of this (ADR-0010), so the question
   matters only for builds run with `--network=none`. Kaniko mode on a
   container's `/` refuses `--network=none` (ADR-0057).

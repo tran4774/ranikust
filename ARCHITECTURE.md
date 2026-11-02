@@ -293,9 +293,10 @@ Only `ranikust` depends on `rnk-metrics`; libraries reach it through
    while single-threaded; check the state directory;
    start-up clean-up of the store (`rnk-store`).
 2. **Probe** (`ranikust`, still single-threaded, running the probes of
-   `rnk-sandbox` and `rnk-snapshot` in order): choose overlay root, overlay
-   rootless, kaniko, or refuse; `--mode=overlay|kaniko` skips the choice but
-   not the checks ([modes-and-detection](docs/design/modes-and-detection.md)).
+   `rnk-sandbox` and `rnk-snapshot` in order): choose overlay root, kaniko,
+   or refuse (overlay rootless is planned, Phase 3); `--mode=overlay|kaniko`
+   skips the choice but not the checks
+   ([modes-and-detection](docs/design/modes-and-detection.md)).
    In kaniko mode, pick the root: `/` in a container (`flock` on `/`
    itself), else a directory per stage, `<state>/builds/<id>/stages/<n>/rootfs`
    (ADR-0059), where root must be able to mount (Q-330).

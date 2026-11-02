@@ -247,10 +247,15 @@ own for the kaniko-mode walk; the child sets it right before `execve`.
   [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)); the
   one filter that exists is the `--network=none` one of
   [ADR-0033](../adr/0033-network-none-loopback-through-a-user-namespace.md).
-  Docker's default profile refuses what a `RUN` here can do: use root's user
-  and persistent keyrings, open `AF_VSOCK` and `AF_ALG` sockets, and, where
+  A default `RUN` here can open `AF_VSOCK` and `AF_ALG` sockets and, where
   the host lets a process without `CAP_SYS_ADMIN` create one, make a user
-  namespace. See the accepted risks of the
+  namespace (the `--network=none` filter refuses `CLONE_NEWUSER`); a root
+  `RUN` can also use root's user and persistent keyrings. The only evidence
+  here for what a Docker-style profile refuses is the moby/profiles default
+  profile as BuildKit `cd8ee24` vendors it
+  (`vendor/github.com/moby/profiles/seccomp/default_linux.go`) **[external]**:
+  it leaves out `AF_VSOCK` and `AF_ALG`, in a recent change, and allows a new
+  user namespace only with `CAP_SYS_ADMIN`. See the accepted risks of the
   [threat model](../security/threat-model.md#6-accepted-risks).
 - A `RUN` gets stdout and stderr as pipes of its own, owned by its user
   and copied by a thread to ranikust's streams, never ranikust's own

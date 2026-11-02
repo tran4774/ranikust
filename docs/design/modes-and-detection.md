@@ -32,9 +32,12 @@ user namespace for the probe or the build: `enter_build_namespace` in
 sandbox probe (`crates/rnk-sandbox/src/probe.rs`) runs the `RUN` sequence in
 an empty root with `pivot_root`, then `MS_MOVE`, and `Outcome` in
 `crates/ranikust/src/setup.rs` has `OverlayRoot` alone (kaniko mode is set
-up by `set_up_kaniko`). Until then, a process that cannot enter a mount
-namespace gets kaniko mode if it is root and a refusal saying it needs root
-if it is not (`namespace_refusal`).
+up by `set_up_kaniko`). Until then, under `--mode=auto`, root lacking the
+privilege to mount (`Error::Privilege`, `namespace_refusal`) goes to kaniko
+mode, which builds on `/` in a container and is refused on a host, where
+root may not mount (`host_without_mounts`, ADR-0050); a process that is not
+root is refused with `NEEDS_ROOT`; and `--mode=overlay` is told to use kaniko
+mode (`NEEDS_KANIKO_MODE`).
 
 ## Where environments land
 
@@ -57,8 +60,9 @@ Most locked-down CI pods land in kaniko mode. Overlay is available only where
 BuildKit or buildah would also run. Until rootless mode is built, the two
 rows marked planned end differently: root without `CAP_SYS_ADMIN` (the root
 of a rootless podman container, or of a Docker container started without
-`--cap-add SYS_ADMIN`) takes the kaniko path, with its own checks (ADR-0054),
-and an unprivileged user is refused.
+`--cap-add SYS_ADMIN`) goes to kaniko mode under `--mode=auto`, which builds
+on `/` in a container, with its own checks (ADR-0054), and is refused on a
+host; an unprivileged user is refused.
 
 ## Probe order (`--mode=auto`)
 
@@ -212,11 +216,12 @@ first. Where the kernel does not report whether `/` is a mount root
 ground and does not fall back to `MS_MOVE`.
 
 Rootless overlay mode and the guidance above that belongs to it are planned
-for Phase 3. Today an environment that is not overlay as root or kaniko mode
-gets the failing probe step with its errno and the way out: `sudo` or a
-`--privileged` container without root; kaniko mode for root that may not
-mount, as with Docker's defaults; nothing extra for a host-side failure such
-as an unwritable state directory (`crates/ranikust/src/setup.rs`).
+for Phase 3. Today root that may not mount takes kaniko mode (a forced
+`--mode=overlay` is told to), and only a process that is not root, or a
+failed probe step, gets a refusal: the failing step with its errno and the
+way out (`sudo` or a `--privileged` container for a process that is not
+root). A host-side failure such as an unwritable state directory is
+reported as it is, with nothing extra (`crates/ranikust/src/setup.rs`).
 
 ## Failure handling
 
