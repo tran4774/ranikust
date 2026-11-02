@@ -555,14 +555,20 @@ fn a_new_cache_gets_its_owner_and_mode_once() {
 }
 
 /// A cache that cannot be made leaves no temporary directory and no cache:
-/// as a regular user, giving it to root fails.
+/// without the right to give files away, giving it to root fails.
 #[test]
 fn a_failed_new_cache_leaves_nothing() {
-    if rustix::process::geteuid().is_root() {
-        eprintln!("skipped: root can give a directory to root");
+    let dir = tempfile::tempdir().unwrap();
+    // A process that can give a file to root (root, or `CAP_CHOWN`) makes
+    // the cache: nothing fails there to check.
+    let probe = dir.path().join("probe");
+    fs::write(&probe, "").unwrap();
+    let gives_away = std::os::unix::fs::chown(&probe, Some(0), Some(0)).is_ok();
+    fs::remove_file(&probe).unwrap();
+    if gives_away {
+        eprintln!("skipped: this process can give a directory to root");
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&paths(dir.path())).unwrap();
     let owner = rnk_store::CacheOwner {
         uid: 0,
