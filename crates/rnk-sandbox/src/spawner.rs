@@ -3715,11 +3715,13 @@ mod tests {
     /// `sleep 300` under a name of its own; the `RUN` must then be killed,
     /// not left running in its namespaces. Cases: a plain binary as root
     /// (the control), as `USER 1000:1000` (the death signal armed again
-    /// after `setresuid`, which clears it), and as root through a copy
-    /// that is setuid or setgid to 65534, whose `execve` changes the
-    /// credentials and so clears the death signal again, after the child
-    /// last armed it. A `RUN` still running 15 s after its parent thread
-    /// ended is killed by the test and counted.
+    /// after `setresuid`, which clears it), as root through a copy that is
+    /// setuid or setgid to 65534, whose `execve` changes the credentials
+    /// and so clears the death signal again, after the child last armed
+    /// it, and a `python3` that clears its own with
+    /// `prctl(PR_SET_PDEATHSIG, 0)`, which needs no privilege. A `RUN`
+    /// still running 15 s after its parent thread ended is killed by the
+    /// test and counted.
     #[test]
     #[ignore = "T2: mounts, chown and setuid as real root in a private mount namespace; run in the test VM only"]
     fn red_team_no_run_outlives_the_thread_that_cloned_it() {
@@ -3773,15 +3775,38 @@ mod tests {
                 // After the `chown`, which clears the set-id bits.
                 fs::set_permissions(&bin, Permissions::from_mode(mode)).unwrap();
             }
+            // PID 1 of the `RUN` clears its own death signal, names itself,
+            // then says it is ready.
+            const PRCTL: &str = "import ctypes, time\n\
+                libc = ctypes.CDLL(None)\n\
+                libc.prctl(1, 0, 0, 0, 0)\n\
+                libc.prctl(15, b'rnkt8prctl', 0, 0, 0)\n\
+                open('/r/rnkt8prctl.ready', 'w').close()\n\
+                time.sleep(300)\n";
+            let cases = cases
+                .map(|(case, name, user, _, _)| {
+                    (
+                        case,
+                        name,
+                        user,
+                        format!("touch /r/{name}.ready; exec /{name} 300"),
+                    )
+                })
+                .into_iter()
+                .chain([(
+                    "root, python3 clearing its own death signal",
+                    "rnkt8prctl",
+                    "",
+                    format!("exec /usr/bin/python3 -c \"{PRCTL}\""),
+                )]);
             let parent = ParentPid::new().unwrap();
             let mut outlived = Vec::new();
             let mut control_died = false;
-            for (i, (case, name, user, _, _)) in cases.into_iter().enumerate() {
+            for (i, (case, name, user, script)) in cases.enumerate() {
                 let runner =
                     Runner::new(&top.join(format!("sandbox{i}")), Some(RootEntry::PivotRoot))
                         .unwrap();
                 let ready = root.join("r").join(format!("{name}.ready"));
-                let script = format!("touch /r/{name}.ready; exec /{name} 300");
                 let mut spec =
                     RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
                 spec.user = user.into();

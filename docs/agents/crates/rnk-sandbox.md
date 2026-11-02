@@ -332,9 +332,11 @@ from `rnk-store`, secret file) and passes `--network`.
   `red_team_no_run_outlives_the_thread_that_cloned_it`: a `RUN` cloned on
   a thread that then ends is killed by `PR_SET_PDEATHSIG` as root and as
   `USER 1000:1000` (the re-arm after `setresuid` holds, 0.5 s), but one
-  whose shell `exec`s a copy of `sleep` setuid or setgid to 65534 is still
+  whose shell `exec`s a copy of `sleep` setuid or setgid to 65534, or a
+  `python3` that calls `prctl(PR_SET_PDEATHSIG, 0)` itself, is still
   running 15 s later: the credential change of that `execve` clears the
-  death signal after the child last armed it.
+  death signal after the child last armed it, and any process may clear
+  its own.
 
 ## Metrics
 
