@@ -336,7 +336,9 @@ from `rnk-store`, secret file) and passes `--network`.
   `python3` that calls `prctl(PR_SET_PDEATHSIG, 0)` itself, is still
   running 15 s later: the credential change of that `execve` clears the
   death signal after the child last armed it, and any process may clear
-  its own.
+  its own. Marked `pending T2` so the VM suite skips it until the stub
+  PID 1 of ADR-0080 (`fix/run-stub-init`) lands; restore its `T2` reason
+  then.
 
 ## Metrics
 
