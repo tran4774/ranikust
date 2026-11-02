@@ -389,6 +389,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- A registry named with an upper-case letter and no `.` or `:`
+  (`LOCALDOMAIN/app`, `LOCALHOST/app`) is now reached for every request.
+  The registry client parsed such a reference again by other rules and
+  sent its requests, with the credential configured for that registry, to
+  Docker Hub. References now reach the client built from ranikust's own
+  parse, and a request that would go to another host fails before it is
+  sent.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

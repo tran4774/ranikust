@@ -86,12 +86,15 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 - Credentials never reach `Debug`, `Display`, logs, errors, the image or
   cache keys ([threat model T11](../../security/threat-model.md#5-threats-and-mitigations)), and never go to a plain-HTTP token
   realm of an HTTPS registry.
-- References reach `oci-client` through their string form (ADR-0026).
+- References reach `oci-client` built from the parts `rnk_oci` parsed,
+  never parsed again, and a request fails before it is sent if `oci-client`
+  would address a host or repository other than the one the connection and
+  the credential were chosen for (ADR-0070, refining ADR-0026).
 
 ## Refs
 
 - **Design:** [design/cache-and-store.md#ownership](../../design/cache-and-store.md#ownership) (blob transfer here), [#atomic-publication](../../design/cache-and-store.md#atomic-publication), [#locks](../../design/cache-and-store.md#locks)
-- **Decisions:** [ADR-0024](../../adr/0024-tls-rustls-ring.md) (`ring`, combined trust store), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (DER certs to `oci-client`; helpers external), [ADR-0021](../../adr/0021-rnk-store-crate.md) (blobs go through `rnk-store`), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (`--destination`, `--registry-certificate`, `--cache-repo`), [ADR-0006](../../adr/0006-persistent-store.md) (per-digest locks), [ADR-0026](../../adr/0026-rnk-oci-owns-its-types.md) (references by string)
+- **Decisions:** [ADR-0024](../../adr/0024-tls-rustls-ring.md) (`ring`, combined trust store), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (DER certs to `oci-client`; helpers external), [ADR-0021](../../adr/0021-rnk-store-crate.md) (blobs go through `rnk-store`), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (`--destination`, `--registry-certificate`, `--cache-repo`), [ADR-0006](../../adr/0006-persistent-store.md) (per-digest locks), [ADR-0026](../../adr/0026-rnk-oci-owns-its-types.md) (`oci-spec` types stay inside), [ADR-0070](../../adr/0070-registry-references-reach-oci-client-built-from-parts.md) (references built from parts)
 - **Evidence:** [exp-05 Q4](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180) (`oci-client` behaviour, timings),
   [Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (CAs in `scratch`), [Q7](../../research/experiments/05-rust-ecosystem.md#q7-docker_credential-and-oci-spec) (credential lookup table).
 - **kaniko:** `kaniko@44aa7ddc0 pkg/image/remote/remote.go:40-129` (maps,
