@@ -5,7 +5,9 @@
 //! handles, and it handles `SIGINT` and `SIGTERM` to stop a build. A `RUN`
 //! sending those twice would stop the build before the store empties the
 //! state directory. So they are blocked in every thread and read through a
-//! `signalfd`, which gives the sender, and only the operator's are obeyed.
+//! `signalfd`, which gives the sender, and only the operator's are obeyed:
+//! the others (a `RUN`'s) cancel the build, which still closes its store,
+//! and never stop ranikust at once.
 //!
 //! Who counts as the operator:
 //! - the kernel (a terminal's interrupt);

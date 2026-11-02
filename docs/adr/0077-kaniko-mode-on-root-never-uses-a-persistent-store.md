@@ -107,8 +107,9 @@ empty at its end.
     then, before the rest, which can take long. It is tried once more
     after the emptying, which frees what the `RUN` wrote, and stays. If it still cannot
     be made, the close fails with `Error::Unmarked`, which says that
-    nothing marks the directory and that it must be deleted; no message
-    then claims the marker is there.
+    nothing marks the directory, or that what holds the marker's name is
+    something a `RUN` made, and that the directory must be deleted; no
+    message then claims the marker is there.
 - **A `RUN` cannot stop the build.** A `Direct` `RUN` shares ranikust's PID
   namespace. As the container's PID 1, ranikust gets only the signals it
   handles, and it handles `SIGINT` and `SIGTERM` to stop a build, so a

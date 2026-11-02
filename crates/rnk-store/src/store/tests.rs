@@ -82,6 +82,43 @@ fn a_forged_state_marker_goes_before_the_marker_is_tried_again() {
 }
 
 #[test]
+fn a_marker_name_held_by_what_a_run_made_is_named_in_the_error() {
+    // Root removes the directory below whatever its mode.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    // A RUN replaces the marker with a directory this user cannot empty.
+    let marker = state.join(BUILDING);
+    fs::remove_file(&marker).unwrap();
+    fs::create_dir_all(marker.join("locked")).unwrap();
+    fs::write(marker.join("locked/kept"), b"").unwrap();
+    fs::set_permissions(marker.join("locked"), fs::Permissions::from_mode(0o500)).unwrap();
+    let e = store.close().unwrap_err();
+    fs::set_permissions(marker.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        matches!(
+            e,
+            Error::Unmarked {
+                emptied: true,
+                held: true,
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let shown = e.to_string();
+    assert!(
+        shown.contains("emptied except the name .ranikust-building"),
+        "{shown}"
+    );
+}
+
+#[test]
 fn a_marker_the_close_can_never_make_fails_it_and_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
@@ -91,7 +128,17 @@ fn a_marker_the_close_can_never_make_fails_it_and_says_so() {
     MARKER_CREATE_FAILS.with(|n| n.set(u32::MAX));
     let e = store.close().unwrap_err();
     MARKER_CREATE_FAILS.with(|n| n.set(0));
-    assert!(matches!(e, Error::Unmarked { emptied: true, .. }), "{e:?}");
+    assert!(
+        matches!(
+            e,
+            Error::Unmarked {
+                emptied: true,
+                held: false,
+                ..
+            }
+        ),
+        "{e:?}"
+    );
     let shown = e.to_string();
     assert!(shown.contains("nothing marks it"), "{shown}");
     assert!(shown.contains("delete this directory"), "{shown}");

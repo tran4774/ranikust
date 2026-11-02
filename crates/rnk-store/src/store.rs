@@ -1198,6 +1198,7 @@ impl Store {
                     return Err(Error::Unmarked {
                         path: self.state_path.clone(),
                         emptied: emptied.is_ok(),
+                        held: self.state.statx(BUILDING).is_ok(),
                         why: e.to_string(),
                     });
                 }

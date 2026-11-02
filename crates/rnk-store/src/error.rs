@@ -100,17 +100,17 @@ pub enum Error {
          / ({why}); {}: delete this directory, or its volume, before any other build uses it \
          (ADR-0077)",
         path.display(),
-        if *emptied {
-            "it was emptied, but nothing marks it"
-        } else {
-            "it still holds what a RUN may have written there, and nothing marks it"
-        }
+        unmarked_state(*emptied, *held)
     )]
     Unmarked {
         /// The state directory.
         path: PathBuf,
-        /// Whether everything a `RUN` left there was removed.
+        /// Whether everything a `RUN` left there, but what holds the
+        /// marker's name, was removed.
         emptied: bool,
+        /// Whether something not ranikust's marker holds its name (a
+        /// directory a `RUN` made that could not be removed).
+        held: bool,
         /// Why the marker could not be written.
         why: String,
     },
@@ -216,4 +216,20 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+/// What [`Error::Unmarked`] says of the state directory.
+fn unmarked_state(emptied: bool, held: bool) -> &'static str {
+    match (emptied, held) {
+        (true, false) => "it was emptied, but nothing marks it",
+        (true, true) => {
+            "it was emptied except the name .ranikust-building, which holds something a RUN \
+             made, not ranikust's marker"
+        }
+        (false, false) => "it still holds what a RUN may have written there, and nothing marks it",
+        (false, true) => {
+            "it still holds what a RUN may have written there, and the name .ranikust-building \
+             holds something a RUN made, not ranikust's marker"
+        }
+    }
 }
