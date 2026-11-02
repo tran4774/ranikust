@@ -52,7 +52,8 @@ pub fn terminal_text(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Serialized JSON with DEL, C1 and the bidi controls written as `\uXXXX`.
+/// Serialized JSON with DEL, C1, the bidi controls and U+2028/U+2029
+/// written as `\uXXXX`.
 /// `serde_json` escapes only what JSON requires (below U+0020); those
 /// characters can only occur inside strings, so the value read back is the
 /// same.

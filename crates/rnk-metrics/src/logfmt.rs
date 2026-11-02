@@ -155,8 +155,8 @@ fn quoted(value: &str) -> String {
     if plain {
         value.to_owned()
     } else {
-        // JSON string escaping is Go's `%q` for printable text; DEL, C1
-        // and bidi controls escaped too, as `%q` does.
+        // JSON string escaping is Go's `%q` for printable text; DEL, C1,
+        // bidi controls and U+2028/U+2029 escaped too.
         json_text(serde_json::Value::String(value.to_owned()).to_string())
     }
 }
