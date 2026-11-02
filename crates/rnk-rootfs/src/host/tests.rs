@@ -4,7 +4,7 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::Path;
 
-use super::{Fence, OutputDir, Reached, fault, reach};
+use super::{Fence, OutputDir, Reached, fault, reach, trusted_link};
 use crate::error::Error;
 use crate::root::RootPath;
 
@@ -389,6 +389,38 @@ fn a_symlink_others_could_have_placed_is_not_followed() {
     .unwrap();
     let e = reach(&shared.join("Dockerfile"), &fence).unwrap_err();
     assert!(invalid(&e).contains("does not follow"), "{e}");
+}
+
+/// The link rule as a predicate: a group- or world-writable directory is
+/// trusted only when root owns it and it is on a read-only mount, as
+/// kubelet's ConfigMap volume is (`0777`, root's, mounted read-only)
+/// [inferred]. Other accounts are played by changed fields of a real
+/// `statx`.
+#[test]
+fn a_writable_directory_is_trusted_only_when_root_owns_it_read_only() {
+    let dir = private_dir();
+    symlink("x", dir.path().join("l")).unwrap();
+    let root = RootPath::open(dir.path()).unwrap();
+    let link = root.statx("l").unwrap();
+    let real = root.statx("").unwrap();
+    let link = crate::meta::Stat { uid: 0, ..link };
+    let at = |uid: u32, mode: u32| crate::meta::Stat {
+        uid,
+        mode: (real.mode & !0o7777) | mode,
+        ..real
+    };
+    let other = rustix::process::geteuid().as_raw().wrapping_add(4242);
+    // Root's 0755: trusted whatever the mount.
+    assert!(trusted_link(&link, &at(0, 0o755), false));
+    // Root's 0777 (a ConfigMap volume): only on a read-only mount.
+    assert!(!trusted_link(&link, &at(0, 0o777), false));
+    assert!(trusted_link(&link, &at(0, 0o777), true));
+    assert!(!trusted_link(&link, &at(0, 0o775), false));
+    // Another account's directory is never trusted, read-only or not.
+    assert!(!trusted_link(&link, &at(other, 0o755), true));
+    // A link with another name is never trusted.
+    let twice = crate::meta::Stat { nlink: 2, ..link };
+    assert!(!trusted_link(&twice, &at(0, 0o755), true));
 }
 
 /// A host Dockerfile and the ignore file beside it are judged as a build

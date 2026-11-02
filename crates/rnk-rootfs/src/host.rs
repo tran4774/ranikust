@@ -77,21 +77,33 @@ const KERNEL_FS: [i128; 14] = [
 /// Why [`reach`] refuses a symlink outside the context.
 const UNTRUSTED_LINK: &str = "is a symlink ranikust does not follow (ADR-0076): owned by an \
      account other than root and ranikust's own, hard-linked elsewhere, or in a directory such an \
-     account owns or that its group or others may write; pass the path it points to";
+     account owns or that its group or others may write (a read-only mount excepted, for root's); \
+     pass the path it points to, or mount the file itself (a ConfigMap's subPath)";
 
 /// Whether [`reach`] follows the symlink `link`, found in the directory
 /// `dir`, outside the context. Both must be root's or ranikust's own user's,
 /// the link must have no other name (a symlink hard-linked in from
 /// elsewhere, which `fs.protected_hardlinks=0` allows), and the directory
-/// must not be writable by its group or others, so no other account could
-/// have placed or moved the link there. ranikust builds as root, so a link
-/// a lower-trust account made or placed is never followed; a link committed
-/// to a checkout root made is, which is why a parse error never shows a
-/// file's text.
-fn trusted_link(link: &Stat, dir: &Stat) -> bool {
+/// must not be writable by another account: neither group- nor
+/// world-writable, unless root owns it and it is on a read-only mount
+/// (`dir_read_only`), where its mode bits give nobody a write. A Kubernetes
+/// ConfigMap volume is such a directory: kubelet makes its root `0777`,
+/// root's, and mounts it read-only **[inferred]** (from kubelet's source,
+/// not run on a cluster). So no other account could have placed or moved
+/// the link there. ranikust builds as root, so a link a lower-trust account
+/// made or placed is never followed; a link committed to a checkout root
+/// made is, which is why a parse error never shows a file's text.
+fn trusted_link(link: &Stat, dir: &Stat, dir_read_only: bool) -> bool {
     let euid = rustix::process::geteuid().as_raw();
     let ours = |uid: u32| uid == 0 || uid == euid;
-    ours(link.uid) && link.nlink == 1 && ours(dir.uid) && dir.mode & 0o022 == 0
+    let unwritable = dir.mode & 0o022 == 0 || (dir.uid == 0 && dir_read_only);
+    ours(link.uid) && link.nlink == 1 && ours(dir.uid) && unwritable
+}
+
+/// Whether the directory `fd` is on a read-only mount (`ST_RDONLY`).
+fn on_read_only_mount(fd: BorrowedFd<'_>, path: &Path) -> Result<bool> {
+    let vfs = rustix::fs::fstatvfs(fd).map_err(|e| io_err("fstatvfs", path, e))?;
+    Ok(vfs.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY))
 }
 
 /// The build context's root directory, which an operator's host path must
@@ -275,7 +287,9 @@ pub fn reach(path: &Path, fence: &Fence) -> Result<Reached> {
         let st = stat_of(fd.as_fd(), &here)?;
         match st.file_type() {
             FileType::Symlink => {
-                if !trusted_link(&st, &stat_of(cur.as_fd(), &at)?) {
+                let dir = stat_of(cur.as_fd(), &at)?;
+                let read_only = dir.uid == 0 && on_read_only_mount(cur.as_fd(), &at)?;
+                if !trusted_link(&st, &dir, read_only) {
                     return Err(Error::InvalidPath {
                         path: here,
                         reason: UNTRUSTED_LINK,

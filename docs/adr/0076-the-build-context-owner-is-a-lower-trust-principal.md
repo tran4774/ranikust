@@ -97,13 +97,18 @@ with no new flag.
    - Outside the context, a symlink is followed only when root or
      ranikust's own user owns both the link and the directory it is in,
      that directory is not writable by its group or others, and the link
-     has no other name. The path is the operator's, and a Dockerfile
-     mounted from a Kubernetes ConfigMap is a chain of root's symlinks
-     (`Dockerfile -> ..data/Dockerfile`) in root's directories. A link a
-     lower-trust account made, or could have placed or moved (in a
-     directory it owns or may write, or hard-linked in from elsewhere), is
-     refused. A ConfigMap volume mounted with `fsGroup` is group-writable,
-     so its links are refused too: pass the resolved path.
+     has no other name. A root-owned directory on a read-only mount counts
+     as not writable, whatever its mode bits. A link a lower-trust account
+     made, or could have placed or moved (in a directory it owns or may
+     write, or hard-linked in from elsewhere), is refused.
+   - The path is the operator's, and a Dockerfile mounted from a Kubernetes
+     ConfigMap is a chain of root's symlinks
+     (`Dockerfile -> ..data/Dockerfile`). kubelet makes the volume's root
+     `0777`, root's, and mounts it read-only, so the read-only exception
+     lets the chain be followed **[inferred]**: read from kubelet's source,
+     not yet run on a cluster. Mounting the Dockerfile itself with
+     `subPath` gives a plain file and needs no link at all; it is the
+     stable alternative where a volume does not meet the rule.
    - A link committed to a checkout made by root is root's, in root's
      directories, and the walk cannot tell it from the operator's. A
      monorepo job with `--context=$CI_PROJECT_DIR/services/api` and
@@ -191,8 +196,9 @@ Not covered:
 
 - Good, because every redirection above is closed by descriptor, not by a
   check on a path string.
-- Good, because a Dockerfile mounted from a ConfigMap, or anywhere else
-  outside the context, keeps working.
+- Good, because a Dockerfile anywhere else outside the context keeps
+  working, and one mounted from a ConfigMap is expected to **[inferred]**
+  (`subPath` works for certain).
 - Good, because the rules add no flag.
 - Bad, because an output in the context is refused. GitLab's habit of
   writing `--digest-file=$CI_PROJECT_DIR/digest` with
@@ -213,6 +219,20 @@ Not covered:
 - Neutral, because `rnk-rootfs` now also reaches operator output paths on
   the host (`OutputDir`, `reach`). That is still "every filesystem access"
   through descriptors, and still never by joining strings onto a host path.
+
+## More Information
+
+- Follow-up, not done here: other `rnk-dockerfile` parse errors still echo
+  text from the line, so a non-Dockerfile reached through a followed link
+  can still show some of its text there. The unknown-keyword error no
+  longer does. The remaining ones:
+  - `ENV` and `LABEL` without `=`: "can't find = in …"
+    (`crates/rnk-dockerfile/src/parser.rs` ~648-651);
+  - an invalid `escape` directive value (~276);
+  - the heredoc lexing error, which prints the rest of the line (~781).
+
+  They should get the same rule: show text only when the line is
+  recognisably a Dockerfile's.
 
 ## Evidence
 
