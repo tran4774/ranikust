@@ -480,7 +480,9 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
     committed `digest -> /etc/...` made root truncate a host file. They are
     now reached from `/` without following any symlink. The digest files
     are written in place only into a regular file with one link; the other
-    outputs replace their name by rename.
+    outputs replace only a regular file, by rename, and never a device
+    node or a FIFO (`--tar-path=/dev/stdout` is refused), also on NFS and
+    9p, which refuse `RENAME_NOREPLACE`.
   - **Outputs in the context.** An output in the build context, or one
     reached through a symlink, is refused before the build, exit code 2 for
     `--metrics-file`.

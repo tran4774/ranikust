@@ -79,7 +79,13 @@ with no new flag.
      link: a symlink, a hardlink, a FIFO or a device is refused, never
      opened.
    - The other outputs replace their name through an exclusive temporary
-     file renamed into place.
+     file renamed into place: over a regular file only, else with
+     `RENAME_NOREPLACE`, so a device node, a FIFO, a socket or a symlink
+     there (`/dev/null`, `/dev/stdout`) is refused. Where the filesystem
+     refuses `RENAME_NOREPLACE` (NFS, 9p, FUSE without `rename2`), the
+     temporary file is hard-linked into place, which never replaces, and
+     where hard links are refused too the name is looked at again and the
+     file renamed over it.
    - The paths are checked before the build (`--metrics-file` before its
      report is set up, so nothing is written there) and again as they are
      written.

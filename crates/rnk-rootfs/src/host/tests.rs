@@ -4,7 +4,7 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::Path;
 
-use super::{Fence, OutputDir, Reached, reach};
+use super::{Fence, OutputDir, Reached, fault, reach};
 use crate::error::Error;
 use crate::root::RootPath;
 
@@ -227,6 +227,44 @@ fn an_atomic_write_replaces_the_name_and_leaves_nothing_on_error() {
         .collect();
     names.sort();
     assert_eq!(names, ["image.tar", "victim"]);
+}
+
+/// Where the filesystem refuses `RENAME_NOREPLACE` (NFS, 9p, FUSE without
+/// `rename2`), a new output is linked into place and its temporary name
+/// removed; where hard links are refused too, it is renamed after the name
+/// is looked at again. Either way the output is written, nothing is left
+/// behind, and a name that is no regular file is still refused.
+#[test]
+fn an_output_is_written_where_the_filesystem_refuses_rename_noreplace() {
+    for faults in [
+        fault::NOREPLACE_REFUSED,
+        fault::NOREPLACE_REFUSED | fault::LINK_REFUSED,
+    ] {
+        fault::set(faults);
+        let dir = private_dir();
+        let out = OutputDir::open(dir.path(), None, None).unwrap();
+        out.write_atomically(OsStr::new("new.tar"), 0o644, |f| {
+            f.write_all(b"NEW").map_err(|source| Error::Io {
+                op: "write",
+                path: dir.path().join("new.tar"),
+                source,
+            })
+        })
+        .unwrap();
+        assert_eq!(fs::read(dir.path().join("new.tar")).unwrap(), b"NEW");
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["new.tar"], "faults {faults}: {names:?}");
+        // A FIFO at the name is refused before anything is written.
+        mkfifo(&dir.path().join("fifo"));
+        let e = out
+            .write_atomically(OsStr::new("fifo"), 0o644, |_| Ok::<(), Error>(()))
+            .unwrap_err();
+        assert!(invalid(&e).contains("FIFO"), "{e}");
+    }
+    fault::set(0);
 }
 
 #[test]

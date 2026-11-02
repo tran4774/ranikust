@@ -552,26 +552,63 @@ impl OutputDir {
     /// Renames the temporary file `tmp` to `name`: over a regular file
     /// there, else only where nothing is (`RENAME_NOREPLACE`), so a device
     /// node, a FIFO, a socket, a directory or a symlink at the name
-    /// (`/dev/null`, `/dev/stdout`) is refused, never replaced.
+    /// (`/dev/null`, `/dev/stdout`) is refused, never replaced. Where the
+    /// filesystem refuses `RENAME_NOREPLACE` (NFS, 9p, FUSE without
+    /// `rename2`: `EINVAL`), [`OutputDir::link_into`] takes over.
     fn rename_into(&self, tmp: &OsStr, name: &OsStr, tmp_path: &Path) -> Result<()> {
         for _ in 0..2 {
             if self.replaceable(name)? {
                 return rustix::fs::renameat(&self.fd, tmp, &self.fd, name)
                     .map_err(|e| io_err("rename", tmp_path, e));
             }
-            match rustix::fs::renameat_with(
-                &self.fd,
-                tmp,
-                &self.fd,
-                name,
-                rustix::fs::RenameFlags::NOREPLACE,
-            ) {
+            match rename_noreplace(self.fd.as_fd(), tmp, name) {
                 // Made by someone else in between: looked at again.
                 Err(Errno::EXIST) => {}
+                Err(Errno::INVAL) => return self.link_into(tmp, name, tmp_path),
                 r => return r.map_err(|e| io_err("rename", tmp_path, e)),
             }
         }
         Err(io_err("rename", tmp_path, Errno::EXIST))
+    }
+
+    /// [`OutputDir::rename_into`] where the filesystem refuses
+    /// `RENAME_NOREPLACE`: a hard link `name` to `tmp`, which never replaces
+    /// anything (`EEXIST`), then the temporary name removed. Where hard links
+    /// are refused too, `name` is looked at again and `tmp` renamed over it
+    /// plainly: between the look and the rename only a writer of this
+    /// directory could put an entry there, and the rename replaces that name
+    /// without following it.
+    fn link_into(&self, tmp: &OsStr, name: &OsStr, tmp_path: &Path) -> Result<()> {
+        for _ in 0..2 {
+            match link_name(self.fd.as_fd(), tmp, name) {
+                Ok(()) => {
+                    if let Err(e) = rustix::fs::unlinkat(&self.fd, tmp, AtFlags::empty()) {
+                        tracing::warn!(
+                            "rnk-rootfs: the output {} is in place, but its temporary name {} \
+                             could not be removed: {e}",
+                            self.path.join(name).display(),
+                            tmp_path.display()
+                        );
+                    }
+                    return Ok(());
+                }
+                // A regular file appeared meanwhile: replaced by rename;
+                // anything else is refused by `replaceable`.
+                Err(Errno::EXIST) => {
+                    if self.replaceable(name)? {
+                        return rustix::fs::renameat(&self.fd, tmp, &self.fd, name)
+                            .map_err(|e| io_err("rename", tmp_path, e));
+                    }
+                }
+                Err(Errno::PERM | Errno::OPNOTSUPP | Errno::INVAL | Errno::MLINK) => {
+                    self.replaceable(name)?;
+                    return rustix::fs::renameat(&self.fd, tmp, &self.fd, name)
+                        .map_err(|e| io_err("rename", tmp_path, e));
+                }
+                Err(e) => return Err(io_err("link", tmp_path, e)),
+            }
+        }
+        Err(io_err("link", tmp_path, Errno::EXIST))
     }
 
     /// Whether `name` here is a regular file an output may replace (`true`)
@@ -743,6 +780,47 @@ fn parent_of(dir: BorrowedFd<'_>, path: &Path) -> Result<OwnedFd> {
         Mode::empty(),
     )
     .map_err(|e| io_err("open the parent of", path, e))
+}
+
+/// `renameat2(RENAME_NOREPLACE)` of `from` to `to` in `dir`.
+fn rename_noreplace(dir: BorrowedFd<'_>, from: &OsStr, to: &OsStr) -> rustix::io::Result<()> {
+    #[cfg(test)]
+    if fault::is(fault::NOREPLACE_REFUSED) {
+        return Err(Errno::INVAL);
+    }
+    rustix::fs::renameat_with(dir, from, dir, to, rustix::fs::RenameFlags::NOREPLACE)
+}
+
+/// `linkat` of `from` to the new name `to` in `dir`, no symlink followed.
+fn link_name(dir: BorrowedFd<'_>, from: &OsStr, to: &OsStr) -> rustix::io::Result<()> {
+    #[cfg(test)]
+    if fault::is(fault::LINK_REFUSED) {
+        return Err(Errno::PERM);
+    }
+    rustix::fs::linkat(dir, from, dir, to, AtFlags::empty())
+}
+
+/// Faults the tests inject: filesystems that refuse `RENAME_NOREPLACE`, or
+/// hard links too, which a tmpfs test directory does not.
+#[cfg(test)]
+pub(crate) mod fault {
+    use std::cell::Cell;
+
+    pub(crate) const NOREPLACE_REFUSED: u8 = 1;
+    pub(crate) const LINK_REFUSED: u8 = 2;
+
+    thread_local! {
+        static FAULTS: Cell<u8> = const { Cell::new(0) };
+    }
+
+    /// Sets the faults of this thread (a test runs on its own thread).
+    pub(crate) fn set(faults: u8) {
+        FAULTS.with(|f| f.set(faults));
+    }
+
+    pub(super) fn is(fault: u8) -> bool {
+        FAULTS.with(|f| f.get() & fault != 0)
+    }
 }
 
 fn stat_of(fd: BorrowedFd<'_>, path: &Path) -> Result<Stat> {
