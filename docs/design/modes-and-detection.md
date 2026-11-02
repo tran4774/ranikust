@@ -220,9 +220,9 @@ for Phase 3. Today root that may not mount takes kaniko mode in a container
 and is refused on a host (ADR-0050; a forced `--mode=overlay` is told to use
 kaniko mode). Refusals also come from a process that is not root, a failed
 probe step, kaniko mode on `/` where `refuse_unsafe_slash` stops it (root
-may mount, `--network=none`, a writable `/proc/sys`, ADR-0054) and a
+may mount or a writable `/proc/sys`, ADR-0054; `--network=none`, ADR-0057) and a
 container where root may mount but overlayfs is unusable
-(`Route::RefuseInContainer`). A refusal gives the failing step with its
+(`Route::RefuseInContainer`). A probe refusal gives the failing step with its
 errno and the way out (`sudo` or a `--privileged` container for a process
 that is not root). A host-side failure such as an unwritable state
 directory is reported as it is, with nothing extra
