@@ -442,5 +442,17 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   content the walk never compared. The export now also checks size,
   `mtime` and `ctime`, and in `full` snapshot mode hashes the content it
   writes against the walk's hash.
+- At start-up, the replay of the `RUN` mount stubs a crashed build left
+  no longer hangs on a FIFO, or opens a device node as root, put at a
+  journal's name in `<state-dir>/sandbox/runs`: only a regular file of at
+  most 16 MiB is read, anything else is left with a warning.
+- In kaniko mode on `/`, a `--state-dir` on NFS, FUSE or SMB, where
+  `O_TMPFILE` is missing and an unlinked open file keeps a name such as
+  `.nfs*`, is refused instead of leaving ranikust's state files under a
+  name a `RUN` could open. Put the state directory on a local filesystem.
+- A missing `--state-dir` below `/tmp` is created one directory at a time
+  from the directory checked before it: another local user's symlink
+  planted at a missing name meanwhile can no longer make root create
+  directories elsewhere.
 
 [Unreleased]: https://github.com/tran4774/ranikust/commits/main

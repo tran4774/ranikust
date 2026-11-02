@@ -48,7 +48,11 @@ the scheduler runs one stage at a time) or a private directory per stage
     ([ADR-0056](../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md)):
     `O_TMPFILE` in the state directory, else (a container's overlayfs
     root, kernels 6.8 and 5.15, measured) a file made by a random name and
-    unlinked at once, only while no `RUN` process exists: the store's
+    unlinked at once, only where the unlink removes the name (a state
+    directory on NFS, FUSE or SMB, by `statfs`, or a file still linked
+    after its unlink, fails the build with `Error::NameOutlivesUnlink`:
+    those keep `.nfs*` or `.fuse_hidden*` names for open files), only
+    while no `RUN` process exists: the store's
     fence keeps names and `RUN`s apart (`Store::enter_run` and
     `Store::leave_run` around each `RUN`, `Store::named_window` for a
     name); a `RUN` that ended with an error once its command may have run
@@ -393,9 +397,14 @@ written, `ranikust::statedir::prepare` checks the state directory:
    parent, walked from a descriptor (`..`), never by path, are owned by
    root (or the user) and not writable by group or others, except root's
    sticky directories.
-2. It is created `0700`, opened with `RESOLVE_NO_SYMLINKS`, owned by the
-   user, not writable by others, and set to `0700` if others may search
-   it; then the whole chain is checked again from its descriptor.
+2. It is created `0700`, each missing name with `mkdirat` below the
+   descriptor of the directory checked or made before it and opened from
+   it (`RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV`), never by path, so a
+   symlink planted at a missing name in `/tmp` meanwhile makes nothing
+   elsewhere, and a name that appeared meanwhile must pass the rule of
+   step 1; it is owned by the user, not writable by others, and set to
+   `0700` if others may search it; then the whole chain is checked again
+   from its descriptor.
 3. Before its mode is touched: never `/`, and only a directory just
    created, empty, or holding the store's regular `.ranikust-state`
    marker (Q-111), and, unmarked, none of the thirty system directories of

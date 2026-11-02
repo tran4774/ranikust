@@ -35,7 +35,11 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
 3. Replay the stub journals of previous crashed runs and remove their stubs.
    The replay trusts no symlink in the sandbox's directory and touches only
    roots below the state directory: a planted journal or run directory
-   cannot point it at host files.
+   cannot point it at host files. It opens a journal for I/O only once its
+   pinned (`O_PATH | O_NOFOLLOW`) entry shows a regular file, reopened with
+   `O_NONBLOCK | O_NOCTTY`, and reads at most 16 MiB, the most a `RUN`
+   writes: a FIFO or a device node planted at a journal's name is left in
+   place with a warning, never blocked on or opened.
 
 The privilege probes of [modes-and-detection](modes-and-detection.md) also
 run in this single-threaded window: `ranikust` runs this crate's probes

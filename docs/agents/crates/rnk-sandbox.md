@@ -176,7 +176,12 @@ from `rnk-store`, secret file) and passes `--network`.
   replayed by `probe` and `Sandbox::start`. The replay runs as root on a
   directory others may have written: journals and run directories are
   opened with `O_NOFOLLOW` and the scratch files removed with `unlinkat`
-  through descriptors, a journal's root must resolve strictly below the
+  through descriptors, a journal is pinned `O_PATH` and reopened for I/O
+  (`O_NONBLOCK | O_NOCTTY`, through `/proc/self/fd`) only if it is a
+  regular file, so a planted FIFO or device node is never blocked on or
+  opened, a journal holds at most 16 MiB (`MAX_JOURNAL_BYTES`: a `RUN`
+  needing more fails before placing the entry, a replay leaves a larger
+  file unread), a journal's root must resolve strictly below the
   state directory (the parent of `dir`) or be the shared root given to
   `Sandbox::start_with_root`, opened once and matched by device, inode and
   mount, never by path (on it only swaps and the `/etc`, `/dev` stubs are
