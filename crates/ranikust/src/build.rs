@@ -88,7 +88,7 @@ struct Shared<S: Snapshotter> {
     exporter: LayerExporter,
     time: BuildTime,
     network: rnk_sandbox::Network,
-    secrets: BTreeMap<String, rnk_builder::Secret>,
+    secrets: BTreeMap<String, rnk_builder::SecretValue>,
     allow_network_host: bool,
     platform: Platform,
     client: Arc<Client>,
@@ -496,12 +496,13 @@ where
     let in_target = in_target(&graph);
     let mut secrets = BTreeMap::new();
     for (id, source) in &config.secrets {
-        // As BuildKit's store: a file secret must exist and fit at the
-        // start, not first at the RUN that mounts it.
-        source
-            .check(id)
+        // Read now, before the first instruction, and never again
+        // (ADR-0078): a file must exist and fit at the start, as BuildKit's
+        // store checks, and a `RUN` that swaps it later changes nothing.
+        let value = source
+            .load(id)
             .map_err(|e| format!("--secret id={id}: {e}"))?;
-        secrets.insert(id.clone(), source.clone());
+        secrets.insert(id.clone(), value);
     }
     // Per-stage directories only: who reads each stage's root, and the
     // thread that releases a root once nobody does (ADR-0061, ADR-0062).

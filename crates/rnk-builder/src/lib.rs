@@ -44,7 +44,7 @@ pub use layer::{
     AnonBlob, BlobLayer, EMPTY_LAYER_DIFF_ID, EntriesLayer, LayerBytes, LayerDemand, LayerExporter,
     LayerSource,
 };
-pub use mounts::{MAX_SECRET_SIZE, Secret};
+pub use mounts::{MAX_SECRET_SIZE, Secret, SecretValue};
 pub use output::{Outputs, UNSET_DESTINATION, push, write_docker_tar, write_oci_layout};
 pub use pull::{PulledImage, pull_image};
 pub use sources::ContextFiles;

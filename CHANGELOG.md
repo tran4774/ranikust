@@ -12,6 +12,22 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ## [Unreleased]
 
+### Security
+
+- Kaniko mode on a container's `/`: ranikust now gives up, before the first
+  `RUN`, every capability the container grants beyond Docker's defaults, as
+  each `RUN` already did. A `RUN` that planted a link at a path ranikust
+  opens later (an output, a `--secret` file) could otherwise have had it
+  opened with a capability the `RUN` was denied, such as `CAP_SYS_PTRACE`
+  under `--cap-add SYS_PTRACE`.
+- Every `--secret` is read once, at the start of the build, and kept in
+  memory; a file secret was opened again by path for each `RUN` that
+  mounted it, so in kaniko mode on `/` an earlier `RUN` could replace it,
+  or point it at ranikust's own `/proc/self`, and a later `RUN` got that.
+  A change to a secret file during the build is no longer seen. In kaniko
+  mode on `/`, each `--secret src=` file now gets a warning: every `RUN`
+  there can read it.
+
 ### Added
 
 - The `par-stages` smoke case: four independent stages give one digest at

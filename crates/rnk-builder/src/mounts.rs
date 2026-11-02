@@ -24,49 +24,135 @@ pub const MAX_SECRET_SIZE: u64 = 500 * 1024;
 /// Where a `--secret` comes from, as buildctl's and kaniko's `--secret`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Secret {
-    /// A host file, read when a `RUN` mounts it; an absolute path.
+    /// A host file; an absolute path.
     File(PathBuf),
-    /// A variable of ranikust's own environment, read when a `RUN` mounts
-    /// it; unset reads as empty, as BuildKit's `os.Getenv`.
+    /// A variable of ranikust's own environment; unset reads as empty, as
+    /// BuildKit's `os.Getenv`.
     Env(OsString),
 }
 
 impl Secret {
-    /// Checks a file secret as BuildKit's store does at the start: it exists
-    /// and fits [`MAX_SECRET_SIZE`]; also that it is a regular file.
+    /// Reads the secret, once, at the start of the build (ADR-0078): a file
+    /// must exist, be a regular file and fit [`MAX_SECRET_SIZE`], as
+    /// BuildKit's store checks at the start. Its path is never opened
+    /// again: a `RUN` that replaces the file, or a symlink in its place,
+    /// changes nothing a later `RUN` gets.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the file cannot be opened, [`Error::Invalid`] when
-    /// it is not a regular file or is too large.
-    pub fn check(&self, id: &str) -> Result<()> {
-        if let Self::File(path) = self {
-            open_secret(id, path)?;
-        }
-        Ok(())
-    }
-
-    /// The secret's bytes.
-    fn read(&self, id: &str) -> Result<Vec<u8>> {
-        let data = match self {
+    /// [`Error::Io`] when the file cannot be opened or read,
+    /// [`Error::Invalid`] when it is not a regular file or the secret is
+    /// too large.
+    pub fn load(&self, id: &str) -> Result<SecretValue> {
+        // Every buffer the bytes pass through is wiped when it is dropped,
+        // on error paths too; none is grown, so none leaves an old block
+        // behind.
+        let raw = match self {
             Self::File(path) => {
-                let f = open_secret(id, path)?;
-                let mut data = Vec::new();
+                let mut f = open_secret(id, path)?;
                 // One byte more than the limit tells a file that grew since
-                // the start-up check.
-                f.take(MAX_SECRET_SIZE + 1)
-                    .read_to_end(&mut data)
-                    .map_err(Error::io("read the secret", path))?;
-                data
+                // its size was read. A plain read loop into this buffer: no
+                // other buffer holds the bytes.
+                let mut buf = Wiped(vec![
+                    0u8;
+                    usize::try_from(MAX_SECRET_SIZE + 1)
+                        .unwrap_or(usize::MAX)
+                ]);
+                let mut n = 0;
+                while n < buf.0.len() {
+                    match f.read(&mut buf.0[n..]) {
+                        Ok(0) => break,
+                        Ok(k) => n += k,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(Error::io("read the secret", path)(e)),
+                    }
+                }
+                buf.0.truncate(n);
+                buf
             }
-            Self::Env(name) => std::env::var_os(name).unwrap_or_default().into_vec(),
+            Self::Env(name) => Wiped(std::env::var_os(name).unwrap_or_default().into_vec()),
         };
-        if u64::try_from(data.len()).unwrap_or(u64::MAX) > MAX_SECRET_SIZE {
+        if u64::try_from(raw.0.len()).unwrap_or(u64::MAX) > MAX_SECRET_SIZE {
             return Err(Error::Invalid(format!(
                 "secret {id:?} is larger than {MAX_SECRET_SIZE} bytes"
             )));
         }
-        Ok(data)
+        Ok(SecretValue {
+            bytes: Arc::<[u8]>::from(raw.0.as_slice()),
+        })
+    }
+}
+
+/// Overwrites `bytes` with zeros in a way the compiler keeps: the memory is
+/// about to be freed, so plain stores could be dropped.
+fn wipe(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        // SAFETY: `b` is a valid, aligned, exclusive reference to a byte.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A buffer holding a secret's bytes, wiped when dropped: its whole
+/// allocation, the part past its length included.
+struct Wiped(Vec<u8>);
+
+impl Drop for Wiped {
+    fn drop(&mut self) {
+        let len = self.0.capacity();
+        // Zero-filling up to the capacity never reallocates.
+        self.0.resize(len, 0);
+        wipe(&mut self.0);
+    }
+}
+
+/// A secret's bytes, read once by [`Secret::load`] and shared by every
+/// `RUN` that mounts it. `Debug` never shows them. When the last holder
+/// drops them they are overwritten with zeros, as is every buffer
+/// [`Secret::load`] read them through. Not wiped: the copies made for a
+/// `RUN` (its variable, the file on its tmpfs), and the value itself when
+/// the build ends with another thread still holding it, which never drops
+/// it ([open: Q-444]).
+pub struct SecretValue {
+    bytes: Arc<[u8]>,
+}
+
+impl SecretValue {
+    /// A value from bytes already in memory (tests, callers that read a
+    /// secret themselves).
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            bytes: bytes.into(),
+        }
+    }
+
+    /// Its length in bytes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Whether it is empty (an unset variable).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
+impl std::fmt::Debug for SecretValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretValue(<{} bytes hidden>)", self.bytes.len())
+    }
+}
+
+impl Drop for SecretValue {
+    fn drop(&mut self) {
+        // Only the last holder can write: a `RUN`'s mount still holding the
+        // allocation keeps it until it drops it.
+        if let Some(bytes) = Arc::get_mut(&mut self.bytes) {
+            wipe(bytes);
+        }
     }
 }
 
@@ -139,17 +225,14 @@ pub(crate) fn run_mounts(
     mounts: &[Mount],
     workdir: &Path,
     store: &Store,
-    secrets: &BTreeMap<String, Secret>,
+    secrets: &BTreeMap<String, SecretValue>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<RunMounts> {
     let mut out = RunMounts::default();
     let mut caches: Vec<(String, &Mount)> = Vec::new();
-    // Each secret is read once per RUN and shared by all its mounts, which
-    // share one file on the RUN's tmpfs.
-    let mut read: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
     check_supported(mounts)?;
     // A required secret that was not given fails the `RUN` before any
-    // secret of it is read.
+    // mount of it is made.
     if let Some(id) = mounts
         .iter()
         .filter(|m| m.kind == MountType::Secret && m.required)
@@ -165,7 +248,7 @@ pub(crate) fn run_mounts(
             MountType::Cache => {
                 caches.push((cache_key(m), m));
             }
-            MountType::Secret => secret_mount(m, workdir, secrets, &mut read, &mut out)?,
+            MountType::Secret => secret_mount(m, workdir, secrets, &mut out)?,
             // Refused by `check_supported` above; refused here too, so that
             // relaxing that check can never drop a mount silently.
             MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
@@ -377,11 +460,13 @@ fn secret_id(m: &Mount) -> String {
 ///   target, else at `/run/secrets/<id>`, mode `mode` (default `0400`,
 ///   permission bits only) and owner `uid`:`gid` (default root), which the
 ///   sandbox writes on a tmpfs of the `RUN`'s own and binds read-only.
+///
+/// The bytes are those [`Secret::load`] read at the start, one allocation
+/// shared by every mount of the id, which the sandbox writes as one file.
 fn secret_mount(
     m: &Mount,
     workdir: &Path,
-    secrets: &BTreeMap<String, Secret>,
-    read: &mut BTreeMap<String, Arc<[u8]>>,
+    secrets: &BTreeMap<String, SecretValue>,
     out: &mut RunMounts,
 ) -> Result<()> {
     // Never empty: `check_supported` refused that.
@@ -390,14 +475,7 @@ fn secret_mount(
     let Some(secret) = secrets.get(&id) else {
         return Ok(());
     };
-    let data = match read.get(&id) {
-        Some(data) => Arc::clone(data),
-        None => {
-            let data: Arc<[u8]> = secret.read(&id)?.into();
-            read.insert(id.clone(), Arc::clone(&data));
-            data
-        }
-    };
+    let data = Arc::clone(&secret.bytes);
     // A variable name: `check_supported` refused any other.
     if let Some(name) = &m.env {
         // Never the value in a message: only the id.

@@ -31,7 +31,7 @@ use crate::error::{Error, Result};
 use crate::history;
 use crate::image::instruction_history;
 use crate::layer::{BlobLayer, LayerDemand, LayerExporter, LayerSource};
-use crate::mounts::{self, Secret};
+use crate::mounts::{self, SecretValue};
 use crate::pull::PulledImage;
 use crate::sources::{self, ContextFiles};
 use crate::time::BuildTime;
@@ -75,8 +75,9 @@ pub struct BuildCx<'a, S> {
     pub time: &'a BuildTime,
     /// The network of a `RUN` without `--network` (ADR-0010).
     pub network: Network,
-    /// `RUN --mount=type=secret` sources by id: `--secret` (ADR-0032).
-    pub secrets: &'a BTreeMap<String, Secret>,
+    /// `RUN --mount=type=secret` values by id: `--secret` (ADR-0032), read
+    /// once at the start ([`crate::Secret::load`], ADR-0078).
+    pub secrets: &'a BTreeMap<String, SecretValue>,
     /// Whether a `RUN --network=host` may lift `--network=none`: BuildKit's
     /// `network.host` entitlement, `--allow network.host` (ADR-0032).
     pub allow_network_host: bool,

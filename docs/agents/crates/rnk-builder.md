@@ -105,10 +105,12 @@ pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox,
     pub isolation: Isolation,                            // Full, or Direct on kaniko mode's shared root (ADR-0043)
     pub store: &'a Store,
     pub context: &'a Context, pub context_files: &'a ContextFiles, pub exporter: &'a LayerExporter,
-    pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, Secret>,
+    pub time: &'a BuildTime, pub network: Network, pub secrets: &'a BTreeMap<String, SecretValue>,
     pub allow_network_host: bool,                        // --allow network.host
     pub platform: &'a Platform, pub run_gate: &'a dyn RunGate, pub cancelled: &'a (dyn Fn() -> bool + Sync) }
-pub enum Secret { File(PathBuf), Env(OsString) }         // a --secret, read when a RUN mounts it
+pub enum Secret { File(PathBuf), Env(OsString) }         // a --secret's source
+impl Secret { pub fn load(&self, id: &str) -> Result<SecretValue>; }  // read once at the start, never by path again (ADR-0078): a regular file of at most MAX_SECRET_SIZE, opened without blocking; a variable, unset = empty
+pub struct SecretValue { /* Arc<[u8]> */ }               // shared by every RUN that mounts it; Debug hides it; zeroed when the last holder drops it ([open: Q-444] for a RUN's copies); from_bytes, len, is_empty
 pub const MAX_SECRET_SIZE: u64;                          // 500 KiB, as BuildKit
 pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
 pub struct StageInput<'a, R, L> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R, L>,

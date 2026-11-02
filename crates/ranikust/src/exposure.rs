@@ -6,7 +6,9 @@
 //!   command line is readable by every `RUN`;
 //! - another process of the container that holds a credential in its
 //!   environment (the CI shell that started ranikust) exposes it through its
-//!   own `/proc/<pid>/environ`.
+//!   own `/proc/<pid>/environ`;
+//! - a `--secret src=` file is a file on `/`, which every `RUN` reads; ranikust
+//!   reads it once, at the start (ADR-0078), but cannot hide it.
 //!
 //! It also checks what it refuses to build under: a writable `/proc/sys`
 //! ([`proc_sys_read_only`]).
@@ -56,6 +58,26 @@ pub(crate) fn warn_build_args(args: &[BuildArg]) {
     }
 }
 
+/// The warning for each `--secret` read from a file: on `/` it is a file
+/// like any other, which every `RUN` can read, not only the one that mounts
+/// it (threat model, section 6). Whether to refuse such files there is
+/// [open: Q-445].
+pub(crate) fn file_secret_warnings(secrets: &[(String, rnk_builder::Secret)]) -> Vec<String> {
+    secrets
+        .iter()
+        .filter_map(|(id, secret)| match secret {
+            rnk_builder::Secret::File(path) => Some(format!(
+                "--secret id={id}: {} is a file on /, which every RUN can read in kaniko mode \
+                 on /, not only the RUN that mounts it; ranikust reads it once, at the start, \
+                 but cannot hide it: pass the secret in ranikust's environment \
+                 (--secret id={id},env=VAR) with ranikust started as the container's PID 1",
+                path.display()
+            )),
+            rnk_builder::Secret::Env(_) => None,
+        })
+        .collect()
+}
+
 /// Every variable of ranikust's environment that holds a credential or a
 /// secret: [`CREDENTIAL_VARS`], the variable of each `--secret` read from
 /// the environment (`env=`, or the id itself when set), and each
@@ -96,9 +118,10 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 
 /// Warns for every other process of the PID namespace whose environment
 /// holds one of `variables` ([`secret_variables`]): a `RUN` reads it
-/// through that process's `/proc/<pid>/environ`. Processes ranikust cannot
-/// read (not dumpable, another user) are skipped: a `RUN` running as root
-/// cannot read them either without `CAP_SYS_PTRACE`.
+/// through that process's `/proc/<pid>/environ`. Called after
+/// [`rnk_sandbox::trim_to_run_capabilities`], so ranikust reads exactly the
+/// environments a root `RUN` reads: one it cannot read (not dumpable,
+/// another user) a `RUN` cannot read either, and is skipped.
 pub(crate) fn warn_credential_holders(variables: &[String]) {
     let names: Vec<&str> = variables.iter().map(String::as_str).collect();
     let me = std::process::id().to_string();
@@ -206,6 +229,16 @@ mod tests {
         assert_eq!(
             secret_variables(&config),
             ["DOCKER_AUTH_CONFIG", "GH_TOKEN", "NPM_SECRET_VAR"]
+        );
+        // The file secret, and only it, gets the warning that every RUN on
+        // `/` reads it.
+        let warnings = file_secret_warnings(&config.secrets);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("--secret id=file_one: /ranikust/s ")
+                && warnings[0].contains("every RUN can read"),
+            "{}",
+            warnings[0]
         );
     }
 }
