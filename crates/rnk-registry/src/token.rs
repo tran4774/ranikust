@@ -50,6 +50,8 @@ pub(crate) struct AccessToken {
 /// How long a token is used when the response gives no `expires_in`: the
 /// distribution token specification's default.
 const DEFAULT_EXPIRES_IN: u64 = 60;
+/// The longest lifetime a token is trusted for, whatever the realm says.
+const MAX_EXPIRES_IN: u64 = 24 * 60 * 60;
 /// Tokens are refreshed this long before they expire.
 const MARGIN: Duration = Duration::from_secs(10);
 /// The `client_id` sent with token requests.
@@ -145,11 +147,20 @@ async fn access_token(
             "the token has characters a header cannot carry",
         ));
     }
-    let lifetime = Duration::from_secs(parsed.expires_in.unwrap_or(DEFAULT_EXPIRES_IN));
     Ok(AccessToken {
         token,
-        refresh_after: started + lifetime.saturating_sub(MARGIN),
+        refresh_after: refresh_after(started, parsed.expires_in),
     })
+}
+
+/// When to stop using a token that the realm says lives `expires_in`
+/// seconds from `started`: the registry's number is clamped to a day, and
+/// a time past what `Instant` can hold means "now", so a hostile
+/// `expires_in` can neither overflow nor keep a token forever.
+fn refresh_after(started: Instant, expires_in: Option<u64>) -> Instant {
+    let seconds = expires_in.unwrap_or(DEFAULT_EXPIRES_IN).min(MAX_EXPIRES_IN);
+    let lifetime = Duration::from_secs(seconds).saturating_sub(MARGIN);
+    started.checked_add(lifetime).unwrap_or(started)
 }
 
 /// Why an exchange failed; never holds the token.
@@ -178,6 +189,24 @@ struct TokenResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hostile_expires_in_neither_overflows_nor_lasts() {
+        let now = Instant::now();
+        // `Instant + Duration::from_secs(u64::MAX)` would panic.
+        let at = refresh_after(now, Some(u64::MAX));
+        assert_eq!(
+            at,
+            now + Duration::from_secs(MAX_EXPIRES_IN) - MARGIN,
+            "clamped to a day"
+        );
+        assert_eq!(
+            refresh_after(now, None),
+            now + Duration::from_secs(DEFAULT_EXPIRES_IN) - MARGIN
+        );
+        // Shorter than the margin: refreshed at once.
+        assert_eq!(refresh_after(now, Some(3)), now);
+    }
 
     #[test]
     fn bearer_challenges_are_parsed() {
