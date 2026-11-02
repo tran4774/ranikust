@@ -75,6 +75,12 @@ impl Fence {
         }
     }
 
+    /// Whether names and `RUN`s exclude each other: a store whose names a
+    /// `RUN` could reach (kaniko mode on `/`), not a persistent one.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.is_some()
+    }
+
     /// Counts a `RUN` in, once no name is alive.
     pub(crate) fn enter_run(&self) -> Result<RunGuard> {
         let Some(inner) = &self.inner else {

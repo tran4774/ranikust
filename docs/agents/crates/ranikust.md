@@ -144,7 +144,10 @@ per-stage directories (Phase 2 task 9).
 State-directory checks (`src/statedir.rs`, ADR-0050), before anything is
 written: the nearest existing directory on its path and every real parent,
 walked by descriptor (`..`), owned by root or the user and not writable by
-group or others (root's sticky directories excepted); created `0700`;
+group or others (root's sticky directories excepted); created `0700`,
+each missing name by `mkdirat` below the descriptor checked or made
+before it, never by path (`create_missing`; a name that appeared meanwhile
+must pass the parent rule);
 opened with `RESOLVE_NO_SYMLINKS`, owned by the user, not writable by
 others, set to `0700` if others may search it; the chain checked again
 from its descriptor. It is the private directory of every root and upper
@@ -252,7 +255,8 @@ error, a refused kaniko flag, an invalid combination, and for now every
   failed overlay probe), the plain-chroot refusal's message, and the
   state-directory check (created 0700; a symlinked state dir, a parent
   or state dir others may write refused, nothing created through a
-  symlink or below a refused parent). `tests/cli.rs`, unless the tests
+  symlink, below a refused parent or through one planted at a missing
+  name after the check). `tests/cli.rs`, unless the tests
   run as root: kaniko mode needing root with nothing created, the refusal
   before the namespace with the state directory left empty and
   `ranikust.setup` in the report.
