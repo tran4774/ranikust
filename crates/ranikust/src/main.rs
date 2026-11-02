@@ -173,6 +173,11 @@ fn main() -> ExitCode {
                 .to_owned(),
         );
     }
+    // Refused before the report is set up, so nothing is written there.
+    if let Err(message) = check_metrics_file(&command, metrics_file.as_deref()) {
+        report(&message, "");
+        return ExitCode::from(EXIT_USAGE);
+    }
     let telemetry = rnk_metrics::init(metrics_config(&command, metrics_file.as_deref()));
     telemetry.set_meta("ranikust_version", env!("CARGO_PKG_VERSION"));
     for warning in &warnings {
@@ -227,7 +232,52 @@ fn metrics_config(command: &Command, metrics_file: Option<&Path>) -> Config {
         config.logs = config::log_options(args);
     }
     config.file = metrics_file.map(|f| std::path::absolute(f).unwrap_or_else(|_| f.to_path_buf()));
+    config.write_file = Some(write_metrics_file);
     config
+}
+
+/// `--metrics-file` is an output like the others (ADR-0076): its directory
+/// must be reached without a symlink and lie outside the build context.
+/// Checked before the report is set up; a context that cannot be opened is
+/// left for the build to report.
+fn check_metrics_file(command: &Command, metrics_file: Option<&Path>) -> Result<(), String> {
+    let (Command::Build(args), Some(file)) = (command, metrics_file) else {
+        return Ok(());
+    };
+    let context = BuildConfig::from_args(args)
+        .ok()
+        .and_then(|config| rnk_rootfs::RootPath::open(&config.context).ok())
+        .and_then(|root| rnk_rootfs::Fence::of(&root).ok());
+    let file = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
+    build::check_output_path("--metrics-file", &file, false, context.as_ref())
+}
+
+/// Writes the metrics report at exit: its directory reached without
+/// following a symlink and made if missing, the file replaced through a
+/// temporary file renamed into place (ADR-0076).
+fn write_metrics_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the metrics path has no file name",
+        ));
+    };
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    rnk_rootfs::OutputDir::open(dir, Some(0o777), None)
+        .and_then(|dir| {
+            dir.write_atomically(name, 0o644, |f| {
+                f.write_all(bytes).map_err(|source| rnk_rootfs::Error::Io {
+                    op: "write",
+                    path: path.to_owned(),
+                    source,
+                })
+            })
+        })
+        .map_err(std::io::Error::other)
 }
 
 fn run(
@@ -862,6 +912,39 @@ mod tests {
             "ranikust: error: probe of /x\\ny failed\n  pass --state-dir on a local filesystem\n"
         );
         assert_eq!(failure.text(), shown);
+    }
+
+    /// `--metrics-file` in the build context, or through a symlink, is
+    /// refused before the report is set up; the report's writer never
+    /// follows a symlink either (ADR-0076).
+    #[test]
+    fn the_metrics_file_stays_out_of_the_context_and_off_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = dir.path().join("ctx");
+        std::fs::create_dir(&ctx).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join("out")).unwrap();
+        let check = |file: &Path| {
+            let ctx = format!("--context={}", ctx.display());
+            let argv = ["ranikust", ctx.as_str(), "--no-push"];
+            let command = cli::parse(argv).unwrap().cli.into_command();
+            check_metrics_file(&command, Some(file))
+        };
+        let e = check(&ctx.join("m.json")).unwrap_err();
+        assert!(e.contains("build context"), "{e}");
+        let e = check(&dir.path().join("out/m.json")).unwrap_err();
+        assert!(e.contains("symlink"), "{e}");
+        check(&dir.path().join("m.json")).unwrap();
+
+        let e = write_metrics_file(&dir.path().join("out/m.json"), b"{}").unwrap_err();
+        assert!(e.to_string().contains("symlink"), "{e}");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        write_metrics_file(&dir.path().join("new/m.json"), b"{}\n").unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("new/m.json")).unwrap(),
+            b"{}\n"
+        );
     }
 
     /// Kaniko mode on `/` refuses in a fixed order: root that may mount

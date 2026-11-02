@@ -62,6 +62,33 @@ fn an_output_never_follows_a_planted_name_and_leaves_nothing_on_error() {
     );
 }
 
+/// A symlink at an output's directory, or a parent of it, as a build
+/// context's owner can commit one: refused, and nothing is written where it
+/// points (ADR-0076).
+#[test]
+fn an_output_never_goes_through_a_symlinked_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = tempfile::tempdir().unwrap();
+    let base = base(blobs.path(), Reference::parse("r.example/base:1").unwrap());
+    let image = image(blobs.path(), &base, &time(), Compression::Gzip);
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    symlink(&elsewhere, dir.path().join("out")).unwrap();
+
+    let out = dir.path().join("out");
+    let err = rnk_builder::write_docker_tar(&image, &[], &out.join("image.tar")).unwrap_err();
+    assert!(err.to_string().contains("symlink"), "{err}");
+    let err = rnk_builder::write_oci_layout(&image, &out.join("layout")).unwrap_err();
+    assert!(err.to_string().contains("symlink"), "{err}");
+    // A layout whose `blobs` is a symlink.
+    let layout = dir.path().join("layout");
+    std::fs::create_dir(&layout).unwrap();
+    symlink(&elsewhere, layout.join("blobs")).unwrap();
+    let err = rnk_builder::write_oci_layout(&image, &layout).unwrap_err();
+    assert!(err.to_string().contains("symlink"), "{err}");
+    assert!(names(&elsewhere).is_empty(), "{:?}", names(&elsewhere));
+}
+
 #[test]
 fn exporters_sharing_a_directory_do_not_collide() {
     let dir = Arc::new(tempfile::tempdir().unwrap());

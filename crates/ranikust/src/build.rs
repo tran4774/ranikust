@@ -392,6 +392,7 @@ where
 {
     let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
         .map_err(|e| format!("opening the build context: {e}"))?;
+    check_output_paths(config, &context)?;
     let source = dockerfile_source(&config.dockerfile);
     let text = read_dockerfile(&source, &context)?;
     let dockerfile_path = match &source {
@@ -728,31 +729,90 @@ fn requested_format(config: &BuildConfig) -> rnk_oci::ImageFormat {
     }
 }
 
+/// The operator's output paths, each with its flag: the file outputs by
+/// their own path, the OCI layout by its directory.
+fn output_paths(config: &BuildConfig) -> Vec<(&'static str, &Path, bool)> {
+    let mut out = Vec::new();
+    for (flag, path, is_dir) in [
+        ("--tar-path", &config.tar_path, false),
+        ("--oci-layout-path", &config.oci_layout_path, true),
+        ("--digest-file", &config.digest_file, false),
+        (
+            "--image-name-with-digest-file",
+            &config.image_name_digest_file,
+            false,
+        ),
+        (
+            "--image-name-tag-with-digest-file",
+            &config.image_name_tag_digest_file,
+            false,
+        ),
+    ] {
+        if let Some(p) = path {
+            out.push((flag, p.as_path(), is_dir));
+        }
+    }
+    out
+}
+
+/// Refuses, before anything is built, an output whose directory is reached
+/// through a symlink or lies in the build context (ADR-0076): the context's
+/// owner controls every name in it.
+fn check_output_paths(config: &BuildConfig, context: &Context) -> Result<(), String> {
+    for (flag, path, is_dir) in output_paths(config) {
+        check_output_path(flag, path, is_dir, Some(context.fence()))?;
+    }
+    Ok(())
+}
+
+/// [`check_output_paths`] for one path.
+pub(crate) fn check_output_path(
+    flag: &str,
+    path: &Path,
+    is_dir: bool,
+    fence: Option<&rnk_rootfs::Fence>,
+) -> Result<(), String> {
+    let dir = if is_dir {
+        path
+    } else {
+        path.parent().unwrap_or(Path::new("/"))
+    };
+    rnk_rootfs::OutputDir::check(dir, fence).map_err(|e| format!("{flag} {}: {e}", path.display()))
+}
+
 /// kaniko's digest files (`kaniko@44aa7ddc0 pkg/executor/push.go:194-256`):
 /// the digest alone, then `repository[:tag]@digest` lines, one per
 /// destination, with go-containerregistry's names (Docker Hub as
 /// `index.docker.io`, a missing tag as `latest`).
-fn write_digest_files(config: &BuildConfig, digest: &str) -> Result<(), String> {
+///
+/// Written in place, as kaniko does, so a file mounted at the path (a
+/// Kubernetes termination log) keeps its inode; but the directory is
+/// reached without following a symlink and outside `fence`, the build
+/// context, and an existing file must be a regular file with no other hard
+/// link (ADR-0076).
+fn write_digest_files(
+    config: &BuildConfig,
+    digest: &str,
+    fence: Option<&rnk_rootfs::Fence>,
+) -> Result<(), String> {
     // kaniko creates a missing parent directory 0700 and writes the file
-    // 0644 (`push.go:168-176`). These are operator paths, not the image's.
+    // 0644 (`push.go:168-176`).
     let write = |path: &Path, text: &str| {
-        use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
-        let fail = |e: std::io::Error| format!("writing {}: {e}", path.display());
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(parent)
-                .map_err(fail)?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o644)
-            .open(path)
-            .map_err(fail)?;
-        std::io::Write::write_all(&mut file, text.as_bytes()).map_err(fail)
+        let fail = |e: rnk_rootfs::Error| format!("writing {}: {e}", path.display());
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return Err(format!(
+                "writing {}: the path names no file",
+                path.display()
+            ));
+        };
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        rnk_rootfs::OutputDir::open(parent, Some(0o700), fence)
+            .and_then(|dir| dir.write_in_place(name, 0o644, text.as_bytes()))
+            .map_err(fail)
     };
     if let Some(path) = &config.digest_file {
         write(path, digest)?;
@@ -938,12 +998,17 @@ where
         &config.annotations,
     )
     .map_err(|e| e.to_string())?;
-    write_digest_files(config, image.digest().as_str())?;
+    let fence = shared.context.fence();
+    write_digest_files(config, image.digest().as_str(), Some(fence))?;
     let outputs = &shared.outputs;
+    // Checked again just before: `rnk-builder` reaches the paths without
+    // following a symlink, and this keeps them out of the context.
     if let Some(dir) = &outputs.oci_layout {
+        check_output_path("--oci-layout-path", dir, true, Some(fence))?;
         rnk_builder::write_oci_layout(&image, dir).map_err(|e| e.to_string())?;
     }
     if let Some(path) = &outputs.docker_tar {
+        check_output_path("--tar-path", path, false, Some(fence))?;
         rnk_builder::write_docker_tar(&image, outputs.tar_tags(), path)
             .map_err(|e| e.to_string())?;
     }
@@ -2063,6 +2128,85 @@ mod tests {
         assert_eq!(o.manifest_retries, 3);
     }
 
+    /// An output in the build context is refused before anything is built,
+    /// and by the writer itself (ADR-0076).
+    #[test]
+    fn outputs_in_the_build_context_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = dir.path().join("ctx");
+        std::fs::create_dir(&ctx).unwrap();
+        let context = rnk_context::open(&ContextSpec::Dir(ctx.clone())).unwrap();
+        let p = |p: PathBuf| p.display().to_string();
+        for (flag, path) in [
+            ("--digest-file", ctx.join("digest")),
+            ("--image-name-with-digest-file", ctx.join("sub/names")),
+            ("--tar-path", ctx.join("out/image.tar")),
+            ("--oci-layout-path", ctx.clone()),
+            ("--oci-layout-path", ctx.join("layout")),
+        ] {
+            let c = config_of(&["--no-push", "-d", "r.example/a:1", flag, &p(path)]);
+            let e = check_output_paths(&c, &context).unwrap_err();
+            assert!(e.contains("build context"), "{flag}: {e}");
+        }
+        let c = config_of(&["--no-push", "--digest-file", &p(ctx.join("digest"))]);
+        let e = write_digest_files(&c, "sha256:1", Some(context.fence())).unwrap_err();
+        assert!(e.contains("build context"), "{e}");
+        assert!(!ctx.join("digest").exists());
+        // Beside the context is fine.
+        let c = config_of(&["--no-push", "--digest-file", &p(dir.path().join("digest"))]);
+        check_output_paths(&c, &context).unwrap();
+        write_digest_files(&c, "sha256:1", Some(context.fence())).unwrap();
+    }
+
+    /// A digest file never follows a name the build context's owner could
+    /// have planted (ADR-0076): a symlink at the leaf or a parent, a
+    /// dangling one, a hardlink.
+    #[test]
+    fn digest_files_never_follow_a_planted_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |n: &str| dir.path().join(n).display().to_string();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("digest")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("created"), dir.path().join("dangling"))
+            .unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join("out")).unwrap();
+        std::fs::hard_link(&victim, dir.path().join("hard")).unwrap();
+        for flags in [
+            vec![
+                "--no-push".to_owned(),
+                "--digest-file".to_owned(),
+                p("digest"),
+            ],
+            vec![
+                "--no-push".to_owned(),
+                "--digest-file".to_owned(),
+                p("dangling"),
+            ],
+            vec![
+                "--no-push".to_owned(),
+                "--digest-file".to_owned(),
+                p("hard"),
+            ],
+            vec![
+                "-d".to_owned(),
+                "r.example/a:1".to_owned(),
+                "--image-name-with-digest-file".to_owned(),
+                p("out/names"),
+            ],
+        ] {
+            let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+            let c = config_of(&flags);
+            let e = write_digest_files(&c, "sha256:0123", None).unwrap_err();
+            assert!(e.contains("link"), "{flags:?}: {e}");
+        }
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        assert!(!dir.path().join("created").exists());
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
+
     /// kaniko's formats (`push.go:194-256`): the digest without a newline;
     /// one `repository[:tag]@digest` line per destination, Docker Hub as
     /// `index.docker.io`, and the tagged text in both files when the tag
@@ -2083,7 +2227,7 @@ mod tests {
             "--image-name-with-digest-file",
             &n,
         ]);
-        write_digest_files(&c, digest).unwrap();
+        write_digest_files(&c, digest, None).unwrap();
         assert_eq!(std::fs::read_to_string(&d).unwrap(), digest);
         // A missing parent is made 0700, as kaniko's `MkdirAll`.
         use std::os::unix::fs::PermissionsExt as _;
@@ -2106,7 +2250,7 @@ mod tests {
             "--image-name-tag-with-digest-file",
             &t,
         ]);
-        write_digest_files(&c, digest).unwrap();
+        write_digest_files(&c, digest, None).unwrap();
         let tagged = "index.docker.io/library/alpine:latest@sha256:0123\n";
         assert_eq!(std::fs::read_to_string(&t).unwrap(), tagged);
         assert_eq!(std::fs::read_to_string(&n).unwrap(), tagged);

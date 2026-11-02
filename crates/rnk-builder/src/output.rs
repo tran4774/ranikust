@@ -3,15 +3,18 @@
 //!
 //! kaniko writes them in the order OCI layout, tar, push
 //! (`kaniko@44aa7ddc0 pkg/executor/push.go:182-330`); the caller does the
-//! same. Output paths come from the command line and are trusted host paths;
-//! nothing here reads an image root.
+//! same. Output paths come from the command line, but a directory on the way
+//! may belong to someone the operator trusts less, such as the build
+//! context's owner (ADR-0076): every output is reached through
+//! [`rnk_rootfs::OutputDir`], one name at a time and never through a
+//! symlink, and written by descriptor. Nothing here reads an image root.
 
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::ffi::OsStr;
+use std::fs::File;
 use std::io::{BufWriter, Read as _, Write};
 use std::num::NonZeroUsize;
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
@@ -21,9 +24,15 @@ use rnk_oci::{
     to_canonical_json,
 };
 use rnk_registry::{BlobBody, Client, PushOutcome, RemoteBlob};
+use rnk_rootfs::OutputDir;
 use sha2::Digest as _;
-use tempfile::NamedTempFile;
 use tracing::{Instrument as _, debug_span};
+
+/// The mode of a directory an output makes, less the umask: what
+/// `create_dir_all` and go-containerregistry's `MkdirAll` give.
+const DIR_MODE: u32 = 0o777;
+/// The mode of an output file, less the umask.
+const FILE_MODE: u32 = 0o644;
 
 use crate::error::{Error, Result};
 use crate::image::Image;
@@ -124,9 +133,13 @@ impl Outputs {
 /// `AppendImage`, which kaniko uses: blobs already present are kept, and
 /// `index.json` lists this image alone, without a name annotation.
 ///
+/// `dir` and the layout's own directories are reached without following a
+/// symlink (ADR-0076): a symlink on the way is refused.
+///
 /// # Errors
 ///
-/// [`Error::Io`] when a file cannot be written or a layer blob read.
+/// [`Error::Io`] when a layer blob cannot be read; [`Error::Rootfs`] when a
+/// directory cannot be reached or made, or a file written.
 pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()> {
     let span = debug_span!(
         "rnk_builder.output",
@@ -134,28 +147,28 @@ pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()> {
         bytes_out = tracing::field::Empty
     );
     let _entered = span.enter();
-    fs::create_dir_all(dir).map_err(Error::io("create", dir))?;
+    let layout = OutputDir::open(dir, Some(DIR_MODE), None)?;
     let mut bytes_out = 0;
     bytes_out += write_new(
-        dir,
+        &layout,
         OciLayout::FILE,
         &serde_json::to_vec(&OciLayout::new()).map_err(rnk_oci::Error::from)?,
     )?;
     bytes_out += put_blob(
-        dir,
+        &layout,
         &image.config_descriptor.digest,
         BlobFrom::Bytes(&image.config),
     )?;
     bytes_out += put_blob(
-        dir,
+        &layout,
         image.manifest.digest(),
         BlobFrom::Bytes(image.manifest.bytes()),
     )?;
     for layer in &image.layers {
-        bytes_out += put_blob(dir, &layer.blob.digest, BlobFrom::Layer(kept(layer)?))?;
+        bytes_out += put_blob(&layout, &layer.blob.digest, BlobFrom::Layer(kept(layer)?))?;
     }
     let index = ImageIndex::new(ImageFormat::Oci, vec![image.manifest.descriptor()]);
-    bytes_out += write_new(dir, OciLayout::INDEX_FILE, &to_canonical_json(&index)?)?;
+    bytes_out += write_new(&layout, OciLayout::INDEX_FILE, &to_canonical_json(&index)?)?;
     span.record("bytes_out", bytes_out);
     Ok(())
 }
@@ -170,10 +183,15 @@ pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()> {
 /// tags; its entries are sorted by name, not in go-containerregistry's
 /// order, which loaders do not depend on.
 ///
+/// The directory of `path` is reached without following a symlink
+/// (ADR-0076), and the file is written through a temporary file renamed
+/// over `path`, so whatever was at the name is replaced, never followed.
+///
 /// # Errors
 ///
-/// [`Error::Io`] when the file cannot be written or a layer blob read,
-/// [`Error::Layer`] when the tar cannot be written.
+/// [`Error::Io`] when a layer blob cannot be read, [`Error::Rootfs`] when
+/// the directory cannot be reached or the file written, [`Error::Layer`]
+/// when the tar cannot be written.
 pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<()> {
     let span = debug_span!(
         "rnk_builder.output",
@@ -238,7 +256,9 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
         Content::Bytes(manifest),
     )?;
 
-    let size = write_atomically(path, |out| {
+    let (dir, name) = parent_and_name(path)?;
+    let dir = OutputDir::open(dir, Some(DIR_MODE), None)?;
+    let size = write_atomically(&dir, name, |out| {
         Ok(writer.finish(&mut Contents { items }, out)?.size)
     })?;
     span.record("bytes_out", size);
@@ -384,15 +404,22 @@ enum BlobFrom<'a> {
 /// Puts a blob into a layout's `blobs/` unless a regular file with exactly
 /// its bytes is there (hashed, not trusted by size); returns the bytes
 /// written.
-fn put_blob(dir: &Path, digest: &Digest, from: BlobFrom<'_>) -> Result<u64> {
-    let path = dir.join(OciLayout::blob_path(digest));
-    if holds(&path, digest)? {
+fn put_blob(layout: &OutputDir, digest: &Digest, from: BlobFrom<'_>) -> Result<u64> {
+    let rel = PathBuf::from(OciLayout::blob_path(digest));
+    let (parent, name) = parent_and_name(&rel)?;
+    let mut dir = None;
+    for c in parent.components() {
+        if let Component::Normal(n) = c {
+            let next = dir.as_ref().unwrap_or(layout).sub_dir(n, Some(DIR_MODE))?;
+            dir = Some(next);
+        }
+    }
+    let dir = dir.as_ref().unwrap_or(layout);
+    if holds(dir, name, digest)? {
         return Ok(0);
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(Error::io("create", parent))?;
-    }
-    write_atomically(&path, |out| match from {
+    let path = dir.path().join(name);
+    write_atomically(dir, name, |out| match from {
         BlobFrom::Bytes(bytes) => out
             .write_all(bytes)
             .map_err(Error::io("write", &path))
@@ -405,17 +432,17 @@ fn put_blob(dir: &Path, digest: &Digest, from: BlobFrom<'_>) -> Result<u64> {
     })
 }
 
-/// Whether `path` is a regular file (not a symlink) whose sha256 is
-/// `digest`.
-fn holds(path: &Path, digest: &Digest) -> Result<bool> {
-    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+/// Whether `name` in `dir` is a regular file (not a symlink) whose sha256
+/// is `digest`.
+fn holds(dir: &OutputDir, name: &OsStr, digest: &Digest) -> Result<bool> {
+    let Some(mut file) = dir.open_existing(name)? else {
         return Ok(false);
-    }
-    let mut file = File::open(path).map_err(Error::io("open", path))?;
+    };
+    let path = dir.path().join(name);
     let mut hasher = sha2::Sha256::new();
     let mut buf = vec![0; 128 * 1024];
     loop {
-        let n = file.read(&mut buf).map_err(Error::io("read", path))?;
+        let n = file.read(&mut buf).map_err(Error::io("read", &path))?;
         if n == 0 {
             break;
         }
@@ -426,50 +453,47 @@ fn holds(path: &Path, digest: &Digest) -> Result<bool> {
 }
 
 /// Writes a small file of a layout, replacing what is there.
-fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> Result<u64> {
-    let path = dir.join(name);
-    write_atomically(&path, |out| {
+fn write_new(layout: &OutputDir, name: &str, bytes: &[u8]) -> Result<u64> {
+    let path = layout.path().join(name);
+    write_atomically(layout, OsStr::new(name), |out| {
         out.write_all(bytes).map_err(Error::io("write", &path))
     })?;
     Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
 }
 
-/// Writes `path` through a temporary sibling renamed into place, so a
-/// failed or interrupted write never leaves a partial output under the
-/// name.
-///
-/// The temporary file has a random name and is created exclusively
-/// (`O_CREAT | O_EXCL`), so nothing planted beside the output is followed or
-/// overwritten. On every error it is removed when dropped; only a killed
-/// process leaves one behind.
+/// Writes `name` in `dir` through a temporary file renamed into place
+/// ([`OutputDir::write_atomically`]), buffered: a failed or interrupted
+/// write never leaves a partial output under the name, and nothing planted
+/// there or beside it is followed or written through. On every error the
+/// temporary file is removed; only a killed process leaves one behind.
 fn write_atomically<T>(
-    path: &Path,
-    write: impl FnOnce(&mut BufWriter<NamedTempFile>) -> Result<T>,
+    dir: &OutputDir,
+    name: &OsStr,
+    write: impl FnOnce(&mut BufWriter<&mut File>) -> Result<T>,
 ) -> Result<T> {
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        Some(_) | None => Path::new("."),
-    };
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = tempfile::Builder::new()
-        .prefix(&format!(".{name}."))
-        .suffix(".ranikust-tmp")
-        .permissions(fs::Permissions::from_mode(0o644))
-        .tempfile_in(parent)
-        .map_err(Error::io("create a temporary file in", parent))?;
-    let tmp_path = tmp.path().to_owned();
-    let mut out = BufWriter::new(tmp);
-    let value = write(&mut out)?;
-    let tmp = out
-        .into_inner()
-        .map_err(|e| Error::io("write", &tmp_path)(e.into_error()))?;
-    tmp.as_file()
-        .sync_all()
-        .map_err(Error::io("sync", &tmp_path))?;
-    tmp.persist(path)
-        .map_err(|e| Error::io("rename", &tmp_path)(e.error))?;
-    Ok(value)
+    let path = dir.path().join(name);
+    dir.write_atomically(name, FILE_MODE, |file| {
+        let mut out = BufWriter::new(file);
+        let value = write(&mut out)?;
+        out.flush().map_err(Error::io("write", &path))?;
+        Ok(value)
+    })
+}
+
+/// The directory of an output file and its name.
+fn parent_and_name(path: &Path) -> Result<(&Path, &OsStr)> {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => {
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            Ok((parent, name))
+        }
+        _ => Err(Error::Invalid(format!(
+            "the output path {} names no file",
+            path.display()
+        ))),
+    }
 }

@@ -7,7 +7,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use rnk_ignore::Matcher;
-use rnk_rootfs::RootPath;
+use rnk_rootfs::{Fence, RootPath};
 
 use crate::spec::ContextSpec;
 use crate::walk::Walk;
@@ -48,9 +48,11 @@ impl ContextSource for DirSource {
             source,
         })?;
         let root = RootPath::open(&canonical)?;
+        let fence = Fence::of(&root)?;
         Ok(Context {
             root,
             origin: canonical,
+            fence,
         })
     }
 }
@@ -87,6 +89,9 @@ pub fn open(spec: &ContextSpec) -> Result<Context> {
 pub struct Context {
     root: RootPath,
     origin: PathBuf,
+    /// The directory the context was opened from, which an output must not
+    /// lead into, and its owner (ADR-0076).
+    fence: Fence,
 }
 
 /// Where the ignore file was found.
@@ -118,6 +123,19 @@ impl Context {
         &self.origin
     }
 
+    /// The context's directory as a [`Fence`]: an operator's output path
+    /// must not lead into it, since its owner controls every name in it
+    /// (ADR-0076).
+    pub fn fence(&self) -> &Fence {
+        &self.fence
+    }
+
+    /// The owner of the context's directory: the principal whose files the
+    /// context holds (ADR-0076).
+    pub fn owner(&self) -> u32 {
+        self.fence.owner()
+    }
+
     /// The directory `sub` inside this context as a context of its own
     /// (`--context-sub-path`; which contexts the CLI applies it to: ADR-0032).
     /// `sub` cannot lead outside the context.
@@ -127,9 +145,11 @@ impl Context {
     /// [`Error::Rootfs`] when `sub` is missing or not a directory.
     pub fn sub_context(&self, sub: impl AsRef<Path>) -> Result<Context> {
         let sub = sub.as_ref();
+        // The whole context stays its owner's: the fence is not moved.
         Ok(Context {
             root: self.root.sub_root(sub)?,
             origin: self.origin.join(sub),
+            fence: self.fence,
         })
     }
 

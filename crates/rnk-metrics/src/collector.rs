@@ -31,6 +31,8 @@ pub(crate) struct Collector {
     panics: AtomicU64,
     /// Held while a report is written, so two writes never interleave.
     pub(crate) writing: Mutex<()>,
+    /// How the report file is written ([`crate::Config::write_file`]).
+    pub(crate) write_file: crate::WriteFile,
 }
 
 impl Collector {
@@ -66,6 +68,7 @@ impl Collector {
             finished: AtomicBool::new(false),
             panics: AtomicU64::new(0),
             writing: Mutex::new(()),
+            write_file: report::write_file,
         }
     }
 
@@ -167,7 +170,7 @@ impl Collector {
         if let Some(file) = &self.file {
             let written = report::to_bytes(report)
                 .map_err(std::io::Error::from)
-                .and_then(|bytes| report::write_file(file, &bytes));
+                .and_then(|bytes| (self.write_file)(file, &bytes));
             if let Err(err) = written {
                 crate::warn(&format!("writing {}: {err}", file.display()));
             }
