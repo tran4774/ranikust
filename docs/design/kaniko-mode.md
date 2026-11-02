@@ -49,7 +49,7 @@ the scheduler runs one stage at a time) or a private directory per stage
     `O_TMPFILE` in the state directory, else (a container's overlayfs
     root, kernels 6.8 and 5.15, measured) a file made by a random name and
     unlinked at once, only where the unlink removes the name (a state
-    directory on NFS, FUSE or SMB, by `statfs`, or a file still linked
+    directory on NFS, FUSE, SMB or AFS, by `statfs`, or a file still linked
     after its unlink, fails the build with `Error::NameOutlivesUnlink`:
     those keep `.nfs*` or `.fuse_hidden*` names for open files), only
     while no `RUN` process exists: the store's

@@ -446,7 +446,7 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   no longer hangs on a FIFO, or opens a device node as root, put at a
   journal's name in `<state-dir>/sandbox/runs`: only a regular file of at
   most 16 MiB is read, anything else is left with a warning.
-- In kaniko mode on `/`, a `--state-dir` on NFS, FUSE or SMB, where
+- In kaniko mode on `/`, a `--state-dir` on NFS, FUSE, SMB or AFS, where
   `O_TMPFILE` is missing and an unlinked open file keeps a name such as
   `.nfs*`, is refused instead of leaving ranikust's state files under a
   name a `RUN` could open. Put the state directory on a local filesystem.

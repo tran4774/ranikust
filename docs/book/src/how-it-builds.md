@@ -140,7 +140,7 @@ with the default security profile or in most Kubernetes pods.
   `COPY --from` an earlier stage or an image: restart the container. A
   volume at `/var/lib/ranikust` works too, one per container: a second
   build on a state directory in use is refused. The volume must be a
-  local filesystem: on NFS, FUSE or SMB, which keep a name for a file
+  local filesystem: on NFS, FUSE, SMB or AFS, which keep a name for a file
   removed while open, ranikust refuses to keep its state there.
 - ranikust refuses to build on the container's `/` where root may mount
   (a `--privileged` container, `CAP_SYS_ADMIN`) and where `/proc/sys` is

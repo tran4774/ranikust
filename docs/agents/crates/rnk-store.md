@@ -40,7 +40,7 @@ impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
-    pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE|O_EXCL, memfd with MFD_NOEXEC_SEAL fallback) named /proc/self/fd/<n>, refused unless /proc/self/fd is procfs; without O_TMPFILE a name unlinked at once, refused on NFS, FUSE or SMB (statfs) and when the file is still linked after the unlink (Error::NameOutlivesUnlink); layers and cache mounts refused (Error::Anonymous)
+    pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE|O_EXCL, memfd with MFD_NOEXEC_SEAL fallback) named /proc/self/fd/<n>, refused unless /proc/self/fd is procfs; without O_TMPFILE a name unlinked at once, refused on NFS, FUSE, SMB or AFS (statfs), when the file is still linked after the unlink and when the unlink fails (Error::NameOutlivesUnlink; a persistent store is not checked); layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store
     pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (an encoded layer, a spooled base layer,
