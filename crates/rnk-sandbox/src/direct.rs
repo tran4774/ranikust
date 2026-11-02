@@ -20,8 +20,8 @@
 use rustix::io::Errno;
 
 use crate::child::{
-    ChildArgs, ChildFds, ExecPtrs, ParentCheck, arm_death_signal, check, close_inherited,
-    drop_capabilities, fail, switch_user_and_exec, trim_capabilities,
+    ChildArgs, ChildFds, ChildStdio, ExecPtrs, ParentCheck, arm_death_signal, check,
+    close_inherited, drop_capabilities, early_stdio, fail, switch_user_and_exec, trim_capabilities,
 };
 use crate::error::Step;
 
@@ -38,6 +38,12 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // As in the full sandbox: a root other than `/` must not be left
     // through a descriptor of ranikust's.
     close_inherited(args, fds, parent);
+    // The parent opened `/dev/null` for a `Null` slot: the root's, which
+    // an earlier `RUN` may have replaced, is never opened here.
+    if args.stdio.contains(&ChildStdio::Null) {
+        fail(fds.err_w, Step::Stdio, Errno::INVAL);
+    }
+    early_stdio(fds.err_w, &args.stdio, parent);
     if let Some(want) = args.chroot {
         // `ParentCheck` holds its `/proc` descriptor from before: the root
         // has no `/proc`.

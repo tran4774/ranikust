@@ -96,6 +96,12 @@ from `rnk-store`, secret file) and passes `--network`.
   the network namespace, the stdio sources and a `#!` script
   (`close_inherited`, `Full` and `Direct` alike): ranikust holds
   directories outside the root, which `/proc/self/fd/<n>` would reach.
+  The stdio sources then go on 0–2 at once (`early_stdio`). `/dev/null` is
+  never opened by name in the child: `Full` opens the `null` node of its
+  fresh `/dev` tmpfs by descriptor before any `RUN --mount` (a read-only
+  bind, so a root `RUN` cannot change the host's node through its stdin);
+  `Direct` gets the host's from the parent (`host_null`: no symlink, char
+  device 1:3).
 - Namespaces: mount, PID, UTS, IPC (plus user without `CAP_SYS_ADMIN`
   [design, Phase 3], network for `--network=none`, with `lo` up: the
   clone's own; where `CAP_NET_ADMIN` is missing, refused, or with

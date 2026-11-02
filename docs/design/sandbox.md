@@ -98,7 +98,17 @@ rtnetlink first; the ADR lists them as residual risk.
    close-on-exec acts only at `execve`: until then `/proc/self/fd/<n>` of
    the `RUN`'s `proc` would lead a `WORKDIR`, a `PATH` entry or a mount
    target to them (runc's CVE-2024-21626). None of those kept is a
-   directory.
+   directory. Then the caller's stdio descriptors go on 0–2 at once, so that
+   ranikust's own streams are gone too. `/dev/null` is never opened by name
+   in the child: a `RUN --mount` over `/dev` (or, in `Direct` on `/`, an
+   earlier `RUN`) could make it a link to `/proc/self/fd/1`, ranikust's
+   stdout. The full sandbox's child opens the `null` node of its own `/dev`
+   tmpfs by descriptor right after populating it (step 3.4), before any
+   `RUN --mount`; until then the slot holds a placeholder. `Direct` gets
+   the host's `/dev/null` from the parent, reached without symlinks and
+   checked to be the null device. The full sandbox does not take the
+   parent's: a descriptor of the host's node would let a root `RUN` change
+   its mode through `/proc/self/fd/0`, which the read-only bind prevents.
 2. *Planned, Phase 3; not built, so no `RUN` runs this step today.* In a new
    user namespace, map the full id range available and allow `setgroups`;
    otherwise `USER _apt` (used by apt-get) fails with `setgroups: EPERM`.

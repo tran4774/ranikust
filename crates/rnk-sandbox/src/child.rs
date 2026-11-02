@@ -369,6 +369,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     let parent = ParentCheck::open(err, fds.parent);
     arm_death_signal(err, parent);
     close_inherited(args, fds, parent);
+    early_stdio(err, &args.stdio, parent);
     // First, so that `sysfs` below is mounted for this namespace.
     if let Some(fd) = args.netns {
         // SAFETY: `setns` on a namespace descriptor the parent keeps open
@@ -437,14 +438,22 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
             fail(err, Step::EnterRoot, Errno::XDEV);
         }
     }
-    let (mut proc, mut sys) = (None, None);
+    let (mut proc, mut sys, mut null) = (None, None, None);
     for m in &args.mounts {
         let made = mount_one(err, root.as_fd(), args, m);
         match m {
             ChildMount::Proc { .. } => proc = made,
             ChildMount::Sysfs { .. } => sys = made,
+            ChildMount::Dev { .. } => null = made,
             _ => {}
         }
+    }
+    // Every `Null` slot gets the sandbox's `/dev/null`, or the `RUN` does
+    // not start: the slot still holds a placeholder.
+    match null {
+        Some(null) => null_stdio(err, &args.stdio, &null),
+        None if args.stdio.contains(&ChildStdio::Null) => fail(err, Step::Stdio, Errno::NOENT),
+        None => {}
     }
     if let Some(s) = &args.secrets {
         mount_secrets(err, root.as_fd(), s, args.mount_api);
@@ -586,7 +595,6 @@ pub(crate) fn switch_user_and_exec(
     // A change of uid or gid cleared the death signal (`commit_creds`).
     arm_death_signal(err, parent);
 
-    set_stdio(err, &args.stdio);
     reset_process_state();
     // After the close-on-exec pass, which may count descriptors up to the
     // current limit.
@@ -705,7 +713,10 @@ fn mount_one(
             let dev = resolve_dir(err, Step::MountDev, root, target);
             fs_is(err, Step::MountDev, &dev, TMPFS_MAGIC);
             populate_dev(err, dev.as_fd(), &args.dev_remount, args.dev_pipes);
-            None
+            // Opened now, before any `RUN --mount` can cover `/dev`.
+            args.stdio
+                .contains(&ChildStdio::Null)
+                .then(|| open_dev_null(err, dev.as_fd()))
         }
         ChildMount::File { source, target } => {
             let s = open_source(err, Step::BindFile, source, false);
@@ -1640,39 +1651,56 @@ fn join_session_keyring(err: RawFd) {
     }
 }
 
-fn set_stdio(err: RawFd, stdio: &[ChildStdio; 3]) {
+/// Right after [`close_inherited`], before anything a `RUN` can steer is
+/// looked up: the stdio sources the parent passed go on 0, 1 and 2, so
+/// that ranikust's own streams are gone. `/dev/null` is never opened by
+/// name here: a `RUN --mount` over `/dev`, or in `Direct` an earlier `RUN`,
+/// could make it a link to `/proc/self/fd/1`, ranikust's stdout. A `Null`
+/// slot (the full sandbox only; `Direct` gets the parent's descriptor)
+/// holds a copy of the parent check's `stat` file until [`null_stdio`]
+/// puts the sandbox's own `/dev/null` there, since a closed slot would let
+/// a later open take its number. `Inherit` keeps ranikust's stream, as the
+/// caller asked.
+pub(crate) fn early_stdio(err: RawFd, stdio: &[ChildStdio; 3], parent: ParentCheck) {
     for (target, how) in (0..).zip(stdio) {
-        let source = match *how {
-            ChildStdio::Inherit => continue,
-            ChildStdio::Fd(fd) => fd,
-            ChildStdio::Null => {
-                let null = check(
-                    err,
-                    Step::Stdio,
-                    rustix::fs::openat(
-                        CWD,
-                        c"/dev/null",
-                        OFlags::RDWR | OFlags::CLOEXEC,
-                        Mode::empty(),
-                    ),
-                );
-                let raw = null.as_raw_fd();
-                if raw == target {
-                    // Already in place; only the close-on-exec flag must go.
-                    check(
-                        err,
-                        Step::Stdio,
-                        rustix::io::fcntl_setfd(&null, rustix::io::FdFlags::empty()),
-                    );
-                    std::mem::forget(null);
-                    continue;
-                }
-                dup_to(err, raw, target);
-                continue;
-            }
-        };
-        dup_to(err, source, target);
+        match *how {
+            ChildStdio::Inherit => {}
+            ChildStdio::Fd(fd) => dup_to(err, fd, target),
+            ChildStdio::Null => dup_to(err, parent.stat, target),
+        }
     }
+}
+
+/// Puts `null`, the sandbox's `/dev/null` (a read-only bind of the outer
+/// node, opened from the `/dev` tmpfs by descriptor), on every `Null` slot.
+fn null_stdio(err: RawFd, stdio: &[ChildStdio; 3], null: &OwnedFd) {
+    for (target, how) in (0..).zip(stdio) {
+        if *how == ChildStdio::Null {
+            dup_to(err, null.as_raw_fd(), target);
+        }
+    }
+}
+
+/// `null` in the `/dev` tmpfs `dev` just populated, read-write: the bind of
+/// the outer `/dev/null`, a character device 1:3, on a read-only mount so
+/// that a `RUN` cannot change the host's node through its stdin.
+fn open_dev_null(err: RawFd, dev: BorrowedFd<'_>) -> OwnedFd {
+    let null = check(
+        err,
+        Step::Stdio,
+        rustix::fs::openat(
+            dev,
+            c"null",
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ),
+    );
+    let st = check(err, Step::Stdio, rustix::fs::fstat(&null));
+    let rdev = (rustix::fs::major(st.st_rdev), rustix::fs::minor(st.st_rdev));
+    if FileType::from_raw_mode(st.st_mode) != FileType::CharacterDevice || rdev != (1, 3) {
+        fail(err, Step::Stdio, Errno::NXIO);
+    }
+    null
 }
 
 fn dup_to(err: RawFd, source: RawFd, target: RawFd) {

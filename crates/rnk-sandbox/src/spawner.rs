@@ -975,9 +975,13 @@ impl Runner {
         let env = plan::environment(&spec.env, &user.home);
         let candidates = plan::exec_candidates(&spec.argv[0], plan::path_var(&env));
         let mut keep = Vec::new();
-        // In a `chroot`, `/dev/null` is the image's entry, or missing where
-        // `mknod` is refused: the host's is opened here instead.
-        let stdio = if chroot.is_some() {
+        // `Direct`: the root's `/dev/null` is the image's entry (missing
+        // where `mknod` is refused), or on `/` one an earlier `RUN` may have
+        // replaced, so the host's is opened here and checked instead. The
+        // full sandbox's child opens the read-only bind of it in its own
+        // `/dev`: a descriptor of the host's node would let a root `RUN`
+        // change its mode through `/proc/self/fd/0`.
+        let stdio = if spec.isolation == Isolation::Direct {
             stdio.map(|s| match s {
                 Stdio::Null => host_null().map(Stdio::Fd),
                 s => Ok(s),
@@ -1236,11 +1240,28 @@ fn place_direct(journal: &mut Journal) -> Result<()> {
     journal.commit()
 }
 
-/// The host's `/dev/null`, read-write, close-on-exec.
+/// The host's `/dev/null`, read-write, close-on-exec: reached without any
+/// symlink or magic link and checked to be the null device (1:3). On `/` a
+/// `Direct` `RUN` can replace it, say with a link to `/proc/self/fd/1`, which
+/// would hand the next `RUN` ranikust's stdout.
 fn host_null() -> Result<OwnedFd> {
     let p = Path::new("/dev/null");
-    rustix::fs::open(p, OFlags::RDWR | OFlags::CLOEXEC, Mode::empty())
-        .map_err(|e| io_err("open", p, e.into()))
+    let fd = rustix::fs::openat2(
+        rustix::fs::CWD,
+        p,
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+        rustix::fs::ResolveFlags::NO_SYMLINKS | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(|e| io_err("open", p, e.into()))?;
+    let st = rustix::fs::fstat(&fd).map_err(|e| io_err("stat", p, e.into()))?;
+    let rdev = (rustix::fs::major(st.st_rdev), rustix::fs::minor(st.st_rdev));
+    if FileType::from_raw_mode(st.st_mode) != FileType::CharacterDevice || rdev != (1, 3) {
+        return Err(Error::InvalidSpec(
+            "/dev/null is not the null device (character device 1:3)".into(),
+        ));
+    }
+    Ok(fd)
 }
 
 /// The remount of the root's bind: `nodev`, the root mount's flags kept.
