@@ -237,7 +237,9 @@ pub enum Error {
     /// A step needs privileges the process does not have.
     #[error("{0} needs privileges this process does not have")]
     Privilege(&'static str),
-    /// [`crate::enter_build_namespace`] was called with other threads alive.
+    /// [`crate::enter_build_namespace`] or
+    /// [`crate::trim_to_run_capabilities`] was called with other threads
+    /// alive.
     #[error("the process must be single-threaded here, but has {threads} threads")]
     NotSingleThreaded {
         /// Threads counted in `/proc/self/status`.

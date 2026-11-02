@@ -312,6 +312,16 @@ pub(crate) fn set_up_kaniko(
     if let Some(refusal) = host_without_mounts(on_slash, can_mount) {
         return Err(refusal);
     }
+    // On `/`, before anything else and while no other thread exists,
+    // ranikust keeps only what a `RUN` keeps: whatever it later opens on
+    // `/` after a `RUN`, the `RUN` could open itself (ADR-0078).
+    if on_slash {
+        rnk_sandbox::trim_to_run_capabilities().map_err(|e| Refusal {
+            kind: Kind::Other,
+            reason: format!("kaniko mode on /: {e}"),
+            guidance: "",
+        })?;
+    }
     // On `/`, the lock first, on `/` itself: two builds in one container
     // never share it, whatever their state directories.
     let root_lock = if on_slash { Some(lock_slash()?) } else { None };
