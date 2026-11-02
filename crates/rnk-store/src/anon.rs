@@ -12,7 +12,11 @@
 //!    suite]): a file created by a random name with `O_EXCL`, opened, and
 //!    unlinked at once, inside a [`Fence::named`] window, so the name never
 //!    exists while a `RUN` process does. Its blocks stay on disk, in the
-//!    page cache the kernel reclaims, never in ranikust's memory.
+//!    page cache the kernel reclaims, never in ranikust's memory. Only where
+//!    the unlink removes the name: a filesystem that keeps one for an open
+//!    file (NFS, FUSE, SMB, by `statfs`), or a file that still has a link
+//!    after its unlink, is refused with [`Error::NameOutlivesUnlink`]
+//!    before any `RUN` starts, never worked around.
 //! 3. A `memfd`, with a warning, only when the state directory takes no
 //!    file at all (read-only, or permission refused), when the fence was
 //!    poisoned by a `RUN` that ended with an error, or when the store opened
@@ -67,6 +71,10 @@ pub(crate) struct AnonFiles {
     /// paths handed out.
     kept: Mutex<Vec<OwnedFd>>,
     fence: Fence,
+    /// Tests only: give each named file a second name, `kept`, before its
+    /// unlink, as a filesystem that keeps one would.
+    #[cfg(test)]
+    link_before_unlink: std::sync::atomic::AtomicBool,
 }
 
 impl AnonFiles {
@@ -81,6 +89,8 @@ impl AnonFiles {
             no_names: Mutex::new(None),
             kept: Mutex::new(Vec::new()),
             fence,
+            #[cfg(test)]
+            link_before_unlink: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -176,8 +186,26 @@ impl AnonFiles {
         }
     }
 
-    /// A file made by a random name and unlinked before the window closes.
+    /// A file made by a random name and unlinked before the window closes,
+    /// and checked to have no name left: refused on a filesystem known to
+    /// keep one ([`keeps_unlinked_names`]) before any name exists, and for
+    /// any other filesystem by the file's link count after the unlink.
     fn create_named(&self) -> Result<File> {
+        let st = rustix::fs::fstatfs(&self.dir).map_err(|e| self.err(e))?;
+        #[allow(
+            clippy::useless_conversion,
+            reason = "f_type's integer type differs between targets"
+        )]
+        let f_type = i64::from(st.f_type);
+        if let Some(fs) = keeps_unlinked_names(f_type) {
+            return Err(Error::NameOutlivesUnlink {
+                path: self.dir_path.clone(),
+                why: format!(
+                    "it is on {fs}, which takes no O_TMPFILE and keeps a name for a file \
+                     unlinked while open"
+                ),
+            });
+        }
         let name = random_name()?;
         let window = self.fence.named()?;
         let fd = rustix::fs::openat(
@@ -192,12 +220,43 @@ impl AnonFiles {
             Mode::from_raw_mode(0o600),
         )
         .map_err(|e| self.err(e))?;
+        #[cfg(test)]
+        if self.link_before_unlink.load(Ordering::Relaxed) {
+            rustix::fs::linkat(
+                &self.dir,
+                name.as_str(),
+                &self.dir,
+                "kept",
+                AtFlags::empty(),
+            )
+            .map_err(|e| self.err(e))?;
+        }
         if let Err(e) = rustix::fs::unlinkat(&self.dir, name.as_str(), AtFlags::empty()) {
             // The name stays: the window must too, so no RUN starts while
             // it exists (`enter_run` then fails the build). The next start
             // removes the name ([`remove_leftovers`]).
             std::mem::forget(window);
             return Err(self.err(e));
+        }
+        // An unlink that returned 0 may still leave a name: a filesystem
+        // that renames an open file away instead (NFS, FUSE). The window
+        // stays then too, and the file is closed, which lets such a
+        // filesystem drop the name.
+        match rustix::fs::fstat(&fd) {
+            Ok(st) if st.st_nlink == 0 => {}
+            r => {
+                std::mem::forget(window);
+                return Err(match r {
+                    Err(e) => self.err(e),
+                    Ok(st) => Error::NameOutlivesUnlink {
+                        path: self.dir_path.clone(),
+                        why: format!(
+                            "a file unlinked there still has a name (link count {})",
+                            st.st_nlink
+                        ),
+                    },
+                });
+            }
         }
         drop(window);
         Ok(File::from(fd))
@@ -248,6 +307,25 @@ impl AnonFiles {
 /// quota or anything else stays an error.
 fn takes_no_file(e: Errno) -> bool {
     matches!(e, Errno::ROFS | Errno::ACCESS | Errno::PERM)
+}
+
+/// The filesystem, named, when `f_type` is one that keeps a name for a file
+/// unlinked while open: the NFS client renames it to `.nfs*` until the last
+/// close (its "silly rename"), libfuse's high-level API without
+/// `hard_remove` to `.fuse_hidden*`, and an SMB client may keep it as
+/// delete-pending. The named way never runs there.
+fn keeps_unlinked_names(f_type: i64) -> Option<&'static str> {
+    const NFS: i64 = 0x6969;
+    const FUSE: i64 = 0x6573_5546;
+    const SMB: i64 = 0x517b;
+    const SMB2: i64 = 0xfe53_4d42;
+    const CIFS: i64 = 0xff53_4d42;
+    match f_type {
+        NFS => Some("NFS"),
+        FUSE => Some("FUSE"),
+        SMB | SMB2 | CIFS => Some("SMB/CIFS"),
+        _ => None,
+    }
 }
 
 /// `/proc/self/fd/<n>` of `fd`: its name for this process alone.
@@ -358,6 +436,37 @@ mod tests {
         reads_back(&anon);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         assert!(!anon.in_memory());
+    }
+
+    #[test]
+    fn a_named_file_whose_name_outlives_the_unlink_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let anon = files(dir.path());
+        anon.force(NAMED);
+        anon.link_before_unlink.store(true, Ordering::Relaxed);
+        let err = anon.create().unwrap_err();
+        assert!(matches!(err, Error::NameOutlivesUnlink { .. }), "{err}");
+        assert!(err.to_string().contains("still has a name"), "{err}");
+        assert!(!anon.in_memory(), "never falls back to memory for that");
+        // The file's other name is all that is left; the random one went.
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("kept")]);
+    }
+
+    #[test]
+    fn network_and_fuse_filesystems_keep_names_of_unlinked_files() {
+        assert_eq!(keeps_unlinked_names(0x6969), Some("NFS"));
+        assert_eq!(keeps_unlinked_names(0x6573_5546), Some("FUSE"));
+        for smb in [0x517b, 0xfe53_4d42, 0xff53_4d42] {
+            assert_eq!(keeps_unlinked_names(smb), Some("SMB/CIFS"), "{smb:x}");
+        }
+        // ext4, tmpfs, xfs, btrfs, overlayfs.
+        for local in [0xef53, 0x0102_1994, 0x5846_5342, 0x9123_683e, 0x794c_7630] {
+            assert_eq!(keeps_unlinked_names(local), None, "{local:x}");
+        }
     }
 
     #[test]

@@ -99,6 +99,22 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// The state directory's filesystem keeps a name for a file that was
+    /// unlinked while open (NFS's `.nfs*`, FUSE's `.fuse_hidden*`), so a
+    /// file made there would stay reachable by a `RUN` in kaniko mode on `/`
+    /// (ADR-0051). Never worked around with a name.
+    #[error(
+        "cannot keep state in {}: {why}, and a RUN in kaniko mode on / could open that name; \
+         put the state directory on a local filesystem (ext4, xfs, btrfs or tmpfs)",
+        path.display()
+    )]
+    NameOutlivesUnlink {
+        /// The state directory.
+        path: PathBuf,
+        /// What keeps the name.
+        why: String,
+    },
+
     /// An operation inside the state directory failed.
     #[error("state directory: {0}")]
     Rootfs(#[from] rnk_rootfs::Error),
