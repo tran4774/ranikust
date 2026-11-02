@@ -305,14 +305,21 @@ impl Copier<'_> {
                 Ok(())
             }
             _ => {
-                // The directory it was found in, for a context's rule: the
-                // builder hands over context paths with no symlink left.
-                let dir = if self.o.from_context {
-                    let (sparent, _) = path::entry(from)?;
-                    let dfd = src.resolve_dir(&sparent)?;
-                    Some(meta::statx_at(dfd.as_fd(), OsStr::new(""), &sparent)?)
+                // For a context's rule, the entry is pinned again together
+                // with the directory it is in, both by descriptor, and that
+                // pin is what is copied: the directory judged is the one
+                // the copied inode was found in.
+                let (pinned, st, dir) = if self.o.from_context {
+                    let (leaf, again, dir) = src.pin_with_dir(from)?;
+                    if again.file_type() != st.file_type() || !again.same_inode(&st) {
+                        return Err(Error::InvalidPath {
+                            path: from.to_owned(),
+                            reason: "changed while it was being copied",
+                        });
+                    }
+                    (leaf, again, Some(dir))
                 } else {
-                    None
+                    (pinned, st, None)
                 };
                 let (parent, name) = path::entry(&to)?;
                 let pfd = self.parents(&parent)?;

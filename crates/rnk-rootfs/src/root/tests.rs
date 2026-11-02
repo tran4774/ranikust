@@ -36,6 +36,32 @@ fn open_refuses_symlinked_host_path_and_missing_dir() {
     ));
 }
 
+/// `pin_with_dir` pins an entry and the directory it was found in, both by
+/// descriptor, and resolves a final symlink from the link's own directory,
+/// clamped to the root: the directory returned is the target's, whatever
+/// the link's spelling (ADR-0076).
+#[test]
+fn an_entry_is_pinned_with_the_directory_it_is_in_through_its_symlinks() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("a")).unwrap();
+    fs::write(f.host("a/f"), b"x").unwrap();
+    symlink("a/f", f.host("rel")).unwrap();
+    symlink("/a/f", f.host("abs")).unwrap();
+    symlink("../../a/f", f.host("climb")).unwrap();
+    symlink("rel", f.host("chain")).unwrap();
+    let file = fs::metadata(f.host("a/f")).unwrap();
+    let dir = fs::metadata(f.host("a")).unwrap();
+    for name in ["a/f", "rel", "abs", "climb", "chain"] {
+        let (_, st, d) = f.root.pin_with_dir(Path::new(name)).unwrap();
+        assert_eq!(st.ino, file.ino(), "{name}");
+        assert_eq!(d.ino, dir.ino(), "{name}");
+    }
+    symlink("y", f.host("x")).unwrap();
+    symlink("x", f.host("y")).unwrap();
+    let e = f.root.pin_with_dir(Path::new("x")).unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::LOOP), "{e}");
+}
+
 /// A context file is judged by the directory it is in (ADR-0076): the
 /// owner's own hardlink is read, a file the owner could not read by its
 /// mode bits is refused. The foreign-hardlink case needs another account:

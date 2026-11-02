@@ -134,8 +134,13 @@ with no new flag.
      directory fails in sticky shared directories (`/tmp/ctx -> root-0700`),
      and needs a resolver of its own.
 4. **A file planted into the context from outside is never read.** A
-   context file is judged against the directory it was found in, the one
-   the walk pinned, and refused when it is a regular file that:
+   context file is judged against the directory it was found in, pinned by
+   descriptor together with it: in a directory walk, the directory the
+   walk holds; for a single file (a single-file `COPY` or `ADD` source, the
+   Dockerfile, an ignore file, the archive check of `ADD`), its parent
+   resolved to a descriptor and the name opened relative to it without
+   following it, a final symlink resolved the same way from its own
+   directory. It is refused when it is a regular file that:
    - has more than one link and an owner other than the directory's (a
      hardlink planted from outside, which `fs.protected_hardlinks=0`
      allows); or
