@@ -1019,16 +1019,14 @@ where
     let fence = shared.context.fence();
     write_digest_files(config, image.digest().as_str(), Some(fence))?;
     let outputs = &shared.outputs;
-    // Checked again just before: `rnk-builder` reaches the paths without
-    // following a symlink, and this keeps them out of the context.
+    // The walk that writes keeps them out of the context too.
     if let Some(dir) = &outputs.oci_layout {
-        check_output_path("--oci-layout-path", dir, true, Some(fence))?;
-        rnk_builder::write_oci_layout(&image, dir).map_err(|e| e.to_string())?;
+        rnk_builder::write_oci_layout(&image, dir, Some(fence))
+            .map_err(|e| format!("--oci-layout-path {}: {e}", dir.display()))?;
     }
     if let Some(path) = &outputs.docker_tar {
-        check_output_path("--tar-path", path, false, Some(fence))?;
-        rnk_builder::write_docker_tar(&image, outputs.tar_tags(), path)
-            .map_err(|e| e.to_string())?;
+        rnk_builder::write_docker_tar(&image, outputs.tar_tags(), path, Some(fence))
+            .map_err(|e| format!("--tar-path {}: {e}", path.display()))?;
     }
     if outputs.push {
         let jobs = push_jobs(config);

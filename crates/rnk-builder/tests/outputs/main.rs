@@ -318,9 +318,9 @@ fn file_outputs_write_an_anonymous_layer_as_its_file_twin() {
     let out = tempfile::tempdir().unwrap();
     let tags = ["r.example/app:1".to_owned()];
     for (name, image) in [("named", &named), ("anon", &anon)] {
-        rnk_builder::write_docker_tar(image, &tags, &out.path().join(format!("{name}.tar")))
+        rnk_builder::write_docker_tar(image, &tags, &out.path().join(format!("{name}.tar")), None)
             .unwrap();
-        rnk_builder::write_oci_layout(image, &out.path().join(name)).unwrap();
+        rnk_builder::write_oci_layout(image, &out.path().join(name), None).unwrap();
     }
     assert_eq!(
         std::fs::read(out.path().join("anon.tar")).unwrap(),
@@ -549,9 +549,9 @@ fn the_oci_layout_holds_every_blob_and_indexes_the_image() {
     let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
     let image = image(dir.path(), &base, &time(), Compression::Zstd);
     let out = dir.path().join("layout");
-    rnk_builder::write_oci_layout(&image, &out).unwrap();
+    rnk_builder::write_oci_layout(&image, &out, None).unwrap();
     // Twice: an existing layout is updated in place.
-    rnk_builder::write_oci_layout(&image, &out).unwrap();
+    rnk_builder::write_oci_layout(&image, &out, None).unwrap();
 
     assert_eq!(
         std::fs::read_to_string(out.join(OciLayout::FILE)).unwrap(),
@@ -599,9 +599,9 @@ fn the_docker_tar_is_what_docker_save_writes() {
 
     let path = dir.path().join("image.tar");
     let tags = ["r.example/app:v1".to_owned()];
-    rnk_builder::write_docker_tar(&doubled, &tags, &path).unwrap();
+    rnk_builder::write_docker_tar(&doubled, &tags, &path, None).unwrap();
     let first = std::fs::read(&path).unwrap();
-    rnk_builder::write_docker_tar(&doubled, &tags, &path).unwrap();
+    rnk_builder::write_docker_tar(&doubled, &tags, &path, None).unwrap();
     assert_eq!(
         std::fs::read(&path).unwrap(),
         first,
@@ -696,7 +696,7 @@ async fn a_base_layer_never_kept_is_pushed_from_its_source_registry() {
     );
 
     // An output written to a file needs the bytes: refused, not guessed.
-    let err = rnk_builder::write_oci_layout(&image, &dir.path().join("layout")).unwrap_err();
+    let err = rnk_builder::write_oci_layout(&image, &dir.path().join("layout"), None).unwrap_err();
     assert!(err.to_string().contains("not kept"), "{err}");
 }
 
@@ -711,7 +711,7 @@ fn a_docker_tar_refuses_a_layer_that_was_never_kept() {
     let mut image = image(dir.path(), &base, &time(), Compression::Gzip);
     image.layers[0].bytes = rnk_builder::LayerBytes::Registry(from);
     let path = dir.path().join("image.tar");
-    let err = rnk_builder::write_docker_tar(&image, &[], &path).unwrap_err();
+    let err = rnk_builder::write_docker_tar(&image, &[], &path, None).unwrap_err();
     assert!(err.to_string().contains("not kept"), "{err}");
     assert!(!path.exists());
 }

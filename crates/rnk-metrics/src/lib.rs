@@ -83,8 +83,26 @@ pub struct Config {
     pub write_file: Option<WriteFile>,
 }
 
-/// Writes the report's bytes to its file ([`Config::write_file`]).
-pub type WriteFile = fn(&std::path::Path, &[u8]) -> std::io::Result<()>;
+/// Writes the report's bytes to its file ([`Config::write_file`]): a
+/// closure, so the binary's can carry what it checks against (the build
+/// context, ADR-0076). Called at exit, and by the panic hook.
+#[derive(Clone)]
+pub struct WriteFile(pub Arc<WriteFn>);
+
+/// The function a [`WriteFile`] calls.
+pub type WriteFn = dyn Fn(&std::path::Path, &[u8]) -> std::io::Result<()> + Send + Sync;
+
+impl std::fmt::Debug for WriteFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WriteFile(..)")
+    }
+}
+
+impl WriteFile {
+    fn write(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        (self.0)(path, bytes)
+    }
+}
 
 /// The log layer's settings: kaniko's `--verbosity`, `--log-format` and
 /// `--log-timestamp` (ADR-0036). They never change what the metrics layer
@@ -258,8 +276,8 @@ fn build(config: &Config, paths: HostPaths) -> (Dispatch, Option<Arc<Collector>>
         return (Dispatch::new(logs_only(config.logs)), None);
     }
     let mut collector = Collector::new(config.file.clone(), config.summary, paths);
-    if let Some(write_file) = config.write_file {
-        collector.write_file = write_file;
+    if let Some(write_file) = &config.write_file {
+        collector.write_file = write_file.clone();
     }
     let collector = Arc::new(collector);
     let metrics =

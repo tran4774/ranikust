@@ -173,12 +173,17 @@ fn main() -> ExitCode {
                 .to_owned(),
         );
     }
-    // Refused before the report is set up, so nothing is written there.
-    if let Err(message) = check_metrics_file(&command, metrics_file.as_deref()) {
+    // Refused before the report is set up, so nothing is written there; the
+    // report's writer keeps to the same context when it writes.
+    // `version` only warns when its report cannot be written.
+    let fence = context_fence(&command);
+    if matches!(command, Command::Build(_))
+        && let Err(message) = check_metrics_file(metrics_file.as_deref(), fence.as_ref())
+    {
         report(&message, "");
         return ExitCode::from(EXIT_USAGE);
     }
-    let telemetry = rnk_metrics::init(metrics_config(&command, metrics_file.as_deref()));
+    let telemetry = rnk_metrics::init(metrics_config(&command, metrics_file.as_deref(), fence));
     telemetry.set_meta("ranikust_version", env!("CARGO_PKG_VERSION"));
     for warning in &warnings {
         tracing::warn!("{warning}");
@@ -226,36 +231,57 @@ fn report_to(out: &mut impl std::io::Write, message: &str, guidance: &str) -> st
 /// The metrics settings: the report path from `--metrics-file` only
 /// (ADR-0037), the summary from `RANIKUST_METRICS_SUMMARY`, and the log
 /// settings of `build`.
-fn metrics_config(command: &Command, metrics_file: Option<&Path>) -> Config {
+fn metrics_config(
+    command: &Command,
+    metrics_file: Option<&Path>,
+    fence: Option<rnk_rootfs::Fence>,
+) -> Config {
     let mut config = Config::from_env();
     if let Command::Build(args) = command {
         config.logs = config::log_options(args);
     }
     config.file = metrics_file.map(|f| std::path::absolute(f).unwrap_or_else(|_| f.to_path_buf()));
-    config.write_file = Some(write_metrics_file);
+    config.write_file = Some(rnk_metrics::WriteFile(std::sync::Arc::new(
+        move |path: &Path, bytes: &[u8]| write_metrics_file(path, bytes, fence.as_ref()),
+    )));
     config
+}
+
+/// The build context's directory as a fence, opened once for the metrics
+/// report's check and its writer (ADR-0076); `None` for `version`, or a
+/// context that cannot be opened, which the build reports.
+fn context_fence(command: &Command) -> Option<rnk_rootfs::Fence> {
+    let Command::Build(args) = command else {
+        return None;
+    };
+    BuildConfig::from_args(args)
+        .ok()
+        .and_then(|config| rnk_rootfs::RootPath::open(&config.context).ok())
+        .and_then(|root| rnk_rootfs::Fence::of(&root).ok())
 }
 
 /// `--metrics-file` is an output like the others (ADR-0076): its directory
 /// must be reached without a symlink and lie outside the build context.
-/// Checked before the report is set up; a context that cannot be opened is
-/// left for the build to report.
-fn check_metrics_file(command: &Command, metrics_file: Option<&Path>) -> Result<(), String> {
-    let (Command::Build(args), Some(file)) = (command, metrics_file) else {
+/// Checked before the report is set up.
+fn check_metrics_file(
+    metrics_file: Option<&Path>,
+    fence: Option<&rnk_rootfs::Fence>,
+) -> Result<(), String> {
+    let Some(file) = metrics_file else {
         return Ok(());
     };
-    let context = BuildConfig::from_args(args)
-        .ok()
-        .and_then(|config| rnk_rootfs::RootPath::open(&config.context).ok())
-        .and_then(|root| rnk_rootfs::Fence::of(&root).ok());
     let file = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
-    build::check_output_path("--metrics-file", &file, false, context.as_ref())
+    build::check_output_path("--metrics-file", &file, false, fence)
 }
 
 /// Writes the metrics report at exit: its directory reached without
-/// following a symlink and made if missing, the file replaced through a
-/// temporary file renamed into place (ADR-0076).
-fn write_metrics_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// following a symlink and never through `fence`, made if missing, the file
+/// replaced through a temporary file renamed into place (ADR-0076).
+fn write_metrics_file(
+    path: &Path,
+    bytes: &[u8],
+    fence: Option<&rnk_rootfs::Fence>,
+) -> std::io::Result<()> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -267,7 +293,7 @@ fn write_metrics_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     } else {
         dir
     };
-    rnk_rootfs::OutputDir::open(dir, Some(0o777), None)
+    rnk_rootfs::OutputDir::open(dir, Some(0o777), fence)
         .and_then(|dir| {
             dir.write_atomically(name, 0o644, |f| {
                 f.write_all(bytes).map_err(|source| rnk_rootfs::Error::Io {
@@ -925,22 +951,28 @@ mod tests {
         let elsewhere = dir.path().join("elsewhere");
         std::fs::create_dir(&elsewhere).unwrap();
         std::os::unix::fs::symlink(&elsewhere, dir.path().join("out")).unwrap();
-        let check = |file: &Path| {
-            let ctx = format!("--context={}", ctx.display());
-            let argv = ["ranikust", ctx.as_str(), "--no-push"];
-            let command = cli::parse(argv).unwrap().cli.into_command();
-            check_metrics_file(&command, Some(file))
-        };
+        let flag = format!("--context={}", ctx.display());
+        let argv = ["ranikust", flag.as_str(), "--no-push"];
+        let command = cli::parse(argv).unwrap().cli.into_command();
+        let fence = context_fence(&command);
+        assert!(fence.is_some());
+        let check = |file: &Path| check_metrics_file(Some(file), fence.as_ref());
         let e = check(&ctx.join("m.json")).unwrap_err();
         assert!(e.contains("build context"), "{e}");
         let e = check(&dir.path().join("out/m.json")).unwrap_err();
         assert!(e.contains("symlink"), "{e}");
         check(&dir.path().join("m.json")).unwrap();
 
-        let e = write_metrics_file(&dir.path().join("out/m.json"), b"{}").unwrap_err();
+        // The writer itself, with the same fence: through a symlink or into
+        // the context, nothing is written.
+        let write = |p: &Path| write_metrics_file(p, b"{}\n", fence.as_ref());
+        let e = write(&dir.path().join("out/m.json")).unwrap_err();
         assert!(e.to_string().contains("symlink"), "{e}");
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
-        write_metrics_file(&dir.path().join("new/m.json"), b"{}\n").unwrap();
+        let e = write(&ctx.join("m.json")).unwrap_err();
+        assert!(e.to_string().contains("build context"), "{e}");
+        assert!(!ctx.join("m.json").exists());
+        write(&dir.path().join("new/m.json")).unwrap();
         assert_eq!(
             std::fs::read(dir.path().join("new/m.json")).unwrap(),
             b"{}\n"

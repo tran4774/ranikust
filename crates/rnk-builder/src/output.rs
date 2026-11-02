@@ -24,7 +24,7 @@ use rnk_oci::{
     to_canonical_json,
 };
 use rnk_registry::{BlobBody, Client, PushOutcome, RemoteBlob};
-use rnk_rootfs::OutputDir;
+use rnk_rootfs::{Fence, OutputDir};
 use sha2::Digest as _;
 use tracing::{Instrument as _, debug_span};
 
@@ -134,20 +134,21 @@ impl Outputs {
 /// `index.json` lists this image alone, without a name annotation.
 ///
 /// `dir` and the layout's own directories are reached without following a
-/// symlink (ADR-0076): a symlink on the way is refused.
+/// symlink and never through `fence`, the build context (ADR-0076): either
+/// is refused, in the same walk that writes.
 ///
 /// # Errors
 ///
 /// [`Error::Io`] when a layer blob cannot be read; [`Error::Rootfs`] when a
 /// directory cannot be reached or made, or a file written.
-pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()> {
+pub fn write_oci_layout(image: &Image, dir: &Path, fence: Option<&Fence>) -> Result<()> {
     let span = debug_span!(
         "rnk_builder.output",
         layers = image.layers.len(),
         bytes_out = tracing::field::Empty
     );
     let _entered = span.enter();
-    let layout = OutputDir::open(dir, Some(DIR_MODE), None)?;
+    let layout = OutputDir::open(dir, Some(DIR_MODE), fence)?;
     let mut bytes_out = 0;
     bytes_out += write_new(
         &layout,
@@ -183,16 +184,22 @@ pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()> {
 /// tags; its entries are sorted by name, not in go-containerregistry's
 /// order, which loaders do not depend on.
 ///
-/// The directory of `path` is reached without following a symlink
-/// (ADR-0076), and the file is written through a temporary file renamed
-/// over `path`, so whatever was at the name is replaced, never followed.
+/// The directory of `path` is reached without following a symlink and never
+/// through `fence`, the build context (ADR-0076), and the file is written
+/// through a temporary file renamed over `path`, which replaces only a
+/// regular file.
 ///
 /// # Errors
 ///
 /// [`Error::Io`] when a layer blob cannot be read, [`Error::Rootfs`] when
 /// the directory cannot be reached or the file written, [`Error::Layer`]
 /// when the tar cannot be written.
-pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<()> {
+pub fn write_docker_tar(
+    image: &Image,
+    tags: &[String],
+    path: &Path,
+    fence: Option<&Fence>,
+) -> Result<()> {
     let span = debug_span!(
         "rnk_builder.output",
         layers = image.layers.len(),
@@ -257,7 +264,7 @@ pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<(
     )?;
 
     let (dir, name) = parent_and_name(path)?;
-    let dir = OutputDir::open(dir, Some(DIR_MODE), None)?;
+    let dir = OutputDir::open(dir, Some(DIR_MODE), fence)?;
     let size = write_atomically(&dir, name, |out| {
         Ok(writer.finish(&mut Contents { items }, out)?.size)
     })?;

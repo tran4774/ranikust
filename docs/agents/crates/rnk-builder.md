@@ -82,8 +82,8 @@ impl Outputs {
     pub fn new(destinations: &[String], push: bool, docker_tar: Option<PathBuf>, oci_layout: Option<PathBuf>) -> Result<Self>;
     pub fn tar_tags(&self) -> &[String];                // as typed, `:latest` added; UNSET_DESTINATION without one
 }
-pub fn write_oci_layout(image: &Image, dir: &Path) -> Result<()>;  // through rnk_rootfs::OutputDir: no symlink followed, files renamed into place (ADR-0076)
-pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path) -> Result<()>;  // the same; the caller keeps both out of the build context
+pub fn write_oci_layout(image: &Image, dir: &Path, fence: Option<&Fence>) -> Result<()>;  // through rnk_rootfs::OutputDir: no symlink followed, never into `fence` (the build context), only regular files replaced (ADR-0076)
+pub fn write_docker_tar(image: &Image, tags: &[String], path: &Path, fence: Option<&Fence>) -> Result<()>;  // the same
 pub async fn push(image: &Image, destinations: &[Reference], client: &Arc<Client>, jobs: NonZeroUsize)
     -> Result<Vec<(Reference, Digest)>>;
 ```

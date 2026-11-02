@@ -38,7 +38,7 @@ fn an_output_never_follows_a_planted_name_and_leaves_nothing_on_error() {
     std::fs::write(&victim, b"keep me").unwrap();
     symlink(&victim, dir.path().join(".image.tar.ranikust-tmp")).unwrap();
 
-    rnk_builder::write_docker_tar(&image, &["r.example/a:1".to_owned()], &out).unwrap();
+    rnk_builder::write_docker_tar(&image, &["r.example/a:1".to_owned()], &out, None).unwrap();
     assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
     assert!(std::fs::symlink_metadata(&out).unwrap().is_file());
 
@@ -47,12 +47,12 @@ fn an_output_never_follows_a_planted_name_and_leaves_nothing_on_error() {
     let mut broken = image.clone();
     broken.layers[1].bytes = rnk_builder::LayerBytes::File(blobs.path().join("missing"));
     std::fs::remove_file(&out).unwrap();
-    let err = rnk_builder::write_docker_tar(&broken, &[], &out).unwrap_err();
+    let err = rnk_builder::write_docker_tar(&broken, &[], &out, None).unwrap_err();
     assert!(matches!(err, Error::Layer(_)), "{err}");
     assert_eq!(names(dir.path()), [".image.tar.ranikust-tmp", "victim"]);
 
     let layout = dir.path().join("layout");
-    let err = rnk_builder::write_oci_layout(&broken, &layout).unwrap_err();
+    let err = rnk_builder::write_oci_layout(&broken, &layout, None).unwrap_err();
     assert!(matches!(err, Error::Io { .. }), "{err}");
     let sha = layout.join("blobs/sha256");
     assert!(
@@ -76,15 +76,15 @@ fn an_output_never_goes_through_a_symlinked_directory() {
     symlink(&elsewhere, dir.path().join("out")).unwrap();
 
     let out = dir.path().join("out");
-    let err = rnk_builder::write_docker_tar(&image, &[], &out.join("image.tar")).unwrap_err();
+    let err = rnk_builder::write_docker_tar(&image, &[], &out.join("image.tar"), None).unwrap_err();
     assert!(err.to_string().contains("symlink"), "{err}");
-    let err = rnk_builder::write_oci_layout(&image, &out.join("layout")).unwrap_err();
+    let err = rnk_builder::write_oci_layout(&image, &out.join("layout"), None).unwrap_err();
     assert!(err.to_string().contains("symlink"), "{err}");
     // A layout whose `blobs` is a symlink.
     let layout = dir.path().join("layout");
     std::fs::create_dir(&layout).unwrap();
     symlink(&elsewhere, layout.join("blobs")).unwrap();
-    let err = rnk_builder::write_oci_layout(&image, &layout).unwrap_err();
+    let err = rnk_builder::write_oci_layout(&image, &layout, None).unwrap_err();
     assert!(err.to_string().contains("symlink"), "{err}");
     assert!(names(&elsewhere).is_empty(), "{:?}", names(&elsewhere));
 }
@@ -191,12 +191,12 @@ fn the_oci_layout_rewrites_a_blob_that_only_has_the_right_size() {
     let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
     let image = image(dir.path(), &base, &time(), Compression::Gzip);
     let out = dir.path().join("layout");
-    rnk_builder::write_oci_layout(&image, &out).unwrap();
+    rnk_builder::write_oci_layout(&image, &out, None).unwrap();
     let path = out.join(OciLayout::blob_path(&base.layer.blob.digest));
     let wrong = vec![b'x'; base.bytes.len()];
     std::fs::write(&path, &wrong).unwrap();
 
-    rnk_builder::write_oci_layout(&image, &out).unwrap();
+    rnk_builder::write_oci_layout(&image, &out, None).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), base.bytes);
 }
 
@@ -206,7 +206,8 @@ fn a_docker_tar_refuses_a_layer_type_it_cannot_name() {
     let base = base(dir.path(), Reference::parse("r.example/base:1").unwrap());
     let mut image = image(dir.path(), &base, &time(), Compression::Gzip);
     image.layers[0].blob.media_type = MediaType::new("application/x-unknown");
-    let err = rnk_builder::write_docker_tar(&image, &[], &dir.path().join("x.tar")).unwrap_err();
+    let err =
+        rnk_builder::write_docker_tar(&image, &[], &dir.path().join("x.tar"), None).unwrap_err();
     assert!(matches!(err, Error::UnknownLayerType { .. }), "{err}");
 }
 

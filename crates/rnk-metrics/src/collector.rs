@@ -68,7 +68,7 @@ impl Collector {
             finished: AtomicBool::new(false),
             panics: AtomicU64::new(0),
             writing: Mutex::new(()),
-            write_file: report::write_file,
+            write_file: crate::WriteFile(Arc::new(report::write_file)),
         }
     }
 
@@ -170,7 +170,7 @@ impl Collector {
         if let Some(file) = &self.file {
             let written = report::to_bytes(report)
                 .map_err(std::io::Error::from)
-                .and_then(|bytes| (self.write_file)(file, &bytes));
+                .and_then(|bytes| self.write_file.write(file, &bytes));
             if let Err(err) = written {
                 crate::warn(&format!("writing {}: {err}", file.display()));
             }

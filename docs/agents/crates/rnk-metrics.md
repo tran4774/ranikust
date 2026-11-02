@@ -42,7 +42,7 @@ pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY"; // [design]
 pub const SCHEMA: &str = "ranikust.metrics/v1";            // [decided]
 pub struct Config { pub file: Option<PathBuf>, pub summary: bool, pub logs: LogOptions,
                     pub write_file: Option<WriteFile> }  // from_env(), is_enabled()
-pub type WriteFile = fn(&Path, &[u8]) -> io::Result<()>;  // the binary's: no symlink followed (ADR-0076); None: temporary file + rename
+pub struct WriteFile(pub Arc<WriteFn>);  // a closure: the binary's carries the build context's fence, follows no symlink (ADR-0076); None: temporary file + rename
 pub fn init(config: Config) -> Telemetry;                  // once, first thing in main, single-threaded
 pub struct Telemetry;  // is_enabled(), set_meta(key, impl Into<Value>), finish(&Outcome): first call writes
 pub struct Outcome;    // success() | error(code, message); panics are reported by the hook
