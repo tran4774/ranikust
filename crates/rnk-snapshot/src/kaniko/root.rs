@@ -370,10 +370,7 @@ fn check_marker_dir_opened(
     root_mnt: u64,
     opened_mnt: u64,
 ) -> Result<()> {
-    if opened_mnt != root_mnt
-        || (made.dev_major, made.dev_minor, made.ino)
-            != (opened.dev_major, opened.dev_minor, opened.ino)
-    {
+    if opened_mnt != root_mnt || !same_inode(made, opened) {
         return Err(Error::State(
             "/ranikust changed between its look-up and its opening",
         ));
@@ -441,6 +438,12 @@ fn clear_views(shared: &Shared) -> Result<()> {
 /// Device, inode and mount of `st`.
 fn identity(st: &rnk_rootfs::Stat) -> (u32, u32, u64, u64) {
     (st.dev_major, st.dev_minor, st.ino, st.mnt_id)
+}
+
+/// Whether `a` and `b` are the same inode (device and inode number): what a
+/// name showed is what was opened. The mount is checked apart.
+fn same_inode(a: &rnk_rootfs::Stat, b: &rnk_rootfs::Stat) -> bool {
+    (a.dev_major, a.dev_minor, a.ino) == (b.dev_major, b.dev_minor, b.ino)
 }
 
 /// Deletes `view`'s directory, only if the name still leads, without
@@ -721,8 +724,7 @@ fn make_dir(shared: &Shared, name: &str) -> Result<Made> {
     match opened {
         Ok((made, st, root))
             if made.file_type() == FileType::Directory
-                && (made.dev_major, made.dev_minor, made.ino)
-                    == (st.dev_major, st.dev_minor, st.ino)
+                && same_inode(&made, &st)
                 && root.mnt_id() == shared.kept.mnt_id() =>
         {
             Ok((name.to_owned(), root, identity(&st)))
