@@ -184,8 +184,8 @@ No span: pure data. Serializing configs and manifests is charged to
 
 `requests` counts HTTP requests including retries; `retries` the re-sent
 ones. No span per HTTP request or body chunk. `requests` is the count of
-the requests each `oci-client` call makes; token refreshes `oci-client`
-makes on its own are not seen. `bytes_in`/`bytes_out` include retried
+the requests each call makes; token refreshes `oci-client` makes on its
+own, on the push side, are not seen. `bytes_in`/`bytes_out` include retried
 attempts.
 
 ### `rnk-rootfs`
@@ -280,7 +280,7 @@ indent, final newline. Times in nanoseconds; integers only.
 | Section | Holds |
 |---|---|
 | `schema` | `ranikust.metrics/v1`; bumped on any incompatible change |
-| `meta` | `ranikust_version`, `os`, `arch`, `num_cpu`, `pid`, `file`, `start`, `end` (RFC 3339 UTC), `wall_ns`; for `build`, `mode` (the `--mode` asked for) and `options`: `compression`, `jobs`, `mode`, `network`, `no_push`, `outputs` (`destinations` count, `oci_layout` and `tar` booleans), `reproducible`, `snapshot_mode`, `targets` count (`Telemetry::set_meta`; never a destination, path, build argument, secret or credential) |
+| `meta` | `ranikust_version`, `os`, `arch`, `num_cpu`, `pid`, `file`, `start`, `end` (RFC 3339 UTC), `wall_ns`; for `build`, `mode` (the `--mode` asked for) and `options`: `compression`, `jobs`, `limits` (each `--limit` in force by name, sizes in bytes, durations in milliseconds, ADR-0079), `mode`, `network`, `no_push`, `outputs` (`destinations` count, `oci_layout` and `tar` booleans), `reproducible`, `snapshot_mode`, `targets` count (`Telemetry::set_meta`; never a destination, path, build argument, secret or credential) |
 | `exit` | `status` (`success`, `error`, `panic`), `code`, `message` (500 characters at most); `panics` when an unwinding build panicked earlier; `spans_unavailable` when the panic hook could not read the span state |
 | `phases` | per span name: `count`, `total_ns` (sum), `max_ns`, `wall_ns` (time at least one was open), `open` (still open at exit), and the summed fields |
 | `stages`, `commands`, `snapshots` | records: `build` (always 0), `stage`, `index`, `line`, `kind`, `name`, `text`, `cache_hit`, `start_ns` (from process start), `wall_ns`, `incomplete` (open at exit), `values` (the record span's own fields), `phases` (spans nested in it: `count`, `total_ns`, `max_ns`, fields) |

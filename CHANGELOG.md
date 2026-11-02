@@ -30,6 +30,18 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Added
 
+- `--limit NAME=VALUE` and default bounds on what a registry or an image
+  can make ranikust hold or wait for (ADR-0079): `tar-header` (1 MiB per
+  GNU long name, long link or PAX record set, refused at its header),
+  `manifest` (4 MiB, refused while it arrives), `registry-body` (1 MiB for
+  token responses; error bodies are read no further), `config` (8 MiB,
+  checked before the pull) and `registry-idle` (2 min without data fails a
+  request, which is retried). Before, a small layer or a hostile registry
+  could make ranikust allocate gigabytes, and a registry that stopped
+  sending held a pull, and the store's per-digest lock other builds wait
+  for, forever. Manifest and blob pulls and anonymous or basic token
+  requests are now sent by `rnk-registry` itself rather than `oci-client`.
+
 - The `par-stages` smoke case: four independent stages give one digest at
   `--jobs 1` and `4` and the same as when chained; with
   `RANIKUST_QUICK_BENCH=1` the VM's `quick` also runs the Phase 2 criterion 7
