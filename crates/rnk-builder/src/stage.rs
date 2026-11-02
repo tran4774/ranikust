@@ -124,7 +124,7 @@ impl<R: StageRootfs> SourceRoot<R> {
         let KeepNeed::Sources(list) = need else {
             return Ok(root.keep(&Keep::All)?);
         };
-        let Some((paths, expected)) = keep_paths(root.view()?, list) else {
+        let Some(SourcePaths { paths, expected }) = keep_paths(root.view()?, list) else {
             return Ok(root.keep(&Keep::All)?);
         };
         // A source naming the root (`/`, `.`, a link to `/`) is the whole
@@ -184,14 +184,19 @@ pub enum KeepNeed {
     Sources(Vec<String>),
 }
 
-/// The paths to keep for `list` in `root`: each source's entries with the
-/// symlinks on their way, and what each source resolves to now. `None`
-/// when a source cannot be resolved here.
-#[allow(clippy::type_complexity, reason = "a pair returned once")]
-fn keep_paths(
-    root: &RootPath,
-    list: &[String],
-) -> Option<(Vec<PathBuf>, Vec<Vec<sources::Resolved>>)> {
+/// What keeping `COPY --from` sources by their paths takes ([`keep_paths`]).
+struct SourcePaths {
+    /// The entries to keep: each source's entries with the symlinks on
+    /// their way.
+    paths: Vec<PathBuf>,
+    /// What each source resolves to now, in order: the kept copy must
+    /// resolve each to the same entries.
+    expected: Vec<Vec<sources::Resolved>>,
+}
+
+/// The paths to keep for `list` in `root`, and what each source resolves
+/// to now. `None` when a source cannot be resolved here.
+fn keep_paths(root: &RootPath, list: &[String]) -> Option<SourcePaths> {
     let mut paths = Vec::new();
     let mut expected = Vec::with_capacity(list.len());
     for s in list {
@@ -205,7 +210,7 @@ fn keep_paths(
         }
         expected.push(found);
     }
-    Some((paths, expected))
+    Some(SourcePaths { paths, expected })
 }
 
 /// An image read by `COPY --from=<image>`: pulled, with a root on it, made

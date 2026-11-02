@@ -166,8 +166,14 @@ pub(crate) fn run_mounts(
                 caches.push((cache_key(m), m));
             }
             MountType::Secret => secret_mount(m, workdir, secrets, &mut read, &mut out)?,
-            // Refused by `check_supported` above.
-            MountType::Bind | MountType::Tmpfs | MountType::Ssh => {}
+            // Refused by `check_supported` above; refused here too, so that
+            // relaxing that check can never drop a mount silently.
+            MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
+                return Err(Error::Invalid(format!(
+                    "RUN --mount=type={} is not supported yet (Phase 5)",
+                    m.kind
+                )));
+            }
         }
     }
     let mut order: Vec<usize> = (0..caches.len()).collect();
@@ -282,7 +288,17 @@ pub(crate) fn direct_mounts(mounts: &[Mount]) -> Result<Vec<Mount>> {
                         .to_owned(),
                 ));
             }
-            _ => kept.push(m.clone()),
+            // A secret as a variable: the only mount a `Direct` RUN keeps.
+            MountType::Secret => kept.push(m.clone()),
+            // Refused by `check_supported` above; refused here too, so that
+            // relaxing that check can never drop a mount silently.
+            MountType::Bind | MountType::Tmpfs | MountType::Ssh => {
+                return Err(Error::Invalid(format!(
+                    "RUN --mount=type={}: kaniko mode on / runs RUN directly, where nothing \
+                     can be mounted",
+                    m.kind
+                )));
+            }
         }
     }
     Ok(kept)
