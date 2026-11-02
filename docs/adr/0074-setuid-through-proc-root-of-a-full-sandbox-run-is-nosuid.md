@@ -37,17 +37,32 @@ The setuid consequence of ADR-0047 is corrected as follows: through
 `/proc/<pid>/root` of a full-sandbox `RUN`, a setuid-root file from the image
 does not take effect for a host user, because the kernel treats a mount of
 another mount namespace as `nosuid`, and a hardlink out of that root fails
-with `EXDEV`; the rest of ADR-0047 stands.
+with `EXDEV`; the rest of ADR-0047 stands. Measured in the T2 VM, in overlay
+mode, on 2026-11-03, on kernels 5.15 and 6.8 (see Evidence).
 
 - **What stays true.** While the `RUN` lives as a non-root `USER`, a distinct
-  host account with the same uid can still read its `/proc/<pid>/environ` and
-  reach its root through `/proc/<pid>/root`, with that uid's file
-  permissions, until `--userns` (Phase 3, [ADR-0003](0003-dockerfile-trust-and-default-isolation.md)).
-  The threat model now lists this as an accepted risk
+  host account can still read its `/proc/<pid>/environ` and reach its root
+  through `/proc/<pid>/root`, with that account's file permissions, until
+  `--userns` (Phase 3, [ADR-0003](0003-dockerfile-trust-and-default-isolation.md)),
+  but only when both conditions hold [measured]:
+  - the account's uid **and** primary gid both equal the `RUN`'s. A
+    `USER <uid>` with no passwd entry runs as gid 0, so an account
+    `<uid>:<uid>` gets `EACCES` on everything and can only list the
+    descriptor numbers in `/proc/<pid>/fd` (a uid match is enough for that
+    listing, which shows names only); `USER <uid>:<uid>` makes the account
+    `<uid>:<uid>` the one that gets in. A different uid is always refused;
+  - the `RUN` process is dumpable. A binary that is exec-only (`0711`)
+    makes it non-dumpable, and then nothing is reachable.
+
+  Files only root may read (`0600`) stay unreadable through the root. The
+  threat model lists the reach as an accepted risk
   ([section 6](../security/threat-model.md#6-accepted-risks)).
 - **Where ADR-0047's sentence was true.** Only for a `RUN` in the host's own
-  mount namespace (by the same kernel rule [inferred]): the `Direct` `chroot`
-  of a host `--workdir` that ADR-0047 first described. [ADR-0050](0050-ranikust-picks-the-build-root-no-workdir-flag.md)
+  mount namespace, by the same kernel rule: [measured] for a plain host
+  process in the account's own mount namespace, where a setuid-root file
+  executed through `/proc/<pid>/root` gives `euid=0`; the `Direct` `chroot` of
+  a host `--workdir` that ADR-0047 first described has not been run, so for
+  it the rule is [inferred]. [ADR-0050](0050-ranikust-picks-the-build-root-no-workdir-flag.md)
   removed that workdir, and the binary runs a `Direct` `RUN` on `/` of a
   container only, so no mode has that case today.
 - **The private chain stands.** Its purpose, that no other user reaches the
@@ -58,9 +73,13 @@ with `EXDEV`; the rest of ADR-0047 stands.
 
 - Good, because the threat model no longer tells a reader that a same-uid
   account can turn an image's setuid file into privilege through
-  `/proc/<pid>/root`.
-- Bad, because the kernel rule is [inferred], not measured here: until a VM
-  experiment shows it, this ADR stays `proposed`.
+  `/proc/<pid>/root`, and the kernel rule behind that is measured, not
+  inferred, for the full sandbox in overlay mode.
+- Bad, because the measurement did not cover everything the sentence reaches.
+  Still [inferred]: kaniko mode with a directory per stage; the `Direct`
+  `chroot` case of ADR-0047; "Docker without user-namespace remapping behaves
+  the same"; kernels other than 5.15 and 6.8; and `--userns`. This ADR stays
+  `proposed` until the maintainer accepts it.
 - Neutral, because nothing in the code changes: it never depended on the
   statement.
 
@@ -75,16 +94,53 @@ with `EXDEV`; the rest of ADR-0047 stands.
 - `Direct` only on `/` [code]: `crates/ranikust/src/setup.rs` picks
   `Isolation::Direct` only when no sandbox probe ran, which is kaniko mode on
   `/`; off `/` the full sandbox runs (ADR-0059, ADR-0060).
+- The experiment [measured], 2026-11-03, T2 VM, Ubuntu noble
+  `6.8.0-147-generic` and jammy `5.15.0-198-generic`, identical results on
+  both. ranikust ran in overlay mode as root with a full sandbox: a non-root
+  `USER` `RUN` in its own mount, PID, UTS and IPC namespaces, no user
+  namespace, entering its root with `pivot_root`. The account A is a separate
+  host account outside the build. The probe is a static C helper that prints
+  `getresuid`, set setuid-root in the image, run by A through
+  `/proc/<pid>/root` of the `RUN`. (A setuid copy of busybox does not do:
+  busybox drops privileges itself.) Host settings: `kernel.yama.ptrace_scope=1`,
+  `fs.suid_dumpable=2`, ext4, LSMs `lockdown,capability,landlock,yama,apparmor`.
+  The experiment's source is not kept in this repository.
 - A same-uid account passes the kernel's check for `/proc/<pid>/root` and
   `/proc/<pid>/environ` [external]: both are governed by
   `PTRACE_MODE_READ_FSCREDS` (`proc_pid_root(5)`, `proc_pid_environ(5)`),
   which allows a caller whose filesystem uid and gid match the target's ids
   when the target is dumpable (`ptrace(2)`, "Ptrace access mode checking").
-- A foreign mount is `nosuid`, and a link across mounts fails [inferred]:
-  from `mnt_may_suid()` in the kernel's `fs/namespace.c`, which requires the
-  mount to be in the caller's mount namespace before honouring setuid, setgid
-  and file capabilities, and from `linkat(2)`'s `EXDEV` for two mounts. Not in
-  this repository and not yet measured.
+  The experiment confirms it and shows both ids and the dumpable state matter
+  [measured]: A reads `/proc/<pid>/environ` and the `root`, `cwd` and `fd/*`
+  targets, and through the root what A's uid may read, only when A's uid and
+  primary gid both equal the `RUN`'s and the `RUN` is dumpable. `USER 1234`
+  with no passwd entry runs as gid 0, so an account 1234:1234 gets `EACCES`
+  on all of it and can only list the descriptor numbers; `USER 1234:1234`
+  makes the account 1234:1234 the one that gets in; a different uid is always
+  refused. An exec-only (`0711`) binary makes the `RUN` non-dumpable, and then
+  nothing is reachable. Root-only files (`0600`) stay unreadable through the
+  root. The `/proc/<pid>/fd` listing (names only) needs only a uid match.
+- A foreign mount is `nosuid` [measured]: a setuid-root file executed by A
+  through `/proc/<pid>/root` of the `RUN` gives `euid=1234`, not 0. The
+  `RUN`'s root mount has no `nosuid` flag (`rw,nodev,relatime`), so the cause
+  is the foreign mount namespace; the same rule appears with a plain
+  `unshare -m` and a tmpfs, without ranikust. Controls: the same file in A's
+  own namespace gives `euid=0` with a full `CapEff`, and through
+  `/proc/<hostpid>/root` of a host process in A's own mount namespace it also
+  gives `euid=0`, so the `/proc` route does not disable setuid; the foreign
+  namespace does. Inside the `RUN` setuid works: `euid=0` with `CapBnd`
+  `a80425fb`. The kernel source has the same rule [external]: `mnt_may_suid()`
+  in `fs/namespace.c` requires the mount to be in the caller's mount namespace
+  before honouring setuid, setgid and file capabilities.
+- A hardlink out of that root fails [measured]: a hardlink from that path
+  into A's namespace fails with `EXDEV` with `fs.protected_hardlinks` at 1 and
+  at 0. `EXDEV` comes from the two paths being on different mounts, which
+  holds for any two mounts, even within one namespace (`linkat(2)`
+  [external]), and the kernel returns it before the `protected_hardlinks`
+  check, so that sysctl plays no part.
+- `/proc/<pid>/mountinfo` of the `RUN` [measured]: readable by any host user
+  when `hidepid` is 0. It shows the state directory and overlay layer paths;
+  only the names leak, since the tree is `0700`.
 
 ## More Information
 
@@ -94,6 +150,7 @@ and ADR-0047 keeps `accepted`. Related:
 [ADR-0050](0050-ranikust-picks-the-build-root-no-workdir-flag.md) (partly
 supersedes ADR-0047), [ADR-0003](0003-dockerfile-trust-and-default-isolation.md)
 (`--userns`), [ADR-0043](0043-direct-run-on-a-workdir-chroots-with-placed-files.md)
-(the `Direct` `chroot`). Revisit once the T2 experiment is run: a non-root
-`USER` `RUN` in the full sandbox, a setuid-root file in its root, and a
-same-uid host account executing it through `/proc/<pid>/root`.
+(the `Direct` `chroot`). The T2 experiment of 2026-11-03 (Evidence) ran a
+non-root `USER` `RUN` in the full sandbox, a setuid-root file in its root and
+a same-uid host account executing it through `/proc/<pid>/root`; what it left
+unmeasured is listed in the Consequences.

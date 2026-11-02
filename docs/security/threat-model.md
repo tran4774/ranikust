@@ -188,23 +188,30 @@ These follow from decisions and are documented to users rather than fixed:
   allows `unshare` and `clone` with `CLONE_NEWUSER` only with
   `CAP_SYS_ADMIN` (lines 720-775). Whether the Docker release you run has
   the same profile is not checked here.
-- Until `--userns` (Phase 3), a distinct host account whose uid is the `USER`
-  of a non-root `RUN` can reach that `RUN` while it lives
+- Until `--userns` (Phase 3), a distinct host account whose uid and primary
+  gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by
   [ADR-0074](../adr/0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md)
-  (proposed)). In the full sandbox the `RUN` keeps the Dockerfile's raw uid
-  and gid in the user namespace ranikust runs in (no `CLONE_NEWUSER`) and,
-  once it has executed, is dumpable **[inferred]**, so such an account
-  passes the kernel's check for `/proc/<pid>/environ` (every `env=` secret of
-  that `RUN`), `/proc/<pid>/root`, `/proc/<pid>/cwd` and `/proc/<pid>/fd/*`:
-  all ask for matching ids and a dumpable target (`PTRACE_MODE_READ_FSCREDS`;
-  `ptrace(2)`, `proc_pid_environ(5)`, `proc_pid_root(5)`, `proc_pid_cwd(5)`,
-  `proc_pid_fd(5)`) **[external]**. Through the root and the descriptors it
-  reads and writes what that uid may in the root being built, a secret file
-  mounted with `uid=` that uid, and a cache mount that uid owns (T14). With
-  `kernel.yama.ptrace_scope` 0 it can also attach with `ptrace` and read and
-  write `/proc/<pid>/mem`, which are `PTRACE_MODE_ATTACH` checks that Yama
-  does not restrict at 0 (`ptrace(2)`, `proc_pid_mem(5)`) **[external]**;
+  (proposed)). Both ids must match: a `USER <uid>` with no passwd entry runs
+  as gid 0, so an account `<uid>:<uid>` is refused, and a uid match alone
+  lists only the descriptor numbers in `/proc/<pid>/fd` **[measured]**
+  (2026-11-03, kernels 5.15 and 6.8). In the full sandbox the `RUN` keeps the
+  Dockerfile's raw uid and gid in the user namespace ranikust runs in (no
+  `CLONE_NEWUSER`) and, once it has executed, is dumpable, unless its binary
+  is exec-only (`0711`), which makes it non-dumpable and then nothing is
+  reachable **[measured]** (2026-11-03, kernels 5.15 and 6.8). So such an
+  account passes the kernel's check for `/proc/<pid>/environ` (every `env=`
+  secret of that `RUN`), `/proc/<pid>/root`, `/proc/<pid>/cwd` and
+  `/proc/<pid>/fd/*`: all ask for matching ids and a dumpable target
+  (`PTRACE_MODE_READ_FSCREDS`; `ptrace(2)`, `proc_pid_environ(5)`,
+  `proc_pid_root(5)`, `proc_pid_cwd(5)`, `proc_pid_fd(5)`) **[external]**.
+  Through the root and the descriptors it reads and writes what that uid may
+  in the root being built, a secret file mounted with `uid=` that uid, and a
+  cache mount that uid owns (T14); files only root may read (`0600`) stay
+  unreadable. With `kernel.yama.ptrace_scope` 0 it can also attach with
+  `ptrace` and read and write `/proc/<pid>/mem`, which are
+  `PTRACE_MODE_ATTACH` checks that Yama does not restrict at 0 (`ptrace(2)`,
+  `proc_pid_mem(5)`) **[external]**;
   ranikust's warning for that setting (`crates/rnk-sandbox/src/sweep.rs`)
   covers only one `RUN` process attaching to another. Before its command
   runs, the child is a copy of ranikust's memory: it is made non-dumpable
@@ -212,14 +219,20 @@ These follow from decisions and are documented to users rather than fixed:
   `setresuid` and that `prctl` is open, and only where
   `fs.suid_dumpable` is 1 (the common defaults are 0 and 2)
   **[inferred]**. The account gains
-  nothing over the state directory, which is root's `0700`, and no privilege
-  from a setuid file: the `RUN`'s mounts belong to its mount namespace, which
-  the kernel treats as `nosuid` for a process of another one, and a hardlink
-  out of that root fails with `EXDEV` **[inferred]**. Docker without
-  user-namespace remapping behaves the same. A `RUN` as root is reachable
-  only by host root, who is trusted; in kaniko mode on `/` the `RUN` is an
-  ordinary process of the container, and the container runtime's boundary
-  applies (section 3).
+  nothing over the state directory, which is root's `0700`: any host user can
+  read the `RUN`'s `/proc/<pid>/mountinfo` where `hidepid` is 0, but it shows
+  only the names of the state-directory and overlay layer paths
+  **[measured]** (same runs). It gets no privilege from a setuid file either: the `RUN`'s
+  mounts belong to its mount namespace, which the kernel treats as `nosuid`
+  for a process of another one (the same file gives `euid=0` for the account
+  in its own namespace, and the `RUN`'s root mount has no `nosuid` flag), and
+  a hardlink out of that root fails with `EXDEV`, since the two paths are on
+  different mounts, whatever `fs.protected_hardlinks` is **[measured]**
+  (2026-11-03, kernels 5.15 and 6.8, full sandbox in overlay mode). Docker
+  without user-namespace remapping behaves the same **[inferred]**. A `RUN`
+  as root is reachable only by host root, who is trusted; in kaniko mode on
+  `/` the `RUN` is an ordinary process of the container, and the container
+  runtime's boundary applies (section 3).
 - `RUN` shares the host network by default
   ([ADR-0010](../adr/0010-run-network-host-or-none.md)), as kaniko's does; it
   can reach services that listen on the host and the cloud metadata
