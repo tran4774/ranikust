@@ -992,9 +992,9 @@ impl Runner {
         let [stdin, stdout, stderr] = stdio;
         let (stdin, stdout, stderr) = (stdin?, stdout?, stderr?);
         let stdio = [
-            child_stdio(stdin, &mut keep)?,
-            child_stdio(stdout, &mut keep)?,
-            child_stdio(stderr, &mut keep)?,
+            child_stdio(stdin, 0, &mut keep)?,
+            child_stdio(stdout, 1, &mut keep)?,
+            child_stdio(stderr, 2, &mut keep)?,
         ];
         let mounts = mounts.into_iter().map(child_mount).collect::<Result<_>>()?;
         let (root_remount, dev_remount) = match spec.isolation {
@@ -1491,13 +1491,26 @@ fn check_source(p: &Path, kind: MountKind) -> Result<rustix::fs::StatVfs> {
     rustix::fs::fstatvfs(&fd).map_err(|e| io_err("statvfs", p, e.into()))
 }
 
-/// A caller's stream for the child: a descriptor is duplicated to 3 or
-/// higher, close-on-exec, and kept open in `keep` until the clone.
-fn child_stdio(s: Stdio, keep: &mut Vec<OwnedFd>) -> Result<ChildStdio> {
+/// A caller's stream `target` (0, 1 or 2) for the child: a descriptor is
+/// duplicated to 3 or higher, close-on-exec, and kept open in `keep` until
+/// the clone. A descriptor, or ranikust's own stream for `Inherit`, must
+/// not be a directory or an `O_PATH` descriptor ([`check_stream`]).
+fn child_stdio(s: Stdio, target: RawFd, keep: &mut Vec<OwnedFd>) -> Result<ChildStdio> {
     Ok(match s {
-        Stdio::Inherit => ChildStdio::Inherit,
+        Stdio::Inherit => {
+            // SAFETY: `F_GETFL` on a descriptor number; a closed one fails
+            // with EBADF.
+            if unsafe { libc::fcntl(target, libc::F_GETFL) } >= 0 {
+                // SAFETY: open, as just checked, and never closed by this
+                // process: it is one of its standard streams.
+                let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(target) };
+                check_stream(fd, target)?;
+            }
+            ChildStdio::Inherit
+        }
         Stdio::Null => ChildStdio::Null,
         Stdio::Fd(fd) => {
+            check_stream(std::os::fd::AsFd::as_fd(&fd), target)?;
             let dup = rustix::io::fcntl_dupfd_cloexec(&fd, 3)
                 .map_err(|e| sys_err("duplicate a stdio descriptor", e))?;
             let raw: RawFd = dup.as_raw_fd();
@@ -1505,6 +1518,29 @@ fn child_stdio(s: Stdio, keep: &mut Vec<OwnedFd>) -> Result<ChildStdio> {
             ChildStdio::Fd(raw)
         }
     })
+}
+
+/// Refuses a `RUN` stream that is a directory or an `O_PATH` descriptor: it
+/// crosses `execve`, and `/proc/self/fd/<n>` or `openat` from it would let
+/// the `RUN` look up paths outside its root.
+fn check_stream(fd: std::os::fd::BorrowedFd<'_>, target: RawFd) -> Result<()> {
+    let name = ["stdin", "stdout", "stderr"]
+        .get(usize::try_from(target).unwrap_or(usize::MAX))
+        .copied()
+        .unwrap_or("stream");
+    let flags = rustix::fs::fcntl_getfl(fd).map_err(|e| sys_err("fcntl(F_GETFL)", e))?;
+    if flags.contains(OFlags::PATH) {
+        return Err(Error::InvalidSpec(format!(
+            "the RUN's {name} is an O_PATH descriptor"
+        )));
+    }
+    let st = rustix::fs::fstat(fd).map_err(|e| sys_err("fstat a stdio descriptor", e))?;
+    if FileType::from_raw_mode(st.st_mode) == FileType::Directory {
+        return Err(Error::InvalidSpec(format!(
+            "the RUN's {name} is a directory"
+        )));
+    }
+    Ok(())
 }
 
 fn read_host_file(p: &Path) -> Result<Option<Vec<u8>>> {
@@ -2027,15 +2063,50 @@ mod tests {
     fn stdio_descriptors_are_moved_above_two() {
         let mut keep = Vec::new();
         let (r, _w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
-        let s = child_stdio(Stdio::Fd(r), &mut keep).unwrap();
+        let s = child_stdio(Stdio::Fd(r), 0, &mut keep).unwrap();
         let ChildStdio::Fd(fd) = s else {
             panic!("{s:?}")
         };
         assert!(fd >= 3);
         assert_eq!(keep.len(), 1);
         assert_eq!(
-            child_stdio(Stdio::Null, &mut keep).unwrap(),
+            child_stdio(Stdio::Null, 0, &mut keep).unwrap(),
             ChildStdio::Null
+        );
+    }
+
+    /// A directory or an `O_PATH` descriptor is refused as a `RUN` stream:
+    /// it would cross `execve` as a way out of the root.
+    #[test]
+    fn a_directory_or_path_descriptor_is_no_stream() {
+        let mut keep = Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        fs::write(&file, b"x").unwrap();
+        let opened = |p: &Path, flags: OFlags| {
+            rustix::fs::open(p, flags | OFlags::CLOEXEC, Mode::empty()).unwrap()
+        };
+        for (what, fd) in [
+            (
+                "a directory",
+                opened(dir.path(), OFlags::RDONLY | OFlags::DIRECTORY),
+            ),
+            ("an O_PATH directory", opened(dir.path(), OFlags::PATH)),
+            ("an O_PATH file", opened(&file, OFlags::PATH)),
+        ] {
+            let r = child_stdio(Stdio::Fd(fd), 1, &mut keep);
+            assert!(
+                matches!(&r, Err(Error::InvalidSpec(m)) if m.contains("stdout")),
+                "{what}: {r:?}"
+            );
+        }
+        assert!(keep.is_empty());
+        let ok = child_stdio(Stdio::Fd(opened(&file, OFlags::RDONLY)), 1, &mut keep);
+        assert!(matches!(ok, Ok(ChildStdio::Fd(_))), "{ok:?}");
+        // The test process's own streams are no directory.
+        assert_eq!(
+            child_stdio(Stdio::Inherit, 2, &mut keep).unwrap(),
+            ChildStdio::Inherit
         );
     }
 
