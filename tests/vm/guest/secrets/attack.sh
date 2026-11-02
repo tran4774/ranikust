@@ -177,20 +177,32 @@ V10)
 V11)
   # ranikust's own capabilities never exceed the RUN's (ADR-0078): with
   # --cap-add SYS_PTRACE it would otherwise open paths a RUN planted with a
-  # capability the RUN was denied. /proc/<pid>/status is readable whatever
+  # capability the RUN was denied. Capabilities are per thread: every
+  # thread's /proc/<pid>/task/<tid>/status, readable whatever
   # PR_SET_DUMPABLE says.
   pids=$(rnk_pids)
   [ -n "$pids" ] || { out V11 INVALID "no ranikust process seen"; exit 0; }
   hit=
+  seen=0
   for p in $pids; do
-    for k in CapInh CapPrm CapEff CapBnd CapAmb; do
-      a=$(sed -n "s/^$k:[[:space:]]*//p" "/proc/$p/status")
-      b=$(sed -n "s/^$k:[[:space:]]*//p" /proc/self/status)
-      [ -n "$a" ] || continue
-      [ $((0x$a & ~0x$b)) -eq 0 ] || hit="$hit $k ranikust=$a run=$b"
+    for s in "/proc/$p/task/"*/status; do
+      [ -r "$s" ] || continue
+      seen=$((seen + 1))
+      for k in CapInh CapPrm CapEff CapBnd CapAmb; do
+        a=$(sed -n "s/^$k:[[:space:]]*//p" "$s")
+        b=$(sed -n "s/^$k:[[:space:]]*//p" /proc/self/status)
+        [ -n "$a" ] || continue
+        [ $((0x$a & ~0x$b)) -eq 0 ] || hit="$hit ${s#/proc/} $k ranikust=$a run=$b"
+      done
     done
   done
-  if [ -n "$hit" ]; then out V11 LEAK "$hit"; else out V11 blocked; fi
+  if [ "$seen" = 0 ]; then
+    out V11 INVALID "no thread of ranikust readable"
+  elif [ -n "$hit" ]; then
+    out V11 LEAK "$hit"
+  else
+    out V11 blocked "$seen threads"
+  fi
   ;;
 V12)
   # An earlier RUN (swap) replaced the --secret file with a symlink: this
