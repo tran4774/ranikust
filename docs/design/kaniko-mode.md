@@ -82,10 +82,20 @@ the scheduler runs one stage at a time) or a private directory per stage
 
     Nothing is kept between builds in this mode: no layer cache, and cache
     mounts are left out (ADR-0057). That is by design for now, and a safe
-    cache is [open: Q-441]. A build killed before its end, whose `RUN`
-    also deleted the marker, can leave what that `RUN` wrote. A state
-    volume used here therefore never serves overlay or per-stage builds
-    later;
+    cache is [open: Q-441]. The marker is made this build's again after
+    every `RUN` and at the end: whatever a `RUN` put under its name is
+    replaced, the build then makes no more names, and the marker stays.
+    The state directory is emptied after the store's files are closed,
+    and a close that leaves anything fails the build. A `RUN` cannot stop
+    the build with `SIGINT` or `SIGTERM`: both are blocked before any
+    thread starts and read through a `signalfd`
+    (`rnk_sandbox::block_stop_signals`). Only the kernel's, those sent
+    from outside the PID namespace and those from ranikust's parent count,
+    and the marker is written back before the second one's exit. A `RUN`
+    can still end ranikust (`SIGKILL` where it is not PID 1, the OOM
+    killer), and leave what it wrote. A state volume used here therefore
+    never serves overlay or per-stage builds later, is mounted at
+    `--state-dir` itself, and gets a warning when it is a mount root;
   - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
     need `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers);
   - the `RUN` child drops every capability outside Docker's defaults from

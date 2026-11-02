@@ -131,10 +131,18 @@ These follow from decisions and are documented to users rather than fixed:
   state outlives a kaniko-mode build on `/`: its state directory is never a
   persistent store, is shared with no other build, and is emptied of what a
   `RUN` wrote there at the end ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
-  Not closed: a build killed before its end whose `RUN` also deleted
-  `.ranikust-building` leaves what that `RUN` wrote, a forged store marker
-  included; a state volume used by kaniko mode on `/` must never later serve
-  overlay-mode or per-stage builds.
+  The store writes its marker back after every `RUN` and at the end, and a
+  `RUN`'s `SIGINT` or `SIGTERM` cannot stop the build (only the kernel, a
+  process outside the container's PID namespace or ranikust's parent can).
+  Not closed: a `RUN` can still end ranikust before its end, by `SIGKILL`
+  where ranikust is not PID 1, or through the OOM killer after raising its
+  `oom_score_adj`. If it also removed `.ranikust-building` in between, what
+  it wrote stays, a forged store marker included, and nothing in ranikust
+  can stop that. So the rule is load-bearing: a state volume used by kaniko
+  mode on `/` must never later serve overlay-mode or per-stage builds, and
+  it must be mounted at `--state-dir` itself, never at a parent a `RUN`
+  could rename it in. Sharing one safely needs the store's entries checked
+  against a key no `RUN` can reach ([open: Q-441]).
 - Builds one after the other in one container trust one another. A later
   build empties `/` before its first base when an earlier build left its
   marker, `/ranikust/.built` (ADR-0052, D1), so files left by accident never

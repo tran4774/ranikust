@@ -76,14 +76,43 @@ empty at its end.
   `/` never runs beside any other build there: `Error::Busy`, whichever
   starts first. ADR-0056's "a second build on it is refused" now holds
   across modes.
-- **Emptied at the end.** `Store::close` of an anonymous store removes
-  whatever a `RUN` left in the state directory. It removes through
-  descriptors (`rnk_rootfs::delete_contents`), never following a link or
-  crossing a mount, and logs a warning that names what it removed.
-  - `.ranikust-building` is kept where it stays today: after a build cut
-    short, or a `RUN` that may have left processes (ADR-0066).
-  - It is also kept when something could not be removed, for example an
-    entry on another mount, which fails the close.
+- **The marker is this build's.** After every `RUN`, and first thing at
+  the end, the store makes `.ranikust-building` a regular file holding this
+  build's mark again. Anything else under that name is removed through
+  descriptors and written anew: nothing, a link, a FIFO, a directory a
+  `RUN` filled, or another container's text, which would let the next
+  build take the marker over. A marker a `RUN` changed poisons the fence,
+  so the build makes no more names, and the marker stays at the end.
+- **Emptied at the end.** `Store::close` of an anonymous store first closes
+  the store's files, so that names a filesystem keeps for open removed
+  files go with them. It then removes whatever a `RUN` left in the state
+  directory, through descriptors (`rnk_rootfs::delete_contents`), never
+  following a link or crossing a mount, and logs a warning that names
+  what it removed. The lock on the directory goes last.
+  - `.ranikust-building` goes only when the final listing shows nothing
+    else and the build was clean. It stays after a build cut short, a
+    `RUN` that may have left processes (ADR-0066), or a marker a `RUN`
+    changed.
+  - Anything that could not be removed, an entry on another mount say,
+    is `Error::NotEmptied`. That fails the build, with a message saying
+    not to give the directory or its volume to another build. A store
+    still in use at the end, which cannot be closed, fails the build the
+    same way, after its marker is written back.
+- **A `RUN` cannot stop the build.** A `Direct` `RUN` shares ranikust's PID
+  namespace. As the container's PID 1, ranikust gets only the signals it
+  handles, and it handles `SIGINT` and `SIGTERM` to stop a build, so a
+  `RUN` could send them twice and skip the end.
+  - On `/`, both are blocked before any thread starts and read through a
+    `signalfd`, which gives the sender (`rnk_sandbox::StopSignals`).
+  - A signal is obeyed only from the kernel (a terminal), from outside the
+    PID namespace (`docker stop`, a kubelet: pid 0) or from ranikust's
+    parent, and only as sent by `kill` or `tgkill`, whose sender the
+    kernel sets. A `RUN`'s signals are logged and ignored.
+  - Before the second signal's exit, the marker is written back, since
+    `Store::close` never runs then.
+- **A volume is warned about.** A state directory that is a mount root (a
+  volume) gets a warning that it must never serve overlay-mode or
+  per-stage builds.
 - **Persistent stores keep off it.** `Store::open` refuses a state
   directory holding `.ranikust-building` in any form, with
   `Error::UsedOnSlash`. A kaniko-mode build on `/` used it and did not end
@@ -100,14 +129,33 @@ empty at its end.
   is tested: a directory a kaniko-mode build on `/` used is left empty, or
   is refused by persistent stores.
 
-Not covered:
-- A kaniko-mode build on `/` killed before its end, whose `RUN` also
-  deleted `.ranikust-building`. What that `RUN` wrote stays, a forged
-  marker included, and a later persistent store would open on it. A `RUN`
-  is root on that filesystem, so no marker it can reach proves anything.
-- The operator's rule is therefore that a state volume used by kaniko mode
-  on `/` never later serves overlay or per-stage builds (threat model,
-  section 6).
+Not covered, and why the operator's rule carries the weight:
+- A `RUN` can still end ranikust before its end.
+  - Without ranikust as PID 1 (a CI shell, `docker run --init`), a `RUN`
+    can `SIGKILL` it.
+  - Even as PID 1, a `RUN` can make the kernel kill it, for example by
+    raising ranikust's `oom_score_adj` and exhausting memory.
+  - If it also removed `.ranikust-building` between two checks, what it
+    wrote stays, a forged store marker included, and a later persistent
+    store would open on it. A `RUN` is root on that filesystem, so no
+    marker it can reach proves anything, and nothing in ranikust can stop
+    a `RUN` from killing it there.
+- The operator's rule is therefore load-bearing, not a footnote: a state
+  volume used by kaniko mode on `/` never later serves overlay-mode or
+  per-stage builds (threat model, section 6). Sharing one across builds
+  in turn needs the store's entries checked against a key no `RUN` can
+  reach, which is part of Q-441.
+- A volume must be mounted at `--state-dir` itself. If it is mounted at a
+  parent, a `RUN` can rename the state directory during the build and put
+  a look-alike in its place. The store keeps marking the directory it
+  holds, and the build fails (`leave_run`), but the renamed directory is
+  then unmarked elsewhere on the volume. The message says to discard that
+  directory or volume.
+- Writes before a refusal are benign. `Store::open` creates a missing
+  state directory, empty, before it takes the lock, since the lock needs
+  the directory. `ranikust::statedir` may set a marked directory to mode
+  `0700` before the store refuses it on `/`, and directories ranikust made
+  have that mode already.
 
 ### Consequences
 
@@ -123,6 +171,9 @@ Not covered:
 - Bad, because a persistent build takes one more `flock`. A filesystem
   without `flock` is refused (`Error::NoFlock`), as its per-digest locks
   already were.
+- Bad, because in kaniko mode on `/` a `SIGTERM` from a process of the
+  container other than ranikust's parent (a sibling script) is ignored:
+  stop the build with `docker stop`, from outside, or from the parent.
 - Neutral, because a clean kaniko-mode build on `/` whose `RUN` wrote
   nothing in the state directory sees no change.
 
@@ -137,7 +188,20 @@ Not covered:
     leaves the files they point to untouched;
   - `a_kaniko_build_on_slash_cut_short_keeps_persistent_stores_off_its_directory`.
 
-  All five failed before the change.
+  All five failed before the change. Written with the fixes of the
+  host-safety review:
+  - `a_marker_a_run_removed_is_written_again_and_stays`;
+  - `a_marker_a_run_rewrote_for_another_container_is_replaced_and_stays`;
+  - `a_marker_that_is_a_full_directory_is_replaced_by_a_fresh_one`;
+  - `a_failed_close_after_a_run_removed_the_marker_keeps_one_and_fails`;
+  - `the_marker_keeper_writes_a_removed_marker_where_the_store_is_never_closed`;
+  - `a_tree_deeper_than_path_max_is_emptied_at_the_end`;
+  - `a_refusal_names_what_the_state_directory_holds`;
+  - `rnk-sandbox` `only_the_operators_stop_signals_are_obeyed`.
+- [measured] VM `secrets` suite, `stopsig` scenario: a `RUN` removes the
+  marker, forges a store on a volume and sends ranikust (PID 1) `SIGTERM`
+  twice. The build succeeds, both signals are reported as ignored, and
+  the volume keeps only the marker.
 - [inferred] The poisoning and the cross-build reads were traced from
   source in a security review. They were not run: the tests above check
   the store's protocol, not a build.

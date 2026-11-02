@@ -385,7 +385,13 @@ error, a refused kaniko flag, an invalid combination, and for now every
   read inside the context through its `RootPath`, never by a host path.
   The first SIGINT or SIGTERM, or a failed stage, cancels the build and
   kills the running `RUN`s (`Sandbox::cancel`, as BuildKit); a second
-  signal exits at once. A release that fails leaves the stages below it to the
+  signal exits at once. In kaniko mode on `/`, `main` blocks both before
+  any thread starts (`rnk_sandbox::block_stop_signals`), and a thread of
+  their own obeys only the kernel's, those from outside the PID namespace
+  and those from ranikust's parent: a `RUN`'s are logged and ignored, and
+  the store's marker is written back before the second one's exit
+  (ADR-0077). There an anonymous store whose close fails, or that is still
+  in use at the end, fails the build (`build::close_store`). A release that fails leaves the stages below it to the
   next build's clean-up.
 - Left for Phase 2 ([phase-2.md](../phase-2.md)): the workdir checks and
   the kaniko-mode workdir lock (`ADR-0038`, Q-011), built in Phase 2 task

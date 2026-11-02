@@ -153,11 +153,20 @@ with the default security profile or in most Kubernetes pods.
   local filesystem: on NFS, FUSE, SMB or AFS, which keep a name for a file
   removed while open, ranikust refuses to keep its state there. It is
   never a cache in this mode: ranikust keeps nothing there between builds
-  and empties it at the end, because a `RUN` could change it. A state directory that holds
-  a store of overlay-mode builds (`.ranikust-state`) is refused, and so is
-  one in use by any other build. Do not later give overlay-mode or
-  per-stage builds a volume this mode used
+  and empties it at the end, because a `RUN` could change it. A state
+  directory that holds a store of overlay-mode builds (`.ranikust-state`)
+  is refused, and so is one in use by any other build. Mount the volume at
+  the state directory itself, not at a parent of it, and never give a
+  volume this mode used to overlay-mode or per-stage builds later: a `RUN`
+  that kills ranikust before the end leaves what it wrote there
   ([ADR-0077](https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+  A build whose state directory keeps anything a `RUN` left fails, and
+  says so.
+- In kaniko mode on `/`, `SIGINT` and `SIGTERM` stop the build only when
+  they come from outside the container (`docker stop`, a kubelet), from a
+  terminal, or from ranikust's parent process: a `RUN`, or another process
+  of the container, cannot stop it that way. Run ranikust as the
+  container's first process, so that a `RUN` cannot kill it either.
 - ranikust refuses to build on the container's `/` where root may mount
   (a `--privileged` container, `CAP_SYS_ADMIN`) and where `/proc/sys` is
   not a read-only mount (Docker's `systempaths=unconfined`, Kubernetes'

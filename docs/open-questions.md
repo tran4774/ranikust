@@ -563,7 +563,12 @@ Entry format:
     ADR-0056.
   - (b) A store whose content is checked again on every reuse: hash each
     blob, and keep a digest of each extracted tree checked before it is
-    used. This costs time on every build.
+    used. This costs time on every build. A digest a `RUN` can rewrite
+    proves nothing, so the digests need a key no `RUN` can reach (held
+    outside the container, or by a process the `RUN` cannot signal or
+    read). That is also what any sharing of a state volume between kaniko
+    mode on `/` and other builds would need, since a `RUN` can end the
+    build before the store empties the directory (ADR-0077).
   - (c) A per-build snapshot of the cache: copied in before the first
     `RUN` and checked or discarded after the last one.
   - (d) Keep only a registry cache (Phase 4) in that mode.
