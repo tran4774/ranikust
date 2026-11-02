@@ -20,6 +20,20 @@ fn store(dir: &Path) -> Store {
     Store::open(&BuildPaths::new(dir, dir.join(".ranikust"))).unwrap()
 }
 
+/// The secrets as the build has them: each read once, at the start
+/// (ADR-0078).
+fn loaded<const N: usize>(sources: [(&str, Secret); N]) -> BTreeMap<String, SecretValue> {
+    sources
+        .into_iter()
+        .map(|(id, s)| (id.to_owned(), s.load(id).unwrap()))
+        .collect()
+}
+
+/// A secret whose bytes are already in memory.
+fn value(id: &str, bytes: &[u8]) -> BTreeMap<String, SecretValue> {
+    [(id.to_owned(), SecretValue::from_bytes(bytes))].into()
+}
+
 #[test]
 fn mount_targets_are_absolute_and_clean() {
     let wd = Path::new("/app");
@@ -165,14 +179,10 @@ fn secret_mounts_follow_buildkit_defaults() {
     let store = store(dir.path());
     let host = dir.path().join("token");
     fs::write(&host, b"s3cret").unwrap();
-    let secrets: BTreeMap<String, Secret> = [
-        ("token".to_owned(), Secret::File(host)),
-        (
-            "env".to_owned(),
-            Secret::Env("RNK_TEST_SECRET_NEVER_SET".into()),
-        ),
-    ]
-    .into();
+    let secrets = loaded([
+        ("token", Secret::File(host)),
+        ("env", Secret::Env("RNK_TEST_SECRET_NEVER_SET".into())),
+    ]);
     let wd = Path::new("/app");
     let one = |m: &Mount| run_mounts(std::slice::from_ref(m), wd, &store, &secrets, &never);
 
@@ -255,7 +265,7 @@ fn a_nul_in_an_env_secret_is_refused_without_its_value() {
     let store = store(dir.path());
     let host = dir.path().join("token");
     fs::write(&host, b"top\0secret").unwrap();
-    let secrets: BTreeMap<String, Secret> = [("token".to_owned(), Secret::File(host))].into();
+    let secrets = loaded([("token", Secret::File(host))]);
     let mut m = mount(MountType::Secret);
     m.cache_id = "token".into();
     m.env = Some("TOKEN".into());
@@ -275,11 +285,11 @@ fn a_secret_over_the_limit_or_not_a_file_is_refused() {
         vec![b'x'; usize::try_from(MAX_SECRET_SIZE).unwrap() + 1],
     )
     .unwrap();
-    assert!(Secret::File(path.clone()).read("big").is_err());
-    assert!(Secret::File(path.clone()).check("big").is_err());
+    assert!(Secret::File(path.clone()).load("big").is_err());
     fs::write(&path, vec![b'x'; usize::try_from(MAX_SECRET_SIZE).unwrap()]).unwrap();
-    assert!(Secret::File(path.clone()).read("big").is_ok());
-    assert!(Secret::File(path).check("big").is_ok());
+    let max = Secret::File(path).load("big").unwrap();
+    assert_eq!(max.len(), usize::try_from(MAX_SECRET_SIZE).unwrap());
+    assert!(!format!("{max:?}").contains('x'), "Debug hides the bytes");
     // A FIFO is refused at once, never opened for a blocking read.
     let fifo = dir.path().join("fifo");
     rustix::fs::mknodat(
@@ -290,9 +300,8 @@ fn a_secret_over_the_limit_or_not_a_file_is_refused() {
         0,
     )
     .unwrap();
-    assert!(Secret::File(fifo.clone()).check("f").is_err());
-    assert!(Secret::File(fifo).read("f").is_err());
-    assert!(Secret::File(dir.path().to_owned()).check("d").is_err());
+    assert!(Secret::File(fifo).load("f").is_err());
+    assert!(Secret::File(dir.path().to_owned()).load("d").is_err());
 }
 
 /// A new cache's owner and mode are the store's to set, once.
@@ -336,7 +345,7 @@ fn a_secret_mounted_twice_is_read_once() {
     let store = store(dir.path());
     let host = dir.path().join("token");
     fs::write(&host, b"s").unwrap();
-    let secrets: BTreeMap<String, Secret> = [("token".to_owned(), Secret::File(host))].into();
+    let secrets = loaded([("token", Secret::File(host))]);
     let mut a = mount(MountType::Secret);
     a.cache_id = "token".into();
     a.target = "/a".into();
@@ -358,8 +367,7 @@ fn a_file_secret_swapped_after_the_start_changes_nothing() {
     fs::write(&host, b"original").unwrap();
     let other = dir.path().join("other");
     fs::write(&other, b"planted").unwrap();
-    let secrets: BTreeMap<String, Secret> =
-        [("token".to_owned(), Secret::File(host.clone()))].into();
+    let secrets = loaded([("token", Secret::File(host.clone()))]);
     let mut m = mount(MountType::Secret);
     m.cache_id = "token".into();
     m.env = Some("TOKEN".into());
@@ -422,14 +430,14 @@ fn direct_runs_take_secrets_as_variables_and_drop_caches() {
     assert!(direct_mounts(&[cache]).is_err());
 }
 
-/// An unsupported mount after a secret is refused before the secret is
-/// read, in every mode: here reading it would fail with another error.
+/// An unsupported mount after a secret is refused, in every mode, before
+/// any mount is made. (Secrets are read once at the start, ADR-0078: no
+/// `RUN` reads one, so a refusal never follows a read.)
 #[test]
-fn unsupported_mounts_are_refused_before_any_secret_is_read() {
+fn unsupported_mounts_are_refused_before_any_mount_is_made() {
     let dir = tempfile::tempdir().unwrap();
     let store = store(dir.path());
-    let secrets: BTreeMap<String, Secret> =
-        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    let secrets = value("tok", b"x");
     let mut env = mount(MountType::Secret);
     env.cache_id = "tok".into();
     env.env = Some("TOK".into());
@@ -491,9 +499,8 @@ fn parsed(spec: &str) -> std::result::Result<Mount, String> {
 fn red_team_direct_secret_mount_spellings() {
     let dir = tempfile::tempdir().unwrap();
     let store = store(dir.path());
-    // Reading this secret fails with an I/O error: a refusal must come first.
-    let unreadable: BTreeMap<String, Secret> =
-        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    // Secrets are read at the start (ADR-0078): the refusals never read one.
+    let given = value("tok", b"x");
     let refused = [
         "type=secret,id=tok,env=TOK,dst=/x",
         "type=secret,id=tok,env=TOK,destination=/x",
@@ -525,11 +532,7 @@ fn red_team_direct_secret_mount_spellings() {
         assert!(parsed(spec).is_err(), "{spec}");
     }
     // Kept as a variable only.
-    let secrets: BTreeMap<String, Secret> = [(
-        "tok".to_owned(),
-        Secret::Env("RNK_RED_TEAM_UNSET_VARIABLE".into()),
-    )]
-    .into();
+    let secrets = loaded([("tok", Secret::Env("RNK_RED_TEAM_UNSET_VARIABLE".into()))]);
     for spec in [
         "type=secret,id=tok,env=TOK",
         "type=Secret,id=tok,env=TOK",
@@ -550,11 +553,11 @@ fn red_team_direct_secret_mount_spellings() {
     // `required=false` and missing: left out, nothing read, no variable.
     let m = parsed("type=secret,id=absent,env=TOK,required=false").unwrap();
     let kept = direct_mounts(&[m]).unwrap();
-    let r = run_mounts(&kept, Path::new("/"), &store, &unreadable, &never).unwrap();
+    let r = run_mounts(&kept, Path::new("/"), &store, &given, &never).unwrap();
     assert!(r.env.is_empty() && r.secrets.is_empty());
     let m = parsed("type=secret,id=absent,env=TOK,required").unwrap();
     let kept = direct_mounts(&[m]).unwrap();
-    assert!(run_mounts(&kept, Path::new("/"), &store, &unreadable, &never).is_err());
+    assert!(run_mounts(&kept, Path::new("/"), &store, &given, &never).is_err());
     // A cache mount, whatever its spelling, is dropped before any lease.
     for spec in [
         "type=cache,target=/c",
@@ -566,15 +569,13 @@ fn red_team_direct_secret_mount_spellings() {
     }
 }
 
-/// A required secret missing from `--secret` is refused before an earlier
-/// secret of the same `RUN` is read: reading that one would fail with
-/// another error.
+/// A required secret missing from `--secret` fails the `RUN` before any
+/// mount of it is made, an earlier given secret included.
 #[test]
-fn a_missing_required_secret_is_refused_before_any_secret_is_read() {
+fn a_missing_required_secret_is_refused_before_any_mount_is_made() {
     let dir = tempfile::tempdir().unwrap();
     let store = store(dir.path());
-    let secrets: BTreeMap<String, Secret> =
-        [("tok".to_owned(), Secret::File(dir.path().join("missing")))].into();
+    let secrets = value("tok", b"x");
     let mut given = mount(MountType::Secret);
     given.cache_id = "tok".into();
     given.env = Some("TOK".into());
