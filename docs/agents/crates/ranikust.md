@@ -22,8 +22,11 @@ log writer) before `unshare`, the probes and the state directory's checks.
 
 ## Must not
 
-- Contain build logic: everything past flag parsing and process set-up lives
-  in the library crates ([`main.rs`](../../../crates/ranikust/src/main.rs) `# Boundaries`).
+- Hold the rule of a single concern: Dockerfile semantics, scheduling,
+  executing an instruction, snapshots, the sandbox, filesystem access,
+  storage, layers, images and registries live in their library crates. It
+  does orchestrate a build across them (`build.rs`, ADR-0067;
+  [`main.rs`](../../../crates/ranikust/src/main.rs) `# Boundaries`).
 - Keep global state (paths as `rnk-store`'s `BuildPaths`, settings as
   values), probe a capability itself (each crate probes its own; the kernel
   check is `rnk_rootfs::probe_support`), re-implement stub cleanup, or

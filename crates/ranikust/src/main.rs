@@ -26,8 +26,12 @@
 //!
 //! # Boundaries
 //!
-//! - No build logic: everything past flag parsing and process setup lives in
-//!   the library crates.
+//! - Orchestrates a build across the library crates (`build.rs`: the stage
+//!   reader counts and hand-over decisions, the release thread, the units,
+//!   the push set; ADR-0067), but holds no rule of a single concern: Dockerfile
+//!   semantics, scheduling, executing an instruction, snapshots, the sandbox,
+//!   filesystem access, storage, layers, images and registries live in their
+//!   library crates.
 //! - Probes no capability itself: each library probes its own, and this
 //!   binary runs the probes in order and combines their results.
 

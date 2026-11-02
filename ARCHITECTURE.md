@@ -60,7 +60,10 @@ name), refuses a kernel older than Linux 5.8 through
 ([ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)), installs the logs
 and the opt-in metrics of `rnk-metrics`, and validates the flags into a
 `BuildConfig`; it writes the metrics report on every way out.
-**Must not** contain build logic, or probe a capability itself.
+It orchestrates a build across the library crates (ADR-0067). **Must not**
+hold the rule of a single concern (Dockerfile semantics, scheduling,
+executing an instruction, snapshots, the sandbox, filesystem access,
+storage, layers, images, registries), or probe a capability itself.
 
 ### `rnk-dockerfile`
 
