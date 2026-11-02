@@ -422,6 +422,63 @@ Entry format:
 - **Interim:** refused in every mode (Phase 5).
 - **Raised:** 2026-11-01
 
+### Q-444: How are secrets wiped from ranikust's memory?
+
+- **Blocks:** nothing yet; **Area:** `rnk-builder`, `rnk-sandbox`
+- **Context:** ADR-0078 reads each `--secret` once into memory. The one
+  copy the build holds (`SecretValue`) is overwritten with zeros when its
+  last holder drops it. Other copies are not wiped: the variable handed to
+  a `RUN` (an `OsString`, then its `envp`), the sandbox's tmpfs file
+  write, a registry credential (`Credentials`). Wiping every one needs a
+  type of its own through `rnk-sandbox`'s `RunSpec`, or a crate such as
+  `zeroize`, and adding a crate is the maintainer's call.
+- **Options:** (a) keep the single-copy wipe; (b) `zeroize` (with
+  `secrecy`) for every secret and credential type, through `RunSpec`;
+  (c) (b) plus `mlock` for the held copy, so it never reaches swap.
+- **Recommendation:** (b) in the Phase 6 hardening pass, when the crate is
+  vetted (`cargo deny`, static musl); (a) until then. The process is not
+  dumpable and has no core file (ADR-0051), so the remaining exposure is
+  freed memory read by a later bug of the same process.
+- **Interim:** (a).
+- **Raised:** 2026-11-02
+
+### Q-445: Should kaniko mode on `/` refuse `--secret` files?
+
+- **Blocks:** nothing yet; **Area:** `ranikust`
+- **Context:** in kaniko mode on `/`, a `--secret src=` file is a file on
+  the `/` every `RUN` shares, so any `RUN` can read it, not only the one
+  that mounts it (threat model, section 6). ranikust reads it once at the
+  start (ADR-0078) but cannot hide it.
+- **Options:** (a) warn for each one and document it; (b) refuse a file
+  secret there, and accept secrets only from ranikust's environment; (c)
+  read it at the start, then require the operator's tooling to remove it
+  before the first `RUN` (unenforceable).
+- **Recommendation:** (b), if security comes before kaniko's
+  `--secret`-file habit: a secret the maintainer hands to one `RUN`
+  should not reach every `RUN`. (a) keeps such builds working.
+- **Interim:** (a): a warning per file secret in kaniko mode on `/`.
+- **Raised:** 2026-11-02
+
+### Q-446: Should kaniko mode on `/` read the resolver files once?
+
+- **Blocks:** nothing yet; **Area:** `rnk-registry`, `ranikust`
+- **Context:** the C library reads `/etc/hosts` and `/etc/resolv.conf` at
+  every lookup. In kaniko mode on `/` a `RUN` can edit both and redirect
+  ranikust's later requests. ADR-0051 sends credentials only over verified
+  TLS there, so a redirect can only fail a request, or answer an
+  anonymous pull of a tag (digests are still checked). ADR-0078 reads
+  ranikust's own configuration once; these files are the system's, read
+  per lookup.
+- **Options:** (a) keep it, as ADR-0051 accepts; (b) give `reqwest` a
+  resolver that reads both files once, at the start (hickory or a
+  custom `Resolve`); (c) resolve every registry the build names at the
+  start and pin the addresses.
+- **Recommendation:** (a) until a measurement shows a case that (a) does
+  not cover; (b) if one does. (c) breaks registries behind DNS
+  round-robin or short TTLs.
+- **Interim:** (a).
+- **Raised:** 2026-11-02
+
 ### Q-421: Which performance conditions does Phase 6 measure?
 
 - **Blocks:** Phase 6; **Area:** performance

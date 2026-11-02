@@ -67,8 +67,19 @@ the scheduler runs one stage at a time) or a private directory per stage
     them stops the `RUN`; the ambient, inheritable, permitted and
     effective sets go to the defaults in every case; ranikust's own soft
     `RLIMIT_CORE` is 0;
+  - ranikust itself keeps no more than its `RUN` ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)):
+    first thing in the set-up, while single-threaded,
+    `rnk_sandbox::trim_to_run_capabilities` cuts its own bounding set to
+    Docker's defaults (`CAP_SETPCAP`, else the build is refused), clears
+    its ambient and inheritable sets and keeps its permitted and
+    effective sets to the defaults; every later thread inherits them. A
+    link a `RUN` plants at an operator path (an output, the metrics
+    report) then reaches only what that `RUN` could reach itself;
+  - every `--secret` is read once while the build is prepared and never
+    opened by path again (`Secret::load`); a `--secret src=` file on `/`
+    still gets a warning: every `RUN` there can read it ([open: Q-445]);
   - registry credentials only over verified TLS: a `RUN` may edit
-    `/etc/hosts` and `/etc/resolv.conf`;
+    `/etc/hosts` and `/etc/resolv.conf` ([open: Q-446]);
   - kaniko mode on `/` where root may mount, or where `/proc/sys` is not
     a read-only mount, is refused ([ADR-0054](../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)); devices passed with
     `--device` stay the operator's choice;
@@ -83,7 +94,7 @@ the scheduler runs one stage at a time) or a private directory per stage
     processes on the next rounds, once reparented to ranikust;
   - warnings for what it cannot close: a `--build-arg NAME=value` whose
     name looks like a secret (`/proc/<pid>/cmdline`), another process
-    holding `DOCKER_AUTH_CONFIG` in its environment.
+    holding `DOCKER_AUTH_CONFIG` in its environment, a `--secret` file.
 - Anything ranikust places in a root (stubs, `hosts`, `resolv.conf`, `/dev`
   nodes, fake `/proc`) is removed, and its parent directory's metadata
   restored, before the diff.

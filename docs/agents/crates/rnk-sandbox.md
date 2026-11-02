@@ -39,6 +39,7 @@ where mounting is possible; no `RUN` process outlives the build.
 
 ```rust
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
+pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on / (ADR-0078), before start_direct: ranikust's own sets cut to what a Direct RUN keeps (bounding to Docker's defaults with CAP_SETPCAP, else Error::RunReachesState; ambient and inheritable cleared; permitted/effective = permitted ∩ defaults), PR_SET_DUMPABLE 0 again, read back; refuses with other threads (Error::NotSingleThreaded) before any change; no-op when not root
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]; what the probe found
 pub enum RootEntry { PivotRoot, MoveMount }

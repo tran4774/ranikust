@@ -124,11 +124,17 @@ with the default security profile or in most Kubernetes pods.
   cannot be inspected through `/proc` (unless the container grants
   `CAP_SYS_PTRACE` and ranikust cannot take it away from `RUN`, in which
   case it refuses to build), and no process a `RUN` starts in the
-  background outlives that `RUN`. Three things ranikust cannot hide, and
+  background outlives that `RUN`. ranikust gives up any capability the
+  container grants beyond Docker's defaults before the first `RUN`, as the
+  `RUN` does, and reads every `--secret` once at the start, so a `RUN`
+  cannot trick it into opening a path for it with more rights than its
+  own. Four things ranikust cannot hide, and
   warns about: a value on its own command line (a `--build-arg TOKEN=…`:
   pass secrets with `--secret`), credentials held in the environment of
   another process of the container (start ranikust as the container's
-  first process, `exec` it, rather than from a shell that keeps them), and
+  first process, `exec` it, rather than from a shell that keeps them),
+  a `--secret src=` file (every `RUN` can read it: pass the secret in
+  ranikust's environment with `--secret id=…,env=VAR`), and
   any file mounted into the container (pass registry credentials in
   `DOCKER_AUTH_CONFIG` rather than a mounted `config.json`).
   On a container's own root filesystem, which takes no unnamed file on
