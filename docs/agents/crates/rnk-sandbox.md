@@ -81,11 +81,18 @@ from `rnk-store`, secret file) and passes `--network`.
   own `stat` file of the outer procfs, opened before entering the root
   (`getppid` is 0 in a new PID namespace): another pid than ranikust's
   means it was reparented, so ranikust died before the signal was armed.
-  The id switch clears the death signal (`commit_creds`), so it is armed
-  and checked again after it. The child is PID 1 of its PID namespace, so
-  its tree dies with it. Dropping
-  the `Sandbox` ends the thread and kills every running `RUN`.
-- `Sandbox::cancel` kills every running `RUN` with `SIGKILL` (its PID 1;
+  The id switch clears the death signal (`commit_creds`), so `Direct`
+  arms and checks it again after it. In the full sandbox the child stays
+  as the `RUN`'s init, PID 1 of its PID namespace (`child::run_init`,
+  ADR-0080): it forks the command as PID 2, keeps the death signal (it
+  never changes its user or executes anything), drops every capability,
+  is not dumpable, keeps no descriptor but the status pipe, reaps orphans,
+  and writes the command's wait status on the status pipe before it
+  exits; `execute` reports that status. So the namespace dies with
+  ranikust even when the command clears its own death signal or executes
+  a set-id binary. Dropping the `Sandbox` ends the thread and kills every
+  running `RUN`.
+- `Sandbox::cancel` kills every running `RUN` with `SIGKILL` (its init;
   a `Direct` one's process group too), as BuildKit on a cancel, and every
   later `run` returns `Error::Cancelled`. A child is forgotten only after
   `waitid(WNOWAIT)` saw it exit and before `wait4` reaps it: the kill
@@ -282,7 +289,8 @@ from `rnk-store`, secret file) and passes `--network`.
   makes there, all `nodev`).
 - **T1** (rootless podman): `just smoke` (2026-10-30, kernel 7.0, podman
   5.7): probe → `pivot_root`; `apk add` through the sandbox's network and
-  `/etc` copies; checked inside: PID 1, host name, CapBnd/Prm/Eff
+  `/etc` copies; checked inside: PID 1 (PID 2 under `ranikust-init` since
+  ADR-0080), host name, CapBnd/Prm/Eff
   `a80425fb` with empty Inh and Amb, root and `/dev` `nodev`, `/proc/sys`
   and `/dev/null` read-only, `/proc/kcore` and the other paths masked, no
   terminal, only stdio fds; no stub in the layer [measured]. To add: the
@@ -328,15 +336,19 @@ from `rnk-store`, secret file) and passes `--network`.
   and its own directory only) and
   `red_team_a_run_cannot_change_the_hosts_dev_nodes` (`chmod` and `chown`
   of `/dev/null`, `zero`, `full`, `random`, `urandom` and `tty` fail, the
-  host's nodes unchanged). Broken (a finding, open, T8):
-  `red_team_no_run_outlives_the_thread_that_cloned_it`: a `RUN` cloned on
-  a thread that then ends is killed by `PR_SET_PDEATHSIG` as root and as
-  `USER 1000:1000` (the re-arm after `setresuid` holds, 0.5 s), but one
-  whose shell `exec`s a copy of `sleep` setuid or setgid to 65534, or a
-  `python3` that calls `prctl(PR_SET_PDEATHSIG, 0)` itself, is still
-  running 15 s later: the credential change of that `execve` clears the
-  death signal after the child last armed it, and any process may clear
-  its own.
+  host's nodes unchanged).
+  `red_team_no_run_outlives_the_thread_that_cloned_it` (T8): a `RUN`
+  cloned on a thread that then ends dies with it as root, as
+  `USER 1000:1000`, when its shell `exec`s a copy of `sleep` setuid or
+  setgid to 65534, and when a `python3` calls `prctl(PR_SET_PDEATHSIG, 0)`
+  itself. Before ADR-0080 the last three were still running 15 s later
+  (the command held the death signal and could lose it); the init now
+  holds it. `the_run_is_pid_2_under_an_init_that_reports_its_status` (T2):
+  the command is PID 2 under `ranikust-init`, which holds no capability
+  and survives `kill -KILL 1` from the command; an exit code, a signal, an
+  `execve` failure and a `WORKDIR` failure are reported as before.
+  `the_inits_status_records_are_read_back` (T0): the status pipe's
+  record.
 
 ## Metrics
 

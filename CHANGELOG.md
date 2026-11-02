@@ -14,6 +14,16 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Security
 
+- A full-sandbox `RUN` can no longer outlive ranikust. Its command was PID 1
+  of its PID namespace and held the death signal that kills it when
+  ranikust dies; a command could clear it (`prctl(PR_SET_PDEATHSIG, 0)`,
+  no privilege needed) or lose it by executing a set-id binary, and then
+  kept running as root after a `SIGKILL`, a CI timeout or the OOM killer
+  ended ranikust. A ranikust-owned init is now PID 1 of every `RUN`'s
+  namespace and keeps the signal; the command runs as PID 2 under it
+  (`/proc/1/comm` is `ranikust-init`), and when ranikust dies the whole
+  namespace dies (ADR-0080). Exit codes and signals of the command are
+  reported as before. `Direct` (kaniko mode on `/`) is unchanged.
 - Kaniko mode on a container's `/`: ranikust now gives up, before the first
   `RUN`, every capability the container grants beyond Docker's defaults, as
   each `RUN` already did. A `RUN` that planted a link at a path ranikust
