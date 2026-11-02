@@ -121,3 +121,70 @@ impl Drop for Detach {
         }
     }
 }
+
+/// Characterization (before the Phase 2 refactor): the advice given when an
+/// anonymous store opened on the traces of a build cut short, word for word.
+#[test]
+fn the_cut_short_advice_is_worded_as_before() {
+    assert_eq!(
+        CUT_SHORT,
+        "an earlier build in this container did not end cleanly and may have left RUN \
+         processes; run ranikust as the container's PID 1, or restart the container, to keep \
+         state on disk"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A marker of this container left behind: the next build is tainted.
+    let first = Store::open_anonymous(&state).unwrap();
+    let run = first.enter_run().unwrap();
+    first.leave_run(run, false).unwrap();
+    first.close().unwrap();
+    let s = Store::open_anonymous(&state).unwrap();
+    let e = s.named_window().unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        Error::Anonymous(
+            "COPY --from a kept stage or an image, unpacked by name, after a build cut short (an \
+             earlier build in this container did not end cleanly and may have left RUN \
+             processes; run ranikust as the container's PID 1, or restart the container),"
+        )
+        .to_string()
+    );
+    s.close().unwrap();
+}
+
+/// Characterization: `scratch_file` and `anonymous_file` take their files
+/// from the same place in each kind of store, and name nothing.
+#[test]
+fn scratch_and_anonymous_files_name_nothing_in_either_store() {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let names = |d: &Path| -> Vec<std::ffi::OsString> {
+        fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let persistent = store(dir.path());
+    let anon_dir = dir.path().join("anon");
+    fs::create_dir(&anon_dir).unwrap();
+    let anonymous = Store::open_anonymous(&anon_dir).unwrap();
+    for (s, shown) in [
+        (&persistent, persistent.build_dir().to_owned()),
+        (&anonymous, anon_dir.clone()),
+    ] {
+        let before = names(&shown);
+        let mut f = s.scratch_file().unwrap();
+        f.write_all(b"scratch").unwrap();
+        f.rewind().unwrap();
+        let mut back = String::new();
+        f.read_to_string(&mut back).unwrap();
+        assert_eq!(back, "scratch");
+        let (mut kept, path) = s.anonymous_file().unwrap();
+        kept.write_all(b"kept").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"kept");
+        assert_eq!(before, names(&shown), "{}", shown.display());
+    }
+    anonymous.close().unwrap();
+}
