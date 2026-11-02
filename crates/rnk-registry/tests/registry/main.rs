@@ -60,6 +60,34 @@ async fn a_loopback_registry_speaks_plain_http_unasked() {
 }
 
 #[tokio::test]
+async fn a_bracketed_ipv6_registry_pulls() {
+    // `[v6]:port` references reach the registry client built from their
+    // parts; its own parser has no such form and refused them. `[::1]` is
+    // loopback: plain HTTP unasked.
+    let Some(registry) = FakeRegistry::start_ipv6(Auth::Open).await else {
+        eprintln!("skipped: no IPv6 loopback here");
+        return;
+    };
+    let image = add_image(&registry, "app", "1.0", b"v6 layer".to_vec());
+    let mut options = options(&registry);
+    options.insecure.clear();
+    options.http_credentials.clear();
+    let client = Client::new(options, TrustStore::load(), Credentials::none()).unwrap();
+    let reference = reference(&registry, "app:1.0");
+    assert!(reference.registry().starts_with("[::1]:"), "{reference}");
+
+    let manifest = client.pull_manifest(&reference).await.unwrap();
+    assert_eq!(manifest.digest().as_str(), image.manifest_digest);
+    let mut layer = Vec::new();
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+    client
+        .pull_blob(&reference, &blob, &mut layer)
+        .await
+        .unwrap();
+    assert_eq!(layer, image.layer);
+}
+
+#[tokio::test]
 async fn bearer_tokens_from_config_json_credentials() {
     let registry = FakeRegistry::start(Auth::Bearer {
         user: "builder".to_owned(),

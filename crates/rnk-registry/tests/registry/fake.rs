@@ -88,6 +88,16 @@ pub(crate) struct FakeRegistry {
 impl FakeRegistry {
     pub(crate) async fn start(auth: Auth) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Self::serve(listener, auth)
+    }
+
+    /// On `[::1]`, or `None` where this host has no IPv6 loopback.
+    pub(crate) async fn start_ipv6(auth: Auth) -> Option<Self> {
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.ok()?;
+        Some(Self::serve(listener, auth))
+    }
+
+    fn serve(listener: tokio::net::TcpListener, auth: Auth) -> Self {
         let addr = listener.local_addr().unwrap();
         let state = Arc::new(Mutex::new(State {
             auth,
@@ -116,7 +126,7 @@ impl FakeRegistry {
         Self { addr, state }
     }
 
-    /// `127.0.0.1:<port>`, the registry part of references.
+    /// `127.0.0.1:<port>` (`[::1]:<port>`), the registry part of references.
     pub(crate) fn host(&self) -> String {
         self.addr.to_string()
     }

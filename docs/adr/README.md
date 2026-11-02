@@ -98,7 +98,7 @@ when new measurements contradict its evidence.
 | [0023](0023-mode-flag.md) | `--mode` selects the snapshot mode; `--snapshot-mode` keeps kaniko's meaning | Accepted | 2026-10-30 | Phase 1 O2 |
 | [0024](0024-tls-rustls-ring.md) | rustls with the `ring` provider; trust host CAs and embedded roots together | Accepted | 2026-10-30 | Phase 1 O4, Exp 05 |
 | [0025](0025-build-metrics-from-tracing-spans.md) | Build metrics from `tracing` spans, aggregated by an opt-in `rnk-metrics` crate | Accepted | 2026-10-30 | kaniko fork metrics, Exp 07, 08, 12 |
-| [0026](0026-rnk-oci-owns-its-types.md) | `rnk-oci` owns its OCI and Docker image types instead of using `oci-spec` | Accepted | 2026-10-30 | `oci-spec` 0.10 source, `rnk-oci` tests |
+| [0026](0026-rnk-oci-owns-its-types.md) | `rnk-oci` owns its OCI and Docker image types instead of using `oci-spec` | Accepted | 2026-10-30 | `oci-spec` 0.10 source, `rnk-oci` tests; the string-form hand-over to `oci-client` refined by ADR-0070 |
 | [0027](0027-context-filtering-follows-buildkit-walk.md) | Build-context filtering follows BuildKit's walk, not `MatchesOrParentMatches` | Accepted | 2026-10-30 | Q-050, `rnk-ignore` goldens |
 | [0028](0028-minimum-kernel-linux-5-8.md) | Require Linux 5.8 or later and check it at start-up | Accepted | 2026-10-30 | Q-054, `rnk-rootfs` escape suite |
 | [0029](0029-zstd-layers-as-independent-1-mib-frames.md) | zstd layers are written as independent 1 MiB frames | Accepted | 2026-10-30 | Exp 05 Q3, `rnk-layer` tests |
@@ -139,3 +139,4 @@ when new measurements contradict its evidence.
 | [0065](0065-single-snapshot-refused-for-good.md) | `--single-snapshot` is refused for good | Accepted | 2026-11-01 | maintainer, Q-420 measurement; ADR-0049 |
 | [0066](0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md) | Kaniko mode on `/` makes no names after a build in the container was cut short | Accepted | 2026-11-01 | maintainer, Q-360; host-safety review of ADR-0056 |
 | [0067](0067-the-cli-crate-orchestrates-the-build.md) | The CLI crate orchestrates the build across the library crates | Accepted | 2026-11-02 | maintainer; refactor of `ranikust` |
+| [0070](0070-registry-references-reach-oci-client-built-from-parts.md) | Registry references reach `oci-client` built from their parts, and a request fails if it would address another host | Accepted | 2026-11-02 | security hardening; refines ADR-0026 |
