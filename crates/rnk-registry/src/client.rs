@@ -410,8 +410,8 @@ impl Client {
     }
 
     async fn pull_manifest_once(&self, reference: &Reference) -> Result<RawManifest, Error> {
-        let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(reference)?;
+        let host = self.host(reference.registry()).await?;
         self.authorize(
             &host,
             &oci_ref,
@@ -540,8 +540,8 @@ impl Client {
         blob: &Descriptor,
         out: &mut impl BlobSink,
     ) -> Result<(), Error> {
-        let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(reference)?;
+        let host = self.host(reference.registry()).await?;
         self.authorize(
             &host,
             &oci_ref,
@@ -633,8 +633,8 @@ impl Client {
         reference: &Reference,
         digest: &Digest,
     ) -> Result<bool, Error> {
-        let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(reference)?;
+        let host = self.host(reference.registry()).await?;
         self.authorize(
             &host,
             &oci_ref,
@@ -691,8 +691,14 @@ impl Client {
         blob: &Descriptor,
         body: &BlobBody,
     ) -> Result<PushOutcome, Error> {
-        let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(reference)?;
+        let from = from
+            .filter(|f| {
+                f.registry() == reference.registry() && f.repository() != reference.repository()
+            })
+            .map(|f| oci_reference(f).map(|o| (o, f.repository())))
+            .transpose()?;
+        let host = self.host(reference.registry()).await?;
         self.authorize(
             &host,
             &oci_ref,
@@ -700,12 +706,6 @@ impl Client {
             RegistryOperation::Push,
         )
         .await?;
-        let from = from
-            .filter(|f| {
-                f.registry() == reference.registry() && f.repository() != reference.repository()
-            })
-            .map(|f| oci_reference(f).map(|o| (o, f.repository())))
-            .transpose()?;
 
         let digest = blob.digest.as_str();
         let ctx = Op {
@@ -912,8 +912,8 @@ impl Client {
                 reason: "a manifest is pushed by tag, without a digest".to_owned(),
             });
         }
-        let host = self.host(reference.registry()).await?;
         let oci_ref = oci_reference(reference)?;
+        let host = self.host(reference.registry()).await?;
         self.authorize(
             &host,
             &oci_ref,
@@ -1418,8 +1418,9 @@ fn endpoint(registry: &str) -> &str {
 /// `oci-spec`), so a re-parse could send a request, and the credential
 /// chosen for `reference.registry()`, to another host.
 ///
-/// Fails, before anything is sent, if `oci-client` would still address a
-/// host other than the one [`Client::connect`] reached for the registry.
+/// Fails if `oci-client` would still address another host or repository
+/// ([`same_target`]); callers convert before they connect, so nothing is
+/// sent then.
 fn oci_reference(reference: &Reference) -> Result<oci_client::Reference, Error> {
     let registry = reference.registry().to_owned();
     let repository = reference.repository().to_owned();
@@ -1436,10 +1437,17 @@ fn oci_reference(reference: &Reference) -> Result<oci_client::Reference, Error> 
             tag.unwrap_or_else(|| Reference::DEFAULT_TAG.to_owned()),
         ),
     };
+    same_target(&oci, reference)?;
+    Ok(oci)
+}
+
+/// Refuses `oci` unless `oci-client` would address it to the host and
+/// repository [`Client::connect`] reached and chose the credential for:
+/// `reference`'s endpoint and repository, exactly, since `oci-client` keys
+/// its credentials and tokens on them case-sensitively.
+fn same_target(oci: &oci_client::Reference, reference: &Reference) -> Result<(), Error> {
     let expected = endpoint(reference.registry());
-    if !oci.resolve_registry().eq_ignore_ascii_case(expected)
-        || oci.repository() != reference.repository()
-    {
+    if oci.resolve_registry() != expected || oci.repository() != reference.repository() {
         return Err(Error::Reference {
             reference: reference.to_string(),
             reason: format!(
@@ -1450,7 +1458,7 @@ fn oci_reference(reference: &Reference) -> Result<oci_client::Reference, Error> 
             ),
         });
     }
-    Ok(oci)
+    Ok(())
 }
 
 /// The fields that tell a manifest's kind.
@@ -1716,30 +1724,45 @@ mod tests {
     #[test]
     fn oci_client_addresses_the_registry_credentials_were_chosen_for() {
         // The host a credential is picked for (`Client::connect`) is the one
-        // `oci-client` sends requests and that credential to.
-        for text in [
-            "LOCALDOMAIN/debian:1",
-            "LOCALHOST/app:1",
-            "Registry/team/app:1",
-            "localhost/app:1",
-            "localhost:5000/app:1",
-            "registry.example.com/team/app:1",
-            "[fc00::1]:5000/app:1",
-            "debian:1",
-            "index.docker.io/team/app:1",
-            "debian@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        // `oci-client` sends requests and that credential to. `agrees`: the
+        // string form `oci-spec` parses gives the same reference.
+        const DIGEST: &str =
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let digest_only = format!("debian@{DIGEST}");
+        let tag_and_digest = format!("registry.example.com/app:1@{DIGEST}");
+        for (text, host, repository, agrees) in [
+            ("LOCALDOMAIN/debian:1", "LOCALDOMAIN", "debian", false),
+            ("LOCALHOST/app:1", "LOCALHOST", "app", false),
+            ("Registry/team/app:1", "Registry", "team/app", false),
+            ("[fc00::1]:5000/app:1", "[fc00::1]:5000", "app", false),
+            ("[::1]:5000/app:1", "[::1]:5000", "app", false),
+            ("localhost/app:1", "localhost", "app", true),
+            ("localhost:5000/app:1", "localhost:5000", "app", true),
+            (
+                "registry.example.com/team/app:1",
+                "registry.example.com",
+                "team/app",
+                true,
+            ),
+            ("debian:1", "index.docker.io", "library/debian", true),
+            (
+                "index.docker.io/team/app:1",
+                "index.docker.io",
+                "team/app",
+                true,
+            ),
+            (&digest_only, "index.docker.io", "library/debian", true),
+            (&tag_and_digest, "registry.example.com", "app", true),
         ] {
             let reference = Reference::parse(text).unwrap().with_default_tag();
-            // Blob requests name only the repository.
-            let name = Reference::parse(&reference.name()).unwrap();
-            for (what, r) in [("whole", &reference), ("name", &name)] {
+            // Blob requests pass the caller's reference, which may have no
+            // tag or digest; `oci-client` uses only its registry and
+            // repository there.
+            let untagged = Reference::parse(&reference.name()).unwrap();
+            for (what, r) in [("whole", &reference), ("untagged", &untagged)] {
                 let oci = oci_reference(r).unwrap();
-                assert_eq!(
-                    oci.resolve_registry(),
-                    endpoint(reference.registry()),
-                    "{text} ({what}): oci-client addresses another host"
-                );
-                assert_eq!(oci.repository(), reference.repository(), "{text} ({what})");
+                assert_eq!(oci.resolve_registry(), host, "{text} ({what})");
+                assert_eq!(oci.repository(), repository, "{text} ({what})");
                 assert_eq!(
                     oci.digest(),
                     r.digest().map(Digest::as_str),
@@ -1752,9 +1775,42 @@ mod tests {
                         "{text} ({what})"
                     );
                 }
+                let parsed = r.to_string().parse::<oci_client::Reference>();
+                if agrees {
+                    // Ordinary references are unchanged.
+                    assert_eq!(oci, parsed.unwrap(), "{text} ({what})");
+                } else if text.starts_with('[') {
+                    // `oci-spec` has no `[v6]:port` form: these were refused.
+                    assert!(parsed.is_err(), "{text} ({what})");
+                } else {
+                    // The string form goes to Docker Hub.
+                    assert!(same_target(&parsed.unwrap(), r).is_err(), "{text} ({what})");
+                }
             }
         }
-        assert_eq!(endpoint("docker.io"), "index.docker.io");
-        assert_eq!(endpoint("LOCALDOMAIN"), "LOCALDOMAIN");
+    }
+
+    #[test]
+    fn a_reference_oci_client_would_address_elsewhere_is_refused() {
+        // `oci-spec` reads an upper-case, dot-less registry as a Docker Hub
+        // repository: the request would reach `index.docker.io`.
+        let reference = Reference::parse("LOCALDOMAIN/debian:1").unwrap();
+        let reparsed: oci_client::Reference = "LOCALDOMAIN/debian:1".parse().unwrap();
+        assert_eq!(reparsed.resolve_registry(), "index.docker.io");
+        let err = same_target(&reparsed, &reference).unwrap_err();
+        assert!(
+            matches!(&err, Error::Reference { reason, .. }
+                if reason.contains("index.docker.io") && reason.contains("not LOCALDOMAIN/debian")),
+            "{err}"
+        );
+        // The host differs only in case: `oci-client` keys its credentials
+        // and tokens on the exact name, so that is refused too.
+        let lower = oci_client::Reference::with_tag(
+            "localdomain".to_owned(),
+            "debian".to_owned(),
+            "1".to_owned(),
+        );
+        assert!(same_target(&lower, &reference).is_err());
+        assert!(same_target(&oci_reference(&reference).unwrap(), &reference).is_ok());
     }
 }
