@@ -644,6 +644,8 @@ fn apply_with(
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsFd;
+
     use super::*;
 
     #[test]
@@ -656,5 +658,67 @@ mod tests {
             s.first.borrow().as_deref(),
             Some("a: xattr security.selinux: EPERM")
         );
+    }
+
+    /// A pinned symlink, its pinned parent, and a new symlink renamed over
+    /// its name: what a swap between pinning and the xattr calls leaves.
+    fn swapped_symlink() -> (tempfile::TempDir, OwnedFd, OwnedFd) {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("a", dir.path().join("l")).unwrap();
+        let pin = |p: &Path, flags: OFlags| {
+            rustix::fs::openat(
+                rustix::fs::CWD,
+                p,
+                flags | OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap()
+        };
+        let parent = pin(dir.path(), OFlags::DIRECTORY);
+        let fd = pin(&dir.path().join("l"), OFlags::empty());
+        std::os::unix::fs::symlink("b", dir.path().join("new")).unwrap();
+        std::fs::rename(dir.path().join("new"), dir.path().join("l")).unwrap();
+        (dir, parent, fd)
+    }
+
+    /// A symlink's xattrs are read by its name, then the name is checked to
+    /// still be the pinned symlink.
+    #[test]
+    fn read_xattrs_of_a_symlink_whose_name_was_swapped_is_changed() {
+        let (_dir, parent, fd) = swapped_symlink();
+        let parent = Some((parent.as_fd(), OsStr::new("l")));
+        let e = read_xattrs(
+            fd.as_fd(),
+            FileType::Symlink,
+            parent,
+            Xattrs::All,
+            Path::new("l"),
+        )
+        .unwrap_err();
+        assert!(matches!(e, Error::Changed { .. }), "{e:?}");
+    }
+
+    /// Stripping checks the name only before it removes something: a
+    /// symlink with none of overlay's own xattrs is left as it is.
+    #[test]
+    fn strip_overlay_own_of_a_swapped_symlink_with_nothing_to_remove_is_ok() {
+        let (_dir, parent, fd) = swapped_symlink();
+        let parent = Some((parent.as_fd(), OsStr::new("l")));
+        strip_overlay_own(fd.as_fd(), FileType::Symlink, parent, Path::new("l")).unwrap();
+    }
+
+    /// A symlink without a pinned parent has no xattrs to reach.
+    #[test]
+    fn a_symlink_without_a_parent_has_no_xattrs_and_nothing_stripped() {
+        let (_dir, _parent, fd) = swapped_symlink();
+        let read = read_xattrs(
+            fd.as_fd(),
+            FileType::Symlink,
+            None,
+            Xattrs::All,
+            Path::new("l"),
+        );
+        assert!(read.unwrap().is_empty());
+        strip_overlay_own(fd.as_fd(), FileType::Symlink, None, Path::new("l")).unwrap();
     }
 }
