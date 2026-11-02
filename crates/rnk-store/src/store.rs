@@ -393,28 +393,16 @@ impl Store {
         };
         let state_path = fs::canonicalize(state).map_err(|e| host_err("resolve", e))?;
         let root = RootPath::open(&state_path)?;
-        let dir = rustix::fs::open(
-            &state_path,
-            rustix::fs::OFlags::PATH
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|e| host_err("open", e.into()))?;
+        // Both descriptors come from the one directory `root` holds, never
+        // from the path again, which a `RUN` of an earlier build could have
+        // pointed elsewhere in between.
+        let dir = root.open_at(".", &OpenHow::path().directory())?;
         check_proc_fd()?;
         // One build at a time per state directory, held for the store's
         // life: a second one (another container on the same volume) would
-        // see this one's names and take its marker for a dead build's.
-        let lock = rustix::fs::openat(
-            &dir,
-            ".",
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|e| host_err("open", e.into()))?;
+        // see this one's names and take its marker for a dead build's, and
+        // a persistent store's shared lock keeps it off a store (ADR-0077).
+        let lock = root.open_at(".", &OpenHow::read().directory())?;
         lock_state_dir(&lock, &state_path)?;
         // Nothing but this store's own marker and leftovers, checked under
         // the lock and before anything is removed or written: a persistent
