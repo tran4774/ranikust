@@ -479,7 +479,7 @@ impl Store {
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
         // they would see a name, so this build makes none (ADR-0066).
         let mark = building_mark();
-        let marker = read_building_marker(&dir, &state_path, mark.as_deref())?;
+        let marker = read_building_marker(&root, &state_path, mark.as_deref())?;
         let interrupted = match marker {
             Marker::Ours => true,
             Marker::Theirs => false,
@@ -1371,43 +1371,41 @@ enum Marker {
     Theirs,
 }
 
-/// The [`BUILDING`] marker in the state directory `dir` (shown as
+/// The [`BUILDING`] marker in the state directory `root` (shown as
 /// `state_path`), `mark` being what this build would write
 /// ([`building_mark`]). A marker from another PID namespace or boot (a state
-/// directory on a volume, an earlier boot) is [`Marker::Theirs`]. Opened
-/// before its type is checked, on the descriptor, without following a link
-/// or blocking on a FIFO a leftover process put there; anything but a
-/// regular file counts as this container's.
-fn read_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<Marker> {
-    let fd = match rustix::fs::openat(
-        dir,
-        BUILDING,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::NONBLOCK
-            | rustix::fs::OFlags::NOCTTY
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    ) {
-        Ok(fd) => fd,
-        Err(Errno::NOENT) => return Ok(Marker::Absent),
-        Err(Errno::LOOP) => return Ok(Marker::Ours),
-        Err(e) => return Err(building_marker_err(state_path, "open", e.into())),
+/// directory on a volume, an earlier boot) is [`Marker::Theirs`]. Read as
+/// [`marker_text`] does; anything but a regular file counts as this
+/// container's.
+fn read_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<Marker> {
+    Ok(match marker_text(root, state_path, 256)? {
+        None => Marker::Absent,
+        Some(None) => Marker::Ours,
+        Some(Some(held)) if mark.is_none_or(|m| held == m.as_bytes()) => Marker::Ours,
+        Some(Some(_)) => Marker::Theirs,
+    })
+}
+
+/// What [`BUILDING`] in the state directory `root` holds, its first `max`
+/// bytes: `None` when nothing has the name, `Some(None)` when what has it
+/// is not a regular file. The entry is pinned with `O_PATH | O_NOFOLLOW`
+/// and its type checked on that descriptor before anything opens it for
+/// reading (`rnk_rootfs::Pinned::open_regular`): a link is never followed,
+/// and a FIFO or device node a `RUN` put there is never opened.
+fn marker_text(root: &RootPath, state_path: &Path, max: u64) -> Result<Option<Option<Vec<u8>>>> {
+    let pinned = match root.pin(BUILDING) {
+        Ok(p) => p,
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(None),
+        Err(e) => return Err(e.into()),
     };
-    let st =
-        rustix::fs::fstat(&fd).map_err(|e| building_marker_err(state_path, "stat", e.into()))?;
-    if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
-        return Ok(Marker::Ours);
+    if pinned.stat().file_type() != FileType::Regular {
+        return Ok(Some(None));
     }
     let mut held = Vec::new();
-    io::Read::take(File::from(fd), 256)
+    io::Read::take(File::from(pinned.open_regular()?), max)
         .read_to_end(&mut held)
         .map_err(|e| building_marker_err(state_path, "read", e))?;
-    Ok(if mark.is_none_or(|m| held == m.as_bytes()) {
-        Marker::Ours
-    } else {
-        Marker::Theirs
-    })
+    Ok(Some(Some(held)))
 }
 
 /// Creates this build's [`BUILDING`] marker, holding `mark`, as a new file.
@@ -1449,33 +1447,10 @@ fn create_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) 
 }
 
 /// Whether [`BUILDING`] is a regular file holding exactly `mark`, read as
-/// [`read_building_marker`] does: no link followed, no FIFO blocked on.
-fn marker_is_mine(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<Option<bool>> {
-    let fd = match rustix::fs::openat(
-        dir,
-        BUILDING,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::NONBLOCK
-            | rustix::fs::OFlags::NOCTTY
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    ) {
-        Ok(fd) => fd,
-        Err(Errno::NOENT) => return Ok(None),
-        Err(Errno::LOOP) => return Ok(Some(false)),
-        Err(e) => return Err(building_marker_err(state_path, "open", e.into())),
-    };
-    let st =
-        rustix::fs::fstat(&fd).map_err(|e| building_marker_err(state_path, "stat", e.into()))?;
-    if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
-        return Ok(Some(false));
-    }
-    let mut held = Vec::new();
-    io::Read::take(File::from(fd), 257)
-        .read_to_end(&mut held)
-        .map_err(|e| building_marker_err(state_path, "read", e))?;
-    Ok(Some(held == mark.unwrap_or_default().as_bytes()))
+/// [`marker_text`] does: no link followed, no FIFO or device opened.
+fn marker_is_mine(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<Option<bool>> {
+    Ok(marker_text(root, state_path, 257)?
+        .map(|held| held.is_some_and(|h| h == mark.unwrap_or_default().as_bytes())))
 }
 
 /// Makes [`BUILDING`] this build's marker: a regular file holding `mark`.
@@ -1492,7 +1467,7 @@ fn ensure_own_marker(
     // A `RUN` process left behind could race the replacement: a few tries,
     // then the error.
     for _ in 0..3 {
-        match marker_is_mine(dir, state_path, mark)? {
+        match marker_is_mine(root, state_path, mark)? {
             Some(true) => return Ok(false),
             Some(false) => {
                 remove_tree(root, Path::new(BUILDING))?;
