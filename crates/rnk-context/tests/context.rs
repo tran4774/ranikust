@@ -58,6 +58,37 @@ fn a_context_path_through_a_symlink_is_refused() {
     assert_eq!(ctx.origin(), checkout.path().join("services"));
 }
 
+/// Red team (T22, ADR-0076): `--context` through a magic link is refused
+/// like any symlink: `/proc/self/cwd`, `/proc/self/root/...`,
+/// `/proc/self/fd/<n>` of a directory held open and `/dev/fd/<n>` all lead
+/// to a directory the caller did not name. The same directory by its
+/// real path opens.
+#[test]
+fn red_team_a_context_through_a_magic_link_is_refused() {
+    let dir = ctx_dir();
+    let real = dir.path().canonicalize().unwrap();
+    let held = fs::File::open(&real).unwrap();
+    let n = std::os::fd::AsRawFd::as_raw_fd(&held);
+    let paths = [
+        PathBuf::from("/proc/self/cwd"),
+        PathBuf::from("/proc/thread-self/cwd"),
+        Path::new("/proc/self/root").join(real.strip_prefix("/").unwrap()),
+        PathBuf::from(format!("/proc/self/fd/{n}")),
+        PathBuf::from(format!("/dev/fd/{n}")),
+    ];
+    for path in &paths {
+        let err = DirSource::new(path).open().unwrap_err();
+        assert!(
+            err.to_string().contains("symlink"),
+            "{}: {err}",
+            path.display()
+        );
+    }
+    let ctx = DirSource::new(&real).open().unwrap();
+    assert_eq!(ctx.origin(), real);
+    drop(held);
+}
+
 /// T2c (the VM or a default rootful Docker run): a root-only file
 /// hardlinked into a context another account owns, as that account can do
 /// where `fs.protected_hardlinks=0`, is neither read as the Dockerfile nor
