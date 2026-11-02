@@ -132,8 +132,9 @@ These follow from decisions and are documented to users rather than fixed:
   persistent store, is shared with no other build, and is emptied of what a
   `RUN` wrote there at the end ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
   The store writes its marker back after every `RUN` and at the end, and a
-  `RUN`'s `SIGINT` or `SIGTERM` cannot stop the build (only the kernel, a
-  process outside the container's PID namespace or ranikust's parent can).
+  `RUN`'s `SIGINT` or `SIGTERM` cannot stop ranikust at once (only the
+  kernel, a process outside the container's PID namespace or ranikust's
+  parent can): it cancels the build, which still closes its store.
   Not closed: a `RUN` can still end ranikust before its end, by `SIGKILL`
   where ranikust is not PID 1, or through the OOM killer after raising its
   `oom_score_adj`. If it also removed `.ranikust-building` in between, what

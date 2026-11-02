@@ -1081,10 +1081,19 @@ async fn cancel_on_signals(cancel: CancellationToken) {
     }
 }
 
+/// How often [`obey_operator_signals`] reports stop signals not the
+/// operator's, which a `RUN` can send in a loop.
+const IGNORED_REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// [`cancel_on_signals`] for kaniko mode on `/`, on a thread of its own
 /// that reads `stop` for the rest of the process: only the operator's
-/// signals count (`rnk_sandbox::StopSignals`), a `RUN`'s are logged and
-/// ignored. Before the second signal's exit, the state directory's marker
+/// signals count toward the exit (`rnk_sandbox::StopSignals`). Any other
+/// stop signal (a `RUN`'s) cancels the build, which then ends through
+/// `Store::close` as a failed build: a `RUN` can end its own build, never
+/// skip the close. A flood of them, which would keep a `SIGTERM` pending
+/// so the operator's coalesces into it, therefore ends the build all the
+/// same; its warning is logged at most every [`IGNORED_REPORT_EVERY`].
+/// Before the second operator signal's exit, the state directory's marker
 /// is written back, since `Store::close` never runs then and a `RUN` may
 /// have removed it (ADR-0077).
 fn obey_operator_signals(
@@ -1100,6 +1109,8 @@ fn obey_operator_signals(
         .name("ranikust-signals".into())
         .spawn(move || {
             let mut obeyed = 0_u32;
+            let mut reported: Option<std::time::Instant> = None;
+            let mut unreported = 0_u64;
             loop {
                 let signal = match stop.wait() {
                     Ok(s) => s,
@@ -1112,13 +1123,30 @@ fn obey_operator_signals(
                     }
                 };
                 if !signal.obeyed {
-                    tracing::warn!(
-                        "signal {} from pid {} ignored: in kaniko mode on / a RUN cannot stop \
-                         the build; only the kernel, a process outside the container's PID \
-                         namespace or ranikust's parent can (ADR-0077)",
-                        signal.signo,
-                        signal.pid
-                    );
+                    // Cancelled, never stopped at once: the build still
+                    // closes its store (ADR-0077).
+                    cancel.cancel();
+                    let now = std::time::Instant::now();
+                    if reported.is_some_and(|t| now.duration_since(t) < IGNORED_REPORT_EVERY) {
+                        unreported += 1;
+                    } else {
+                        tracing::warn!(
+                            "signal {} from pid {} is not the operator's{}: in kaniko mode on / \
+                             a RUN cannot stop ranikust at once, so the build is cancelled and \
+                             closes its store; only the kernel, a process outside the \
+                             container's PID namespace or ranikust's parent can stop it at once \
+                             (ADR-0077)",
+                            signal.signo,
+                            signal.pid,
+                            if unreported == 0 {
+                                String::new()
+                            } else {
+                                format!(" ({unreported} more since the last report)")
+                            }
+                        );
+                        reported = Some(now);
+                        unreported = 0;
+                    }
                     continue;
                 }
                 obeyed += 1;

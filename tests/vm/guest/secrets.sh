@@ -30,7 +30,8 @@
 # (O_TMPFILE, a name unlinked at once, or memfd).
 #
 # Then `stopsig` (ADR-0077): a RUN that forges a store on the state volume
-# and signals ranikust cannot stop the build, and what it wrote goes.
+# and signals ranikust cannot stop it at once, only cancel the build, which
+# still closes its store: what the RUN wrote goes.
 #
 # Then `memlimit` (ADR-0056): a build whose state (a 512 MiB layer) exceeds
 # the container's memory limit (--memory 256m, no swap) must succeed: the
@@ -159,8 +160,9 @@ for s in pid1 ptrace shell; do
 done
 # stopsig (ADR-0077): a RUN removes the store's marker, forges a persistent
 # store on the state volume, then sends ranikust (PID 1) SIGTERM twice. The
-# build must go on, the signals ignored, and the volume end holding only
-# the marker, written back and kept since a RUN removed it.
+# signals are not the operator's: they cancel the build (a failure, never
+# the immediate exit 130), which still closes its store, so the volume ends
+# holding only the marker, written back and kept since a RUN removed it.
 sudo mkdir -m 755 "$W/stopsig"
 sudo tee "$W/stopsig/Dockerfile" >/dev/null <<EOF
 FROM $IMAGE
@@ -181,12 +183,12 @@ sudo docker run --rm -v "$RNK:/ranikust/bin/ranikust:ro" -v "$W/stopsig:/ranikus
   --oci-layout-path /ranikust/out/oci >"$OUT/stopsig.log" 2>&1 || rc=$?
 left="$(sudo docker run --rm -v rnk-stopsig:/s "$IMAGE" ls -A /s)"
 sudo docker volume rm -f rnk-stopsig >/dev/null
-if [ "$rc" != 0 ] || ! grep -qE '^sha256:[0-9a-f]{64}$' "$OUT/stopsig.log"; then
-  echo "error: stopsig: a RUN's SIGTERM stopped the build (exit $rc), see $OUT/stopsig.log" >&2
+if [ "$rc" = 0 ] || [ "$rc" = 130 ] || ! grep -qi 'cancelled' "$OUT/stopsig.log"; then
+  echo "error: stopsig: a RUN's SIGTERM did not just cancel the build (exit $rc), see $OUT/stopsig.log" >&2
   tail -20 "$OUT/stopsig.log" >&2
   status=1
-elif [ "$(grep -c 'a RUN cannot stop the build' "$OUT/stopsig.log")" != 2 ]; then
-  echo "error: stopsig: the two signals were not reported as ignored" >&2
+elif ! grep -q 'is not the operator' "$OUT/stopsig.log"; then
+  echo "error: stopsig: the RUN's signals were not reported as not the operator's" >&2
   status=1
 elif [ "$left" != .ranikust-building ]; then
   echo "error: stopsig: the state volume holds '$left', not only the marker" >&2
@@ -195,7 +197,7 @@ elif ! grep -q 'is a volume' "$OUT/stopsig.log"; then
   echo "error: stopsig: no warning that the state directory is a volume" >&2
   status=1
 else
-  echo "stopsig: a RUN's SIGTERM ignored twice; the forged store removed; the marker kept"
+  echo "stopsig: a RUN's SIGTERM only cancelled the build; the forged store removed; the marker kept"
 fi
 
 # memlimit: state larger than the container's memory, on disk.

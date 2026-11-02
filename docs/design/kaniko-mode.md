@@ -94,7 +94,9 @@ the scheduler runs one stage at a time) or a private directory per stage
     thread starts and read through a `signalfd`
     (`rnk_sandbox::block_stop_signals`). Only the kernel's, those sent
     from outside the PID namespace and those from ranikust's parent count,
-    and the marker is written back before the second one's exit. A `RUN`
+    and the marker is written back before the second one's exit; any
+    other stop signal cancels the build, which still closes its store, so
+    a `RUN` flooding them cannot hide the operator's. A `RUN`
     can still end ranikust (`SIGKILL` where it is not PID 1, the OOM
     killer), and leave what it wrote. A state volume used here therefore
     never serves overlay or per-stage builds later, is mounted at

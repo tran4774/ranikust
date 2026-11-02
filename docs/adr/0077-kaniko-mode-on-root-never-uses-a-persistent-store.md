@@ -114,7 +114,15 @@ empty at its end.
   - A signal is obeyed only from the kernel (a terminal), from outside the
     PID namespace (`docker stop`, a kubelet: pid 0) or from ranikust's
     parent, and only as sent by `kill` or `tgkill`, whose sender the
-    kernel sets. A `RUN`'s signals are logged and ignored.
+    kernel sets.
+  - Any other stop signal (a `RUN`'s) cancels the build, which then ends
+    through `Store::close` as a failed build: the `RUN` killed, the marker
+    made this build's again, the directory emptied. It never counts
+    toward the immediate exit. A `RUN` can always end its own build, by
+    failing, so this gives it nothing; it does stop a `RUN` from hiding
+    the operator's stop: a flood of `SIGTERM` keeps one pending, so the
+    operator's coalesces into it, and that flood itself now ends the
+    build. The warning is logged at most every 10 seconds.
   - Before the second signal's exit, the marker is written back, since
     `Store::close` never runs then.
 - **A volume is warned about.** A state directory that is a mount root (a
@@ -179,8 +187,9 @@ Not covered, and why the operator's rule carries the weight:
   without `flock` is refused (`Error::NoFlock`), as its per-digest locks
   already were.
 - Bad, because in kaniko mode on `/` a `SIGTERM` from a process of the
-  container other than ranikust's parent (a sibling script) is ignored:
-  stop the build with `docker stop`, from outside, or from the parent.
+  container other than ranikust's parent (a sibling script) only cancels
+  the build: a second one does not stop ranikust at once. Stop it at once
+  with `docker stop`, from outside, or from the parent.
 - Neutral, because a clean kaniko-mode build on `/` whose `RUN` wrote
   nothing in the state directory sees no change.
 
@@ -207,8 +216,9 @@ Not covered, and why the operator's rule carries the weight:
   - `rnk-sandbox` `only_the_operators_stop_signals_are_obeyed`.
 - [measured] VM `secrets` suite, `stopsig` scenario: a `RUN` removes the
   marker, forges a store on a volume and sends ranikust (PID 1) `SIGTERM`
-  twice. The build succeeds, both signals are reported as ignored, and
-  the volume keeps only the marker.
+  twice. The signals only cancel the build: it fails, never with the
+  immediate exit 130, they are reported as not the operator's, and the
+  volume keeps only the marker.
 - [inferred] The poisoning and the cross-build reads were traced from
   source in a security review. They were not run: the tests above check
   the store's protocol, not a build.

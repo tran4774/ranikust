@@ -490,9 +490,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   Nothing is cached between builds in that mode, by design for now
   (ADR-0077, Q-441). A `RUN` there can no longer get around it:
   - the store writes its marker back after every `RUN` and at the end;
-  - a `RUN`'s `SIGINT` or `SIGTERM` no longer stops the build, since only
-    the kernel's, those from outside the container's PID namespace and
-    those from ranikust's parent count;
+  - a `RUN`'s `SIGINT` or `SIGTERM` no longer stops ranikust at once,
+    since only the kernel's, those from outside the container's PID
+    namespace and those from ranikust's parent count; it cancels the
+    build instead, which still empties and marks the state directory;
   - a close that leaves anything in the state directory fails the build,
     and one that cannot write the marker at all, even after emptying the
     directory a `RUN` filled, fails it saying that nothing marks the
