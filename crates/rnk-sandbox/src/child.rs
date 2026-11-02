@@ -1551,6 +1551,13 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// hold duplicates and negative entries (ignored): with `close_range` over
 /// the gaps, else those `/proc/self/fd` lists, else every number up to the
 /// hard limit.
+///
+/// Limits, known and accepted: the last fallback stops at 2^20, so a
+/// descriptor numbered higher under a larger hard `RLIMIT_NOFILE` would
+/// stay open where neither `close_range` (Linux 5.9) nor a readable
+/// `/proc/self/fd` is there; and a seccomp profile that answers
+/// `close_range` with success without running it goes unnoticed, as no
+/// call here checks that the descriptors are gone.
 fn close_all_except(keep: &[RawFd]) {
     let mut ok = true;
     let mut next: u32 = 0;
