@@ -470,7 +470,7 @@ impl Client {
             raw_manifest(body, &digest).map_err(|reason| Error::Manifest {
                 host: host.name.clone(),
                 target: target.clone(),
-                reason,
+                reason: excerpt(&reason),
             })
         })
         .instrument(span.clone())
@@ -511,7 +511,8 @@ impl Client {
             target: reference.to_string(),
             reason,
         };
-        let index = ImageIndex::from_json(top.bytes()).map_err(|e| fail(e.to_string()))?;
+        let index =
+            ImageIndex::from_json(top.bytes()).map_err(|e| fail(excerpt(&e.to_string())))?;
         let entry = select_platform(&index, platform).ok_or_else(|| {
             let variant = platform
                 .variant

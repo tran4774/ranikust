@@ -165,11 +165,13 @@ impl Op<'_> {
                 expected,
                 actual,
             }) => {
+                // `expected` may be a registry's `Docker-Content-Digest`, of
+                // any length: shown whole only when it is a digest.
                 return Error::DigestMismatch {
                     host: self.host.to_owned(),
                     target: self.target.to_owned(),
-                    expected,
-                    actual,
+                    expected: shown_digest(&expected),
+                    actual: shown_digest(&actual),
                 };
             }
             OciDistributionError::AuthenticationFailure(reason) => {
@@ -190,12 +192,7 @@ impl Op<'_> {
                     .errors
                     .iter()
                     .any(|e| matches!(e.code, OciErrorCode::Toomanyrequests));
-                let codes: Vec<String> = envelope
-                    .errors
-                    .iter()
-                    .map(|e| format!("{:?}: {}", e.code, excerpt(&e.message)))
-                    .collect();
-                (codes.join("; "), retryable)
+                (envelope_text(&envelope.errors), retryable)
             }
             OciDistributionError::RequestError(e) => {
                 let retryable = e.is_connect() || e.is_timeout() || e.is_body() || e.is_request();
@@ -272,9 +269,55 @@ fn request_error_message(e: &reqwest::Error) -> String {
     message
 }
 
+/// A registry's error envelope as one excerpt: its entries, `code: message`,
+/// joined until the excerpt's 200 characters are used, then the number of
+/// entries. A registry can send thousands of entries within the
+/// `registry-body` limit; only the excerpt reaches a message.
+fn envelope_text(errors: &[oci_client::errors::OciError]) -> String {
+    let mut joined = String::new();
+    for e in errors {
+        if joined.chars().count() > EXCERPT_CHARS {
+            break;
+        }
+        if !joined.is_empty() {
+            joined.push_str("; ");
+        }
+        joined.push_str(&format!("{:?}: {}", e.code, excerpt(&e.message)));
+    }
+    let text = excerpt(&joined);
+    if errors.len() > 1 {
+        format!("{text} ({} errors)", errors.len())
+    } else {
+        text
+    }
+}
+
+/// A digest as a message shows it: whole when it is `<algorithm>:<hex>` of
+/// a length a digest has, else an excerpt (a registry's
+/// `Docker-Content-Digest` header can be of any length).
+fn shown_digest(text: &str) -> String {
+    let well_formed = text.split_once(':').is_some_and(|(algorithm, hex)| {
+        let len = match algorithm {
+            "sha256" => 64,
+            "sha384" => 96,
+            "sha512" => 128,
+            _ => return false,
+        };
+        hex.len() == len && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    });
+    if well_formed {
+        text.to_owned()
+    } else {
+        excerpt(text)
+    }
+}
+
+/// How many characters of an untrusted message reach an error.
+const EXCERPT_CHARS: usize = 200;
+
 /// At most 200 characters of an untrusted message, on one line.
 pub(crate) fn excerpt(text: &str) -> String {
-    const MAX: usize = 200;
+    const MAX: usize = EXCERPT_CHARS;
     let single: String = text
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -337,5 +380,34 @@ mod tests {
         let long = "x".repeat(500);
         assert_eq!(excerpt(&long).chars().count(), 201);
         assert_eq!(excerpt("a\nb\r\tc"), "a b  c");
+    }
+
+    #[test]
+    fn an_envelope_of_many_entries_is_one_excerpt_and_a_count() {
+        let one = format!(r#"{{"code":"UNKNOWN","message":"{}"}}"#, "m".repeat(199));
+        let many: Vec<oci_client::errors::OciError> =
+            serde_json::from_str(&format!("[{}]", vec![one; 2000].join(","))).unwrap();
+        let text = envelope_text(&many);
+        assert!(text.chars().count() < 240, "{}", text.len());
+        assert!(text.ends_with("(2000 errors)"), "{text}");
+        let single = envelope_text(&many[..1]);
+        assert!(single.contains(": mmm"), "{single}");
+        assert!(!single.contains("errors)"), "{single}");
+    }
+
+    #[test]
+    fn a_digest_is_shown_whole_only_when_well_formed() {
+        let good = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(shown_digest(&good), good);
+        let long = format!("sha256:{}", "e".repeat(300_000));
+        assert_eq!(shown_digest(&long).chars().count(), 201);
+        assert_eq!(shown_digest("md5:abc"), "md5:abc");
+        let err = op().error(OciDistributionError::DigestError(
+            DigestError::VerificationError {
+                expected: long,
+                actual: good,
+            },
+        ));
+        assert!(err.to_string().len() < 400, "{}", err.to_string().len());
     }
 }

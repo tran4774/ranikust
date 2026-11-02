@@ -420,6 +420,12 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- A registry's text reaches an error only as a 200-character excerpt.
+  An error envelope of thousands of entries, each short, was joined whole
+  into the message (438 KB for 2000 entries within the `registry-body`
+  limit), and a `Docker-Content-Digest` header that did not match was
+  shown at any length; the envelope now gives one excerpt and its entry
+  count, and a digest is shown whole only when it is well formed.
 - The kaniko-mode walk refuses an entry whose path is longer than
   `PATH_MAX`, as the overlay exporter does. Each directory it walks and
   each change it reports held its full path, so a `RUN` that made a

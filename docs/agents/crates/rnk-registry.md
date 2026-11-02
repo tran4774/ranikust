@@ -125,12 +125,16 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   there without the basic credential the registry's own requests carry
   (`red_team_a_redirect_off_the_registry_carries_no_credential`); a token
   holding CR LF, NUL, a space or non-ASCII is refused, never sent
-  (`red_team_a_token_that_would_break_a_header_is_refused`). Failing,
-  a finding: `red_team_a_registrys_text_reaches_an_error_only_as_an_excerpt`:
-  an error envelope of 2000 entries (each under 200 characters, 438 KB in
-  all, within `registry-body`) reaches the error whole, and so does a
-  300 KB `Docker-Content-Digest` that does not match the body
-  (`Error::DigestMismatch`); a plain error body is cut to 200 characters.
+  (`red_team_a_token_that_would_break_a_header_is_refused`); a
+  registry's text reaches an error only as an excerpt
+  (`red_team_a_registrys_text_reaches_an_error_only_as_an_excerpt`): an
+  error envelope of 2000 entries (each under 200 characters, 438 KB in
+  all, within `registry-body`) becomes one 200-character excerpt and the
+  entry count, a 300 KB `Docker-Content-Digest` that does not match the
+  body is cut the same way in `Error::DigestMismatch` (a well-formed
+  digest is shown whole), and a plain error body is cut to 200
+  characters; each error stays under 400 bytes. It held 438 KB and
+  300 KB before.
 - T0, `tests/registry/`: an in-process fake registry (hand-written on
   `hyper`, which the tree already has; it keeps blobs, manifests and upload
   sessions, which a request-matching mock would have to script): open,
