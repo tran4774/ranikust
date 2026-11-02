@@ -589,6 +589,16 @@ pub(crate) fn switch_user_and_exec(
         Step::Uid,
         rustix::thread::set_thread_res_uid(args.uid, args.uid, args.uid),
     );
+    // The switch set the dump flag to `fs.suid_dumpable`, which may be 1:
+    // until `execve` the child holds a copy of ranikust's memory, which a
+    // process of the same uid could then read through `/proc/<pid>/mem`.
+    // `execve` sets the flag again for the command, so the `RUN` sees no
+    // difference.
+    check(
+        err,
+        Step::Uid,
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
+    );
     if chdir_again {
         check(err, Step::Workdir, enter_workdir(workdir));
     }
