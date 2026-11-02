@@ -284,12 +284,17 @@ impl Snapshotter for KanikoStages {
     }
 }
 
+/// Deletes the stage directory `name` (opened as `dir`) and what it holds,
+/// through descriptors, crossing no mount.
+fn delete_stage_dir(shared: &StagesShared, name: &str, dir: &RootPath) -> Result<()> {
+    delete_contents(dir, &IgnoreList::new())?;
+    shared.stages.remove_dir(name)?;
+    Ok(())
+}
+
 /// Deletes a stage directory whose root could not be made.
 fn remove_stage_dir(shared: &StagesShared, name: &str, dir: &RootPath) {
-    let r = delete_contents(dir, &IgnoreList::new())
-        .map_err(Error::from)
-        .and_then(|()| shared.stages.remove_dir(name).map_err(Error::from));
-    if let Err(r) = r {
+    if let Err(r) = delete_stage_dir(shared, name, dir) {
         tracing::warn!("removing the stage directory {name}: {r}");
     }
 }
@@ -425,9 +430,7 @@ impl KanikoStage {
     fn remove(&self) -> Result<()> {
         let span = tracing::info_span!("rnk_snapshot.release");
         let _entered = span.enter();
-        delete_contents(&self.dir, &IgnoreList::new())?;
-        self.shared.stages.remove_dir(&self.name)?;
-        Ok(())
+        delete_stage_dir(&self.shared, &self.name, &self.dir)
     }
 
     /// Walks the root as it is now, as the base of the next diff.
