@@ -174,15 +174,15 @@ fn main() -> ExitCode {
         );
     }
     // Refused before the report is set up, so nothing is written there; the
-    // report's writer keeps to the same context when it writes.
+    // report's writer keeps to the build's own context when it writes.
     // `version` only warns when its report cannot be written.
-    let fence = context_fence(&command);
-    if matches!(command, Command::Build(_))
-        && let Err(message) = check_metrics_file(metrics_file.as_deref(), fence.as_ref())
-    {
-        report(&message, "");
-        return ExitCode::from(EXIT_USAGE);
-    }
+    let fence = match metrics_preflight(&command, metrics_file.as_deref()) {
+        Ok(fence) => fence,
+        Err(message) => {
+            report(&message, "");
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
     let telemetry = rnk_metrics::init(metrics_config(&command, metrics_file.as_deref(), fence));
     telemetry.set_meta("ranikust_version", env!("CARGO_PKG_VERSION"));
     for warning in &warnings {
@@ -241,15 +241,55 @@ fn metrics_config(
         config.logs = config::log_options(args);
     }
     config.file = metrics_file.map(|f| std::path::absolute(f).unwrap_or_else(|_| f.to_path_buf()));
+    let build = matches!(command, Command::Build(_));
     config.write_file = Some(rnk_metrics::WriteFile(std::sync::Arc::new(
-        move |path: &Path, bytes: &[u8]| write_metrics_file(path, bytes, fence.as_ref()),
+        move |path: &Path, bytes: &[u8]| {
+            let fence = BUILD_FENCE.get().or(fence.as_ref());
+            if build && fence.is_none() {
+                return Err(std::io::Error::other(
+                    "the build context could not be fenced, so no report is written \
+                     (ADR-0076)",
+                ));
+            }
+            write_metrics_file(path, bytes, fence)
+        },
     )));
     config
 }
 
-/// The build context's directory as a fence, opened once for the metrics
-/// report's check and its writer (ADR-0076); `None` for `version`, or a
-/// context that cannot be opened, which the build reports.
+/// The build context's directory as the build itself opened it (ADR-0076):
+/// set once when the build opens its context, and preferred by the metrics
+/// report's writer, so the report is kept out of the very context the build
+/// read, not out of a second open of `--context` that a swap of its parent
+/// could have changed in between.
+pub(crate) static BUILD_FENCE: std::sync::OnceLock<rnk_rootfs::Fence> = std::sync::OnceLock::new();
+
+/// The checks of `--metrics-file` before the report is set up: for a build
+/// asking for a report, the build context must open, so the report's path
+/// can be kept out of it, and the path must pass as an output. The fence
+/// found, for the writer until the build opens its own context.
+fn metrics_preflight(
+    command: &Command,
+    metrics_file: Option<&Path>,
+) -> Result<Option<rnk_rootfs::Fence>, String> {
+    let fence = context_fence(command);
+    if !matches!(command, Command::Build(_)) || metrics_file.is_none() {
+        return Ok(fence);
+    }
+    if fence.is_none() {
+        return Err(
+            "--metrics-file: the build context cannot be opened, so the report cannot be kept \
+             out of it (ADR-0076)"
+                .to_owned(),
+        );
+    }
+    check_metrics_file(metrics_file, fence.as_ref())?;
+    Ok(fence)
+}
+
+/// The build context's directory as a fence, opened for the metrics
+/// report's check (ADR-0076); `None` for `version`, or a context that
+/// cannot be opened.
 fn context_fence(command: &Command) -> Option<rnk_rootfs::Fence> {
     let Command::Build(args) = command else {
         return None;
@@ -977,6 +1017,29 @@ mod tests {
             std::fs::read(dir.path().join("new/m.json")).unwrap(),
             b"{}\n"
         );
+    }
+
+    /// A report asked for a build whose context cannot be opened is refused
+    /// before anything is set up: without the context's fence, the report
+    /// could not be kept out of it (ADR-0076). Without a report, the build
+    /// reports the context itself.
+    #[test]
+    fn a_metrics_file_needs_a_context_that_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let flag = format!("--context={}", dir.path().join("missing").display());
+        let argv = ["ranikust", flag.as_str(), "--no-push"];
+        let command = cli::parse(argv).unwrap().cli.into_command();
+        let e = metrics_preflight(&command, Some(&dir.path().join("m.json"))).unwrap_err();
+        assert!(e.contains("cannot be opened"), "{e}");
+        assert!(metrics_preflight(&command, None).unwrap().is_none());
+        // The writer of such a build writes nothing either.
+        let config = metrics_config(&command, Some(&dir.path().join("m.json")), None);
+        let write = config.write_file.unwrap();
+        if BUILD_FENCE.get().is_none() {
+            let e = (write.0)(&dir.path().join("m.json"), b"{}\n").unwrap_err();
+            assert!(e.to_string().contains("could not be fenced"), "{e}");
+            assert!(!dir.path().join("m.json").exists());
+        }
     }
 
     /// Kaniko mode on `/` refuses in a fixed order: root that may mount

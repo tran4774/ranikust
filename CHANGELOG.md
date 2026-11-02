@@ -485,7 +485,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
     9p, which refuse `RENAME_NOREPLACE`.
   - **Outputs in the context.** An output in the build context, or one
     reached through a symlink, is refused before the build, exit code 2 for
-    `--metrics-file`.
+    `--metrics-file`, which is also refused when the build context cannot
+    be opened.
   - **`--dockerfile`.** A path leading into the context
     (`$CI_PROJECT_DIR/Dockerfile`, or the default `Dockerfile` run from the
     checkout) was read on the host through a committed symlink, and the

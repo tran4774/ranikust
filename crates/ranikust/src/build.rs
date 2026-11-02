@@ -392,6 +392,8 @@ where
 {
     let context = rnk_context::open(&ContextSpec::Dir(config.context.clone()))
         .map_err(|e| format!("opening the build context: {e}"))?;
+    // The metrics report's writer keeps to this very context (ADR-0076).
+    let _ = crate::BUILD_FENCE.set(*context.fence());
     check_output_paths(config, &context)?;
     let (text, dockerfile_at) = read_dockerfile(&config.dockerfile, &context)?;
     let dockerfile = rnk_dockerfile::parse(&text).map_err(|e| e.to_string())?;

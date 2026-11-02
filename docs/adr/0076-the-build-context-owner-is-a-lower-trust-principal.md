@@ -88,7 +88,10 @@ with no new flag.
      file renamed over it.
    - The paths are checked before the build (`--metrics-file` before its
      report is set up, so nothing is written there) and again as they are
-     written.
+     written, against the context the build itself opened: the metrics
+     report's writer takes that fence from the build, not from a second
+     open of `--context`. A build that asks for a report and whose context
+     cannot be opened is refused, so a report is never written unfenced.
 2. **A Dockerfile path is read through the context once it enters it.**
    `rnk_rootfs::reach` walks `--dockerfile` from `/`.
    - Outside the context, a symlink is followed only when root or
