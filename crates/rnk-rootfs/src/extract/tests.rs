@@ -850,6 +850,26 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
     assert_eq!(snapshot(&lower.host), before);
 }
 
+/// A copy-up from a lower layer gets none of the lower inode's `trusted.*`
+/// (a layer extracted before they were left out, or a filesystem that
+/// lists its own to root), as the layer's own entries get none
+/// (`ADR-0075`).
+#[test]
+#[ignore = "T2c: sysadmin: setting trusted.* needs CAP_SYS_ADMIN"]
+fn a_hardlink_copied_from_a_lower_layer_gets_no_trusted_xattrs() {
+    let lower = Fixture::new();
+    fs::write(lower.host("dash"), b"#!dash").unwrap();
+    for (n, v) in [("trusted.x", &b"t"[..]), ("user.app", b"u")] {
+        rustix::fs::setxattr(lower.host("dash"), n, v, rustix::fs::XattrFlags::empty()).unwrap();
+    }
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("sh", "dash");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    assert_eq!(xattr(&f.host("sh"), "trusted.x"), None);
+    assert_eq!(xattr(&f.host("sh"), "user.app").unwrap(), b"u");
+}
+
 #[test]
 fn every_name_of_a_lower_inode_shares_one_copy() {
     // A lower file with many names, and a layer linking each name: one

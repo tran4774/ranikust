@@ -89,9 +89,12 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
   form, content xattrs `user.overlay.*` become `user.overlay.overlay.*`
   (kernel ≥ 6.7).
 - A layer's `trusted.*` xattrs are never set, in any mode, before any
-  syscall (`SKIPPED_XATTR`, ADR-0075, as BuildKit's containerd extraction):
-  counted as `xattrs_skipped`, one warning per layer. The other namespaces
-  are set strictly.
+  syscall (`meta::LAYER_SKIPPED_XATTR`, ADR-0075, as BuildKit's containerd
+  extraction): counted as `xattrs_skipped`, one warning per layer. The
+  copy-up of a hardlink from a lower layer leaves them out too
+  (`Xattrs::Layer`); `COPY` (`Xattrs::Copy`) keeps them. The other
+  namespaces are set strictly. `rnk-store` keeps extracted layers in
+  `layers/v3/`, so none extracted before this rule is reused.
 - Identity is compared by `(dev, ino)` (and mount id), never by string;
   the store's `.ranikust-state` marker is a regular file.
 

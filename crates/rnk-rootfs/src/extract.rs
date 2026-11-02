@@ -59,13 +59,9 @@ const AUFS_META_PREFIX: &[u8] = b".wh..wh.";
 const OVERLAY_XATTR: &[u8] = b"user.overlay.";
 const OVERLAY_OPAQUE: &str = "user.overlay.opaque";
 const PAX_XATTR: &[u8] = b"SCHILY.xattr.";
-/// Xattrs a layer never sets (`ADR-0075`): a filesystem may give them a
-/// meaning it leaves to the privileged caller to check, such as XFS's raw
-/// on-disk ACLs `trusted.SGI_ACL_FILE` and `trusted.SGI_ACL_DEFAULT`.
-/// containerd's `archive.Apply`, BuildKit's layer extraction, refuses the
-/// same prefix before the syscall (`buildkit@cd8ee244
-/// vendor/github.com/containerd/containerd/v2/pkg/archive/tar_unix.go:146-152`).
-const SKIPPED_XATTR: &[u8] = b"trusted.";
+/// Xattrs a layer never sets (`ADR-0075`), from its tar or copied up from a
+/// lower layer ([`meta::Xattrs::Layer`]).
+const SKIPPED_XATTR: &[u8] = meta::LAYER_SKIPPED_XATTR;
 /// Mode of a directory until its own mode is set at the end.
 const DIR_PENDING_MODE: u32 = 0o700;
 /// Mode of missing parent directories the layer does not list.

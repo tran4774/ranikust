@@ -411,7 +411,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   check (XFS keeps raw ACLs there), so a hostile base image could leave
   directories that not even root can delete. They are counted as
   `xattrs_skipped` in the metrics, with one warning per layer; `user.*`,
-  `security.*` and `system.*` are set as before.
+  `security.*` and `system.*` are set as before. Overlay mode's copy of a
+  hardlink target from a lower layer leaves them out too. Extracted layers
+  now live in `layers/v3/` of the state directory, so layers extracted
+  before this change are extracted again rather than reused; the old
+  `layers/v2/` stays until removed by hand.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

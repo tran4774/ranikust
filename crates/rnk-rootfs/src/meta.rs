@@ -288,16 +288,37 @@ pub(crate) fn reopen(pinned: BorrowedFd<'_>, flags: OFlags, path: &Path) -> Resu
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Xattrs {
     /// What overlay's copy-up keeps of an inode in an extracted layer: all
-    /// but overlay's own (`trusted.overlay.*`, `user.overlay.*`); the
-    /// escaped content xattrs `user.overlay.overlay.*` are kept.
+    /// but overlay's own (`trusted.overlay.*`, `user.overlay.*`) and every
+    /// other `trusted.*`, which no layer gets ([`LAYER_SKIPPED_XATTR`]);
+    /// the escaped content xattrs `user.overlay.overlay.*` are kept.
     Layer,
     /// Every xattr, overlay's own included: for code that reads overlay's
     /// markers (`rnk-snapshot`'s exporter).
     All,
     /// What `COPY` carries over, as BuildKit copies every xattr (Q-120):
-    /// those of [`Xattrs::Layer`], set best effort ([`apply_lenient`]).
+    /// all but overlay's own, set best effort ([`apply_lenient`]).
     Copy,
 }
+
+impl Xattrs {
+    /// Whether the xattr `name` is among these.
+    fn keeps(self, name: &[u8]) -> bool {
+        match self {
+            Self::All => true,
+            Self::Layer => !is_overlay_own(name) && !name.starts_with(LAYER_SKIPPED_XATTR),
+            Self::Copy => !is_overlay_own(name),
+        }
+    }
+}
+
+/// Xattrs no extracted layer gets (`ADR-0075`), from its tar or copied up
+/// from a lower layer: a filesystem may give them a meaning it leaves to
+/// the privileged caller to check, such as XFS's raw on-disk ACLs
+/// `trusted.SGI_ACL_FILE` and `trusted.SGI_ACL_DEFAULT`. containerd's
+/// `archive.Apply`, BuildKit's layer extraction, refuses the same prefix
+/// before the syscall (`buildkit@cd8ee244
+/// vendor/github.com/containerd/containerd/v2/pkg/archive/tar_unix.go:146-152`).
+pub(crate) const LAYER_SKIPPED_XATTR: &[u8] = b"trusted.";
 
 /// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
 /// `XATTR_SIZE_MAX`).
@@ -333,7 +354,7 @@ pub(crate) fn read_xattrs(
     };
     let mut out = Vec::new();
     for n in names {
-        if matches!(which, Xattrs::Layer | Xattrs::Copy) && is_overlay_own(n.as_bytes()) {
+        if !which.keeps(n.as_bytes()) {
             continue;
         }
         match target.get(n.as_os_str(), &mut buf[..]) {
@@ -685,6 +706,29 @@ mod tests {
     use std::os::fd::AsFd;
 
     use super::*;
+
+    /// A layer's copy-up leaves out what extraction never sets
+    /// (`trusted.*`, `ADR-0075`), so a lower layer extracted earlier, or a
+    /// filesystem that lists its own `trusted.*` to root, cannot pass one
+    /// on; `COPY` keeps every xattr but overlay's own (Q-120).
+    #[test]
+    fn which_xattrs_a_layer_and_a_copy_keep() {
+        for (name, layer, copy) in [
+            (&b"user.app"[..], true, true),
+            (b"security.capability", true, true),
+            (b"system.posix_acl_access", true, true),
+            (b"user.overlay.overlay.origin", true, true),
+            (b"user.overlay.origin", false, false),
+            (b"trusted.overlay.origin", false, false),
+            (b"trusted.SGI_ACL_FILE", false, true),
+            (b"trusted.x", false, true),
+        ] {
+            let n = String::from_utf8_lossy(name);
+            assert_eq!(Xattrs::Layer.keeps(name), layer, "{n}");
+            assert_eq!(Xattrs::Copy.keeps(name), copy, "{n}");
+            assert!(Xattrs::All.keeps(name), "{n}");
+        }
+    }
 
     #[test]
     fn skipped_xattrs_count_all_and_keep_the_first() {

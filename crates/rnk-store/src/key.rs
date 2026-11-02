@@ -5,12 +5,14 @@ use std::path::PathBuf;
 
 use rnk_oci::Digest;
 
-/// The layout of `layers/`: version 2 names layers by chain ID (ADR-0032,
-/// Q-150). The first layout named them by diff ID in
+/// The layout of `layers/`, named by chain ID since version 2 (ADR-0032,
+/// Q-150). Each version is a new directory, so layers extracted by an
+/// earlier rule are never reused. The first layout named them by diff ID in
 /// `layers/<algorithm>/`, where an upper layer may hold content copied from
-/// another stack; a new directory keeps those from ever being reused. They
-/// stay on disk until `prune` (Phase 5) or the operator removes them.
-const LAYER_LAYOUT: &str = "v2";
+/// another stack; version 2 (`layers/v2/`) may hold an image's `trusted.*`
+/// xattrs, which version 3 never sets (ADR-0075). They stay on disk until
+/// `prune` (Phase 5) or the operator removes them.
+const LAYER_LAYOUT: &str = "v3";
 
 /// An entry of the store, named by a digest.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -22,7 +24,7 @@ pub enum EntryKey {
     /// `rnk-snapshot` uses the layer's chain ID (its diff ID for a bottom
     /// layer), so that the gzip and zstd blobs of one layer share it and
     /// an extraction that depends on the layers below never crosses stacks
-    /// (ADR-0032, Q-150): the directory `layers/v2/<algorithm>/<hex>/`
+    /// (ADR-0032, Q-150): the directory `layers/v3/<algorithm>/<hex>/`
     /// [open: Q-015].
     Layer(Digest),
 }
@@ -44,7 +46,7 @@ impl EntryKey {
         }
     }
 
-    /// `<kind>/<algorithm>`, or `layers/v2/<algorithm>` for a layer, the
+    /// `<kind>/<algorithm>`, or `layers/v3/<algorithm>` for a layer, the
     /// parent of the entry and of its lock file under `locks/`. Built from
     /// a validated digest only, so it never holds `..` or anything but
     /// lowercase hex and the algorithm.

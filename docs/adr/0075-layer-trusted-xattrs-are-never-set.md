@@ -87,3 +87,13 @@ rule here. Sibling of
 [ADR-0041](0041-live-root-extraction-skips-device-nodes.md), which keeps
 device nodes out of live roots. Design:
 [rootfs](../design/rootfs.md#extraction).
+
+Clarification (2026-11-03, host-safety review): "extraction" includes
+overlay mode's copy-up of a hardlink target from a lower layer
+(`extract_overlay`, `meta::Xattrs::Layer`), which leaves out `trusted.*`
+too, so a lower layer extracted before this decision, or a filesystem that
+lists its own `trusted.*` to root, cannot pass one on. Extracted layers
+moved to a new store layout, `layers/v3/` (`rnk-store` `key.rs`), so those
+extracted earlier under `layers/v2/` are never reused. `COPY` is unchanged,
+as the decision says: it copies every xattr but overlay's own. Test:
+`a_hardlink_copied_from_a_lower_layer_gets_no_trusted_xattrs` (T2c).

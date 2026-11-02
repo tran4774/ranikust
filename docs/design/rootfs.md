@@ -141,7 +141,8 @@ never called. A hand-written reader would repeat that parsing for no gain.
   opaque directory hides what its layer lacks. The copy is a regular file
   (or symlink, FIFO, device node) with the lower inode's owner, mode, times
   and xattrs as stored, overlay's own (`trusted.overlay.*`,
-  `user.overlay.*` but the escaped `user.overlay.overlay.*`) left behind,
+  `user.overlay.*` but the escaped `user.overlay.overlay.*`) and every
+  other `trusted.*` (`ADR-0075`) left behind,
   which splits the hardlink as overlay's copy-up does (`ADR-0012`). Copies
   are keyed by lower layer and inode: later links to any name of the same
   lower inode link to that copy, so the bytes written stay bounded by the
