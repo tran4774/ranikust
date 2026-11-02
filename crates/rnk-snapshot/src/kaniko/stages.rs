@@ -297,7 +297,8 @@ fn delete_stage_dir(shared: &StagesShared, name: &str, dir: &RootPath) -> Result
     Ok(())
 }
 
-/// Deletes a stage directory whose root could not be made.
+/// Deletes a stage directory whose root could not be made or handed over;
+/// a failure is logged, the caller returns its own error.
 fn remove_stage_dir(shared: &StagesShared, name: &str, dir: &RootPath) {
     if let Err(r) = delete_stage_dir(shared, name, dir) {
         tracing::warn!("removing the stage directory {name}: {r}");

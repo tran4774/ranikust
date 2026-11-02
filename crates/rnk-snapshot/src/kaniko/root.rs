@@ -705,15 +705,15 @@ impl Kept {
     }
 }
 
+/// The directory's name, the directory opened, and its identity
+/// ([`identity`]).
+type Made = (String, RootPath, (u32, u32, u64, u64));
+
 /// A new, empty directory `name` of the keep area. It is opened by name,
 /// which follows a symlink, so the directory opened must be the one just
 /// made (type, device, inode and mount, not following a link): a name
 /// swapped for a link to `.` would otherwise make its removal empty the
 /// whole keep area.
-/// The directory's name, the directory opened, and its identity
-/// ([`identity`]).
-type Made = (String, RootPath, (u32, u32, u64, u64));
-
 fn make_dir(shared: &Shared, name: &str) -> Result<Made> {
     shared.kept.create_dir(name, 0o700)?;
     let opened = shared.kept.statx(name).and_then(|made| {
