@@ -47,6 +47,28 @@ const IN_CONTEXT: &str = "lies in the build context, whose owner controls every 
 const THROUGH_SYMLINK: &str = "is or passes through a symlink, and ranikust follows none in an \
      output path (ADR-0076); pass the path without symlinks, as `realpath` prints it";
 
+/// `statfs` magic numbers of kernel-interface filesystems, which
+/// [`OutputDir::write_atomically`] refuses: proc, sysfs, devpts, cgroup,
+/// cgroup2, securityfs, debugfs, tracefs, bpf, selinuxfs, configfs,
+/// efivarfs, pstore, fusectl. devtmpfs reports tmpfs's number and cannot be
+/// told apart; the refusal of a name that is no regular file covers it.
+const KERNEL_FS: [i128; 14] = [
+    0x9fa0,
+    0x6265_6572,
+    0x1cd1,
+    0x0027_e0eb,
+    0x6367_7270,
+    0x7363_6673,
+    0x6462_6720,
+    0x7472_6163,
+    0xcafe_4a11,
+    0xf97c_ff8c,
+    0x6265_6570,
+    0xde5e_81e4,
+    0x6165_676c,
+    0x6573_5543,
+];
+
 /// Why [`reach`] refuses a symlink outside the context.
 const UNTRUSTED_LINK: &str = "is a symlink owned by an account other than root and ranikust's \
      own, which ranikust does not follow (ADR-0076); pass the path it points to";
@@ -379,22 +401,30 @@ impl OutputDir {
 
     /// Writes the file `name` through a temporary file in this directory,
     /// renamed over `name` once `write` succeeded and the data is synced: a
-    /// reader never sees a partial file, and whatever was at `name` (a
-    /// symlink, a hardlink) is replaced, never written through. The
-    /// temporary file has a random name and is made exclusively
-    /// (`O_CREAT | O_EXCL`) with `mode` (less the umask); it is removed on
-    /// every error.
+    /// reader never sees a partial file. Only a regular file at `name` is
+    /// replaced (a hardlink's other names keep the old content), and only
+    /// where nothing is otherwise (`RENAME_NOREPLACE`): a symlink, a device
+    /// node (`/dev/null`), a FIFO, a socket or a directory is refused,
+    /// before anything is written, and so is a directory on procfs, sysfs
+    /// or another filesystem of kernel interfaces. The temporary file has a
+    /// random name and is made exclusively (`O_CREAT | O_EXCL`) with `mode`
+    /// (less the umask); it is removed on every error.
     ///
     /// # Errors
     ///
-    /// `write`'s own error, or [`Error::Io`] when the temporary file cannot
-    /// be made, synced or renamed.
+    /// `write`'s own error; [`Error::InvalidPath`] for a name that is no
+    /// regular file or a kernel filesystem; [`Error::Io`] when the temporary
+    /// file cannot be made, synced or renamed.
     pub fn write_atomically<T, E: From<Error>>(
         &self,
         name: &OsStr,
         mode: u32,
         write: impl FnOnce(&mut File) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
+        self.refuse_kernel_fs()?;
+        // Before anything is written: a name that is no regular file is
+        // refused, never replaced.
+        self.replaceable(name)?;
         let (tmp_name, file) = self.temporary(name, mode)?;
         let tmp = Temporary {
             dir: self.fd.as_fd(),
@@ -410,10 +440,80 @@ impl OutputDir {
             source,
         })?;
         drop(file);
-        rustix::fs::renameat(&self.fd, &tmp.name, &self.fd, name)
-            .map_err(|e| io_err("rename", &tmp_path, e))?;
+        self.rename_into(&tmp.name, name, &tmp_path)?;
         tmp.keep();
         Ok(value)
+    }
+
+    /// Renames the temporary file `tmp` to `name`: over a regular file
+    /// there, else only where nothing is (`RENAME_NOREPLACE`), so a device
+    /// node, a FIFO, a socket, a directory or a symlink at the name
+    /// (`/dev/null`, `/dev/stdout`) is refused, never replaced.
+    fn rename_into(&self, tmp: &OsStr, name: &OsStr, tmp_path: &Path) -> Result<()> {
+        for _ in 0..2 {
+            if self.replaceable(name)? {
+                return rustix::fs::renameat(&self.fd, tmp, &self.fd, name)
+                    .map_err(|e| io_err("rename", tmp_path, e));
+            }
+            match rustix::fs::renameat_with(
+                &self.fd,
+                tmp,
+                &self.fd,
+                name,
+                rustix::fs::RenameFlags::NOREPLACE,
+            ) {
+                // Made by someone else in between: looked at again.
+                Err(Errno::EXIST) => {}
+                r => return r.map_err(|e| io_err("rename", tmp_path, e)),
+            }
+        }
+        Err(io_err("rename", tmp_path, Errno::EXIST))
+    }
+
+    /// Whether `name` here is a regular file an output may replace (`true`)
+    /// or nothing (`false`); anything else is refused, said as what it is.
+    fn replaceable(&self, name: &OsStr) -> Result<bool> {
+        let path = self.path.join(name);
+        let pin = match root::open_name(
+            self.fd.as_fd(),
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW,
+            0,
+            false,
+            &path,
+        ) {
+            Ok(pin) => pin,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let reason = match stat_of(pin.as_fd(), &path)?.file_type() {
+            FileType::Regular => return Ok(true),
+            FileType::Symlink => THROUGH_SYMLINK,
+            FileType::Directory => "is a directory, which an output file never replaces",
+            FileType::CharDevice | FileType::BlockDevice => {
+                "is a device node, which an output file never replaces; name a regular file"
+            }
+            FileType::Fifo | FileType::Socket => {
+                "is a FIFO or a socket, which an output file never replaces; name a regular file"
+            }
+            FileType::Unknown => "is not a regular file, which an output file never replaces",
+        };
+        Err(Error::InvalidPath { path, reason })
+    }
+
+    /// Refuses a directory on a filesystem of kernel interfaces (`/proc`,
+    /// `/sys` and the like), where a name is no file to replace.
+    fn refuse_kernel_fs(&self) -> Result<()> {
+        let fs = rustix::fs::fstatfs(&self.fd).map_err(|e| io_err("fstatfs", &self.path, e))?;
+        let f_type: i128 = fs.f_type.into();
+        if KERNEL_FS.contains(&f_type) {
+            return Err(Error::InvalidPath {
+                path: self.path.clone(),
+                reason: "is on a filesystem of kernel interfaces (procfs, sysfs, devpts, cgroup, \
+                         securityfs and the like), where an output file never goes",
+            });
+        }
+        Ok(())
     }
 
     /// A new temporary file beside `name`, made exclusively.

@@ -66,7 +66,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--target=STAGE` | The stage to build and produce. One only: kaniko's list (comma-separated or repeated) is refused, since the stages after the first would be built for nothing. Default: the last stage. |
 | `-d`, `--destination=IMAGE` | An image to push to. Repeatable. Required unless `--no-push`. |
 | `--no-push` | Do not push. |
-| `--tar-path=PATH` | Also write a Docker `save` tarball. Like every output, it must lie outside the build context and be reached without a symlink (see `--digest-file`). |
+| `--tar-path=PATH` | Also write a Docker `save` tarball. Like every output, it must lie outside the build context and be reached without a symlink (see `--digest-file`). It is written to a temporary file renamed over `PATH`, which replaces only a regular file: a device node, FIFO, socket or symlink there is refused, and so is a directory on `/proc` or `/sys`. So `--tar-path=/dev/stdout` does not work: write the tarball to a file and stream that (`ranikust … --tar-path=/tmp/image.tar && cat /tmp/image.tar`). |
 | `--oci-layout-path=PATH` | Also write an OCI image layout. Like every output, it must lie outside the build context and be reached without a symlink. |
 | `--compression=gzip\|zstd` | Layer compression, gzip by default. zstd cannot go into a `--tar-path` tarball. |
 | `--reproducible` | Fixed timestamps, for byte-identical images: the image's time is `SOURCE_DATE_EPOCH`, else 1970-01-01, and file times later than it are set to it, as BuildKit does. |

@@ -8,6 +8,24 @@ use super::{Fence, OutputDir, Reached, reach};
 use crate::error::Error;
 use crate::root::RootPath;
 
+/// A device node such as `/dev/null` is never replaced by an output, and
+/// a directory of `/proc` or `/sys` never takes one.
+#[test]
+fn kernel_names_and_filesystems_never_take_an_output() {
+    let dev = OutputDir::open(Path::new("/dev"), None, None).unwrap();
+    let e = dev
+        .write_atomically(OsStr::new("null"), 0o644, |_| Ok::<(), Error>(()))
+        .unwrap_err();
+    assert!(invalid(&e).contains("device node"), "{e}");
+    for dir in ["/proc", "/sys"] {
+        let out = OutputDir::open(Path::new(dir), None, None).unwrap();
+        let e = out
+            .write_atomically(OsStr::new("x.tar"), 0o644, |_| Ok::<(), Error>(()))
+            .unwrap_err();
+        assert!(invalid(&e).contains("kernel interfaces"), "{dir}: {e}");
+    }
+}
+
 fn invalid(e: &Error) -> &'static str {
     match e {
         Error::InvalidPath { reason, .. } => reason,
@@ -148,22 +166,44 @@ fn an_atomic_write_replaces_the_name_and_leaves_nothing_on_error() {
     let out = OutputDir::open(dir.path(), None, None).unwrap();
     let victim = dir.path().join("victim");
     fs::write(&victim, b"keep me").unwrap();
-    symlink(&victim, dir.path().join("image.tar")).unwrap();
-    out.write_atomically(OsStr::new("image.tar"), 0o644, |f| {
-        f.write_all(b"tar").map_err(|source| Error::Io {
-            op: "write",
-            path: "image.tar".into(),
-            source,
+    let write = |name: &str| {
+        out.write_atomically(OsStr::new(name), 0o644, |f| {
+            f.write_all(b"tar").map_err(|source| Error::Io {
+                op: "write",
+                path: name.into(),
+                source,
+            })
         })
-    })
-    .unwrap();
-    assert_eq!(fs::read(&victim).unwrap(), b"keep me");
+    };
+    // Anything but a regular file at the name is refused, not replaced.
+    symlink(&victim, dir.path().join("link.tar")).unwrap();
+    mkfifo(&dir.path().join("fifo.tar"));
+    fs::create_dir(dir.path().join("dir.tar")).unwrap();
+    for (name, what) in [
+        ("link.tar", "symlink"),
+        ("fifo.tar", "FIFO"),
+        ("dir.tar", "directory"),
+    ] {
+        let e = write(name).unwrap_err();
+        assert!(invalid(&e).contains(what), "{name}: {e}");
+    }
     assert!(
-        fs::symlink_metadata(dir.path().join("image.tar"))
+        fs::symlink_metadata(dir.path().join("link.tar"))
             .unwrap()
-            .is_file()
+            .file_type()
+            .is_symlink()
     );
+    assert_eq!(fs::read(&victim).unwrap(), b"keep me");
+    // A regular file is replaced; a missing one made.
+    fs::write(dir.path().join("image.tar"), b"old").unwrap();
+    write("image.tar").unwrap();
     assert_eq!(fs::read(dir.path().join("image.tar")).unwrap(), b"tar");
+    write("new.tar").unwrap();
+    assert_eq!(fs::read(dir.path().join("new.tar")).unwrap(), b"tar");
+    for p in ["link.tar", "fifo.tar", "new.tar"] {
+        fs::remove_file(dir.path().join(p)).unwrap();
+    }
+    fs::remove_dir(dir.path().join("dir.tar")).unwrap();
 
     let failed: Result<(), Error> = out.write_atomically(OsStr::new("other"), 0o644, |_| {
         Err(Error::InvalidPath {
