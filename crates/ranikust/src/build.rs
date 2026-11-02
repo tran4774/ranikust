@@ -185,11 +185,8 @@ fn release_root<R: StageRootfs>(what: &str, root: R) {
 fn stage_readers(graph: &StageGraph) -> Vec<usize> {
     let mut n = vec![0usize; graph.stages.len()];
     for &s in &graph.needed {
-        let bases = match graph.stages.get(s).map(|node| &node.base) {
-            Some(rnk_dockerfile::Base::Stage(b)) => vec![*b],
-            _ => Vec::new(),
-        };
-        for r in bases.into_iter().chain(referenced_stages(graph, s)) {
+        let base = graph.stages.get(s).and_then(|node| base_stage(&node.base));
+        for r in base.into_iter().chain(referenced_stages(graph, s)) {
             if let Some(c) = n.get_mut(r) {
                 *c += 1;
             }
@@ -206,6 +203,14 @@ fn stage_readers(graph: &StageGraph) -> Vec<usize> {
 /// so the choice must never depend on which reader finishes first.
 fn sole_readers(counts: &[usize]) -> Vec<bool> {
     counts.iter().map(|&n| n == 1).collect()
+}
+
+/// The stage a stage is built `FROM`, when it is built on one.
+fn base_stage(base: &rnk_dockerfile::Base) -> Option<usize> {
+    match base {
+        rnk_dockerfile::Base::Stage(b) => Some(*b),
+        rnk_dockerfile::Base::Scratch | rnk_dockerfile::Base::Image(_) => None,
+    }
 }
 
 /// The stages `index` reads with `COPY --from` or `RUN --mount from=`,
@@ -498,6 +503,16 @@ where
             .map_err(|e| format!("--secret id={id}: {e}"))?;
         secrets.insert(id.clone(), source.clone());
     }
+    // Per-stage directories only: who reads each stage's root, and the
+    // thread that releases a root once nobody does (ADR-0061, ADR-0062).
+    let (readers, sole_reader, releaser) = if roots == Roots::StageDirs {
+        let counts = stage_readers(&graph);
+        let sole = sole_readers(&counts);
+        let readers = counts.into_iter().map(AtomicUsize::new).collect();
+        (readers, sole, Some(Releaser::start()?))
+    } else {
+        (Vec::new(), Vec::new(), None)
+    };
     Ok(Shared {
         snapshotter,
         sandbox,
@@ -524,24 +539,9 @@ where
         labels: config.labels.clone(),
         stages: Mutex::new(Vec::new()),
         images: Mutex::new(Vec::new()),
-        readers: if roots == Roots::StageDirs {
-            stage_readers(&graph)
-                .into_iter()
-                .map(AtomicUsize::new)
-                .collect()
-        } else {
-            Vec::new()
-        },
-        sole_reader: if roots == Roots::StageDirs {
-            sole_readers(&stage_readers(&graph))
-        } else {
-            Vec::new()
-        },
-        releaser: if roots == Roots::StageDirs {
-            Some(Releaser::start()?)
-        } else {
-            None
-        },
+        readers,
+        sole_reader,
+        releaser,
         graph,
     })
 }
@@ -1149,12 +1149,13 @@ where
         let cancel = job.cancel.clone();
         // A unit starts from the base of the first stage it runs; it reads
         // the images every stage of it reads.
-        let first = job.folded.first().copied().unwrap_or(job.stage);
+        let chain: Vec<usize> = unit_chain(job.folded, job.stage).collect();
+        // Never empty: the chain ends with `job.stage`.
+        let first = chain.first().copied().unwrap_or(job.stage);
         let base = match &job.graph.stages[first].base {
             rnk_dockerfile::Base::Image(r) => Some(r.clone()),
             rnk_dockerfile::Base::Scratch | rnk_dockerfile::Base::Stage(_) => None,
         };
-        let chain: Vec<usize> = job.folded.iter().copied().chain([job.stage]).collect();
         let platform_ok = chain.iter().all(|&i| {
             job.graph.stages[i]
                 .platform
@@ -1308,6 +1309,12 @@ impl RunGate for ChannelGate {
     }
 }
 
+/// A unit's stages in build order, as [`rnk_sched::Unit::chain`] gives
+/// them: the stages folded into it, base first, then its own `stage`.
+fn unit_chain(folded: &[usize], stage: usize) -> impl Iterator<Item = usize> + '_ {
+    folded.iter().copied().chain(std::iter::once(stage))
+}
+
 /// Builds a unit on the calling thread: the stages folded into it, base
 /// first, then stage `index`, each built on the root the one before ended
 /// with. On the shared root the unit's root is emptied as soon as it is
@@ -1326,7 +1333,7 @@ where
     S::Root: Send + 'static,
 {
     let mut previous: Option<Arc<Stage<S>>> = None;
-    for &stage in folded.iter().chain([&index]) {
+    for stage in unit_chain(folded, index) {
         let done = run_stage(
             shared,
             stage,
@@ -1398,10 +1405,11 @@ fn after_stage<S: Snapshotter>(
 ) where
     S::Root: Send + 'static,
 {
-    let base = match shared.graph.stages.get(index).map(|n| &n.base) {
-        Some(rnk_dockerfile::Base::Stage(b)) => Some(*b),
-        _ => None,
-    };
+    let base = shared
+        .graph
+        .stages
+        .get(index)
+        .and_then(|n| base_stage(&n.base));
     for r in base
         .into_iter()
         .chain(referenced_stages(&shared.graph, index))
@@ -1492,11 +1500,9 @@ where
         },
         // Per-stage directories: whether this stage is its base's only
         // reader, from the stage graph (ADR-0061, ADR-0062).
-        take_base: match (&node.base, folded_base) {
-            (rnk_dockerfile::Base::Stage(b), None) => {
-                shared.sole_reader.get(*b).copied().unwrap_or(false)
-            }
-            _ => false,
+        take_base: match (base_stage(&node.base), folded_base) {
+            (Some(b), None) => shared.sole_reader.get(b).copied().unwrap_or(false),
+            (None, _) | (Some(_), Some(_)) => false,
         },
     };
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
@@ -1537,6 +1543,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_units_stages_are_built_in_the_order_rnk_sched_plans_them() {
+        for folded in [vec![], vec![0], vec![0, 1, 2]] {
+            let unit = rnk_sched::Unit {
+                stage: 3,
+                folded,
+                placement: rnk_sched::Placement::Shared,
+            };
+            assert_eq!(
+                unit_chain(&unit.folded, unit.stage).collect::<Vec<_>>(),
+                unit.chain().collect::<Vec<_>>()
+            );
+        }
+    }
 
     #[test]
     fn every_stage_a_later_unit_builds_from_is_kept_whole() {

@@ -105,7 +105,7 @@ pub(crate) fn route(refusal: &Refusal, in_container: bool) -> Route {
     match (refusal.kind, in_container) {
         (Kind::OverlayUnusable, false) => Route::KanikoStages,
         (Kind::OverlayUnusable, true) => Route::RefuseInContainer,
-        _ => Route::Refuse,
+        (Kind::Other | Kind::NoMountPrivilege | Kind::SandboxBlocked, _) => Route::Refuse,
     }
 }
 
