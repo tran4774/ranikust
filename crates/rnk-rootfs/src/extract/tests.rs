@@ -464,6 +464,27 @@ fn an_opaque_whiteout_keeps_what_the_layer_still_has() {
     assert_eq!(left, expect);
 }
 
+/// A directory that led to an entry the layer created stays the layer's
+/// when that entry goes: it is still on disk, and overlay's merged view
+/// keeps it under an opaque marker (the layer's own copy of it, holding
+/// only the whiteout), so applying the layer keeps it too, empty.
+#[test]
+fn an_opaque_whiteout_keeps_a_directory_whose_created_entry_went() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("d/x")).unwrap();
+    fs::write(f.host("d/x/lower"), b"").unwrap();
+    fs::write(f.host("d/y"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.file("d/x/f", 0o644, b"")
+        .file("d/x/.wh.f", 0o644, b"")
+        .file("d/.wh..wh..opq", 0o644, b"");
+    extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap();
+    let left = crate::test_util::tree(&f.host);
+    let expect: std::collections::BTreeSet<PathBuf> =
+        ["d", "d/x"].into_iter().map(PathBuf::from).collect();
+    assert_eq!(left, expect);
+}
+
 #[test]
 fn hardlink_targets_must_exist_in_the_root() {
     let f = Fixture::new();
@@ -1094,6 +1115,23 @@ fn a_replaced_directory_holding_an_ignored_path_leaves_no_pending_metadata() {
     extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
     assert!(f.host("var/run/sock").exists());
     assert!(!f.host("var/x").exists());
+}
+
+/// The same with an ignore-list entry below the deleted directory that is
+/// not on disk: the list says something may be kept below it, the walk
+/// removed it all the same.
+#[test]
+fn a_replaced_directory_whose_ignored_path_is_absent_leaves_no_pending_metadata() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("var/run")).unwrap();
+    fs::write(f.host("var/run/sock"), b"").unwrap();
+    let mut keep = live_keep();
+    keep.insert("/var/cache/apt").unwrap();
+    let mut t = Tar::new(&f);
+    t.dir("var/cache/", 0o755).file("var", 0o644, b"");
+    extract_live(&f.root, t.bytes().as_slice(), &keep).unwrap();
+    assert!(f.host("var/run/sock").exists());
+    assert!(!f.host("var/cache").exists());
 }
 
 #[test]

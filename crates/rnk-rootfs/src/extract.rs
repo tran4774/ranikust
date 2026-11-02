@@ -833,14 +833,25 @@ impl Extractor<'_> {
             self.stats.ignored += counts.kept;
             // What is left below it is only what the deletion kept: ignored
             // paths, which this layer never wrote, and the directories
-            // leading to them. Pending metadata of the others goes with
-            // them.
+            // leading to them. Pending metadata goes with the directories
+            // the walk removed, as found on disk: the ignore list only says
+            // what might have been kept.
             self.created.clear_below(path);
-            if let Some(keep) = keep {
-                for p in self.pending_below(path) {
-                    if p != path && !keep.has_below(&p) {
+            for p in self.pending_below(path) {
+                if p == path {
+                    continue;
+                }
+                match self.root.statx(&p) {
+                    Err(e)
+                        if matches!(
+                            e.raw_os_error().map(Errno::from_raw_os_error),
+                            Some(Errno::NOENT | Errno::NOTDIR)
+                        ) =>
+                    {
                         self.dirs.remove(&p);
                     }
+                    // Still there, or unknown: `finish` checks it.
+                    Ok(_) | Err(_) => {}
                 }
             }
             return match self.live {

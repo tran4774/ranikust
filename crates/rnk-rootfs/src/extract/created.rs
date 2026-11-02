@@ -1,7 +1,7 @@
 //! What a layer created, for its opaque whiteouts ([`super::Whiteouts::Apply`]).
 
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::Path;
 
 /// The entries a layer created that are still there, and the directories
@@ -9,10 +9,10 @@ use std::path::Path;
 ///
 /// Each name is stored once, however long the paths through it (a live
 /// root's physical paths can be much longer than the layer's names), and
-/// what the layer deletes again is forgotten, so the tree is never larger
-/// than what the layer left on disk. A node that is neither created nor
-/// leads to a created one is removed, so a node that is there and not
-/// created is always an ancestor.
+/// what the layer deletes again is forgotten with everything below it, so
+/// the tree is never larger than what the layer left on disk. A node that
+/// is there and not created is a directory that led to a created entry at
+/// some point, and stays one while the directory stays.
 #[derive(Debug, Default)]
 pub(super) struct Created {
     root: Node,
@@ -72,63 +72,38 @@ impl Created {
         }
     }
 
-    /// Forgets `path` and everything below it: it was deleted.
+    /// Forgets `path` and everything below it: it was deleted. The
+    /// directories above it stay as they are, as they stay on disk: one
+    /// that led only to `path` still led to an entry of this layer, so an
+    /// opaque marker keeps it, as overlay's merged view does.
     pub(super) fn remove(&mut self, path: &Path) {
-        let names: Vec<&OsStr> = path.iter().collect();
-        let Some(last) = names.len().checked_sub(1) else {
+        let Some((parent, name)) = path.parent().zip(path.file_name()) else {
             return;
         };
-        // The node removed from its parent, as the index of its name in
-        // `names`: `path` itself, or the topmost of the directories just
-        // above it that are not created and lead only to it, which removing
-        // it would leave leading nowhere.
-        let mut cut = last;
-        let mut node = &self.root;
-        for (i, name) in names.iter().enumerate() {
-            let Some(next) = node.children.get(*name) else {
-                // Not recorded: nothing to forget.
-                return;
-            };
-            if i < last {
-                if next.created || next.children.len() != 1 {
-                    cut = last;
-                } else if cut == last {
-                    cut = i;
-                }
-            }
-            node = next;
-        }
-        let mut parent = &mut self.root;
-        for name in &names[..cut] {
-            let Some(next) = parent.children.get_mut(*name) else {
-                return;
-            };
-            parent = next;
-        }
-        if let Some(gone) = parent.children.remove(names[cut]) {
+        if let Some(node) = self.find(parent)
+            && let Some(gone) = node.children.remove(name)
+        {
             drop_iteratively(gone);
         }
     }
 
-    /// Forgets everything below `path`, which stays: a deletion inside it
-    /// that had to keep something. What is still there below it is what
-    /// the deletion kept, never something this layer created.
+    /// Forgets everything below `path`, which stays as it was: a deletion
+    /// inside it that had to keep something. What is still there below it
+    /// is what the deletion kept, never something this layer wrote.
     pub(super) fn clear_below(&mut self, path: &Path) {
+        if let Some(node) = self.find(path) {
+            for (_, n) in std::mem::take(&mut node.children) {
+                drop_iteratively(n);
+            }
+        }
+    }
+
+    fn find(&mut self, path: &Path) -> Option<&mut Node> {
         let mut node = &mut self.root;
         for name in path.iter() {
-            let Some(next) = node.children.get_mut(name) else {
-                return;
-            };
-            node = next;
+            node = node.children.get_mut(name)?;
         }
-        let below = std::mem::take(&mut node.children);
-        let created = node.created;
-        for (_, n) in below {
-            drop_iteratively(n);
-        }
-        if !created {
-            self.remove(path);
-        }
+        Some(node)
     }
 
     #[cfg(test)]
@@ -187,15 +162,16 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_entry_takes_the_ancestors_only_it_needed() {
+    fn a_removed_entry_leaves_the_directories_above_it() {
         let mut c = created(&["a/b/c/d", "a/x"]);
         c.remove(Path::new("a/b/c/d"));
-        assert_eq!(c.lookup(Path::new("a/b")), Mark::None);
+        assert_eq!(c.lookup(Path::new("a/b/c/d")), Mark::None);
+        assert_eq!(c.lookup(Path::new("a/b/c")), Mark::Ancestor);
         assert_eq!(c.lookup(Path::new("a")), Mark::Ancestor);
+        assert_eq!(c.nodes(), 4);
+        c.remove(Path::new("a/b"));
+        assert_eq!(c.lookup(Path::new("a/b")), Mark::None);
         assert_eq!(c.nodes(), 2);
-        c.remove(Path::new("a/x"));
-        assert_eq!(c.lookup(Path::new("a")), Mark::None);
-        assert_eq!(c.nodes(), 0);
     }
 
     #[test]
@@ -221,20 +197,21 @@ mod tests {
     }
 
     #[test]
-    fn clearing_below_keeps_the_entry_only_if_it_was_created() {
+    fn clearing_below_keeps_the_entry_as_it_was() {
         let mut c = created(&["k", "k/a", "k/b/c", "n/a"]);
         c.clear_below(Path::new("k"));
         assert_eq!(c.lookup(Path::new("k")), Mark::Created);
         assert_eq!(c.lookup(Path::new("k/a")), Mark::None);
         c.clear_below(Path::new("n"));
-        assert_eq!(c.lookup(Path::new("n")), Mark::None);
-        assert_eq!(c.nodes(), 1);
+        assert_eq!(c.lookup(Path::new("n")), Mark::Ancestor);
+        assert_eq!(c.lookup(Path::new("n/a")), Mark::None);
+        assert_eq!(c.nodes(), 2);
     }
 
     #[test]
     fn a_deep_tree_is_dropped_without_recursion() {
         let deep: std::path::PathBuf = std::iter::repeat_n("x", 200_000).collect();
-        let mut c = created(&["x", deep.to_str().unwrap()]);
+        let mut c = created(&[deep.to_str().unwrap()]);
         c.remove(Path::new("x/x"));
         assert_eq!(c.nodes(), 1);
         c.insert(&deep);
