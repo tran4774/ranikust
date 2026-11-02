@@ -68,22 +68,45 @@ const PLANTED_LINK: &str = "is a hardlink owned by another account than the dire
 const UNREADABLE: &str = "is a file the owner of the directory it is in could not read by its \
      mode bits (a root-only file linked in from elsewhere); it is not read (ADR-0076)";
 
+/// Why a file is refused in a directory root owns that others may write:
+/// a hardlink any of them could have planted.
+const SHARED_LINK: &str = "is a hardlink in a directory root owns that its group or others may \
+     write, where another account could have planted it; it is not read (ADR-0076)";
+
+/// Why a file is refused in a directory root owns that others may write:
+/// one others could not read, which any of them could have linked in.
+const SHARED_UNREADABLE: &str = "is a file others could not read by its mode bits, in a \
+     directory root owns that its group or others may write, where another account could have \
+     linked a root-only file in; it is not read (ADR-0076)";
+
 /// Whether the regular file `st`, found in the directory `dir` of a build
 /// context, is refused, and why (ADR-0076). It is refused when it has
 /// other links and another owner than the directory's (a hardlink planted
 /// from outside, which `fs.protected_hardlinks=0` allows), or when the
 /// directory's owner could not read it by its mode bits: owner bits when
 /// the owner is the file's, group bits when the directory's group is the
-/// file's, else the bits for others. Group membership beyond the
-/// directory's own group is not looked up, so such a file is refused
-/// (fail closed). A directory root owns reads anything, as root does.
-/// Same-owner hardlinks (a pnpm store) pass.
+/// file's, else the bits for others. A directory root owns reads anything,
+/// as root does, unless its group or others may write it: then any of them
+/// could have planted the file, so it must have one link and be readable
+/// by others. Same-owner hardlinks (a pnpm store) pass elsewhere.
+///
+/// The rule is an approximation of what the directory's owner may read:
+/// it does not look the owner's supplementary groups up, nor read ACLs, so
+/// it fails closed in the usual direction only (a file readable through
+/// another of the owner's groups, or an ACL grant, is refused), and can
+/// pass a file a deny entry or a group-excluding mode would deny.
 pub(crate) fn context_refusal(st: &Stat, dir: &Stat) -> Option<&'static str> {
     if st.file_type() != FileType::Regular {
         return None;
     }
     if st.nlink > 1 && st.uid != dir.uid {
         return Some(PLANTED_LINK);
+    }
+    if dir.uid == 0 && dir.mode & 0o022 != 0 {
+        if st.nlink > 1 {
+            return Some(SHARED_LINK);
+        }
+        return (st.mode & 0o004 == 0).then_some(SHARED_UNREADABLE);
     }
     let readable = dir.uid == 0
         || if st.uid == dir.uid {

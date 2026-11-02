@@ -120,6 +120,29 @@ fn the_context_rule_judges_a_file_by_the_directory_it_is_in() {
         context_refusal(&with(other, other_group, 0o000, 1), &root_dir),
         None
     );
+    // Unless its group or others may write it: then a file must have one
+    // link and be readable by others, whoever owns it.
+    for writable in [0o020, 0o002, 0o1777] {
+        let shared = Stat {
+            mode: root_dir.mode | writable,
+            ..root_dir
+        };
+        assert!(
+            context_refusal(&with(0, 0, 0o644, 2), &shared)
+                .unwrap()
+                .contains("hardlink")
+        );
+        assert!(
+            context_refusal(&with(0, 0, 0o640, 1), &shared)
+                .unwrap()
+                .contains("could not read")
+        );
+        assert_eq!(context_refusal(&with(0, 0, 0o644, 1), &shared), None);
+        assert_eq!(
+            context_refusal(&with(other, other_group, 0o604, 1), &shared),
+            None
+        );
+    }
     // A copy out of the context with the owner's own files: copied, links kept.
     let d = Fixture::new();
     let o = CopyOpts {

@@ -153,7 +153,11 @@ with no new flag.
    - Group membership beyond the directory's own group is not looked up, so
      such a file is refused (fail closed). ACLs are not read.
    - A directory root owns reads anything, as root does, so a root-made
-     checkout and a directory `sudo` made in one are unchanged.
+     checkout and a directory `sudo` made in one are unchanged. The
+     exception is a root-owned directory its group or others may write (a
+     context root made `root:ci 0775`, a checked-in `tmp/` at `1777`):
+     there any of those accounts could have planted a root-owned hardlink,
+     so a file must have one link and be readable by others.
    - Same-owner hardlinks, which a pnpm store makes, are copied as before.
    - `COPY` and `ADD` from the context check this through
      `CopyOpts::from_context`. The Dockerfile, the ignore files and the

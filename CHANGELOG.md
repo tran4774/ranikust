@@ -506,7 +506,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
     file takes when an account links it into its context with
     `fs.protected_hardlinks=0`. They also refuse a file the directory's
     owner could not read by its mode bits, which a stale link like that
-    becomes.
+    becomes. In a directory root owns that its group or others may write,
+    a file must have one link and be readable by others.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name
