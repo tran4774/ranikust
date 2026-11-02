@@ -189,7 +189,12 @@ These follow from decisions and are documented to users rather than fixed:
   write `/proc/<pid>/mem`, which are `PTRACE_MODE_ATTACH` checks that Yama
   does not restrict at 0 (`ptrace(2)`, `proc_pid_mem(5)`) **[external]**;
   ranikust's warning for that setting (`crates/rnk-sandbox/src/sweep.rs`)
-  covers only one `RUN` process attaching to another. The account gains
+  covers only one `RUN` process attaching to another. Before its command
+  runs, the child is a copy of ranikust's memory: it is made non-dumpable
+  again right after its uid switch, so only the one system call between
+  `setresuid` and that `prctl` is open, and only where
+  `fs.suid_dumpable` is 1 (the common defaults are 0 and 2)
+  **[inferred]**. The account gains
   nothing over the state directory, which is root's `0700`, and no privilege
   from a setuid file: the `RUN`'s mounts belong to its mount namespace, which
   the kernel treats as `nosuid` for a process of another one, and a hardlink

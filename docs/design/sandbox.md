@@ -108,7 +108,10 @@ rtnetlink first; the ADR lists them as residual risk.
    the host's `/dev/null` from the parent, reached without symlinks and
    checked to be the null device. The full sandbox does not take the
    parent's: a descriptor of the host's node would let a root `RUN` change
-   its mode through `/proc/self/fd/0`, which the read-only bind prevents.
+   its mode or owner with `fchmod(0, …)` or `fchown`, which the read-only
+   bind prevents (`EROFS`). The test-only `chroot` path of `Direct` off `/`
+   (`Sandbox::start_with_root`, `#[cfg(test)]`) still hands the host's node
+   to the `RUN`; the binary never runs `Direct` off `/` (ADR-0050, ADR-0060).
 2. *Planned, Phase 3; not built, so no `RUN` runs this step today.* In a new
    user namespace, map the full id range available and allow `setgroups`;
    otherwise `USER _apt` (used by apt-get) fails with `setgroups: EPERM`.
