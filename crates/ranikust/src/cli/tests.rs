@@ -182,6 +182,25 @@ fn bad_values_are_clap_errors() {
 }
 
 #[test]
+fn limits_repeat_and_bad_ones_are_refused_at_start_up() {
+    let args = build(&["--limit", "manifest=8MiB", "--limit=registry-idle=30s"]);
+    assert_eq!(args.limits.len(), 2);
+    let limits = crate::limits::Limits::from_args(&args.limits);
+    assert_eq!(limits.manifest, 8 << 20);
+    assert_eq!(limits.registry_idle, std::time::Duration::from_secs(30));
+    for bad in [
+        "--limit=layer=1GiB",
+        "--limit=manifest=0",
+        "--limit=manifest",
+    ] {
+        let err = clap_error(&[bad]);
+        assert_eq!(err.exit_code(), 2, "{bad}: {err}");
+    }
+    let text = clap_error(&["--limit=layer=1GiB"]).to_string();
+    assert!(text.contains("unknown limit \"layer\""), "{text}");
+}
+
+#[test]
 fn help_and_version_flags_exit_zero() {
     assert_eq!(clap_error(&["--help"]).exit_code(), 0);
     assert_eq!(clap_error(&["--version"]).exit_code(), 0);

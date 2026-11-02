@@ -75,7 +75,7 @@ where
     let manifest = ImageManifest::from_json(images.manifest.bytes())?;
     let mut config_bytes = Vec::new();
     client
-        .pull_blob(&reference, &manifest.config, &mut config_bytes)
+        .pull_config(&reference, &manifest.config, &mut config_bytes)
         .await?;
     let config = ImageConfig::from_json(&config_bytes)?;
     if config.rootfs.diff_ids.len() != manifest.layers.len() {

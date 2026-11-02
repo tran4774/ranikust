@@ -189,6 +189,8 @@ pub(crate) struct BuildConfig {
     pub(crate) allow_network_host: bool,
     /// `--allow network.none-userns` (ADR-0033).
     pub(crate) allow_network_none_userns: bool,
+    /// `--limit`s over the defaults (ADR-0079).
+    pub(crate) limits: crate::limits::Limits,
     /// The compression level, kaniko's range mapped to the encoder's;
     /// `None`: ranikust's default.
     pub(crate) compression_level: Option<i32>,
@@ -443,6 +445,7 @@ impl BuildConfig {
             allow_network_none_userns: args
                 .allow
                 .contains(&crate::cli::Entitlement::NetworkNoneUserns),
+            limits: crate::limits::Limits::from_args(&args.limits),
             compression_level,
             image_format: args.image_format,
             labels: args
@@ -477,6 +480,7 @@ impl BuildConfig {
         json!({
             "compression": name(self.compression),
             "jobs": self.jobs.map(NonZeroUsize::get),
+            "limits": self.limits.meta(),
             "mode": name(self.mode),
             "network": name(self.network),
             "no_push": self.no_push,
