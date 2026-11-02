@@ -70,16 +70,23 @@ const KERNEL_FS: [i128; 14] = [
 ];
 
 /// Why [`reach`] refuses a symlink outside the context.
-const UNTRUSTED_LINK: &str = "is a symlink owned by an account other than root and ranikust's \
-     own, which ranikust does not follow (ADR-0076); pass the path it points to";
+const UNTRUSTED_LINK: &str = "is a symlink ranikust does not follow (ADR-0076): owned by an \
+     account other than root and ranikust's own, hard-linked elsewhere, or in a directory such an \
+     account owns or that its group or others may write; pass the path it points to";
 
-/// Whether [`reach`] follows the symlink `st` outside the context: only
-/// when root or ranikust's own user owns it. ranikust builds as root, so a
-/// link a lower-trust account made (in a directory it owns, beside or above
-/// a context it owns) is never followed; a link committed to a checkout
-/// root made is, which is why a parse error never shows a file's text.
-fn trusted_link(st: &Stat) -> bool {
-    st.uid == 0 || st.uid == rustix::process::geteuid().as_raw()
+/// Whether [`reach`] follows the symlink `link`, found in the directory
+/// `dir`, outside the context. Both must be root's or ranikust's own user's,
+/// the link must have no other name (a symlink hard-linked in from
+/// elsewhere, which `fs.protected_hardlinks=0` allows), and the directory
+/// must not be writable by its group or others, so no other account could
+/// have placed or moved the link there. ranikust builds as root, so a link
+/// a lower-trust account made or placed is never followed; a link committed
+/// to a checkout root made is, which is why a parse error never shows a
+/// file's text.
+fn trusted_link(link: &Stat, dir: &Stat) -> bool {
+    let euid = rustix::process::geteuid().as_raw();
+    let ours = |uid: u32| uid == 0 || uid == euid;
+    ours(link.uid) && link.nlink == 1 && ours(dir.uid) && dir.mode & 0o022 == 0
 }
 
 /// The build context's root directory, which an operator's host path must
@@ -149,24 +156,45 @@ impl HostFile {
     }
 
     /// Opens the entry for reading when it is a regular file, through its
-    /// pinned inode: a FIFO or a device node is never opened.
+    /// pinned inode: a FIFO or a device node is never opened. It is judged
+    /// first as a build context's file is, against the directory it was
+    /// found in (ADR-0076): a hardlink planted from elsewhere, or a file the
+    /// directory's owner could not read, is refused, so a checkout a
+    /// lower-trust account owns outside the context cannot hand root's
+    /// files to the Dockerfile reader either.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidPath`] when it is not a regular file.
+    /// [`Error::InvalidPath`] when it is not a regular file or is refused.
     pub fn open_regular(&self) -> Result<OwnedFd> {
+        self.refuse_planted(self.entry.stat(), self.path())?;
         self.entry.open_regular()
+    }
+
+    /// The context rule ([`crate::copy::context_refusal`]) for the entry
+    /// `st` at `path` in this entry's directory, judged against that held
+    /// directory.
+    fn refuse_planted(&self, st: &Stat, path: &Path) -> Result<()> {
+        let dir = stat_of(self.dir.as_fd(), path.parent().unwrap_or(path))?;
+        match crate::copy::context_refusal(st, &dir) {
+            Some(reason) => Err(Error::InvalidPath {
+                path: path.to_owned(),
+                reason,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// Opens the regular file `name` in the entry's directory, without
     /// following it: `None` when it is missing. It is pinned and checked
     /// first, so a symlink, a FIFO or a device node there is refused, never
-    /// opened.
+    /// opened, and judged against that directory as
+    /// [`HostFile::open_regular`] judges the entry.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidPath`] for anything but a regular file; [`Error::Io`]
-    /// when it cannot be opened.
+    /// [`Error::InvalidPath`] for anything but a regular file, or a file the
+    /// context rule refuses; [`Error::Io`] when it cannot be opened.
     pub fn open_beside(&self, name: &OsStr) -> Result<Option<OwnedFd>> {
         let path = self.path().with_file_name(name);
         let pin = match root::open_name(
@@ -181,8 +209,12 @@ impl HostFile {
             Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let reason = match stat_of(pin.as_fd(), &path)?.file_type() {
-            FileType::Regular => return meta::reopen(pin.as_fd(), OFlags::RDONLY, &path).map(Some),
+        let st = stat_of(pin.as_fd(), &path)?;
+        let reason = match st.file_type() {
+            FileType::Regular => {
+                self.refuse_planted(&st, &path)?;
+                return meta::reopen(pin.as_fd(), OFlags::RDONLY, &path).map(Some);
+            }
             FileType::Symlink => "is a symlink, which is not followed beside the Dockerfile",
             _ => "is not a regular file",
         };
@@ -238,7 +270,7 @@ pub fn reach(path: &Path, fence: &Fence) -> Result<Reached> {
         let st = stat_of(fd.as_fd(), &here)?;
         match st.file_type() {
             FileType::Symlink => {
-                if !trusted_link(&st) {
+                if !trusted_link(&st, &stat_of(cur.as_fd(), &at)?) {
                     return Err(Error::InvalidPath {
                         path: here,
                         reason: UNTRUSTED_LINK,

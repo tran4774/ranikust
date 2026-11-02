@@ -26,6 +26,15 @@ fn kernel_names_and_filesystems_never_take_an_output() {
     }
 }
 
+/// A temporary directory only its owner may write: `reach` follows no
+/// symlink in a directory its group or others may write, and a umask of
+/// `002` would give a new one `0775`.
+fn private_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
 fn invalid(e: &Error) -> &'static str {
     match e {
         Error::InvalidPath { reason, .. } => reason,
@@ -46,7 +55,7 @@ fn mkfifo(p: &Path) {
 
 #[test]
 fn missing_directories_are_made_below_the_last_one_reached() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let out = OutputDir::open(&dir.path().join("a/b"), Some(0o700), None).unwrap();
     assert_eq!(out.path(), dir.path().join("a/b"));
     let mode = fs::metadata(dir.path().join("a"))
@@ -65,7 +74,7 @@ fn missing_directories_are_made_below_the_last_one_reached() {
 
 #[test]
 fn a_symlink_on_the_way_is_refused_and_nothing_is_made_through_it() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let elsewhere = dir.path().join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     symlink(&elsewhere, dir.path().join("out")).unwrap();
@@ -83,7 +92,7 @@ fn a_symlink_on_the_way_is_refused_and_nothing_is_made_through_it() {
 
 #[test]
 fn the_build_context_is_never_an_output_directory() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let ctx = dir.path().join("ctx");
     fs::create_dir_all(ctx.join("sub")).unwrap();
     let fence = Fence::of(&RootPath::open(&ctx).unwrap()).unwrap();
@@ -116,7 +125,7 @@ fn the_build_context_is_never_an_output_directory() {
 
 #[test]
 fn writing_in_place_never_follows_or_writes_through_another_name() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let out = OutputDir::open(dir.path(), None, None).unwrap();
     let victim = dir.path().join("victim");
     fs::write(&victim, b"keep me").unwrap();
@@ -162,7 +171,7 @@ fn writing_in_place_never_follows_or_writes_through_another_name() {
 
 #[test]
 fn an_atomic_write_replaces_the_name_and_leaves_nothing_on_error() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let out = OutputDir::open(dir.path(), None, None).unwrap();
     let victim = dir.path().join("victim");
     fs::write(&victim, b"keep me").unwrap();
@@ -222,7 +231,7 @@ fn an_atomic_write_replaces_the_name_and_leaves_nothing_on_error() {
 
 #[test]
 fn an_existing_file_is_opened_only_when_it_is_regular() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let out = OutputDir::open(dir.path(), None, None).unwrap();
     fs::write(dir.path().join("blob"), b"bytes").unwrap();
     symlink(dir.path().join("blob"), dir.path().join("link")).unwrap();
@@ -241,7 +250,7 @@ fn an_existing_file_is_opened_only_when_it_is_regular() {
 
 #[test]
 fn a_read_follows_symlinks_outside_the_context_and_stops_where_it_enters_it() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let ctx = dir.path().join("ctx");
     fs::create_dir_all(ctx.join("sub")).unwrap();
     let secret = dir.path().join("secret");
@@ -288,9 +297,86 @@ fn a_read_follows_symlinks_outside_the_context_and_stops_where_it_enters_it() {
     assert!(pinned.open_regular().is_ok());
 }
 
+/// Outside the context, a symlink is followed only from a directory no
+/// other account may write, and only when it has no other name: a link
+/// placed in a group- or world-writable directory, or hard-linked in from
+/// elsewhere, could be another account's doing (ADR-0076).
+#[test]
+fn a_symlink_others_could_have_placed_is_not_followed() {
+    let dir = private_dir();
+    let ctx = dir.path().join("ctx");
+    fs::create_dir(&ctx).unwrap();
+    fs::write(dir.path().join("secret"), b"SECRET").unwrap();
+    let shared = dir.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    symlink(dir.path().join("secret"), shared.join("Dockerfile")).unwrap();
+    let fence = Fence::of(&RootPath::open(&ctx).unwrap()).unwrap();
+    for mode in [0o775, 0o757, 0o1777] {
+        fs::set_permissions(&shared, fs::Permissions::from_mode(mode)).unwrap();
+        let e = reach(&shared.join("Dockerfile"), &fence).unwrap_err();
+        assert!(invalid(&e).contains("does not follow"), "{mode:o}: {e}");
+    }
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        reach(&shared.join("Dockerfile"), &fence).unwrap(),
+        Reached::Outside(_)
+    ));
+    // The same link with a second name (a symlink hard-linked elsewhere).
+    rustix::fs::linkat(
+        rustix::fs::CWD,
+        shared.join("Dockerfile"),
+        rustix::fs::CWD,
+        dir.path().join("again"),
+        rustix::fs::AtFlags::empty(),
+    )
+    .unwrap();
+    let e = reach(&shared.join("Dockerfile"), &fence).unwrap_err();
+    assert!(invalid(&e).contains("does not follow"), "{e}");
+}
+
+/// A host Dockerfile and the ignore file beside it are judged as a build
+/// context's files are (ADR-0076): one the owner of its directory could
+/// not read by its mode bits (a root-only file linked in from elsewhere)
+/// is refused, never read. As root every directory reads anything, so the
+/// check is unprivileged only.
+#[test]
+fn a_host_dockerfile_its_directory_owner_could_not_read_is_refused() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let dir = private_dir();
+    let ctx = dir.path().join("ctx");
+    fs::create_dir(&ctx).unwrap();
+    let fence = Fence::of(&RootPath::open(&ctx).unwrap()).unwrap();
+    let df = dir.path().join("Dockerfile");
+    fs::write(&df, b"FROM scratch\n").unwrap();
+    fs::write(dir.path().join("Dockerfile.dockerignore"), b"x\n").unwrap();
+    let Reached::Outside(file) = reach(&df, &fence).unwrap() else {
+        panic!("expected outside");
+    };
+    assert!(file.open_regular().is_ok());
+    assert!(
+        file.open_beside(OsStr::new("Dockerfile.dockerignore"))
+            .unwrap()
+            .is_some()
+    );
+    for name in ["Dockerfile", "Dockerfile.dockerignore"] {
+        fs::set_permissions(dir.path().join(name), fs::Permissions::from_mode(0o200)).unwrap();
+    }
+    let Reached::Outside(file) = reach(&df, &fence).unwrap() else {
+        panic!("expected outside");
+    };
+    let e = file.open_regular().unwrap_err();
+    assert!(invalid(&e).contains("could not read"), "{e}");
+    let e = file
+        .open_beside(OsStr::new("Dockerfile.dockerignore"))
+        .unwrap_err();
+    assert!(invalid(&e).contains("could not read"), "{e}");
+}
+
 #[test]
 fn a_symlink_loop_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let ctx = dir.path().join("ctx");
     fs::create_dir(&ctx).unwrap();
     symlink("b", dir.path().join("a")).unwrap();
@@ -310,7 +396,7 @@ fn a_symlink_loop_is_refused() {
 #[test]
 #[ignore = "T2c: default: a symlink owned by another user needs root"]
 fn a_symlink_another_account_owns_is_not_followed() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let ctx = dir.path().join("ctx");
     fs::create_dir(&ctx).unwrap();
     fs::write(dir.path().join("secret"), b"SECRET").unwrap();
@@ -326,7 +412,7 @@ fn a_symlink_another_account_owns_is_not_followed() {
     .unwrap();
     let fence = Fence::of(&RootPath::open(&ctx).unwrap()).unwrap();
     let e = reach(&dir.path().join("theirs"), &fence).unwrap_err();
-    assert!(invalid(&e).contains("symlink owned by"), "{e}");
+    assert!(invalid(&e).contains("does not follow"), "{e}");
     assert!(matches!(
         reach(&dir.path().join("roots"), &fence).unwrap(),
         Reached::Outside(_)

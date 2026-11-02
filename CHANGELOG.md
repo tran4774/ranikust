@@ -488,8 +488,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
     (`$CI_PROJECT_DIR/Dockerfile`, or the default `Dockerfile` run from the
     checkout) was read on the host through a committed symlink, and the
     target's first token was printed in the parse error. It is now read
-    through the context. Outside the context, symlinks are still followed,
-    so a ConfigMap mount keeps working, and only a regular file is read.
+    through the context. Outside the context, a symlink is followed only
+    when root owns it and its directory and no other account may write
+    that directory, so a ConfigMap mount keeps working; only a regular file
+    is read, judged as a context file is. The parse error shows an unknown
+    keyword only when it is within two edits of an instruction ("did you
+    mean"), and nothing of any other, so a file that is no Dockerfile never
+    reaches the error.
   - **`--context`.** The context was resolved with `canonicalize` as root;
     it is now opened without following any symlink, and one in the path is
     refused.

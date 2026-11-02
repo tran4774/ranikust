@@ -57,15 +57,16 @@ pub struct CopyOpts {
     pub from_context: bool,
 }
 
-/// Why a context file is refused: a hardlink from outside the context.
-const PLANTED_LINK: &str = "its source in the build context is a hardlink owned by another \
-     account than the directory it is in, as one made to a file from outside the context is; \
-     it is not read (ADR-0076)";
+/// Why a file is refused by the context rule: a hardlink planted from
+/// elsewhere. Said of the file, so it fits a `COPY` source, the Dockerfile
+/// and an ignore file alike.
+const PLANTED_LINK: &str = "is a hardlink owned by another account than the directory it is \
+     in, as one made to a file from elsewhere is; it is not read (ADR-0076)";
 
-/// Why a context file is refused: its directory's owner cannot read it.
-const UNREADABLE: &str = "its source in the build context is a file the owner of the directory \
-     it is in could not read by its mode bits (a root-only file linked in from outside the \
-     context); it is not read (ADR-0076)";
+/// Why a file is refused by the context rule: its directory's owner cannot
+/// read it.
+const UNREADABLE: &str = "is a file the owner of the directory it is in could not read by its \
+     mode bits (a root-only file linked in from elsewhere); it is not read (ADR-0076)";
 
 /// Whether the regular file `st`, found in the directory `dir` of a build
 /// context, is refused, and why (ADR-0076). It is refused when it has

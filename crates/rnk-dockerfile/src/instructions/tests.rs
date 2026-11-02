@@ -351,29 +351,52 @@ fn simple_instructions() {
         "VOLUME specified can not be an empty string"
     );
     assert_eq!(
-        err("FROM a\nBOGUS x\n").message(),
-        "unknown instruction: BOGUS"
+        err("FROM a\nCOPPY x y\n").message(),
+        "unknown instruction: COPPY (did you mean copy?)"
     );
 }
 
-/// An unknown keyword is shown only when it looks like a mistyped keyword:
-/// a file read as the Dockerfile that is not one (a token, a password
-/// file) must not reach the error in full (ADR-0076).
+/// An unknown keyword is shown only when it is a mistyped instruction,
+/// within two edits of one: a file read as the Dockerfile that is not one
+/// (a token, a password file, an API key shaped like a word) must not reach
+/// the error at all, not even its length (ADR-0076).
 #[test]
-fn an_unknown_keyword_that_is_no_word_is_not_shown() {
-    for text in [
-        "eyJhbGciOiJSUzI1NiJ9.c2VjcmV0LXBheWxvYWQ.c2lnbmF0dXJl\n",
-        "root:$6$saltsalt$hashhashhashhash:19000:0:99999:7:::\n",
-        "https://user:hunter2@git.example.com\n",
-        "AVERYLONGWORDTHATISNOKEYWORDATALLREALLYNOT x\n",
-        "BOGUS\u{1b}[31m x\n",
+fn an_unknown_keyword_far_from_every_instruction_is_not_shown() {
+    for (text, secret) in [
+        (
+            "eyJhbGciOiJSUzI1NiJ9.c2VjcmV0LXBheWxvYWQ.c2lnbmF0dXJl\n",
+            "c2VjcmV0",
+        ),
+        (
+            "root:$6$saltsalt$hashhashhashhash:19000:0:99999:7:::\n",
+            "saltsalt",
+        ),
+        ("https://user:hunter2@git.example.com\n", "hunter2"),
+        (
+            "AVERYLONGWORDTHATISNOKEYWORDATALLREALLYNOT x\n",
+            "REALLYNOT",
+        ),
+        ("BOGUS\u{1b}[31m x\n", "\u{1b}"),
+        // Word-shaped secrets: a GitLab token, a hex key, a password.
+        ("glpat-AbCdEfGhIjKlMnOpQrSt\n", "AbCdEfGh"),
+        ("0123456789abcdef0123456789abcdef\n", "0123456789"),
+        ("Tr0ub4dor\n", "Tr0ub4dor"),
+        ("BOGUS x\n", "BOGUS"),
     ] {
         let message = err(text).message().to_owned();
         assert!(message.starts_with("unknown instruction"), "{message}");
-        for secret in ["c2VjcmV0", "saltsalt", "hunter2", "REALLYNOT", "\u{1b}"] {
-            assert!(!message.contains(secret), "{text:?}: {message}");
-        }
+        assert!(!message.contains(secret), "{text:?}: {message}");
+        assert!(!message.chars().any(|c| c.is_ascii_digit()), "{message}");
     }
+    // Close to an instruction: shown, with BuildKit's suggestion.
+    assert_eq!(
+        err("FROM a\nWORKDOR /x\n").message(),
+        "unknown instruction: WORKDOR (did you mean workdir?)"
+    );
+    assert_eq!(
+        err("FROM a\nrunn true\n").message(),
+        "unknown instruction: runn (did you mean run?)"
+    );
 }
 
 #[test]

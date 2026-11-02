@@ -521,25 +521,88 @@ fn parse_node(node: &Node) -> Result<Parsed, String> {
 /// Longest unknown keyword the error shows.
 const SHOWN_KEYWORD: usize = 32;
 
-/// BuildKit's "unknown instruction", showing the keyword only when it looks
-/// like a mistyped one: at most 32 ASCII letters, digits, `_` or `-`. A file
-/// read as the Dockerfile that is not one (a token, a password file) must
-/// not reach the error, the log or the metrics report (ADR-0076).
+/// Every instruction keyword, as BuildKit's `allInstructionNames` lists
+/// them for its suggestion.
+const INSTRUCTIONS: [&str; 18] = [
+    "add",
+    "arg",
+    "cmd",
+    "copy",
+    "entrypoint",
+    "env",
+    "expose",
+    "from",
+    "healthcheck",
+    "label",
+    "maintainer",
+    "onbuild",
+    "run",
+    "shell",
+    "stopsignal",
+    "user",
+    "volume",
+    "workdir",
+];
+
+/// Furthest an unknown keyword may be from an instruction (edit distance)
+/// to be shown, with that instruction as BuildKit's suggestion.
+const SHOWN_DISTANCE: usize = 2;
+
+/// BuildKit's "unknown instruction", with its "did you mean" suggestion.
+/// The keyword is shown only when it is a mistyped instruction: at most 32
+/// ASCII letters, digits, `_` or `-`, and within two edits of an
+/// instruction. Anything else is not shown at all, not even its length: a
+/// file read as the Dockerfile that is not one (a token, a password file,
+/// an API key of the same shape as a word) must not reach the error, the
+/// log or the metrics report (ADR-0076).
 fn unknown_instruction(keyword: &str) -> String {
     let word = !keyword.is_empty()
         && keyword.len() <= SHOWN_KEYWORD
         && keyword
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    if word {
-        format!("unknown instruction: {keyword}")
-    } else {
-        format!(
-            "unknown instruction (a {}-byte word that is no keyword, not shown: is this file a \
-             Dockerfile?)",
-            keyword.len()
-        )
+    let lower = keyword.to_ascii_lowercase();
+    let suggestion = word
+        .then(|| {
+            INSTRUCTIONS
+                .iter()
+                .map(|i| (edit_distance(lower.as_bytes(), i.as_bytes()), *i))
+                .filter(|(d, _)| *d <= SHOWN_DISTANCE)
+                .min_by_key(|(d, _)| *d)
+        })
+        .flatten();
+    match suggestion {
+        Some((_, instruction)) => {
+            format!("unknown instruction: {keyword} (did you mean {instruction}?)")
+        }
+        None => "unknown instruction (not shown: it is close to no instruction; is this file a \
+                 Dockerfile?)"
+            .to_owned(),
     }
+}
+
+/// Levenshtein distance of two short byte strings.
+fn edit_distance(a: &[u8], b: &[u8]) -> usize {
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, &x) in a.iter().enumerate() {
+        let mut diag = row.first().copied().unwrap_or(i);
+        if let Some(first) = row.first_mut() {
+            *first = i + 1;
+        }
+        for (j, &y) in b.iter().enumerate() {
+            let above = row.get(j + 1).copied().unwrap_or(usize::MAX);
+            let left = row.get(j).copied().unwrap_or(usize::MAX);
+            let cost = usize::from(x != y);
+            let value = (diag + cost)
+                .min(above.saturating_add(1))
+                .min(left.saturating_add(1));
+            diag = above;
+            if let Some(cell) = row.get_mut(j + 1) {
+                *cell = value;
+            }
+        }
+    }
+    row.last().copied().unwrap_or(0)
 }
 
 /// BuildKit's `parseKvps`: `ENV`/`LABEL` arguments come in triples.

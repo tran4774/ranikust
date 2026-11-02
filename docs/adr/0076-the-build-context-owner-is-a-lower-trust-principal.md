@@ -86,25 +86,38 @@ with no new flag.
 2. **A Dockerfile path is read through the context once it enters it.**
    `rnk_rootfs::reach` walks `--dockerfile` from `/`.
    - Outside the context, a symlink is followed only when root or
-     ranikust's own user owns it: the path is the operator's, and a
-     Dockerfile mounted from a Kubernetes ConfigMap is a chain of root's
-     symlinks (`Dockerfile -> ..data/Dockerfile`). A link a lower-trust
-     account made, for example beside a context it owns, is refused.
-   - A link committed to a checkout made by root is root's, and the walk
-     cannot tell it from the operator's. A monorepo job with
-     `--context=$CI_PROJECT_DIR/services/api` and
+     ranikust's own user owns both the link and the directory it is in,
+     that directory is not writable by its group or others, and the link
+     has no other name. The path is the operator's, and a Dockerfile
+     mounted from a Kubernetes ConfigMap is a chain of root's symlinks
+     (`Dockerfile -> ..data/Dockerfile`) in root's directories. A link a
+     lower-trust account made, or could have placed or moved (in a
+     directory it owns or may write, or hard-linked in from elsewhere), is
+     refused. A ConfigMap volume mounted with `fsGroup` is group-writable,
+     so its links are refused too: pass the resolved path.
+   - A link committed to a checkout made by root is root's, in root's
+     directories, and the walk cannot tell it from the operator's. A
+     monorepo job with `--context=$CI_PROJECT_DIR/services/api` and
      `--dockerfile=$CI_PROJECT_DIR/docker/api.Dockerfile` still follows a
      committed `docker/api.Dockerfile` link. So the parse error shows an
-     unknown keyword only when it looks like one (at most 32 ASCII letters,
-     digits, `_` or `-`). Otherwise it gives only its length, so a file
-     that is no Dockerfile never reaches the error, the log or the metrics
-     report. Passing the checkout itself as `--context` closes the read too.
+     unknown keyword only when it is within two edits of an instruction,
+     with BuildKit's "did you mean" suggestion: a mistyped instruction. Any
+     other keyword is not shown at all, not even its length, so a file
+     that is no Dockerfile (a token, a password file, an API key shaped
+     like a word) never reaches the error, the log or the metrics report.
+     Passing the checkout itself as `--context` closes the read too.
    - Once the walk takes a name inside the context, the rest is resolved
      through the context's `RootPath`, so a committed symlink never leaves
      it. This covers `$CI_PROJECT_DIR/Dockerfile`, the default `Dockerfile`
      from the checkout, and an operator's symlink into the context.
-   - A host Dockerfile is read only when it is a regular file.
-   - `<Dockerfile>.dockerignore` is read from where the Dockerfile was.
+   - A host Dockerfile is read only when it is a regular file, and is
+     judged by rule 4 against the directory it is in, held since the walk.
+     A Dockerfile in a checkout a lower-trust account owns outside the
+     context is therefore no way to read a root-only file hardlinked
+     there.
+   - `<Dockerfile>.dockerignore` is read from where the Dockerfile was:
+     pinned from that held directory, never followed, and judged by rule 4
+     the same way.
 3. **`--context` is never resolved through a symlink.** The directory is
    opened with `RESOLVE_NO_SYMLINKS`, and a symlink in any component is
    refused with a hint to pass the real path.

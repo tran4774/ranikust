@@ -2054,6 +2054,11 @@ mod tests {
         std::fs::write(cm.join("..2026_11_02/Dockerfile"), "FROM scratch\n").unwrap();
         std::os::unix::fs::symlink("..2026_11_02", cm.join("..data")).unwrap();
         std::os::unix::fs::symlink("..data/Dockerfile", cm.join("Dockerfile")).unwrap();
+        // A ConfigMap volume's directory is writable by its owner only; a
+        // link in a directory others may write is not followed (a umask of
+        // `002` would make it `0775`).
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&cm, std::fs::Permissions::from_mode(0o755)).unwrap();
         let context = rnk_context::open(&ContextSpec::Dir(ctx)).unwrap();
         let (text, at) = read_dockerfile(&cm.join("Dockerfile"), &context).unwrap();
         assert_eq!(text, "FROM scratch\n");
