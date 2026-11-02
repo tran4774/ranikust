@@ -662,24 +662,29 @@ impl Extractor<'_> {
         let key = (layer, st.dev_major, st.dev_minor, st.ino);
         if let Some((copy, copy_st)) = self.copied.get(&key) {
             let (cparent, cname) = path::entry(copy)?;
-            let cpfd = self
-                .root
-                .resolve_dir_in(&cparent, Mounts::Stay)
-                .map_err(|e| on_mount(e, raw))?;
             // A copy the layer whited out or replaced since is forgotten
-            // ([`Extractor::forget_copies`]); one reached by another name
-            // (through a symlink) is checked here: copy again rather than
-            // link what is there now.
-            let still = match meta::statx_at(cpfd.as_fd(), cname, copy) {
-                Ok(now) => now.same_inode(copy_st),
-                Err(e) if is_noent(&e) => false,
-                Err(e) => return Err(e),
+            // ([`Extractor::forget_copies`]); one it removed by another name
+            // (through a symlink) is found here: its directory gone, or
+            // something else at its name. Then the lower file is copied
+            // again rather than what is there now linked, or the extraction
+            // failed.
+            let cpfd = match self.root.resolve_dir_in(&cparent, Mounts::Stay) {
+                Ok(fd) => Some(fd),
+                Err(e) if is_gone(&e) => None,
+                Err(e) => return Err(on_mount(e, raw)),
             };
-            if still {
-                rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
-                    .map_err(|e| io_err("link", path, e))?;
-                self.stats.hardlinks += 1;
-                return Ok(());
+            if let Some(cpfd) = cpfd {
+                let still = match meta::statx_at(cpfd.as_fd(), cname, copy) {
+                    Ok(now) => is_same_copy(&now, copy_st),
+                    Err(e) if is_gone(&e) => false,
+                    Err(e) => return Err(e),
+                };
+                if still {
+                    rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
+                        .map_err(|e| io_err("link", path, e))?;
+                    self.stats.hardlinks += 1;
+                    return Ok(());
+                }
             }
         }
         let m = Meta {
@@ -1388,6 +1393,25 @@ fn is_whiteout(st: &Stat) -> bool {
 
 fn is_noent(e: &Error) -> bool {
     e.raw_os_error() == Some(Errno::NOENT.raw_os_error())
+}
+
+/// The name, or a directory on the way to it, is no longer there.
+fn is_gone(e: &Error) -> bool {
+    matches!(
+        e.raw_os_error().map(Errno::from_raw_os_error),
+        Some(Errno::NOENT | Errno::NOTDIR)
+    )
+}
+
+/// Whether `now` is still the hardlink copy `copy` described when it was
+/// made: the same inode, and a regular file of the same size and mtime, so
+/// neither an inode number the filesystem reused for a new file nor a
+/// whiteout device passes.
+fn is_same_copy(now: &Stat, copy: &Stat) -> bool {
+    now.same_inode(copy)
+        && now.file_type() == copy.file_type()
+        && now.size == copy.size
+        && now.mtime == copy.mtime
 }
 
 /// The error for an entry on or below a mount point inside the root.

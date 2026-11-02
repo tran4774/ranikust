@@ -934,6 +934,27 @@ fn a_copy_the_layer_removed_is_not_linked_again() {
     assert_eq!(c.nlink(), 1);
 }
 
+/// A copy made through a symlink, whose directory the layer then whited out
+/// by its other name: the copy's directory is gone (a whiteout device
+/// stands there), so a later link copies the lower file again instead of
+/// failing the extraction.
+#[test]
+fn a_copy_whose_directory_went_by_another_name_is_copied_again() {
+    let lower = Fixture::new();
+    fs::write(lower.host("big"), b"content").unwrap();
+    fs::hard_link(lower.host("big"), lower.host("n1")).unwrap();
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.dir("d/", 0o755)
+        .symlink("s", "d")
+        .hardlink("s/a", "big")
+        .file(".wh.d", 0o644, b"")
+        .hardlink("c", "n1");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    assert_eq!(fs::read(f.host("c")).unwrap(), b"content");
+    assert_eq!(fs::metadata(f.host("c")).unwrap().nlink(), 1);
+}
+
 #[test]
 fn the_nearest_lower_layer_shows_the_target() {
     let top = Fixture::new();

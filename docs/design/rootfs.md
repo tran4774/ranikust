@@ -146,8 +146,9 @@ never called. A hand-written reader would repeat that parsing for no gain.
   which splits the hardlink as overlay's copy-up does (`ADR-0012`). Copies
   are keyed by lower layer and inode: later links to any name of the same
   lower inode link to that copy while it is still there (a copy the layer
-  whites out or replaces is forgotten, and one reached by another name is
-  checked by inode, so a later link copies it again rather than linking
+  whites out or replaces is forgotten, and one it removed by another name
+  is found gone, its directory or name missing or holding another inode,
+  type, size or mtime, so a later link copies it again rather than linking
   what took its place), so the bytes written stay bounded by the
   lower layers' size, however many names a layer links. Only the
   `user.overlay.opaque=y` form ranikust writes is recognised

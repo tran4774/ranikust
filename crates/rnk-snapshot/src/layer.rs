@@ -13,8 +13,9 @@ use sha2::{Digest as _, Sha256};
 use crate::error::{Error, Result};
 use crate::lowers;
 
-/// An extracted layer in the store, `layers/<algorithm>/<hex>/` named by
-/// its chain ID: immutable, only ever a lower directory.
+/// An extracted layer in the store, `layers/v3/<algorithm>/<hex>/` named
+/// by its chain ID (`rnk-store`'s layout): immutable, only ever a lower
+/// directory.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LayerDir {
     pub(crate) diff_id: Digest,

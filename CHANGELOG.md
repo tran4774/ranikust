@@ -419,8 +419,11 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   `security.*` and `system.*` are set as before. Overlay mode's copy of a
   hardlink target from a lower layer leaves them out too. Extracted layers
   now live in `layers/v3/` of the state directory, so layers extracted
-  before this change are extracted again rather than reused; the old
-  `layers/v2/` stays until removed by hand.
+  before this change are extracted again rather than reused. The old
+  `layers/v2/` stays on disk until it is removed by hand, so base layers
+  take twice the space until a prune exists. The new layout stops reuse
+  but does not repair a `layers/v2/` tree that a crafted XFS ACL already
+  damaged: root must remove it.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name
