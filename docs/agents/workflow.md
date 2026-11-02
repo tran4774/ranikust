@@ -146,18 +146,33 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 | Milestones only | vendored `security-audit` (spawns many agents) |
 | End of a phase, when the maintainer asks | `refactor` skill: behaviour-preserving clean-up, one crate per branch, digests held fixed |
 
-`.claude/settings.json` allows the check loop (`cargo` build, test and lint
-commands, the `just` check recipes, read-only and local `git`, `rg`) and
-denies `sudo`, `mount`, `unshare` and the like, plus the options that turn an
-allowed command into code execution, a host-file write or read, or egress:
+`.claude/settings.json` allows without a prompt: `cargo` `build`, `check`,
+`test`, `clippy`, `fmt`, `doc`, `tree`, `metadata` and `deny check` (also
+`deny --locked check`); `just` alone, `just --list` and the recipes `check`,
+`fmt`, `fmt-check`, `lint`, `test`, `build-static`, `check-aarch64`, `deny`,
+`doc`, `book`, `changelog` and `ci`; `rg`; read-only `git` (`status`, `diff`,
+`log`, `show`, `blame`, `ls-files`, `rev-parse`); and the `git` commands that
+change only the local repository (`add`, `commit`, `switch`, `fetch`,
+`pull --ff-only`, `branch`, `stash`). Its `ask` list is empty (since
+`06d5f7b`), so nothing prompts because of it: `cargo run`/`add`/`install`,
+`docker`, `podman`, `git push` and every other command it does not name are
+left to the session's permission mode.
+
+It denies `sudo`, `pkexec`, `su`, `doas`, `mount`, `umount`, `unshare` and
+`nsenter`; `rm -rf` of `/` or the home directory and `rm --no-preserve-root`;
+`cargo publish`; `git push --force` and `-f`; and reading
+`~/.docker/config.json`, the Podman `auth.json` files and `~/.ssh`, with
+`rg` too. It also denies the options that turn an allowed command into code
+execution, a host-file write or read, or egress:
 `cargo --config`/`--manifest-path`/`-Z`/`--logfile` (also through `just
 test`), `git fetch`/`pull --upload-pack`, `git diff`/`log`/`show`/`stash
 --output` and `--ext-diff`, `git diff --no-index`, `git commit` reading a
-message or template from outside the repository, and `rg` on credential
-files. `git fetch` and `git pull --ff-only` are allowed only against
-`origin`, and `just changelog` only without arguments. The justfile passes
-recipe arguments as positional parameters (`"$@"`), never spliced into shell
-text. Everything else is left to the session's permission mode.
+message or template from outside the repository, and `rg --pre`. `git fetch`
+and `git pull --ff-only` are allowed only against `origin`, and `just
+changelog` only without arguments. The justfile passes recipe arguments as
+positional parameters (`"$@"`), never spliced into shell text. A
+maintainer's own rules live in `.claude/settings.local.json`, which git
+ignores.
 
 These rules match command text, so they are guardrails, not a boundary
 (rules.md): a quoted or reordered spelling (`--'config'`, `git -C . fetch

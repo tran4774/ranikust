@@ -140,3 +140,4 @@ when new measurements contradict its evidence.
 | [0066](0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md) | Kaniko mode on `/` makes no names after a build in the container was cut short | Accepted | 2026-11-01 | maintainer, Q-360; host-safety review of ADR-0056 |
 | [0067](0067-the-cli-crate-orchestrates-the-build.md) | The CLI crate orchestrates the build across the library crates | Accepted | 2026-11-02 | maintainer; refactor of `ranikust` |
 | [0070](0070-registry-references-reach-oci-client-built-from-parts.md) | Registry references reach `oci-client` built from their parts, and a request fails if it would address another host | Accepted | 2026-11-02 | security hardening; refines ADR-0026 |
+| [0074](0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md) | Through `/proc/<pid>/root` of a full-sandbox `RUN`, setuid files are `nosuid`; corrects ADR-0047 | Proposed | 2026-11-02 | source review; corrects a Consequence of ADR-0047 |

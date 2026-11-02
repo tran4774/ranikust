@@ -46,7 +46,8 @@ These are vulnerabilities in ranikust, whatever the Dockerfile or image:
   descriptor ranikust holds, keeps capabilities outside Docker's default set,
   or gets a wrong UID/GID mapping.
 - **Sandbox escape in a mode that promises isolation.** In overlay mode
-  (root or rootless) or in kaniko mode with mounts available, a `RUN`
+  (as root; rootless is planned, Phase 3) or in kaniko mode with mounts
+  available, a `RUN`
   command reaches more of the host than `docker build` would allow it under
   the same privileges.
 - **Credential leaks.** Registry credentials or build secrets end up in logs,
@@ -63,7 +64,8 @@ These are documented properties, not vulnerabilities:
 - **`RUN` runs as root.** A Dockerfile you build can do whatever root can do
   inside its sandbox. Whether to build an untrusted Dockerfile is your
   decision ([ADR-0003](docs/adr/0003-dockerfile-trust-and-default-isolation.md));
-  `--userns`, `--seccomp` and `--network=none` tighten the default.
+  `--network=none` tightens the default for the `RUN` (see below); `--userns`
+  and `--seccomp` are planned (Phase 3) and not built.
 - **kaniko mode inside an unprivileged container has no isolation.** Where
   ranikust cannot mount or create namespaces (Docker's default profile, most
   Kubernetes pods), `RUN` commands run in the same container as ranikust,
@@ -94,6 +96,9 @@ These are documented properties, not vulnerabilities:
 To build Dockerfiles you do not trust: run ranikust in a disposable VM or a
 container made for that one build, use `--userns` and `--seccomp=default`,
 add `--network=none` when the build needs no network, and give each trust
-domain its own store. These options are designed but not implemented yet;
-the [book](docs/book/src/where-to-run.md) tracks what each environment
-provides.
+domain its own store. `--userns` and `--seccomp` are designed but not
+implemented yet (Phase 3). `--network=none` exists, and it isolates the `RUN`
+only: ranikust's own registry requests still leave from its network
+namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
+[Q-447](docs/open-questions.md)). The [book](docs/book/src/where-to-run.md)
+tracks what each environment provides.

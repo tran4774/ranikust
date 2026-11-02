@@ -1,8 +1,9 @@
 # Choosing where to run it
 
 > Overlay mode as root and kaniko mode are built; rootless overlay mode
-> (Phase 3) is not yet. The expected modes for each environment come from
-> experiments, checked in the test VM where marked.
+> (Phase 3) is not yet, so a row that would use it shows what happens today.
+> The expected modes for each environment come from experiments and from
+> the code, checked in the test VM where marked.
 
 ranikust needs **Linux 5.8 or later**: it checks at start-up and stops
 with a clear message on older kernels, such as RHEL/CentOS 8, Debian 10,
@@ -21,12 +22,12 @@ not been tried.
 | Docker or Podman container with `--privileged` | overlay | Put the state directory (`/var/lib/ranikust`) on a volume or tmpfs: overlay cannot use the container's own overlay root filesystem. | measured |
 | Podman container with `--cap-add SYS_ADMIN` | overlay | | measured |
 | Docker container with `--cap-add SYS_ADMIN` only | kaniko | Docker's default AppArmor profile still blocks mounts. | measured |
-| Podman rootless container (default options) | overlay, rootless | `RUN` sees the container's processes, because a fresh `/proc` cannot be mounted. | measured |
-| Docker container with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` | overlay, rootless | | measured |
+| Podman rootless container (default options) | kaniko (rootless overlay planned, Phase 3) | The container's root has no `CAP_SYS_ADMIN`, so ranikust cannot mount and builds on the container's `/`. Rootless overlay mode would run in a user namespace and, where a fresh `/proc` cannot be mounted, let `RUN` see the container's processes; today a refused `proc` mount fails the `RUN`. | inferred |
+| Docker container with `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` | kaniko (rootless overlay planned, Phase 3) | Without `--cap-add SYS_ADMIN` the container's root cannot mount. | inferred |
 | Docker container with default options, under cgroup v2 or v1 | kaniko | Docker's default seccomp profile blocks user namespaces, and AppArmor blocks mounts. | measured |
 | GitHub Actions `container:` job, GitLab Kubernetes executor, ordinary Kubernetes pod, GKE Autopilot, Bottlerocket | kaniko | Same restrictions as a default Docker container. | inferred |
-| Regular user on Debian 11+, Fedora, RHEL 9+ or Ubuntu 22.04 | overlay, rootless | Images with several users need `newuidmap` and entries in `/etc/subuid` and `/etc/subgid`. | inferred |
-| Regular user on Ubuntu 24.04 or later | none | User namespaces get no capabilities by default. With the binary installed at a fixed path and a three-line AppArmor profile for it, rootless overlay mode works. | measured |
+| Regular user on Debian 11+, Fedora, RHEL 9+ or Ubuntu 22.04 | none: refused today (rootless overlay planned, Phase 3) | ranikust builds as root only for now; it says to run as root or in a container. Rootless overlay mode would need `newuidmap` and entries in `/etc/subuid` and `/etc/subgid` for images with several users. | inferred |
+| Regular user on Ubuntu 24.04 or later | none | Refused, as is every regular user until rootless overlay mode (Phase 3). There, user namespaces get no capabilities by default; a three-line AppArmor profile for the binary at a fixed path is the planned remedy. | measured |
 | Kubernetes pod under the "restricted" Pod Security Standard, OpenShift `restricted-v2` | none | Neither root nor user namespaces. | inferred |
 
 The measurements are in the project's research reports: the
@@ -38,8 +39,9 @@ Real Kubernetes clusters have not been tested yet.
 
 ## Picking an environment
 
-- **Fastest builds:** an environment that gets overlay mode, root or
-  rootless.
+- **Fastest builds:** an environment that gets overlay mode: root on a host
+  or in a privileged container. Rootless overlay mode is planned for
+  Phase 3.
 - **Locked-down CI:** kaniko mode works where kaniko works. Builds there are
   sequential on a container's `/`; `--parallel-stages` is refused for good
   there, since a bare `chroot` per stage would let a `RUN` reach the

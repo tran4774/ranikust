@@ -16,7 +16,7 @@ The probe ends in exactly one of these outcomes:
 | Outcome | Snapshot | Stage roots | `RUN` execution | Stages |
 |---|---|---|---|---|
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
-| **overlay, rootless** | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind if a new `proc` is refused | parallel |
+| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind if a new `proc` is refused | parallel |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
 | **kaniko, cannot mount** | walk + hash | `/` in a container, else a root in the state directory | directly, like kaniko (`Isolation::Direct`) | sequential on `/`; `--parallel-stages` refused (ADR-0060) |
 | **refuse** | — | — | — | exit with guidance |
@@ -24,6 +24,20 @@ The probe ends in exactly one of these outcomes:
 "kaniko, can mount" covers root where overlay is unusable: state directory on NFS or
 FUSE, upper directory on the container's overlay root without a volume, or a
 kernel without overlay.
+
+**Built:** overlay, root; both kaniko outcomes; refuse. **Planned, Phase 3:**
+overlay, rootless, and the user-namespace probe it needs. No code makes a
+user namespace for the probe or the build: `enter_build_namespace` in
+`crates/rnk-sandbox/src/setup.rs` does `unshare(CLONE_NEWNS)` only, the
+sandbox probe (`crates/rnk-sandbox/src/probe.rs`) runs the `RUN` sequence in
+an empty root with `pivot_root`, then `MS_MOVE`, and `Outcome` in
+`crates/ranikust/src/setup.rs` has `OverlayRoot` alone (kaniko mode is set
+up by `set_up_kaniko`). Until then, under `--mode=auto`, root lacking the
+privilege to mount (`Error::Privilege`, `namespace_refusal`) goes to kaniko
+mode, which builds on `/` in a container and is refused on a host, where
+root may not mount (`host_without_mounts`, ADR-0050); a process that is not
+root is refused with `NEEDS_ROOT`; and `--mode=overlay` is told to use kaniko
+mode (`NEEDS_KANIKO_MODE`).
 
 ## Where environments land
 
@@ -36,14 +50,19 @@ table per CI system is in experiment 03 §6.
 | Host as root or via `sudo` (GitHub Actions with `sudo`, GitLab.com SaaS) | overlay, root |
 | Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
-| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless |
-| Unprivileged user on Debian, Fedora, RHEL 8+, Ubuntu ≤ 22.04 | overlay, rootless (full uid range only with `newuidmap` and `/etc/subuid`) |
+| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3) |
+| Unprivileged user on Debian, Fedora, RHEL 8+, Ubuntu ≤ 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`) |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
 | Pod Security Standards `restricted`, OpenShift `restricted-v2` | refuse |
 
 Most locked-down CI pods land in kaniko mode. Overlay is available only where
-BuildKit or buildah would also run.
+BuildKit or buildah would also run. Until rootless mode is built, the two
+rows marked planned end differently: root without `CAP_SYS_ADMIN` (the root
+of a rootless podman container, or of a Docker container started without
+`--cap-add SYS_ADMIN`) goes to kaniko mode under `--mode=auto`, which builds
+on `/` in a container, with its own checks (ADR-0054), and is refused on a
+host; an unprivileged user is refused.
 
 ## Probe order (`--mode=auto`)
 
@@ -51,8 +70,11 @@ Each crate probes its own capability, and the binary `ranikust` runs the
 probes in the order below while the process is still single-threaded, then
 picks the outcome:
 
-- `rnk-sandbox`: namespaces, the uid and gid maps, `proc`,
-  `pivot_root`/`MS_MOVE`, `sysfs`, bind mounts, `mknod`;
+- `rnk-sandbox`: the real `RUN` sequence in an empty root, as built
+  (`probe.rs`): the namespaces, `proc`, `sysfs`, the `/dev` tmpfs and its
+  node binds, `pivot_root` then `MS_MOVE`, the capability drop and the
+  `USER` switch. No probe step tries a user namespace, the uid and gid maps
+  or `mknod`; they are planned with rootless mode (Phase 3);
 - `rnk-snapshot`: the overlay mount with the
   [ADR-0016](../adr/0016-overlay-mount-options.md) options, and `fsconfig`
   with `lowerdir+`.
@@ -77,7 +99,8 @@ Q-111).
    then mount a new `proc` in a new PID namespace. With `CAP_SYS_ADMIN` this
    is the only way to get a new `proc` when `/proc` is masked: a new user
    namespace makes the kernel refuse it (`EPERM`).
-2. **Overlay in a user namespace.**
+2. **Overlay in a user namespace** (planned, Phase 3; not built: no code
+   creates a user namespace for a probe).
    - `unshare(CLONE_NEWUSER | CLONE_NEWNS)`, then **write `uid_map` and
      `gid_map`**. Root inside a container writes a multi-range map itself
      (written once; each range must fit inside one range of the parent map,
@@ -95,8 +118,9 @@ Q-111).
    then fail with `EACCES`. The probe must reach those steps.
 3. **Sandbox capabilities.** Try `pivot_root` (Docker's seccomp profile
    blocks it even with `CAP_SYS_ADMIN`; fallback `MS_MOVE` + `chroot`) and a
-   read-only `sysfs` (fallback: rbind `/sys`, remount read-only), so the
-   sandbox knows which variant to use ([sandbox](sandbox.md)).
+   read-only `sysfs` (the rbind `/sys` fallback is planned, Phase 3: a refused
+   `sysfs` mount fails the probe today), so the sandbox knows which variant
+   to use ([sandbox](sandbox.md)).
 4. **Mount API.** Create a test overlay with `fsconfig(lowerdir+)`. Kernel
    5.15 accepts `FSCONFIG_SET_STRING` for `lowerdir+` and fails only at
    `FSCONFIG_CMD_CREATE` (`EINVAL`), so only a real create counts. On failure
@@ -166,7 +190,11 @@ it is accepted and ignored with a warning.
 
 kaniko mode needs root (`chown`, `chroot`, switching users). An unprivileged
 process with no usable user namespace cannot build, and ranikust says so
-instead of producing a broken image. The message offers, in order:
+instead of producing a broken image. Built today: a process that is not root
+is refused whatever its user namespaces allow, with the advice to run as root
+or in a container (`NEEDS_ROOT`, `crates/ranikust/src/setup.rs`). Planned,
+Phase 3, with rootless mode: refusing only where no user namespace is usable,
+and offering, in order:
 
 1. Run with `sudo`.
 2. Install the AppArmor profile, when
@@ -187,11 +215,17 @@ first. Where the kernel does not report whether `/` is a mount root
 (`STATX_ATTR_MOUNT_ROOT` missing from the mask), it does not refuse on that
 ground and does not fall back to `MS_MOVE`.
 
-Phase 1 builds only the "overlay, root" outcome: every other environment
-gets the failing probe step with its errno and the way out: `sudo` or a
-`--privileged` container without root; kaniko mode (Phase 2) for root the
-environment still refuses, as with Docker's defaults; nothing extra for a
-host-side failure such as an unwritable state directory
+Rootless overlay mode and the guidance above that belongs to it are planned
+for Phase 3. Today root that may not mount takes kaniko mode in a container
+and is refused on a host (ADR-0050; a forced `--mode=overlay` is told to use
+kaniko mode). Refusals also come from a process that is not root, a failed
+probe step, kaniko mode on `/` where `refuse_unsafe_slash` stops it (root
+may mount or a writable `/proc/sys`, ADR-0054; `--network=none`, ADR-0057) and a
+container where root may mount but overlayfs is unusable
+(`Route::RefuseInContainer`). A probe refusal gives the failing step with its
+errno and the way out (`sudo` or a `--privileged` container for a process
+that is not root). A host-side failure such as an unwritable state
+directory is reported as it is, with nothing extra
 (`crates/ranikust/src/setup.rs`).
 
 ## Failure handling
