@@ -2891,6 +2891,307 @@ mod tests {
         .unwrap();
     }
 
+    /// Runs `body` as a T2 test does: on a thread of its own, in a new
+    /// mount namespace with every mount private, so that nothing it mounts
+    /// reaches another namespace.
+    fn in_private_mount_namespace(body: impl FnOnce() + Send + 'static) {
+        std::thread::spawn(|| {
+            use rustix::mount::MountPropagationFlags;
+            use rustix::thread::UnshareFlags;
+            // SAFETY: this thread shares nothing that the unshared
+            // filesystem attributes or mount namespace would break; it ends
+            // with the test.
+            unsafe { rustix::thread::unshare_unsafe(UnshareFlags::FS | UnshareFlags::NEWNS) }
+                .expect("unshare(CLONE_FS | CLONE_NEWNS)");
+            rustix::mount::mount_change(
+                "/",
+                MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+            )
+            .expect("make every mount private");
+            body();
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// A root at `root` that runs `/bin/sh`: the host's `/usr` bound
+    /// read-only, so that neither a `RUN` nor a removal reaches it, and the
+    /// `bin`, `lib`, `lib64`, `sbin` symlinks into it.
+    fn root_with_usr(mounts: &mut TestMounts, root: &Path) {
+        fs::create_dir_all(root.join("usr")).unwrap();
+        for l in ["bin", "lib", "lib64", "sbin"] {
+            std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).unwrap();
+        }
+        rustix::mount::mount_bind("/usr", root.join("usr")).expect("bind /usr");
+        mounts.add(root.join("usr"));
+        rustix::mount::mount_remount(root.join("usr"), MountFlags::BIND | MountFlags::RDONLY, c"")
+            .expect("remount the /usr bind read-only");
+    }
+
+    /// A file outside the root for a `RUN`'s stdout and stderr, so that
+    /// what it prints survives a root it made read-only.
+    fn output_to(path: &Path, spec: &mut RunSpec) {
+        let file = File::create(path).unwrap();
+        spec.stdout = Stdio::Fd(file.try_clone().unwrap().into());
+        spec.stderr = Stdio::Fd(file.into());
+    }
+
+    /// Red team (T2, the VM only; T1, T7): a descriptor of a directory
+    /// outside the root, open in ranikust as the state directory and the
+    /// build context are during a build, gives a `RUN` no way out: not a
+    /// `WORKDIR` spelled `/proc/self/fd/<n>` or `/dev/fd/<n>`, not an image
+    /// symlink to one, not a `PATH` entry through one, whichever way the
+    /// child enters the root. A `RUN` that starts outside finds the dummy
+    /// canary in its working directory.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_an_inherited_descriptor_gives_a_run_no_way_out() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let outside = top.join("outside");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("rnk-canary"), b"dummy").unwrap();
+            let probe = outside.join("rnk-probe");
+            fs::write(&probe, b"#!/bin/sh\necho ran > /verdict-exec\n").unwrap();
+            fs::set_permissions(&probe, Permissions::from_mode(0o755)).unwrap();
+            let held = rustix::fs::open(
+                &outside,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            let n = held.as_raw_fd();
+            std::os::unix::fs::symlink(format!("/proc/self/fd/{n}"), root.join("w")).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let mut escaped = Vec::new();
+            for entry in [RootEntry::PivotRoot, RootEntry::MoveMount] {
+                let runner =
+                    Runner::new(&top.join(format!("sandbox-{entry:?}")), Some(entry)).unwrap();
+                for workdir in [
+                    format!("/proc/self/fd/{n}"),
+                    format!("/dev/fd/{n}"),
+                    "/w".to_owned(),
+                ] {
+                    let mut spec = RunSpec::new(
+                        &root,
+                        vec![
+                            "/bin/sh".into(),
+                            "-c".into(),
+                            "if test -e rnk-canary; then echo outside; else echo inside; fi \
+                             > /verdict"
+                                .into(),
+                        ],
+                    );
+                    spec.workdir = workdir.clone().into();
+                    let r = runner.run(spec, None, |job| clone_child(job, parent));
+                    let verdict = fs::read_to_string(root.join("verdict")).unwrap_or_default();
+                    let _ = fs::remove_file(root.join("verdict"));
+                    println!("{entry:?}, WORKDIR {workdir}: {r:?}, verdict {verdict:?}");
+                    if verdict.trim() == "outside" {
+                        escaped.push(format!("{entry:?}: WORKDIR {workdir}"));
+                    }
+                }
+                let mut spec = RunSpec::new(&root, vec!["rnk-probe".into()]);
+                spec.env.push((
+                    "PATH".into(),
+                    format!("/proc/self/fd/{n}:/dev/fd/{n}:/w:/usr/bin").into(),
+                ));
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let ran = fs::read_to_string(root.join("verdict-exec")).unwrap_or_default();
+                let _ = fs::remove_file(root.join("verdict-exec"));
+                println!("{entry:?}, PATH through descriptor {n}: {r:?}, ran {ran:?}");
+                if ran.trim() == "ran" {
+                    escaped.push(format!("{entry:?}: PATH through descriptor {n}"));
+                }
+            }
+            drop(held);
+            drop(mounts);
+            assert!(
+                escaped.is_empty(),
+                "a RUN started outside its root through an inherited descriptor: {escaped:?}"
+            );
+        });
+    }
+
+    /// Red team (T2, the VM only; T17): a root whose `/proc` is a symlink
+    /// through a directory a later mount hides (`/sys` or `/dev`) does not
+    /// get a `proc` without its read-only and masked paths: the `RUN` either
+    /// fails or finds `/proc/sys` read-only, as in a root with an ordinary
+    /// `/proc` (the control). Only `kernel.hostname` is written, which
+    /// belongs to the `RUN`'s own UTS namespace.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_symlinked_proc_keeps_its_kernel_files_protected() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let parent = ParentPid::new().unwrap();
+            let mut unprotected = Vec::new();
+            let mut control = None;
+            // (case, the directory the symlink goes through, where proc is
+            // in the RUN)
+            for (i, (case, hop, proc_at)) in [
+                ("through /sys", Some("sys"), "/realproc"),
+                ("through /dev", Some("dev"), "/realproc"),
+                ("control", None, "/proc"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let root = top.join(format!("root{i}"));
+                root_with_usr(&mut mounts, &root);
+                if let Some(hop) = hop {
+                    fs::create_dir(root.join("realproc")).unwrap();
+                    fs::create_dir(root.join(hop)).unwrap();
+                    std::os::unix::fs::symlink("/", root.join(hop).join("up")).unwrap();
+                    std::os::unix::fs::symlink(format!("/{hop}/up/realproc"), root.join("proc"))
+                        .unwrap();
+                }
+                let script = format!(
+                    "grep -E ' {proc_at}(/sys)? ' {proc_at}/self/mountinfo; \
+                     if [ -w {proc_at}/sys/kernel/hostname ]; then echo WRITABLE; fi; \
+                     echo rnk-test > {proc_at}/sys/kernel/hostname && echo WROTE"
+                );
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                let out = top.join(format!("out{i}"));
+                output_to(&out, &mut spec);
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap();
+                println!("{case}: {r:?}\n{text}");
+                if hop.is_some() {
+                    let left = fs::read_dir(root.join("realproc")).unwrap().count();
+                    assert_eq!(left, 0, "{case}: the RUN left files in /realproc");
+                }
+                if text.contains("WROTE") || text.contains("WRITABLE") {
+                    unprotected.push(case);
+                }
+                if hop.is_none() {
+                    control = Some(r);
+                }
+            }
+            drop(mounts);
+            assert!(
+                matches!(control, Some(Ok(_))),
+                "the control RUN ran: {control:?}"
+            );
+            assert!(
+                unprotected.is_empty(),
+                "a writable /proc/sys reached the RUN: {unprotected:?}"
+            );
+        });
+    }
+
+    /// Red team (T2, the VM only; T18): a `RUN --mount` target reached
+    /// through symlinks that the bind itself changes (`/c -> /t/w`,
+    /// `/t/w -> /t`, and the cache's own `w`) keeps the bind `nodev`, and
+    /// read-only when asked, and no other mount of the sandbox changes:
+    /// neither the root, nor the read-only `sysfs`, nor the read-only bind
+    /// of the host's `/dev/null`.
+    #[test]
+    #[ignore = "T2: mounts and mknod as real root in a private mount namespace; run in the test VM only"]
+    fn red_team_a_symlinked_mount_target_keeps_its_bind_nodev() {
+        in_private_mount_namespace(|| {
+            use rustix::fs::StatVfsMountFlags;
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let st = rustix::fs::statvfs(&top).unwrap();
+            assert!(
+                !st.f_flag.contains(StatVfsMountFlags::NODEV),
+                "the test directory's mount is nodev: the test would prove nothing"
+            );
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            fs::create_dir(root.join("t")).unwrap();
+            std::os::unix::fs::symlink("/t", root.join("t/w")).unwrap();
+            std::os::unix::fs::symlink("/t/w", root.join("c")).unwrap();
+            let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let parent = ParentPid::new().unwrap();
+            // The mount options of `mountpoint` in a `/proc/self/mountinfo`
+            // listing.
+            let options = |text: &str, mountpoint: &str| -> Option<String> {
+                text.lines()
+                    .map(|l| l.split(' ').collect::<Vec<_>>())
+                    .find(|f| f.get(4) == Some(&mountpoint))
+                    .and_then(|f| f.get(5).map(|o| (*o).to_owned()))
+            };
+            let mut changed = Vec::new();
+            // (case, the cache's `w`, read-only, script)
+            for (i, (case, link, read_only, script)) in [
+                (
+                    "read-only cache",
+                    "/",
+                    true,
+                    "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
+                     echo OPENED; touch /t/rw && echo WROTE",
+                ),
+                (
+                    "read-write cache",
+                    "/",
+                    false,
+                    "cat /proc/self/mountinfo; mknod /t/made c 1 3 && echo x > /t/made && \
+                     echo OPENED",
+                ),
+                ("sysfs", "/sys", false, "cat /proc/self/mountinfo"),
+                ("/dev/null", "/dev/null", false, "cat /proc/self/mountinfo"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let cache = top.join(format!("cache{i}"));
+                fs::create_dir(&cache).unwrap();
+                std::os::unix::fs::symlink(link, cache.join("w")).unwrap();
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                spec.mounts.push(crate::BindMount {
+                    source: cache,
+                    target: "/c".into(),
+                    kind: MountKind::Directory,
+                    read_only,
+                });
+                let out = top.join(format!("out{i}"));
+                output_to(&out, &mut spec);
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap();
+                let (t, slash, sys, null) = (
+                    options(&text, "/t"),
+                    options(&text, "/"),
+                    options(&text, "/sys"),
+                    options(&text, "/dev/null"),
+                );
+                println!(
+                    "{case}: {r:?}; /t {t:?}, / {slash:?}, /sys {sys:?}, /dev/null {null:?}\n{text}"
+                );
+                let rw = |o: &Option<String>| o.as_deref().is_some_and(|o| o.starts_with("rw"));
+                if text.contains("OPENED") || text.contains("WROTE") {
+                    changed.push(format!("{case}: a node or file was written in /t"));
+                }
+                if t.as_deref()
+                    .is_some_and(|o| !o.split(',').any(|f| f == "nodev"))
+                {
+                    changed.push(format!("{case}: /t is not nodev ({t:?})"));
+                }
+                if read_only && rw(&t) {
+                    changed.push(format!("{case}: /t is writable ({t:?})"));
+                }
+                if rw(&sys) || rw(&null) || slash.as_deref().is_some_and(|o| o.starts_with("ro")) {
+                    changed.push(format!(
+                        "{case}: another mount changed: / {slash:?}, /sys {sys:?}, /dev/null {null:?}"
+                    ));
+                }
+            }
+            drop(mounts);
+            assert!(
+                changed.is_empty(),
+                "a symlinked mount target misplaced the bind's remount: {changed:?}"
+            );
+        });
+    }
+
     #[test]
     fn dev_nodes_are_remounted_read_only_and_never_nodev() {
         for flags in dev_remount() {
