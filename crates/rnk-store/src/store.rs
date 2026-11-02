@@ -45,19 +45,27 @@ fn building_mark() -> Option<String> {
     Some(format!("{} {}\n", ns.to_str()?, boot.trim()))
 }
 
+/// What [`read_building_marker`] found in the state directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Marker {
+    /// No [`BUILDING`] marker.
+    Absent,
+    /// This container's marker (or anything but a regular file): a build
+    /// here was cut short.
+    Ours,
+    /// A marker from another PID namespace or boot: no process of its build
+    /// is left here.
+    Theirs,
+}
+
 /// The [`BUILDING`] marker in the state directory `dir` (shown as
-/// `state_path`): `None` when there is none, else whether it is this
-/// container's, `mark` being what this build would write ([`building_mark`]).
-/// A marker from another PID namespace or boot (a state directory on a
-/// volume, an earlier boot) left no process here and is not. Opened before
-/// its type is checked, on the descriptor, without following a link or
-/// blocking on a FIFO a leftover process put there; anything but a regular
-/// file counts as this container's.
-fn read_building_marker(
-    dir: &OwnedFd,
-    state_path: &Path,
-    mark: Option<&str>,
-) -> Result<Option<bool>> {
+/// `state_path`), `mark` being what this build would write
+/// ([`building_mark`]). A marker from another PID namespace or boot (a state
+/// directory on a volume, an earlier boot) is [`Marker::Theirs`]. Opened
+/// before its type is checked, on the descriptor, without following a link
+/// or blocking on a FIFO a leftover process put there; anything but a
+/// regular file counts as this container's.
+fn read_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<Marker> {
     let fd = match rustix::fs::openat(
         dir,
         BUILDING,
@@ -69,33 +77,27 @@ fn read_building_marker(
         rustix::fs::Mode::empty(),
     ) {
         Ok(fd) => fd,
-        Err(Errno::NOENT) => return Ok(None),
-        Err(Errno::LOOP) => return Ok(Some(true)),
+        Err(Errno::NOENT) => return Ok(Marker::Absent),
+        Err(Errno::LOOP) => return Ok(Marker::Ours),
         Err(e) => return Err(marker_err(state_path, "open", e.into())),
     };
     let st = rustix::fs::fstat(&fd).map_err(|e| marker_err(state_path, "stat", e.into()))?;
     if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
-        return Ok(Some(true));
+        return Ok(Marker::Ours);
     }
     let mut held = Vec::new();
     io::Read::take(File::from(fd), 256)
         .read_to_end(&mut held)
         .map_err(|e| marker_err(state_path, "read", e))?;
-    Ok(Some(mark.is_none_or(|m| held == m.as_bytes())))
+    Ok(if mark.is_none_or(|m| held == m.as_bytes()) {
+        Marker::Ours
+    } else {
+        Marker::Theirs
+    })
 }
 
-/// Writes this build's [`BUILDING`] marker, `mark`, as a new file. A stale
-/// marker (`stale`: a dead build's, the directory being locked) is removed
-/// first and replaced, never written through.
-fn write_building_marker(
-    root: &RootPath,
-    state_path: &Path,
-    stale: bool,
-    mark: Option<&str>,
-) -> Result<()> {
-    if stale {
-        root.remove_file(BUILDING)?;
-    }
+/// Creates this build's [`BUILDING`] marker, holding `mark`, as a new file.
+fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<()> {
     let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
     io::Write::write_all(&mut f, mark.unwrap_or_default().as_bytes())
         .map_err(|e| marker_err(state_path, "write", e))
@@ -494,15 +496,23 @@ impl Store {
         let mark = building_mark();
         let marker = read_building_marker(&dir, &state_path, mark.as_deref())?;
         let interrupted = match marker {
-            Some(here) => here,
+            Marker::Ours => true,
+            Marker::Theirs => false,
             // Names with no marker: it was deleted (a `RUN` can), or made
             // by an older ranikust.
-            None => leftovers,
+            Marker::Absent => leftovers,
         };
         // Written unless this container's marker is kept as it is; made
         // anew when names were left with none, so later builds heed it.
-        if !interrupted || marker.is_none() {
-            write_building_marker(&root, &state_path, marker.is_some(), mark.as_deref())?;
+        match marker {
+            Marker::Ours => {}
+            // A stale marker (a dead build's, the directory being locked) is
+            // replaced by a new file, never written through.
+            Marker::Theirs => {
+                root.remove_file(BUILDING)?;
+                write_building_marker(&root, &state_path, mark.as_deref())?;
+            }
+            Marker::Absent => write_building_marker(&root, &state_path, mark.as_deref())?,
         }
         let tainted = interrupted.then_some(CUT_SHORT);
         if !list(&root, Path::new("."))?.iter().all(|n| n == BUILDING) {
