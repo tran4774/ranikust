@@ -331,7 +331,9 @@ pub(crate) fn set_up_kaniko(
     }
     // On `/`, before anything else and while no other thread exists,
     // ranikust keeps only what a `RUN` keeps: whatever it later opens on
-    // `/` after a `RUN`, the `RUN` could open itself (ADR-0078).
+    // `/` after a `RUN`, the `RUN` could open itself (ADR-0078). The
+    // anonymous store relies on it too: it deletes names a `RUN` can reach
+    // (`Store::open_anonymous`), so the trim must stay before it.
     if on_slash {
         rnk_sandbox::trim_to_run_capabilities().map_err(|e| Refusal {
             kind: Kind::Other,

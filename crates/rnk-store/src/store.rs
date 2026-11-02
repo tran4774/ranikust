@@ -400,6 +400,11 @@ impl Store {
     /// the build and keeps the marker (ADR-0066). A marker from another
     /// container or boot is taken over.
     ///
+    /// The caller must have given the process no more authority than its
+    /// `RUN`s (`rnk_sandbox::trim_to_run_capabilities`, ADR-0078) before
+    /// this: the store later deletes, as this process, names a `RUN` can
+    /// reach (its marker, what a `RUN` left), safe only on that condition.
+    ///
     /// Anything else in the state directory is refused, a persistent store
     /// first: a `Direct` `RUN` writes the state directory as root, and the
     /// builds of a persistent store reuse its entries without hashing them
@@ -1750,9 +1755,21 @@ fn remove_build(state: &RootPath, id: &str) -> Result<u64> {
 /// through `rnk-rootfs`: no symlink followed (a symlink is unlinked), no
 /// mount crossed or emptied. `false` when it did not exist.
 ///
-/// Not for `caches/`, which `RUN` writes, or anything else a build's
-/// content can reach, until `rnk-rootfs` offers a deletion that opens the
-/// top directory itself without following or crossing.
+/// Not for `caches/`, which `RUN` writes in a persistent store, or anything
+/// else a build's content can reach there, until `rnk-rootfs` offers a
+/// deletion that opens the top directory itself without following or
+/// crossing.
+///
+/// An anonymous store uses it on names a `RUN` can reach (its marker, the
+/// leftovers [`anon::remove_leftovers`] removes): safe there because the
+/// top entry is `statx`ed without following, mount roots and other mounts
+/// are refused, and [`remove_dir_tree`] checks that the directory it opens
+/// is the one seen (inode, device, mount) and empties it by descriptor;
+/// and because kaniko mode on `/` gives ranikust no more authority than its
+/// `RUN` before the store opens (`rnk_sandbox::trim_to_run_capabilities`,
+/// ADR-0078), so whatever a swap could make this delete, the `RUN` could
+/// delete itself. That last condition is load-bearing: an anonymous store
+/// opened without the trim needs this reviewed again.
 fn remove_tree(state: &RootPath, rel: &Path) -> Result<bool> {
     let st = match state.statx(rel) {
         Ok(st) => st,
