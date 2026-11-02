@@ -317,36 +317,11 @@ pub(crate) fn read_xattrs(
     path: &Path,
 ) -> Result<Vec<(OsString, Vec<u8>)>> {
     proc_fd_dir(path)?;
-    // A symlink: its name in the pinned parent, with the `l*` calls, which
-    // never follow the last name. Anything else: the fd's magic link, with
-    // the plain calls, which follow it to exactly the pinned inode.
-    let (target, follow) = if file_type == FileType::Symlink {
-        let Some((pfd, name)) = parent else {
-            return Ok(Vec::new());
-        };
-        let mut p = OsString::from(proc_path(pfd));
-        p.push("/");
-        p.push(name);
-        (p, false)
-    } else {
-        (OsString::from(proc_path(fd)), true)
-    };
-    let list = |buf: &mut [u8]| {
-        if follow {
-            rustix::fs::listxattr(&target, buf)
-        } else {
-            rustix::fs::llistxattr(&target, buf)
-        }
-    };
-    let get = |n: &OsStr, buf: &mut [u8]| {
-        if follow {
-            rustix::fs::getxattr(&target, n, buf)
-        } else {
-            rustix::fs::lgetxattr(&target, n, buf)
-        }
+    let Some(target) = XattrTarget::of(fd, file_type, parent) else {
+        return Ok(Vec::new());
     };
     let mut buf = vec![0; XATTR_MAX];
-    let names: Vec<OsString> = match list(&mut buf[..]) {
+    let names: Vec<OsString> = match target.list(&mut buf[..]) {
         Ok(n) => buf[..n]
             .split(|&b| b == 0)
             .filter(|s| !s.is_empty())
@@ -360,24 +335,95 @@ pub(crate) fn read_xattrs(
         if matches!(which, Xattrs::Layer | Xattrs::Copy) && is_overlay_own(n.as_bytes()) {
             continue;
         }
-        match get(n.as_os_str(), &mut buf[..]) {
+        match target.get(n.as_os_str(), &mut buf[..]) {
             Ok(len) => out.push((n, buf[..len].to_vec())),
             Err(Errno::NODATA | Errno::NOTSUP) => {}
             Err(e) => return Err(io_err("getxattr", path, e)),
         }
     }
-    if let (false, Some((pfd, name))) = (follow, parent) {
-        // The symlink was read by name: check that the name still is the
-        // pinned symlink, not an entry swapped in meanwhile.
-        let pinned = statx_at(fd, OsStr::new(""), path)?;
-        let named = statx_at(pfd, name, path)?;
-        if !named.same_inode(&pinned) {
-            return Err(Error::Changed {
-                path: path.to_owned(),
-            });
+    // After the reads, so a swap during them is caught too.
+    target.check_still_pinned(fd, path)?;
+    Ok(out)
+}
+
+/// How [`read_xattrs`] and [`strip_overlay_own`] reach a pinned entry's
+/// xattrs. The variant picks the calls, so a symlink's name is never given
+/// to a call that follows it.
+enum XattrTarget<'a> {
+    /// The fd's magic link in ranikust's own `/proc/self/fd`, with the plain
+    /// calls, which follow it to exactly the pinned inode.
+    MagicLink(OsString),
+    /// A symlink: its name in its pinned parent, with the `l*` calls, which
+    /// never follow the last name; [`XattrTarget::check_still_pinned`]
+    /// checks the name.
+    Named {
+        target: OsString,
+        parent: BorrowedFd<'a>,
+        name: &'a OsStr,
+    },
+}
+
+impl<'a> XattrTarget<'a> {
+    /// The target of the pinned entry `fd` of type `file_type`; `None` for a
+    /// symlink without a pinned parent, whose xattrs cannot be reached.
+    fn of(
+        fd: BorrowedFd<'_>,
+        file_type: FileType,
+        parent: Option<(BorrowedFd<'a>, &'a OsStr)>,
+    ) -> Option<Self> {
+        if file_type != FileType::Symlink {
+            return Some(Self::MagicLink(OsString::from(proc_path(fd))));
+        }
+        let (pfd, name) = parent?;
+        let mut target = OsString::from(proc_path(pfd));
+        target.push("/");
+        target.push(name);
+        Some(Self::Named {
+            target,
+            parent: pfd,
+            name,
+        })
+    }
+
+    fn list(&self, buf: &mut [u8]) -> rustix::io::Result<usize> {
+        match self {
+            Self::MagicLink(target) => rustix::fs::listxattr(target, buf),
+            Self::Named { target, .. } => rustix::fs::llistxattr(target, buf),
         }
     }
-    Ok(out)
+
+    fn get(&self, n: &OsStr, buf: &mut [u8]) -> rustix::io::Result<usize> {
+        match self {
+            Self::MagicLink(target) => rustix::fs::getxattr(target, n, buf),
+            Self::Named { target, .. } => rustix::fs::lgetxattr(target, n, buf),
+        }
+    }
+
+    fn remove(&self, n: &OsStr) -> rustix::io::Result<()> {
+        match self {
+            Self::MagicLink(target) => rustix::fs::removexattr(target, n),
+            Self::Named { target, .. } => rustix::fs::lremovexattr(target, n),
+        }
+    }
+
+    /// For a symlink reached by name: that the name still is the pinned
+    /// symlink `fd`, not an entry swapped in meanwhile. The magic link
+    /// reaches exactly the pinned inode, so it has nothing to check.
+    fn check_still_pinned(&self, fd: BorrowedFd<'_>, path: &Path) -> Result<()> {
+        match self {
+            Self::MagicLink(_) => Ok(()),
+            Self::Named { parent, name, .. } => {
+                let pinned = statx_at(fd, OsStr::new(""), path)?;
+                let named = statx_at(*parent, name, path)?;
+                if !named.same_inode(&pinned) {
+                    return Err(Error::Changed {
+                        path: path.to_owned(),
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// An xattr overlayfs itself keeps on a layer's entries (`trusted.overlay.*`,
@@ -405,24 +451,11 @@ pub(crate) fn strip_overlay_own(
     path: &Path,
 ) -> Result<()> {
     proc_fd_dir(path)?;
-    let (target, follow) = if file_type == FileType::Symlink {
-        let Some((pfd, name)) = parent else {
-            return Ok(());
-        };
-        let mut p = OsString::from(proc_path(pfd));
-        p.push("/");
-        p.push(name);
-        (p, false)
-    } else {
-        (OsString::from(proc_path(fd)), true)
+    let Some(target) = XattrTarget::of(fd, file_type, parent) else {
+        return Ok(());
     };
     let mut buf = vec![0; XATTR_MAX];
-    let listed = if follow {
-        rustix::fs::listxattr(&target, &mut buf[..])
-    } else {
-        rustix::fs::llistxattr(&target, &mut buf[..])
-    };
-    let names: Vec<OsString> = match listed {
+    let names: Vec<OsString> = match target.list(&mut buf[..]) {
         Ok(n) => buf[..n]
             .split(|&b| b == 0)
             .filter(|s| is_overlay_own(s))
@@ -434,23 +467,10 @@ pub(crate) fn strip_overlay_own(
     if names.is_empty() {
         return Ok(());
     }
-    if let (false, Some((pfd, name))) = (follow, parent) {
-        // By name: check first that the name still is the pinned symlink.
-        let pinned = statx_at(fd, OsStr::new(""), path)?;
-        let named = statx_at(pfd, name, path)?;
-        if !named.same_inode(&pinned) {
-            return Err(Error::Changed {
-                path: path.to_owned(),
-            });
-        }
-    }
+    // Before the removals: they change the entry.
+    target.check_still_pinned(fd, path)?;
     for n in names {
-        let r = if follow {
-            rustix::fs::removexattr(&target, n.as_os_str())
-        } else {
-            rustix::fs::lremovexattr(&target, n.as_os_str())
-        };
-        match r {
+        match target.remove(n.as_os_str()) {
             Ok(()) | Err(Errno::NODATA) => {}
             Err(e) => return Err(io_err("removexattr", path, e)),
         }
