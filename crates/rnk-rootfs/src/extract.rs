@@ -356,6 +356,12 @@ impl Extractor<'_> {
             path: raw.clone(),
             reason: reason.to_owned(),
         };
+        // Before anything else, a whiteout name included: `limit::Framed`
+        // stops following the framing at a sparse entry, so nothing after
+        // one may be read.
+        if etype == EntryType::GNUSparse {
+            return Err(refuse("GNU sparse entries are not supported"));
+        }
         let path = path::clean(&raw).ok_or_else(|| refuse("the name leaves the root"))?;
 
         if let Some(name) = path.file_name()
@@ -370,8 +376,8 @@ impl Extractor<'_> {
             EntryType::Regular | EntryType::Continuous => Kind::File,
             EntryType::GNUSparse => {
                 // The `tar` crate fills holes with zeros, so a tiny entry could
-                // claim 2^62 bytes and fill the disk. `limit::Framed` stops
-                // following the framing here: nothing after it is read.
+                // claim 2^62 bytes and fill the disk. Refused above already,
+                // before the whiteout names.
                 return Err(refuse("GNU sparse entries are not supported"));
             }
             EntryType::Symlink | EntryType::Link => {

@@ -10,6 +10,10 @@
 //! extension larger than the limit, before the `tar` crate reads its body.
 //! Go's `archive/tar`, which kaniko and BuildKit read layers with, has the
 //! same 1 MiB bound (`maxSpecialFileSize`).
+//!
+//! It fails closed: once it cannot follow the framing (a malformed size, a
+//! GNU sparse entry, whose extension blocks it does not parse, or any read
+//! past the end of the archive), every later read fails.
 
 use std::fmt;
 use std::io::{self, Read};
@@ -54,7 +58,48 @@ impl fmt::Display for TooLarge {
 
 impl std::error::Error for TooLarge {}
 
+/// Why [`Framed`] stopped; every later read fails with it again.
+#[derive(Clone, Copy, Debug)]
+enum Stop {
+    TooLarge {
+        size: u64,
+        max: u64,
+    },
+    /// After a GNU sparse entry, whose extension blocks are not followed.
+    Sparse,
+    /// A read after the end-of-archive block.
+    PastEnd,
+    /// A header whose size does not parse or overflows.
+    BadSize,
+}
+
+impl Stop {
+    fn error(self) -> io::Error {
+        match self {
+            Self::TooLarge { size, max } => {
+                io::Error::new(io::ErrorKind::InvalidData, TooLarge { size, max })
+            }
+            Self::Sparse => io::Error::new(
+                io::ErrorKind::InvalidData,
+                "nothing is read after a GNU sparse entry",
+            ),
+            Self::PastEnd => io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a read past the end of the archive",
+            ),
+            Self::BadSize => io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a tar header with an invalid size",
+            ),
+        }
+    }
+}
+
 const BLOCK: usize = 512;
+
+/// How much of a PAX record set's body is reserved before it arrives: a
+/// raised limit must not reserve it whole up front.
+const PAX_RESERVE: usize = 64 << 10;
 
 /// A pass-through reader that tracks the tar framing of what it hands on.
 pub(crate) struct Framed<R> {
@@ -71,11 +116,17 @@ pub(crate) struct Framed<R> {
     /// A PAX record set waits for the next entry: the `size` it gives, if
     /// it gives one.
     pending: Option<Option<u64>>,
-    /// The archive ended, or what follows is not tracked: everything is
-    /// handed on as it is.
-    done: bool,
-    /// Every read after a refusal fails again.
-    refused: Option<(u64, u64)>,
+    /// The end-of-archive block was read: the `tar` crate reads no more.
+    ended: bool,
+    /// Set once the framing cannot be followed: every later read fails.
+    stop: Option<Stop>,
+    /// Offset of the next byte handed on.
+    #[cfg(test)]
+    offset: u64,
+    /// Each header's offset, and whether the `tar` crate hands its entry
+    /// to the caller (rather than keeping it as an extension).
+    #[cfg(test)]
+    headers: Vec<(u64, bool)>,
 }
 
 impl<R> Framed<R> {
@@ -88,14 +139,22 @@ impl<R> Framed<R> {
             body_left: 0,
             pax: None,
             pending: None,
-            done: false,
-            refused: None,
+            ended: false,
+            stop: None,
+            #[cfg(test)]
+            offset: 0,
+            #[cfg(test)]
+            headers: Vec::new(),
         }
     }
 
-    /// Follows `data`, the next bytes of the archive.
-    fn observe(&mut self, mut data: &[u8]) -> io::Result<()> {
-        while !data.is_empty() && !self.done {
+    /// Follows `data`, the next bytes of the archive. `Some` when what it
+    /// read stops the framing.
+    fn observe(&mut self, mut data: &[u8]) -> Option<Stop> {
+        while !data.is_empty() {
+            if self.ended {
+                return Some(Stop::PastEnd);
+            }
             if self.body_left > 0 {
                 let take = usize::try_from(self.body_left)
                     .unwrap_or(usize::MAX)
@@ -108,26 +167,49 @@ impl<R> Framed<R> {
                     }
                 }
                 self.body_left -= u64::try_from(take).unwrap_or(u64::MAX);
+                self.advance(take);
                 data = &data[take..];
                 continue;
             }
             let take = (BLOCK - self.filled).min(data.len());
             self.header[self.filled..self.filled + take].copy_from_slice(&data[..take]);
             self.filled += take;
+            self.advance(take);
             data = &data[take..];
             if self.filled == BLOCK {
                 self.filled = 0;
-                self.header_read()?;
+                // A sparse header still reaches the `tar` crate, so that the
+                // extraction refuses its entry by name; reads after it fail.
+                match self.header_read() {
+                    Ok(()) => {}
+                    Err(Stop::Sparse) => {
+                        self.stop = Some(Stop::Sparse);
+                        return if data.is_empty() {
+                            None
+                        } else {
+                            Some(Stop::Sparse)
+                        };
+                    }
+                    Err(stop) => return Some(stop),
+                }
             }
         }
-        Ok(())
+        None
     }
 
+    #[cfg(test)]
+    fn advance(&mut self, n: usize) {
+        self.offset += u64::try_from(n).unwrap_or(u64::MAX);
+    }
+
+    #[cfg(not(test))]
+    fn advance(&mut self, _n: usize) {}
+
     /// A whole header block has been read: what the `tar` crate makes of it.
-    fn header_read(&mut self) -> io::Result<()> {
+    fn header_read(&mut self) -> Result<(), Stop> {
         if self.header.iter().all(|&b| b == 0) {
             // The `tar` crate stops at the first zero block.
-            self.done = true;
+            self.ended = true;
             return Ok(());
         }
         let header = tar::Header::from_byte_slice(&self.header);
@@ -137,20 +219,24 @@ impl<R> Framed<R> {
             || kind.is_gnu_longlink()
             || kind.is_pax_local_extensions()
             || kind.is_pax_global_extensions();
-        let mut size = header.entry_size()?;
+        let mut size = header.entry_size().map_err(|_| Stop::BadSize)?;
         if !extension_kind && let Some(Some(pax_size)) = self.pending {
             size = pax_size;
         }
         let buffered = recognized
             && (kind.is_gnu_longname() || kind.is_gnu_longlink() || kind.is_pax_local_extensions());
+        #[cfg(test)]
+        self.headers.push((self.offset - BLOCK as u64, !buffered));
         if buffered {
             if size > self.limit {
-                self.refused = Some((size, self.limit));
-                return Err(self.refusal());
+                return Err(Stop::TooLarge {
+                    size,
+                    max: self.limit,
+                });
             }
             if kind.is_pax_local_extensions() {
                 let len = usize::try_from(size).unwrap_or(usize::MAX);
-                self.pax = Some((Vec::with_capacity(len), len));
+                self.pax = Some((Vec::with_capacity(len.min(PAX_RESERVE)), len));
                 if len == 0 {
                     self.finish_pax();
                 }
@@ -160,16 +246,14 @@ impl<R> Framed<R> {
             self.pending = None;
             if kind.is_gnu_sparse() {
                 // The `tar` crate reads extension blocks of its own for a
-                // sparse entry; the extraction refuses the entry right after,
-                // so nothing past it is read.
-                self.done = true;
-                return Ok(());
+                // sparse entry, which this reader does not follow.
+                return Err(Stop::Sparse);
             }
         }
         self.body_left = size
             .checked_add(511)
             .map(|s| s & !511)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "size overflow"))?;
+            .ok_or(Stop::BadSize)?;
         Ok(())
     }
 
@@ -189,119 +273,21 @@ impl<R> Framed<R> {
             self.pending = Some(size);
         }
     }
-
-    fn refusal(&self) -> io::Error {
-        let (size, max) = self.refused.unwrap_or_default();
-        io::Error::new(io::ErrorKind::InvalidData, TooLarge { size, max })
-    }
 }
 
 impl<R: Read> Read for Framed<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.refused.is_some() {
-            return Err(self.refusal());
+        if let Some(stop) = self.stop {
+            return Err(stop.error());
         }
         let n = self.inner.read(buf)?;
-        self.observe(&buf[..n])?;
+        if let Some(stop) = self.observe(&buf[..n]) {
+            self.stop = Some(stop);
+            return Err(stop.error());
+        }
         Ok(n)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn header(name: &[u8], kind: tar::EntryType, size: u64) -> [u8; BLOCK] {
-        let mut h = tar::Header::new_gnu();
-        h.set_path(std::str::from_utf8(name).unwrap()).unwrap();
-        h.set_entry_type(kind);
-        h.set_size(size);
-        h.set_mode(0o644);
-        h.set_cksum();
-        let mut out = [0; BLOCK];
-        out.copy_from_slice(h.as_bytes());
-        out
-    }
-
-    fn padded(body: &[u8]) -> Vec<u8> {
-        let mut v = body.to_vec();
-        v.resize(body.len().div_ceil(BLOCK) * BLOCK, 0);
-        v
-    }
-
-    /// Reads all of `archive` through [`Framed`] in `chunk`-byte reads.
-    fn read_all(archive: &[u8], limit: u64, chunk: usize) -> io::Result<()> {
-        let mut framed = Framed::new(archive, limit);
-        let mut buf = vec![0; chunk];
-        while framed.read(&mut buf)? > 0 {}
-        Ok(())
-    }
-
-    fn too_large(e: &io::Error) -> bool {
-        e.get_ref()
-            .is_some_and(|i| i.downcast_ref::<TooLarge>().is_some())
-    }
-
-    #[test]
-    fn an_extension_header_over_the_limit_is_refused_at_its_header() {
-        for kind in [
-            tar::EntryType::GNULongName,
-            tar::EntryType::GNULongLink,
-            tar::EntryType::XHeader,
-        ] {
-            let archive = header(b"././@LongLink", kind, 2048);
-            for chunk in [1, 100, 512, 4096] {
-                let err = read_all(&archive, 1024, chunk).unwrap_err();
-                assert!(too_large(&err), "{kind:?}, {chunk}-byte reads: {err}");
-            }
-        }
-    }
-
-    #[test]
-    fn extension_headers_within_the_limit_and_other_entries_pass() {
-        let mut archive = Vec::new();
-        archive.extend_from_slice(&header(b"././@LongLink", tar::EntryType::GNULongName, 600));
-        archive.extend(padded(&[b'n'; 600]));
-        // A file far larger than the limit is not an extension header.
-        archive.extend_from_slice(&header(b"big", tar::EntryType::Regular, 5000));
-        archive.extend(padded(&[0; 5000]));
-        archive.extend([0; 2 * BLOCK]);
-        // A global PAX header is handed to the caller and streamed.
-        archive.extend_from_slice(&header(b"g", tar::EntryType::XGlobalHeader, 5000));
-        for chunk in [1, 7, 512, 1 << 16] {
-            read_all(&archive, 1024, chunk).unwrap();
-        }
-    }
-
-    #[test]
-    fn the_size_a_pax_record_gives_the_next_entry_keeps_the_framing() {
-        // The PAX set says the next file holds 2048 bytes; its header says 0.
-        // Inside those 2048 bytes sits what looks like an oversized long
-        // name: it is file data, not a header.
-        let record = b"13 size=2048\n";
-        let mut archive = Vec::new();
-        archive.extend_from_slice(&header(b"pax", tar::EntryType::XHeader, 13));
-        archive.extend(padded(record));
-        archive.extend_from_slice(&header(b"f", tar::EntryType::Regular, 0));
-        let mut data = header(b"././@LongLink", tar::EntryType::GNULongName, 1 << 30).to_vec();
-        data.resize(2048, 0);
-        archive.extend(&data);
-        // The real next header is an oversized long name, after the data.
-        archive.extend_from_slice(&header(b"././@LongLink", tar::EntryType::GNULongName, 4096));
-        for chunk in [1, 512, 1 << 16] {
-            let err = read_all(&archive, 1024, chunk).unwrap_err();
-            assert!(too_large(&err), "{chunk}: {err}");
-            let TooLarge { size, .. } = err.get_ref().unwrap().downcast_ref().unwrap();
-            assert_eq!(*size, 4096, "the header after the data, not inside it");
-        }
-    }
-
-    #[test]
-    fn reads_fail_again_after_a_refusal() {
-        let archive = header(b"x", tar::EntryType::XHeader, 4096);
-        let mut framed = Framed::new(&archive[..], 1024);
-        let mut buf = [0; BLOCK];
-        assert!(framed.read(&mut buf).is_err());
-        assert!(framed.read(&mut buf).is_err());
-    }
-}
+mod tests;

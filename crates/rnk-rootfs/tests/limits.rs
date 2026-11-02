@@ -75,6 +75,9 @@ fn header(name: &str, kind: tar::EntryType, size: u64) -> Vec<u8> {
     h.set_uid(u64::from(rustix::process::getuid().as_raw()));
     h.set_gid(u64::from(rustix::process::getgid().as_raw()));
     h.set_mtime(0);
+    if let Some(gnu) = h.as_gnu_mut() {
+        gnu.set_real_size(size);
+    }
     h.set_cksum();
     h.as_bytes().to_vec()
 }
@@ -123,6 +126,26 @@ fn extension_headers_are_bounded_by_the_tar_header_limit() {
             "{text}"
         );
         assert!(peak < 2 << 20, "{kind:?}: held {peak} bytes");
+    }
+
+    // A GNU sparse entry named as a whiteout is refused, not skipped as a
+    // whiteout would be, so the oversized long name after it is never read.
+    for wh in [Whiteouts::Apply, Whiteouts::Overlay] {
+        let mut archive = header("a/.wh..wh.x", tar::EntryType::GNUSparse, 0);
+        archive.extend(header(
+            "././@LongLink",
+            tar::EntryType::GNULongName,
+            1 << 40,
+        ));
+        archive.extend([0; 1024]);
+        let (_tmp, root) = new_root();
+        let (result, peak) = peak_of(|| extract(&root, &archive[..], wh));
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Entry { reason, .. } if reason.contains("sparse")),
+            "{wh:?}: {err}"
+        );
+        assert!(peak < 2 << 20, "{wh:?}: held {peak} bytes");
     }
 
     // Control: without a working bound, the `tar` crate holds the whole
