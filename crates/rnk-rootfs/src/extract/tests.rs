@@ -1270,10 +1270,10 @@ fn an_opaque_marker_below_a_var_run_link_never_empties_run() {
     }
 }
 
-/// A hardlink in a live root is made from its target's directory as
-/// `live_target` checked it.
+/// A hardlink in a live root to a target of the same layer is linked to
+/// that target.
 #[test]
-fn live_extraction_links_a_hardlink_from_its_checked_target_directory() {
+fn live_extraction_links_a_hardlink_to_a_target_of_the_same_layer() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.dir("d/", 0o755)

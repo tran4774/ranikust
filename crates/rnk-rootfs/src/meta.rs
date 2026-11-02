@@ -695,20 +695,22 @@ mod tests {
         );
     }
 
+    /// An `O_PATH` fd pinning `p` itself, never what it points to.
+    fn pin(p: &Path, flags: OFlags) -> OwnedFd {
+        rustix::fs::openat(
+            rustix::fs::CWD,
+            p,
+            flags | OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap()
+    }
+
     /// A pinned symlink, its pinned parent, and a new symlink renamed over
     /// its name: what a swap between pinning and the xattr calls leaves.
     fn swapped_symlink() -> (tempfile::TempDir, OwnedFd, OwnedFd) {
         let dir = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink("a", dir.path().join("l")).unwrap();
-        let pin = |p: &Path, flags: OFlags| {
-            rustix::fs::openat(
-                rustix::fs::CWD,
-                p,
-                flags | OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .unwrap()
-        };
         let parent = pin(dir.path(), OFlags::DIRECTORY);
         let fd = pin(&dir.path().join("l"), OFlags::empty());
         std::os::unix::fs::symlink("b", dir.path().join("new")).unwrap();
@@ -745,7 +747,9 @@ mod tests {
     /// A symlink without a pinned parent has no xattrs to reach.
     #[test]
     fn a_symlink_without_a_parent_has_no_xattrs_and_nothing_stripped() {
-        let (_dir, _parent, fd) = swapped_symlink();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("a", dir.path().join("l")).unwrap();
+        let fd = pin(&dir.path().join("l"), OFlags::empty());
         let read = read_xattrs(
             fd.as_fd(),
             FileType::Symlink,
