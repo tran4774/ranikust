@@ -4,9 +4,10 @@
 //! records); every filesystem change goes through `RootPath`. Its `unpack`
 //! family, which joins entry names onto a host path, is never used.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
+use std::ops::Bound;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,10 @@ use crate::ignore::IgnoreList;
 use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat, Xattrs};
 use crate::path;
 use crate::root::{self, Mounts, RootPath};
+
+mod created;
+
+use created::{Created, Mark};
 
 /// How OCI whiteouts in a layer are written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -217,8 +222,7 @@ fn extract_with(
         lowers,
         live,
         dirs: BTreeMap::new(),
-        created: HashSet::new(),
-        ancestors: HashSet::new(),
+        created: Created::default(),
         copied: HashMap::new(),
         stats: Stats::default(),
         first_skipped: None,
@@ -305,10 +309,11 @@ struct Extractor<'r> {
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
     dirs: BTreeMap<PathBuf, Meta>,
-    /// [`Whiteouts::Apply`]: entries this layer created, and their
-    /// ancestors, which an opaque whiteout must not remove.
-    created: HashSet<PathBuf>,
-    ancestors: HashSet<PathBuf>,
+    /// [`Whiteouts::Apply`]: entries this layer created and still has, and
+    /// their ancestors, which an opaque whiteout must not remove. Each name
+    /// is kept once, and what the layer deletes is forgotten, so this grows
+    /// with what the layer leaves on disk, not with its entries.
+    created: Created,
     stats: Stats,
     /// The first xattr left out ([`SKIPPED_XATTR`]): the entry's name in
     /// the layer and the xattr's, for the one warning per layer.
@@ -510,7 +515,7 @@ impl Extractor<'_> {
                 root::set_meta_at(pfd.as_fd(), &name, &meta, None, &path)?;
             }
         }
-        self.mark_created(path);
+        self.mark_created(&path);
         Ok(())
     }
 
@@ -826,6 +831,18 @@ impl Extractor<'_> {
         let all = delete::remove_below(self.root, start, path, &mut decide, &mut counts)?;
         if !all {
             self.stats.ignored += counts.kept;
+            // What is left below it is only what the deletion kept: ignored
+            // paths, which this layer never wrote, and the directories
+            // leading to them. Pending metadata of the others goes with
+            // them.
+            self.created.clear_below(path);
+            if let Some(keep) = keep {
+                for p in self.pending_below(path) {
+                    if p != path && !keep.has_below(&p) {
+                        self.dirs.remove(&p);
+                    }
+                }
+            }
             return match self.live {
                 Some(_) => Ok(false),
                 None => Err(Error::Entry {
@@ -836,8 +853,22 @@ impl Extractor<'_> {
         }
         rustix::fs::unlinkat(pfd, name, AtFlags::REMOVEDIR)
             .map_err(|e| io_err("rmdir", path, e))?;
-        self.dirs.retain(|p, _| !p.starts_with(path));
+        self.created.remove(path);
+        for p in self.pending_below(path) {
+            self.dirs.remove(&p);
+        }
         Ok(true)
+    }
+
+    /// The directories with pending metadata at or below `path`: one range
+    /// of `dirs`, as paths sort component by component.
+    fn pending_below(&self, path: &Path) -> Vec<PathBuf> {
+        self.dirs
+            .range::<Path, _>((Bound::Included(path), Bound::Unbounded))
+            .map(|(p, _)| p)
+            .take_while(|p| p.starts_with(path))
+            .cloned()
+            .collect()
     }
 
     fn whiteout(&mut self, path: &Path, name: &[u8], raw: &Path) -> Result<()> {
@@ -936,8 +967,12 @@ impl Extractor<'_> {
                     Ok(st) if st.file_type() == FileType::Directory => self
                         .remove_dir_tree(&target, pfd.as_fd(), hidden, &st)
                         .map(drop),
-                    Ok(_) => rustix::fs::unlinkat(&pfd, hidden, AtFlags::empty())
-                        .map_err(|e| io_err("unlink", &target, e)),
+                    Ok(_) => {
+                        rustix::fs::unlinkat(&pfd, hidden, AtFlags::empty())
+                            .map_err(|e| io_err("unlink", &target, e))?;
+                        self.created.remove(&target);
+                        Ok(())
+                    }
                 }
             }
         }
@@ -976,7 +1011,7 @@ impl Extractor<'_> {
             }
             None => (dir, None),
         };
-        let (created, ancestors) = (&self.created, &self.ancestors);
+        let created = &self.created;
         let mut decide = |p: &Path, t: FileType| {
             if let Some(keep) = keep {
                 if keep.covers(p) {
@@ -986,16 +1021,11 @@ impl Extractor<'_> {
                     return Keep::Descend;
                 }
             }
-            if created.contains(p) {
-                if t == FileType::Directory {
-                    Keep::Descend
-                } else {
-                    Keep::Whole
-                }
-            } else if ancestors.contains(p) {
-                Keep::Descend
-            } else {
-                Keep::Remove
+            match created.lookup(p) {
+                Mark::Created if t == FileType::Directory => Keep::Descend,
+                Mark::Created => Keep::Whole,
+                Mark::Ancestor => Keep::Descend,
+                Mark::None => Keep::Remove,
             }
         };
         // Pending directory metadata needs no cleanup: it belongs to
@@ -1114,18 +1144,10 @@ impl Extractor<'_> {
     }
 
     /// Records `path` as created by this layer, for opaque whiteouts.
-    fn mark_created(&mut self, path: PathBuf) {
-        if self.wh != Whiteouts::Apply {
-            return;
+    fn mark_created(&mut self, path: &Path) {
+        if self.wh == Whiteouts::Apply {
+            self.created.insert(path);
         }
-        let mut a = path.parent();
-        while let Some(p) = a {
-            if p.as_os_str().is_empty() || !self.ancestors.insert(p.to_owned()) {
-                break;
-            }
-            a = p.parent();
-        }
-        self.created.insert(path);
     }
 
     /// Directory modes and times, deepest first.

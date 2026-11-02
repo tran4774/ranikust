@@ -160,9 +160,16 @@ never called. A hand-written reader would repeat that parsing for no gain.
 - **`Whiteouts::Apply`** (a live root, kaniko mode): `.wh.<name>` removes
   `<name>`; `.wh..wh..opq` removes everything in its directory that this
   layer did not create, keeping this layer's entries and the directories
-  leading to them, at the point the marker appears in the stream. Writing
-  into a live root, mount points included, is Phase 2
-  ([kaniko mode](kaniko-mode.md)).
+  leading to them, at the point the marker appears in the stream. "This
+  layer's entries" are those it still has: what it created is kept as a
+  tree of names, each name once however long the (physical) paths through
+  it, and a whiteout or a replacement that deletes an entry forgets it with
+  everything below, so the memory follows what the layer leaves on disk,
+  not how many entries it had (T15). Writing into a live root, mount points
+  included, is Phase 2 ([kaniko mode](kaniko-mode.md)). A directory the
+  layer listed and a later entry deleted gets no metadata at the end; when
+  that deletion had to keep an ignored path, only the directories leading
+  to it keep theirs.
 - Other `.wh..wh.*` names (AUFS bookkeeping) are skipped; global PAX
   headers are ignored; unknown entry types are refused. Device nodes need
   `CAP_MKNOD` (T2); foreign owners need root or a user namespace (T1).

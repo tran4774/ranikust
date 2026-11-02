@@ -389,6 +389,14 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- Kaniko mode's extraction of a base layer or `COPY --from` image no
+  longer keeps the path of every entry the layer created until it ends.
+  A layer that kept creating and whiting out the same deep tree, or wrote
+  many entries through a symlink to a deep directory, made ranikust's
+  memory grow while the disk stayed flat. Each name is now kept once, and
+  what the layer deletes is forgotten. Replacing a directory that holds an
+  ignored path (kept in place, as kaniko) no longer fails the extraction
+  on the subdirectories the layer had listed in it and that were deleted.
 - Extracting a layer never sets its `trusted.*` xattrs, as BuildKit: a
   filesystem may give them a meaning it leaves the privileged writer to
   check (XFS keeps raw ACLs there), so a hostile base image could leave

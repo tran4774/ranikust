@@ -430,6 +430,40 @@ fn applied_whiteouts_hide_lower_entries_only() {
     assert_eq!(snapshot(&out), before);
 }
 
+/// What a layer deletes again is no longer its own: an opaque whiteout
+/// after it keeps only what the layer still has, a name it made again
+/// included, and the directories leading there.
+#[test]
+fn an_opaque_whiteout_keeps_what_the_layer_still_has() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("d")).unwrap();
+    fs::write(f.host("d/lower"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.file("d/gone/x/f", 0o644, b"")
+        .file("d/.wh.gone", 0o644, b"")
+        .file("d/again", 0o644, b"")
+        .file("d/.wh.again", 0o644, b"")
+        .file("d/again/deep/f", 0o644, b"")
+        .file("d/kept/f", 0o644, b"")
+        .file("d/kept/.wh.f", 0o644, b"")
+        .file("d/kept/g", 0o644, b"")
+        .file("d/.wh..wh..opq", 0o644, b"");
+    extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap();
+    let left = crate::test_util::tree(&f.host);
+    let expect: std::collections::BTreeSet<PathBuf> = [
+        "d",
+        "d/again",
+        "d/again/deep",
+        "d/again/deep/f",
+        "d/kept",
+        "d/kept/g",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect();
+    assert_eq!(left, expect);
+}
+
 #[test]
 fn hardlink_targets_must_exist_in_the_root() {
     let f = Fixture::new();
@@ -1043,6 +1077,23 @@ fn live_whiteouts_leave_ignored_paths_alone() {
     assert_eq!(fs::read(f.host("etc/mtab")).unwrap(), b"m");
     assert!(!f.host("etc/old").exists());
     assert!(f.host("etc/new").exists());
+}
+
+/// A directory the layer listed, then deleted with the directory around it
+/// when a later entry replaced that one, gets no metadata at the end: only
+/// what the deletion kept is still there.
+#[test]
+fn a_replaced_directory_holding_an_ignored_path_leaves_no_pending_metadata() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.host("var/run")).unwrap();
+    fs::write(f.host("var/run/sock"), b"").unwrap();
+    let mut t = Tar::new(&f);
+    t.dir("var/x/", 0o755)
+        .dir("var/x/y/", 0o755)
+        .file("var", 0o644, b"");
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    assert!(f.host("var/run/sock").exists());
+    assert!(!f.host("var/x").exists());
 }
 
 #[test]
