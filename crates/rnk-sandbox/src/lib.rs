@@ -49,6 +49,7 @@ mod seccomp;
 mod setup;
 mod spawner;
 mod spec;
+mod stop;
 mod sweep;
 
 pub use child::RootEntry;
@@ -56,6 +57,7 @@ pub use error::{Error, Result, Step};
 pub use probe::{Caps, probe};
 pub use setup::{enter_build_namespace, trim_to_run_capabilities};
 pub use spawner::Sandbox;
+pub use stop::{StopSignal, StopSignals, block_stop_signals};
 pub use spec::{
     BindMount, Isolation, MountKind, Network, NofileLimit, RunSpec, SecretFile, Stdio,
     forbid_core_dumps,

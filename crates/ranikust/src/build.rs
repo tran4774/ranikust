@@ -37,7 +37,7 @@ use rnk_dockerfile::{Dockerfile, GraphOptions, StageGraph};
 use rnk_layer::{Compression, EncodeOptions};
 use rnk_oci::Platform;
 use rnk_registry::{Client, ClientOptions, Credentials, TrustStore};
-use rnk_sandbox::{Isolation, Sandbox};
+use rnk_sandbox::{Isolation, Sandbox, StopSignals};
 use rnk_sched::{
     CancellationToken, PrepareJob, Scheduler, StageJob, StageRunner, Unit, own_root_units,
     shared_root_units,
@@ -55,10 +55,13 @@ pub(crate) enum Snapshots {
     /// Overlay mode, with what the probe found.
     Overlay(rnk_snapshot::OverlayCaps),
     /// Kaniko mode on the shared root `/` in a container; `RUN` with
-    /// `isolation` (`Direct`).
+    /// `isolation` (`Direct`). `stop`: the stop signals, blocked before any
+    /// thread started, so that only the operator's stop the build
+    /// (ADR-0077).
     Kaniko {
         snapshotter: Kaniko,
         isolation: Isolation,
+        stop: StopSignals,
     },
     /// Kaniko mode off `/`: a directory per stage in the state directory,
     /// the stages scheduled as overlay mode's, `RUN` in the full sandbox
@@ -248,7 +251,7 @@ pub(crate) fn run(
             let overlay = match Overlay::new(Arc::clone(&store), caps) {
                 Ok(o) => Arc::new(o),
                 Err(e) => {
-                    close_store(store);
+                    close_after_error(store);
                     return Err(e.to_string());
                 }
             };
@@ -257,7 +260,7 @@ pub(crate) fn run(
                 store,
                 sandbox,
                 overlay,
-                Isolation::Full,
+                (Isolation::Full, None),
                 Roots::Own,
                 &|| {},
             )
@@ -265,6 +268,7 @@ pub(crate) fn run(
         Snapshots::Kaniko {
             snapshotter,
             isolation,
+            stop,
         } => {
             let snapshotter = Arc::new(snapshotter);
             // Before the store closes and removes the build directory: a
@@ -281,7 +285,7 @@ pub(crate) fn run(
                 store,
                 sandbox,
                 Arc::clone(&snapshotter),
-                isolation,
+                (isolation, Some(stop)),
                 Roots::Shared,
                 &finish,
             )
@@ -293,7 +297,7 @@ pub(crate) fn run(
             store,
             sandbox,
             Arc::new(stages),
-            Isolation::Full,
+            (Isolation::Full, None),
             Roots::StageDirs,
             &|| {},
         ),
@@ -318,7 +322,7 @@ fn run_with<S: Snapshotter + Send + Sync + 'static>(
     store: Arc<Store>,
     sandbox: Sandbox,
     snapshotter: Arc<S>,
-    isolation: Isolation,
+    (isolation, stop): (Isolation, Option<StopSignals>),
     roots: Roots,
     before_close: &dyn Fn(),
 ) -> Result<Built, String>
@@ -341,11 +345,11 @@ where
         Ok(s) => Arc::new(s),
         Err(e) => {
             before_close();
-            close_store(store);
+            close_after_error(store);
             return Err(e);
         }
     };
-    let result = runtime.block_on(build(config, &shared));
+    let result = runtime.block_on(build(config, &shared, stop));
     release_all(&shared);
     // The uploads run on the runtime: they end before it does. After a
     // failed build they are cancelled, not awaited, and the files still
@@ -363,18 +367,60 @@ where
         None => tracing::warn!("a stage thread still holds the build; the store stays open"),
     }
     before_close();
-    close_store(store);
-    result
+    match (result, close_store(store)) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(closed)) => Err(closed),
+        (Err(e), Err(closed)) => {
+            tracing::warn!("{closed}");
+            Err(e)
+        }
+    }
 }
 
-fn close_store(store: Arc<Store>) {
-    match Arc::into_inner(store) {
-        Some(store) => {
-            if let Err(e) = store.close() {
-                tracing::warn!("closing the store: {e}");
+/// Closes the store. A persistent store's failure is a warning: the next
+/// build cleans up. An anonymous store's (kaniko mode on `/`) fails the
+/// build: its state directory may keep what a `RUN` wrote there, and must
+/// not serve another build (ADR-0077). Where the store is still in use, so
+/// cannot be closed, its marker is written back first.
+fn close_store(store: Arc<Store>) -> Result<(), String> {
+    const DO_NOT_REUSE: &str = "its state directory keeps .ranikust-building; do not give it, \
+         or its volume, to another build (ADR-0077)";
+    if !store.is_anonymous() {
+        match Arc::into_inner(store) {
+            Some(store) => {
+                if let Err(e) = store.close() {
+                    tracing::warn!("closing the store: {e}");
+                }
             }
+            None => tracing::warn!("the store is still in use; the next build cleans it up"),
         }
-        None => tracing::warn!("the store is still in use; the next build cleans it up"),
+        return Ok(());
+    }
+    let keeper = store.marker_keeper();
+    match Arc::into_inner(store) {
+        Some(store) => store.close().map_err(|e| match e {
+            rnk_store::Error::NotEmptied { .. } => format!("closing the store: {e}"),
+            e => format!("closing the store: {e}; {DO_NOT_REUSE}"),
+        }),
+        None => {
+            if let Ok(Some(keeper)) = keeper
+                && let Err(e) = keeper.keep()
+            {
+                tracing::warn!("writing the state directory's marker back: {e}");
+            }
+            Err(format!(
+                "the store is still in use at the end of the build, so it was not closed; \
+                 {DO_NOT_REUSE}"
+            ))
+        }
+    }
+}
+
+/// [`close_store`] on a path that already fails the build: its own
+/// failure is only logged.
+fn close_after_error(store: Arc<Store>) {
+    if let Err(e) = close_store(store) {
+        tracing::warn!("{e}");
     }
 }
 
@@ -908,6 +954,7 @@ fn stage_demand(
 async fn build<S: Snapshotter + Send + Sync + 'static>(
     config: &BuildConfig,
     shared: &Arc<Shared<S>>,
+    stop: Option<StopSignals>,
 ) -> Result<Built, String>
 where
     S::Root: Send + Sync,
@@ -916,11 +963,20 @@ where
         shared: Arc::clone(shared),
     };
     let cancel = CancellationToken::new();
-    let signals = tokio::spawn(cancel_on_signals(cancel.clone()));
+    let signals = match stop {
+        // Kaniko mode on `/`: a `RUN` may not stop the build (ADR-0077).
+        Some(stop) => {
+            obey_operator_signals(stop, cancel.clone(), shared.store.marker_keeper());
+            None
+        }
+        None => Some(tokio::spawn(cancel_on_signals(cancel.clone()))),
+    };
     let summary = Scheduler::new(config.jobs)
         .run_units(&shared.graph, &shared.units, &runner, &cancel)
         .await;
-    signals.abort();
+    if let Some(signals) = signals {
+        signals.abort();
+    }
     let summary = summary.map_err(|e| e.to_string())?;
     let target = summary
         .stages
@@ -1011,6 +1067,66 @@ async fn cancel_on_signals(cancel: CancellationToken) {
             tracing::warn!("stopping at once");
             std::process::exit(130);
         }
+    }
+}
+
+/// [`cancel_on_signals`] for kaniko mode on `/`, on a thread of its own
+/// that reads `stop` for the rest of the process: only the operator's
+/// signals count (`rnk_sandbox::StopSignals`), a `RUN`'s are logged and
+/// ignored. Before the second signal's exit, the state directory's marker
+/// is written back, since `Store::close` never runs then and a `RUN` may
+/// have removed it (ADR-0077).
+fn obey_operator_signals(
+    stop: StopSignals,
+    cancel: CancellationToken,
+    keeper: Result<Option<rnk_store::MarkerKeeper>, rnk_store::Error>,
+) {
+    let keeper = keeper.unwrap_or_else(|e| {
+        tracing::warn!("the state directory's marker cannot be written back on a stop: {e}");
+        None
+    });
+    let spawned = std::thread::Builder::new()
+        .name("ranikust-signals".into())
+        .spawn(move || {
+            let mut obeyed = 0_u32;
+            loop {
+                let signal = match stop.wait() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(
+                            "reading stop signals: {e}; a RUN cannot stop the build, \
+                             nor can SIGINT or SIGTERM now"
+                        );
+                        return;
+                    }
+                };
+                if !signal.obeyed {
+                    tracing::warn!(
+                        "signal {} from pid {} ignored: in kaniko mode on / a RUN cannot stop \
+                         the build; only the kernel, a process outside the container's PID \
+                         namespace or ranikust's parent can (ADR-0077)",
+                        signal.signo,
+                        signal.pid
+                    );
+                    continue;
+                }
+                obeyed += 1;
+                if obeyed == 1 {
+                    tracing::warn!("cancelling the build; a second signal stops at once");
+                    cancel.cancel();
+                } else {
+                    tracing::warn!("stopping at once");
+                    if let Some(keeper) = &keeper
+                        && let Err(e) = keeper.keep()
+                    {
+                        tracing::warn!("writing the state directory's marker back: {e}");
+                    }
+                    std::process::exit(130);
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("cannot start the stop-signal thread: {e}; SIGINT and SIGTERM do nothing");
     }
 }
 
