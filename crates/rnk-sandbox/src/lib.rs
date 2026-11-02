@@ -49,6 +49,7 @@ mod seccomp;
 mod setup;
 mod spawner;
 mod spec;
+mod stop;
 mod sweep;
 
 pub use child::RootEntry;
@@ -60,3 +61,4 @@ pub use spec::{
     BindMount, Isolation, MountKind, Network, NofileLimit, RunSpec, SecretFile, Stdio,
     forbid_core_dumps,
 };
+pub use stop::{StopSignal, StopSignals, block_stop_signals};

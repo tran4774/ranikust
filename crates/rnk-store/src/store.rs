@@ -8,7 +8,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
@@ -231,8 +231,38 @@ struct Anon {
     /// Opened on traces of a build cut short: the [`BUILDING`] marker stays
     /// at the end, so later builds keep their state in memory too.
     tainted: bool,
+    /// The state directory (`O_PATH`), for the marker.
+    marker_dir: OwnedFd,
+    /// What this build's marker holds ([`building_mark`]).
+    mark: Option<String>,
+    /// A `RUN` removed or changed the marker: it stays at the end.
+    tampered: AtomicBool,
     /// The exclusive `flock` on the state directory, held to the end.
     _lock: OwnedFd,
+}
+
+/// Writes an anonymous store's [`BUILDING_MARKER`] again from outside the
+/// store, where the process ends before [`Store::close`] (a second signal,
+/// a store still in use): the directory then keeps a marker, so no
+/// persistent store opens on what a `RUN` wrote there (ADR-0077).
+#[derive(Debug)]
+pub struct MarkerKeeper {
+    dir: OwnedFd,
+    mark: Option<String>,
+    state_path: PathBuf,
+}
+
+impl MarkerKeeper {
+    /// Creates the marker if nothing is under its name. Anything there
+    /// already, whatever it is, is left: a persistent store refuses the
+    /// directory for it all the same.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the marker cannot be created.
+    pub fn keep(&self) -> Result<()> {
+        create_building_marker(&self.dir, &self.state_path, self.mark.as_deref()).map(drop)
+    }
 }
 
 impl Anon {
@@ -260,6 +290,11 @@ pub struct Store {
     /// [`Store::close`] leaves its directories to the next start. `None`
     /// for an anonymous store, which registers nothing.
     _build_lock: Option<OwnedFd>,
+    /// The shared `flock` on the state directory a persistent store holds
+    /// for its life, which keeps an anonymous store's exclusive one away
+    /// (ADR-0077). `None` for an anonymous store, which holds the
+    /// exclusive one in [`Anon`].
+    _state_lock: Option<OwnedFd>,
     /// [`Store::open_anonymous`]: entries are anonymous files, and the
     /// state directory stays empty (ADR-0051).
     anon: Option<Anon>,
@@ -284,11 +319,22 @@ impl Store {
     /// marker, and a non-empty one without it is refused. A state directory
     /// owned by another user or writable by others is used with a warning.
     ///
+    /// The store holds a shared `flock` on the state directory for its
+    /// life: persistent builds share it, and an anonymous store (kaniko
+    /// mode on `/`), which takes it exclusively, never runs beside them.
+    /// A state directory holding [`BUILDING_MARKER`] is refused: a
+    /// kaniko-mode build on `/` used it and did not end cleanly, and its
+    /// `RUN` may have written there what this store would reuse without
+    /// hashing it again (ADR-0077). Both checks come before anything is
+    /// written.
+    ///
     /// # Errors
     ///
-    /// [`Error::NotAStateDir`] for a foreign directory, [`Error::NoFlock`]
-    /// when its filesystem has no `flock`, [`Error::Io`] or
-    /// [`Error::Rootfs`] when it cannot be created or opened (including
+    /// [`Error::NotAStateDir`] for a foreign directory, [`Error::Busy`]
+    /// while an anonymous store holds it, [`Error::UsedOnSlash`] for the
+    /// marker of a kaniko-mode build on `/`, [`Error::NoFlock`] when its
+    /// filesystem has no `flock`, [`Error::Io`] or [`Error::Rootfs`] when
+    /// it cannot be created or opened (including
     /// [`rnk_rootfs::Error::Unsupported`] before Linux 5.8).
     pub fn open(paths: &BuildPaths) -> Result<Self> {
         let host_err = |op, source| Error::Io {
@@ -303,6 +349,18 @@ impl Store {
             .map_err(|e| host_err("create", e))?;
         let state_path = fs::canonicalize(&paths.state).map_err(|e| host_err("resolve", e))?;
         let state = RootPath::open(&state_path)?;
+        let state_lock = state.open_at(".", &OpenHow::read().directory().no_follow())?;
+        match lock::try_lock_shared(&state_lock) {
+            Ok(true) => {}
+            Ok(false) => return Err(Error::Busy { path: state_path }),
+            Err(source) => {
+                return Err(Error::NoFlock {
+                    path: state_path,
+                    source,
+                });
+            }
+        }
+        refuse_used_on_slash(&state, &state_path)?;
         check_marker(&state, &state_path)?;
         for d in DIRS {
             state.create_dir_all(d, DIR_MODE)?;
@@ -315,6 +373,7 @@ impl Store {
             state_path,
             id,
             _build_lock: Some(build_lock),
+            _state_lock: Some(state_lock),
             anon: None,
             build_files: OnceLock::new(),
             fence: Fence::default(),
@@ -339,13 +398,28 @@ impl Store {
     /// a store opened on this container's marker, or on names an earlier
     /// store left ([`crate::ANON_PREFIX`], removed here), makes no name for
     /// the build and keeps the marker (ADR-0066). A marker from another
-    /// container or boot is taken over. Anything else in the state directory
-    /// is used as is, with a warning: a `RUN` can read what is there.
+    /// container or boot is taken over.
+    ///
+    /// The caller must have given the process no more authority than its
+    /// `RUN`s (`rnk_sandbox::trim_to_run_capabilities`, ADR-0078) before
+    /// this: the store later deletes, as this process, names a `RUN` can
+    /// reach (its marker, what a `RUN` left), safe only on that condition.
+    ///
+    /// Anything else in the state directory is refused, a persistent store
+    /// first: a `Direct` `RUN` writes the state directory as root, and the
+    /// builds of a persistent store reuse its entries without hashing them
+    /// again (ADR-0077). The store holds an exclusive `flock` on the state
+    /// directory for its life, which a persistent store's shared one
+    /// excludes, and [`Store::close`] empties the directory of whatever a
+    /// `RUN` left there.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when `state` cannot be resolved or opened, or
-    /// `/proc/self/fd` is missing; [`Error::Rootfs`] as [`Store::open`].
+    /// [`Error::Busy`] while another build holds the state directory,
+    /// [`Error::StateNotEmpty`] for anything but this store's own marker
+    /// and leftovers in it, [`Error::Io`] when `state` cannot be resolved
+    /// or opened, or `/proc/self/fd` is missing; [`Error::Rootfs`] as
+    /// [`Store::open`].
     pub fn open_anonymous(state: &Path) -> Result<Self> {
         let host_err = |op, source| Error::Io {
             op,
@@ -354,35 +428,63 @@ impl Store {
         };
         let state_path = fs::canonicalize(state).map_err(|e| host_err("resolve", e))?;
         let root = RootPath::open(&state_path)?;
-        let dir = rustix::fs::open(
-            &state_path,
-            rustix::fs::OFlags::PATH
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|e| host_err("open", e.into()))?;
+        // Both descriptors come from the one directory `root` holds, never
+        // from the path again, which a `RUN` of an earlier build could have
+        // pointed elsewhere in between.
+        let dir = root.open_at(".", &OpenHow::path().directory())?;
         check_proc_fd()?;
         // One build at a time per state directory, held for the store's
         // life: a second one (another container on the same volume) would
-        // see this one's names and take its marker for a dead build's.
-        let lock = rustix::fs::openat(
-            &dir,
-            ".",
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|e| host_err("open", e.into()))?;
+        // see this one's names and take its marker for a dead build's, and
+        // a persistent store's shared lock keeps it off a store (ADR-0077).
+        let lock = root.open_at(".", &OpenHow::read().directory())?;
         lock_state_dir(&lock, &state_path)?;
+        // Nothing but this store's own marker and leftovers, checked under
+        // the lock and before anything is removed or written: a persistent
+        // store's entries would be in a `Direct` `RUN`'s reach (ADR-0077).
+        let own = |n: &OsString| n == BUILDING || anon::is_leftover(n);
+        let foreign: Vec<OsString> = list(&root, Path::new("."))?
+            .into_iter()
+            .filter(|n| !own(n))
+            .collect();
+        if !foreign.is_empty() {
+            return Err(Error::StateNotEmpty {
+                path: state_path,
+                found: describe_foreign(&foreign),
+            });
+        }
+        // A volume outlives the container: what a `RUN` writes there is
+        // emptied at the end, but a build that ends before then leaves it,
+        // and a `RUN` can end the build (ADR-0077).
+        // On another mount than `/` but not its root, the volume is mounted
+        // at a parent: a `RUN` can rename the state directory and leave a
+        // look-alike, unmarked, at its path.
+        let slash = RootPath::open("/")?;
+        if root.statx("/")?.mount_root {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {} is a volume: kaniko mode on / keeps nothing there and empties \
+                 it at the end, but a RUN can write it, and a build that ends early leaves what \
+                 the RUN wrote; never give this volume to overlay-mode or per-stage builds \
+                 (ADR-0077)",
+                state_path.display()
+            );
+        } else if root.mnt_id() != slash.mnt_id() {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {} is a directory of a volume mounted at one of its parents: a \
+                 RUN can write it, and can rename it and leave a look-alike at its path that no \
+                 marker covers; mount the volume at --state-dir itself, and never give this \
+                 volume to overlay-mode or per-stage builds (ADR-0077)",
+                state_path.display()
+            );
+        }
         let leftovers = anon::remove_leftovers(&root, &state_path)?;
         // A build that did not end cleanly here may have left `RUN`
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
         // they would see a name, so this build makes none (ADR-0066).
         let mark = building_mark();
-        let marker = read_building_marker(&dir, &state_path, mark.as_deref())?;
+        let marker = read_building_marker(&root, &state_path, mark.as_deref())?;
         let interrupted = match marker {
             Marker::Ours => true,
             Marker::Theirs => false,
@@ -390,10 +492,15 @@ impl Store {
             // by an older ranikust.
             Marker::Absent => leftovers,
         };
-        // Written unless this container's marker is kept as it is; made
-        // anew when names were left with none, so later builds heed it.
+        // Written unless this container's marker is kept: made anew when
+        // names were left with none, so later builds heed it, and replaced
+        // by a fresh file when what is kept is not a regular file holding
+        // this container's mark (a directory a `RUN` filled, say).
+        let marker_dir = dir.try_clone().map_err(|e| host_err("duplicate", e))?;
         match marker {
-            Marker::Ours => {}
+            Marker::Ours => {
+                ensure_own_marker(&root, &marker_dir, &state_path, mark.as_deref())?;
+            }
             // A stale marker (a dead build's, the directory being locked) is
             // replaced by a new file, never written through.
             Marker::Theirs => {
@@ -403,14 +510,6 @@ impl Store {
             Marker::Absent => write_building_marker(&root, &state_path, mark.as_deref())?,
         }
         let tainted = interrupted.then_some(CUT_SHORT);
-        if !list(&root, Path::new("."))?.iter().all(|n| n == BUILDING) {
-            tracing::warn!(
-                target: "rnk_store",
-                "state directory {} is not empty: a RUN can read what it holds; kaniko mode on / \
-                 keeps nothing there itself",
-                state_path.display()
-            );
-        }
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -426,12 +525,16 @@ impl Store {
                 files,
                 entries: Mutex::default(),
                 tainted: tainted.is_some(),
+                marker_dir,
+                mark,
+                tampered: AtomicBool::new(false),
                 _lock: lock,
             }),
             state: root,
             state_path,
             id,
             _build_lock: None,
+            _state_lock: None,
             build_files: OnceLock::new(),
             fence,
             held: lock::InProcess::default(),
@@ -500,20 +603,27 @@ impl Store {
     /// name is made for the rest of the build (its processes may live). In
     /// an anonymous store the state directory must still be the one opened
     /// (a `RUN` may have moved it, or made `/var/lib` a link): checked by
-    /// device, inode and mount, without following a link.
+    /// device, inode and mount, without following a link. Its marker must
+    /// still be the one this build wrote: a `RUN` that removed or changed it
+    /// gets it written again, through the directory held, and the build
+    /// then makes no more names and keeps the marker at its end (ADR-0077).
     ///
     /// # Errors
     ///
     /// [`Error::BadEntry`] when the state directory changed; the fence is
-    /// then closed to names too.
+    /// then closed to names too. [`Error::Io`] or [`Error::Rootfs`] when
+    /// the marker cannot be written again.
     pub fn leave_run(&self, guard: RunGuard, swept: bool) -> Result<()> {
         if !swept {
             self.fence.poison();
         }
-        let checked = if self.anon.is_some() {
-            self.same_state_dir()
-        } else {
-            Ok(())
+        let checked = match &self.anon {
+            Some(anon) => {
+                let same = self.same_state_dir();
+                let marked = self.keep_own_marker(anon);
+                same.and(marked)
+            }
+            None => Ok(()),
         };
         if checked.is_err() {
             self.fence.poison();
@@ -522,12 +632,71 @@ impl Store {
         checked
     }
 
+    /// [`ensure_own_marker`] for an anonymous store; a marker not this
+    /// build's poisons the fence and stays at the end.
+    fn keep_own_marker(&self, anon: &Anon) -> Result<()> {
+        let remark = || {
+            ensure_own_marker(
+                &self.state,
+                &anon.marker_dir,
+                &self.state_path,
+                anon.mark.as_deref(),
+            )
+        };
+        // A `RUN` that filled the filesystem can keep the marker from being
+        // made; no `RUN` runs now, so a forged `.ranikust-state` goes, which
+        // frees an inode, and it is tried once more.
+        let replaced = match remark() {
+            Ok(replaced) => replaced,
+            Err(_) => {
+                remove_state_marker(&self.state);
+                remark()?
+            }
+        };
+        if replaced {
+            anon.tampered.store(true, Ordering::Relaxed);
+            self.fence.poison();
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {}: a RUN removed or changed {BUILDING}; it is written again and \
+                 stays at the end, and this build makes no more names (ADR-0077)",
+                self.state_path.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// The [`MarkerKeeper`] of an anonymous store; `None` for a persistent
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the state directory's descriptor cannot be
+    /// duplicated.
+    pub fn marker_keeper(&self) -> Result<Option<MarkerKeeper>> {
+        let Some(anon) = &self.anon else {
+            return Ok(None);
+        };
+        let dir = anon.marker_dir.try_clone().map_err(|source| Error::Io {
+            op: "duplicate",
+            path: self.state_path.clone(),
+            source,
+        })?;
+        Ok(Some(MarkerKeeper {
+            dir,
+            mark: anon.mark.clone(),
+            state_path: self.state_path.clone(),
+        }))
+    }
+
     /// Whether the state directory's path still leads, with no link, to the
     /// directory this store holds.
     fn same_state_dir(&self) -> Result<()> {
         let changed = || Error::BadEntry {
             path: self.state_path.clone(),
-            reason: "the state directory changed during a RUN",
+            reason: "the state directory changed during a RUN (moved, or a link put on its \
+                     path): what is now at that path is not the directory this build marked, so \
+                     discard that directory or volume; never give it to another build",
         };
         let now = RootPath::open(&self.state_path).map_err(|_| changed())?;
         let (a, b) = (now.statx("/")?, self.state.statx("/")?);
@@ -964,23 +1133,108 @@ impl Store {
     /// Ends the build: removes `builds/<build-id>` and `tmp/<build-id>`,
     /// then releases the build's lock.
     ///
+    /// An anonymous store ends in this order (ADR-0077):
+    ///
+    /// 1. its marker is made this build's again, first, so that whatever
+    ///    happens next the directory keeps one: anything else under its
+    ///    name (removed, another type, another build's text) is replaced,
+    ///    and then stays at the end;
+    /// 2. its files go with their descriptors (on a filesystem that keeps
+    ///    a name for an open removed file, the name goes with them);
+    /// 3. the state directory is emptied of whatever a `RUN` wrote there,
+    ///    through descriptors, never following a link or crossing a mount,
+    ///    a forged `.ranikust-state` first; a marker step 1 could not make
+    ///    (a filesystem a `RUN` filled) is tried again right after that
+    ///    file goes and once more after the emptying, and then stays;
+    /// 4. the marker goes only when nothing else is left and the build was
+    ///    clean: no cut-short start, no `RUN` that may have left processes,
+    ///    no marker a `RUN` changed;
+    /// 5. the lock on the state directory goes last.
+    ///
     /// # Errors
     ///
     /// [`Error::Rootfs`] or [`Error::BadEntry`] when a directory cannot be
     /// removed, for example because a mount is still inside it or on it;
-    /// the next start retries.
+    /// the next start retries. For an anonymous store, [`Error::NotEmptied`]
+    /// when the state directory keeps anything but its marker, and
+    /// [`Error::Unmarked`] when no marker can be written even after the
+    /// emptying: the caller must fail the build, since that directory must
+    /// not serve another one.
     pub fn close(self) -> Result<()> {
-        if let Some(anon) = &self.anon {
-            // The files go with their descriptors. The marker of a build in
-            // progress goes only after a clean build: a poisoned fence or a
-            // tainted start may have left `RUN` processes in the container.
-            if !anon.tainted && !self.fence.is_poisoned() {
-                self.state.remove_file(BUILDING)?;
-            }
+        let Some(anon) = self.anon else {
+            remove_build(&self.state, &self.id)?;
             return Ok(());
+        };
+        let Anon {
+            files,
+            entries,
+            tainted,
+            marker_dir,
+            mark,
+            tampered,
+            _lock: lock,
+        } = anon;
+        let remark =
+            || ensure_own_marker(&self.state, &marker_dir, &self.state_path, mark.as_deref());
+        let first = remark();
+        drop(entries);
+        drop(files);
+        // A `RUN` can keep the marker from being made (a filesystem it
+        // filled, whose inodes root has no reserve of). A forged
+        // `.ranikust-state` then goes first, which frees an inode and
+        // leaves a directory no persistent store opens, and the marker is
+        // tried again before the rest is emptied, which can take long; and
+        // once more after, when that space is free. A marker made only then
+        // stays, as one a `RUN` removed does.
+        let early = match first {
+            Ok(replaced) => Some(replaced),
+            Err(e) => {
+                remove_state_marker(&self.state);
+                tracing::warn!(
+                    target: "rnk_store",
+                    "state directory {}: {BUILDING} cannot be made this build's ({e}); a RUN may \
+                     have filled the filesystem, so it is tried again while the directory is \
+                     emptied (ADR-0077)",
+                    self.state_path.display()
+                );
+                remark().ok().map(|_| true)
+            }
+        };
+        let emptied = empty_state_dir(&self.state, &self.state_path);
+        let replaced = match early {
+            Some(replaced) => replaced,
+            None => match remark() {
+                Ok(_) => true,
+                Err(e) => {
+                    drop(lock);
+                    return Err(Error::Unmarked {
+                        path: self.state_path.clone(),
+                        emptied: emptied.is_ok(),
+                        // ranikust's own marker, made empty when its text
+                        // could not be written, is not what a `RUN` made.
+                        held: match marker_text(&self.state, &self.state_path, 1) {
+                            Ok(None) => false,
+                            Ok(Some(Some(h))) => !h.is_empty(),
+                            _ => true,
+                        },
+                        why: e.to_string(),
+                    });
+                }
+            },
+        };
+        let keep = emptied.is_err()
+            || replaced
+            || tainted
+            || tampered.load(Ordering::Relaxed)
+            || self.fence.is_poisoned();
+        if !keep {
+            match self.state.remove_file(BUILDING) {
+                Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {}
+                r => r?,
+            }
         }
-        remove_build(&self.state, &self.id)?;
-        Ok(())
+        drop(lock);
+        emptied
     }
 
     /// Removes the `tmp/` and `builds/` directories of every build that no
@@ -1158,43 +1412,45 @@ enum Marker {
     Theirs,
 }
 
-/// The [`BUILDING`] marker in the state directory `dir` (shown as
+/// The [`BUILDING`] marker in the state directory `root` (shown as
 /// `state_path`), `mark` being what this build would write
 /// ([`building_mark`]). A marker from another PID namespace or boot (a state
-/// directory on a volume, an earlier boot) is [`Marker::Theirs`]. Opened
-/// before its type is checked, on the descriptor, without following a link
-/// or blocking on a FIFO a leftover process put there; anything but a
-/// regular file counts as this container's.
-fn read_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<Marker> {
-    let fd = match rustix::fs::openat(
-        dir,
-        BUILDING,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::NONBLOCK
-            | rustix::fs::OFlags::NOCTTY
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    ) {
-        Ok(fd) => fd,
-        Err(Errno::NOENT) => return Ok(Marker::Absent),
-        Err(Errno::LOOP) => return Ok(Marker::Ours),
-        Err(e) => return Err(building_marker_err(state_path, "open", e.into())),
+/// directory on a volume, an earlier boot) is [`Marker::Theirs`]. Read as
+/// [`marker_text`] does; anything but a regular file counts as this
+/// container's.
+fn read_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<Marker> {
+    Ok(match marker_text(root, state_path, 256)? {
+        None => Marker::Absent,
+        Some(None) => Marker::Ours,
+        // An empty one is a marker this process made whose text could not
+        // be written (a full filesystem).
+        Some(Some(held)) if held.is_empty() || mark.is_none_or(|m| held == m.as_bytes()) => {
+            Marker::Ours
+        }
+        Some(Some(_)) => Marker::Theirs,
+    })
+}
+
+/// What [`BUILDING`] in the state directory `root` holds, its first `max`
+/// bytes: `None` when nothing has the name, `Some(None)` when what has it
+/// is not a regular file. The entry is pinned with `O_PATH | O_NOFOLLOW`
+/// and its type checked on that descriptor before anything opens it for
+/// reading (`rnk_rootfs::Pinned::open_regular`): a link is never followed,
+/// and a FIFO or device node a `RUN` put there is never opened.
+fn marker_text(root: &RootPath, state_path: &Path, max: u64) -> Result<Option<Option<Vec<u8>>>> {
+    let pinned = match root.pin(BUILDING) {
+        Ok(p) => p,
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(None),
+        Err(e) => return Err(e.into()),
     };
-    let st =
-        rustix::fs::fstat(&fd).map_err(|e| building_marker_err(state_path, "stat", e.into()))?;
-    if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
-        return Ok(Marker::Ours);
+    if pinned.stat().file_type() != FileType::Regular {
+        return Ok(Some(None));
     }
     let mut held = Vec::new();
-    io::Read::take(File::from(fd), 256)
+    io::Read::take(File::from(pinned.open_regular()?), max)
         .read_to_end(&mut held)
         .map_err(|e| building_marker_err(state_path, "read", e))?;
-    Ok(if mark.is_none_or(|m| held == m.as_bytes()) {
-        Marker::Ours
-    } else {
-        Marker::Theirs
-    })
+    Ok(Some(Some(held)))
 }
 
 /// Creates this build's [`BUILDING`] marker, holding `mark`, as a new file.
@@ -1202,6 +1458,155 @@ fn write_building_marker(root: &RootPath, state_path: &Path, mark: Option<&str>)
     let mut f = File::from(root.open_at(BUILDING, &OpenHow::write().create_new(0o600))?);
     io::Write::write_all(&mut f, mark.unwrap_or_default().as_bytes())
         .map_err(|e| building_marker_err(state_path, "write", e))
+}
+
+/// Creates [`BUILDING`] holding `mark` through the directory descriptor
+/// `dir`, never following a link; `false` when something already holds the
+/// name.
+fn create_building_marker(dir: &OwnedFd, state_path: &Path, mark: Option<&str>) -> Result<bool> {
+    #[cfg(test)]
+    if tests::marker_create_fails(dir) {
+        return Err(building_marker_err(
+            state_path,
+            "create",
+            Errno::NOSPC.into(),
+        ));
+    }
+    let fd = match rustix::fs::openat(
+        dir,
+        BUILDING,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0o600),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::EXIST) => return Ok(false),
+        Err(e) => return Err(building_marker_err(state_path, "create", e.into())),
+    };
+    io::Write::write_all(&mut File::from(fd), mark.unwrap_or_default().as_bytes())
+        .map_err(|e| building_marker_err(state_path, "write", e))?;
+    Ok(true)
+}
+
+/// Whether [`BUILDING`] is a regular file holding exactly `mark`, read as
+/// [`marker_text`] does: no link followed, no FIFO or device opened.
+fn marker_is_mine(root: &RootPath, state_path: &Path, mark: Option<&str>) -> Result<Option<bool>> {
+    Ok(marker_text(root, state_path, 257)?
+        .map(|held| held.is_some_and(|h| h == mark.unwrap_or_default().as_bytes())))
+}
+
+/// Makes [`BUILDING`] this build's marker: a regular file holding `mark`.
+/// Anything else under the name (nothing, a link, a FIFO, a directory a
+/// `RUN` filled, another build's text) is removed through `rnk-rootfs`,
+/// never followed, and a new file made. Returns whether it had to: the
+/// marker was not the one this build wrote (ADR-0077).
+fn ensure_own_marker(
+    root: &RootPath,
+    dir: &OwnedFd,
+    state_path: &Path,
+    mark: Option<&str>,
+) -> Result<bool> {
+    // A `RUN` process left behind could race the replacement: a few tries,
+    // then the error.
+    for _ in 0..3 {
+        match marker_is_mine(root, state_path, mark)? {
+            Some(true) => return Ok(false),
+            Some(false) => {
+                remove_tree(root, Path::new(BUILDING))?;
+            }
+            None => {}
+        }
+        if create_building_marker(dir, state_path, mark)? {
+            return Ok(true);
+        }
+    }
+    Err(building_marker_err(
+        state_path,
+        "replace",
+        io::Error::other("something keeps taking its name"),
+    ))
+}
+
+/// What an anonymous store found in a state directory besides its own
+/// names, for [`Error::StateNotEmpty`].
+fn describe_foreign(names: &[OsString]) -> String {
+    let has = |prefix: &str| {
+        names
+            .iter()
+            .any(|n| n.as_encoded_bytes().starts_with(prefix.as_bytes()))
+    };
+    if names.iter().any(|n| n == MARKER) {
+        format!(
+            "a persistent store ({MARKER}, among {})",
+            shown_names(names)
+        )
+    } else if has(".nfs") || has(".fuse_hidden") {
+        format!(
+            "{}: names NFS or FUSE give a file removed while open; such a state directory is \
+             not supported, and ranikust left them there itself only if an earlier build ran on \
+             it",
+            shown_names(names)
+        )
+    } else {
+        format!("{}, which ranikust did not leave there", shown_names(names))
+    }
+}
+
+/// Removes everything in an anonymous store's state directory but
+/// [`BUILDING`]: nothing there is the store's own at its end, so whatever
+/// is left a `RUN` wrote (ADR-0077). An entry on another mount stays, and
+/// fails the call, as any entry that could not be removed does.
+fn empty_state_dir(state: &RootPath, state_path: &Path) -> Result<()> {
+    remove_state_marker(state);
+    let left = |names: Vec<OsString>| -> Vec<OsString> {
+        names.into_iter().filter(|n| n != BUILDING).collect()
+    };
+    let found = left(list(state, Path::new("."))?);
+    if found.is_empty() {
+        return Ok(());
+    }
+    let mut keep = IgnoreList::new();
+    keep.insert(BUILDING)?;
+    let deleted = delete_contents(state, &keep);
+    tracing::warn!(
+        target: "rnk_store",
+        "state directory {}: {} entries a RUN left there ({}){}; kaniko mode on / keeps nothing \
+         there between builds (ADR-0077)",
+        state_path.display(),
+        found.len(),
+        shown_names(&found),
+        if deleted.is_ok() { " removed" } else { "" },
+    );
+    let left = left(list(state, Path::new("."))?);
+    match (left.is_empty(), deleted) {
+        (true, Ok(())) => Ok(()),
+        (_, Err(e)) => Err(Error::NotEmptied {
+            path: state_path.to_owned(),
+            left: format!("{} (removing them failed: {e})", shown_names(&left)),
+        }),
+        (false, Ok(())) => Err(Error::NotEmptied {
+            path: state_path.to_owned(),
+            left: format!("{} (on another mount?)", shown_names(&left)),
+        }),
+    }
+}
+
+/// Removes a regular [`MARKER`] a `RUN` forged in an anonymous store's state
+/// directory, before anything else there: without it, `check_marker` and
+/// `ranikust`'s state-directory check refuse a non-empty directory, so a
+/// persistent store never opens what is left if the build is killed while
+/// the rest is emptied. Anything else under the name, or a failure, is left
+/// to the general emptying.
+fn remove_state_marker(state: &RootPath) {
+    if state
+        .statx(MARKER)
+        .is_ok_and(|st| st.file_type() == FileType::Regular)
+    {
+        let _ = state.remove_file(MARKER);
+    }
 }
 
 /// An [`Error::Io`] on the [`BUILDING`] marker.
@@ -1259,6 +1664,34 @@ fn lock_state_dir(fd: &OwnedFd, state_path: &Path) -> Result<()> {
             source,
         }),
     }
+}
+
+/// Refuses, for a persistent store, a state directory holding
+/// [`BUILDING`] in any form: a kaniko-mode build on `/` used it and did not
+/// end cleanly, or still runs there under another lock (ADR-0077).
+fn refuse_used_on_slash(state: &RootPath, state_path: &Path) -> Result<()> {
+    match state.statx(BUILDING) {
+        Ok(_) => Err(Error::UsedOnSlash {
+            path: state_path.to_owned(),
+        }),
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The first few of `names`, quoted, for a log line: names a `RUN` chose.
+fn shown_names(names: &[OsString]) -> String {
+    const SHOWN: usize = 5;
+    let mut s = names
+        .iter()
+        .take(SHOWN)
+        .map(|n| format!("{n:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > SHOWN {
+        s.push_str(", …");
+    }
+    s
 }
 
 /// Refuses a non-empty state directory without a regular-file marker, and
@@ -1378,9 +1811,21 @@ fn remove_build(state: &RootPath, id: &str) -> Result<u64> {
 /// through `rnk-rootfs`: no symlink followed (a symlink is unlinked), no
 /// mount crossed or emptied. `false` when it did not exist.
 ///
-/// Not for `caches/`, which `RUN` writes, or anything else a build's
-/// content can reach, until `rnk-rootfs` offers a deletion that opens the
-/// top directory itself without following or crossing.
+/// Not for `caches/`, which `RUN` writes in a persistent store, or anything
+/// else a build's content can reach there, until `rnk-rootfs` offers a
+/// deletion that opens the top directory itself without following or
+/// crossing.
+///
+/// An anonymous store uses it on names a `RUN` can reach (its marker, the
+/// leftovers [`anon::remove_leftovers`] removes): safe there because the
+/// top entry is `statx`ed without following, mount roots and other mounts
+/// are refused, and [`remove_dir_tree`] checks that the directory it opens
+/// is the one seen (inode, device, mount) and empties it by descriptor;
+/// and because kaniko mode on `/` gives ranikust no more authority than its
+/// `RUN` before the store opens (`rnk_sandbox::trim_to_run_capabilities`,
+/// ADR-0078), so whatever a swap could make this delete, the `RUN` could
+/// delete itself. That last condition is load-bearing: an anonymous store
+/// opened without the trim needs this reviewed again.
 fn remove_tree(state: &RootPath, rel: &Path) -> Result<bool> {
     let st = match state.statx(rel) {
         Ok(st) => st,

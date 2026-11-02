@@ -14,7 +14,8 @@ builds fetch or extract the same digest at once.
 - The store layout in the state directory (ADR-0022): `blobs/sha256/`,
   `layers/<id>/`, `caches/<sha256(id)>/`, `tmp/`, lock files, the
   per-build `builds/<id>/` areas and the `.ranikust-state` marker (`STATE_MARKER`; ADR-0050 renamed it from `.ranikust-root`).
-  An anonymous store writes only `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build (ADR-0056, ADR-0066), and holds an exclusive `flock` on the state directory (`Error::Busy` for a second build).
+  An anonymous store writes only `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build (ADR-0056, ADR-0066), and holds an exclusive `flock` on the state directory (`Error::Busy` for a second build). A persistent store holds that `flock` shared, so neither opens while the other holds the directory (ADR-0077).
+  An anonymous store refuses anything there but its marker and leftovers, a persistent store first (`Error::StateNotEmpty`), and its `close` empties the directory of whatever a `RUN` left. A persistent store refuses a directory holding `.ranikust-building` (`Error::UsedOnSlash`).
 - Per-digest `flock` locks; publication of a filled temporary entry by
   atomic `rename`.
 - Start-up clean-up of `tmp/` leftovers and of `builds/<id>` whose build is
@@ -46,7 +47,8 @@ impl Store {
     pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (an encoded layer, a spooled base layer,
                                                         // a kept stage's tar), gone with it; never kept by the store, persistent or not
     pub fn enter_run(&self) -> Result<RunGuard>;        // ADR-0056: held around each RUN; waits until no name is on disk (no-op when persistent)
-    pub fn leave_run(&self, g: RunGuard, swept: bool) -> Result<()>; // ADR-0056: !swept poisons the fence (no name for the build); checks the state dir's identity
+    pub fn leave_run(&self, g: RunGuard, swept: bool) -> Result<()>; // ADR-0056: !swept poisons the fence (no name for the build); checks the state dir's identity; ADR-0077: makes .ranikust-building this build's again (anything else under the name replaced, then the fence poisoned and the marker kept)
+    pub fn marker_keeper(&self) -> Result<Option<MarkerKeeper>>; // anonymous store only: MarkerKeeper::keep() creates the marker if nothing holds its name, for exits that skip close (ADR-0077)
     pub fn named_window(&self) -> Result<NamedGuard>;   // ADR-0056: a name may exist while held; waits for RUNs; fails inside one, after a failed RUN, and in a store opened on a build cut short (Q-360)
     pub fn scratch_name(&self) -> Result<String>;       // ANON_PREFIX + 128 random bits; removed by the next open_anonymous if left
     pub fn state_dir(&self) -> &Path;                   // canonical
@@ -65,18 +67,23 @@ pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked:
 pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new cache's; set-id bits dropped
 impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  // flock held until dropped
 impl Store {
-    pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>
+    pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: marker made this build's, files closed, state dir emptied through descriptors, marker removed only if nothing is left and the build was clean, lock last; Error::NotEmptied fails the build (ADR-0077)
     pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport>; // [design] Phase 5, (Q-043, ADR-0032)
 }
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, Q-150) [open: Q-015]; digest() -> &Digest
-pub enum Error { NotAStateDir, NoFlock, Busy, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
+pub enum Error { NotAStateDir, NoFlock, Busy, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a
 blob again. It is synchronous; an async caller (`rnk-registry`) runs `fill`
-on a blocking thread, because the lock may wait.
+on a blocking thread, because the lock may wait. Not hashing again rests on
+one premise: no lower-trust principal writes a persistent store's state
+directory. Full-sandbox `RUN`s cannot. A `Direct` `RUN` can write its own
+state directory, which is therefore never a persistent store and is shared
+with no other build (ADR-0077). The test
+`a_kaniko_build_on_slash_leaves_nothing_its_run_wrote` holds that.
 
 ## Invariants
 

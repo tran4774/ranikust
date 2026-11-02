@@ -29,6 +29,10 @@
 # overlayfs takes O_TMPFILE, and how ranikust made its state files
 # (O_TMPFILE, a name unlinked at once, or memfd).
 #
+# Then `stopsig` (ADR-0077): a RUN that forges a store on the state volume
+# and signals ranikust cannot stop it at once, only cancel the build, which
+# still closes its store: what the RUN wrote goes.
+#
 # Then `memlimit` (ADR-0056): a build whose state (a 512 MiB layer) exceeds
 # the container's memory limit (--memory 256m, no swap) must succeed: the
 # state files are on disk, never in memfd.
@@ -154,6 +158,48 @@ for s in pid1 ptrace shell; do
     echo "$s: state in O_TMPFILE files"
   fi
 done
+# stopsig (ADR-0077): a RUN removes the store's marker, forges a persistent
+# store on the state volume, then sends ranikust (PID 1) SIGTERM twice. The
+# signals are not the operator's: they cancel the build (a failure, never
+# the immediate exit 130), which still closes its store, so the volume ends
+# holding only the marker, written back and kept since a RUN removed it.
+sudo mkdir -m 755 "$W/stopsig"
+sudo tee "$W/stopsig/Dockerfile" >/dev/null <<EOF
+FROM $IMAGE
+RUN rm -f /var/lib/ranikust/.ranikust-building \
+ && touch /var/lib/ranikust/.ranikust-state \
+ && mkdir -p /var/lib/ranikust/layers/v2/sha256/0707 \
+ && echo poison > /var/lib/ranikust/layers/v2/sha256/0707/planted \
+ && kill -TERM 1 && sleep 1 && kill -TERM 1 && sleep 1
+RUN true
+EOF
+so="$W/out-stopsig" && sudo rm -rf "$so" && sudo mkdir -m 755 "$so"
+sudo docker volume rm -f rnk-stopsig >/dev/null 2>&1 || true
+sudo docker volume create rnk-stopsig >/dev/null
+rc=0
+sudo docker run --rm -v "$RNK:/ranikust/bin/ranikust:ro" -v "$W/stopsig:/ranikust/ctx:ro" \
+  -v "$so:/ranikust/out" -v rnk-stopsig:/var/lib/ranikust -v /etc/ssl/certs:/etc/ssl/certs:ro \
+  "$IMAGE" /ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx --no-push \
+  --oci-layout-path /ranikust/out/oci >"$OUT/stopsig.log" 2>&1 || rc=$?
+left="$(sudo docker run --rm -v rnk-stopsig:/s "$IMAGE" ls -A /s)"
+sudo docker volume rm -f rnk-stopsig >/dev/null
+if [ "$rc" = 0 ] || [ "$rc" = 130 ] || ! grep -qi 'cancelled' "$OUT/stopsig.log"; then
+  echo "error: stopsig: a RUN's SIGTERM did not just cancel the build (exit $rc), see $OUT/stopsig.log" >&2
+  tail -20 "$OUT/stopsig.log" >&2
+  status=1
+elif ! grep -q 'is not the operator' "$OUT/stopsig.log"; then
+  echo "error: stopsig: the RUN's signals were not reported as not the operator's" >&2
+  status=1
+elif [ "$left" != .ranikust-building ]; then
+  echo "error: stopsig: the state volume holds '$left', not only the marker" >&2
+  status=1
+elif ! grep -q 'is a volume' "$OUT/stopsig.log"; then
+  echo "error: stopsig: no warning that the state directory is a volume" >&2
+  status=1
+else
+  echo "stopsig: a RUN's SIGTERM only cancelled the build; the forged store removed; the marker kept"
+fi
+
 # memlimit: state larger than the container's memory, on disk.
 sudo mkdir -m 755 "$W/big"
 sudo tee "$W/big/Dockerfile" >/dev/null <<EOF

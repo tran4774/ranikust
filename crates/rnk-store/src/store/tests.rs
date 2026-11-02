@@ -10,6 +10,177 @@ fn store(dir: &Path) -> Store {
     Store::open(&BuildPaths::new(dir, dir.join("state"))).unwrap()
 }
 
+thread_local! {
+    /// How many more marker creations on this thread fail with `ENOSPC`,
+    /// as on a filesystem a `RUN` filled.
+    static MARKER_CREATE_FAILS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// What the state directory held at each marker creation on this
+    /// thread: a `.ranikust-state`, and the forged `layers/`.
+    static MARKER_CREATE_SAW: std::cell::RefCell<Vec<(bool, bool)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The hook in `create_building_marker`, given the state directory:
+/// records what it holds, and whether this creation fails.
+pub(super) fn marker_create_fails(dir: &OwnedFd) -> bool {
+    let holds =
+        |name: &str| rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).is_ok();
+    MARKER_CREATE_SAW.with(|s| s.borrow_mut().push((holds(MARKER), holds("layers"))));
+    MARKER_CREATE_FAILS.with(|n| {
+        let left = n.get();
+        n.set(left.saturating_sub(1));
+        left > 0
+    })
+}
+
+/// A state directory as a `RUN` leaves it after removing the marker:
+/// a forged persistent store in its place.
+fn forge_after_marker_removed(state: &Path) {
+    fs::remove_file(state.join(BUILDING)).unwrap();
+    fs::write(state.join(MARKER), b"").unwrap();
+    fs::create_dir_all(state.join("layers/v3/sha256/0707")).unwrap();
+    fs::write(state.join("layers/v3/sha256/0707/planted"), b"poison").unwrap();
+}
+
+#[test]
+fn a_marker_the_close_cannot_make_at_first_is_made_once_the_directory_is_emptied() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    forge_after_marker_removed(&state);
+    // The first creation fails, as on a filesystem a RUN filled.
+    MARKER_CREATE_FAILS.with(|n| n.set(1));
+    store.close().unwrap();
+    let left: Vec<_> = fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, [BUILDING], "only the marker stays");
+    assert!(
+        fs::symlink_metadata(state.join(BUILDING))
+            .unwrap()
+            .is_file()
+    );
+}
+
+#[test]
+fn a_forged_state_marker_goes_before_the_marker_is_tried_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    forge_after_marker_removed(&state);
+    MARKER_CREATE_SAW.with(|s| s.borrow_mut().clear());
+    MARKER_CREATE_FAILS.with(|n| n.set(1));
+    store.close().unwrap();
+    let saw = MARKER_CREATE_SAW.with(|s| s.borrow().clone());
+    // The first try saw the forged store; the second came once
+    // `.ranikust-state` was gone, before the rest was emptied, so a kill
+    // during a long emptying leaves no store a persistent build would open.
+    assert_eq!(saw, [(true, true), (false, true)]);
+}
+
+#[test]
+fn a_marker_name_held_by_what_a_run_made_is_named_in_the_error() {
+    // Root removes the directory below whatever its mode.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    // A RUN replaces the marker with a directory this user cannot empty.
+    let marker = state.join(BUILDING);
+    fs::remove_file(&marker).unwrap();
+    fs::create_dir_all(marker.join("locked")).unwrap();
+    fs::write(marker.join("locked/kept"), b"").unwrap();
+    fs::set_permissions(marker.join("locked"), fs::Permissions::from_mode(0o500)).unwrap();
+    let e = store.close().unwrap_err();
+    fs::set_permissions(marker.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        matches!(
+            e,
+            Error::Unmarked {
+                emptied: true,
+                held: true,
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let shown = e.to_string();
+    assert!(
+        shown.contains("emptied except the name .ranikust-building"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_marker_a_run_kept_from_being_made_is_made_after_its_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    forge_after_marker_removed(&state);
+    // The RUN filled the filesystem: the first try fails.
+    MARKER_CREATE_FAILS.with(|n| n.set(1));
+    store.leave_run(run, true).unwrap();
+    assert!(!state.join(MARKER).exists(), "the forged store marker goes");
+    assert!(
+        fs::symlink_metadata(state.join(BUILDING))
+            .unwrap()
+            .is_file()
+    );
+    drop(store);
+}
+
+#[test]
+fn an_empty_marker_is_this_containers() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // A marker made but left empty, its text unwritten (a full filesystem).
+    fs::write(state.join(BUILDING), b"").unwrap();
+    let root = RootPath::open(&state).unwrap();
+    assert_eq!(
+        read_building_marker(&root, &state, Some("pid:[1] boot:x")).unwrap(),
+        Marker::Ours
+    );
+}
+
+#[test]
+fn a_marker_the_close_can_never_make_fails_it_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    forge_after_marker_removed(&state);
+    MARKER_CREATE_FAILS.with(|n| n.set(u32::MAX));
+    let e = store.close().unwrap_err();
+    MARKER_CREATE_FAILS.with(|n| n.set(0));
+    assert!(
+        matches!(
+            e,
+            Error::Unmarked {
+                emptied: true,
+                held: false,
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let shown = e.to_string();
+    assert!(shown.contains("nothing marks it"), "{shown}");
+    assert!(shown.contains("delete this directory"), "{shown}");
+    assert!(!shown.contains("keeps .ranikust-building"), "{shown}");
+    // What the RUN forged is gone all the same.
+    assert_eq!(fs::read_dir(&state).unwrap().count(), 0);
+}
+
 #[test]
 fn a_directory_swapped_for_a_symlink_is_not_emptied() {
     let dir = tempfile::tempdir().unwrap();

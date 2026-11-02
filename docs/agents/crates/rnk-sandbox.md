@@ -52,6 +52,9 @@ impl Sandbox {
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;       // blocking; cloned on the spawner thread
     pub fn cancel(&self);                                         // SIGKILL every running RUN; later runs: Error::Cancelled
 }
+pub fn block_stop_signals() -> io::Result<StopSignals>; // kaniko mode on / (ADR-0077): SIGINT and SIGTERM blocked while single-threaded (refused otherwise), read from a signalfd
+pub struct StopSignals;  // wait() -> io::Result<StopSignal>, blocking
+pub struct StopSignal { pub signo: i32, pub pid: u32, pub obeyed: bool }  // obeyed: from the kernel (SI_KERNEL), or kill/tgkill from pid 0 (outside the PID namespace) or ranikust's parent; never rt_sigqueueinfo, whose sender is the caller's word
 pub fn forbid_core_dumps() -> rustix::io::Result<()>;  // first in main (ADR-0051): soft RLIMIT_CORE 0, hard kept; every later RUN gets the recorded soft limit back (Step::CoreLimit)
 pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, stdin/out/err, isolation, script, root_id */ }  // #[non_exhaustive]; RunSpec::new; script: a #! heredoc body, Direct on / only: sealed memfd run with execveat (ADR-0057); root_id via RunSpec::expect_root(&RootPath): the reopened root must be that (dev, ino, mnt) in the parent, (dev, ino) in the child after the bind (ADR-0059)
 pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache

@@ -507,6 +507,35 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   bind able to open device nodes. Each bind is now remounted through its
   own descriptor (`open_tree`, `move_mount`); where a seccomp profile
   refuses those calls, such a target is refused instead.
+- Kaniko mode on a container's `/` no longer shares its state directory.
+  Before, it accepted a state directory that held a persistent store, and
+  a persistent build could run on it at the same time. A `RUN` there,
+  which runs as root on `/`, could then plant layers or blobs that later
+  overlay-mode or per-stage builds reused without hashing them again, or
+  read and change their build directories. Now:
+  - that mode refuses a state directory holding a persistent store or
+    other files;
+  - one `flock` on the state directory keeps it apart from every other
+    build, while persistent builds still share theirs;
+  - it empties the state directory of what a `RUN` left there at the end
+    of each build;
+  - a persistent store refuses a state directory a kaniko-mode build on
+    `/` left its `.ranikust-building` marker in.
+
+  Nothing is cached between builds in that mode, by design for now
+  (ADR-0077, Q-441). A `RUN` there can no longer get around it:
+  - the store writes its marker back after every `RUN` and at the end;
+  - a `RUN`'s `SIGINT` or `SIGTERM` no longer stops ranikust at once,
+    since only the kernel's, those from outside the container's PID
+    namespace and those from ranikust's parent count; it cancels the
+    build instead, which still empties and marks the state directory;
+  - a close that leaves anything in the state directory fails the build,
+    and one that cannot write the marker at all, even after emptying the
+    directory a `RUN` filled, fails it saying that nothing marks the
+    directory and it must be deleted;
+  - a state directory on a volume gets a warning never to give that volume
+    to other builds, and one inside a volume mounted at a parent a warning
+    to mount the volume at `--state-dir` itself.
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

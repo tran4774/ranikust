@@ -39,15 +39,94 @@ pub enum Error {
         source: io::Error,
     },
 
-    /// Another build holds the state directory of an anonymous store (two
-    /// containers sharing one volume): it would see and remove this one's
-    /// names (ADR-0056).
+    /// Another build holds the state directory, and one of the two is an
+    /// anonymous store (kaniko mode on `/`): two containers sharing one
+    /// volume would see and remove each other's names (ADR-0056), and a
+    /// `Direct` `RUN` would reach a persistent store's entries and build
+    /// directories (ADR-0077). Persistent stores share a state directory.
     #[error(
-        "another build is using the state directory {}: one build at a time per state \
-         directory; give each container its own volume or --state-dir",
+        "another build is using the state directory {}: a kaniko-mode build on / shares its \
+         state directory with no other build; give each container its own volume or \
+         --state-dir",
         path.display()
     )]
     Busy {
+        /// The state directory.
+        path: PathBuf,
+    },
+
+    /// An anonymous store (kaniko mode on `/`) was opened on a state
+    /// directory holding more than its own marker and leftovers: a
+    /// persistent store, or files ranikust did not leave there. A `Direct`
+    /// `RUN` could change them for the builds that trust them (ADR-0077).
+    #[error(
+        "the state directory {} is not empty: it holds {found}; kaniko mode on / builds with a \
+         temporary store only, since a RUN there could change what later builds reuse \
+         (ADR-0077); pass an empty or new --state-dir, and keep persistent stores for overlay \
+         mode and per-stage builds",
+        path.display()
+    )]
+    StateNotEmpty {
+        /// The state directory.
+        path: PathBuf,
+        /// What it holds, in words, with the names quoted.
+        found: String,
+    },
+
+    /// An anonymous store could not empty its state directory at its end
+    /// ([`crate::Store::close`]): an entry on another mount, or one that
+    /// could not be removed. The directory keeps `.ranikust-building`, so no
+    /// persistent store opens there (ADR-0077).
+    #[error(
+        "the state directory {} still holds {left} after a kaniko-mode build on /, which \
+         ranikust could not remove; a RUN may have written it, so the directory keeps \
+         .ranikust-building and no persistent store opens there: do not give this directory or \
+         its volume to another build (ADR-0077)",
+        path.display()
+    )]
+    NotEmptied {
+        /// The state directory.
+        path: PathBuf,
+        /// What is left, with the names quoted.
+        left: String,
+    },
+
+    /// An anonymous store could not write `.ranikust-building` at its end
+    /// ([`crate::Store::close`]), not even once the state directory was
+    /// emptied: a `RUN` may have written there what a persistent store
+    /// would reuse, and nothing marks the directory (ADR-0077).
+    #[error(
+        "the state directory {} got no .ranikust-building marker after a kaniko-mode build on \
+         / ({why}); {}: delete this directory, or its volume, before any other build uses it \
+         (ADR-0077)",
+        path.display(),
+        unmarked_state(*emptied, *held)
+    )]
+    Unmarked {
+        /// The state directory.
+        path: PathBuf,
+        /// Whether everything a `RUN` left there, but what holds the
+        /// marker's name, was removed.
+        emptied: bool,
+        /// Whether something not ranikust's marker holds its name (a
+        /// directory a `RUN` made that could not be removed).
+        held: bool,
+        /// Why the marker could not be written.
+        why: String,
+    },
+
+    /// A persistent store was opened on a state directory holding the
+    /// marker of a kaniko-mode build on `/` (`.ranikust-building`): that
+    /// build ended badly or is unknown, and its `RUN` may have written what
+    /// a persistent store would reuse unchecked (ADR-0077).
+    #[error(
+        "the state directory {} was used by a kaniko-mode build on / that did not end \
+         cleanly (it holds .ranikust-building): a RUN there may have written what a persistent \
+         store would reuse, so it is not opened as one (ADR-0077); pass another --state-dir, \
+         or delete this one first",
+        path.display()
+    )]
+    UsedOnSlash {
         /// The state directory.
         path: PathBuf,
     },
@@ -137,4 +216,20 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+/// What [`Error::Unmarked`] says of the state directory.
+fn unmarked_state(emptied: bool, held: bool) -> &'static str {
+    match (emptied, held) {
+        (true, false) => "it was emptied, but nothing marks it",
+        (true, true) => {
+            "it was emptied except the name .ranikust-building, which holds something a RUN \
+             made, not ranikust's marker"
+        }
+        (false, false) => "it still holds what a RUN may have written there, and nothing marks it",
+        (false, true) => {
+            "it still holds what a RUN may have written there, and the name .ranikust-building \
+             holds something a RUN made, not ranikust's marker"
+        }
+    }
 }

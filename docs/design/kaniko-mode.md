@@ -64,6 +64,44 @@ the scheduler runs one stage at a time) or a private directory per stage
     directory's path must still lead, with no link, to the directory held. The state directory holds no name while a `RUN` runs;
     what must outlive the emptying of the root (a kept stage) is a tar in
     an anonymous file (`Store::scratch_file`);
+  - the state directory is never a persistent store, and no other build
+    shares it ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+    A `Direct` `RUN` writes it as root, and persistent builds reuse
+    their entries without hashing them again. So:
+    - `Store::open_anonymous` refuses anything there but its own marker
+      and leftover names, a `.ranikust-state` store first
+      (`Error::StateNotEmpty`);
+    - it holds the state directory's `flock` exclusive, which a
+      persistent store's shared one excludes (`Error::Busy`, whichever
+      comes first);
+    - `Store::close` empties the directory of whatever a `RUN` left there,
+      through descriptors, keeping only `.ranikust-building` where it
+      stays;
+    - a persistent store refuses a directory holding that marker
+      (`Error::UsedOnSlash`).
+
+    Nothing is kept between builds in this mode: no layer cache, and cache
+    mounts are left out (ADR-0057). That is by design for now, and a safe
+    cache is [open: Q-441]. The marker is made this build's again after
+    every `RUN` and at the end: whatever a `RUN` put under its name is
+    replaced, the build then makes no more names, and the marker stays.
+    The state directory is emptied after the store's files are closed,
+    and a close that leaves anything fails the build. A marker the close
+    cannot make at first (a filesystem a `RUN` filled) is made once the
+    directory is emptied; if it still cannot be, the build fails with
+    `Error::Unmarked`, saying the directory must be deleted. A `RUN` cannot stop
+    the build with `SIGINT` or `SIGTERM`: both are blocked before any
+    thread starts and read through a `signalfd`
+    (`rnk_sandbox::block_stop_signals`). Only the kernel's, those sent
+    from outside the PID namespace and those from ranikust's parent count,
+    and the marker is written back before the second one's exit; any
+    other stop signal cancels the build, which still closes its store, so
+    a `RUN` flooding them cannot hide the operator's. A `RUN`
+    can still end ranikust (`SIGKILL` where it is not PID 1, the OOM
+    killer), and leave what it wrote. A state volume used here therefore
+    never serves overlay or per-stage builds later, is mounted at
+    `--state-dir` itself, and gets a warning when it is a mount root, or
+    a directory of a volume mounted at a parent;
   - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
     need `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers);
   - the `RUN` child drops every capability outside Docker's defaults from
@@ -422,6 +460,10 @@ written, `ranikust::statedir::prepare` checks the state directory:
    `statedir::SYSTEM_DIRS` (`/mnt`, `/srv`, `/opt`…, by device and inode);
    one marked only with the old `.ranikust-root` is refused, named. After `chmod 0700`, the mode must read back so;
    `builds/` likewise.
+4. On `/`, the store then refuses a marked directory too, and anything
+   but its own marker and leftovers. A persistent store refuses a
+   directory holding `.ranikust-building`, and neither store opens while
+   the other holds the directory (ADR-0077).
 
 `ranikust` holds kaniko mode on `/` with `flock` on a descriptor of `/`
 for the whole build, and refuses kaniko mode outside a container where

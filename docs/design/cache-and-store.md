@@ -77,6 +77,20 @@ form of a flattened base in the store is not designed yet].
   `/` itself, held by `ranikust`; a second build on the container's `/` is
   refused, whatever its state directory. Other builds share the
   store through the per-digest locks, each in its own `builds/<build-id>`.
+- **Per state directory**: every store holds a `flock` on the state
+  directory itself for its life, taken before anything is written
+  ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+  A persistent store holds it shared, so persistent builds share a state
+  directory. An anonymous store (kaniko mode on `/`) holds it exclusive,
+  so it never runs beside another build there (`Error::Busy`, whichever
+  comes first): a `Direct` `RUN` writes the state directory as root.
+  The anonymous store also refuses a persistent store
+  (`Error::StateNotEmpty`, naming what it found) and empties the directory
+  at its end, its files closed first and its lock released last. A
+  persistent store refuses a directory holding `.ranikust-building`
+  (`Error::UsedOnSlash`). The anonymous store makes that marker its own
+  again after every `RUN` and first thing at its end. A close that leaves
+  anything is `Error::NotEmptied`, which fails the build.
 - Locks are `flock` on lock files in the store, released by the kernel when
   the process dies (T0 test with `SIGKILL`). Per-digest lock files are never
   removed, so no build ever locks a file another has just unlinked.

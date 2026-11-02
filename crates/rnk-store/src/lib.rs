@@ -44,6 +44,6 @@ pub use error::{Error, Result};
 pub use fence::{NamedGuard, RunGuard};
 pub use key::EntryKey;
 pub use store::{
-    BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, STATE_MARKER, Store,
-    TmpEntry,
+    BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper, STATE_MARKER,
+    Store, TmpEntry,
 };

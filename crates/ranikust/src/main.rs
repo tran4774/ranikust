@@ -466,6 +466,20 @@ fn kaniko(
              bounds the uploads"
         );
     }
+    // On `/` a `RUN` shares ranikust's PID namespace: SIGINT and SIGTERM
+    // are blocked before any thread starts, and read with their sender, so
+    // that only the operator's stop the build (ADR-0077).
+    let stop = if on_slash {
+        let blocked = rnk_sandbox::block_stop_signals().map_err(|e| {
+            Failure::error(format!(
+                "{how}: kaniko mode on /: cannot block SIGINT and SIGTERM, so that a RUN cannot \
+                 stop the build: {e}"
+            ))
+        })?;
+        Some(blocked)
+    } else {
+        None
+    };
     let setup = tracing::debug_span!("ranikust.setup")
         .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile))
         .map_err(Failure::refused)?;
@@ -483,8 +497,8 @@ fn kaniko(
         state_dir,
         root_lock,
     } = setup;
-    let snapshots = match root {
-        Some((root, root_path)) => build::Snapshots::Kaniko {
+    let snapshots = match (root, stop) {
+        (Some((root, root_path)), Some(stop)) => build::Snapshots::Kaniko {
             snapshotter: kaniko_snapshotter(
                 config,
                 root,
@@ -494,8 +508,16 @@ fn kaniko(
                 metrics_file,
             )?,
             isolation,
+            stop,
         },
-        None => build::Snapshots::KanikoStages(stages_snapshotter(config, &store, metrics_file)?),
+        (Some(_), None) => {
+            return Err(Failure::error(
+                "kaniko mode on /: the stop signals were not blocked",
+            ));
+        }
+        (None, _) => {
+            build::Snapshots::KanikoStages(stages_snapshotter(config, &store, metrics_file)?)
+        }
     };
     let built = build::run(config, store, sandbox, snapshots).map_err(Failure::error)?;
     // The lock of `/` is held to the end of the build.

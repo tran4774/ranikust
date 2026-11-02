@@ -721,16 +721,199 @@ fn a_marker_that_is_not_a_regular_file_never_blocks_the_start() {
     assert!(matches!(store.named_window(), Err(Error::Anonymous { .. })));
     store.close().unwrap();
     fs::remove_file(&marker).unwrap();
-    // A link: never followed, counted likewise.
+    // A link: never followed, counted likewise, and replaced by a regular
+    // file holding this container's mark, which stays (ADR-0077).
     std::os::unix::fs::symlink("/etc/hostname", &marker).unwrap();
+    let hostname = fs::read("/etc/hostname").ok();
     let store = Store::open_anonymous(&state).unwrap();
     assert!(matches!(store.named_window(), Err(Error::Anonymous { .. })));
     store.close().unwrap();
+    assert!(fs::symlink_metadata(&marker).unwrap().is_file());
+    assert!(fs::read_to_string(&marker).unwrap().starts_with("pid:["));
+    assert_eq!(fs::read("/etc/hostname").ok(), hostname);
+}
+
+/// A state directory as kaniko mode on `/` uses it: new and empty.
+fn anon_state(dir: &Path) -> (PathBuf, PathBuf) {
+    let state = dir.join("state");
+    fs::create_dir(&state).unwrap();
+    let marker = state.join(".ranikust-building");
+    (state, marker)
+}
+
+#[test]
+fn a_marker_a_run_removed_is_written_again_and_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, marker) = anon_state(dir.path());
+    let store = Store::open_anonymous(&state).unwrap();
+    let mine = fs::read(&marker).unwrap();
+    let run = store.enter_run().unwrap();
+    fs::remove_file(&marker).unwrap();
+    store.leave_run(run, true).unwrap();
+    assert_eq!(fs::read(&marker).unwrap(), mine);
+    // The build makes no more names, and the marker stays at the end.
+    assert!(store.named_window().is_err());
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+    let e = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+}
+
+#[test]
+fn a_marker_a_run_rewrote_for_another_container_is_replaced_and_stays() {
+    // Another PID namespace's text would let the next build take the
+    // marker over and make names while this build's processes live.
+    let dir = tempfile::tempdir().unwrap();
+    let (state, marker) = anon_state(dir.path());
+    let store = Store::open_anonymous(&state).unwrap();
+    let mine = fs::read(&marker).unwrap();
+    let run = store.enter_run().unwrap();
+    fs::write(&marker, "pid:[1] 00000000-0000-0000-0000-000000000000\n").unwrap();
+    store.leave_run(run, true).unwrap();
+    assert_eq!(fs::read(&marker).unwrap(), mine);
+    store.close().unwrap();
+    assert_eq!(fs::read(&marker).unwrap(), mine);
+}
+
+#[test]
+fn a_marker_that_is_a_full_directory_is_replaced_by_a_fresh_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, marker) = anon_state(dir.path());
+    // Left by an earlier build: counted as this container's, cut short.
+    fs::create_dir_all(marker.join("a/b")).unwrap();
+    fs::write(marker.join("a/b/c"), "x").unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(fs::symlink_metadata(&marker).unwrap().is_file());
+    let mine = fs::read(&marker).unwrap();
+    // A `RUN` does the same during this build.
+    let run = store.enter_run().unwrap();
+    fs::remove_file(&marker).unwrap();
+    fs::create_dir_all(marker.join("d")).unwrap();
+    fs::write(marker.join("d/e"), "y").unwrap();
+    store.leave_run(run, true).unwrap();
+    assert_eq!(fs::read(&marker).unwrap(), mine);
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+    assert_eq!(fs::read(&marker).unwrap(), mine);
+}
+
+#[test]
+fn a_failed_close_after_a_run_removed_the_marker_keeps_one_and_fails() {
+    if rustix::process::geteuid().is_root() {
+        // Root removes from a directory it may not write: no failure to see.
+        eprintln!("skipped as root: the failure needs a permission check");
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, marker) = anon_state(dir.path());
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    // A directory whose entries cannot be removed, then the marker gone,
+    // after the last check (a process the sweep missed).
+    fs::create_dir(state.join("stuck")).unwrap();
+    fs::write(state.join("stuck/file"), "x").unwrap();
+    fs::set_permissions(state.join("stuck"), fs::Permissions::from_mode(0o500)).unwrap();
+    store.leave_run(run, true).unwrap();
+    fs::remove_file(&marker).unwrap();
+    let e = store.close().unwrap_err();
+    assert!(matches!(e, Error::NotEmptied { .. }), "{e}");
+    assert!(e.to_string().contains("\"stuck\""), "{e}");
+    assert!(e.to_string().contains("another build"), "{e}");
+    assert!(fs::symlink_metadata(&marker).unwrap().is_file());
+    let e = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+    fs::set_permissions(state.join("stuck"), fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+fn the_marker_keeper_writes_a_removed_marker_where_the_store_is_never_closed() {
+    // A second signal ends the process before `close`: the keeper puts
+    // the marker back first.
+    let dir = tempfile::tempdir().unwrap();
+    let (state, marker) = anon_state(dir.path());
+    let store = Store::open_anonymous(&state).unwrap();
+    let keeper = store.marker_keeper().unwrap().expect("an anonymous store");
+    let run = store.enter_run().unwrap();
+    fs::remove_file(&marker).unwrap();
+    let outside = dir.path().join("outside");
+    fs::write(&outside, "kept").unwrap();
+    plant_as_a_run(&state, &outside);
+    keeper.keep().unwrap();
+    drop(run);
+    drop(store);
+    assert!(fs::symlink_metadata(&marker).unwrap().is_file());
+    let e = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+    // Anything already under the name stays as it is.
+    fs::remove_file(&marker).unwrap();
+    fs::create_dir(&marker).unwrap();
+    keeper.keep().unwrap();
+    assert!(marker.is_dir());
+    // A persistent store has none.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&paths(dir.path())).unwrap();
+    assert!(store.marker_keeper().unwrap().is_none());
+}
+
+#[test]
+fn a_tree_deeper_than_path_max_is_emptied_at_the_end() {
+    use rustix::fs::{CWD, Mode, OFlags, mkdirat, openat};
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    const DEPTH: u64 = 2100; // "d/" each: 4200 bytes, past PATH_MAX
+    let limit = getrlimit(Resource::Nofile);
+    let want = DEPTH + 64;
+    if limit.maximum.is_some_and(|max| max < want) {
+        eprintln!("skipped: RLIMIT_NOFILE's hard limit is below {want}");
+        return;
+    }
+    setrlimit(
+        Resource::Nofile,
+        Rlimit {
+            current: Some(want.max(limit.current.unwrap_or(0))),
+            maximum: limit.maximum,
+        },
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _marker) = anon_state(dir.path());
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    let mut at = openat(CWD, &state, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    for _ in 0..DEPTH {
+        mkdirat(&at, "d", Mode::from_raw_mode(0o700)).unwrap();
+        at = openat(&at, "d", OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
+    }
+    drop(at);
+    store.leave_run(run, true).unwrap();
+    store.close().unwrap();
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+}
+
+#[test]
+fn a_refusal_names_what_the_state_directory_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _marker) = anon_state(dir.path());
+    // A name NFS gives a file removed while open: not a persistent store.
+    fs::write(state.join(".nfs000000000001"), "").unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
+    let shown = e.to_string();
+    assert!(shown.contains("\".nfs000000000001\""), "{shown}");
+    assert!(shown.contains("NFS or FUSE"), "{shown}");
+    assert!(!shown.contains("persistent store ("), "{shown}");
+    // A persistent store is named as one.
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    Store::open(&BuildPaths::new(dir.path(), &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
     assert!(
-        fs::symlink_metadata(&marker)
-            .unwrap()
-            .file_type()
-            .is_symlink()
+        e.to_string()
+            .contains("a persistent store (.ranikust-state"),
+        "{e}"
     );
 }
 
@@ -797,4 +980,134 @@ fn a_failed_anonymous_fill_publishes_nothing() {
     });
     assert!(matches!(r, Err(Error::Fill { .. })), "{r:?}");
     assert_eq!(store.get(&key).unwrap(), None);
+}
+
+/// What a `Direct` `RUN` in kaniko mode on `/` can write in the state
+/// directory, as root on its filesystem: a forged store marker, a layer
+/// under a chain id for a later build to reuse, links and a FIFO.
+fn plant_as_a_run(state: &Path, outside: &Path) {
+    fs::write(state.join(".ranikust-state"), "").unwrap();
+    let layer = state.join(format!("layers/v2/sha256/{}", "07".repeat(32)));
+    fs::create_dir_all(&layer).unwrap();
+    fs::write(layer.join("planted"), "poison").unwrap();
+    std::os::unix::fs::symlink(outside, state.join("link")).unwrap();
+    fs::hard_link(outside, state.join("hardlink")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        state.join("fifo"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_anonymous_store_refuses_a_persistent_store() {
+    // Kaniko mode on `/` builds with a temporary store only: its `RUN` could
+    // change what the builds of a persistent store reuse (ADR-0077).
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    Store::open(&BuildPaths::new(dir.path(), &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    let before = names(&state);
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
+    assert!(e.to_string().contains("temporary store"), "{e}");
+    assert_eq!(names(&state), before);
+}
+
+#[test]
+fn an_anonymous_store_refuses_files_it_did_not_leave() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join("notes"), "x").unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
+    assert_eq!(names(&state), ["notes"]);
+}
+
+#[test]
+fn a_kaniko_build_on_slash_and_other_builds_never_share_a_state_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let paths = BuildPaths::new(dir.path(), &state);
+    // An anonymous store holds it: a persistent one is refused and writes
+    // nothing there.
+    let anon = Store::open_anonymous(&state).unwrap();
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::Busy { .. }), "{e}");
+    assert_eq!(names(&state), [".ranikust-building"]);
+    anon.close().unwrap();
+    // A persistent store holds it: an anonymous one is refused.
+    let first = Store::open(&paths).unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::Busy { .. }), "{e}");
+    // Persistent builds still share it.
+    let second = Store::open(&paths).unwrap();
+    second.close().unwrap();
+    first.close().unwrap();
+}
+
+#[test]
+fn a_kaniko_build_on_slash_leaves_nothing_its_run_wrote() {
+    // Published entries are reused without hashing them again, which holds
+    // only while no `RUN` can write the state directory. A `Direct` `RUN`
+    // can, so the anonymous store empties it at its end (ADR-0077).
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let outside = dir.path().join("outside");
+    fs::write(&outside, "kept").unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    plant_as_a_run(&state, &outside);
+    store.leave_run(run, true).unwrap();
+    store.close().unwrap();
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "kept");
+    // A persistent store opened there next starts empty: nothing planted is
+    // taken for a published entry.
+    let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    assert_eq!(store.get(&EntryKey::Layer(digest(7))).unwrap(), None);
+    store.close().unwrap();
+}
+
+#[test]
+fn a_kaniko_build_on_slash_cut_short_keeps_persistent_stores_off_its_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let outside = dir.path().join("outside");
+    fs::write(&outside, "kept").unwrap();
+    let paths = BuildPaths::new(dir.path(), &state);
+    // A `RUN` that ended with an error may have left processes: the marker
+    // stays, the rest goes.
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    plant_as_a_run(&state, &outside);
+    store.leave_run(run, false).unwrap();
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "kept");
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+    // A forged store marker beside it changes nothing.
+    fs::write(state.join(".ranikust-state"), "").unwrap();
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+    fs::remove_file(state.join(".ranikust-state")).unwrap();
+    // A build killed before its end leaves what its `RUN` wrote, and its
+    // marker: no persistent store opens on it either.
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    plant_as_a_run(&state, &outside);
+    store.leave_run(run, true).unwrap();
+    drop(store);
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
 }
