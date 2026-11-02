@@ -126,6 +126,18 @@ impl Stat {
         self.mode & PERMISSION_BITS
     }
 
+    /// Whether `other` describes the same inode: the same inode number on
+    /// the same device.
+    pub(crate) fn same_inode(&self, other: &Stat) -> bool {
+        (self.ino, self.dev_major, self.dev_minor) == (other.ino, other.dev_major, other.dev_minor)
+    }
+
+    /// Whether `other` describes the same entry: the same inode, reached on
+    /// the same mount.
+    pub(crate) fn same_entry(&self, other: &Stat) -> bool {
+        self.same_inode(other) && self.mnt_id == other.mnt_id
+    }
+
     fn from_statx(x: &Statx) -> Self {
         let t = |ts: rustix::fs::StatxTimestamp| FileTime {
             secs: ts.tv_sec,
@@ -359,9 +371,7 @@ pub(crate) fn read_xattrs(
         // pinned symlink, not an entry swapped in meanwhile.
         let pinned = statx_at(fd, OsStr::new(""), path)?;
         let named = statx_at(pfd, name, path)?;
-        if (named.ino, named.dev_major, named.dev_minor)
-            != (pinned.ino, pinned.dev_major, pinned.dev_minor)
-        {
+        if !named.same_inode(&pinned) {
             return Err(Error::Changed {
                 path: path.to_owned(),
             });
@@ -428,9 +438,7 @@ pub(crate) fn strip_overlay_own(
         // By name: check first that the name still is the pinned symlink.
         let pinned = statx_at(fd, OsStr::new(""), path)?;
         let named = statx_at(pfd, name, path)?;
-        if (named.ino, named.dev_major, named.dev_minor)
-            != (pinned.ino, pinned.dev_major, pinned.dev_minor)
-        {
+        if !named.same_inode(&pinned) {
             return Err(Error::Changed {
                 path: path.to_owned(),
             });

@@ -639,11 +639,7 @@ impl RootPath {
             path: path.to_owned(),
             reason,
         };
-        let same = |st: &Stat| {
-            !st.mount_root
-                && (st.ino, st.dev_major, st.dev_minor, st.mnt_id)
-                    == (want.ino, want.dev_major, want.dev_minor, want.mnt_id)
-        };
+        let same = |st: &Stat| !st.mount_root && st.same_entry(&want);
         let before = meta::statx_at(self.fd(), from_os, name)?;
         if before.file_type() != FileType::Directory || !same(&before) {
             return Err(refused(name, "the name no longer holds the root to move"));
@@ -948,7 +944,7 @@ pub(crate) fn open_name(
 pub(crate) fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()> {
     let own = meta::statx_at(rustix::fs::CWD, OsStr::new("/"), Path::new("/"))?;
     let st = meta::statx_at(root.fd(), OsStr::new(""), path)?;
-    if (st.ino, st.dev_major, st.dev_minor) == (own.ino, own.dev_major, own.dev_minor) {
+    if st.same_inode(&own) {
         return Err(Error::InvalidPath {
             path: path.to_owned(),
             reason: "the machine's own root directory",
