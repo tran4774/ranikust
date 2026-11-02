@@ -520,14 +520,16 @@ fn remove_unlocked(path: &Path) {
     }
 }
 
-/// Opens the journal `path` for I/O only if it is a regular file, as the
-/// store opens its lock files: the entry is pinned with
-/// `O_PATH | O_NOFOLLOW`, its type is checked on that descriptor, and only
-/// a regular file is reopened, through ranikust's own `/proc/self/fd`,
-/// with `O_NONBLOCK | O_NOCTTY`. A FIFO planted at a journal's name would
-/// block the replay in `open`, or, opened read-write, in a `read` whose
-/// only writer is the replay itself; a device node would be opened as
-/// root. Neither ever is: the open fails with `InvalidData`.
+/// Opens the journal `path` for I/O only if it is a regular file of at most
+/// [`MAX_JOURNAL_BYTES`], as the store opens its lock files: the entry is
+/// pinned with `O_PATH | O_NOFOLLOW`, its type and size are checked on that
+/// descriptor, and only then is it reopened, through this thread's own
+/// `/proc/thread-self/fd`, with `O_NONBLOCK | O_NOCTTY`. A FIFO planted at
+/// a journal's name would block the replay in `open`, or, opened
+/// read-write, in a `read` whose only writer is the replay itself; a
+/// device node would be opened as root. Neither ever is: the open fails
+/// with `InvalidData`, and a larger file with `FileTooLarge`, before
+/// anything opens or locks it.
 fn open_journal(path: &Path, write: bool) -> io::Result<File> {
     use rustix::fs::{Mode, OFlags};
     let pinned = rustix::fs::open(
@@ -542,13 +544,18 @@ fn open_journal(path: &Path, write: bool) -> io::Result<File> {
             "not a regular file, so not a journal ranikust wrote",
         ));
     }
+    if u64::try_from(st.st_size).map_or(true, |size| size > MAX_JOURNAL_BYTES) {
+        return Err(too_large());
+    }
+    // This thread's table: the one the pinned descriptor is in, even if a
+    // thread ever unshares its files.
     let proc = rustix::fs::open(
-        "/proc/self/fd",
+        "/proc/thread-self/fd",
         OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
     )?;
     if rustix::fs::fstatfs(&proc)?.f_type != rustix::fs::PROC_SUPER_MAGIC {
-        return Err(io::Error::other("/proc/self/fd is not on procfs"));
+        return Err(io::Error::other("/proc/thread-self/fd is not on procfs"));
     }
     let access = if write { OFlags::RDWR } else { OFlags::RDONLY };
     let num = std::os::fd::AsRawFd::as_raw_fd(&pinned).to_string();
@@ -609,10 +616,8 @@ fn replay_locked(
     if st.st_nlink == 0 {
         return Ok(None);
     }
-    // Bounded both before and while reading: the file may still grow.
-    if u64::try_from(st.st_size).map_or(true, |size| size > MAX_JOURNAL_BYTES) {
-        return Err(io_err("read the stub journal", path, too_large()));
-    }
+    // `open_journal` checked the size; bounded again while reading, since
+    // the file may have grown since.
     let mut text = Vec::new();
     io::Read::take(&mut *file, MAX_JOURNAL_BYTES + 1)
         .read_to_end(&mut text)
@@ -932,9 +937,14 @@ fn parse(text: &[u8]) -> (Option<PathBuf>, Vec<StubRecord>) {
                 let (Some(path), Some(mtime)) = (unhex(path), parse_time(mtime)) else {
                     continue;
                 };
-                let path = path_from(path);
-                if let Some(stub) = stubs.iter_mut().rev().find(|s| s.path == path) {
-                    stub.placed_mtime = Some(mtime);
+                // The writer journals `placed` right after the entry it
+                // completes, so only the newest record can match: a planted
+                // journal of unmatched lines costs one comparison each.
+                if let Some(last) = stubs.last_mut()
+                    && last.placed_mtime.is_none()
+                    && last.path.as_os_str().as_bytes() == path.as_slice()
+                {
+                    last.placed_mtime = Some(mtime);
                 }
             }
             _ => {}
@@ -1191,6 +1201,67 @@ mod tests {
         let len = fs::metadata(f.runs.join("1.journal")).unwrap().len();
         assert!(len < MAX_JOURNAL_BYTES, "{len}");
         j.finish().unwrap();
+    }
+
+    /// A file over the bound is refused on its pinned descriptor, before
+    /// anything opens it for I/O or locks it.
+    #[test]
+    fn a_journal_over_the_bound_is_refused_before_it_is_opened() {
+        let f = fixture();
+        let big = f.runs.join("x.journal");
+        File::create(&big)
+            .unwrap()
+            .set_len(MAX_JOURNAL_BYTES + 1)
+            .unwrap();
+        for write in [false, true] {
+            let err = open_journal(&big, write).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::FileTooLarge, "{err}");
+        }
+        File::create(&big)
+            .unwrap()
+            .set_len(MAX_JOURNAL_BYTES)
+            .unwrap();
+        open_journal(&big, true).unwrap();
+    }
+
+    /// A journal within the bound whose `placed` lines match no record:
+    /// parsing takes time in proportion to its lines, never to their square.
+    #[test]
+    fn a_planted_journal_within_the_bound_parses_in_linear_time() {
+        use std::io::Write as _;
+        let f = fixture();
+        let mut text = Vec::new();
+        while text.len() < 7_900_000 {
+            text.extend_from_slice(b"stub\td\t2f\t0.0\t0.0\n");
+        }
+        while text.len() < 16_000_000 {
+            text.extend_from_slice(b"placed\t2f61\t0.0\n");
+        }
+        assert!(u64::try_from(text.len()).unwrap() <= MAX_JOURNAL_BYTES);
+        File::create(f.runs.join("x.journal"))
+            .unwrap()
+            .write_all(&text)
+            .unwrap();
+        assert_eq!(
+            replay_within(&f),
+            Some(Replayed {
+                journals: 1,
+                stubs: 0
+            }),
+            "parsing took longer than 10 s"
+        );
+    }
+
+    #[test]
+    fn a_placed_record_completes_only_the_newest_entry() {
+        let text = format!(
+            "stub\td\t{a}\t1.0\t2.0\nplaced\t{a}\t3.0\nstub\td\t{b}\t1.0\t2.0\nplaced\t{a}\t4.0\n",
+            a = hex(b"/a"),
+            b = hex(b"/b"),
+        );
+        let (_, stubs) = parse(text.as_bytes());
+        let placed: Vec<_> = stubs.iter().map(|s| s.placed_mtime).collect();
+        assert_eq!(placed, [Some(FileTime::from_secs(3)), None]);
     }
 
     /// A device node at a journal's name is never opened: as root, opening
