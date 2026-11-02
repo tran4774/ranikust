@@ -373,6 +373,8 @@ pub(crate) unsafe fn set_nodev_recursive(path: &std::ffi::CStr) -> libc::c_long 
 /// the clone.
 pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -> ! {
     let err = fds.err_w;
+    // First: ranikust's runtime handlers must not run in the child.
+    default_signals();
     let parent = ParentCheck::open(err, fds.parent);
     arm_death_signal(err, parent);
     close_inherited(args, fds, parent);
@@ -535,11 +537,14 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// The init then keeps only what it needs to wait: no capability, no
 /// descriptor but the status pipe's write end, no signal handler (the
 /// kernel drops every signal a process of the namespace sends to its PID 1
-/// whose disposition is the default), not dumpable, in a session of its own
-/// so that no terminal signal reaches it. It reaps every process that
-/// reparents to it; when the command exits, it writes the command's wait
-/// status on the status pipe and exits, and the kernel kills the rest, as
-/// when the command was PID 1 itself.
+/// whose disposition is the default), not dumpable, its copy of ranikust's
+/// argument and environment strings zeroed, in a session of its own so that
+/// no terminal signal reaches it. The command waits on the go pipe until
+/// the init has given all that up, so a failure of the init's own steps
+/// (`Step::Init`) always comes before the command ran. The init reaps every
+/// process that reparents to it; when the command exits, it writes the
+/// command's wait status on the status pipe and exits, and the kernel kills
+/// the rest, as when the command was PID 1 itself.
 fn run_init(
     err: RawFd,
     parent: ParentCheck,
@@ -547,10 +552,26 @@ fn run_init(
     args: &ChildArgs,
     ptrs: &ExecPtrs<'_>,
 ) -> ! {
-    // Before the fork, so the command inherits neither: it starts its own
+    // Before the fork, so the command inherits it until its own `execve`.
+    check(
+        err,
+        Step::Init,
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
+    );
+    // `/proc/1/cmdline` has no ptrace check: the strings ranikust started
+    // with (`--build-arg` values, `--secret` paths, the environment) must not
+    // be readable there by the command.
+    zero_args_and_environment(err, parent);
+    // Before the fork, so the command does not inherit it: it starts its own
     // session and resets its own state.
     check(err, Step::Init, rustix::process::setsid().map(drop));
-    default_signals();
+    // The command blocks reading the go pipe until every write end is
+    // closed: the init's goes in `close_all_except`, after its own steps.
+    let (go_r, go_w) = check(
+        err,
+        Step::Init,
+        rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC),
+    );
     // A plain `fork`: no `CLONE_VM`, a null stack, the child continues on a
     // copy of this stack, as the spawner's clone.
     let null: libc::c_long = 0;
@@ -574,14 +595,20 @@ fn run_init(
         // The command: the status pipe is the init's alone.
         // SAFETY: closing a descriptor number this process holds.
         unsafe { libc::close(status_w) };
+        drop(go_w);
+        wait_for_go(err, &go_r);
+        drop(go_r);
         switch_user_and_exec(err, None, args, ptrs);
     }
     let Ok(command) = libc::pid_t::try_from(ret) else {
         fail(err, Step::Init, Errno::INVAL)
     };
+    drop(go_r);
     init_keep_nothing(err, parent, command);
     // Nothing is left to report on the error pipe: the command's own copy
-    // says whether it reached `execve`.
+    // says whether it reached `execve`. Closing the go pipe's write end,
+    // with every other descriptor, lets the command go on.
+    let _ = go_w.into_raw_fd();
     close_all_except(&[status_w]);
     let status = reap_until(command);
     let bytes = status.to_le_bytes();
@@ -593,10 +620,85 @@ fn run_init(
     unsafe { libc::_exit(0) }
 }
 
+/// The command waits here until the init has closed its write end of the
+/// go pipe; any other outcome of the read fails the `RUN`.
+fn wait_for_go(err: RawFd, go: &OwnedFd) {
+    let mut byte = [0u8; 1];
+    loop {
+        match rustix::io::read(go, &mut byte) {
+            Ok(0) => return,
+            Ok(_) => fail(err, Step::Init, Errno::PROTO),
+            Err(Errno::INTR) => {}
+            Err(e) => fail(err, Step::Init, e),
+        }
+    }
+}
+
+/// Zeroes this process's copy of the argument and environment strings
+/// ranikust started with (`/proc/self/stat` fields 48 to 51, Linux 3.5),
+/// read through the parent check's `stat` file, which names this process.
+/// Fails the `RUN` if they cannot be found.
+fn zero_args_and_environment(err: RawFd, parent: ParentCheck) {
+    // SAFETY: `stat` is open in this process.
+    let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
+    let mut buf = [0u8; 1024];
+    let len = loop {
+        match rustix::io::pread(stat, &mut buf, 0) {
+            Ok(n) => break n,
+            Err(Errno::INTR) => {}
+            Err(e) => fail(err, Step::Init, e),
+        }
+    };
+    let Some(regions) = buf.get(..len).and_then(arg_and_env_regions) else {
+        fail(err, Step::Init, Errno::INVAL)
+    };
+    for (start, end) in regions {
+        // SAFETY: `[start, end)` is this process's own argument or
+        // environment area as the kernel records it, mapped and writable
+        // (the top of the initial stack); only zeros are written, and
+        // nothing reads these strings again in this process or its child.
+        unsafe { std::ptr::write_bytes(start as *mut u8, 0, end - start) };
+    }
+}
+
+/// `(arg_start, arg_end)` and `(env_start, env_end)` from a
+/// `/proc/<pid>/stat` line: fields 48 to 51, counted after the name.
+/// `None` unless each area is non-inverted and below 64 MiB.
+pub(crate) fn arg_and_env_regions(stat: &[u8]) -> Option<[(usize, usize); 2]> {
+    let close = stat.iter().rposition(|&b| b == b')')?;
+    // Field 3, the state, is the first after ") ".
+    let rest = stat.get(close + 2..)?;
+    let mut fields = rest.split(|&b| b == b' ' || b == b'\n');
+    let mut next = |skip: usize| -> Option<usize> {
+        let f = fields.nth(skip)?;
+        if f.is_empty() {
+            return None;
+        }
+        let mut n: usize = 0;
+        for &b in f {
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            n = n.checked_mul(10)?.checked_add(usize::from(b - b'0'))?;
+        }
+        Some(n)
+    };
+    // Field 48 is the 46th after field 3.
+    let arg_start = next(45)?;
+    let arg_end = next(0)?;
+    let env_start = next(0)?;
+    let env_end = next(0)?;
+    let regions = [(arg_start, arg_end), (env_start, env_end)];
+    regions
+        .iter()
+        .all(|&(s, e)| s <= e && e - s < (64 << 20))
+        .then_some(regions)
+}
+
 /// The init gives up what the command still needs: every capability, its
-/// dump flag, its name. It checks its death signal is still armed and
-/// ranikust still alive. On a failure the command is killed, and the
-/// failure reported as a set-up step.
+/// name. It checks its death signal is still armed and ranikust still
+/// alive. On a failure the command, still waiting on the go pipe, is
+/// killed, and the failure reported as a set-up step.
 fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t) {
     let fail_init = |e: Errno| -> ! {
         // SAFETY: a plain `kill` of this process's own child.
@@ -605,13 +707,9 @@ fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t) {
     };
     // A cosmetic name for `ps` in the `RUN`; refused only for a bad name.
     let _ = rustix::thread::set_name(INIT_NAME);
-    if let Err(e) =
-        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
-    {
-        fail_init(e);
-    }
-    // Lowering capabilities keeps the death signal: `commit_creds` clears
-    // it only for a new uid or gid, or a gain of capabilities.
+    // Lowering capabilities keeps the death signal and the dump flag:
+    // `commit_creds` clears both only when the euid, egid, fsuid or fsgid
+    // changes, or the new permitted set is not a subset of the old one.
     let none = CapabilitySets {
         effective: CapabilitySet::empty(),
         permitted: CapabilitySet::empty(),
@@ -647,44 +745,98 @@ fn parent_alive(parent: ParentCheck) -> bool {
     matches!(buf.get(..len).and_then(stat_pid_and_ppid), Some((_, ppid)) if ppid == parent.parent)
 }
 
-/// Every signal to its default disposition and none blocked. An init
-/// inherits ranikust's handlers (a signal handler of the runtime would run
-/// its code here) and, in kaniko mode on `/`, its blocked stop signals.
-/// With the default disposition, the kernel drops a signal a process of the
-/// namespace sends to its PID 1; one from outside (ranikust's `SIGKILL`)
-/// still acts. `SIGCHLD`'s default keeps children waitable.
-fn default_signals() {
-    // SAFETY: `sigaction` to `SIG_DFL` with an empty mask and no flags, and
-    // `sigprocmask`, are async-signal-safe; numbers the kernel refuses
-    // (`SIGKILL`, `SIGSTOP`, unused real-time ones) fail with EINVAL.
-    unsafe {
-        let mut dfl: libc::sigaction = std::mem::zeroed();
-        dfl.sa_sigaction = libc::SIG_DFL;
-        // 64 is the last signal number on every architecture Linux runs
-        // ranikust on (`_NSIG` - 1).
-        for sig in 1..=64 {
-            libc::sigaction(sig, &raw const dfl, std::ptr::null_mut());
+/// The kernel's `struct sigaction` for `rt_sigaction`: handler, flags,
+/// restorer, then the mask, on every architecture ranikust builds for
+/// (`SA_RESTORER` exists on x86_64 and aarch64).
+#[repr(C)]
+struct KernelSigaction {
+    handler: usize,
+    flags: libc::c_ulong,
+    restorer: usize,
+    mask: u64,
+}
+
+/// Every signal to its default disposition and none blocked, with the raw
+/// system calls: the C library's wrappers refuse the numbers it keeps for
+/// itself (musl: 32 to 34) and may take a lock (musl's `SIGABRT`). A child
+/// of ranikust inherits its handlers (the runtime's `SIGINT` and `SIGTERM`
+/// handlers would run ranikust's code in the child) and, in kaniko mode on
+/// `/`, its blocked stop signals. With the default disposition, the kernel
+/// drops a signal a process of the namespace sends to its PID 1; one from
+/// outside (ranikust's `SIGKILL`) still acts. `SIGCHLD`'s default keeps
+/// children waitable. `SIGKILL` and `SIGSTOP`, whose disposition cannot
+/// change, are skipped.
+pub(crate) fn default_signals() {
+    let dfl = KernelSigaction {
+        handler: 0, // SIG_DFL
+        flags: 0,
+        restorer: 0,
+        mask: 0,
+    };
+    for sig in 1..=64 {
+        if sig == libc::SIGKILL || sig == libc::SIGSTOP {
+            continue;
         }
-        let mut none: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&raw mut none);
-        libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut());
+        // SAFETY: `rt_sigaction` reads `dfl`, which lives across the call;
+        // the mask size is the kernel's, 8 bytes.
+        unsafe {
+            libc::syscall(
+                libc::SYS_rt_sigaction,
+                libc::c_long::from(sig),
+                &raw const dfl,
+                std::ptr::null_mut::<KernelSigaction>(),
+                8usize,
+            );
+        }
+    }
+    let none: u64 = 0;
+    // SAFETY: `rt_sigprocmask` reads `none`, alive across the call; the
+    // mask size is the kernel's.
+    unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::c_long::from(libc::SIG_SETMASK),
+            &raw const none,
+            std::ptr::null_mut::<u64>(),
+            8usize,
+        );
     }
 }
 
-/// Reaps every child until `command` has exited, and returns its wait
-/// status. Ends the init (status 125, nothing reported) if it has no child
-/// left without having reaped the command, which cannot happen.
+/// Reaps every child until `command` has exited or been killed, and returns
+/// its wait status. A tracee stop (the command may make the init its
+/// tracer with `PTRACE_TRACEME`) is never taken for an end: the init
+/// detaches, handing the stop signal on. Ends the init (status 125, nothing
+/// reported) if it has no child left without having reaped the command,
+/// which cannot happen.
 fn reap_until(command: libc::pid_t) -> i32 {
     loop {
         let mut status: libc::c_int = 0;
         // SAFETY: `waitpid` writes the status, which lives across the call.
         let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::__WALL) };
-        if pid == command {
-            return status;
-        }
-        if pid < 0 && last_errno() != Errno::INTR {
+        if pid < 0 {
+            if last_errno() == Errno::INTR {
+                continue;
+            }
             // SAFETY: `_exit` ends the process at once.
             unsafe { libc::_exit(125) }
+        }
+        if libc::WIFSTOPPED(status) {
+            // SAFETY: `PTRACE_DETACH` of a tracee this process holds
+            // stopped; integer arguments.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_ptrace,
+                    libc::c_long::from(libc::PTRACE_DETACH),
+                    libc::c_long::from(pid),
+                    0usize,
+                    libc::c_long::from(libc::WSTOPSIG(status)),
+                );
+            }
+            continue;
+        }
+        if pid == command && (libc::WIFEXITED(status) || libc::WIFSIGNALED(status)) {
+            return status;
         }
     }
 }
@@ -2241,6 +2393,35 @@ mod tests {
             Some(ppid),
             rustix::process::getppid().map(|p| p.as_raw_nonzero().get())
         );
+    }
+
+    /// Fields 48 to 51 of a stat line, after a name with spaces and
+    /// parentheses; this process's own match where its strings are.
+    #[test]
+    fn stat_lines_give_the_argument_and_environment_areas() {
+        let mut line = b"7 (a) b) R".to_vec();
+        // Fields 4 to 47, then 48 to 52.
+        for i in 4..=47 {
+            line.extend_from_slice(format!(" {i}").as_bytes());
+        }
+        line.extend_from_slice(b" 1000 1010 1010 1100 0\n");
+        assert_eq!(
+            arg_and_env_regions(&line),
+            Some([(1000, 1010), (1010, 1100)])
+        );
+        let mut inverted = line.clone();
+        let at = inverted.len() - b"1000 1010 1010 1100 0\n".len();
+        inverted.splice(at.., b"1010 1000 1010 1100 0\n".iter().copied());
+        assert_eq!(arg_and_env_regions(&inverted), None);
+        assert_eq!(arg_and_env_regions(b"7 (a) R 1 2"), None);
+        let own = std::fs::read("/proc/self/stat").unwrap();
+        let [(arg_start, arg_end), _] = arg_and_env_regions(&own).unwrap();
+        let first = std::env::args_os().next().unwrap();
+        // SAFETY: the kernel's own record of this process's argument area,
+        // mapped for the life of the process; read only.
+        let area =
+            unsafe { std::slice::from_raw_parts(arg_start as *const u8, arg_end - arg_start) };
+        assert!(area.starts_with(std::os::unix::ffi::OsStrExt::as_bytes(first.as_os_str())));
     }
 
     #[test]
