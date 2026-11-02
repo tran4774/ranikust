@@ -1269,3 +1269,34 @@ fn an_opaque_marker_below_a_var_run_link_never_empties_run() {
         assert_eq!(var_run.is_dir(), with_dir);
     }
 }
+
+/// A hardlink in a live root is made from its target's directory as
+/// `live_target` checked it.
+#[test]
+fn live_extraction_links_a_hardlink_from_its_checked_target_directory() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.dir("d/", 0o755)
+        .file("d/f", 0o644, b"x")
+        .hardlink("d/l", "d/f");
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    let link = fs::metadata(f.host("d/l")).unwrap();
+    let target = fs::metadata(f.host("d/f")).unwrap();
+    assert_eq!((link.dev(), link.ino()), (target.dev(), target.ino()));
+}
+
+/// A hardlink in a live root whose target's directory is missing is
+/// reported as missing: a live root has no lower layer to copy it from.
+#[test]
+fn live_extraction_reports_a_hardlink_whose_target_directory_is_missing() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("l", "nowhere/f");
+    let e = extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap_err();
+    assert!(
+        matches!(&e, Error::Entry { reason, .. }
+            if reason.contains("is neither in this layer nor in the root")),
+        "{e:?}"
+    );
+    assert!(fs::symlink_metadata(f.host("l")).is_err());
+}
