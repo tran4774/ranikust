@@ -17,6 +17,14 @@ fn walk_paths(ctx: &rnk_context::Context, m: Option<&rnk_ignore::Matcher>) -> Ve
     ctx.walk(m).map(|e| e.unwrap().path).collect()
 }
 
+/// The host Dockerfile at `path`, outside `ctx`, as the binary pins it.
+fn host_file(path: &Path, ctx: &rnk_context::Context) -> rnk_rootfs::HostFile {
+    match rnk_rootfs::reach(path, ctx.fence()).unwrap() {
+        rnk_rootfs::Reached::Outside(file) => file,
+        rnk_rootfs::Reached::Inside(rest) => panic!("inside the context: {}", rest.display()),
+    }
+}
+
 fn p(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
@@ -223,7 +231,8 @@ fn dockerignore_beside_the_dockerfile_wins() {
     // Beside a Dockerfile on the host, outside the context.
     let host = ctx_dir();
     fs::write(host.path().join("Dockerfile.dockerignore"), b"host\n").unwrap();
-    let dockerfile = host.path().join("Dockerfile");
+    fs::write(host.path().join("Dockerfile"), b"FROM scratch\n").unwrap();
+    let dockerfile = host_file(&host.path().join("Dockerfile"), &ctx);
     let found = ctx
         .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
         .unwrap()
@@ -245,11 +254,26 @@ fn dockerignore_symlink_beside_the_dockerfile_is_refused() {
     let tmp = ctx_dir();
     let root = tmp.path();
     let ctx = DirSource::new(root).open().unwrap();
-    let dockerfile = host.path().join("Dockerfile");
+    fs::write(host.path().join("Dockerfile"), b"FROM scratch\n").unwrap();
+    let dockerfile = host_file(&host.path().join("Dockerfile"), &ctx);
     let err = ctx
         .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
         .unwrap_err();
     assert!(matches!(err, Error::IgnoreFile { .. }), "{err:?}");
+    // A FIFO beside it is refused without being opened, so it never blocks.
+    fs::remove_file(host.path().join("Dockerfile.dockerignore")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        host.path().join("Dockerfile.dockerignore"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let err = ctx
+        .find_dockerignore(Some(DockerfileAt::Host(&dockerfile)))
+        .unwrap_err();
+    assert!(err.to_string().contains("not a regular file"), "{err}");
     // In the context: resolved inside it, where the target does not exist.
     symlink(
         outside.path().join("secret"),

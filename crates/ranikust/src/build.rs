@@ -548,11 +548,11 @@ where
 }
 
 /// Where the Dockerfile was read from.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum DockerfileAt {
-    /// Outside the build context, on the host: the path walked, symlinks
-    /// resolved.
-    Host(PathBuf),
+    /// Outside the build context, on the host: pinned with its directory,
+    /// where the ignore file beside it is looked for.
+    Host(rnk_rootfs::HostFile),
     /// Inside the build context, relative to its root.
     Context(PathBuf),
 }
@@ -573,16 +573,14 @@ fn read_dockerfile(dockerfile: &Path, context: &Context) -> Result<(String, Dock
     use std::io::Read as _;
     let rel = match rnk_rootfs::reach(dockerfile, context.fence()) {
         Ok(rnk_rootfs::Reached::Inside(rel)) => rel,
-        Ok(rnk_rootfs::Reached::Outside(pinned)) => {
-            let path = pinned.path().to_owned();
+        Ok(rnk_rootfs::Reached::Outside(file)) => {
             let mut text = String::new();
-            pinned
-                .open_regular()
+            file.open_regular()
                 .map(std::fs::File::from)
                 .map_err(|e| e.to_string())
                 .and_then(|mut f| f.read_to_string(&mut text).map_err(|e| e.to_string()))
-                .map_err(|e| format!("reading the Dockerfile {}: {e}", path.display()))?;
-            return Ok((text, DockerfileAt::Host(path)));
+                .map_err(|e| format!("reading the Dockerfile {}: {e}", file.path().display()))?;
+            return Ok((text, DockerfileAt::Host(file)));
         }
         Err(e)
             if !dockerfile.is_absolute()
@@ -2005,7 +2003,10 @@ mod tests {
         let (text, at) =
             read_dockerfile(Path::new("no-such-dir/../x/Dockerfile"), &context).unwrap();
         assert_eq!(text, "FROM scratch\n");
-        assert_eq!(at, DockerfileAt::Context(PathBuf::from("x/Dockerfile")));
+        assert!(
+            matches!(&at, DockerfileAt::Context(p) if p == Path::new("x/Dockerfile")),
+            "{at:?}"
+        );
         // Absolute and missing: an error, as kaniko's.
         assert!(read_dockerfile(Path::new("/no-such-dir/Dockerfile"), &context).is_err());
     }
@@ -2028,7 +2029,10 @@ mod tests {
 
         let (text, at) = read_dockerfile(&ctx.join("Dockerfile"), &context).unwrap();
         assert_eq!(text, "FROM scratch\n");
-        assert_eq!(at, DockerfileAt::Context(PathBuf::from("Dockerfile")));
+        assert!(
+            matches!(&at, DockerfileAt::Context(p) if p == Path::new("Dockerfile")),
+            "{at:?}"
+        );
         let e = read_dockerfile(&ctx.join("escape"), &context).unwrap_err();
         assert!(!e.contains("SECRET"), "{e}");
         // Through an operator's own symlink into the context: the same.
@@ -2053,7 +2057,10 @@ mod tests {
         let context = rnk_context::open(&ContextSpec::Dir(ctx)).unwrap();
         let (text, at) = read_dockerfile(&cm.join("Dockerfile"), &context).unwrap();
         assert_eq!(text, "FROM scratch\n");
-        assert_eq!(at, DockerfileAt::Host(cm.join("..2026_11_02/Dockerfile")));
+        assert!(
+            matches!(&at, DockerfileAt::Host(f) if f.path() == cm.join("..2026_11_02/Dockerfile")),
+            "{at:?}"
+        );
 
         rustix::fs::mknodat(
             rustix::fs::CWD,

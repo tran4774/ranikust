@@ -50,7 +50,7 @@ pub use error::{Error, Result};
 pub use extract::{
     Extracted, Whiteouts, extract, extract_live, extract_live_literal, extract_overlay,
 };
-pub use host::{Fence, OutputDir, Reached, reach};
+pub use host::{Fence, HostFile, OutputDir, Reached, reach};
 pub use ignore::IgnoreList;
 pub use meta::{FileTime, FileType, Meta, Stat, is_overlay_own};
 pub use mode::{Chmod, ModeSet};

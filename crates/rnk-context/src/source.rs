@@ -3,11 +3,10 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read as _};
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use rnk_ignore::Matcher;
-use rnk_rootfs::{Fence, RootPath};
+use rnk_rootfs::{Fence, HostFile, RootPath};
 
 use crate::spec::ContextSpec;
 use crate::walk::Walk;
@@ -125,11 +124,11 @@ pub struct Context {
 }
 
 /// Where the Dockerfile was read from, for the ignore file beside it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub enum DockerfileAt<'a> {
-    /// A host path outside the context, the operator's own: the path the
-    /// Dockerfile was found at, symlinks resolved.
-    Host(&'a Path),
+    /// A host file outside the context, the operator's own: the Dockerfile
+    /// as `rnk_rootfs::reach` pinned it, with its directory.
+    Host(&'a HostFile),
     /// A path inside the context, relative to its root: what its owner
     /// put there, reached through the context's root (ADR-0076).
     Context(&'a Path),
@@ -221,8 +220,8 @@ impl Context {
         };
         match dockerfile {
             Some(DockerfileAt::Host(dockerfile)) => {
-                let beside = beside(dockerfile);
-                if let Some(contents) = read_beside_dockerfile(&beside)? {
+                let beside = beside(dockerfile.path());
+                if let Some(contents) = read_beside_dockerfile(dockerfile, &beside)? {
                     return Ok(Some(IgnoreFile {
                         source: IgnoreSource::Dockerfile(beside),
                         contents,
@@ -302,37 +301,22 @@ impl Context {
 }
 
 /// Reads `<Dockerfile>.dockerignore` without following a final symlink.
-/// `None` when it does not exist.
-fn read_beside_dockerfile(path: &Path) -> Result<Option<Vec<u8>>> {
+/// Reads `<Dockerfile>.dockerignore` beside a host Dockerfile, reached from
+/// the Dockerfile's own pinned directory, without following it: a symlink,
+/// a FIFO or a device node there is refused, never opened. `None` when it
+/// does not exist.
+fn read_beside_dockerfile(dockerfile: &HostFile, path: &Path) -> Result<Option<Vec<u8>>> {
     let err = |source| Error::IgnoreFile {
         path: path.to_owned(),
         source,
     };
-    // `O_NOFOLLOW` refuses a final symlink; `O_NONBLOCK` keeps a FIFO from
-    // blocking the open, and the type check below refuses it.
-    let flags = (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits();
-    let flags = i32::try_from(flags).map_err(|_| {
-        err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "open flags out of range",
-        ))
-    })?;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(flags)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(err(e)),
+    let name = path.file_name().unwrap_or_default();
+    let fd = match dockerfile.open_beside(name) {
+        Ok(Some(fd)) => fd,
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(err(io::Error::other(e))),
     };
-    if !file.metadata().map_err(err)?.file_type().is_file() {
-        return Err(err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        )));
-    }
     let mut contents = Vec::new();
-    (&file).read_to_end(&mut contents).map_err(err)?;
+    File::from(fd).read_to_end(&mut contents).map_err(err)?;
     Ok(Some(contents))
 }

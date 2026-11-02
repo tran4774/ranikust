@@ -117,14 +117,77 @@ impl Fence {
 /// Where [`reach`] led.
 #[derive(Debug)]
 pub enum Reached {
-    /// An entry outside the build context, pinned `O_PATH | O_NOFOLLOW`: never
-    /// a symlink. Its path is the one walked, symlinks replaced by what they
-    /// pointed to.
-    Outside(Pinned),
+    /// An entry outside the build context, pinned with the directory it is
+    /// in.
+    Outside(HostFile),
     /// The path enters the build context: the rest of it, relative to the
     /// context's root, for the caller to resolve through the context's
     /// [`RootPath`]. Empty when the path names the context's root itself.
     Inside(PathBuf),
+}
+
+/// An entry [`reach`] found outside the build context: pinned
+/// `O_PATH | O_NOFOLLOW`, never a symlink, with the directory it is in, so a
+/// name beside it is reached from that directory, not by path again.
+#[derive(Debug)]
+pub struct HostFile {
+    entry: Pinned,
+    dir: OwnedFd,
+}
+
+impl HostFile {
+    /// The path walked, symlinks replaced by what they pointed to.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.entry.path()
+    }
+
+    /// What `statx` said of the entry.
+    #[must_use]
+    pub fn stat(&self) -> &Stat {
+        self.entry.stat()
+    }
+
+    /// Opens the entry for reading when it is a regular file, through its
+    /// pinned inode: a FIFO or a device node is never opened.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] when it is not a regular file.
+    pub fn open_regular(&self) -> Result<OwnedFd> {
+        self.entry.open_regular()
+    }
+
+    /// Opens the regular file `name` in the entry's directory, without
+    /// following it: `None` when it is missing. It is pinned and checked
+    /// first, so a symlink, a FIFO or a device node there is refused, never
+    /// opened.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidPath`] for anything but a regular file; [`Error::Io`]
+    /// when it cannot be opened.
+    pub fn open_beside(&self, name: &OsStr) -> Result<Option<OwnedFd>> {
+        let path = self.path().with_file_name(name);
+        let pin = match root::open_name(
+            self.dir.as_fd(),
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW,
+            0,
+            false,
+            &path,
+        ) {
+            Ok(pin) => pin,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let reason = match stat_of(pin.as_fd(), &path)?.file_type() {
+            FileType::Regular => return meta::reopen(pin.as_fd(), OFlags::RDONLY, &path).map(Some),
+            FileType::Symlink => "is a symlink, which is not followed beside the Dockerfile",
+            _ => "is not a regular file",
+        };
+        Err(Error::InvalidPath { path, reason })
+    }
 }
 
 /// Walks the host path `path` from `/` (a relative one from the current
@@ -202,7 +265,12 @@ pub fn reach(path: &Path, fence: &Fence) -> Result<Reached> {
                 cur = fd;
                 at = here;
             }
-            _ if rest.is_empty() => return Ok(Reached::Outside(Pinned::new(fd, st, here))),
+            _ if rest.is_empty() => {
+                return Ok(Reached::Outside(HostFile {
+                    entry: Pinned::new(fd, st, here),
+                    dir: cur,
+                }));
+            }
             _ => return Err(io_err("resolve", &here, Errno::NOTDIR)),
         }
     }
@@ -210,7 +278,11 @@ pub fn reach(path: &Path, fence: &Fence) -> Result<Reached> {
         return Ok(Reached::Inside(PathBuf::new()));
     }
     let st = stat_of(cur.as_fd(), &at)?;
-    Ok(Reached::Outside(Pinned::new(cur, st, at)))
+    let dir = parent_of(cur.as_fd(), &at)?;
+    Ok(Reached::Outside(HostFile {
+        entry: Pinned::new(cur, st, at),
+        dir,
+    }))
 }
 
 /// A host directory an output goes in (ADR-0076): reached from `/` one name
