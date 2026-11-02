@@ -220,6 +220,7 @@ fn extract_with(
         dirs: BTreeMap::new(),
         created: Created::default(),
         copied: HashMap::new(),
+        copy_names: BTreeMap::new(),
         stats: Stats::default(),
         first_skipped: None,
     };
@@ -298,9 +299,12 @@ struct Extractor<'r> {
     /// [`extract_live`]: the ignore list and physical paths.
     live: Option<Live<'r>>,
     /// Lower inodes copied for a hardlink, by index in `lowers`, device and
-    /// inode, and where the copy is, so that every further link to any of
-    /// their names links to it.
-    copied: HashMap<(usize, u32, u32, u64), PathBuf>,
+    /// inode, and where the copy is with its `statx`, so that every further
+    /// link to any of their names links to it while it is still there.
+    copied: HashMap<LowerInode, (PathBuf, Stat)>,
+    /// The same copies by name: a copy the layer removes or replaces is
+    /// forgotten ([`Extractor::forget_copies`]).
+    copy_names: BTreeMap<PathBuf, LowerInode>,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
@@ -315,6 +319,9 @@ struct Extractor<'r> {
     /// the layer and the xattr's, for the one warning per layer.
     first_skipped: Option<(PathBuf, OsString)>,
 }
+
+/// A lower layer's inode: its index in `lowers`, device and inode number.
+type LowerInode = (usize, u32, u32, u64);
 
 /// What a tar entry asks for, after cleaning.
 enum Kind {
@@ -653,16 +660,27 @@ impl Extractor<'_> {
         // keyed by path, a layer linking each of a lower file's many names
         // would copy its content once per name.
         let key = (layer, st.dev_major, st.dev_minor, st.ino);
-        if let Some(copy) = self.copied.get(&key) {
+        if let Some((copy, copy_st)) = self.copied.get(&key) {
             let (cparent, cname) = path::entry(copy)?;
             let cpfd = self
                 .root
                 .resolve_dir_in(&cparent, Mounts::Stay)
                 .map_err(|e| on_mount(e, raw))?;
-            rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
-                .map_err(|e| io_err("link", path, e))?;
-            self.stats.hardlinks += 1;
-            return Ok(());
+            // A copy the layer whited out or replaced since is forgotten
+            // ([`Extractor::forget_copies`]); one reached by another name
+            // (through a symlink) is checked here: copy again rather than
+            // link what is there now.
+            let still = match meta::statx_at(cpfd.as_fd(), cname, copy) {
+                Ok(now) => now.same_inode(copy_st),
+                Err(e) if is_noent(&e) => false,
+                Err(e) => return Err(e),
+            };
+            if still {
+                rustix::fs::linkat(&cpfd, cname, pfd, name, AtFlags::empty())
+                    .map_err(|e| io_err("link", path, e))?;
+                self.stats.hardlinks += 1;
+                return Ok(());
+            }
         }
         let m = Meta {
             uid: Some(st.uid),
@@ -685,7 +703,9 @@ impl Extractor<'_> {
             path,
         )?;
         self.stats.hardlinks_copied += 1;
-        self.copied.insert(key, path.to_owned());
+        let copy_st = meta::statx_at(pfd, name, path)?;
+        self.copied.insert(key, (path.to_owned(), copy_st));
+        self.copy_names.insert(path.to_owned(), key);
         Ok(())
     }
 
@@ -801,6 +821,7 @@ impl Extractor<'_> {
         } else {
             rustix::fs::unlinkat(pfd, name, AtFlags::empty())
                 .map_err(|e| io_err("unlink", path, e))?;
+            self.forget_copies(path);
         }
         Ok(Room::Free)
     }
@@ -833,6 +854,7 @@ impl Extractor<'_> {
             // the walk removed, as found on disk: the ignore list only says
             // what might have been kept.
             self.created.clear_below(path);
+            self.forget_copies(path);
             for p in self.pending_below(path) {
                 if p == path {
                     continue;
@@ -861,10 +883,30 @@ impl Extractor<'_> {
         rustix::fs::unlinkat(pfd, name, AtFlags::REMOVEDIR)
             .map_err(|e| io_err("rmdir", path, e))?;
         self.created.remove(path);
+        self.forget_copies(path);
         for p in self.pending_below(path) {
             self.dirs.remove(&p);
         }
         Ok(true)
+    }
+
+    /// Forgets the hardlink copies at or below `path`, which the layer just
+    /// removed: a later link to their lower inode copies it again.
+    fn forget_copies(&mut self, path: &Path) {
+        let gone: Vec<PathBuf> = self
+            .copy_names
+            .range::<Path, _>((Bound::Included(path), Bound::Unbounded))
+            .map(|(p, _)| p)
+            .take_while(|p| p.starts_with(path))
+            .cloned()
+            .collect();
+        for p in gone {
+            if let Some(key) = self.copy_names.remove(&p)
+                && self.copied.get(&key).is_some_and(|(at, _)| *at == p)
+            {
+                self.copied.remove(&key);
+            }
+        }
     }
 
     /// The directories with pending metadata at or below `path`: one range
@@ -978,6 +1020,7 @@ impl Extractor<'_> {
                         rustix::fs::unlinkat(&pfd, hidden, AtFlags::empty())
                             .map_err(|e| io_err("unlink", &target, e))?;
                         self.created.remove(&target);
+                        self.forget_copies(&target);
                         Ok(())
                     }
                 }

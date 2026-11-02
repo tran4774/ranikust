@@ -902,6 +902,38 @@ fn every_name_of_a_lower_inode_shares_one_copy() {
     assert_eq!(xattr(&f.host("a"), "user.overlay.origin"), None);
 }
 
+/// A copy the layer then whited out or replaced is not the copy any more:
+/// a later link to another name of the same lower inode copies it again
+/// instead of linking whatever is at the old copy's name.
+#[test]
+fn a_copy_the_layer_removed_is_not_linked_again() {
+    let lower = Fixture::new();
+    fs::write(lower.host("big"), b"content").unwrap();
+    for n in ["n1", "n2"] {
+        fs::hard_link(lower.host("big"), lower.host(n)).unwrap();
+    }
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("a", "big")
+        .file(".wh.a", 0o644, b"")
+        .hardlink("b", "n1")
+        .file("b", 0o644, b"replaced")
+        .hardlink("c", "n2");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    // `a` is overlay's whiteout now, `b` the layer's own file.
+    assert!(
+        fs::symlink_metadata(f.host("a"))
+            .unwrap()
+            .file_type()
+            .is_char_device()
+    );
+    assert_eq!(fs::read(f.host("b")).unwrap(), b"replaced");
+    let c = fs::symlink_metadata(f.host("c")).unwrap();
+    assert!(c.is_file());
+    assert_eq!(fs::read(f.host("c")).unwrap(), b"content");
+    assert_eq!(c.nlink(), 1);
+}
+
 #[test]
 fn the_nearest_lower_layer_shows_the_target() {
     let top = Fixture::new();

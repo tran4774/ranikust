@@ -389,6 +389,10 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Fixed
 
+- In overlay mode, a layer that whited out or replaced its copy of a
+  file from a lower layer, then hardlinked another name of the same lower
+  file, linked whatever had taken the copy's place (the whiteout, or the
+  layer's new file). It now copies the lower file again.
 - Loading the build context's entries no longer looks at every
   directory above each entry: in a deep context that took CPU growing
   with the square of the depth before the first stage ran. It now stops
@@ -397,7 +401,8 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   start-up) took memory growing with the square of its depth: each level
   kept its full path. A `RUN` could make a chain deep enough to get the
   build killed for memory, again at every later start-up cleanup. Memory
-  is now linear in depth, for the deletion and for kaniko mode's prune.
+  now grows with the entries on the walk's stack, no longer with the
+  square of the depth, for the deletion and for kaniko mode's prune.
 - Kaniko mode's extraction of a base layer or `COPY --from` image no
   longer keeps the path of every entry the layer created until it ends.
   A layer that kept creating and whiting out the same deep tree, or wrote
