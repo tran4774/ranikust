@@ -68,7 +68,6 @@ fn run_in(dockerfile: &str, need: Option<KeepNeed>, tars: bool) -> Outcome {
     let root = top.join("root");
     let outside = top.join("outside");
     fs::create_dir_all(root.join("state")).unwrap();
-    fs::write(root.join("state/blob"), STATE).unwrap();
     fs::create_dir(&outside).unwrap();
     fs::write(outside.join("secret"), HOST).unwrap();
     fs::create_dir(top.join("kept")).unwrap();
@@ -97,6 +96,10 @@ fn run_in(dockerfile: &str, need: Option<KeepNeed>, tars: bool) -> Outcome {
     } else {
         Store::open(&BuildPaths::new(&top, &state)).unwrap()
     });
+    // After the store opens: an anonymous store refuses a state directory
+    // holding anything it did not leave there (ADR-0077), as a `RUN` writes
+    // it later.
+    fs::write(root.join("state/blob"), STATE).unwrap();
     if tars {
         kaniko.keep_in_anonymous_files(Arc::clone(&store)).unwrap();
     }

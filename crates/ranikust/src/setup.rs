@@ -252,11 +252,25 @@ const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
 
 /// Opens the store in `state_dir` for a build whose root is `root`.
 fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
-    Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| Refusal {
+    Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| store_refusal(&e, state_dir))
+}
+
+/// A store that cannot be opened in `state_dir`, as a [`Refusal`]. A state
+/// directory another build holds, or one kaniko mode on `/` may not share
+/// with persistent builds (ADR-0077), says so itself.
+fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
+    use rnk_store::Error;
+    let reason = match e {
+        Error::Busy { .. } | Error::StateNotEmpty { .. } | Error::UsedOnSlash { .. } => {
+            e.to_string()
+        }
+        _ => format!("cannot open the store in {}: {e}", state_dir.display()),
+    };
+    Refusal {
         kind: Kind::Other,
-        reason: format!("cannot open the store in {}: {e}", state_dir.display()),
+        reason,
         guidance: "",
-    })
+    }
 }
 
 /// What kaniko mode's set-up hands to the build.
@@ -331,13 +345,11 @@ pub(crate) fn set_up_kaniko(
     prepare_state_dir(state_dir)?;
     let slash = Path::new("/");
     // On `/` a `RUN` reads any file with a path: the store keeps none, its
-    // blobs are anonymous files (ADR-0051).
+    // blobs are anonymous files (ADR-0051). A `RUN` also writes the state
+    // directory there, so it is never a persistent store, and nothing a
+    // `RUN` left outlives the build (ADR-0077).
     let store = if on_slash {
-        Store::open_anonymous(state_dir).map_err(|e| Refusal {
-            kind: Kind::Other,
-            reason: format!("cannot open the store in {}: {e}", state_dir.display()),
-            guidance: "",
-        })?
+        Store::open_anonymous(state_dir).map_err(|e| store_refusal(&e, state_dir))?
     } else {
         open_store(state_dir, state_dir)?
     };

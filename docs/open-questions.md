@@ -544,6 +544,34 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-11-01
 
+### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
+
+- **Blocks:** nothing yet (backlog); **Area:** `rnk-store`, `rnk-builder`
+- **Context:** kaniko mode on `/` keeps nothing between builds. It refuses
+  a persistent store and empties its state directory at the end, because
+  a `Direct` `RUN` is root on that directory's filesystem and could
+  change what later builds reuse without hashing again
+  ([ADR-0077](adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+  So it has no local layer cache, and `RUN --mount=type=cache` is left out
+  with a warning (ADR-0057, Q-381). The maintainer asked, on 2026-11-02,
+  for a way to mount a cache there later ("sẽ tìm giải pháp mount cache
+  trực tiếp sau").
+- **Options:**
+  - (a) A store outside every `RUN`'s reach: a directory no path of the
+    container's `/` leads to while a `RUN` runs, such as a volume the
+    store holds only by descriptor and closes off with the fence of
+    ADR-0056.
+  - (b) A store whose content is checked again on every reuse: hash each
+    blob, and keep a digest of each extracted tree checked before it is
+    used. This costs time on every build.
+  - (c) A per-build snapshot of the cache: copied in before the first
+    `RUN` and checked or discarded after the last one.
+  - (d) Keep only a registry cache (Phase 4) in that mode.
+- **Recommendation:** none yet. Decide with the Phase 4 layer cache; (d)
+  stays the default until then.
+- **Interim:** no cache in kaniko mode on `/` (ADR-0077).
+- **Raised:** 2026-11-02
+
 ## Answered
 
 ### Q-033: Which performance conditions are still unmeasured?

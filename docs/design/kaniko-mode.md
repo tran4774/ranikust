@@ -64,6 +64,28 @@ the scheduler runs one stage at a time) or a private directory per stage
     directory's path must still lead, with no link, to the directory held. The state directory holds no name while a `RUN` runs;
     what must outlive the emptying of the root (a kept stage) is a tar in
     an anonymous file (`Store::scratch_file`);
+  - the state directory is never a persistent store, and no other build
+    shares it ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+    A `Direct` `RUN` writes it as root, and persistent builds reuse
+    their entries without hashing them again. So:
+    - `Store::open_anonymous` refuses anything there but its own marker
+      and leftover names, a `.ranikust-state` store first
+      (`Error::StateNotEmpty`);
+    - it holds the state directory's `flock` exclusive, which a
+      persistent store's shared one excludes (`Error::Busy`, whichever
+      comes first);
+    - `Store::close` empties the directory of whatever a `RUN` left there,
+      through descriptors, keeping only `.ranikust-building` where it
+      stays;
+    - a persistent store refuses a directory holding that marker
+      (`Error::UsedOnSlash`).
+
+    Nothing is kept between builds in this mode: no layer cache, and cache
+    mounts are left out (ADR-0057). That is by design for now, and a safe
+    cache is [open: Q-441]. A build killed before its end, whose `RUN`
+    also deleted the marker, can leave what that `RUN` wrote. A state
+    volume used here therefore never serves overlay or per-stage builds
+    later;
   - ranikust is not dumpable: `/proc/<ranikust>/{fd,environ,mem,maps,root}`
     need `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers);
   - the `RUN` child drops every capability outside Docker's defaults from
@@ -422,6 +444,10 @@ written, `ranikust::statedir::prepare` checks the state directory:
    `statedir::SYSTEM_DIRS` (`/mnt`, `/srv`, `/opt`…, by device and inode);
    one marked only with the old `.ranikust-root` is refused, named. After `chmod 0700`, the mode must read back so;
    `builds/` likewise.
+4. On `/`, the store then refuses a marked directory too, and anything
+   but its own marker and leftovers. A persistent store refuses a
+   directory holding `.ranikust-building`, and neither store opens while
+   the other holds the directory (ADR-0077).
 
 `ranikust` holds kaniko mode on `/` with `flock` on a descriptor of `/`
 for the whole build, and refuses kaniko mode outside a container where

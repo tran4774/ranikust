@@ -472,6 +472,23 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   take twice the space until a prune exists. The new layout stops reuse
   but does not repair a `layers/v2/` tree that a crafted XFS ACL already
   damaged: root must remove it.
+- Kaniko mode on a container's `/` no longer shares its state directory.
+  Before, it accepted a state directory that held a persistent store, and
+  a persistent build could run on it at the same time. A `RUN` there,
+  which runs as root on `/`, could then plant layers or blobs that later
+  overlay-mode or per-stage builds reused without hashing them again, or
+  read and change their build directories. Now:
+  - that mode refuses a state directory holding a persistent store or
+    other files;
+  - one `flock` on the state directory keeps it apart from every other
+    build, while persistent builds still share theirs;
+  - it empties the state directory of what a `RUN` left there at the end
+    of each build;
+  - a persistent store refuses a state directory a kaniko-mode build on
+    `/` left its `.ranikust-building` marker in.
+
+  Nothing is cached between builds in that mode, by design for now
+  (ADR-0077, Q-441).
 - Setting a symlink's xattrs (extracting a layer, `COPY`) now checks,
   before and after, that the symlink's name still holds the symlink
   ranikust pinned, as reading and stripping them already did. A name

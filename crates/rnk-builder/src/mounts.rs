@@ -342,7 +342,9 @@ pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {
 /// (ADR-0057): a secret only as a variable (`env=` without `target=`); a
 /// secret as a file is refused, as it would need the `RUN`'s own tmpfs
 /// (Q-380); a cache mount is left out with a warning, the `RUN` running
-/// without the cache (Q-381).
+/// without the cache (Q-381). By design for now: kaniko mode on `/` keeps
+/// nothing between builds, cache mounts included (ADR-0077); a safe way to
+/// keep them is [open: Q-441].
 pub(crate) fn direct_mounts(mounts: &[Mount]) -> Result<Vec<Mount>> {
     check_supported(mounts)?;
     let mut kept = Vec::with_capacity(mounts.len());
@@ -351,9 +353,10 @@ pub(crate) fn direct_mounts(mounts: &[Mount]) -> Result<Vec<Mount>> {
             MountType::Cache => {
                 tracing::warn!(
                     "RUN --mount=type=cache,target={}: ignored: kaniko mode on / runs RUN \
-                     directly, where nothing can be mounted, so this RUN runs without the \
-                     cache, and what it writes there lands in its layer (a tool's cache may \
-                     hold tokens: clean it in the same RUN){}",
+                     directly, where nothing can be mounted, and keeps no cache between \
+                     builds (ADR-0077), so this RUN runs without the cache, and what it \
+                     writes there lands in its layer (a tool's cache may hold tokens: clean \
+                     it in the same RUN){}",
                     m.target,
                     if m.sharing == Some(Sharing::Locked) {
                         "; sharing=locked does not serialize it with other RUNs either"

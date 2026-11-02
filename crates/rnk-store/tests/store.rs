@@ -798,3 +798,133 @@ fn a_failed_anonymous_fill_publishes_nothing() {
     assert!(matches!(r, Err(Error::Fill { .. })), "{r:?}");
     assert_eq!(store.get(&key).unwrap(), None);
 }
+
+/// What a `Direct` `RUN` in kaniko mode on `/` can write in the state
+/// directory, as root on its filesystem: a forged store marker, a layer
+/// under a chain id for a later build to reuse, links and a FIFO.
+fn plant_as_a_run(state: &Path, outside: &Path) {
+    fs::write(state.join(".ranikust-state"), "").unwrap();
+    let layer = state.join(format!("layers/v2/sha256/{}", "07".repeat(32)));
+    fs::create_dir_all(&layer).unwrap();
+    fs::write(layer.join("planted"), "poison").unwrap();
+    std::os::unix::fs::symlink(outside, state.join("link")).unwrap();
+    fs::hard_link(outside, state.join("hardlink")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        state.join("fifo"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_anonymous_store_refuses_a_persistent_store() {
+    // Kaniko mode on `/` builds with a temporary store only: its `RUN` could
+    // change what the builds of a persistent store reuse (ADR-0077).
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    Store::open(&BuildPaths::new(dir.path(), &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    let before = names(&state);
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
+    assert!(e.to_string().contains("temporary store"), "{e}");
+    assert_eq!(names(&state), before);
+}
+
+#[test]
+fn an_anonymous_store_refuses_files_it_did_not_leave() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join("notes"), "x").unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
+    assert_eq!(names(&state), ["notes"]);
+}
+
+#[test]
+fn a_kaniko_build_on_slash_and_other_builds_never_share_a_state_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let paths = BuildPaths::new(dir.path(), &state);
+    // An anonymous store holds it: a persistent one is refused and writes
+    // nothing there.
+    let anon = Store::open_anonymous(&state).unwrap();
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::Busy { .. }), "{e}");
+    assert_eq!(names(&state), [".ranikust-building"]);
+    anon.close().unwrap();
+    // A persistent store holds it: an anonymous one is refused.
+    let first = Store::open(&paths).unwrap();
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::Busy { .. }), "{e}");
+    // Persistent builds still share it.
+    let second = Store::open(&paths).unwrap();
+    second.close().unwrap();
+    first.close().unwrap();
+}
+
+#[test]
+fn a_kaniko_build_on_slash_leaves_nothing_its_run_wrote() {
+    // Published entries are reused without hashing them again, which holds
+    // only while no `RUN` can write the state directory. A `Direct` `RUN`
+    // can, so the anonymous store empties it at its end (ADR-0077).
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let outside = dir.path().join("outside");
+    fs::write(&outside, "kept").unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    plant_as_a_run(&state, &outside);
+    store.leave_run(run, true).unwrap();
+    store.close().unwrap();
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "kept");
+    // A persistent store opened there next starts empty: nothing planted is
+    // taken for a published entry.
+    let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    assert_eq!(store.get(&EntryKey::Layer(digest(7))).unwrap(), None);
+    store.close().unwrap();
+}
+
+#[test]
+fn a_kaniko_build_on_slash_cut_short_keeps_persistent_stores_off_its_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let outside = dir.path().join("outside");
+    fs::write(&outside, "kept").unwrap();
+    let paths = BuildPaths::new(dir.path(), &state);
+    // A `RUN` that ended with an error may have left processes: the marker
+    // stays, the rest goes.
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    plant_as_a_run(&state, &outside);
+    store.leave_run(run, false).unwrap();
+    store.close().unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "kept");
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+    // A forged store marker beside it changes nothing.
+    fs::write(state.join(".ranikust-state"), "").unwrap();
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+    fs::remove_file(state.join(".ranikust-state")).unwrap();
+    // A build killed before its end leaves what its `RUN` wrote, and its
+    // marker: no persistent store opens on it either.
+    let store = Store::open_anonymous(&state).unwrap();
+    let run = store.enter_run().unwrap();
+    plant_as_a_run(&state, &outside);
+    store.leave_run(run, true).unwrap();
+    drop(store);
+    let e = Store::open(&paths).unwrap_err();
+    assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+}

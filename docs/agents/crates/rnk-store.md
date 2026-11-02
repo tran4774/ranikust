@@ -14,7 +14,8 @@ builds fetch or extract the same digest at once.
 - The store layout in the state directory (ADR-0022): `blobs/sha256/`,
   `layers/<id>/`, `caches/<sha256(id)>/`, `tmp/`, lock files, the
   per-build `builds/<id>/` areas and the `.ranikust-state` marker (`STATE_MARKER`; ADR-0050 renamed it from `.ranikust-root`).
-  An anonymous store writes only `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build (ADR-0056, ADR-0066), and holds an exclusive `flock` on the state directory (`Error::Busy` for a second build).
+  An anonymous store writes only `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build (ADR-0056, ADR-0066), and holds an exclusive `flock` on the state directory (`Error::Busy` for a second build). A persistent store holds that `flock` shared, so neither opens while the other holds the directory (ADR-0077).
+  An anonymous store refuses anything there but its marker and leftovers, a persistent store first (`Error::StateNotEmpty`), and its `close` empties the directory of whatever a `RUN` left. A persistent store refuses a directory holding `.ranikust-building` (`Error::UsedOnSlash`).
 - Per-digest `flock` locks; publication of a filled temporary entry by
   atomic `rename`.
 - Start-up clean-up of `tmp/` leftovers and of `builds/<id>` whose build is
@@ -71,12 +72,17 @@ impl Store {
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, Q-150) [open: Q-015]; digest() -> &Digest
-pub enum Error { NotAStateDir, NoFlock, Busy, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
+pub enum Error { NotAStateDir, NoFlock, Busy, StateNotEmpty, UsedOnSlash, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a
 blob again. It is synchronous; an async caller (`rnk-registry`) runs `fill`
-on a blocking thread, because the lock may wait.
+on a blocking thread, because the lock may wait. Not hashing again rests on
+one premise: no lower-trust principal writes a persistent store's state
+directory. Full-sandbox `RUN`s cannot. A `Direct` `RUN` can write its own
+state directory, which is therefore never a persistent store and is shared
+with no other build (ADR-0077). The test
+`a_kaniko_build_on_slash_leaves_nothing_its_run_wrote` holds that.
 
 ## Invariants
 

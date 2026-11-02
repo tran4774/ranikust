@@ -104,7 +104,9 @@ directory), `RLIMIT_NOFILE` raised, on `/` a warning that the stages run one
 at a time and `--jobs` only bounds the uploads, then
 `setup::set_up_kaniko`: the state directory checked (`statedir::prepare`),
 the store (on `/`, `Store::open_anonymous` and `Sandbox::start_direct`,
-ADR-0051, after `exposure`'s warnings for a secret-looking `--build-arg`
+ADR-0051; a state directory holding a persistent store, or held by another
+build, is refused there with the store's own message, `setup::store_refusal`,
+ADR-0077; after `exposure`'s warnings for a secret-looking `--build-arg`
 value and another process holding `DOCKER_AUTH_CONFIG`, a `--secret env=`
 or a value-less `--build-arg`; `main` makes the process non-dumpable and
 sets the soft `RLIMIT_CORE` to 0 first of all; credentials then go only

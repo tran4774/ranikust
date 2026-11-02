@@ -55,7 +55,12 @@ impl Fixture {
     fn tars() -> (Self, Arc<Store>) {
         let f = Self::at(Some("/"));
         let state = f.host.join("state");
+        // The anonymous store refuses a state directory holding anything it
+        // did not leave there (ADR-0077): the blob a `RUN` could have
+        // written goes in once it is open.
+        fs::remove_file(state.join("blob")).unwrap();
         let store = Arc::new(Store::open_anonymous(&state).unwrap());
+        fs::write(state.join("blob"), b"kept").unwrap();
         let kept = RootPath::open(&state).unwrap();
         let mut ignore = IgnoreList::new();
         ignore.insert("/state").unwrap();
