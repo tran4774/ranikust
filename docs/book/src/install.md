@@ -46,8 +46,14 @@ sudo install -m 0755 "ranikust-$v-x86_64-unknown-linux-musl/ranikust" /usr/local
 ranikust version
 ```
 
-The tarball also holds the licences, `NOTICE`, the README and a short
-`INSTALL` note. On a host ranikust builds as root, in overlay mode
+The tarball also holds ranikust's licences, `NOTICE`, the README, a short
+`INSTALL` note and `THIRD-PARTY-LICENSES`: the licence notices of every
+crate compiled into the binary and of the C code some of them build
+(mimalloc, zstd, ring's), generated from `Cargo.lock` when the release is
+built
+([ADR-0094](https://github.com/tran4774/ranikust/blob/main/docs/adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)).
+It names, without their texts, what the Rust toolchain links in: the
+standard library, musl libc and LLVM's libunwind. On a host ranikust builds as root, in overlay mode
 ([Choosing where to run it](where-to-run.md)):
 
 ```sh

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-03
 decision-makers: Tran Nguyen (maintainer)
 ---
@@ -61,6 +61,9 @@ Users verify a release by the workflow and the tag that built it, and the
 release workflow uses no cache and refuses to go on without a protected
 `release` environment.
 
+Maintainer, 2026-11-03, asked which proposed ADRs to accept: "ADR-0092
+(Recommended)".
+
 - **Verification instructions** (README, the book's Installing page, the
   tarball's `INSTALL` note) give
   `gh attestation verify <tarball> --repo tran4774/ranikust
@@ -69,7 +72,10 @@ release workflow uses no cache and refuses to go on without a protected
   GitHub CLI 2.102.0 or later: 2.51.0 added `--signer-workflow` and 2.68.0
   `--source-ref`, but before 2.102.0 the first was matched against the
   beginning of the certificate's identity only and the second without
-  regard to case [external: gh release notes].
+  regard to case [external: gh release notes
+  [2.51.0](https://github.com/cli/cli/releases/tag/v2.51.0),
+  [2.68.0](https://github.com/cli/cli/releases/tag/v2.68.0),
+  [2.102.0](https://github.com/cli/cli/releases/tag/v2.102.0)].
 - **The attesting job** runs only for a pushed tag `v*`: the workflow's
   only push trigger is `tags: ["v*"]`, and the job's condition repeats it.
 - **Zig** is downloaded from `ziglang.org` and checked against a SHA-256
@@ -79,10 +85,14 @@ release workflow uses no cache and refuses to go on without a protected
   cache and checks the SHA-256 of what it downloads [code].
 - **The environment.** Before the first tag, the maintainer creates
   `release` with the maintainer as required reviewer and deployments limited to
-  the tag rule `v*`. `scripts/release.py check-environment` reads it
-  through the API; the build job runs it for a tag before anything is
-  built or attested, and the publishing job again before it publishes; a
-  pull request's dry run reports what it finds.
+  the tag rule `v*`, and leaves "Prevent self-reviews" off: with one
+  maintainer, who pushes the tag, it would leave nobody to approve.
+  `scripts/release.py check-environment` reads it through the API and
+  refuses a missing environment, one without a required reviewer, one with
+  "Prevent self-reviews" on, and one deploying from anything but the tag
+  rule `v*`; the build job runs it for a tag before anything is built or
+  attested, and the publishing job again before it publishes; a pull
+  request's dry run reports what it finds.
 - **Before any build or approval**, a tag run also checks that
   `CHANGELOG.md` has a finished section for the version, and the built
   binary must report that version.
@@ -108,26 +118,33 @@ release workflow uses no cache and refuses to go on without a protected
 - [code] `mlugg/setup-zig@d1434d0` `main.js`: `retrieveTarball` calls
   `cache.restoreCache` for the archive unconditionally; `use-cache` guards
   only the global Zig cache directory.
-- [external] gh 2.102.0 release notes: `--signer-workflow` was matched
-  against the start of the certificate identity only, and `--source-ref`
-  case-insensitively, before that release; 2.68.0 added `--source-ref`,
-  2.51.0 `--signer-workflow`.
+- [external] gh
+  [2.102.0 release notes](https://github.com/cli/cli/releases/tag/v2.102.0):
+  `--signer-workflow` was matched against the start of the certificate
+  identity only, and `--source-ref` case-insensitively, before that
+  release; [2.68.0](https://github.com/cli/cli/releases/tag/v2.68.0) added
+  `--source-ref`, [2.51.0](https://github.com/cli/cli/releases/tag/v2.51.0)
+  `--signer-workflow`.
 - [external] GitHub documentation: a workflow job that references a
   non-existent environment creates it, without protection rules.
 - [measured] Zig 0.16.0 x86_64-linux: the archive downloaded on 2026-11-03
   has SHA-256 `70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00`,
   the value in ziglang.org's `index.json`.
 - [code] `tests/release/test_release.py`: `check-environment` refuses a
-  missing environment, one without a required reviewer and one deploying
-  from anything but the tag rule `v*`.
+  missing environment, one without a required reviewer, one with "Prevent
+  self-reviews" on and one deploying from anything but the tag rule `v*`.
 
 ## More Information
 
 - Refines [ADR-0089](0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md),
   whose follow-ups name the environment and the tag ruleset; it does not
   change its decision.
-- Not decided here, for the maintainer: bundling the third-party licence
-  notices of the statically linked dependencies with the binary, and
-  GitHub's immutable releases setting.
+- The third-party licence notices shipped with the binary are
+  [ADR-0094](0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md).
+  GitHub's immutable releases setting is the maintainer's, not decided here.
+- Residual: agents work with the maintainer's GitHub token, so the tag
+  ruleset and the environment approval bind them only through the agents'
+  ask rules ([ADR-0087](0087-work-flows-through-github-issues-pull-requests-and-a-project.md)),
+  not through GitHub's permissions.
 - Revisit when GitHub CLI or the attestation format changes how the signer
   is matched, or when an aarch64 release is added (its own ADR, ADR-0009).

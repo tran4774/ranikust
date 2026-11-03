@@ -27,6 +27,7 @@ up a machine step by step; the table below is the reference.
 | [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
 | Python 3.11 or later | `just docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
 | [GitHub CLI](https://cli.github.com/) (`gh`) | `just release-prepare` reads the merged pull requests; checking a release's attestation needs 2.102.0 or later | your distribution, or cli.github.com |
+| [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | `cargo install --locked cargo-about@0.9.2` |
 | [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
 | `file`, `readelf` | `just build-static` and `just test-aarch64` check the binary is static | `file` and `binutils` packages |
 | A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
@@ -151,14 +152,19 @@ Before 1.0 every release is a pre-release: a
 minor version marks the end of a phase, a patch version ships fixes and
 user-visible changes once `main` is green, the privileged T2 tests
 included. A release is one static `x86_64-unknown-linux-musl` binary in a
-tarball, with `SHA256SUMS` and a GitHub build provenance attestation; there
-is no container image and no aarch64 build yet.
+tarball, with the licence notices of the code it contains
+(`THIRD-PARTY-LICENSES`,
+[ADR-0094](docs/adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)),
+`SHA256SUMS` and a GitHub build provenance attestation; there is no
+container image and no aarch64 build yet.
 
 **Before the first tag** (the maintainer, once): the repository needs an
 environment named `release` with the maintainer as required reviewer and
 deployments limited to the tag rule `v*` (Settings → Environments;
 [ADR-0092](docs/adr/0092-a-release-is-verified-by-workflow-and-tag-and-built-without-cache-or-unprotected-environment.md)).
-A job that names a missing environment creates it with no protection, so
+Leave "Prevent self-reviews" off: the maintainer pushes the tag and is the
+only reviewer, so with it on nobody could approve the release. A job that
+names a missing environment creates it with no protection, so
 the workflow checks it (`scripts/release.py check-environment`) before it
 builds and again before it publishes, and stops a tag otherwise; a pull
 request's dry run reports what it found.
@@ -195,9 +201,12 @@ request's dry run reports what it found.
    section for it, and that the `release` environment is protected; builds
    the binary from the tag without any cache (Zig downloaded with a pinned
    checksum); checks it is static-pie, runs and reports the version
-   (`scripts/check-static.sh`, as CI and `just build-static` do); packages
-   it reproducibly (`scripts/release.py package`); and attests the
-   tarball's build provenance in a job of its own.
+   (`scripts/check-static.sh`, as CI and `just build-static` do);
+   generates `THIRD-PARTY-LICENSES` with cargo-about from `Cargo.lock` for
+   the release target, stopping on a licence `deny.toml` does not allow
+   (`just third-party-licenses` locally); packages it all reproducibly
+   (`scripts/release.py package`); and attests the tarball's build
+   provenance in a job of its own.
 5. **Approve** (the maintainer), within 30 days, as long as the built files
    are kept: the publishing job waits for the `release` environment's
    approval. It then creates a **draft** pre-release whose notes are the
@@ -213,10 +222,12 @@ Users check a release with `sha256sum -c SHA256SUMS` and
 [installation guide](docs/book/src/install.md) has the command).
 
 A pull request that changes what goes into a release (the workflow, its
-scripts and tests, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the
-packaged files) runs the build path as a dry run (tests, build, check,
-package, checksums; no attestation, no release), and so does a manual run
-(`workflow_dispatch`) on any branch.
+scripts and tests, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
+`about.toml`, `deny.toml`, the packaged files) runs the build path as a dry
+run (tests, build, check, licence notices, package, checksums; no
+attestation, no release), and so does a manual run (`workflow_dispatch`)
+on any branch. `about.toml`'s accepted licences must stay the set
+`deny.toml` allows; `just test-release` compares them.
 
 ## How decisions are made
 
