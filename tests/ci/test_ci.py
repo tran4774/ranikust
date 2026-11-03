@@ -28,14 +28,20 @@ SPEC.loader.exec_module(ci)
 RUST_T2 = {"rust", "t2"}
 
 
-def run(args, env=None, stdin=None, cwd=ROOT):
-    """scripts/ci.py with only the given CI_* variables set."""
+def run(args, env=None, stdin=None, cwd=ROOT, github_output=True):
+    """scripts/ci.py with only the given CI_* variables set, and, as in a
+    workflow, a fresh $GITHUB_OUTPUT whenever CI_EVENT is set (unless
+    `github_output` is False or the caller names one)."""
     base = {k: v for k, v in os.environ.items() if not k.startswith(("CI_", "GITHUB_"))}
-    return subprocess.run(
-        [sys.executable, "-I", str(SCRIPT), *args],
-        env=base | (env or {}), input=stdin, capture_output=True, text=True, cwd=cwd,
-        timeout=60, check=False,
-    )
+    env = dict(env or {})
+    with tempfile.TemporaryDirectory() as d:
+        if github_output and "CI_EVENT" in env and "GITHUB_OUTPUT" not in env:
+            env["GITHUB_OUTPUT"] = str(Path(d) / "github-output")
+        return subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), *args],
+            env=base | env, input=stdin, capture_output=True, text=True, cwd=cwd,
+            timeout=60, check=False,
+        )
 
 
 def outputs(stdout):
@@ -65,14 +71,13 @@ class Classify(unittest.TestCase):
     def test_rust_code_runs_rust_and_t2(self):
         self.check(["crates/rnk-rootfs/src/lib.rs"], RUST_T2)
         self.check(["crates/rnk-oci/testdata/oci-index.json"], RUST_T2)
-        self.check(["rust-toolchain.toml"], RUST_T2)
         self.check(["rustfmt.toml"], RUST_T2)
         self.check(["justfile"], RUST_T2)
         self.check(["scripts/check-static.sh"], RUST_T2)
-        self.check([".cargo/config.toml"], RUST_T2)
 
-    def test_manifests_also_run_deny(self):
-        for p in ["Cargo.toml", "Cargo.lock", "crates/rnk-oci/Cargo.toml"]:
+    def test_manifests_toolchain_and_cargo_config_also_run_deny(self):
+        for p in ["Cargo.toml", "Cargo.lock", "crates/rnk-oci/Cargo.toml", "rust-toolchain.toml",
+                  ".cargo/config.toml"]:
             self.check([p], RUST_T2 | {"deny"})
         self.check(["deny.toml"], {"deny"})
         # A Cargo.toml deeper in a crate is the crate's, not a member's.
@@ -93,10 +98,15 @@ class Classify(unittest.TestCase):
                     "about.toml", "NOTICE", "LICENSE-MIT", "LICENSE-APACHE", "cliff.toml",
                     "scripts/docs-lint.py", "scripts/review-pack.py", "tests/ci/test_ci.py",
                     "tests/bench/walk-hash/Cargo.toml", "tests/e2e/run.sh",
-                    "tests/registry/compose.yaml", ".github/release.yml", ".gitignore"], set())
+                    "tests/registry/compose.yaml", ".github/release.yml", ".gitignore",
+                    ".github/ISSUE_TEMPLATE/task.yml", ".github/dependabot.yml"], set())
 
     def test_an_unknown_path_runs_everything(self):
         self.check(["newdir/file", "docs/testing.md"], ci.ALL, ["newdir/file"])
+        # Only the named files under .github/ run nothing: a local action
+        # or anything new there runs every lane.
+        self.check([".github/actions/setup/action.yml"], ci.ALL, [".github/actions/setup/action.yml"])
+        self.check([".github/CODEOWNERS"], ci.ALL, [".github/CODEOWNERS"])
         self.check(["Makefile"], ci.ALL, ["Makefile"])
         # `*` does not cross a `/`: a nested Markdown file outside docs/ is
         # not a top-level one.
@@ -159,6 +169,11 @@ class Events(unittest.TestCase):
             # changes nothing.
             ("labeled", "ci:full", "false", '["ci:full"]', True, False),
             ("unlabeled", "ci:full", "false", "[]", True, False),
+            # Case does not matter, as for GitHub's `==` in the concurrency
+            # group.
+            ("labeled", "CI:Full", "true", '["CI:Full"]', False, True),
+            ("unlabeled", "CI:FULL", "true", "[]", False, False),
+            ("labeled", "Agent", "true", '["Agent", "CI:FULL"]', True, False),
         ]
         for action, label, draft, labels, label_only, full in cases:
             r = self.pr(draft=draft, labels=labels, action=action, label=label)
@@ -181,6 +196,21 @@ class Events(unittest.TestCase):
         r = run(["changes"])
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("CI_EVENT", r.stderr)
+
+    def test_a_label_in_another_case_still_selects_the_full_lane(self):
+        r = self.pr(draft="true", labels='["Ci:Full"]', action="synchronize")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(outputs(r.stdout)["full"], "true")
+
+    def test_in_a_workflow_the_outputs_must_have_somewhere_to_go(self):
+        for env in [{"CI_EVENT": "push"},
+                    {"CI_EVENT": "pull_request", "CI_DRAFT": "false", "CI_LABELS": "[]"},
+                    {"CI_EVENT": "pull_request", "CI_DRAFT": "true", "CI_LABELS": "[]",
+                     "CI_ACTION": "labeled", "CI_LABEL": "agent"}]:
+            r = run(["changes", "--paths", "-"], env=env, stdin="crates/x/src/lib.rs\n", github_output=False)
+            self.assertNotEqual(r.returncode, 0, env)
+            self.assertIn("GITHUB_OUTPUT", r.stderr, env)
+            self.assertEqual(outputs(r.stdout), {}, env)
 
     def test_by_hand_a_list_stands_for_a_ready_pull_request(self):
         r = run(["changes", "--paths", "-"], stdin="docs/book/src/SUMMARY.md\n")
@@ -386,8 +416,80 @@ def cache_name(job: str, lines: list[str]) -> str | None:
     return None
 
 
+def job_line(lines: list[str], key: str) -> str | None:
+    """The value of a job-level key (`if`, `name`), or None."""
+    for line in lines:
+        m = re.fullmatch(rf"    {key}: (.*)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+RUST = "needs.changes.outputs.rust == 'true'"
+FULL = "needs.changes.outputs.full == 'true'"
+T2 = "needs.changes.outputs.t2 == 'true'"
+PUSH_TO_MAIN = "always() && github.event_name == 'push' && github.ref == 'refs/heads/main'"
+
+
+def gate_name(base: str, draft: str) -> str:
+    return (
+        "${{ needs.changes.outputs.label_only == 'true' && '" + base + " (label change, nothing run)'"
+        " || github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && '" + base
+        + " (manual run)' || needs.changes.outputs.full == 'false' && '" + base + " (" + draft + ")'"
+        " || '" + base + "' }}"
+    )
+
+
+# Each job's exact `if:` and each gate's `name:`: a change to the lanes'
+# wiring has to change this table too.
+CONDITIONS = {
+    "ci.yml": {
+        "changes": None,
+        "fmt": RUST,
+        "clippy": RUST,
+        "test": RUST,
+        "static-build": f"{RUST} && {FULL}",
+        "test-aarch64": f"{RUST} && {FULL}",
+        "deny": "needs.changes.outputs.deny == 'true'",
+        "docs": f"{RUST} || needs.changes.outputs.book == 'true'",
+        "docs-lint": "needs.changes.outputs.label_only != 'true'",
+        "caches": PUSH_TO_MAIN,
+        "result": "always()",
+    },
+    "t2.yml": {
+        "changes": None,
+        "unit": f"{T2} && {FULL}",
+        "unit-c": f"{T2} && {FULL}",
+        "smoke": f"{T2} && {FULL}",
+        "caches": PUSH_TO_MAIN,
+        "result": "always()",
+    },
+}
+GATE_NAMES = {
+    "ci.yml": gate_name("CI result", "draft, fast lane"),
+    "t2.yml": gate_name("T2 result", "draft, not run"),
+}
+OUTPUTS_CHECK = (
+    "jq -e '.changes.outputs | to_entries | length > 0 and all(.value == \"true\" or .value == \"false\")'"
+)
+
+
 class Workflows(unittest.TestCase):
     LANED = ["ci.yml", "t2.yml"]
+
+    def test_every_jobs_condition_and_the_gates_names_are_pinned(self):
+        for wf in self.LANED:
+            js = jobs(wf)
+            self.assertEqual(sorted(js), sorted(CONDITIONS[wf]), wf)
+            for job, want in CONDITIONS[wf].items():
+                self.assertEqual(job_line(js[job], "if"), want, f"{wf}: {job}")
+            self.assertEqual(job_line(js["result"], "name"), GATE_NAMES[wf], wf)
+
+    def test_the_gates_check_the_lanes_outputs(self):
+        for wf in self.LANED:
+            script = "\n".join(jobs(wf)["result"])
+            self.assertIn(OUTPUTS_CHECK, script, wf)
+            self.assertIn(".changes.result", script, wf)
 
     def test_the_gate_needs_every_job_and_always_runs(self):
         for wf in self.LANED:
@@ -395,6 +497,8 @@ class Workflows(unittest.TestCase):
             self.assertIn("result", js, wf)
             want = sorted(j for j in js if j not in ("result", "caches"))
             self.assertEqual(sorted(needs(js["result"])), want, wf)
+            # Not `!cancelled()`: a cancelled run's gate must fail, not be
+            # skipped (ADR-0095).
             self.assertIn("    if: always()", js["result"], wf)
 
     def test_every_tested_job_waits_for_the_lanes(self):

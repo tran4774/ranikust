@@ -99,8 +99,10 @@ the lanes and rules are in [docs/testing.md](docs/testing.md#ci-lanes)):
   (`workflow_dispatch`, any branch), and on every push to `main`.
 - **The required checks** are two gates, `CI result` and `T2 result`, which
   fail if any job failed or was cancelled. A draft's gates carry other
-  names (`... (draft, fast lane)`), so a pull request is mergeable only
-  after a full run.
+  names (`... (draft, fast lane)`), and so do a manual run's on a branch
+  (`... (manual run)`: it tests the branch, not its merge with `main`), so
+  a pull request is mergeable only after its own full run. After a label
+  change the job rows show "skipped"; the gates keep the verdict.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
 not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the

@@ -163,9 +163,12 @@ request (`ADR-0088`).
    comes when the pull request is marked ready, so ask the maintainer to
    mark it ready when the work is done; or, when the maintainer asks (or
    the pull request changes CI itself), add the `ci:full` label to the
-   draft, and remove it afterwards. "Run workflow" in the Actions tab runs
-   everything on a branch. Read the gates, `CI result` and `T2 result`,
-   the only required checks. The test plan names the tiers run elsewhere.
+   draft, and remove it once the full run has finished (removing it
+   starts a fast-lane run). "Run workflow" in the Actions tab runs
+   everything on a branch, under gates named `... (manual run)` that do
+   not count for the pull request. After a label change the job rows show
+   "skipped"; read the gates, `CI result` and `T2 result`, the only
+   required checks. The test plan names the tiers run elsewhere.
    `reviewer`, `host-safety` and `red-team` report to the main session as
    before; their summary goes on the pull request as a comment once the
    findings are fixed, never the details of an open weakness.

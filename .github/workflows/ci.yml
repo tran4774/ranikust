@@ -286,12 +286,18 @@ jobs:
           echo "$n superseded cache entries deleted"
 
   # The one required check of this workflow (ADR-0095). Named `CI result`
-  # only on a full run; a draft's fast lane and a label change that runs
-  # nothing report under other names, so neither stands in for the full run
-  # on the same commit. A failed `changes` job leaves the name `CI result`
-  # and fails it.
+  # only on a full run of a pull request or `main`; a draft's fast lane, a
+  # label change that runs nothing and a manual run on a branch (which tests
+  # the branch's head, not the merge with `main`) report under other names,
+  # so none stands in for a pull request's full run on the same commit
+  # (GitHub counts the check run of a name created last). A failed
+  # `changes` job leaves the name `CI result` and fails it. `always()`, not
+  # `!cancelled()`: a run that a newer one cancels on the same commit (a
+  # `ci:full` run when the pull request is marked ready) must leave a
+  # failing `CI result` until the newer run's gate, never a skipped one,
+  # which counts as passed.
   result:
-    name: ${{ needs.changes.outputs.label_only == 'true' && 'CI result (label change, nothing run)' || needs.changes.outputs.full == 'false' && 'CI result (draft, fast lane)' || 'CI result' }}
+    name: ${{ needs.changes.outputs.label_only == 'true' && 'CI result (label change, nothing run)' || github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'CI result (manual run)' || needs.changes.outputs.full == 'false' && 'CI result (draft, fast lane)' || 'CI result' }}
     needs: [changes, fmt, clippy, test, static-build, test-aarch64, deny, docs, docs-lint]
     if: always()
     runs-on: ubuntu-24.04
@@ -304,6 +310,12 @@ jobs:
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           if [ "$(jq -r '.changes.result' <<<"$NEEDS")" != success ]; then
             echo "::error::the changes job did not succeed, so the lanes are unknown"
+            exit 1
+          fi
+          # An output that is unset or misspelled would skip its jobs and
+          # still pass: every output must be "true" or "false".
+          if ! jq -e '.changes.outputs | to_entries | length > 0 and all(.value == "true" or .value == "false")' <<<"$NEEDS" >/dev/null; then
+            echo "::error::the changes job's outputs are not all true or false, so the lanes are unknown"
             exit 1
           fi
           bad="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<<"$NEEDS")"

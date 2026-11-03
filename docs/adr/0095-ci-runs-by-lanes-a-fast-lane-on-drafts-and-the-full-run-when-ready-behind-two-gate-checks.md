@@ -72,11 +72,16 @@ result` are the only required checks.
     aarch64 job runs `just test-aarch64`) and `scripts/check-static.sh`;
   - `book`: `docs/book/**`;
   - `t2`: `rust`, or `tests/vm/**`, `tests/container/**`, `tests/smoke/**`;
-  - `deny`: `Cargo.toml`, `Cargo.lock`, `crates/*/Cargo.toml`, `deny.toml`;
+  - `deny`: `Cargo.toml`, `Cargo.lock`, `crates/*/Cargo.toml`, `deny.toml`,
+    and `rust-toolchain.toml` and `.cargo/**`, which change what cargo
+    resolves;
   - every lane: `.github/workflows/**`, `scripts/ci.py` and
     `.gitattributes` (it changes every checked-out file);
-  - no lane: the rest of `docs/`, top-level Markdown, `.claude/`, the rest
-    of `.github/`, `scripts/docs-lint.py` (its job runs every time),
+  - no lane: the rest of `docs/`, top-level Markdown, `.claude/`, four
+    files of `.github/` named one by one (`ISSUE_TEMPLATE/**`,
+    `PULL_REQUEST_TEMPLATE.md`, `dependabot.yml`, `release.yml`), so that
+    anything new there, such as a local action, runs every lane;
+    `scripts/docs-lint.py` (its job runs every time),
     `scripts/review-pack.py`, `tests/ci/**` (the `changes` job runs those
     tests every time), what only the Release workflow reads
     (`scripts/release.py`, `scripts/third-party-licenses.hbs`,
@@ -91,9 +96,13 @@ result` are the only required checks.
   - `full`: true unless the event is a pull request that is a draft
     without the `ci:full` label;
   - `label_only`: a `labeled` or `unlabeled` event other than `ci:full` on
-    a draft; then every lane is false and nothing runs.
+    a draft; then every lane is false and nothing runs. Label names compare
+    without regard to case, as GitHub's `==` does in the concurrency
+    group.
   The event's values reach the script only through `env:`; the paths it
   logs are percent-encoded, so a file name cannot form a workflow command.
+  In a workflow (`CI_EVENT` set) it fails when `$GITHUB_OUTPUT` is not
+  set, rather than print outputs no job receives.
 - **Lanes (E):** the fast lane runs on every pull request, drafts
   included: `rustfmt`, `clippy` and `test (x86_64 gnu)` when `rust`;
   `cargo-deny` when `deny`; `docs (rustdoc, mdBook)` when `rust` (rustdoc)
@@ -110,19 +119,28 @@ result` are the only required checks.
   `agent`, added right after a pull request opens, cancels nothing.
 - **Gates (B):** `CI result` (`ci.yml`) and `T2 result` (`t2.yml`) need
   every job of their workflow but the cache pruning, run `if: always()`,
-  fail when the `changes` job did not succeed or any needed job failed or
-  was cancelled, and pass when the rest succeeded or were skipped (a job
-  skipped by `if:` reports success [external]). They become the `main`
-  ruleset's only required checks, replacing the eleven job names. A gate
-  carries its plain name only on a full run; on a draft's fast lane it is
-  `CI result (draft, fast lane)` and `T2 result (draft, not run)`, and on
-  a `label_only` run `... (label change, nothing run)`. GitHub judges a
-  required check by the check run of that name created last on the
-  commit, and creates a gate's check run only when the gate starts, after
-  the jobs it needs (both measured, Evidence), so a fast lane or a label
-  change must not post a passing `CI result` over the commit's full run,
-  or before it: after a draft is marked ready, the required checks wait
-  for the full run.
+  fail when the `changes` job did not succeed, when any of its outputs is
+  not exactly `true` or `false` (an output unset or misspelled would skip
+  its jobs and pass), or when any needed job failed or was cancelled, and
+  pass when the rest succeeded or were skipped (a job skipped by `if:`
+  reports success [external]). They become the `main` ruleset's only
+  required checks, replacing the eleven job names. A gate carries its
+  plain name only on a full run of a pull request or of `main`; on a
+  draft's fast lane it is `CI result (draft, fast lane)` and `T2 result
+  (draft, not run)`, on a `label_only` run `... (label change, nothing
+  run)`, and on a manual run on any branch but `main` `... (manual run)`,
+  since that run tests the branch's head, not its merge with `main`.
+  GitHub judges a required check by the check run of that name created
+  last on the commit, and creates a gate's check run only when the gate
+  starts, after the jobs it needs (both measured, Evidence), so none of
+  these runs may post a passing `CI result` over a pull request's full
+  run, or before it: after a draft is marked ready, the required checks
+  wait for the full run, and a manual run cannot replace a failing gate.
+  `always()` and not `!cancelled()`: a full run that a newer run cancels
+  on the same commit (a `ci:full` run when the draft is marked ready) then
+  leaves a failing `CI result` until the newer run's gate, where
+  `!cancelled()` would skip its gate, and a skipped check counts as
+  passed. The cost is a failing gate on a commit whose run was superseded.
 - **Who clicks:** agents use the maintainer's GitHub account, so GitHub
   cannot tell who marked a pull request ready or added a label. The guard
   is the agents' ask rules: `gh pr ready` already asks
@@ -131,8 +149,10 @@ result` are the only required checks.
   (ADR-0087). An agent adds `ci:full` only when the maintainer asks, or to
   verify a pull request that changes CI itself; nothing but the rule holds
   that. "Run workflow" (`workflow_dispatch`) on the pull request's branch
-  runs everything and posts its gates on the branch's head commit, which
-  the pull request's required checks read.
+  runs everything on the branch's head; its gates are named `... (manual
+  run)`, so they report the run without standing in for the pull
+  request's required checks, which only marking it ready or `ci:full`
+  provide.
 - **Cache (C):** `T2 unit` and `T2c unit-c` build the same thing
   (`cargo-zigbuild test --no-run` for x86_64 musl, `-p` the crates holding
   T2 or T2c tests: the same six crates today, the same linker setting and
@@ -142,10 +162,13 @@ result` are the only required checks.
   `static-build` makes). Caches are saved only from `main`, as before. On a
   push to `main`, a `caches` job in each workflow runs after the jobs that
   save caches and deletes each of their entries on `refs/heads/main` that
-  a newer entry with the same restore key (the key without its files hash)
-  supersedes (`scripts/ci.py stale-caches`, `gh cache list` and `gh cache
-  delete` with the job's token). Only that job has `actions: write`; it
-  never touches another ref's entries or another job's names.
+  a newer entry with the same restore key (the job's cache name, the
+  runner's OS and architecture and the toolchain's environment hash: the
+  key without its files hash) supersedes (`scripts/ci.py stale-caches`,
+  `gh cache list` and `gh cache delete` with the job's token). Entries of
+  an older toolchain have a restore key of their own and stay until GitHub
+  evicts them. Only that job has `actions: write`; it never touches
+  another ref's entries or another job's names.
 - **aarch64 (D):** the `check (aarch64 musl)` job is removed: the native
   `test (aarch64 musl, native)` job builds and tests the same target. `just
   check-aarch64` stays as a quick local recipe, and `just ci` no longer
@@ -163,8 +186,11 @@ result` are the only required checks.
   pinned by commit, no secrets, never `pull_request_target`.
 - **Switch-over:** the maintainer replaces the ruleset's required checks
   with `CI result` and `T2 result` just before merging the pull request
-  that brings this in. Until then the old ruleset expects `check (aarch64
-  musl)`, which that pull request no longer has. Other open pull requests
+  that brings this in, both required from the GitHub Actions app
+  (`integration_id` 15368) as the eleven are today, so no other app or a
+  commit status can post a check of that name that counts. Until then
+  the old ruleset expects `check (aarch64 musl)`, which that pull request
+  no longer has. Other open pull requests
   get the gates on their next push or merge of `main`; a re-run uses the
   workflow files and event of its first run.
 
@@ -175,8 +201,9 @@ result` are the only required checks.
   changes Rust code gets its fast results without the native aarch64, the
   static build and the root jobs.
 - Good, because the cache drops from 46 entries (10,296 MiB) to one entry
-  per job after each `main` run, about 2 GB in steady state, below
-  GitHub's limit with room for a `Cargo.lock` change.
+  per restore key after each `main` run (one per job while the toolchain
+  stays the same), about 2 GB in steady state, below GitHub's limit with
+  room for a `Cargo.lock` change.
 - Good, because two required checks replace eleven names, so adding or
   renaming a job no longer needs a ruleset change.
 - Bad, because a draft no longer gets the static build, the aarch64 tests
@@ -189,6 +216,14 @@ result` are the only required checks.
 - Bad, because the gates' names change with the kind of run, and a re-run
   of an old run repeats its old lanes (the event's draft state and labels
   of that time).
+- Bad, because after a label change the pull request's job rows (`rustfmt`,
+  `clippy`, ...) show "skipped": GitHub shows the check run of each name
+  created last, which is the label-change run's. Only the gates say what
+  the commit's last real run found; read them.
+- Bad, because a required gate now depends on live GitHub issue state:
+  `docs-lint` runs with `DOCS_LINT_REQUIRE_GITHUB=1`, so a GitHub API
+  outage, or a `question` issue closed while an `[open: #N]` marker still
+  names it, fails `CI result` on a change that did not touch it.
 - Neutral, because each label change on a pull request still starts two
   short runs (`changes` and the gate, about half a minute each) that test
   nothing.

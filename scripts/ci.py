@@ -35,11 +35,15 @@ Lanes, from the paths (RULES below; a path no rule names runs every lane):
   rust   the Rust workspace and what builds or checks it
   book   docs/book/
   t2     rust, or the T2 harness (tests/vm, tests/container, tests/smoke)
-  deny   the manifests, Cargo.lock and deny.toml
+  deny   the manifests, Cargo.lock, deny.toml, the toolchain, .cargo/
   full   true unless the pull request is a draft without the `ci:full` label
   label_only
          a label change that changes no lane (any label but `ci:full`, or
          `ci:full` on a pull request that is not a draft): nothing runs
+
+Label names compare case-insensitively, as GitHub's `==` in the workflows'
+concurrency expression does. With CI_EVENT set (in a workflow), a missing
+$GITHUB_OUTPUT is an error: the gates fail on outputs that are not set.
 
 Tests: tests/ci/test_ci.py (`just test-ci`).
 """
@@ -76,8 +80,10 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("crates/*/Cargo.toml", frozenset({"rust", "deny"})),
     ("Cargo.toml", frozenset({"rust", "deny"})),
     ("Cargo.lock", frozenset({"rust", "deny"})),
-    ("rust-toolchain.toml", frozenset({"rust"})),
-    (".cargo/**", frozenset({"rust"})),
+    # The toolchain and cargo's configuration also change what cargo-deny
+    # resolves and reads.
+    ("rust-toolchain.toml", frozenset({"rust", "deny"})),
+    (".cargo/**", frozenset({"rust", "deny"})),
     ("rustfmt.toml", frozenset({"rust"})),
     (".rustfmt.toml", frozenset({"rust"})),
     ("clippy.toml", frozenset({"rust"})),
@@ -97,13 +103,19 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("docs/**", NONE),
     ("*.md", NONE),
     (".claude/**", NONE),
-    (".github/**", NONE),
+    # Named one by one, not `.github/**`: a new directory there (a local
+    # action under `.github/actions/`) must fall to "every lane".
+    (".github/ISSUE_TEMPLATE/**", NONE),
+    (".github/PULL_REQUEST_TEMPLATE.md", NONE),
+    (".github/dependabot.yml", NONE),
     (".gitignore", NONE),
     (".editorconfig", NONE),
     ("scripts/docs-lint.py", NONE),
     ("scripts/review-pack.py", NONE),
     ("tests/ci/**", NONE),
-    # The Release workflow's, which has paths of its own.
+    # The Release workflow's, which has paths of its own (.github/release.yml
+    # groups the release notes).
+    (".github/release.yml", NONE),
     ("scripts/release.py", NONE),
     ("scripts/third-party-licenses.hbs", NONE),
     ("tests/release/**", NONE),
@@ -184,7 +196,8 @@ def pr_labels(value: str) -> list[str]:
         die(f"CI_LABELS is not JSON: {e}")
     if not isinstance(labels, list) or not all(isinstance(x, str) for x in labels):
         die("CI_LABELS must be a JSON list of label names")
-    return labels
+    # GitHub's `==` ignores case, so the concurrency group does too.
+    return [x.casefold() for x in labels]
 
 
 def changed_paths(base: str, head: str) -> list[str] | None:
@@ -217,9 +230,13 @@ def read_paths(source: str) -> list[str]:
 
 
 def emit(outputs: dict[str, bool]) -> None:
+    target = os.environ.get("GITHUB_OUTPUT")
+    if os.environ.get("CI_EVENT") and not target:
+        # In a workflow the outputs must reach the job; the gates also fail
+        # on outputs that are not "true" or "false".
+        die("CI_EVENT is set but GITHUB_OUTPUT is not: the lanes would reach no job")
     lines = [f"{k}={'true' if v else 'false'}" for k, v in outputs.items()]
     print("\n".join(lines))
-    target = os.environ.get("GITHUB_OUTPUT")
     if target:
         with open(target, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -249,7 +266,7 @@ def changes(argv: list[str]) -> None:
     elif event == "pull_request":
         draft = flag("CI_DRAFT", env.get("CI_DRAFT", ""))
         labels = pr_labels(env.get("CI_LABELS", ""))
-        action, label = env.get("CI_ACTION", ""), env.get("CI_LABEL", "")
+        action, label = env.get("CI_ACTION", ""), env.get("CI_LABEL", "").casefold()
     outputs = {lane: False for lane in LANES} | {"full": False, "label_only": False}
 
     if event != "pull_request":

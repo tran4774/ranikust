@@ -616,9 +616,9 @@ lane is needed, and skips itself otherwise.
 | `rust` | `crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/**`, rustfmt and clippy configuration, `justfile`, `scripts/check-static.sh` |
 | `book` | `docs/book/**` |
 | `t2` | the `rust` paths, `tests/vm/**`, `tests/container/**`, `tests/smoke/**` |
-| `deny` | `Cargo.toml`, `Cargo.lock`, `crates/*/Cargo.toml`, `deny.toml` |
-| every lane | `.github/workflows/**`, `scripts/ci.py`, `.gitattributes`, and any path no rule names |
-| no lane | the rest of `docs/`, top-level Markdown, `.claude/`, the rest of `.github/`, `tests/ci/`, the Release workflow's files, the local-only harnesses (`tests/bench`, `tests/e2e`, `tests/registry`) |
+| `deny` | `Cargo.toml`, `Cargo.lock`, `crates/*/Cargo.toml`, `deny.toml`, `rust-toolchain.toml`, `.cargo/**` |
+| every lane | `.github/workflows/**`, `scripts/ci.py`, `.gitattributes`, and any path no rule names (a new file under `.github/`, such as a local action, included) |
+| no lane | the rest of `docs/`, top-level Markdown, `.claude/`, `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `tests/ci/`, the Release workflow's files (`.github/release.yml` among them), the local-only harnesses (`tests/bench`, `tests/e2e`, `tests/registry`) |
 
 `scripts/ci.py`'s `RULES` is the authority; `just test-ci` fails on a
 tracked file no rule names, so a new path gets its lane when it is added.
@@ -638,34 +638,48 @@ What runs, by event:
   draft ready starts one), a draft labelled `ci:full`, a manual run ("Run
   workflow" in the Actions tab, `workflow_dispatch`, on any branch) or a
   push to `main`. A push to `main` and a manual run count as changing every
-  path, so they run every job.
+  path, so they run every job. A manual run tests the branch's head, not
+  its merge with `main`.
 - **Gates.** `CI result` and `T2 result` need every job of their workflow,
-  run even when one failed, and fail when the `changes` job did not
-  succeed or any job failed or was cancelled; a job skipped by its lane
-  counts as passed. They are the only checks the `main` ruleset requires.
-  On a draft's fast lane they are named `CI result (draft, fast lane)` and
-  `T2 result (draft, not run)`, so a draft never carries the required
-  names: those come only from a full run, and after a draft is marked
-  ready the pull request waits for them.
-- **Labels.** Only `ci:full` on a draft changes what runs; adding or
-  removing any other label (or `ci:full` on a pull request that is
-  already ready) starts a run that tests nothing, whose gates are named
-  `... (label change, nothing run)`. Such a run never cancels another; a
-  newer push still cancels the older run of the same pull request.
+  run even when one failed or the run was cancelled, and fail when the
+  `changes` job did not succeed, when any of its outputs is not exactly
+  `true` or `false`, or when any job failed or was cancelled; a job
+  skipped by its lane counts as passed. They are the only checks the
+  `main` ruleset requires. They carry those names only on a full run of a
+  pull request or of `main`: on a draft's fast lane they are named `CI
+  result (draft, fast lane)` and `T2 result (draft, not run)`, and on a
+  manual run on another branch `... (manual run)`. GitHub counts the
+  check run of a name created last, so a draft or a manual run never
+  stands in for a pull request's full run: after a draft is marked ready
+  the pull request waits for its gates. A run cancelled by a newer one
+  leaves failing gates (`always()`, not `!cancelled()`, whose skipped
+  gate would count as passed).
+- **Labels.** Only `ci:full` on a draft changes what runs (in any case:
+  `CI:Full` too); adding or removing any other label (or `ci:full` on a
+  pull request that is already ready) starts a run that tests nothing,
+  whose gates are named `... (label change, nothing run)`. Such a run
+  never cancels another; a newer push still cancels the older run of the
+  same pull request. After a label change the pull request's job rows
+  (`rustfmt`, `clippy`, ...) show "skipped", from that run: read the
+  gates, which keep the last real run's verdict.
 - **Who starts a full run.** The maintainer marks a pull request ready,
-  adds `ci:full` or clicks "Run workflow". Agents use the maintainer's
-  account, so GitHub cannot tell them apart: an agent asks before marking
-  a pull request ready (`gh pr ready` is an ask rule), and adds `ci:full`
-  only when the maintainer asks or to verify a pull request that changes
-  CI itself ([workflow.md](agents/workflow.md#github-flow)).
+  adds `ci:full` or clicks "Run workflow" (whose gates, `... (manual
+  run)`, report the run but do not count for the pull request). Agents
+  use the maintainer's account, so GitHub cannot tell them apart: an
+  agent asks before marking a pull request ready (`gh pr ready` is an ask
+  rule), and adds `ci:full` only when the maintainer asks or to verify a
+  pull request that changes CI itself
+  ([workflow.md](agents/workflow.md#github-flow)).
 - **A re-run** ("Re-run jobs") repeats the lanes of the run it repeats:
   the draft state and labels of that event, and the workflow files of that
   commit.
 - **Caches.** rust-cache entries are saved only from `main`. On a push to
   `main`, a `caches` job in each workflow deletes the entries of its jobs
   that a newer entry with the same restore key supersedes
-  (`scripts/ci.py stale-caches`), keeping one entry per job; only that job
-  holds `actions: write`.
+  (`scripts/ci.py stale-caches`), keeping one entry per restore key (the
+  job's cache name, OS, architecture and toolchain hash; entries of an
+  older toolchain stay until GitHub evicts them); only that job holds
+  `actions: write`.
 - **Timeouts.** Every job has one: 5 minutes for the gates, 10 for the
   small jobs, 20 for `clippy` and the docs, 30 for the tests, the static
   build and T2.
