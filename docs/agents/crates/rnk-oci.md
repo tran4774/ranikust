@@ -1,7 +1,9 @@
 # rnk-oci
 
-> **Status:** done for Phase 1 (open: Q-007) · **Phase:** 1 ·
-> **Depends on:** — (`serde`, `serde_json`, `thiserror`) · **Used by:** `rnk-registry`, `rnk-layer`, `rnk-cache`, `rnk-builder`, `rnk-store` (`Digest`) · **Path:** `crates/rnk-oci/`
+> **Status:** done · **Phase:** 1 ·
+> **Depends on:** nothing internal (`serde`, `serde_json`, `thiserror`) ·
+> **Used by:** `rnk-registry`, `rnk-builder`, `rnk-store` (`Digest`),
+> `rnk-snapshot`, `ranikust` (`rnk-cache` planned) · **Path:** `crates/rnk-oci/`
 
 **TL;DR:** OCI and Docker manifests, indexes, image configs and media types,
 owned here rather than taken from `oci-spec`. A digest covers exact bytes:
@@ -17,6 +19,8 @@ sorted keys.
   writes.
 
 ## Must not
+
+Boundaries: `crates/rnk-oci/src/lib.rs`. In short:
 
 - Access the network or the filesystem: types and (de)serialization only.
 - Encode or compress layers (`rnk-layer`), move blobs (`rnk-registry`), or
@@ -34,7 +38,7 @@ pub struct Digest;  // "sha256:<64 hex>" | "sha512:<128 hex>", validated; Ord = 
 pub enum DigestAlgorithm { Sha256, Sha512 }
 pub struct MediaType; // any string; consts OCI_* / DOCKER_*: manifest, index, config, layers, foreign layers, schema 1
     // format() by vendor prefix, is_manifest/is_index/is_config/is_layer/is_foreign_layer, layer_compression, to_format
-pub enum ImageFormat { Oci, Docker } // no Default; builds write OCI, as BuildKit (Q-006, ADR-0032)
+pub enum ImageFormat { Oci, Docker } // no Default; builds write OCI, as BuildKit (ADR-0032)
     // manifest_media_type, index_media_type, config_media_type, layer_media_type(Compression) (Docker + zstd: Err)
 pub enum Compression { Uncompressed, Gzip, Zstd }
 pub struct Descriptor; pub struct Platform;     // Platform keeps "os.version" / "os.features"
@@ -55,8 +59,8 @@ Canonical JSON is OLPC's, as OCI [considerations.md](https://github.com/opencont
 asks: every object's keys sorted by UTF-8 bytes, struct fields included; no
 whitespace; integers only; `serde_json`'s string escaping.
 
-Config edits and output index files (pure; (Q-007) here rather than
-in `rnk-builder`):
+Config edits and output index files (pure types here, not in `rnk-builder`,
+which writes the files; ADR-0032):
 
 ```rust
 pub enum CommandLine { Exec(Vec<String>), Shell(String) }   // CMD/ENTRYPOINT; shell form uses config Shell or DEFAULT_SHELL
@@ -73,28 +77,29 @@ pub struct DockerTarImage { config, repo_tags, layers, layer_sources } // one en
 pub struct OciLayout { image_layout_version }          // `oci-layout`; FILE, INDEX_FILE, VERSION, REF_NAME_ANNOTATION, blob_path
 ```
 
-`apply` follows kaniko's `ExecuteCommand`s (`pkg/commands/*.go`): an
-empty `ENV`, `LABEL`, `EXPOSE`, `VOLUME` or `SHELL` list is refused; `ENV`
-replaces a key in place or appends, rewriting every entry as `key=value`;
-`USER` is stored as written; `HEALTHCHECK` zeros become `None`;
-`WORKDIR` keeps an absolute path as written and joins and cleans a relative
-one; `EXPOSE` takes BuildKit's port specs (`exposed_ports`: `tcp`, `udp`,
-`sctp` in any case, written lower case; a range gives one key per port;
-`ip:hostport:` checked and dropped); `STOPSIGNAL` is checked as moby's
-`ParseSignal` and stored as written; `CMD` sets `ArgsEscaped`; a new
-`ENTRYPOINT` clears the `CMD` unless `keep_cmd` (the stage set it); an
-empty exec form clears the field; an empty `VOLUME` is refused. These are
-BuildKit's rules where kaniko differs (Q-130, `ADR-0032`). The builder
-adds one history entry per instruction (Q-131). On error the config is
-unchanged. Creating the `WORKDIR` directory is `rnk-builder`'s, through
-`RootPath`.
+`apply` follows kaniko's `ExecuteCommand`s (`pkg/commands/*.go`), and
+BuildKit's rules where kaniko differs (ADR-0032):
 
-A config is written as BuildKit's typed round trip writes it (Q-132):
+- An empty `ENV`, `LABEL`, `EXPOSE`, `VOLUME` or `SHELL` list is refused.
+  `ENV` replaces a key in place or appends, rewriting every entry as
+  `key=value`. `USER` is stored as written. `HEALTHCHECK` zeros become
+  `None`. `WORKDIR` keeps an absolute path as written and joins and cleans a
+  relative one.
+- `EXPOSE` takes BuildKit's port specs (`exposed_ports`: `tcp`, `udp`, `sctp`
+  in any case, written lower case; a range gives one key per port;
+  `ip:hostport:` checked and dropped). `STOPSIGNAL` is checked as moby's
+  `ParseSignal` and stored as written.
+- `CMD` sets `ArgsEscaped`; a new `ENTRYPOINT` clears the `CMD` unless
+  `keep_cmd` (the stage set it); an empty exec form clears the field.
+- On error the config is unchanged. The builder adds one history entry per
+  instruction and creates the `WORKDIR` directory, through `RootPath`.
+
+A config is written as BuildKit's typed round trip writes it (ADR-0032):
 fields Go marks `omitempty` are left out when empty (`""`, `false`, `0`,
-`[]`, `{}`), `config` is always written, and properties outside the OCI
-and Docker extension specs (Docker's legacy `Hostname`, `Tty`,
-`AttachStd*`, `Image`, `container`, `container_config`,
-`docker_version`) are dropped when a base config is read.
+`[]`, `{}`), `config` is always written, and properties outside the OCI and
+Docker extension specs (Docker's legacy `Hostname`, `Tty`, `AttachStd*`,
+`Image`, `container`, `container_config`, `docker_version`) are dropped when
+a base config is read.
 
 `RawManifest` and `select_platform` live in `rnk-registry` (`client.rs`,
 `platform.rs`): platform matching is kaniko's pull rule, not a property of
@@ -109,7 +114,7 @@ the format.
 
 ## Refs
 
-- **Design:** [ARCHITECTURE.md#data-flow-of-a-build](../../../ARCHITECTURE.md#data-flow-of-a-build) (step 8), [#determinism](../../../ARCHITECTURE.md#determinism)
+- **Design:** none of its own; [ARCHITECTURE.md#data-flow-of-a-build](../../../ARCHITECTURE.md#data-flow-of-a-build) (step 8), [#determinism](../../../ARCHITECTURE.md#determinism)
 - **Decisions:** [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (`--compression`, `--reproducible`, outputs), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (digests may differ between modes), [ADR-0009](../../adr/0009-x86-64-first-aarch64-ready.md) (platforms)
 - **Evidence:** [exp-05](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180): `push_manifest_raw` keeps the
   bytes, so the digest is stable.
@@ -121,20 +126,23 @@ the format.
 
 ## Tests
 
-- T0 next to the code: hostile digests and references (no panic, short
+All T0 (`cargo test -p rnk-oci`).
+
+- Next to the code: hostile digests and references (no panic, short
   messages); media types per format and compression, OCI matrix conversion;
   malformed descriptors, manifests and configs; distribution v0.6.0's
   reference test vectors, adapted to normalized parsing.
-- T0 fixtures in `testdata/` (Docker v2s2 manifest, list, config; OCI
+- Fixtures in `testdata/` (Docker v2s2 manifest, list, config; OCI
   manifest, artifact manifest, index, config) serialize back to the same
   JSON value. Canonical JSON: golden bytes, `HashMap` order never shows over
   100 runs, proptest on insertion order, any JSON value, random documents.
-- T0: every `ConfigEdit` against kaniko's rules (ENV order, WORKDIR joins,
+- Every `ConfigEdit` against kaniko's rules (ENV order, WORKDIR joins,
   EXPOSE and STOPSIGNAL validation, shell form), history and `diff_ids`
   appends in canonical bytes; `manifest.json` and layout files as
   go-containerregistry and the image-spec write them.
-- Planned: config fields compared with kaniko's and BuildKit's (T1/T2, with
-  `rnk-builder`).
+- To do: config fields compared with kaniko's and BuildKit's (T1/T2, with
+  `rnk-builder`). Multi-platform output is out of scope
+  ([ADR-0008](../../adr/0008-out-of-scope-bake-warmer-cloud-contexts.md)).
 
 ## Metrics
 
@@ -162,7 +170,7 @@ the format.
 - Docker schema 2 has no zstd layer type: zstd needs OCI; kaniko rejects
   zstd with `--image-format=docker` or `--tar-path` (`root.go:177-188`).
 - kaniko's `--image-format` defaults to the base's format (`root.go:358`);
-  ranikust writes OCI, as BuildKit (Q-006). kaniko converts layer media
+  ranikust writes OCI, as BuildKit (ADR-0032). kaniko converts layer media
   types and asserts no mixing
   (`build.go:1237-1268`, `transform.go:141-148`); its table maps OCI zstd to
   Docker gzip and Docker foreign gzip to uncompressed OCI, mislabeling the
@@ -176,14 +184,3 @@ the format.
   (`build.go:2100`); under `--reproducible` every timestamp must be fixed.
 - A base reference may be an index: pick the platform (kaniko
   `--custom-platform`, default host, `root.go:113-118`).
-
-## Phase 1
-
-- All of it: the MVP pushes to a registry and writes Docker tars and OCI
-  layouts with gzip or zstd and `--reproducible` ([survey 04 §2](../../research/survey/04-risks-and-roadmap.md#2-mvp-and-10-scope)).
-- Order: `Digest` and media types → raw manifest, index and config parsing,
-  platform selection → canonical serialization and config edits → tar and
-  layout index types. All built (`RawManifest` and platform selection in
-  `rnk-registry`); left: the comparison with kaniko's and BuildKit's
-  configs (config goldens).
-- Nothing deferred; multi-platform output is out of scope ([ADR-0008](../../adr/0008-out-of-scope-bake-warmer-cloud-contexts.md)).
