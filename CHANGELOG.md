@@ -289,10 +289,13 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   kept for the later stages and `COPY --from` images made on it, instead
   of each stage downloading the layer again and decompressing it twice
   (to verify it, then to extract it). The extraction from the spool still
-  checks the diff ID. Kaniko mode also decompresses a layer on a thread of
-  its own, at most 4 MiB of plain tar ahead of the extraction writing its
-  files, so a layer takes the longer of the two instead of their sum
-  (ADR-0081).
+  checks the diff ID, through the descriptor held rather than a path; no
+  spool is kept while the store's files are in memory (`memfd`). Kaniko
+  mode also decompresses a layer on a thread of its own, up to 5 MiB of
+  plain tar ahead of the extraction writing its files, so a layer takes
+  the longer of the two instead of their sum; the thread stops at the
+  blob when the extraction stops early, and where no thread can be
+  started the extraction decompresses itself (ADR-0081).
 - `--mode=auto` builds in kaniko mode with a directory per stage where
   root may mount but overlayfs refuses the state directory (NFS, overlayfs)
   outside a container, instead of refusing; a failed step of the `RUN`

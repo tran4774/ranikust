@@ -131,8 +131,12 @@ the number of layers uploading or waiting to is bounded by twice
   stage or `COPY --from` image the build announced on its layer
   (ADR-0081), so the disk holds one compressed layer at a time plus the
   layers of a base later stages still use, and a shared base is
-  downloaded and verified once per build. The second decompression runs on
-  a thread of its own, a few MiB ahead of the extraction's writes. A
+  downloaded and verified once per build; a spool announced for a stage
+  that never runs (a failed stage, `--target`) stays until the build
+  ends. Under the `memfd` fallback no spool is kept for a later stage:
+  memory holds one layer's spool at a time, and a shared base is
+  downloaded once per stage. The second decompression runs on a thread of
+  its own, up to 5 MiB ahead of the extraction's writes. A
   `COPY --from=<image>` on `/` is spooled and verified the same way before
   any directory is unpacked for it, and its verified compressed blobs kept
   for the stage's later readers. On a host root, and in

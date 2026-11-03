@@ -58,24 +58,42 @@ the last such use.
   `Snapshotter::streamed_layer` call, which the builder makes for each
   stage or image it pulls on the layer. A layer extracted more often than
   announced is spooled again; one announced but not extracted keeps its
-  spool until the build ends.
+  spool until the build ends, when the snapshotter drops.
 - The spool stays the compressed blob, capped by its descriptor's size,
   and an anonymous file of the store that no `RUN` can open (ADR-0051).
   Every extraction from it still decompresses it and checks the diff ID
-  on the way, as the extraction of a spool always did.
+  on the way, as the extraction of a spool always did: a spool changed
+  after its check fails the stage that reads it.
+- A kept spool, like a kept stage's tar, is read through a duplicate of
+  the descriptor held, at offsets of its own (`pread`), never by a path
+  such as `/proc/self/fd/<n>` looked up after a `RUN`.
+- While the store's files are in memory (the `memfd` fallback), no spool
+  is kept for later uses: each stage spools its layers anew, one at a
+  time, so memory never holds more than one layer's spool. A spool kept on
+  disk before the store fell back to memory stays.
 - Overlay mode and kaniko mode off `/` are unchanged: they do not spool.
 
 In kaniko mode, on `/` and off it, a layer's extraction reads its plain
 tar from a thread that decompresses the blob and computes the diff ID, at
-most 4 chunks of 1 MiB ahead.
+most 4 chunks of 1 MiB queued ahead, plus the one it fills: up to 5 MiB
+ahead of the extraction.
 
 - The thread only reads the blob and decompresses it; every file is still
   written by the extraction, through `RootPath`, in the tar's order. The
   bytes extracted are the ones decompressed, in the same order.
 - An error of the blob or of the decompression reaches the extraction as a
-  read error of the same kind. An extraction that stops early drops its
-  reader, the thread ends at its next chunk and is joined: no thread
-  outlives the extraction of its layer, so none runs during a `RUN`.
+  read error of the same kind. An extraction that stops early sets a stop
+  flag and drops its reader: the blob fails its next read, also inside a
+  read of the decoder that skips empty gzip members or zstd skippable
+  frames, the thread checks the flag before each read of the decoder, and
+  it is joined. No thread outlives the extraction of its layer. On `/`,
+  where kaniko mode runs one stage at a time, none runs during a `RUN`;
+  off `/`, with `--jobs` above 1, one stage's thread can run beside
+  another stage's full-sandbox `RUN`, which it cannot reach: it reads and
+  decompresses only, and writes no file.
+- Where no thread can be started (a tight `pids` limit), the extraction
+  decompresses the blob itself, as before this decision, instead of
+  failing.
 - The decoder, and its `rnk_layer.decode` span, are made and dropped on
   the extraction's thread.
 
@@ -87,8 +105,9 @@ most 4 chunks of 1 MiB ahead.
 - Good, because a layer's extraction takes the longer of its
   decompression and its writes instead of their sum.
 - Bad, because the compressed layers of a shared base stay on the state
-  directory's filesystem, or in memory under the `memfd` fallback, from
-  the first stage on it to the last, instead of one layer at a time.
+  directory's filesystem from the first stage on it to the last, instead
+  of one layer at a time; under the `memfd` fallback they do not, and a
+  shared base is downloaded once per stage there, as before.
 - Bad, because each extraction holds one more thread and up to 6 MiB of
   plain tar (4 queued chunks, the one being filled and the one being read).
 - Neutral, because layers, digests and what reaches `/` are unchanged:
@@ -100,8 +119,16 @@ most 4 chunks of 1 MiB ahead.
   `on_slash_a_layer_several_stages_were_made_on_is_downloaded_and_verified_once`:
   three stages on one streamed layer opened its source 3 times before and
   1 time after; `on_slash_a_spool_goes_with_the_last_use_the_build_announced`;
+  `on_slash_a_kept_spool_changed_after_its_check_fails_the_next_stage`;
+  `on_slash_a_spool_announced_but_never_used_goes_with_the_snapshotter`;
+  `on_slash_with_its_state_in_memory_a_spool_is_not_kept_for_later_stages`;
   `a_layer_decompressed_on_its_own_thread_reads_as_the_decoder_and_has_its_digest`;
-  `a_corrupt_layer_fails_its_reader_and_a_reader_that_stops_early_ends_the_thread`.
+  `a_corrupt_layer_fails_its_reader_and_a_reader_that_stops_early_ends_the_thread`;
+  `a_reader_that_stops_early_stops_the_blob_even_among_empty_gzip_members`
+  (without the blob's check the thread read all 2 020 290 bytes of the
+  blob, with it the 2 MB of empty members are not read);
+  `without_a_thread_a_layer_is_decompressed_by_its_reader`;
+  `rnk-store` `an_anonymous_store_says_when_its_files_are_in_memory`.
 - The kaniko behaviour comes from an upstream-oracle read of the kaniko
   fork at `44aa7ddc0` (`pkg/executor/base_reuse.go:19-44, 142-175`).
 - Measured in the test VM (`just test-vm ultra` limited to W1–W3 and the
