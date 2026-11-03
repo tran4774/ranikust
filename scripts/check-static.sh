@@ -4,7 +4,8 @@
 # table kept for readable panic backtraces, and that it runs.
 #
 # Used by `just build-static`, CI's `static-build` job and the release
-# workflow (ADR-0089), so the three cannot drift apart.
+# workflow (ADR-0089), so the three cannot drift apart. Tested by
+# tests/release/check-static-test.sh (`just test-release`).
 #
 # Usage: scripts/check-static.sh <binary>
 set -euo pipefail
@@ -26,18 +27,26 @@ fail() {
   exit 1
 }
 
+# readelf's output is read whole before it is searched: `readelf | grep -q`
+# under pipefail fails with readelf's SIGPIPE (141) when grep stops at the
+# first match, which an `if` takes for "no match".
 [ -f "$BIN" ] || fail "does not exist"
 file "$BIN"
-if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter'; then
+program_headers="$(readelf --program-headers --wide "$BIN")" || fail "cannot be read by readelf"
+dynamic="$(readelf --dynamic --wide "$BIN")" || fail "cannot be read by readelf"
+file_header="$(readelf --file-header --wide "$BIN")" || fail "cannot be read by readelf"
+section_headers="$(readelf --section-headers --wide "$BIN")" || fail "cannot be read by readelf"
+
+if [[ "$program_headers" == *"program interpreter"* ]]; then
   fail "requests a dynamic loader"
 fi
-if readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
+if [[ "$dynamic" == *"(NEEDED)"* ]]; then
   fail "depends on shared libraries"
 fi
-if ! readelf --file-header --wide "$BIN" | grep -q 'Type: *DYN'; then
+if ! [[ "$file_header" =~ Type:\ *DYN ]]; then
   fail "is not position-independent (static-pie)"
 fi
-if ! readelf --section-headers --wide "$BIN" | grep -q '\.symtab'; then
+if [[ "$section_headers" != *".symtab"* ]]; then
   fail "has no symbol table"
 fi
 ls -l "$BIN"

@@ -179,6 +179,11 @@ changelog *args:
 release-prepare version:
     python3 -I scripts/release.py prepare "$1"
 
+# Tests of the release scripts (CI: the `Release` workflow's build job): scripts/check-static.sh with a fake readelf, and scripts/release.py with fake gh and git remotes; no network, no privileges. Requires bash, python3 3.11 or later and git.
+test-release:
+    bash tests/release/check-static-test.sh
+    python3 -I tests/release/test_release.py
+
 # Local only, not in CI yet: mechanical checks of the decision records (every ADR indexed with its status, no duplicate question, no `[open: Q-NNN]` left for an answered question). Requires python3.
 docs-lint:
     python3 -I scripts/docs-lint.py
