@@ -1,10 +1,9 @@
 # Design documents
 
-Design docs describe the **current intended design** of ranikust: what each
-component does, the invariants it keeps, its algorithms, how it handles
-failure, and what is still open. They are updated in the same pull request as
-the code changes they describe. When code and design doc disagree, one of
-them is a bug.
+Design docs describe the **current design** of ranikust: what each component
+does, the invariants it keeps, its algorithms, how it handles failure, and
+what is still open. They are updated in the same pull request as the code they
+describe. When code and design doc disagree, one of them is a bug.
 
 | | |
 |---|---|
@@ -30,9 +29,11 @@ them is a bug.
 
 - Present tense, describing the design as it is meant to work now. History
   belongs in ADRs and research reports.
-- Each doc has: purpose, invariants, design, failure handling, open
-  questions, references. Keep each section short; link instead of repeating.
+- Each doc opens with a **TL;DR**. Invariants, failure handling, open
+  questions and references follow where the subject has them. Link instead of
+  repeating.
+- Open questions are the GitHub issues labelled `question`; a doc marks the
+  spot `[open: #N]` and lists the issues it depends on under "Open questions".
 - Numbers come from experiments and cite them. Behaviour not yet verified is
   labelled `[inferred]`.
-- Hard-wrap prose at about 80 columns; do not wrap tables, headings, links or
-  code.
+- How to write: [rules.md](../agents/rules.md#writing).

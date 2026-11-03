@@ -1,40 +1,49 @@
 # rnk-registry
 
-> **Status:** Phase 1 done (task 6) · **Phase:** 1 ·
-> **Depends on:** `rnk-oci` (pulls go into sinks its caller takes from `rnk-store`) · **Used by:** `rnk-builder`, `rnk-cache` (`ranikust` for `login`/`push` [open: #7]) · **Path:** `crates/rnk-registry/`
+> **Status:** in progress · **Phase:** 1-2 (mirrors, credential helpers: 5) ·
+> **Depends on:** `rnk-oci` (pulls go into sinks its caller takes from
+> `rnk-store`) ·
+> **Used by:** `rnk-builder`, `ranikust` (the client), `rnk-cache` (planned) ·
+> **Path:** `crates/rnk-registry/`
 
 **TL;DR:** A thin wrapper over `oci-client` 0.18 adding what it lacks:
-`config.json` auth, the identity-token exchange, retries, size limits,
-mount fallback, fast streamed push, rustls with `ring` and an explicit trust
-store, spans. Registry responses are hostile: verify every digest and size
-while streaming; never log a credential.
+`config.json` auth, the identity-token exchange, retries, size limits, mount
+fallback, fast streamed push, rustls with `ring` and an explicit trust store,
+spans. Registry responses are hostile: verify every digest and size while
+streaming; never log a credential.
 
 ## Owns
 
 - Authentication (docker `config.json`; credential helpers in Phase 5); TLS:
   rustls with `ring`, trusting the host's CAs plus the embedded webpki roots,
   plus `--registry-certificate` per registry (ADR-0024).
-- Retries, streamed blob pulls into a caller's sink (an `rnk-store`
-  temporary file) and pushes; cross-repository mounts with a fallback to a
-  regular upload; platform selection from an index. Mirrors in Phase 5.
+- Retries, streamed blob pulls into a caller's sink (an `rnk-store` temporary
+  file) and pushes; cross-repository mounts with a fallback to a regular
+  upload (ADR-0032); platform selection from an index. Mirrors in Phase 5.
+- Manifest and blob `GET`s and anonymous or basic token requests
+  (`fetch.rs`, `token.rs`), so every body read is bounded as it arrives (the
+  `--limit` limits, ADR-0079); the push side goes through `oci-client`.
 - Blobs streamed without being kept (ADR-0055): `Client::open_blob`, a
-  blocking reader over a 256 KiB pipe (`PIPE_BYTES`) that a thread of its
-  own fills, for kaniko mode's extraction; `BlobBody::Remote`, a push
-  whose body is pulled from another repository through the same pipe.
-  The reader (or body) owns the thread: dropped, it stops the pull and
-  joins the thread, so no pull outlives the runtime. A pull into a pipe is
-  retried only until its first byte; after that its first error is final,
-  and a reader that failed fails on every read. Read only from a thread
-  outside the runtime (a stage's): inside, the read fails.
+  blocking reader over a 256 KiB pipe (`PIPE_BYTES`) that a thread of its own
+  fills, for kaniko mode's extraction; `BlobBody::Remote`, a push whose body
+  is pulled from another repository through the same pipe. The reader (or
+  body) owns the thread: dropped, it stops the pull and joins the thread, so
+  no pull outlives the runtime. A pull into a pipe is retried only until its
+  first byte; after that its first error is final, and a reader that failed
+  fails on every read. Read only from a thread outside the runtime (a
+  stage's): inside, the read fails.
 
 ## Must not
+
+Boundaries: `crates/rnk-registry/src/lib.rs`. In short:
 
 - Build, compress or inspect layer contents (`rnk-layer`), or hold caching
   policy (`rnk-cache`).
 - Keep process-wide state (a global certificate pool, credentials in
-  statics), or define the store layout or publish entries (`rnk-store`).
-  The one exception: `ring` installed as rustls's default provider, which
+  statics), or define the store layout or publish entries (`rnk-store`). The
+  one exception: `ring` installed as rustls's default provider, which
   `reqwest` needs.
+- Put a credential in an error, a `Debug` output, a log event or a span field.
 
 ## API
 
@@ -49,8 +58,8 @@ pub enum Credential { Basic { username, password }, IdentityToken(String), Regis
     pub skip_tls_verify: BTreeSet<String>,   // everything sent to the registry, token realm included
     pub registry_certificates: Vec<(String, PathBuf)>, pub retry: RetryPolicy,
     pub manifest_retries: u32,               // kaniko's --image-download-retry around pull_image_manifest
-    pub connect_timeout: Option<Duration>, pub read_timeout: Option<Duration>, pub user_agent: &'static str }
-pub struct RetryPolicy { pub attempts: u32, pub initial_delay: Duration, pub factor: u32 } // default 3, 1 s, ×3
+    pub connect_timeout: Option<Duration>, pub read_timeout: Option<Duration>, pub user_agent: &'static str } // plus the --limit values, defaulted
+pub struct RetryPolicy { pub attempts: u32, pub initial_delay: Duration, pub factor: u32 } // default 3, 1 s, x3
 pub async fn retry_kaniko<T, E: Display>(retries: u32, op: impl AsyncFn() -> Result<T, E>) -> Result<T, E>;
     // kaniko's outer Retry (1 s, doubling, any error): --push-retry, --image-download-retry
 pub struct RawManifest;  // new(media_type, bytes) hashes; media_type(), digest(), bytes(), size(), descriptor()
@@ -58,7 +67,6 @@ pub struct ImageManifests { pub manifest: RawManifest, pub index: Option<RawMani
 pub enum PushOutcome { Existed, Mounted, Uploaded }
 pub enum BlobBody { Bytes(Bytes), Opened(Arc<dyn BlobFile>), File(PathBuf), Remote(Box<RemoteBlob>) } // reopened per attempt; Remote pulled through a pipe
 pub trait BlobFile: Debug + Send + Sync { fn open(&self) -> io::Result<std::fs::File>; } // a file reached by a handle, not a path (an anonymous layer)
-pub fn Client::open_blob(self: &Arc<Self>, h: &Handle, r: &Reference, d: &Descriptor) -> io::Result<BlobReader>; // blocking Read, fails unless size and digest match
 pub trait BlobSink: AsyncWrite + Unpin + Send { fn reset(&mut self) -> impl Future<Output = io::Result<()>>; fn can_restart(&self) -> bool { true } } // File, Vec<u8>
 pub fn select_platform<'a>(index: &'a ImageIndex, p: &Platform) -> Option<&'a Descriptor>;
 impl Client {
@@ -67,6 +75,7 @@ impl Client {
     pub async fn pull_image_manifest(&self, r: &Reference, p: &Platform) -> Result<ImageManifests, Error>;
     pub async fn pull_blob(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>;
     pub async fn pull_config(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>; // the `config` limit first (ADR-0079)
+    pub fn open_blob(self: &Arc<Self>, h: &Handle, r: &Reference, d: &Descriptor) -> io::Result<BlobReader>; // blocking Read, fails unless size and digest match
     pub async fn blob_exists(&self, r: &Reference, d: &Digest) -> Result<bool, Error>;
     pub async fn push_blob(&self, r: &Reference, d: &Descriptor, body: &BlobBody) -> Result<PushOutcome, Error>;
     pub async fn mount_or_push(&self, r: &Reference, from: &Reference, d: &Descriptor, body: &BlobBody) -> Result<PushOutcome, Error>;
@@ -81,182 +90,146 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
   through `open_blob` or `BlobBody::Remote` (ADR-0055): its reader or push
   fails at the end of the body, never ends cleanly, and the caller's use of
   the bytes (an extraction, an upload session) fails with it. Otherwise a
-  mismatch discards the temporary file ([design/cache-and-store.md#failure-handling](../../design/cache-and-store.md#failure-handling)). Memory stays flat
-  whatever the blob size: stream both ways. A pull never writes more than
-  the descriptor's size.
+  mismatch discards the temporary file
+  ([design/cache-and-store.md#failure-handling](../../design/cache-and-store.md#failure-handling)).
+  Memory stays flat whatever the blob size: stream both ways. A pull never
+  writes more than the descriptor's size.
 - Credentials never reach `Debug`, `Display`, logs, errors, the image or
-  cache keys ([threat model T11](../../security/threat-model.md#5-threats-and-mitigations)), and never go to a plain-HTTP token
-  realm of an HTTPS registry.
-- References reach `oci-client` built from the parts `rnk_oci` parsed,
-  never parsed again, and converted before the call connects, so a request
-  fails before anything is sent if `oci-client` would address a host or
-  repository other than the one the connection and the credential were
-  chosen for (ADR-0070, refining ADR-0026).
+  cache keys ([threat model T11](../../security/threat-model.md#5-threats-and-mitigations)),
+  and never go to a plain-HTTP token realm of an HTTPS registry.
+- References reach `oci-client` built from the parts `rnk_oci` parsed, never
+  parsed again, and converted before the call connects, so a request fails
+  before anything is sent if `oci-client` would address a host or repository
+  other than the one the connection and the credential were chosen for
+  (ADR-0070, refining ADR-0026).
+- Plain HTTP: a loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is
+  plain HTTP unasked, as BuildKit (ADR-0032); private-network addresses are
+  not special. Unlike BuildKit, credentials go over plain HTTP only to a
+  registry in `ClientOptions::http_credentials`, which `ranikust` fills with
+  names the operator typed (`--insecure-registry`, destinations under
+  `--insecure`; ADR-0036): ranikust's `RUN` shares the host's network and
+  could sniff `lo` or serve the port (T11). Any other plain-HTTP registry
+  (a loopback one, or one a Dockerfile names under `--insecure-pull`) is
+  accessed anonymously, and a refusal names the flags. With
+  `verified_credentials_only` (kaniko mode on `/`) only verified TLS carries
+  credentials: none over plain HTTP even to a registry so named, nor to one
+  under `--skip-tls-verify*`, and a refusal says so (ADR-0051).
 
 ## Refs
 
-- **Design:** [design/cache-and-store.md#ownership](../../design/cache-and-store.md#ownership) (blob transfer here), [#atomic-publication](../../design/cache-and-store.md#atomic-publication), [#locks](../../design/cache-and-store.md#locks)
-- **Decisions:** [ADR-0024](../../adr/0024-tls-rustls-ring.md) (`ring`, combined trust store), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (DER certs to `oci-client`; helpers external), [ADR-0021](../../adr/0021-rnk-store-crate.md) (blobs go through `rnk-store`), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (`--destination`, `--registry-certificate`, `--cache-repo`), [ADR-0006](../../adr/0006-persistent-store.md) (per-digest locks), [ADR-0026](../../adr/0026-rnk-oci-owns-its-types.md) (`oci-spec` types stay inside), [ADR-0070](../../adr/0070-registry-references-reach-oci-client-built-from-parts.md) (references built from parts)
-- **Evidence:** [exp-05 Q4](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180) (`oci-client` behaviour, timings),
-  [Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (CAs in `scratch`), [Q7](../../research/experiments/05-rust-ecosystem.md#q7-docker_credential-and-oci-spec) (credential lookup table).
-- **kaniko:** `kaniko@44aa7ddc0 pkg/image/remote/remote.go:40-129` (maps,
-  mirrors, retries), `pkg/creds/creds.go:35-70` (keychains),
-  `pkg/util/gcr_util.go:30-46` (`DOCKER_CONFIG`), `transport_util.go:143-196`,
-  `pkg/executor/push.go:95-140` (permission check), `:318-366` (mount, then
-  upload, retries); `cmd/executor/cmd/root.go:391-410` (flags); vendored
-  go-containerregistry: `pkg/v1/remote/options.go:80-101` (retry defaults),
-  `pkg/v1/remote/index.go:252-291` (platform match),
-  `pkg/v1/remote/transport/bearer.go:442-497` (identity tokens),
-  `ping.go:47-58` and `pkg/name/registry.go:88-108` (HTTP fallback)
+- **Design:** [design/cache-and-store.md#ownership](../../design/cache-and-store.md#ownership) (blob transfer here), [#atomic-publication](../../design/cache-and-store.md#atomic-publication), [#locks](../../design/cache-and-store.md#locks); [design/streaming.md](../../design/streaming.md)
+- **Decisions:** [ADR-0024](../../adr/0024-tls-rustls-ring.md) (`ring`, combined trust store), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (DER certs to `oci-client`; helpers external; `ring` compiles C, built with cargo-zigbuild), [ADR-0021](../../adr/0021-rnk-store-crate.md) (blobs go through `rnk-store`), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (`--destination`, `--registry-certificate`, `--cache-repo`), [ADR-0006](../../adr/0006-persistent-store.md) (per-digest locks), [ADR-0026](../../adr/0026-rnk-oci-owns-its-types.md) (`oci-spec` types stay inside), [ADR-0070](../../adr/0070-registry-references-reach-oci-client-built-from-parts.md) (references built from parts), [ADR-0079](../../adr/0079-resource-limits-with-a-limit-flag.md) (`--limit`)
+- **Open:** [#27](https://github.com/tran4774/ranikust/issues/27) (bound push-side error bodies), [#28](https://github.com/tran4774/ranikust/issues/28) (an overall pull deadline or minimum rate), [#25](https://github.com/tran4774/ranikust/issues/25) (`--network=none` and ranikust's own requests), [#23](https://github.com/tran4774/ranikust/issues/23) (encode a layer straight into its upload), [#37](https://github.com/tran4774/ranikust/issues/37) (signing)
+- **Evidence:** [exp-05 Q4](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180) (`oci-client` behaviour, timings), [Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (CAs in `scratch`), [Q7](../../research/experiments/05-rust-ecosystem.md#q7-docker_credential-and-oci-spec) (credential lookup table); only a loopback registry was measured ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not))
+- **kaniko:** `kaniko@44aa7ddc0 pkg/image/remote/remote.go:40-129` (maps, mirrors, retries), `pkg/creds/creds.go:35-70` (keychains), `pkg/util/gcr_util.go:30-46` (`DOCKER_CONFIG`), `transport_util.go:143-196`, `pkg/executor/push.go:95-140` (permission check), `:318-366` (mount, then upload, retries); `cmd/executor/cmd/root.go:391-410` (flags); vendored go-containerregistry: `pkg/v1/remote/options.go:80-101` (retry defaults), `pkg/v1/remote/index.go:252-291` (platform match), `pkg/v1/remote/transport/bearer.go:442-497` (identity tokens), `ping.go:47-58` and `pkg/name/registry.go:88-108` (HTTP fallback)
 - **External:** [oci-client v0.18.0 client.rs](https://github.com/oras-project/rust-oci-client/blob/v0.18.0/src/client.rs), [OCI distribution-spec v1.1.1](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md), [token authentication](https://distribution.github.io/distribution/spec/auth/oauth/), [docker_credential](https://crates.io/crates/docker_credential), [webpki-root-certs](https://crates.io/crates/webpki-root-certs)
 
 ## Tests
 
-- T0, `tests/limits/`: the `--limit` limits against hostile bodies (64 MiB
+All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
+
+- `tests/registry/`: an in-process fake registry (hand-written on `hyper`,
+  which the tree already has; it keeps blobs, manifests and upload sessions,
+  which a request-matching mock would have to script): open, basic and bearer
+  registries, `config.json` credentials, identity tokens per scope, digest
+  and size mismatches, retries on 503 and none on 404, one-PUT push,
+  existence check, mount refused (`202`) then upload, mount accepted,
+  platform selection, a loopback registry over plain HTTP unlisted.
+  `tests/spans/` checks the spans in a binary with one test, since tracing
+  caches callsite interest per process.
+- `tests/limits/`: the `--limit` limits against hostile bodies (64 MiB
   manifests, token responses and error bodies the fake streams), memory
-  measured by a counting allocator, a config refused before any request,
-  and a stalled body failing after `registry-idle` (ADR-0079); a pull
-  under basic authentication sends one `GET /v2/` only, never
-  `oci-client`'s own, and a push carries the same credential
-  (`basic_authentication`; `rnk-builder` `tests/stall.rs` runs it inside
-  the store's locked fill).
-- T0, `tests/red_team/`: a registry scripted byte for byte on loopback.
-  Held: a manifest or blob `GET` redirected to another origin arrives
-  there without the basic credential the registry's own requests carry
-  (`red_team_a_redirect_off_the_registry_carries_no_credential`); a token
-  holding CR LF, NUL, a space or non-ASCII is refused, never sent
-  (`red_team_a_token_that_would_break_a_header_is_refused`); a
-  registry's text reaches an error only as an excerpt
-  (`red_team_a_registrys_text_reaches_an_error_only_as_an_excerpt`): an
-  error envelope of 2000 entries (each under 200 characters, 438 KB in
-  all, within `registry-body`) becomes one 200-character excerpt and the
-  entry count, a 300 KB `Docker-Content-Digest` that does not match the
-  body is cut the same way in `Error::DigestMismatch` (a well-formed
-  digest is shown whole), and a plain error body is cut to 200
-  characters; each error stays under 400 bytes. It held 438 KB and
-  300 KB before.
-- T0, `tests/registry/`: an in-process fake registry (hand-written on
-  `hyper`, which the tree already has; it keeps blobs, manifests and upload
-  sessions, which a request-matching mock would have to script): open,
-  basic and bearer registries, `config.json` credentials, identity tokens
-  per scope, digest and size mismatches, retries on 503 and none on 404,
-  one-PUT push, existence check, mount refused (`202`) then upload, mount
-  accepted, platform selection, a loopback registry over plain HTTP
-  unlisted. The spans are
-  checked in `tests/spans/`, a binary with one test, since tracing caches
-  callsite interest per process.
-- T0 unit tests: exp-05's Table 14 credential cases without helpers, secret
+  measured by a counting allocator, a config refused before any request, a
+  stalled body failing after `registry-idle` (ADR-0079); a pull under basic
+  authentication sends one `GET /v2/` only and a push carries the same
+  credential (`basic_authentication`; `rnk-builder` `tests/stall.rs` runs it
+  inside the store's locked fill).
+- `tests/red_team/`: a registry scripted byte for byte on loopback: a
+  manifest or blob `GET` redirected to another origin arrives there without
+  the basic credential; a token holding CR LF, NUL, a space or non-ASCII is
+  refused, never sent; a registry's text reaches an error only as an excerpt
+  (a 2000-entry error envelope, a 300 KB `Docker-Content-Digest`, a plain
+  error body: each error stays under 400 bytes).
+- Unit tests: exp-05's Table 14 credential cases without helpers, secret
   redaction in `Debug` and errors, trust store (embedded roots, invalid host
   certificates dropped, PEM files), retry delays, challenge parsing.
-- Ignored: `real_registry_pull`, read-only, pulls `RNK_TEST_IMAGE` for
-  linux/amd64 (passed on 2026-10-30 against a local `registry:2` and
-  `docker.io/library/busybox:latest`, the latter over TLS with the
-  combined trust store and an anonymous token); `real_registry_round_trip`
-  pushes to a `k6-*` repository of `RNK_TEST_REGISTRY` (`host:port`, plain
-  HTTP) and deletes the manifest, but `registry:2` keeps the repository
-  in its catalog. Not covered in T0: `SSL_CERT_FILE`/`SSL_CERT_DIR`
-  (process environment), TLS handshakes, htpasswd, ECR, GCR.
+- Ignored (need a registry): `real_registry_pull` (read-only, pulls
+  `RNK_TEST_IMAGE` for linux/amd64) and `real_registry_round_trip` (pushes to
+  a `k6-*` repository of `RNK_TEST_REGISTRY`, `host:port`, plain HTTP, and
+  deletes the manifest; `registry:2` keeps the repository in its catalog).
+  Not covered: `SSL_CERT_FILE`/`SSL_CERT_DIR` (process environment), TLS
+  handshakes, htpasswd, ECR, GCR.
 
 ## Metrics
 
-- One span per operation, each with `host`: `rnk_registry.auth` (the
-  `/v2/` probe when a registry is first used, and each token fetch),
-  `pull_manifest`, `pull_blob`, `push_blob` (`mounted`, `existed`),
-  `push_manifest` ([rows](../../design/metrics.md#rnk-registry)); `blob_exists` has none.
-- `bytes_in`/`bytes_out` are body bytes of every attempt; `requests`
-  counts the requests each `oci-client` call makes, retries included, but
-  not the token refreshes `oci-client` makes on its own. No span per
-  request or chunk, never a credential in a field.
+- One span per operation, each with `host`: `rnk_registry.auth` (the `/v2/`
+  probe when a registry is first used, and each token fetch), `pull_manifest`,
+  `pull_blob`, `push_blob` (`mounted`, `existed`), `push_manifest`
+  ([rows](../../design/metrics.md#rnk-registry)); `blob_exists` has none.
+- `bytes_in`/`bytes_out` are body bytes of every attempt; `requests` counts
+  the requests each `oci-client` call makes, retries included, but not the
+  token refreshes `oci-client` makes on its own. No span per request or
+  chunk, never a credential in a field.
 
 ## Pitfalls
 
-- `Client::pull()` holds every layer in memory, `push_blob(Vec<u8>)` peaked
-  at 526 MB RSS for 500 MB, and chunked push (sequential PATCHes of at most
-  4 MiB) took 13.0–20.4 s against 0.9 s with `use_monolithic_push` ([exp-05 Q4](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180)):
+- `Client::pull()` holds every layer in memory, `push_blob(Vec<u8>)` peaked at
+  526 MB RSS for 500 MB, and chunked push (sequential PATCHes of at most
+  4 MiB) took 13.0-20.4 s against 0.9 s with `use_monolithic_push`
+  ([exp-05 Q4](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180)):
   the client uses `push_blob_stream` with `use_monolithic_push`.
-- A refused mount (`202` with an upload session) is a `SpecViolationError`
-  and the session is dropped: upload yourself, as kaniko does (Q4;
-  `push.go:324-334`). `oci-client`'s tokens cover one repository, and a
-  token registry refuses a mount without pull access to the source: on a
-  token registry `mount_or_push` fetches one token for both scopes itself
-  (a `GET` to the realm with two `scope`s, or the identity-token exchange
-  with both) and sends the mount with it, as go-containerregistry's
-  `maybeUpdateScopes` does; open, basic and static-token registries keep
-  `oci-client`'s path.
+- A refused mount (`202` with an upload session) is a `SpecViolationError` and
+  the session is dropped: upload yourself, as kaniko does (`push.go:324-334`).
+  `oci-client`'s tokens cover one repository, and a token registry refuses a
+  mount without pull access to the source: on a token registry
+  `mount_or_push` fetches one token for both scopes itself (a `GET` to the
+  realm with two `scope`s, or the identity-token exchange with both) and
+  sends the mount with it, as go-containerregistry's `maybeUpdateScopes`
+  does; open, basic and static-token registries keep `oci-client`'s path.
 - A registry's text reaches an error only as a 200-character excerpt
-  (`Error::Registry`'s `message`), so nothing is decided from it: whether
-  the registry refused access (the withheld-credential hint) is
+  (`Error::Registry`'s `message`), so nothing is decided from it: whether the
+  registry refused access (the withheld-credential hint) is
   `Error::Registry`'s `refused`, set from the status (401, 403) and the
   envelope's `UNAUTHORIZED` and `DENIED` codes
   (`a_refusal_is_decided_from_codes_and_status_not_the_excerpt`), as
   `retryable` is.
-- The test fake answers `HEAD` and `GET` of a blob only in repositories
-  that hold it, checks the source scope of a mount under bearer
-  authentication, and stores a pushed manifest with its `Content-Type`:
-  without these, mounts and per-repository reads were never exercised.
-- `oci-client` panics in `push_manifest_raw` when a registry omits
-  `Location` and the reference has a digest, and unwraps a header built from
-  a token: `push_manifest` takes tags only, and identity-token responses
-  with non-header characters are refused. A hostile token from the
-  ordinary token flow can still abort the process.
+- The test fake answers `HEAD` and `GET` of a blob only in repositories that
+  hold it, checks the source scope of a mount under bearer authentication,
+  and stores a pushed manifest with its `Content-Type`: without these,
+  mounts and per-repository reads were never exercised.
+- `oci-client` panics in `push_manifest_raw` when a registry omits `Location`
+  and the reference has a digest: `push_manifest` takes tags only.
 - `oci-client` keeps the first authorization stored per registry and reads
-  every body whole (`Response::bytes()`/`text()`), so pulls do not go
-  through it: manifest and blob `GET`s and anonymous or basic token
-  requests are sent by `fetch.rs`/`token.rs` with bounded reads, the
-  `manifest` and `registry-body` limits (ADR-0079), with `oci-client`'s
-  status and digest handling copied. It keeps the push side, whose error
-  bodies it still reads whole (Q-449). Tokens go into its token cache per
-  scope; a token that outlives `oci-client`'s 60 s guess is put back
-  before each operation.
+  every body whole (`Response::bytes()`/`text()`), so pulls do not go through
+  it: manifest and blob `GET`s and anonymous or basic token requests are sent
+  by `fetch.rs`/`token.rs` with bounded reads (the `manifest` and
+  `registry-body` limits, ADR-0079), with `oci-client`'s status and digest
+  handling copied. It keeps the push side, whose error bodies it still reads
+  whole ([#27](https://github.com/tran4774/ranikust/issues/27)). Tokens go
+  into its token cache per scope; a token that outlives `oci-client`'s 60 s
+  guess is put back before each operation.
 - `ClientOptions` carries the `--limit` values and defaults to them
   (`MAX_MANIFEST_BYTES`, `MAX_BODY_BYTES`, `MAX_CONFIG_BYTES`,
   `READ_TIMEOUT`): a library user is bounded too. `pull_config` checks the
   config's descriptor before the request. `read_timeout` is an idle bound
-  kept by `fetch::on_socket` around each wait for a pull's bytes, never
-  set as `reqwest`'s read timeout (which would cap a whole upload) and
-  never running while the sink writes; it is not a deadline: a registry
-  dripping bytes still holds a pull (Q-448). Token requests use their own
-  client, which follows redirects only within one origin.
-- Without a stored authorization `oci-client` sends no credentials, and
-  with one it pings `/v2/` again before each token: the client probes
-  `/v2/` once per registry and stores nothing for open registries.
+  kept by `fetch::on_socket` around each wait for a pull's bytes, never set
+  as `reqwest`'s read timeout (which would cap a whole upload) and never
+  running while the sink writes; it is not a deadline: a registry dripping
+  bytes still holds a pull ([#28](https://github.com/tran4774/ranikust/issues/28)).
+  Token requests use their own client, which follows redirects only within
+  one origin.
+- Without a stored authorization `oci-client` sends no credentials, and with
+  one it pings `/v2/` again before each token: the client probes `/v2/` once
+  per registry and stores nothing for open registries.
 - `reqwest` with `rustls-no-provider` panics at build unless a crypto
-  provider is installed; `Client::new` installs `ring`. Its default
-  verifier fails in `scratch`, so certificates go through `tls_certs_only`,
-  and one invalid root makes it refuse to build: the trust store drops
-  certificates rustls rejects.
+  provider is installed; `Client::new` installs `ring`. Its default verifier
+  fails in `scratch`, so certificates go through `tls_certs_only`, and one
+  invalid root makes it refuse to build: the trust store drops certificates
+  rustls rejects.
 - kaniko's `--registry-certificate` (`registry=path`) joins one process-wide
   pool unless `FF_KANIKO_SCOPED_REGISTRY_CERTIFICATES` is set
   (`transport_util.go:146-170`): here it is per registry.
 - kaniko tries mapped and mirror registries in order, then the original
   unless `--skip-default-registry-fallback` (`remote.go:54-98`); reads
-  `DOCKER_AUTH_CONFIG` first and has built-in env, google, ecr, acr and
-  gitlab helpers (`creds.go:39-55`); ranikust ships none (ADR-0020).
-- `ring` compiles C: the musl targets need `feat/zigbuild-zstd`'s
-  cargo-zigbuild (task 5a, Q-052).
-
-## Phase 1
-
-- Done (task 6): trust store and per-registry certificates; anonymous,
-  basic, bearer, registry-token and identity-token auth from `config.json`;
-  manifest, index and blob pulls with platform selection; one-PUT blob and
-  raw manifest pushes; `blob_exists`; mounts; retries; spans.
-- Deferred: mirrors, credential helpers (phase 5); cache-repo use by
-  `rnk-cache` (phase 4). (Q-014, ADR-0032) Task 11 mounts (interim, on
-  `feat/rnk-builder-outputs`).
-  A loopback registry (`localhost`, `127.0.0.0/8`, `::1`) is plain HTTP
-  unasked, as BuildKit (ADR-0032, Q-065); private-network addresses are
-  not special. Unlike BuildKit, credentials go over plain HTTP only to a
-  registry in `ClientOptions::http_credentials`, which `ranikust` fills
-  with names the operator typed (`--insecure-registry`, destinations under
-  `--insecure`; ADR-0036): BuildKit's `RUN` has its own network namespace,
-  ranikust's shares the host's and could sniff `lo` or serve the port
-  (threat model T11). Any other plain-HTTP registry, a loopback one or one
-  a Dockerfile names under `--insecure-pull`, is accessed anonymously, and
-  a refusal names the flags. In kaniko mode on `/`
-  (`ClientOptions::verified_credentials_only`), only verified TLS carries
-  credentials: none over plain HTTP, even to a registry so named, nor to
-  one under `--skip-tls-verify*`, since a `RUN` may redirect its name
-  (ADR-0051); a refusal then says so. No `login` subcommand (ADR-0049).
-  Only a loopback registry was measured
-  ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not)).
+  `DOCKER_AUTH_CONFIG` first and has built-in env, google, ecr, acr and gitlab
+  helpers (`creds.go:39-55`); ranikust ships none (ADR-0020).

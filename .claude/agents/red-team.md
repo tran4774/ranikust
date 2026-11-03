@@ -52,7 +52,8 @@ not an opinion.
    the observed effect and the T-id; do not fix product code.
 4. Commit tests and fixtures on the branch you were given, in their own
    commits (`test(<crate>): ...`), with the docs the tests touch
-   (`docs/testing.md`, the crate card's Tests section).
+   (`docs/testing.md`, the crate card's Tests section). A test's comment
+   names the attack and the T-id in one line, not the steps the code shows.
 
 ## Report
 

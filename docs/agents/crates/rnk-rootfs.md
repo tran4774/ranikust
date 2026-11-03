@@ -1,7 +1,9 @@
 # rnk-rootfs
 
-> **Status:** in progress · **Phase:** 1 ·
-> **Depends on:** no internal crate (never `rnk-layer`) · **Used by:** `rnk-snapshot`, `rnk-sandbox`, `rnk-builder`, `rnk-store`, `rnk-context` · **Path:** `crates/rnk-rootfs/`
+> **Status:** done · **Phase:** 1-2 ·
+> **Depends on:** no internal crate (never `rnk-layer`) ·
+> **Used by:** `rnk-snapshot`, `rnk-sandbox`, `rnk-builder`, `rnk-store`,
+> `rnk-context`, `ranikust` · **Path:** `crates/rnk-rootfs/`
 
 **TL;DR:** All filesystem access inside a build root goes through `RootPath`,
 which resolves paths from a root fd with `openat2(RESOLVE_IN_ROOT)`, so `..`
@@ -11,212 +13,172 @@ never delete across a mount: compare `mnt_id`, not `st_dev`.
 ## Owns
 
 - `RootPath`: fd-based resolution of every path inside a root.
-- Layer extraction from an already decompressed tar `Read`, writing
-  whiteouts in the form the caller asks for (OCI or overlay); copy,
-  ownership, xattrs, raw mode bits.
+- Layer extraction from an already decompressed tar `Read`, writing whiteouts
+  in the form the caller asks for (OCI or overlay); copy, ownership, xattrs,
+  raw mode bits.
 - `USER` and `--chown` name lookup in the root's `/etc/passwd` and
   `/etc/group`, for `rnk-sandbox` and `rnk-builder`.
 - The ignore list: mount points below the root plus `--ignore-path`.
 - Safe deletion of a root's contents: the mechanism only.
+- The operator's host paths the build context's owner must not steer
+  (ADR-0076): `OutputDir`, `Fence`, `reach`.
+- The kernel check `probe_support` (Linux 5.8, ADR-0028): `openat2` and the
+  `statx` mount id, no string-based fallback (`Error::Unsupported`).
 
 ## Must not
+
+Boundaries: `crates/rnk-rootfs/src/lib.rs`. In short:
 
 - Reach a root path by joining strings onto a host path: `std::fs` or
   `Path::join` on an image, context or Dockerfile path is a bug.
 - Follow symlinks or cross a mount point when deleting, or decide by `st_dev`.
-- Decide what to delete and when (`rnk-snapshot` in roots, `rnk-store` in
-  the store); mount, create namespaces or run processes (`rnk-sandbox`);
-  write tar or decompress: the caller chains `rnk-layer`'s decoder into
-  `extract`.
+- Decide what to delete and when (`rnk-snapshot` in roots, `rnk-store` in the
+  store); mount, create namespaces or run processes (`rnk-sandbox`); write
+  tar or decompress: the caller chains `rnk-layer`'s decoder into `extract`.
+- Keep process-wide state, but one: the `tar-header` limit (below).
 
-## API (planned)
+## API
 
-Built items say `built`; paths are `impl AsRef<Path>`, absolute or relative,
-both taken relative to the root. Errors: one `Error` enum (`Unsupported`,
-`Io { op, path, source }`, `InvalidPath`, …).
+Paths are `impl AsRef<Path>`, absolute or relative, both taken relative to
+the root. Errors: one `Error` enum (`Unsupported`, `Io { op, path, source }`,
+`InvalidPath`, ...). Design: [design/rootfs.md](../../design/rootfs.md).
 
 ```rust
-pub struct RootPath { /* O_PATH | O_DIRECTORY | O_CLOEXEC fd, mnt_id */ }  // built
+pub struct RootPath { /* O_PATH | O_DIRECTORY | O_CLOEXEC fd, mnt_id */ }
 impl RootPath {
-    pub fn open(host_dir) -> Result<Self>;               // built: the only host path; RESOLVE_NO_SYMLINKS
-    pub fn open_at(&self, p, how: &OpenHow) -> Result<OwnedFd>; // built: RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS
-    pub fn open_regular(&self, p) -> Result<OwnedFd>;    // built: reads a file; FIFOs, devices refused unopened
-    pub fn open_context_file(&self, p) -> Result<OwnedFd>; // built: open_regular, and the context rule against the directory `p` names it in: a foreign hardlink or a file that directory's owner could not read refused (ADR-0076)
-    pub fn sub_root(&self, p) -> Result<RootPath>;       // built: stages/<n>/rootfs, a COPY --from source
-    pub fn create_sub_root(&self, p, mode) -> Result<RootPath>; // built: mkdirat + openat(O_PATH|O_DIRECTORY|O_NOFOLLOW) on one parent fd; empty, euid's, parent's mount, else refused (kaniko stage dirs, ADR-0059)
-    pub fn move_sub_root(&self, name, moved: &RootPath, to: &RootPath, to_name) -> Result<RootPath>; // built: renameat2(RENAME_NOREPLACE) of one plain name between two roots' fds; the name must be `moved`'s directory before, the opened result again after (dev, ino, mount), else refused (ADR-0061)
-    pub fn statx(&self, p) -> Result<Stat>;              // built: no-follow; carries mnt_id, mount_root
-    pub fn read_names(&self, p) -> Result<Vec<OsString>>; // built: a directory's names, mount points included (a directory listing)
-    pub fn pin(&self, p) -> Result<Pinned>;              // built: O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (a physical path: the kaniko exporter)
-    pub fn stay_on_mount(self) -> Self;                  // built: every later resolution with RESOLVE_NO_XDEV, sub_root included (rnk-sandbox's journal, ADR-0043)
-    pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // built: ids, xattrs, raw mode, times (that order)
-    pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // built: every xattr, overlay's too, sorted; no follow, no open of a FIFO or device (rnk-snapshot's exporter)
-    // built: create_dir, create_dir_all, symlink, read_link, hard_link,
-    // rename, remove_file, remove_dir; mnt_id()
+    pub fn open(host_dir) -> Result<Self>;               // the only host path; RESOLVE_NO_SYMLINKS
+    pub fn open_at(&self, p, how: &OpenHow) -> Result<OwnedFd>; // RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS
+    pub fn open_regular(&self, p) -> Result<OwnedFd>;    // reads a file; FIFOs, devices refused unopened
+    pub fn open_context_file(&self, p) -> Result<OwnedFd>; // open_regular plus the context rule (ADR-0076): a foreign hardlink or a file the directory's owner could not read is refused
+    pub fn sub_root(&self, p) -> Result<RootPath>;       // stages/<n>/rootfs, a COPY --from source
+    pub fn create_sub_root(&self, p, mode) -> Result<RootPath>; // mkdirat + openat on one parent fd; empty, euid's, parent's mount, else refused (ADR-0059)
+    pub fn move_sub_root(&self, name, moved: &RootPath, to: &RootPath, to_name) -> Result<RootPath>; // renameat2(RENAME_NOREPLACE) of one plain name between two roots' fds; identity (dev, ino, mount) checked before and after (ADR-0061)
+    pub fn statx(&self, p) -> Result<Stat>;              // no-follow; carries mnt_id, mount_root
+    pub fn read_names(&self, p) -> Result<Vec<OsString>>; // a directory's names, mount points included
+    pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (the kaniko exporter)
+    pub fn stay_on_mount(self) -> Self;                  // every later resolution with RESOLVE_NO_XDEV (rnk-sandbox's journal, ADR-0043)
+    pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order)
+    pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // every xattr, overlay's too, sorted; no follow, no open of a FIFO or device
+    // create_dir, create_dir_all, symlink, read_link, hard_link, rename, remove_file, remove_dir; mnt_id()
 }
-pub struct Pinned;                                      // built: stat(), read_link() (readlinkat(fd, "")), xattrs() (none for a symlink), open_regular() (reopen of the pinned inode)
-pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // built: plain tar; Whiteouts::{Apply, Overlay}
-pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // built: kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
-pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // built: as extract_live with Whiteouts::Literal (a kept kaniko-mode stage, ADR-0056): `.wh.*` names are files
-pub fn set_extension_header_limit(bytes: u64); // built: the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB), the crate's only process-wide setting; Error::ExtensionHeader past it (ADR-0079)
-pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // built: overlay form over lowers (nearest first); a hardlink into a lower is copied (Q-055); Extracted { root_set }: whether the tar had `./`
-pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // built: COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused ("changed while it was copied"), never cut short
-pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // built: copy without the entries below `from` that `keep` refuses (.dockerignore; kaniko's ignore list, a refused mount point skipped, not an error)
-pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<Chmod>, pub skip_special: bool, pub from_context: bool } // built: None keeps the source's; skip_special leaves devices, FIFOs, sockets out (ADR-0059); from_context: each regular file judged against the directory it was found in, a foreign hardlink or a file that directory's owner could not read by its mode bits refused (ADR-0076)
-pub struct Fence;     // built: Fence::of(&RootPath): a directory (by inode, so its bind mounts too) an output must not lead into, the build context's; owner()
-pub struct OutputDir; // built: OutputDir::open(path, create, fence): from / one name at a time, never through a symlink, never into the fence, missing dirs by mkdirat; check(), sub_dir(), write_in_place() (pinned first: a regular file with one link only; digest files), write_atomically() (O_EXCL temporary; renameat over a regular file only, else RENAME_NOREPLACE, else linkat then unlink where the filesystem refuses it, else a plain rename after a second look), open_existing() (ADR-0076)
-pub fn reach(path, fence: &Fence) -> Result<Reached>; // built: walks a host path to read, outside the fence following only a symlink root or the euid owns, with one name, in a directory root or the euid owns and no group or other may write; Reached::Inside(rest) once it takes a name inside, for the context's RootPath; Reached::Outside(HostFile): pinned with its held directory, open_regular(), open_beside(name), both judged by the context rule against that directory (--dockerfile and its ignore file, ADR-0076)
-pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;  // built
-pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // built: deletes what `remove` names (each with what is below), every touched directory's times set back: copy_filtered's entries (directory sizes aside); overlay's own xattrs (pub fn is_overlay_own, the copy's predicate) removed from every kept entry and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root (exact: every name counted before it is deleted, in any walk order)
-pub struct IgnoreList;  // built: insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, matched in O(tokens × characters) by the iterative wildcard algorithm: never exponential in the stars); covers (looks only at prefixes as long as the longest literal entry: a path's length, not its depth times its length), has_below, contains (exact literal)
-pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // built: USER (rnk-sandbox): uid, gid, supplementary gids, home
-pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // built: --chown (rnk-builder): gid = uid without a group
-pub fn probe_support() -> Result<(), Unsupported>;             // built: start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
+pub struct Pinned;   // stat(), read_link(), xattrs(), open_regular() (reopen of the pinned inode)
+pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // plain tar; Whiteouts::{Apply, Overlay}
+pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
+pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // as extract_live with Whiteouts::Literal (a kept stage, ADR-0056): `.wh.*` names are files
+pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); Extracted { root_set }: whether the tar had `./`
+pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
+pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused, never cut short
+pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // copy without the entries `keep` refuses (.dockerignore; the ignore list; a refused mount point is skipped, not an error)
+pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<Chmod>, pub skip_special: bool, pub from_context: bool } // None keeps the source's; skip_special leaves devices, FIFOs, sockets out (ADR-0060); from_context: the context rule per file (ADR-0076)
+pub struct Fence;     // Fence::of(&RootPath): a directory (by inode, so its bind mounts too) an output must not lead into, the build context's
+pub struct OutputDir; // open(path, create, fence): from / one name at a time, never through a symlink, never into the fence; check(), sub_dir(), write_in_place() (a regular file with one link), write_atomically() (O_EXCL temporary, renameat over a regular file only), open_existing() (ADR-0076)
+pub fn reach(path, fence: &Fence) -> Result<Reached>; // walks a host path to read (--dockerfile and its ignore file, ADR-0076); Reached::Inside(rest) once it enters the fence, for the context's RootPath; Reached::Outside(HostFile): pinned, open_regular(), open_beside(name)
+pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;
+pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // deletes what `remove` names (with what is below), every touched directory's times set back, overlay's own xattrs (is_overlay_own) removed from kept entries and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root
+pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, has_below, contains (exact literal)
+pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // USER (rnk-sandbox): uid, gid, supplementary gids, home
+pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // --chown (rnk-builder): gid = uid without a group
+pub fn probe_support() -> Result<(), Unsupported>;             // start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
 ```
 
 ## Invariants
 
 - A root's host path is opened once; every path below it is resolved by the
-  kernel from that fd with `RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS`, so `..`,
-  absolute symlinks and `/proc/self/root` stay inside. Tar hardlink targets
-  outside the root are refused, and the last component of a replaced entry is
-  never followed (threats T1, T2).
-- Every fd is `O_CLOEXEC` (T7). Directories are opened by `(parent fd, name)`,
-  never by a long path, so tree depth is unlimited. A walk keeps one fd per
-  level, each level's name and the names of its directory not yet visited,
-  and a single path buffer, never a path per level: memory linear in the
-  entries on the stack, no longer quadratic in depth (`tests/memory.rs`).
-  The copy walk does the same with one source and one destination buffer
-  (`copying_a_deep_chain_takes_memory_linear_in_its_depth`: 64 MB before,
-  0.5 MB now, at 400 levels of 200-byte names). A file with other names
-  whose path is past `PATH_MAX` is refused before it is copied, so the
-  map of first copies stays at about 4 KB a file
+  kernel from that fd with `RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS`, so
+  `..`, absolute symlinks and `/proc/self/root` stay inside. Tar hardlink
+  targets outside the root are refused, and the last component of a replaced
+  entry is never followed (T1, T2).
+- Every fd is `O_CLOEXEC` (T7). Directories are opened by `(parent fd,
+  name)`, never by a long path, so tree depth is unlimited. A walk keeps one
+  fd per level and a single path buffer, never a path per level: memory
+  linear in the entries on the stack (`tests/memory.rs`; the copy walk too,
+  `copying_a_deep_chain_takes_memory_linear_in_its_depth`). A file with other
+  names whose path is past `PATH_MAX` is refused before it is copied
   (`a_hardlinked_file_past_path_max_is_refused_by_the_copy`).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
-  from `statx` with the opened fd to catch a swap, `unlinkat` symlinks without
-  following; keep ignore-list entries, entries with another `mnt_id` and
-  `STATX_ATTR_MOUNT_ROOT` entries. Never `st_dev` alone. An unexpected mount,
-  swap or permission error stops it; there is no path-based fallback.
+  from `statx` with the opened fd to catch a swap, `unlinkat` symlinks
+  without following; keep ignore-list entries, entries with another `mnt_id`
+  and `STATX_ATTR_MOUNT_ROOT` entries. Never `st_dev` alone. An unexpected
+  mount, swap or permission error stops it; there is no path-based fallback.
 - Modes are raw `st_mode` bits (sticky, setuid, setgid survive). In overlay
   form, content xattrs `user.overlay.*` become `user.overlay.overlay.*`
-  (kernel ≥ 6.7).
-- A layer's `trusted.*` xattrs are never set, in any mode, before any
-  syscall (`meta::LAYER_SKIPPED_XATTR`, ADR-0075, as BuildKit's containerd
+  (kernel 6.7 or later).
+- A layer's `trusted.*` xattrs are never set, in any mode, before any syscall
+  (`meta::LAYER_SKIPPED_XATTR`, ADR-0075, as BuildKit's containerd
   extraction): counted as `xattrs_skipped`, one warning per layer. The
   copy-up of a hardlink from a lower layer leaves them out too
-  (`Xattrs::Layer`); `COPY` (`Xattrs::Copy`) keeps them. The other
-  namespaces are set strictly. `rnk-store` keeps extracted layers in
-  `layers/v3/`, so none extracted before this rule is reused.
-- Identity is compared by `(dev, ino)` (and mount id), never by string;
-  the store's `.ranikust-state` marker is a regular file.
+  (`Xattrs::Layer`); `COPY` (`Xattrs::Copy`) keeps them. The other namespaces
+  are set strictly. `rnk-store` keeps extracted layers in `layers/v3/`, so
+  none extracted before this rule is reused.
+- Identity is compared by `(dev, ino)` (and mount id), never by string; the
+  store's `.ranikust-state` marker is a regular file.
 
 ## Refs
 
-- **Design:** [`design/rootfs.md`](../../design/rootfs.md) (resolution, `EAGAIN`, metadata order); [`design/kaniko-mode.md#safe-deletion`](../../design/kaniko-mode.md#safe-deletion), [`#host-safety-checks`](../../design/kaniko-mode.md#host-safety-checks), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list); [`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer) (its last paragraph: extraction); [threat model T1–T4, T7](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0006](../../adr/0006-persistent-store.md) (extract to a temporary directory, rename), [ADR-0016](../../adr/0016-overlay-mount-options.md) (`userxattr`, hence the escaping), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (copy or `FICLONE`, never hardlinks to the store)
-- **Evidence:** [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) §A.2 (cases D1–D3), [exp-01](../../research/experiments/01-overlay-semantics.md) finding 7, [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (image check), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) (rootfs preparation)
-- **kaniko:** `kaniko@44aa7ddc0 pkg/util/fs_util.go:292` `DeleteFilesystem`
-  (path walk, string ignore list: port as fd + `mnt_id`); `:399`
-  `ExtractFile`, whose `:405-418` resolves only the parent; `:630` ignore list
-  from mountinfo; `pkg/util/command_util.go:534` `LookupUser`, which reads the
-  process's own `/etc/passwd`.
+- **Design:** [`design/rootfs.md`](../../design/rootfs.md) (resolution, `EAGAIN`, metadata order, extraction, copy, users, deletion); [`design/kaniko-mode.md#safe-deletion`](../../design/kaniko-mode.md#safe-deletion), [`#host-safety-checks`](../../design/kaniko-mode.md#host-safety-checks), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list); [`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer); [threat model T1-T4, T7](../../security/threat-model.md#5-threats-and-mitigations)
+- **Decisions:** [ADR-0006](../../adr/0006-persistent-store.md) (extract to a temporary directory, rename), [ADR-0016](../../adr/0016-overlay-mount-options.md) (`userxattr`, hence the escaping), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (copy or `FICLONE`, never hardlinks to the store), [ADR-0032](../../adr/0032-observable-behaviour-follows-buildkit.md) (`copy` follows BuildKit where it differs from kaniko), [ADR-0075](../../adr/0075-layer-trusted-xattrs-are-never-set.md) (no `trusted.*`), [ADR-0076](../../adr/0076-the-build-context-owner-is-a-lower-trust-principal.md) (outputs, context files), [ADR-0079](../../adr/0079-resource-limits-with-a-limit-flag.md) (`tar-header`)
+- **Evidence:** [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) §A.2 (cases D1-D3), [exp-01](../../research/experiments/01-overlay-semantics.md) finding 7, [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (image check), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) (rootfs preparation)
+- **kaniko:** `kaniko@44aa7ddc0 pkg/util/fs_util.go:292` `DeleteFilesystem` (path walk, string ignore list: port as fd + `mnt_id`); `:399` `ExtractFile`, whose `:405-418` resolves only the parent; `:630` ignore list from mountinfo; `pkg/util/command_util.go:534` `LookupUser`, which reads the process's own `/etc/passwd`
 - **External:** <https://man7.org/linux/man-pages/man2/openat2.2.html>, <https://man7.org/linux/man-pages/man2/statx.2.html>, <https://docs.rs/rustix>
 
 ## Tests
 
-- **T0** (temp dirs): escape suite for `RootPath` and `extract`: `..`,
-  symlinks out, chains and loops, `/proc/self/root`, `../etc/passwd`,
-  hardlinks out. Deletion of a 3,004-level tree; raw modes 1777 and 4755;
-  marker cases of exp-09 D3. Property test against a model resolver;
-  `cargo fuzz` on `extract`. Built: `tests/escape.rs` (all of the above
-  but the marker, plus real magic links under `/proc/<pid>` and a thread
-  swapping a directory for a symlink out during every operation); unit
-  tests per module, with the same racing swap under `extract`,
-  `delete_contents` and `copy` (both roots); `extract_overlay` against
-  whiteouts, opaque directories and symlinks in the lowers;
-  `tests/model.rs` checks `open_at` against a model resolver on 150 random
-  trees; `tests/spans.rs` the metrics. Red team of `/var/run` no longer
-  ignored (ADR-0052 D4, `src/extract/tests.rs`): through a container's
-  `/var/run -> ../run`, files, a hardlink, links, whiteouts aimed at an
-  ignored `/run/secrets` and `/run/.containerenv` skipped at their
-  physical path, a link climbing above the root kept in it, one into
-  `/proc` leading nowhere; an opaque marker below the `var/run` link fails
-  the extraction (never followed) unless the layer's own `var/run/`
-  replaces the link first. `copy_data` (ADR-0059): sparse, empty and
-  dense files, a source holding more than its size refused, and one cut
-  short between `SEEK_DATA` calls refused rather than zero-filled (a
-  red-team finding, fixed). `tests/limits.rs`: a 64 MiB GNU long name,
-  long link or PAX set refused at its header with under 2 MiB held, a
-  control without the bound, and a raised limit (ADR-0079). Still to do:
-  `cargo fuzz` on `extract`.
-  Red team of ADR-0060: `skip_special` leaves FIFOs, sockets and (`0:0`)
-  device nodes out at every depth, hardlinked, behind a symlinked
-  directory and named as the source; a file swapped for a FIFO during the
-  walk is copied from its pinned inode, never blocking.
-  ADR-0061: `prune_gives_what_a_filtered_copy_gives` (ignored paths,
-  below-only entries, FIFOs, a socket, a setuid hardlink split by an
-  ignored name, links out, every directory's times) compares entry for
-  entry with `copy_filtered`; `prune` never follows a link out and
-  refuses a root on another mount and the machine's own `/`; it removes
-  overlay's own xattrs from the root, a directory and a file, keeping the
-  escaped ones and every other (as the copy); it reports a
-  kept file hardlinked from outside the root, in both walk orders, and not
-  links whose other names are inside (kept, deleted, or in a directory
-  deleted whole) nor an outside link whose names it all deletes;
-  `move_sub_root` refuses `/` too, moves between two
-  roots' descriptors, refuses a swapped name (a directory or a symlink),
-  never replaces a name taken and takes only plain names. Red team of
-  `prune` (`red_team_prune_*`): an inode with a kept name, a deleted one
-  and one outside is reported in every walk order (the deleted name at
-  the top or in a directory deleted whole), a symlink hardlinked from
-  outside too, a FIFO hardlinked from outside and pruned everywhere not;
-  a thread exchanging a walked directory with a symlink out never gets
-  anything outside deleted or retimed; a directory of 100,000 entries
-  pruned to what a filtered copy gives, its times kept.
-  Red-team finding fixed (criterion 8, resources):
-  `red_team_finding_a_glob_with_stars_against_a_long_name_takes_linear_time`:
-  the glob matcher backtracked over every split of a name among the stars
-  (`/var/cache/*a*a*a*a*b` against one 255-character name: 14 s on a
-  release build); it now widens only the last star, 100 rounds of 4 and
-  10 stars against 255 characters well under 0.5 s in a debug build.
-  `the_linear_matcher_agrees_with_every_split` (proptest, 4000 cases)
-  checks it against the old matcher, kept as the oracle.
-  Red team of the hardening pass (ADR-0076, ADR-0079):
+Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
+
+- **T0** (temp dirs): `tests/escape.rs`: the escape suite for `RootPath` and
+  `extract` (`..`, symlinks out, chains and loops, `/proc/self/root`,
+  `../etc/passwd`, hardlinks out, real magic links under `/proc/<pid>`, a
+  thread swapping a directory for a symlink out during every operation);
+  deletion of a 3,004-level tree; raw modes 1777 and 4755. Unit tests per
+  module, with the same racing swap under `extract`, `delete_contents` and
+  `copy`; `extract_overlay` against whiteouts, opaque directories and
+  symlinks in the lowers. `tests/model.rs`: `open_at` against a model
+  resolver on 150 random trees. `tests/spans.rs`: the metrics.
+  `tests/limits.rs`: a 64 MiB GNU long name, long link or PAX set refused at
+  its header with under 2 MiB held, a control with the limit off that holds
+  the whole name, and a 2 MiB PAX set that passes once the limit is raised,
+  its file extracted (ADR-0079). `copy_data` (`src/copy/tests.rs`,
+  ADR-0059): sparse, empty and dense files copy exactly, a source holding
+  more than its size is refused, and one cut short between `SEEK_DATA` calls
+  is refused rather than zero-filled (a red-team finding, fixed).
+- **T0, red team:** `/var/run` (ADR-0052 D4, `src/extract/tests.rs`): through
+  a container's `/var/run -> ../run`, ignored `/run/secrets` and
+  `/run/.containerenv` skipped at their physical path, an opaque marker below
+  the link fails the extraction. `copy` with `skip_special` (ADR-0060):
+  FIFOs, sockets and device nodes left out at every depth, a file swapped for
+  a FIFO during the walk copied from its pinned inode. `prune` (ADR-0061,
+  `red_team_prune_*`): equals `copy_filtered` entry for entry, never follows a
+  link out, reports `linked_outside` in every walk order, a racing directory
+  exchange deletes nothing outside; `move_sub_root` refuses `/` and a
+  swapped name. The glob matcher is linear
+  (`the_linear_matcher_agrees_with_every_split`, proptest against the old
+  matcher as oracle).
   `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
-  (`src/extract/limit/tests.rs`, proptest, 2048 cases, 200,000 run once)
-  lays blocks out with no regard for the framing: headers where data
-  goes, a well-formed 1 GiB long name inside data, PAX record sets with
-  lying, unparsable, repeated, binary-keyed or empty `size` records, v7
-  headers typed `L`, `K`, `x`, unknown typeflags, early zero blocks.
-  Unbounded, `Framed` changes nothing the `tar` crate hands on and fails
-  no archive the crate reads; bounded (1 to 1500 bytes), no entry handed
-  on carries a name, link name or attached PAX record over the bound. Two
-  hand-made mutations of `Framed` (a `size` taken after a malformed
-  record, a `size` given to an extension header) each fail it.
-  `red_team_names_swapped_during_an_output_never_redirect_it`
-  (`src/host/tests.rs`): a thread exchanging (`RENAME_EXCHANGE`) the
-  output directory with a symlink to a victim directory, the tar with a
-  symlink to a victim file, the digest with a symlink and with a hard
-  link to another, while `OutputDir` opens and writes 3000 times: the
-  victim's files keep their text and no name appears there.
-- **T1** (written, `#[ignore]`): foreign owners and setuid in `extract`.
-- **T2** (VM only, `just test-vm unit`): exp-09's D2,
-  `mounts_inside_the_root_survive`: a bind mount of a directory on the
-  same filesystem (same `st_dev`) and a tmpfs inside a root, with links
-  to them, survive `delete_contents`, run in a private mount namespace
-  whose mounts a guard detaches before anything is deleted;
-  `prune_refuses_a_mount_below_the_root` (ADR-0061: a bind mount below
-  the root is refused, nothing on it touched); device nodes
-  in `extract`, device nodes and foreign owners in `copy` (written,
-  `#[ignore]`).
+  (`src/extract/limit/tests.rs`, proptest): the `tar-header` bound never
+  changes what the `tar` crate hands on and never lets a name or PAX record
+  over the bound through. `red_team_names_swapped_during_an_output_never_redirect_it`
+  (`src/host/tests.rs`): a thread exchanging the output directory, the tar
+  and the digest file with links to victims while `OutputDir` writes 3000
+  times (flaky on CI: [#44](https://github.com/tran4774/ranikust/issues/44)).
+- **T1** (`#[ignore = "T1: ..."]`, `RNK_T1_ROOT`): extraction and live
+  extraction never write below or skip-wrongly real mounts; foreign owners
+  and setuid kept raw in `extract`.
+- **T2c** (rootful Docker, `just test-container unit-c`): `mounts_inside_the_root_survive`
+  and `prune_refuses_a_mount_below_the_root` (`sysadmin`: a bind mount of a
+  directory on the same filesystem and a tmpfs inside a root, with links to
+  them, in a private mount namespace), device nodes in `extract`, device
+  nodes and foreign owners in `copy`, `trusted.*` xattrs, a symlink owned by
+  another user in `host`.
+- **To do:** `cargo fuzz` on `extract` (Phase 6).
 
 ## Metrics
 
 - `rnk_rootfs.extract` per layer (`mode`: `Apply`, `Overlay` or `Live`;
-  `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`, `xattrs_skipped`, `hardlinks`, `bytes_in`,
-  `bytes_written`), `rnk_rootfs.copy` per `COPY`
-  source set, `rnk_rootfs.delete` per tree, `rnk_rootfs.prune` per
-  pruned root (`entries`, `files`, `dirs`, `kept`) ([rows](../../design/metrics.md#rnk-rootfs)).
+  `entries`, `files`, `whiteouts`, `ignored`, `nodes_skipped`,
+  `xattrs_skipped`, `hardlinks`, `bytes_in`, `bytes_written`),
+  `rnk_rootfs.copy` per `COPY` source set, `rnk_rootfs.delete` per tree,
+  `rnk_rootfs.prune` per pruned root (`entries`, `files`, `dirs`, `kept`)
+  ([rows](../../design/metrics.md#rnk-rootfs)).
 - Count in the entry loop, record once at the end: never a span per entry.
 
 ## Pitfalls
@@ -224,59 +186,37 @@ pub fn probe_support() -> Result<(), Unsupported>;             // built: start-u
 - `st_dev`-only deletion emptied a same-filesystem bind mount (exp-09 D2b).
 - A string check let `//` through the system-directory refusal (exp-09 D3).
 - Full-path opens fail past 4,096 bytes and drop the subtree (exp-09).
-- Deletion holds one fd per tree level: raise `RLIMIT_NOFILE` (exp-09 §A.2).
+- Deletion holds one fd per tree level and `copy` two per directory level:
+  the caller raises `RLIMIT_NOFILE` for deep trees (exp-09 §A.2).
 - Joining a whole tar name writes through a final symlink, giving loops like
   `bin/sh -> dash -> dash` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:406-409`).
 - Extraction without raw modes turned `/tmp` 1777 into 777 (exp-07).
 - A hardlink farm let one `echo >>` change the store and a sibling stage
   (exp-12 finding 9).
-- `RESOLVE_IN_ROOT` returns `EAGAIN` when any rename races a `..` step:
-  retry it (`design/rootfs.md#resolution`; hit by the T0 suite).
-- `fchmod`/`fsetxattr` refuse `O_PATH` fds, `rustix` has no `fchmodat2`:
-  go through `/proc/self/fd/<n>` (`design/rootfs.md#metadata`).
+- `RESOLVE_IN_ROOT` returns `EAGAIN` when any rename races a `..` step: retry
+  it ([design/rootfs.md#resolution](../../design/rootfs.md#resolution); hit by
+  the T0 suite).
+- `fchmod`/`fsetxattr` refuse `O_PATH` fds, `rustix` has no `fchmodat2`: go
+  through `/proc/self/fd/<n>` ([design/rootfs.md#metadata](../../design/rootfs.md#metadata)).
 - `chown` clears setuid, setgid, `security.capability`: owner first.
 - Reading a file moves an old atime (relatime): check times before reading.
 - An image's file opened as root may be a FIFO (hang) or a device node (the
   host's device): use `open_regular`, or `pin` then `Pinned::open_regular`
   for a physical path (no symlink followed, no mount crossed).
-- `extract` never crosses a mount and refuses sparse entries; extension
-  headers are unbounded for now (Q-056). Overlay form: a hardlink into a
-  lower layer has no target in `layers/<id>`; `extract_overlay` copies it
-  from the lowers (Q-055), plain `extract` refuses it.
-- `copy` follows the source's own symlink and the destination
-  directory's, inside their roots, but never one inside the copied tree;
-  where kaniko and BuildKit differ it follows BuildKit (Q-120,
-  `ADR-0032`): sockets become empty files, every xattr but overlay's own
-  is copied best effort, `--chmod` may be symbolic (`Chmod`, `mode.rs`,
-  derived from dchapes-mode, BSD, in NOTICE).
-- Source roots never contain live mounts: a rule for the builder. `copy`
-  does not cross a mount below the source it is given (`EXDEV` stops it),
-  so a `/proc` or `/sys` there is refused rather than read as files.
-- A destination inside the source (`COPY . /workspace/sub` on a live
-  root) recursed without end; `copy` refuses a source directory that is a
-  directory it wrote into, as `cp` does.
-- `copy` holds two fds per directory level, deletion one: the caller
-  raises `RLIMIT_NOFILE` for deep trees.
-- Copying a hardlink target from a lower layer once per name let a few
-  MB of tar write a lower file's size per name; copies are keyed by the
-  lower inode.
-
-## Phase 1
-
-- Build first. Order: `RootPath` with the T0 escape suite → overlay-form
-  `extract` → `copy` (`--chown`, `--chmod`, `--from`) and `lookup_user` →
-  fd-based deletion of `builds/<id>` and `tmp/` leftovers.
-- Deferred to Phase 2: `delete_contents` on `/`, `FICLONE` stage copies.
-  Built in Phase 2 task 3: `extract_live` and `IgnoreList`'s kaniko
-  matching; the mountinfo list itself is `rnk-snapshot`'s.
-- The state directory's checks belong to `ranikust` (ADR-0050); this
-  crate provides primitives such as `RootPath::open`, `statx` (`dev`,
-  `ino`, `mnt_id`), `open_at` and `read_names`.
-- Needs Linux 5.8; `Error::Unsupported`, no fallback. The binary checks
-  it at start-up (ADR-0028).
-- Done: `RootPath`, `extract` and `extract_overlay` (Q-055),
-  `lookup_user`/`lookup_owner` (`USER` and `--chown` default the gid
-  differently), `delete_contents` (built before `extract`, which reuses
-  its walker), `copy`. The builder still
-  resolves `COPY` sources and the destination name (Q-080) and extracts
-  `ADD` archives.
+- `extract` never crosses a mount and refuses sparse entries. Extension
+  headers are bounded by the `tar-header` limit (1 MiB, ADR-0079). Overlay
+  form: a hardlink into a lower layer has no target in `layers/<id>`;
+  `extract_overlay` copies it from the lowers (copies are keyed by the lower
+  inode: copying once per name let a few MB of tar write a lower file's size
+  per name), plain `extract` refuses it.
+- `copy` follows the source's own symlink and the destination directory's,
+  inside their roots, but never one inside the copied tree; where kaniko and
+  BuildKit differ it follows BuildKit (ADR-0032): sockets become empty files,
+  every xattr but overlay's own is copied best effort, `--chmod` may be
+  symbolic (`Chmod`, `mode.rs`, derived from dchapes-mode, BSD, in NOTICE).
+- Source roots never contain live mounts: a rule for the builder. `copy` does
+  not cross a mount below the source it is given (`EXDEV` stops it), so a
+  `/proc` or `/sys` there is refused rather than read as files.
+- A destination inside the source (`COPY . /workspace/sub` on a live root)
+  recursed without end; `copy` refuses a source directory that is a directory
+  it wrote into, as `cp` does.

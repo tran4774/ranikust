@@ -46,6 +46,9 @@ requirement.
 6. **Tests.** A bug fix has a test that fails without it; privileged tests
    are ignored with their tier; tests touch only temporary directories.
 7. **Docs in sync.** The "Keep in sync" rules in `docs/agents/rules.md`.
+8. **Writing.** Comments and docs follow "Writing" in `docs/agents/rules.md`:
+   comments that restate the code or narrate history, and docs that repeat
+   what another doc owns, are non-blockers.
 
 ## Report
 
