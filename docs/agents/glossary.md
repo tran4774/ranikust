@@ -62,7 +62,7 @@ term is defined or measured; short forms as in
 | state dir | `--state-dir`, ranikust's `/kaniko`, one for every mode: the store, `builds/<id>`, stub journal, `deps/`, stage images. Default `/var/lib/ranikust`; on the ignore list in kaniko mode on `/` | `ADR-0022`, `ADR-0050`, [overview.md](overview.md#where-state-lives) |
 | store | Persistent, content-addressed `blobs/`, `layers/`, `caches/` in the state directory, shared by builds, owned by `rnk-store`; per-digest `flock`, atomic rename | `ADR-0006`, `ADR-0007`, `ADR-0021` |
 | stub mountpoint | Empty file or directory created in a root as a bind target (`/etc/resolv.conf`); journaled first, removed before the diff | `design/sandbox.md#stub-mount-points` |
-| T0-T3 | Test tiers: no privileges; user namespaces; root in a disposable VM (T2c: throwaway rootful Docker containers); CI | [workflow.md](workflow.md#test-tiers), `docs/testing.md` |
+| T0-T3 | Test tiers: no privileges; user namespaces; root in a disposable VM (T2c: throwaway rootful Docker containers); CI | [docs/testing.md](../testing.md#tiers) |
 | upperdir | Writable overlay layer; one per instruction (`diff-k`), which is that layer's diff | `design/overlay-snapshot.md#one-layer-per-instruction` |
 | `userxattr` | Overlay keeps its metadata in `user.overlay.*` xattrs; needed in a user namespace, used everywhere so `layers/` has one format | `ADR-0016` |
 | `volatile` | Overlay option that skips fsync on copy-up; required for speed; leaves a dirty marker, so an upper/work pair is never remounted | `design/overlay-snapshot.md#the-volatile-lifecycle`, `exp-06` |
