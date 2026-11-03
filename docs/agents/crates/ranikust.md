@@ -65,14 +65,14 @@ Modules of `crates/ranikust/src/` (all crate-private):
   name with the reason, never left to clap's "unexpected argument".
 - Flags worth knowing, with their refusals: the context is a plain path
   (`dir://` refused, exit 2, ADR-0053, ADR-0054; `--context-sub-path`
-  applies to fetched contexts only, a local one with it is refused); `--ignore-path` globs (`/` and bad patterns
-  refused early); refused for good: `--single-snapshot` (ADR-0065),
-  `--parallel-stages` (ADR-0060), `--force` and `--workdir` (ADR-0050),
-  `--ignore-var-run`, `--whitelist-var-run` (ADR-0052 D4); refused until
-  Phase 4: `--materialize` (ADR-0064), `--cache*`; planned: `--seccomp`,
-  `--userns` (Phase 3). Ours: `--mode`, `--state-dir`, `--jobs`,
-  `--network`, `--secret`, `--allow`, `--limit`, `--metrics-file`,
-  `--snapshot-workers`.
+  applies to fetched contexts only, a local one with it is refused);
+  `--ignore-path` globs (`/` and bad patterns refused early). Refused for
+  good: `--single-snapshot` (ADR-0065), `--parallel-stages` (ADR-0060),
+  `--force` and `--workdir` (ADR-0050), `--ignore-var-run`,
+  `--whitelist-var-run` (ADR-0052 D4). Refused until Phase 4:
+  `--materialize` (ADR-0064), `--cache*`. Planned: `--seccomp`, `--userns`
+  (Phase 3). Ours: `--mode`, `--state-dir`, `--jobs`, `--network`,
+  `--secret`, `--allow`, `--limit`, `--metrics-file`, `--snapshot-workers`.
 - `--snapshot-mode` is kaniko's (`full|redo|time`) and keeps that meaning in
   kaniko mode; the mode is `--mode`. Overlay mode warns and ignores it
   (ADR-0023). In overlay mode `overlay_mode_flags` refuses kaniko flags that
