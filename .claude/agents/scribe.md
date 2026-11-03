@@ -42,7 +42,9 @@ You keep ranikust's written record exact. Two kinds of job, often together.
    to note the deferral in the issue.
 5. Remove every `[open: #N]` marker of an answered question from code
    comments and docs (`git grep`), replacing it by the ADR reference where
-   the sentence needs one. The old `[open: Q-NNN]` form no longer exists.
+   the sentence needs one; markers inside accepted ADRs stay, since their
+   bodies are never rewritten. The old `[open: Q-NNN]` form survives only
+   in accepted ADRs up to ADR-0089; write it nowhere else.
 
 ## Syncing docs with a diff
 

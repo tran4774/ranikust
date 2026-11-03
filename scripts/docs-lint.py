@@ -5,23 +5,26 @@ r"""Mechanical checks on the decision records (`just docs-lint`).
 - an ADR's front-matter status matches its status in the index;
 - no question number appears twice in docs/open-questions.md (the answered
   archive and the headings of the questions moved to issues);
-- no `[open: Q-NNN]` marker remains outside the accepted ADRs, which are
-  never rewritten: open questions are GitHub issues since ADR-0088, named
-  by their number since ADR-0091, and their markers are `[open: #N]`;
-- every `[open: #N]` marker, in code or docs, names an open issue (not a
-  pull request) labelled `question`, which is asked of the GitHub API with
-  `gh` (one paginated call). In rustdoc comments the marker is written
-  `\[open: #N]` so rustdoc does not read it as a link; the check finds it
-  either way.
+- no `[open: Q-NNN]` marker remains outside ADR-0001 to ADR-0089, the
+  accepted ADRs written before the move, which are never rewritten: open
+  questions are GitHub issues since ADR-0088, named by their number since
+  ADR-0091, and their markers are `[open: #N]`;
+- every `[open: #N]` marker in code or docs names an open issue (not a pull
+  request) labelled `question`; inside docs/adr/ the issue only has to be a
+  `question` issue, open or closed, since an accepted ADR is not rewritten
+  when its question is answered. GitHub is asked through `gh` (one
+  paginated call). In rustdoc comments the marker is written `\[open: #N]`
+  so rustdoc does not read it as a link; the check finds it either way.
 
 The files checked are the ones `git ls-files` lists (tracked, plus untracked
 ones not ignored), so agent worktrees, `target/` and other ignored trees are
 never read.
 
-Without `gh`, or when the network fails, the issue check is skipped and the
-verdict line says so; set DOCS_LINT_REQUIRE_GITHUB=1 to make a skip a
-problem. Any other `gh` failure (an HTTP error such as 404, an
-authentication failure, a rate limit, unexpected output) is a problem.
+Without `gh`, without a logged-in `gh`, or when the network fails, the
+issue check is skipped and the verdict line says so; set
+DOCS_LINT_REQUIRE_GITHUB=1 to make a skip a problem. Any other `gh` failure
+(an HTTP error such as 404 or 401, a rate limit, unexpected output) is a
+problem.
 
 Prints every problem and exits 1 if there is any. Standard library, `git`
 and `gh` only; run from the repository root.
@@ -55,8 +58,10 @@ MARKER_FILES = (
 MARKER_TOP_LEVEL = ("Cargo.toml", "justfile")
 # Frozen, generated or foreign material that may quote old markers.
 MARKER_SKIP = ("docs/research/", "target/", "graphify-out/", ".claude/worktrees/")
-# Accepted ADRs are never rewritten, so their old markers stay (ADR-0088).
-OLD_MARKER_SKIP = ("docs/adr/",)
+# Accepted ADRs are never rewritten, so the ones written before the move to
+# issues keep their old markers (ADR-0088); later ADRs use `[open: #N]`.
+LAST_ADR_WITH_OLD_MARKERS = 89
+ADR_PATH = re.compile(r"^docs/adr/(\d{4})-[^/]+\.md$")
 # `gh` failures that mean "no network": the issue check is skipped.
 NETWORK_ERROR = re.compile(
     r"error connecting to|dial tcp|no such host|could not resolve|connection refused"
@@ -64,6 +69,8 @@ NETWORK_ERROR = re.compile(
     r"|proxyconnect",
     re.I,
 )
+# `gh` with no account to use: the issue check is skipped too.
+NOT_LOGGED_IN = re.compile(r"gh auth login|not logged in", re.I)
 
 ADR_FILE = re.compile(r"^(\d{4})-[a-z0-9-]+\.md$")
 INDEX_ROW = re.compile(r"^\|\s*\[(\d{4})\]\(([^)]+)\)\s*\|(?:[^|]*\|)\s*([A-Za-z ]+?)\s*\|")
@@ -110,6 +117,12 @@ def adr_checks(problems):
             problems.append(f"docs/adr/README.md: ADR-{num} has no file")
 
 
+def old_markers_allowed(rel):
+    """Only the accepted ADRs written before the move to issues keep `[open: Q-NNN]`."""
+    m = ADR_PATH.match(rel)
+    return bool(m) and int(m.group(1)) <= LAST_ADR_WITH_OLD_MARKERS
+
+
 def is_marker_file(rel):
     if rel.startswith(MARKER_SKIP) or rel == "docs/open-questions.md":
         return False
@@ -141,8 +154,8 @@ def github_issues():
     """Asks GitHub for the repository's issues, pull requests left out.
 
     Returns (issues, skip, error): `issues` maps a number to (state, labels);
-    `skip` says why the check cannot run (no `gh`, no network); `error` is
-    any other failure, which is a problem.
+    `skip` says why the check cannot run (no `gh`, `gh` not logged in, no
+    network); `error` is any other failure, which is a problem.
     """
     try:
         out = subprocess.run(
@@ -161,6 +174,8 @@ def github_issues():
         last = err.splitlines()[-1]
         if NETWORK_ERROR.search(err):
             return None, f"network error: {last}", None
+        if NOT_LOGGED_IN.search(err):
+            return None, "gh is not logged in (run `gh auth login`)", None
         return None, None, f"gh api repos/{REPO}/issues failed: {last}"
     issues = {}
     try:
@@ -185,7 +200,7 @@ def question_checks(problems):
     markers = []
     for rel, lines in marker_files(problems):
         for i, line in enumerate(lines, 1):
-            if not rel.startswith(OLD_MARKER_SKIP):
+            if not old_markers_allowed(rel):
                 for q in OLD_MARKER.findall(line):
                     problems.append(
                         f"{rel}:{i}: [open: {q}] is the old form: open questions are issues "
@@ -208,10 +223,11 @@ def question_checks(problems):
             problems.append(f"{rel}:{i}: [open: #{n}] names no issue (or a pull request)")
             continue
         state, labels = issues[n]
-        if state != "open":
-            problems.append(f"{rel}:{i}: [open: #{n}] but issue #{n} is {state}")
-        elif "question" not in labels:
+        if "question" not in labels:
             problems.append(f"{rel}:{i}: [open: #{n}] but issue #{n} is not labelled `question`")
+        elif state != "open" and not rel.startswith("docs/adr/"):
+            # An accepted ADR is not rewritten when its question is answered.
+            problems.append(f"{rel}:{i}: [open: #{n}] but issue #{n} is {state}")
     return None
 
 

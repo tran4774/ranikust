@@ -66,10 +66,12 @@ just ci                   # everything CI runs, before you open a pull request
 
 Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
-documentation; `just docs-lint` (local only, needs python3, and `gh` for
-its check of the `[open: #N]` markers) after an ADR, a marker or an open
-question changes. Every recipe that mirrors CI runs exactly the command of the
-CI job; if you change one, change the other.
+documentation; `just docs-lint` (local only, needs python3) after an ADR,
+a marker or an open question changes. Its check of the `[open: #N]`
+markers needs `gh` installed and logged in (`gh auth login`) with network
+access; without them it is skipped, and the last line says so. Every
+recipe that mirrors CI runs exactly the command of the CI job; if you
+change one, change the other.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
 not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the
@@ -211,6 +213,8 @@ AI coding tools are welcome; the repository ships instructions for them
   requests, or reply in reviews, on their own. The maintainer's agents work
   within the limits of
   [ADR-0087](docs/adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md)
+  as amended by
+  [ADR-0093](docs/adr/0093-agents-ask-rules-are-tightened-guardrails-and-agents-may-open-question-and-bug-issues.md)
   and label what they open `agent`.
 - **Write the description yourself**, for a reader who never saw your
   session. Do not paste conversation logs.
