@@ -101,5 +101,5 @@ domain its own store. `--userns` and `--seccomp` are designed but not
 implemented yet (Phase 3). `--network=none` exists, and it isolates the `RUN`
 only: ranikust's own registry requests still leave from its network
 namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
-[Q-447](docs/open-questions.md)). The [book](docs/book/src/where-to-run.md)
+[Q-447](https://github.com/tran4774/ranikust/issues/25)). The [book](docs/book/src/where-to-run.md)
 tracks what each environment provides.

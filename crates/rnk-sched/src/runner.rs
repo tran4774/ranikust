@@ -83,7 +83,7 @@ pub struct PrepareJob<'a> {
 /// One stage to build.
 ///
 /// Which layers of the stage must be encoded (`LayerDemand`) is not
-/// computed here: [open: Q-029] decides whether the scheduler or the
+/// computed here: \[open: #8] decides whether the scheduler or the
 /// builder derives it; `graph` and `stage` are enough for either.
 pub struct StageJob<'a, R: StageRunner + ?Sized> {
     /// The stage's index in the graph.

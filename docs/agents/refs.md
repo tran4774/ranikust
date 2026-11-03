@@ -47,7 +47,7 @@ licenses are crates.io's latest at that date, not what `Cargo.lock` pins.
 ## Crates
 
 From survey 03 §3 and `exp-05`. Status: **chosen** (an ADR or the survey
-picked it), **candidate** (later phases; see [open-questions.md](../open-questions.md#open)),
+picked it), **candidate** (later phases; see the [`question` issues](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion)),
 **rejected**.
 
 | Crate | Version, license | Role | Status |
@@ -83,7 +83,7 @@ picked it), **candidate** (later phases; see [open-questions.md](../open-questio
 | [tempfile](https://crates.io/crates/tempfile) | 3.27.0, MIT OR Apache-2.0 | Temp dirs for T0 tests, removed on drop | candidate; used by `rnk-rootfs` tests |
 | [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required; set in `crates/ranikust/src/main.rs`, no features | chosen (`ADR-0020`) |
 | [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | 0.1.44, 0.3.23, MIT | Spans and logs in every crate; the subscriber, per-layer filters and the metrics layer in `rnk-metrics` ([docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/)); `fmt` and `registry` features only | chosen (`ADR-0025`) |
-| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: Q-058]`) |
+| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: #21]`) |
 | [serde_json](https://crates.io/crates/serde_json) | 1.0.154, MIT OR Apache-2.0 | JSON: the metrics report (`rnk-metrics`) | chosen |
 | [libc](https://crates.io/crates/libc) | 0.2.191, MIT OR Apache-2.0 | `getrusage` in `rnk-metrics`, which `rustix` 1.1 lacks | chosen |
 | [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03); derive, no colour | chosen for `ranikust` (Q-012) |

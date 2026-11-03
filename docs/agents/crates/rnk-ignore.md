@@ -1,7 +1,7 @@
 # rnk-ignore
 
 > **Status:** done · **Phase:** 1 ·
-> **Depends on:** `regex`, `thiserror` (pure data) · **Used by:** `rnk-builder` (`rnk-context`, `rnk-cache` [open: Q-028]) · **Path:** `crates/rnk-ignore/`
+> **Depends on:** `regex`, `thiserror` (pure data) · **Used by:** `rnk-builder` (`rnk-context`, `rnk-cache` [open: #7]) · **Path:** `crates/rnk-ignore/`
 
 **TL;DR:** A port of moby `patternmatcher` v0.6.1 (as BuildKit v0.34.0 uses
 it, built with Go 1.26): is this context path excluded by `.dockerignore`?

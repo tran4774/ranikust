@@ -10,9 +10,9 @@
 //! <state-dir>/
 //! ├── .ranikust-state                marker: a non-empty directory without it is refused
 //! ├── blobs/<algorithm>/<hex>        compressed blobs, by digest
-//! ├── layers/v3/<algorithm>/<hex>/   extracted layers, by chain ID [open: Q-015]
+//! ├── layers/v3/<algorithm>/<hex>/   extracted layers, by chain ID [open: #1]
 //! ├── caches/<sha256(id)>/           RUN --mount=type=cache
-//! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: Q-015]
+//! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: #1]
 //! ├── tmp/<build-id>/<n>             entries being filled by one build
 //! └── builds/<build-id>/, <build-id>.lock      one per running build
 //! ```

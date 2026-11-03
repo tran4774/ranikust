@@ -1,9 +1,11 @@
 * text=auto eol=lf
 *.rs diff=rust
 *.md diff=markdown
-# Parallel branches only append to these two: a union merge keeps both sides'
-# lines instead of a conflict. Never for files whose lines are edited in place
-# (phase-N.md checklists, open-questions.md, crate cards): union would keep the
-# old and the new line (docs/agents/workflow.md#merging-parallel-branches).
+# Branches only append to these two: in a local merge, a union merge keeps both
+# sides' lines instead of a conflict (GitHub's server-side merge is expected
+# not to apply it; pull requests no longer edit CHANGELOG.md, ADR-0088). Never
+# for files whose lines are edited in place (crate cards, design docs): union
+# would keep the old and the new line
+# (docs/agents/workflow.md#merging-parallel-branches).
 docs/adr/README.md merge=union
 CHANGELOG.md merge=union

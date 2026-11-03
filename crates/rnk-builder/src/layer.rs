@@ -28,7 +28,7 @@ use crate::upload::Uploader;
 
 /// Why a stage's layers are encoded: any reason is enough.
 ///
-/// [open: Q-029] Interim: `rnk-sched`, which holds the stage graph, builds
+/// \[open: #8] Interim: `rnk-sched`, which holds the stage graph, builds
 /// one per stage with [`LayerDemand::for_stage`]; the rule lives here, with
 /// the lazy export it drives.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

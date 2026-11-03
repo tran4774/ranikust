@@ -1,0 +1,62 @@
+name: Design question
+description: An undecided design question that blocks or shapes work, named by its issue number (ADR-0088, ADR-0091).
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the ADRs and design documents do not answer a question
+        and guessing would bake in a decision. Title it with the question
+        alone: this issue's number `#N` names it, and new questions take no
+        `Q-NNN` number (only the 29 questions migrated from
+        `docs/open-questions.md` keep their `Q-NNN:` prefix; ADR-0091).
+        Mark the place that needs the answer with `[open: #N]`. The
+        maintainer answers in a comment; the pull request that records the
+        decision (an ADR, a design doc, a crate card) says `Closes #N` and
+        removes the markers.
+
+        Not for security problems: report those privately (see SECURITY.md).
+  - type: input
+    id: blocks
+    attributes:
+      label: Blocks
+      description: What waits for the answer (a phase, a task issue, "nothing yet").
+      placeholder: "Phase 3 (rootless overlay)"
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      description: The crates or topic; add the matching `crate:<name>` labels.
+      placeholder: "`rnk-sandbox`, `ranikust`"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: One or two paragraphs, with links to where the question was raised (code, ADR, design doc).
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options
+      description: "(a) …; (b) …, each with its cost for security, then performance."
+    validations:
+      required: true
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation
+      description: The option you would pick and why, or "none".
+    validations:
+      required: true
+  - type: textarea
+    id: interim
+    attributes:
+      label: Interim
+      description: The smallest reversible choice made meanwhile, if any, or "none".
+    validations:
+      required: true

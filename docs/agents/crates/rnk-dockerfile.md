@@ -1,7 +1,7 @@
 # rnk-dockerfile
 
 > **Status:** in progress (Phase 1 done; squashing is Phase 2) · **Phase:** 1 ·
-> **Depends on:** — (pure data) · **Used by:** `rnk-builder` (`rnk-sched`, `rnk-cache` [open: Q-028]) · **Path:** `crates/rnk-dockerfile/`
+> **Depends on:** — (pure data) · **Used by:** `rnk-builder` (`rnk-sched`, `rnk-cache` [open: #7]) · **Path:** `crates/rnk-dockerfile/`
 
 **TL;DR:** A hand port of BuildKit v0.34.0's parser, instruction set and
 shell lexer, plus the stage graph. BuildKit is the oracle: any difference from

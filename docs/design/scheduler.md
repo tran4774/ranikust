@@ -79,7 +79,7 @@ the first being the result; `ranikust` passes at most one
   admission, so stages that become ready together do not all start on the
   same free memory. These numbers
   are a placeholder until measured
-  ([Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds)).
+  ([Q-030](https://github.com/tran4774/ranikust/issues/9)).
 - Sequential kaniko mode ignores `--jobs` for stage execution; pulls and
   compression still run in parallel.
 
@@ -142,5 +142,5 @@ instruction run it once (BuildKit deduplicates such vertices).
 
 ## Open questions
 
-- [Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds) What are the memory-limit algorithm and thresholds?
-- [Q-421](../open-questions.md#q-421-which-performance-conditions-does-phase-6-measure) Which performance conditions does Phase 6 measure? (Q-033's leftovers)
+- [Q-030](https://github.com/tran4774/ranikust/issues/9) What are the memory-limit algorithm and thresholds?
+- [Q-421](https://github.com/tran4774/ranikust/issues/29) Which performance conditions does Phase 6 measure? (Q-033's leftovers)

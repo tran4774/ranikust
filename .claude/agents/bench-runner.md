@@ -13,7 +13,7 @@ parallel `pnpm install` stages; `docs/agents/glossary.md`).
 ## Inputs (the caller gives them)
 
 - What to measure and the question it answers (an acceptance criterion of
-  `docs/agents/phase-N.md`, an open question, an ADR's evidence).
+  a phase's tracking issue, a `question` issue, an ADR's evidence).
 - The branch or commit; the builders and modes to compare.
 - The number of rounds, if it matters more than the default (3).
 

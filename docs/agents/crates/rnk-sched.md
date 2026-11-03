@@ -1,7 +1,7 @@
 # rnk-sched
 
 > **Status:** in progress · **Phase:** 1 ·
-> **Depends on:** `rnk-dockerfile` ([open: Q-028], interim), `tokio`, `tokio-util`, `futures-util`; later `rnk-builder`, `rnk-registry`, `rnk-cache` · **Used by:** `ranikust` · **Path:** `crates/rnk-sched/`
+> **Depends on:** `rnk-dockerfile` ([open: #7], interim), `tokio`, `tokio-util`, `futures-util`; later `rnk-builder`, `rnk-registry`, `rnk-cache` · **Used by:** `ranikust` · **Path:** `crates/rnk-sched/`
 
 **TL;DR:** Runs the stage DAG: each stage is an async task that starts when
 its dependencies finish, `--jobs` bounds concurrent `RUN`s, memory bounds
@@ -81,7 +81,7 @@ pub use tokio_util::sync::CancellationToken;
   on higher ones): the `StageRunner` impl for the builder lives here, or in
   `ranikust`, once `rnk-builder` exists.
 - `LayerDemand` is `rnk-builder`'s; which crate derives it from the graph
-  and the outputs is [open: Q-029]. `StageJob` carries `graph` and `stage`,
+  and the outputs is [open: #8]. `StageJob` carries `graph` and `stage`,
   enough for either answer.
 - Memory gate: another stage starts while free memory (cgroup `memory.max`
   less the working set, `memory.current` minus `inactive_file`; else
@@ -89,7 +89,7 @@ pub use tokio_util::sync::CancellationToken;
   512 MiB; at most one stage per fresh reading (500 ms after the last
   admission); a stage always starts when none runs; a stage held back asks
   again when one finishes, at the latest every 250 ms. The algorithm and
-  thresholds are [open: Q-030]; the gate is a trait, so the placeholder is
+  thresholds are [open: #9]; the gate is a trait, so the placeholder is
   one function and two constants.
 - `--jobs` relies on the runner: `build` must call `run_slot` before each
   `RUN` (ADR-0013). Later, the `RUN` entry point (`rnk-sandbox` through
@@ -187,7 +187,7 @@ pub use tokio_util::sync::CancellationToken;
   first failure is the first by completion time, as in BuildKit; two
   failures at once may be reported either way.
 - Memory-aware limit: decided (ADR-0013); add the hook and measure now, the
-  thresholds stay [open: Q-030] until measured.
+  thresholds stay [open: #9] until measured.
 - `--parallel-stages` is refused for good (ADR-0060). Deferred: cache
   lookahead and skipping fully cached stages (Phase 4); `ONBUILD` and
   `RUN --mount=type=bind,from=` edges (Phase 5); deduplicating identical

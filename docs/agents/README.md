@@ -11,7 +11,7 @@ source; do not load the long documents unless a card sends you there.
 |---|---|
 | First time in the repo | [overview.md](overview.md), [rules.md](rules.md) |
 | Work on a crate | [rules.md](rules.md), [crates/\<crate\>.md](crates/), then the design doc the card links |
-| Pick the next task | Phase 2 is done: its record is [phase-2.md](phase-2.md), Phase 1's is [phase-1.md](phase-1.md). The next phase's plan is not written yet: see the roadmap in the [README](../../README.md#roadmap) and the [phase status](overview.md#phase-status) |
+| Pick the next task | The [Project](https://github.com/users/tran4774/projects/1) and the phase milestones (`ADR-0088`): Phase 3 is tracking issue [#41](https://github.com/tran4774/ranikust/issues/41) (its plan is not written yet). Phases 1 and 2 are done; their records are [phase-1.md](phase-1.md) and [phase-2.md](phase-2.md) |
 | Match kaniko behaviour, port a kaniko feature or flag | [kaniko-map.md](kaniko-map.md), then `upstream-oracle` / the `kaniko-parity` skill; for BuildKit, `buildkit-parity` |
 | Build, test, commit, open a PR | [workflow.md](workflow.md) |
 | Unknown term (whiteout, copy-up, lazy export, W3…) | [glossary.md](glossary.md) |
@@ -19,7 +19,7 @@ source; do not load the long documents unless a card sends you there.
 | Need the reason behind a decision | the ADR listed on the crate card; index in [`../adr/README.md`](../adr/README.md) |
 | Need measured evidence | the experiment listed on the crate card; index in [`../research/README.md`](../research/README.md) |
 | Instrument a crate, read or compare a metrics report | the card's `## Metrics`, then [`../design/metrics.md`](../design/metrics.md#spans-per-crate) |
-| Hit a question no ADR or design doc answers | [`../open-questions.md`](../open-questions.md): check it is not there, then add it (rules: [rules.md](rules.md#open-questions)) |
+| Hit a question no ADR or design doc answers | the [`question` issues](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion) and the answered archive in [`../open-questions.md`](../open-questions.md): check it is not there, then open an issue with the Design question form (rules: [rules.md](rules.md#open-questions)) |
 
 ## Files
 
@@ -61,8 +61,8 @@ source; do not load the long documents unless a card sends you there.
   docs only), `in progress`, `done`. Trust the code over the card; fix the
   card in the same PR when they disagree.
 - **Labels:** `[decided]` (backed by an ADR), `[design]` (current design,
-  may change), `[open: Q-NNN]` (undecided; registered in
-  [`../open-questions.md`](../open-questions.md); do not invent an answer).
+  may change), `[open: #N]` (undecided; issue #N, labelled `question`;
+  do not invent an answer).
 - **References** are short and greppable:
   - `ADR-0016`: `../adr/0016-overlay-mount-options.md`;
   - `design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`: a design doc section;
@@ -81,8 +81,9 @@ source; do not load the long documents unless a card sends you there.
 These files are cheap to read only if they stay accurate and short.
 
 - Change a crate's API, status or boundaries → update its card in the same PR.
-- Finish a task of a phase → tick it in that phase's file; Phases 1 and 2 are
-  done, and the next phase's plan is not written yet.
+- Finish a task of a phase → its pull request closes its issue
+  (`Closes #N`); Phases 1 and 2 are done and their files frozen, later
+  phases live in issues (`ADR-0088`).
 - A card or file grows past ~140 lines → move detail into `docs/design/` and
   link it.
 - Never copy long passages from ADRs, design docs or research; summarize in a

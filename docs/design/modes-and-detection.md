@@ -240,10 +240,10 @@ directory is reported as it is, with nothing extra
 
 ## Open questions
 
-- [Q-039](../open-questions.md#q-039-which-environments-must-the-probe-be-tested-in) Which environments must the probe be tested in?
-- [Q-040](../open-questions.md#q-040-what-happens-to-a-rootless-user-without-subuid-ranges) What happens to a rootless user without subuid ranges?
-- [Q-018](../open-questions.md#q-018-where-does-the-probe-mount-its-test-overlay) Where does the probe mount its test overlay?
-- [Q-017](../open-questions.md#q-017-which-type-carries-the-probe-outcome-to-the-libraries) Which type carries the probe outcome to the libraries?
+- [Q-039](https://github.com/tran4774/ranikust/issues/11) Which environments must the probe be tested in?
+- [Q-040](https://github.com/tran4774/ranikust/issues/12) What happens to a rootless user without subuid ranges?
+- [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
+- [Q-017](https://github.com/tran4774/ranikust/issues/3) Which type carries the probe outcome to the libraries?
 
 ## References
 

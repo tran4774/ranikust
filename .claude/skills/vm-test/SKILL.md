@@ -9,6 +9,12 @@ Real root never runs on the host. `just test-vm` boots a fresh VM as the
 user, runs the suites as root inside it and deletes it again; the full
 description is in `docs/testing.md#the-vm-harness-tier-t2`.
 
+On a pull request, CI also runs `unit`, `smoke`, `quick`, `secrets` and the
+T2c `unit-c` as root on GitHub-hosted runners (`.github/workflows/t2.yml`,
+ADR-0090): read them with `gh pr checks` and `gh run view --log-failed`.
+They do not replace the VM for `e2e`, `ultra`, `push`, kernel 5.15 or an
+acceptance run, and `tests/vm/runner.sh` never runs outside CI.
+
 ## Run
 
 ```sh
@@ -81,8 +87,9 @@ failing lines in your report; a run that did not happen is "not run", not
 - **A Rust test that needs root:** mark it `#[ignore = "T2c: <profile>:
   <why>"]` when it means the same in a throwaway rootful Docker container
   (profile `default`, `sysadmin` or `netadmin`; `just test-container
-  unit-c` runs it on the VPS, ADR-0063), else `#[ignore = "T2: <why>"]`
-  (VM only: a failure could harm the machine, a container's guards would
+  unit-c` runs it on the VPS, ADR-0063, and CI on a GitHub-hosted runner,
+  ADR-0090), else `#[ignore = "T2: <why>"]` (the VM, and CI's GitHub-hosted
+  runners, only: a failure could harm the machine, a container's guards would
   make it pass vacuously, or it needs the host's own root; the rules are in
   `docs/testing.md`). The `unit` suite runs both, finds each by the `fn`
   name under the attribute and fails unless every listed test runs exactly

@@ -1,7 +1,7 @@
 # rnk-context
 
 > **Status:** in progress (Phase 1 done; tar, git, HTTPS are Phase 5) · **Phase:** 1 (local directory) ·
-> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, [open: Q-028]) · **Used by:** `rnk-builder` · **Path:** `crates/rnk-context/`
+> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, [open: #7]) · **Used by:** `rnk-builder` · **Path:** `crates/rnk-context/`
 
 **TL;DR:** The build context from a local directory, tar, git or HTTPS, behind
 an open trait, and its walk exactly as BuildKit's filtered walk. Every
@@ -34,7 +34,7 @@ Phase 1 (`[design]` unless marked):
 pub enum ContextSpec { Dir(PathBuf), Tar(String), Git(String), Https(String) }  // kaniko prefixes; #[non_exhaustive]
 pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // tar://, git://, https://; bare path = dir; gs://, s3:// refused; `dir://` refused with Error::DirScheme, naming the plain path (ADR-0053, ADR-0054)
 pub trait ContextSource {                             // [decided] open trait, ADR-0008
-    fn open(&self) -> Result<Context>;                // sync for now [open: Q-027]
+    fn open(&self) -> Result<Context>;                // sync for now [open: #6]
 }
 pub struct DirSource;                                 // DirSource::new(path): opened with RESOLVE_NO_SYMLINKS, a symlink anywhere refused (Error::Symlink, ADR-0076), used in place
 pub fn open(spec: &ContextSpec) -> Result<Context>;   // Dir only; Tar, Git, Https -> Error::Unsupported until Phase 5
@@ -142,8 +142,8 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
   hooks and `fsmonitor` off, configured by `--git-binary`, `--git-config`,
   `--git-arg` and `--git-host-config` (ADR-0035, Q-045). Refs, commits
   and URLs from the context argument are validated and passed after `--`.
-  [open: Q-250] fallback between backends; [open: Q-251] kaniko's commit
-  with a subdirectory; [open: Q-252] the built-in's `--git-config` keys.
+  [open: #15] fallback between backends; [open: #16] kaniko's commit
+  with a subdirectory; [open: #17] the built-in's `--git-config` keys.
 - `<Dockerfile>.dockerignore` wins over `<context>/.dockerignore` in kaniko
   (`fs_util.go:1195-1204`) and BuildKit; kaniko's integration set uses it.
   The file beside the Dockerfile may lie outside the context: it is opened
@@ -175,7 +175,7 @@ constructor argument, not `open`'s); `ContextSpec` keeps strings until then.
   directory and is read through `RootPath`; `.git` removed unless
   `BUILDKIT_CONTEXT_KEEP_GIT_DIR=1`; kaniko's `--git` keys and `GIT_*`
   variables for both.
-- [open: Q-027] Async or sync trait (sync for now). [open: Q-028] Where
+- [open: #6] Async or sync trait (sync for now). [open: #7] Where
   the TLS configuration shared with `rnk-registry` lives; whether
   `rnk-context` may use `rnk-layer` to decompress tar contexts (same tier
   in ARCHITECTURE); `rnk-context` → `rnk-ignore` is used in the interim.

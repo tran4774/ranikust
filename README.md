@@ -195,14 +195,16 @@ multi-platform builds through emulation
 | **Research** | [`docs/research/`](docs/research/): the survey and every experiment behind the design |
 | **Design** | [`docs/design/`](docs/design/) and [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | **Security** | [`SECURITY.md`](SECURITY.md): how to report a vulnerability, and what is in scope |
-| **Contributing** | [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/testing.md`](docs/testing.md) and the [open questions](docs/open-questions.md) waiting for an answer |
+| **Contributing** | [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/testing.md`](docs/testing.md), the [open questions](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+is%3Aopen+label%3Aquestion) waiting for an answer and the [Project](https://github.com/users/tran4774/projects/1) with the roadmap |
 | **AI coding agents** | [`CLAUDE.md`](CLAUDE.md) and [`docs/agents/`](docs/agents/README.md): a compact, task-oriented map of the code |
 
 ## Contributing
 
 ranikust is at the very beginning, which is the best time to shape it.
 Issues and discussions about the design are welcome, and the
-[open questions](docs/open-questions.md) are a good place to start. Read
+[open questions](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+is%3Aopen+label%3Aquestion)
+and [good first issues](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+are a good place to start. Read
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development loop and the
 [code of conduct](CODE_OF_CONDUCT.md) first.
 
