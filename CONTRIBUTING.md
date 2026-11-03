@@ -76,8 +76,9 @@ documentation; `just docs-lint` (needs python3; CI runs it on every pull
 request) after an ADR, a marker, an open question, a link or a heading
 changes. Its check of the `[open: #N]` markers needs `gh` installed and
 logged in (`gh auth login`) with network access; without them it is
-skipped locally, and the last line says so. Every recipe that mirrors CI runs exactly the command
-of the CI job; if you change one, change the other. A new top-level path,
+skipped locally, and the last line says so. Every recipe that mirrors CI
+runs exactly the command of the CI job; if you change one, change the
+other. A new top-level path,
 or a file a CI job starts to read, needs its lane in `scripts/ci.py`
 (`just test-ci` fails otherwise; see below).
 

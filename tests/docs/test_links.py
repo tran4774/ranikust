@@ -117,6 +117,8 @@ class LinkCheck(unittest.TestCase):
         self.assertFlags("docs/a.md", "[x](design/rootfs.md#tests)\n", "has no anchor #tests")
         self.assertFlags("docs/a.md", "[x](#nowhere)\n", "has no anchor #nowhere")
         self.assertFlags("docs/a.md", "[x](../../../etc/passwd)\n", "outside the repository")
+        self.assertFlags("docs/a.md", "[![i](design/gone.png)](design/rootfs.md)\n", "design/gone.png")
+        self.assertClean("docs/a.md", "[empty](<>)\n")
 
     def test_only_listed_files_count(self):
         # On disk but not in git ls-files (target/, an ignored file): absent in CI.
@@ -141,6 +143,9 @@ class LinkCheck(unittest.TestCase):
                          "design/gone.md")
 
     def test_reference_definitions_and_uses(self):
+        self.assertClean("docs/a.md", "[x][two\nwords]\n\n[two words]: design/rootfs.md\n")
+        # A wrapped code span keeps the next lines' numbers.
+        self.assertFlags("docs/a.md", "a `span\nwraps`\n[r]: design/gone.md\n", "docs/a.md:3:")
         self.assertFlags("docs/a.md", "[ref]: design/gone.md\n", "no such file")
         self.assertClean("docs/a.md", '[x][ref]\n\n[ref]: design/rootfs.md#overview "Overview"\n')
         self.assertFlags("docs/a.md", "see [the design][design]\n", "no definition of [design]")

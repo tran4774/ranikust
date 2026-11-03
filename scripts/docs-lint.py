@@ -43,14 +43,14 @@ Prints every problem and exits 1 if there is any. Standard library, `git`
 and `gh` only; run from the repository root.
 """
 
+import html
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
 import time
-import html
-import posixpath
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
@@ -465,7 +465,7 @@ class Links:
             self.report(rel, i, target, f"{md[0]} has no anchor #{frag}", frag)
 
     def markdown(self, rel, lines):
-        defined = {m.group(1).lower() for line in lines if (m := REF_LABEL.match(line))}
+        defined = {" ".join(m.group(1).split()).lower() for line in lines if (m := REF_LABEL.match(line))}
         for start, block in blocks(lines):
             text = "\n".join(block)
             offsets = [0]
@@ -482,14 +482,20 @@ class Links:
                 for pm in PATH_MENTION.finditer(m.group(2)):
                     self.check(rel, line_of(m.start(2) + pm.start()),
                                pm.group(1) + (f"#{pm.group(2)}" if pm.group(2) else ""), mention=True)
-                prose[m.start():m.end()] = " " * (m.end() - m.start())
+                prose[m.start():m.end()] = re.sub(r"[^\n]", " ", m.group(0))
             prose = "".join(prose)
             for m in INLINE_LINK.finditer(prose):
-                self.check(rel, line_of(m.start()), m.group("angle") or m.group("plain"))
+                target = m.group("angle") if m.group("angle") is not None else m.group("plain")
+                if target:
+                    self.check(rel, line_of(m.start()), target)
+                # An image inside a link's text: `[![alt](img)](target)`.
+                for inner in INLINE_LINK.finditer(m.group(0)[1:]):
+                    if inner.group("plain"):
+                        self.check(rel, line_of(m.start()), inner.group("plain"))
             for m in HTML_LINK.finditer(prose):
                 self.check(rel, line_of(m.start()), m.group(2))
             for m in FULL_REF.finditer(prose):
-                label = (m.group(2) or m.group(1)).lower()
+                label = " ".join((m.group(2) or m.group(1)).split()).lower()
                 if label not in defined:
                     self.problems.append(f"{rel}:{line_of(m.start())}: [{m.group(1)}][{m.group(2)}]: no definition of [{label}]")
             for k, line in enumerate(prose.split("\n")):
@@ -530,7 +536,9 @@ def tracked_files(problems):
     except (OSError, subprocess.SubprocessError) as e:
         problems.append(f"cannot list the repository's files with git ls-files: {e}")
         return []
-    return sorted({p for p in out.stdout.decode("utf-8", "replace").split("\0") if p})
+    # A file deleted or moved but not yet staged is still listed: drop it.
+    return sorted({p for p in out.stdout.decode("utf-8", "replace").split("\0")
+                   if p and os.path.lexists(ROOT / p)})
 
 
 def main():
