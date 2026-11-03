@@ -68,7 +68,7 @@ printf 'export RANIKUST_VM_IMAGE_REGISTRY=%q\nexport RANIKUST_VM_SIZE=%q\n' \
   echo "kernel: $(uname -r)"
   echo "os: $(. /etc/os-release && echo "$PRETTY_NAME")"
   echo "runner: ${RUNNER_NAME:-?} (${ImageOS:-?} ${ImageVersion:-?})"
-  echo "docker: $(sudo docker version --format '{{.Server.Version}}')"
+  echo "docker: $(sudo docker version --format '{{.Server.Version}}'), storage $(sudo docker info --format '{{.Driver}}')"
   echo "cgroup: $(stat -fc %T /sys/fs/cgroup)"
   echo "apparmor: $(cat /sys/module/apparmor/parameters/enabled 2>/dev/null)"
   echo "apparmor_restrict_unprivileged_userns: $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)"

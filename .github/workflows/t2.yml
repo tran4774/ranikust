@@ -134,6 +134,17 @@ jobs:
           tool: cargo-zigbuild@0.24.0
       - name: Install the VM's packages
         run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz
+      # The VM's Docker (Ubuntu's docker.io, 29.x) keeps images in
+      # containerd's store, Docker 29's default, whose `docker load` reads
+      # an OCI layout, as the smoke suite needs; the runner's Docker (28.x)
+      # still has the classic store.
+      - name: Docker with containerd's image store, as in the VM
+        run: |
+          f=/etc/docker/daemon.json
+          if sudo test -s "$f"; then cur="$(sudo cat "$f")"; else cur='{}'; fi
+          jq '.features["containerd-snapshotter"] = true' <<<"$cur" | sudo tee "$f"
+          sudo systemctl restart docker
+          sudo docker info --format 'storage driver: {{.Driver}} {{.DriverStatus}}'
       - name: T2 smoke, quick, secrets
         env:
           RANIKUST_T2_ON_RUNNER: "1"
