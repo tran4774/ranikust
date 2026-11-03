@@ -36,4 +36,4 @@ describe. When code and design doc disagree, one of them is a bug.
   spot `[open: #N]` and lists the issues it depends on under "Open questions".
 - Numbers come from experiments and cite them. Behaviour not yet verified is
   labelled `[inferred]`.
-- How to write: [rules.md](../agents/rules.md#writing).
+- How to write: [rules.md](../agents/rules.md#docs).
