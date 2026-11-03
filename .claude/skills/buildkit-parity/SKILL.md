@@ -34,6 +34,7 @@ BuildKit's source.
 | Build options, contexts, `.dockerignore` | `frontend/dockerui/` |
 | `COPY` semantics (chown, chmod, wildcards, symlinks) | `solver/llbsolver/file/`, `solver/llbsolver/ops/file.go`, vendored `github.com/tonistiigi/fsutil` |
 | `RUN` environment, hosts, resolv.conf, network | `executor/oci/`, `executor/runcexecutor/`, `solver/llbsolver/ops/exec.go` |
+| Secrets, SSH forwarding | `session/` |
 | Overlay diffs and layers | `util/overlay/overlay_linux.go`, `snapshot/`, vendored containerd `pkg/archive/` |
 | Image config, media types, compression | `exporter/containerimage/`, `util/compression/` |
 | Cache keys | `solver/`, `cache/`, `solver/llbsolver/ops/` (`CacheMap`) |

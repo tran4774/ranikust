@@ -40,24 +40,10 @@ and do not answer for it.
 If the caller passed graphify results (nodes with `src=... loc=L...`), start
 there; they are leads, not evidence, so read the code before citing it.
 
-- **kaniko:** `cmd/executor/cmd/root.go` (flags), `pkg/config/` (options),
-  `pkg/executor/build.go` (stage loop), `pkg/commands/` (one file per
-  instruction), `pkg/snapshot/` and `pkg/util/fs_util.go` (snapshots,
-  ignore list, extraction, deletion), `pkg/cache/`, `pkg/executor/push.go`,
-  `pkg/dockerfile/`; Dockerfile parsing is vendored BuildKit
-  (`vendor/github.com/moby/buildkit/frontend/dockerfile/`), `.dockerignore`
-  matching `vendor/github.com/moby/patternmatcher/`; expected results in
-  `integration/dockerfiles/`.
-- **BuildKit:** `frontend/dockerfile/` (parser `parser/`, instructions
-  `instructions/`, conversion to LLB `dockerfile2llb/convert.go`, `RUN`
-  mounts `dockerfile2llb/convert_runmount.go`), `frontend/dockerui/`
-  (contexts, build options), `solver/llbsolver/` (ops, `file/` for COPY),
-  `util/overlay/` (overlay differ), `snapshot/`, `cache/`,
-  `exporter/containerimage/` (image config, media types, compression),
-  `executor/oci/` and `executor/runcexecutor/` (`RUN` environment, hosts,
-  resolv.conf), `session/` (secrets, SSH), `util/gitutil/`,
-  `cmd/buildkitd/config/` (GC defaults); vendored containerd in
-  `vendor/github.com/containerd/` (archive, remotes).
+- **kaniko, BuildKit:** the "Where things are" tables of
+  `.claude/skills/kaniko-parity/SKILL.md` and
+  `.claude/skills/buildkit-parity/SKILL.md` map topics to directories of
+  each checkout; read the one you need.
 - **buildah:** only with a checkout from the caller: `imagebuildah/`
   (Dockerfile executor), `run_linux.go`, `copier/`, `pkg/parse/`.
 

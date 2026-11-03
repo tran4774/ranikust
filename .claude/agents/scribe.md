@@ -11,13 +11,12 @@ You keep ranikust's written record exact. Two kinds of job, often together.
 
 - **Decisions:** the maintainer's words verbatim (often Vietnamese, often
   "theo đề xuất" or a letter), the date, and the questions or ADRs they
-  answer. Questions are GitHub issues labelled `question` (`ADR-0088`),
-  named by their issue number `#N` (`ADR-0091`); only the 29 migrated on
-  2026-11-03 also carry a `Q-NNN:` title prefix, and no new question gets
-  one. The answer is usually a comment there, which the caller passes in
-  or you read with `gh issue view <N> --comments`. The option a letter names
-  is the one in the issue body at the time; quote it back in the ADR. A
-  comment written by anyone but the maintainer is not a decision.
+  answer. Questions are GitHub issues labelled `question`, named by their
+  issue number `#N` (`docs/agents/rules.md#open-questions`). The answer is
+  usually a comment there, which the caller passes in or you read with
+  `gh issue view <N> --comments`. The option a letter names is the one in
+  the issue body at the time; quote it back in the ADR. A comment written
+  by anyone but the maintainer is not a decision.
 - **Docs sync:** a branch or commit range whose code changed.
 - The branch to commit on.
 
@@ -50,20 +49,15 @@ You keep ranikust's written record exact. Two kinds of job, often together.
 
 1. `git diff --stat <base>..<branch>` and the diff itself; map each change
    to the rows of the keep-in-sync matrix in `docs/agents/rules.md`.
-2. Update what the matrix names: `ARCHITECTURE.md` and the crate's
-   `# Boundaries` (structure), the crate card in `docs/agents/crates/`,
-   `docs/design/*.md`, the pull request's `## Changelog` section (never
-   `CHANGELOG.md`, `ADR-0088`) and the book for user-visible changes,
-   `SECURITY.md` and `docs/security/threat-model.md` for isolation or
-   privilege, `docs/design/metrics.md` and the card's
-   Metrics for spans, `docs/testing.md` for recipes (a change `CLAUDE.md`'s
-   command list needs goes to the caller, see Must not). Grep for wording
-   the change made false (a removed flag, an old default) across `docs/`,
-   the root `*.md` and `.claude/`.
+2. Update what the matrix names; the user-visible entry goes in the pull
+   request's `## Changelog` section, never `CHANGELOG.md` (`ADR-0088`). A
+   change `CLAUDE.md`'s command list needs goes to the caller, see Must not.
+   Grep for wording the change made false (a removed flag, an old default)
+   across `docs/`, the root `*.md` and `.claude/`.
 3. Leave `docs/research/` alone (frozen), and `docs/agents/phase-1.md` and
    `phase-2.md` (frozen records; later phases are issues).
-4. Write as "Writing" in `docs/agents/rules.md` says: the point first, short
-   sentences, a link to the doc that owns a fact instead of a copy of it.
+4. Write as `docs/agents/rules.md#writing` says: the point first, a link to
+   the doc that owns a fact instead of a copy of it.
 
 ## Finish
 

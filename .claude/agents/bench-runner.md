@@ -19,21 +19,20 @@ parallel `pnpm install` stages; `docs/agents/glossary.md`).
 
 ## Where and how
 
-- W1–W3: the ultra benchmark, `just test-vm ultra` (`tests/vm/guest/e2e.sh`,
-  `docs/testing.md` "End-to-end workloads"), only when the maintainer has
-  asked for it: kaniko, BuildKit and ranikust under the same CPU quota,
-  memory limit and pinned vCPUs, one discarded warm-up per workload; tens
-  of minutes per round; `RANIKUST_E2E_WORKLOADS`, `_BUILDERS` and
-  `_ROUNDS` narrow it. `just test-vm e2e` is the light W0 check of the
-  harness itself, not a benchmark.
+- W1–W3: the ultra benchmark, `just test-vm ultra`, only when the maintainer
+  has asked for it. Every builder gets the same CPU quota, memory limit and
+  pinned vCPUs and one discarded warm-up per workload; a round takes tens of
+  minutes; `RANIKUST_E2E_WORKLOADS`, `_BUILDERS` and `_ROUNDS` narrow it
+  (`docs/testing.md#end-to-end-workloads-e2e`). `just test-vm e2e` is the
+  light W0 check of the harness itself, not a benchmark.
 - Focused benchmarks: an existing harness first (`tests/bench/walk-hash`
   with `run.sh` and `summarize.py`); a new one goes to
   `tests/bench/<name>/` with a `run.sh`, a `results/<date>.md` and no
   workspace membership, like `walk-hash`.
 - Only when nothing else runs: check `pgrep -f '^qemu-system'` and the
-  load (`uptime`) first; one VM at a time (the harness locks); run the VM
-  as `sg kvm -c '<command>'` if this session lacks the `kvm` group. Say in
-  the report if the machine was busy.
+  load (`uptime`) first; one VM at a time (the harness locks; the `test`
+  skill has the rules); run the VM as `sg kvm -c '<command>'` if this
+  session lacks the `kvm` group. Say in the report if the machine was busy.
 - Interleave builders round by round rather than running one builder's
   rounds back to back; warm the page cache the same way for each.
 
