@@ -15,7 +15,7 @@ the rules that hold across all of them.
 |---|---|---|
 | T0 | `cargo test`, `just check` | everything that needs no privilege: parsers, encoders, path handling on temp dirs, the CLI as a black box |
 | T1 | `just smoke-case [name]`, `just smoke` (rootless podman) | the binary in a container without root |
-| T2 | `just test-vm [unit\|smoke\|quick\|push\|e2e]` | real root, mounts, `pivot_root`, rootful Docker; never on the host |
+| T2 | `just test-vm [unit\|smoke\|quick\|secrets\|push\|e2e]` | real root, mounts, `pivot_root`, rootful Docker; never on the host |
 | T2c | `just test-container unit-c` (ADR-0063) | root tests that mean the same in a throwaway rootful Docker container, on the test machine only |
 
 A T2-only check still gets a T0 test for its logic where one is possible.

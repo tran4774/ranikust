@@ -15,7 +15,8 @@ parallel `pnpm install` stages; `docs/agents/glossary.md`).
 - What to measure and the question it answers (an acceptance criterion of
   a phase's tracking issue, a `question` issue, an ADR's evidence).
 - The branch or commit; the builders and modes to compare.
-- The number of rounds, if it matters more than the default (3).
+- The number of rounds. The ultra benchmark defaults to 1; use 3 or more for
+  timings that will be quoted (`RANIKUST_E2E_ROUNDS`, `docs/testing.md`).
 
 ## Where and how
 
