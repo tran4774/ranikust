@@ -284,6 +284,15 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
 
 ### Changed
 
+- Kaniko mode on a container's `/` downloads and verifies a base layer
+  once per build: its verified spool, an anonymous file of the store, is
+  kept for the later stages and `COPY --from` images made on it, instead
+  of each stage downloading the layer again and decompressing it twice
+  (to verify it, then to extract it). The extraction from the spool still
+  checks the diff ID. Kaniko mode also decompresses a layer on a thread of
+  its own, at most 4 MiB of plain tar ahead of the extraction writing its
+  files, so a layer takes the longer of the two instead of their sum
+  (ADR-0081).
 - `--mode=auto` builds in kaniko mode with a directory per stage where
   root may mount but overlayfs refuses the state directory (NFS, overlayfs)
   outside a container, instead of refusing; a failed step of the `RUN`

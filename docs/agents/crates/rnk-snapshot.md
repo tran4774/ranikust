@@ -87,7 +87,10 @@ pub const BUILT_MARKER: &str = "ranikust/.built";  // relative to the root, unde
 //   mount, else refused); a root off `/` 0755;
 //   extracts each blob with extract_live, diff ID checked; on `/` a streamed layer's compressed blob is
 //   first spooled (scratch_file) while its diff ID is computed, verified, then decompressed again into the
-//   root (ADR-0055). prepare(Stage(p)): takes the root over
+//   root (ADR-0055); the spool is kept while stages or images announced by streamed_layer are still to
+//   read the layer, so a shared base is downloaded and verified once per build (ADR-0081); every extraction
+//   reads the plain tar from a decompression thread (Decoding, 4 x 1 MiB ahead, joined before it returns,
+//   ADR-0081). prepare(Stage(p)): takes the root over
 //   from p if p still holds it (a squashed chain); from a kept p, copies p's copy into the emptied
 //   root; else Error::State.
 // keep(All | Paths): copies the root (ignore list left out) into a new directory of the keep area,
