@@ -21,10 +21,12 @@ ones not ignored), so agent worktrees, `target/` and other ignored trees are
 never read.
 
 Without `gh`, without a logged-in `gh`, or when the network fails, the
-issue check is skipped and the verdict line says so; set
-DOCS_LINT_REQUIRE_GITHUB=1 to make a skip a problem. Any other `gh` failure
-(an HTTP error such as 404 or 401, a rate limit, unexpected output) is a
-problem.
+issue check is skipped and the verdict line says so. A response cut short
+(gh's "unexpected end of JSON input", or a zero exit with output that is not
+JSON) is retried once after 2 s and, cut short again, skipped the same way.
+Set DOCS_LINT_REQUIRE_GITHUB=1 to make a skip a problem. Any other `gh`
+failure (an HTTP error such as 404 or 401, a rate limit, output of the
+wrong shape) is a problem.
 
 Prints every problem and exits 1 if there is any. Standard library, `git`
 and `gh` only; run from the repository root.
@@ -35,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path.cwd()
@@ -70,7 +73,10 @@ NETWORK_ERROR = re.compile(
     re.I,
 )
 # `gh` with no account to use: the issue check is skipped too.
-NOT_LOGGED_IN = re.compile(r"gh auth login|not logged in", re.I)
+NOT_LOGGED_IN = re.compile(r"To get started with GitHub CLI")
+# A response cut short: retried once, then the issue check is skipped.
+TRUNCATED = "unexpected end of JSON input"
+RETRY_DELAY = 2.0
 
 ADR_FILE = re.compile(r"^(\d{4})-[a-z0-9-]+\.md$")
 INDEX_ROW = re.compile(r"^\|\s*\[(\d{4})\]\(([^)]+)\)\s*\|(?:[^|]*\|)\s*([A-Za-z ]+?)\s*\|")
@@ -150,12 +156,11 @@ def marker_files(problems):
             continue
 
 
-def github_issues():
-    """Asks GitHub for the repository's issues, pull requests left out.
+def fetch_issues():
+    """One `gh api` call. Returns (issues, skip, error, transient).
 
-    Returns (issues, skip, error): `issues` maps a number to (state, labels);
-    `skip` says why the check cannot run (no `gh`, `gh` not logged in, no
-    network); `error` is any other failure, which is a problem.
+    `transient` names a response cut short (gh's "unexpected end of JSON
+    input", or a zero exit with output that is not JSON), worth one retry.
     """
     try:
         out = subprocess.run(
@@ -164,28 +169,51 @@ def github_issues():
             capture_output=True, text=True, timeout=120, check=False,
         )
     except FileNotFoundError:
-        return None, "gh is not installed", None
+        return None, "gh is not installed", None, None
     except subprocess.TimeoutExpired:
-        return None, "gh timed out", None
+        return None, "gh timed out", None, None
     except OSError as e:
-        return None, None, f"gh could not run: {e}"
+        return None, None, f"gh could not run: {e}", None
     if out.returncode != 0:
         err = out.stderr.strip() or f"gh exited with {out.returncode}"
         last = err.splitlines()[-1]
         if NETWORK_ERROR.search(err):
-            return None, f"network error: {last}", None
+            return None, f"network error: {last}", None, None
         if NOT_LOGGED_IN.search(err):
-            return None, "gh is not logged in (run `gh auth login`)", None
-        return None, None, f"gh api repos/{REPO}/issues failed: {last}"
+            return None, "gh is not logged in (run `gh auth login`)", None, None
+        if TRUNCATED in err:
+            return None, None, None, f"gh: {TRUNCATED}"
+        return None, None, f"gh api repos/{REPO}/issues failed: {last}", None
     issues = {}
-    try:
-        for line in out.stdout.splitlines():
-            number, state, is_pr, labels = json.loads(line)
-            if not is_pr:
-                issues[number] = (state, labels)
-    except (ValueError, TypeError) as e:
-        return None, None, f"unexpected output from gh: {e}"
-    return issues, None, None
+    for line in out.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as e:
+            return None, None, None, f"gh output is not JSON: {e}"
+        try:
+            number, state, is_pr, labels = row
+        except (ValueError, TypeError) as e:
+            return None, None, f"unexpected output from gh: {e}", None
+        if not is_pr:
+            issues[number] = (state, labels)
+    return issues, None, None, None
+
+
+def github_issues():
+    """Asks GitHub for the repository's issues, pull requests left out.
+
+    Returns (issues, skip, error): `issues` maps a number to (state, labels);
+    `skip` says why the check cannot run (no `gh`, `gh` not logged in, no
+    network, a response cut short twice); `error` is any other failure,
+    which is a problem.
+    """
+    issues, skip, error, transient = fetch_issues()
+    if transient:
+        time.sleep(RETRY_DELAY)
+        issues, skip, error, transient = fetch_issues()
+        if transient:
+            return None, f"{transient} (twice)", None
+    return issues, skip, error
 
 
 def question_checks(problems):

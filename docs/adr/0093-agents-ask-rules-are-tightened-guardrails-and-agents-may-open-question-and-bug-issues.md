@@ -62,18 +62,25 @@ What this sets:
   write (`-X`, `--method`, `-f`, `-F`, `--input`, and every `gh api
   graphql`); `gh pr merge` and `gh pr ready`; `gh repo edit`, `gh secret`,
   `gh variable`, `gh ruleset`, `gh workflow`, `gh issue transfer`, `gh label
-  edit` and `delete`, `gh auth refresh`; `git tag`; and a push that can reach
-  `main`: a bare `git push` or `git push origin`, `HEAD`, `HEAD:main`,
-  `main`, `+<ref>`, `<ref>:main`, `refs/heads/main`, `--all`.
+  edit` and `delete`, `gh auth refresh`, `login`, `logout` and `switch`,
+  `gh run delete`, `gh cache delete`; `git tag`; and a push that can reach
+  `main`: a bare `git push`, a push ending in `origin`, `HEAD`,
+  `HEAD:main`, `main`, `<ref>:main`, `refs/heads/main` anywhere, `--all`.
 - **Deny** (never, even when the maintainer is asked): pushing a tag (by a
-  `v…` name, `refs/tags/`, `--tags` or `--follow-tags`), `--mirror`, any
-  force push (`--force`, `-f`, `--force-with-lease`, wherever it is written);
-  `gh release create`, `delete`, `edit` and `upload` (`gh release list` and
-  `view` are allowed); `gh issue delete`; `gh repo delete`, `rename`,
-  `archive` and `deploy-key`; reading the token (`gh auth token`, `gh auth
-  status -t` or `--show-token`, `gh auth git-credential`, `git credential`,
-  `gh config get` of `oauth_token`, reading `~/.config/gh/`); and running
-  `tests/vm/runner.sh`, which runs the suites as root on a CI runner.
+  `v…` name, `refs/tags/` anywhere, `--tags` or `--follow-tags`),
+  `--mirror`, any force push (`--force`, `-f`, `--force-with-lease`,
+  wherever it is written, and a `+<ref>` refspec); `gh release create`,
+  `delete`, `edit` and `upload` (`gh release list` and `view` are allowed);
+  `gh issue delete`; `gh repo delete`, `rename`, `archive` and
+  `deploy-key`; reading the token (`gh auth token`, `gh auth status -t` or
+  `--show-token`, `gh auth git-credential`, `git credential`, `gh config
+  get` of `oauth_token`, reading `~/.config/gh/`, `rg` over `.config/gh` or
+  for `oauth_token`); and executing `tests/vm/runner.sh`, which runs the
+  suites as root on a CI runner (`tests/vm/runner.sh`, `./tests/vm/…`,
+  `bash` or `sh` of it; `sudo` is denied anyway). That deny was part of
+  the text of the option the maintainer chose ("Siết pattern"); it is
+  written for the forms that execute the script, so reading or searching
+  it stays possible.
 - **Guardrails, not a boundary.** The rules match command text: a command
   wrapped in another (`bash -c`, a script, an alias) or spelled
   differently slips past them, and GitHub cannot tell an agent from the
@@ -81,7 +88,8 @@ What this sets:
   identity with its own permissions (ADR-0087's possible later step) or a
   hook that parses the command. Whether ask rules still prompt under
   `defaultMode: bypassPermissions` is not verified; it is not tested by
-  experiment on the maintainer's machine.
+  experiment on the maintainer's machine, but by `poc-runner` in the VM or
+  a throwaway session ([#45](https://github.com/tran4774/ranikust/issues/45)).
 - **Issues.** Amending D1, agents may open, without asking, a `question`
   issue (a design question, ADR-0091) and a `bug` issue (for example a
   flaky test), besides issues for work already in a plan. Each carries the
@@ -98,10 +106,14 @@ What this sets:
 - Bad, because the patterns are broad: a harmless `gh api` read that
   happens to contain `-f` or `-F`, any `git tag -l`, and a bare `git push`
   of a feature branch now ask [inferred from the patterns].
+- Bad, because two things D1 lets agents do without asking are `gh api`
+  writes and now prompt: posting a commit status and adding a sub-issue
+  (GraphQL `addSubIssue`).
 - Bad, because the rules remain a guardrail: a wrapped command passes, and
   until a bot identity exists nothing on GitHub's side enforces the limits.
 - Neutral, because whether ask rules prompt under `bypassPermissions` is
-  open until someone checks it outside the maintainer's working session.
+  open until someone checks it outside the maintainer's working session
+  ([#45](https://github.com/tran4774/ranikust/issues/45)).
 
 ## Evidence
 
@@ -109,7 +121,7 @@ No experiment; the maintainer's choices between options.
 
 - [code] The review of pull request #43 at commit `a594582` listed the
   spellings that passed the first rules (the ones the Context names).
-- [code] A precedence check of the new `.claude/settings.json` over 82
+- [code] A precedence check of the new `.claude/settings.json` over 102
   sample commands, approximating the harness's `*` matching (deny before
   ask before allow): the read-only `gh` commands stay allowed, feature
   branch pushes stay with the session's mode, and every listed write lands
@@ -125,5 +137,7 @@ No experiment; the maintainer's choices between options.
 - Implemented in `.claude/settings.json` and described in
   `docs/agents/workflow.md` (GitHub flow), `docs/agents/rules.md` and
   `CLAUDE.md`.
-- Revisit when a bot identity, a command-parsing hook or a check of ask
-  rules under `bypassPermissions` is proposed.
+- The check of ask and deny rules under `bypassPermissions` is task
+  [#45](https://github.com/tran4774/ranikust/issues/45).
+- Revisit when a bot identity or a command-parsing hook is proposed, or
+  when #45 reports.
