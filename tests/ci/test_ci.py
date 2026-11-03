@@ -97,6 +97,7 @@ class Classify(unittest.TestCase):
         self.check(["tests/release/test_release.py", "scripts/release.py", "licenses/README.md",
                     "about.toml", "NOTICE", "LICENSE-MIT", "LICENSE-APACHE", "cliff.toml",
                     "scripts/docs-lint.py", "scripts/review-pack.py", "tests/ci/test_ci.py",
+                    "scripts/prune-worktrees.sh", "tests/agents/prune-worktrees-test.sh",
                     "tests/bench/walk-hash/Cargo.toml", "tests/e2e/run.sh",
                     "tests/registry/compose.yaml", ".github/release.yml", ".gitignore",
                     ".github/ISSUE_TEMPLATE/task.yml", ".github/dependabot.yml"], set())

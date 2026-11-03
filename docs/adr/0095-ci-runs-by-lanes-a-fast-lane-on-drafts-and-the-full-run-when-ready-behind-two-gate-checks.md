@@ -88,7 +88,8 @@ result` are the only required checks.
     `tests/release/**`, `licenses/**`, `about.toml`, `LICENSE-*`,
     `NOTICE`, `cliff.toml`; the Release workflow has `paths` of its own)
     and what is local only (`tests/bench/**`, `tests/e2e/**`,
-    `tests/registry/**`, `.gitignore`, `.editorconfig`);
+    `tests/registry/**`, `scripts/prune-worktrees.sh` and its test
+    `tests/agents/**` from ADR-0096, `.gitignore`, `.editorconfig`);
   - a path no rule names runs every lane, and the script's test
     (`just test-ci`, also the first step of `ci.yml`'s `changes` job) fails
     on any tracked file no rule names, so a new path is classified when

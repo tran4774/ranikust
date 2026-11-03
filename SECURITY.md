@@ -86,20 +86,23 @@ These are documented properties, not vulnerabilities:
   ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 - **`RUN` shares the host network** unless `--network=none` is given
   ([ADR-0010](docs/adr/0010-run-network-host-or-none.md)).
-- **Refusing to run** where no mode works, such as a regular user on Ubuntu
-  24.04 or later without an AppArmor profile
-  ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
+- **Refusing to run** where no mode works. Today that includes every regular
+  user, root outside a container where it may not mount, and root in a
+  container whose `/proc/sys` is writable
+  ([ADR-0054](docs/adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md));
+  the rootless mode and its AppArmor advice for Ubuntu 24.04 or later are
+  Phase 3 ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
 - Vulnerabilities in base images, in the tools a Dockerfile runs, or in the
   kernel. Report kernel bugs to the kernel.
 
 ## Hardening
 
-To build Dockerfiles you do not trust: run ranikust in a disposable VM or a
-container made for that one build, use `--userns` and `--seccomp=default`,
-add `--network=none` when the build needs no network, and give each trust
-domain its own store. `--userns` and `--seccomp` are designed but not
-implemented yet (Phase 3). `--network=none` exists, and it isolates the `RUN`
-only: ranikust's own registry requests still leave from its network
-namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
-[Q-447](https://github.com/tran4774/ranikust/issues/25)). The [book](docs/book/src/where-to-run.md)
-tracks what each environment provides.
+To build Dockerfiles you do not trust, run ranikust in a disposable VM or in a
+container made for that one build, add `--network=none` when the build needs
+no network, and give each trust domain its own store. `--network=none`
+isolates the `RUN` only: ranikust's own registry requests still leave from its
+network namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
+[#25](https://github.com/tran4774/ranikust/issues/25)). `--userns` and
+`--seccomp=default` are designed to tighten this further, but are not
+implemented yet (Phase 3). The [book](docs/book/src/where-to-run.md) tracks
+what each environment provides.

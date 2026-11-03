@@ -618,7 +618,7 @@ lane is needed, and skips itself otherwise.
 | `t2` | the `rust` paths, `tests/vm/**`, `tests/container/**`, `tests/smoke/**` |
 | `deny` | `Cargo.toml`, `Cargo.lock`, `crates/*/Cargo.toml`, `deny.toml`, `rust-toolchain.toml`, `.cargo/**` |
 | every lane | `.github/workflows/**`, `scripts/ci.py`, `.gitattributes`, and any path no rule names (a new file under `.github/`, such as a local action, included) |
-| no lane | the rest of `docs/`, top-level Markdown, `.claude/`, `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `tests/ci/`, the Release workflow's files (`.github/release.yml` among them), the local-only harnesses (`tests/bench`, `tests/e2e`, `tests/registry`) |
+| no lane | the rest of `docs/`, top-level Markdown, `.claude/`, `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `tests/ci/`, the Release workflow's files (`.github/release.yml` among them), the local-only harnesses (`tests/bench`, `tests/e2e`, `tests/registry`) and tools (`scripts/review-pack.py`, `scripts/prune-worktrees.sh` with `tests/agents/`) |
 
 `scripts/ci.py`'s `RULES` is the authority; `just test-ci` fails on a
 tracked file no rule names, so a new path gets its lane when it is added.

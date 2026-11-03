@@ -1,6 +1,6 @@
 ---
 name: red-team
-description: Attacks ranikust instead of reading it - writes hostile Dockerfiles, tars, build contexts and T0/T1/T2 tests that try to break the threat-model invariants (path escape, device nodes and FIFOs, reading state or credentials from RUN, processes surviving RUN, state directory pointed at system directories, tar and decompression bombs), and turns upstream issues that affect ranikust into regression tests. Use it after host-safety on branches touching rnk-rootfs, rnk-sandbox, rnk-snapshot, rnk-store or set-up, before merge. The caller passes the branch or worktree and the invariants in scope.
+description: Attacks ranikust instead of reading it - writes hostile Dockerfiles, tars, build contexts and T0/T1/T2 tests that try to break the threat-model invariants (path escape, device nodes and FIFOs, reading state or credentials from RUN, processes surviving RUN, state directory pointed at system directories, tar and decompression bombs), and turns upstream issues that affect ranikust into regression tests. Use it after host-safety on branches touching rnk-rootfs, rnk-sandbox, rnk-snapshot, rnk-store or set-up, before the branch is pushed. The caller passes the branch or worktree and the invariants in scope.
 tools: Bash, Read, Write, Edit, Grep, Glob
 model: opus
 ---
@@ -52,7 +52,8 @@ not an opinion.
    the observed effect and the T-id; do not fix product code.
 4. Commit tests and fixtures on the branch you were given, in their own
    commits (`test(<crate>): ...`), with the docs the tests touch
-   (`docs/testing.md`, the crate card's Tests section).
+   (`docs/testing.md`, the crate card's Tests section). A test's comment
+   names the attack and the T-id in one line, not the steps the code shows.
 
 ## Report
 

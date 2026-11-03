@@ -1,48 +1,52 @@
 # rnk-metrics
 
 > **Status:** in progress · **Phase:** 1 ·
-> **Depends on:** — (`tracing`, `tracing-subscriber`, `serde_json`, `libc`) · **Used by:** `ranikust` only · **Path:** `crates/rnk-metrics/`
+> **Depends on:** `tracing`, `tracing-subscriber`, `serde_json`, `libc` ·
+> **Used by:** `ranikust` only · **Path:** `crates/rnk-metrics/`
 
-**TL;DR:** The process's `tracing` subscriber: logs to stderr, plus, when
-a report file is asked for (`--metrics-file`, ADR-0037), a layer that aggregates every crate's spans
-into one kaniko-shaped JSON report at exit. Off means off; never per file;
-never reaches the image.
+**TL;DR:** The process's `tracing` subscriber: logs to stderr and, when a
+report file is asked for (`--metrics-file`, ADR-0037), a layer that
+aggregates every crate's spans into one kaniko-shaped JSON report at exit.
+Off means off; never per file; never reaches the image.
 
 ## Owns
 
-- Installing the global subscriber: the log layer and, when enabled, the
-  metrics layer, each with its own per-layer filter.
+- The global subscriber: the log layer and, when enabled, the metrics layer,
+  each with its own per-layer filter.
 - Aggregating spans of `rnk_*`/`ranikust` targets per name, per record
   (stage, instruction, snapshot) and per registry host
-  (`design/metrics.md#records`).
-- Process counters: `getrusage` self and children, `/proc/self/status`,
-  cgroup v2 and `/proc/net/dev` at start and exit, with deltas.
+  ([records](../../design/metrics.md#records)).
+- Process counters at start and exit, with deltas: `getrusage` (self and
+  children), `/proc/self/status`, cgroup v2, `/proc/net/dev`.
 - The report (`ranikust.metrics/v1`, canonical JSON), its atomic write, the
-  human summary, and the panic hook that writes it before an abort.
+  human summary and the panic hook that writes it before an abort.
 - `Capture`, the test helper other crates use to check their spans.
 - Escaping what reaches the terminal: `terminal_text` for the colored log
   format and `ranikust`'s fatal error line, `\uXXXX` for DEL, C1, U+2028,
-  U+2029 and bidi controls in the text and JSON formats (`design/metrics.md#turning-it-on`).
+  U+2029 and bidi controls in the text and JSON formats
+  ([turning it on](../../design/metrics.md#turning-it-on)).
 
 ## Must not
 
+Boundaries: `crates/rnk-metrics/src/lib.rs`. In short:
+
 - Be a dependency of a library crate (a dev-dependency for `Capture` is
-  fine); libraries only emit spans (`lib.rs` `# Boundaries`).
+  fine); libraries only emit spans.
 - Influence a build: write anything but the report, or let a library read
   metric state.
 - Start a thread, or keep state per file or tar entry.
-- Parse the logging flags: `ranikust` maps kaniko's `--verbosity`,
-  `--log-format` and `--log-timestamp` into `Config::logs` (`LogOptions`,
-  ADR-0036); this crate only applies them to the log layer.
+- Parse the logging flags: `ranikust` maps `--verbosity`, `--log-format` and
+  `--log-timestamp` into `Config::logs` (`LogOptions`, ADR-0036); this crate
+  only applies them.
 
 ## API
 
 ```rust
-pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY"; // [design]
+pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY";
 pub const SCHEMA: &str = "ranikust.metrics/v1";            // [decided]
 pub struct Config { pub file: Option<PathBuf>, pub summary: bool, pub logs: LogOptions,
                     pub write_file: Option<WriteFile> }  // from_env(), is_enabled()
-pub struct WriteFile(pub Arc<WriteFn>);  // a closure: the binary's carries the build context's fence, follows no symlink (ADR-0076); None: temporary file + rename
+pub struct WriteFile(pub Arc<WriteFn>);  // a closure; None: temporary file + rename
 pub fn init(config: Config) -> Telemetry;                  // once, first thing in main, single-threaded
 pub struct Telemetry;  // is_enabled(), set_meta(key, impl Into<Value>), finish(&Outcome): first call writes
 pub struct Outcome;    // success() | error(code, message); panics are reported by the hook
@@ -50,9 +54,10 @@ pub struct Capture;    // new(), run(f), dispatch(), report() -> Value: span sec
 pub fn terminal_text(text: &str) -> Cow<'_, str>; // controls, U+2028/9 and bidi controls escaped as \n, \u{1b}
 ```
 
-The binary's `--metrics-file` fills `Config::file` after `from_env`, and
-its writer `Config::write_file`, which reaches the directory through
-`rnk_rootfs::OutputDir` (ADR-0076).
+The binary fills `Config::file` from `--metrics-file` after `from_env`, and
+`Config::write_file` with a writer that reaches the directory through
+`rnk_rootfs::OutputDir`: it keeps out of the build context and follows no
+symlink (ADR-0076).
 
 ## Invariants
 
@@ -88,21 +93,24 @@ its writer `Config::write_file`, which reaches the directory through
 
 ## Tests
 
-- T0 unit: aggregation with synthetic times (sum, max, wall union, nested
-  records, a stage inside an instruction, hosts once even when recorded
-  late), real spans nested and from 8 threads, parallel stages overlapping,
-  open spans and lingering children as `incomplete`, exact canonical bytes,
-  readers with missing `/proc` and cgroup files, write-once and panic rules.
-- T0, one process each: `tests/init_disabled.rs` (nothing installed,
-  spans disabled), `tests/init_enabled.rs` (spans at every level, panic
-  hook). The binary's exit paths: `crates/ranikust/tests/metrics.rs`.
+All T0.
+
+- Unit (`src/tests.rs`): aggregation with synthetic times (sum, max, wall
+  union, nested records, hosts), real spans nested and from 8 threads,
+  parallel stages, open spans and lingering children as `incomplete`, exact
+  canonical bytes, missing `/proc` and cgroup files, write-once and panic
+  rules.
+- One process each: `tests/init_disabled.rs` (nothing installed, spans
+  disabled), `tests/init_enabled.rs` (spans at every level, panic hook). The
+  binary's exit paths: `crates/ranikust/tests/metrics.rs`.
 
 ## Metrics
 
 - Emits no span; it is the collector. Every other card links its rows in
   [design/metrics.md](../../design/metrics.md#spans-per-crate).
-- A new record span or reserved field name changes `state.rs` and the
-  design doc together.
+- A new record span or reserved field name changes `state.rs` and the design
+  doc together; each crate instruments itself per that table and checks its
+  spans with `Capture`.
 
 ## Pitfalls
 
@@ -121,10 +129,3 @@ its writer `Config::write_file`, which reaches the directory through
   in tests, drop children inside `Capture::run`.
 - `eprintln!` panics on a closed or full stderr, and a panic aborts: write
   to stderr through `to_stderr`, which drops errors.
-
-## Phase 1
-
-- Done: the crate, the binary's wiring (`ranikust.run`, report on every exit
-  path); with task 8, `--metrics-file`, `meta.options` and `meta.mode`.
-- Every Phase 1 task instruments its crate per the design table and checks
-  its spans with `Capture`.

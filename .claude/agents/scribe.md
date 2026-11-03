@@ -62,6 +62,8 @@ You keep ranikust's written record exact. Two kinds of job, often together.
    the root `*.md` and `.claude/`.
 3. Leave `docs/research/` alone (frozen), and `docs/agents/phase-1.md` and
    `phase-2.md` (frozen records; later phases are issues).
+4. Write as "Writing" in `docs/agents/rules.md` says: the point first, short
+   sentences, a link to the doc that owns a fact instead of a copy of it.
 
 ## Finish
 

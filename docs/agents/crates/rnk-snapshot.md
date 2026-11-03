@@ -1,38 +1,50 @@
 # rnk-snapshot
 
-> **Status:** overlay mode in progress (Phase 1 task 9) · **Phase:** 1 ·
-> **Depends on:** `rnk-rootfs`, `rnk-layer`, `rnk-store` · **Used by:** `rnk-builder`, `rnk-sched` (root sharing only), `ranikust` (probes) · **Path:** `crates/rnk-snapshot/`
+> **Status:** in progress · **Phase:** 1-2 (mounting in a user namespace: 3) ·
+> **Depends on:** `rnk-rootfs`, `rnk-layer`, `rnk-store`, `rnk-oci` ·
+> **Used by:** `rnk-builder`, `ranikust` (probes) ·
+> **Path:** `crates/rnk-snapshot/`
 
 **TL;DR:** Gives each stage a root (`StageRootfs`) and turns each change into
 a `LayerDiff`: overlay mode mounts a fresh upper per instruction, kaniko mode
 walks and hashes. Keep `volatile` with fresh work dirs, the lower root's
-metadata on the upper root, whiteouts before hardlinks; delete via `rnk-rootfs`.
+metadata on the upper root, whiteouts before hardlinks; delete via
+`rnk-rootfs`.
 
 ## Owns
 
 - The `StageRootfs` and `Snapshotter` traits and their two implementations.
 - Overlay: mounts with the ADR-0016 options, one upper per instruction,
-  overlay → OCI whiteout conversion, base layers extracted into the store's
-  `layers/` (`rnk-layer` decoder → `rnk-rootfs::extract`), the exporter that
+  overlay to OCI whiteout conversion, base layers extracted into the store's
+  `layers/` (`rnk-layer` decoder, `rnk-rootfs::extract`), the exporter that
   feeds `rnk-layer`'s writer, and the overlay and `lowerdir+` probes.
-- kaniko: parallel walk and hash with a stat cache, `LayeredMap`, path
-  resolution, filesystem deletion (what and when), the shared root
-  (`Kaniko`) and per-stage directories (`KanikoStages`, ADR-0059).
+- kaniko: the parallel walk and hash with a stat cache, `WalkDiff` and its
+  exporter, path resolution, the ignore list, filesystem deletion (what and
+  when), the shared root (`Kaniko`, on `/` only since ADR-0059) and the
+  per-stage directories (`KanikoStages`, ADR-0059).
 
 ## Must not
 
-- Run instructions (`rnk-sandbox`, `rnk-builder`), encode layers (`rnk-layer`),
-  expose a stage root as anything but a `RootPath`, or delete by path.
-- Own the store (`rnk-store`), transfer blobs (`rnk-registry`), compute
-  cache keys (`rnk-cache`), or switch modes mid-build.
+Boundaries: `crates/rnk-snapshot/src/lib.rs`. In short:
+
+- Run instructions (`rnk-sandbox`, `rnk-builder`), encode layers
+  (`rnk-layer`), expose a stage root as anything but a `RootPath` (the mount
+  point is the one host path), or delete by path.
+- Own the store (`rnk-store`), transfer blobs (`rnk-registry`), compute cache
+  keys (`rnk-cache`), or switch modes mid-build.
 
 ## API
 
+The traits are ADR-0046; the kaniko types
+([design](../../design/kaniko-mode.md#stage-roots-on-the-shared-root),
+[per-stage directories](../../design/kaniko-mode.md#per-stage-directories))
+and overlay's follow.
+
 ```rust
-pub trait ExportLayer: Send {                      // ADR-0046: a closed layer, LayerDiff or KanikoDiff
+pub trait ExportLayer: Send {                      // a closed layer: LayerDiff or a kaniko diff
     fn export(self, o: EncodeOptions, out: &mut dyn Write) -> Result<(LayerDigests, DiffCounts)>;
 }
-pub trait StageRootfs {                            // ADR-0046
+pub trait StageRootfs {
     type Diff: ExportLayer + 'static;
     fn set_layers_needed(&mut self, needed: bool) {} // once after prepare; kaniko walks only when true
     fn root(&self) -> Result<&RootPath>;           // writable root of the open layer (COPY, ADD, WORKDIR)
@@ -41,12 +53,11 @@ pub trait StageRootfs {                            // ADR-0046
     fn end_layer(&mut self) -> Result<Self::Diff>; // overlay: unmount, diff-k the top lower; kaniko: walk + diff
     fn view(&mut self) -> Result<&RootPath>;       // read-only between layers (USER lookup, COPY --from)
     fn keep(&mut self, what: &Keep) -> Result<()> { Ok(()) } // kaniko: copy out what later stages read, give the root up
-    fn done(&mut self) {}                          // last instruction ran; KanikoStage drops its walker (ADR-0059)
+    fn done(&mut self) {}                          // last instruction ran; a kaniko stage drops its walker (ADR-0059)
     fn release(self) -> Result<()>;                // unmount, delete the stage directory, diffs included
 }
-pub enum Keep { All, Paths(Vec<PathBuf>) }         // Paths: physical (no link before the last name, no ..),
-                                                   // a final symlink kept as the link, the root = All
-pub trait Snapshotter {                            // ADR-0046
+pub enum Keep { All, Paths(Vec<PathBuf>) }         // Paths: physical (no link before the last name, no ..); the root = All
+pub trait Snapshotter {
     type Root: StageRootfs;
     type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (a blob, or streamed)
     fn base_layer(&self, diff_id: &Digest, blob: &Path, below: &[Self::Layer]) -> Result<Self::Layer>;
@@ -55,151 +66,84 @@ pub trait Snapshotter {                            // ADR-0046
     fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root>;  // COPY --from=<image>; default prepare(Image)
     fn prepare_last(&self, parent: &Self::Root) -> Result<Self::Root>;     // FROM <stage> by its only reader: may take the root over (ADR-0061, ADR-0062); default prepare(Stage)
 }
-pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction (rnk-builder: from the registry)
+pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction
+
+// Overlay (src/stage.rs): Snapshotter<Root = OverlayStage, Layer = LayerDir>
 impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; pub fn store(&self) -> &Arc<Store>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
-// kaniko mode off `/` (task 9, src/kaniko/stages.rs, ADR-0059): a directory per stage
-impl KanikoStages { pub fn new(store: &Store, ignore: IgnoreList, walk: WalkOptions) -> Result<Self>; // refuses an anonymous store
-    pub fn stages_dir(&self) -> &Path; }           // <state>/builds/<id>/stages
-// Snapshotter<Root = KanikoStage, Layer = KanikoLayer>: prepare makes stages/<n>/rootfs (stage dir 0700),
-//   each opened once and checked to be the one made (dev, ino, mount); Image: extract_blob each layer
-//   (a failure deletes the directory); Stage(p): copy_filtered p's root (copy_file_range, never
-//   hardlinks, ADR-0017) with p's root owner, mode, times and xattrs; walks only when layers are
-//   needed; the walker dropped at done(); view = the root; release deletes the stage directory.
-//   prepare_last(p) (ADR-0061): prune p's root of what the copy leaves out (rnk_rootfs::prune), then
-//   move stages/<p>/rootfs to stages/<c>/rootfs (RootPath::move_sub_root); p is then refused for
-//   view, root, begin_layer and another child, and its release deletes an empty directory.
-// KanikoStageDiff: the walk's diff with the stage root, ExportLayer.
-// kaniko mode's stage roots (task 6, src/kaniko/root.rs): one shared root, one holder
-// (the binary uses it on `/` only since ADR-0059)
-impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions,
-        kept: RootPath) -> Self;                   // kept: <state>/builds/<id>/kept, the keep area
-// Kaniko::keep_in_anonymous_files(&self, store: Arc<Store>) -> Result<()>: on `/` (ADR-0056)
-//   kept stages are tars in the store's anonymous files and `kept` is the state directory,
-//   where a reader's view is unpacked inside a fence window and deleted at the end of the
-//   instruction that read it.
-    pub fn finish(&self) -> Result<bool>; }        // end of build: empties a root off `/` a stage changed; never /
-pub const BUILT_MARKER: &str = "ranikust/.built";  // relative to the root, under the ignored /ranikust
-// Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>
-// prepare(Scratch|Image): refuses while a stage holds the root; empties it, but the first base on /
-//   goes over it (kaniko@44aa7ddc0 pkg/executor/build.go:632-641) unless /ranikust/.built is
-//   there (ADR-0052 D1: looked up and made at that first base, /ranikust 0700 on /'s own
-//   mount, else refused); a root off `/` 0755;
-//   extracts each blob with extract_live, diff ID checked; on `/` a streamed layer's compressed blob is
-//   first spooled (scratch_file) while its diff ID is computed, verified, then decompressed again into the
-//   root (ADR-0055); the spool is kept while stages or images announced by streamed_layer are still to
-//   read the layer, so a shared base is downloaded and verified once per build, but never while
-//   Store::files_in_memory; a kept spool or tar is read with pread on a dup of its descriptor (ReadAt), never
-//   through /proc/self/fd (ADR-0081); every extraction reads the plain tar from a decompression thread
-//   (Decoding: 4 x 1 MiB queued + 1 filling; a stop flag fails the blob's next read when the reader drops;
-//   joined before it returns; inline when no thread starts, ADR-0081). prepare(Stage(p)): takes the root over
-//   from p if p still holds it (a squashed chain); from a kept p, copies p's copy into the emptied
-//   root; else Error::State.
-// keep(All | Paths): copies the root (ignore list left out) into a new directory of the keep area,
-//   then view() reads it and the root is given up; again while no new base started (epoch).
-// prepare_source: unpacks a COPY --from image into the keep area, never into the shared root; on `/`
-//   kept as blobs, streamed ones spooled and verified before the first unpacked view.
-// end_layer: walk + diff when layers are needed, else an empty diff and no walk.
-// release: gives the root up; the next base or finish() empties it (delete_contents + ignore list),
-//   a root off `/` getting its own owner and mode back.
-// Overlay: Snapshotter<Root = OverlayStage>
 pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
-pub struct LayerDiff;                              // upper + lowers; lazily exported
-impl LayerDiff {
-    pub fn new(upper: PathBuf, lowers: Vec<PathBuf>) -> Self;
-    pub fn is_empty(&self) -> Result<bool>;
-    pub fn entries(&self) -> Result<Vec<rnk_layer::Entry>>;
-    pub fn export<W: Write>(&self, o: EncodeOptions, out: W) -> Result<(LayerDigests, DiffCounts)>;
-}
+pub struct LayerDiff;                              // upper + lowers; new(upper, lowers), is_empty(), entries(), export(o, out)
 pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check
 pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
-pub const OVERLAY_OPTIONS: &str =                  // [decided] ADR-0016
-    "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile";
-pub const MAX_LOWERS: usize = 500;                 // (Q-026, ADR-0032) refused beyond, no merging yet
-// kaniko mode (Phase 2), module `kaniko`:
-// MountInfo also carries `device` (major:minor) and `fs_root` (field 4), for ranikust's state-dir check
-pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf] } // /var/run only as a mount point (ADR-0052 D4); /.dockerenv, /run/.containerenv always
-pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>; // mounts below the root, kaniko's defaults, /proc /sys /dev /ranikust, the state dir, a host workdir's marker; root and state_dir physical and normalized
-pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // octal escapes, optional fields; a malformed line is an error
+pub const OVERLAY_OPTIONS: &str = "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile"; // [decided] ADR-0016
+pub const MAX_LOWERS: usize = 500;                 // refused beyond, no merging yet (ADR-0032)
 
-// kaniko mode, built (Phase 2 task 4, src/kaniko/walk.rs, ADR-0039)
-pub const DEFAULT_WALK_WORKERS: NonZeroUsize;      // 8
-pub struct WalkOptions { pub workers: NonZeroUsize, pub mode: SnapshotMode } // Default: 8, Full
-pub enum SnapshotMode { Full, Redo, Time }         // kaniko's --snapshot-mode
-pub struct Walker;                                 // owns a rayon pool: create after the set-up
+// kaniko mode (src/kaniko/): shared root, one holder (used on `/` only since ADR-0059)
+impl Kaniko { pub fn new(root: RootPath, path: PathBuf, ignore: IgnoreList, walk: WalkOptions, kept: RootPath) -> Self;
+    pub fn keep_in_anonymous_files(&self, store: Arc<Store>) -> Result<()>; // on `/` (ADR-0056): kept stages are tars in the store's anonymous files
+    pub fn finish(&self) -> Result<bool>; }        // end of build: empties a root off `/` a stage changed; never `/`
+pub const BUILT_MARKER: &str = "ranikust/.built";  // under the ignored /ranikust (ADR-0052 D1)
+// Snapshotter<Root = KanikoRoot, Layer = KanikoLayer>; KanikoDiff is its ExportLayer
+
+// kaniko mode off `/`: a directory per stage (ADR-0059), <state>/builds/<id>/stages/<n>/rootfs
+impl KanikoStages { pub fn new(store: &Store, ignore: IgnoreList, walk: WalkOptions) -> Result<Self>; // refuses an anonymous store
+    pub fn stages_dir(&self) -> &Path; }
+// Snapshotter<Root = KanikoStage, Layer = KanikoLayer>; KanikoStageDiff is its ExportLayer
+
+pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf] }
+pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>;
+pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // MountInfo has device (major:minor) and fs_root for the state-dir check
+
+pub struct Walker;                                 // owns a rayon pool: create after the set-up (ADR-0039)
 impl Walker {
     pub fn new(opts: WalkOptions) -> Result<Self>;
     pub fn baseline(&mut self, root: &RootPath, ignore: &IgnoreList) -> Result<WalkStats>; // walk, keep, no diff
     pub fn diff(&mut self, root: &RootPath, ignore: &IgnoreList) -> Result<WalkDiff>;      // walk, diff against the last walk, keep
     pub fn forget(&mut self);                      // after emptying the root: next diff adds everything
-    pub fn entries(&self) -> usize; pub fn options(&self) -> WalkOptions;
 }
+pub struct WalkOptions { pub workers: NonZeroUsize, pub mode: SnapshotMode } // Default: DEFAULT_WALK_WORKERS = 8, Full
+pub enum SnapshotMode { Full, Redo, Time }         // kaniko's --snapshot-mode
 pub struct WalkDiff { pub root: Option<EntryMeta>, pub changed: Vec<Changed>, pub deleted: Vec<PathBuf>, pub stats: WalkStats }
+impl WalkDiff { pub fn is_empty(&self) -> bool; pub fn entries(&self, root: &RootPath) -> Result<Vec<Entry>>;
+    pub fn export<W: Write>(&self, root: &RootPath, o: EncodeOptions, out: W) -> Result<(LayerDigests, DiffCounts)>; }
 pub struct Changed { pub path: PathBuf, pub change: Change, pub meta: EntryMeta } // Change::{Added, Modified}
-pub struct EntryMeta { pub kind: FileType, pub mode, uid, gid, size, mtime: FileTime, rdev, dev, ino, nlink } // #[non_exhaustive]
+pub struct EntryMeta { pub kind: FileType, pub mode, uid, gid, size, mtime, rdev, dev, ino, nlink } // #[non_exhaustive]
 pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits, skipped, max_threads }
-
-// kaniko mode's exporter, built (Phase 2 task 5, src/kaniko/export.rs)
-impl WalkDiff {
-    pub fn is_empty(&self) -> bool;                // nothing changed: still an (empty) layer
-    pub fn export<W: Write>(&self, root: &RootPath, o: EncodeOptions, out: W) -> Result<(LayerDigests, DiffCounts)>;
-    pub fn entries(&self, root: &RootPath) -> Result<Vec<Entry>>; // what export feeds, without the writer's parents
-}
 ```
 
-- `WalkDiff` is what task 5's exporter consumes: paths relative to the
-  root, never empty, sorted component by component (a directory before
-  its contents) whatever the worker count. `changed` lists a directory
-  only when its own metadata changed (the exporter adds parent headers);
-  an entry of another type than before is `Added`. `deleted` holds the
-  topmost deleted paths only (one whiteout each); what a directory
-  replaced by a file held is not listed. `root` is set when the root's
-  metadata changed. `meta.dev`/`ino`/`nlink` group hard links. Content is
-  read again by the exporter through `RootPath`.
-- The walk keeps the previous one as a path arena (`kaniko/tree.rs`): one
-  name buffer, nodes with parent and a sorted run of children. The stat
-  cache is the previous walk's record at the same path: a regular file
-  whose `statx` key (`dev, ino, size, mtime, ctime, mode, uid, gid`) is
-  unchanged and whose `mtime` and `ctime` were 2 s older than that walk's
-  start reuses its hashes.
-- A regular file is pinned with `O_PATH` (which opens nothing), checked
-  against its `statx` (type, inode, device, mount id), and only then
-  reopened read-only through `/proc/self/fd`, as `RootPath::open_regular`:
-  a FIFO or device node swapped in is never opened, so no driver's `open`
-  runs as root. At most `size + 1` bytes are read; a longer or shorter file
-  is `Error::Changed`. A directory is opened with `O_DIRECTORY` and checked
-  the same way, inside its own task from its parent's shared descriptor
-  (`Arc<OwnedFd>`): a directory waiting for a worker holds no descriptor of
-  its own. A path arena beyond `u32` offsets is `Error::WalkTooLarge`.
-- Known limits: xattrs are hashed on regular files and directories only,
-  not on symlinks or device nodes [inferred: only `security.*` and
-  `trusted.*` can sit there, and a relabel alone is not a change kaniko
-  sees either]; each directory task copies its path, so path bytes grow
-  with depth squared on very deep trees.
+- **`WalkDiff`** (what the exporter consumes): paths relative to the root,
+  never empty, sorted component by component (a directory before its
+  contents) whatever the worker count. `changed` lists a directory only when
+  its own metadata changed (the exporter adds parent headers); an entry of
+  another type than before is `Added`. `deleted` holds the topmost deleted
+  paths only (one whiteout each). `root` is set when the root's metadata
+  changed and is never written. `meta.dev`/`ino`/`nlink` group hard links.
+  Content is read again by the exporter through `RootPath`.
 - The walk skips an entry, with everything below it, when
-  `IgnoreList::covers` matches it (a literal entry, an `--ignore-path`
-  glob, or kaniko's below-only entries); `contains` is an exact match only.
-
-- `Base::Image` takes layers in image order (the config's `diff_ids`,
-  bottom first); the lower stack is topmost first. `Base::Stage` shares
-  the parent's diffs: release the parent only after its children.
+  `IgnoreList::covers` matches it (a literal entry, an `--ignore-path` glob,
+  or kaniko's below-only entries); `contains` is an exact match only. The
+  walk keeps the previous one as a path arena (`kaniko/tree.rs`); a path
+  beyond `u32` offsets is `Error::WalkTooLarge`. A vanished or swapped entry
+  is `Error::Changed`. Detail:
+  [walk, hash and diff](../../design/kaniko-mode.md#walk-hash-and-diff).
+- `Base::Image` takes layers in image order (the config's `diff_ids`, bottom
+  first); the lower stack is topmost first. `Base::Stage` shares the parent's
+  diffs: release the parent only after its children.
 - `base_layer` fills `EntryKey::Layer(<chain ID>)` through `Store::fill`
-  (per-digest lock): keyed by chain ID, as BuildKit, since a hardlink
-  copied from a lower makes an extraction depend on its stack (ADR-0032,
-  Q-150). It checks that the tar hashes to the diff ID, and marks a layer
-  whose tar has no `./` entry with `user.ranikust.inherit-root`, so the
-  stage root takes its metadata from the layers below, as a flattening
-  extractor would.
-- The stage directory is `builds/<id>/stages/<n>/` with `rootfs/`,
-  `diff-<k>/`, `work-<k>/` and `empty-<i>/` (a lower for `FROM scratch`
-  and the read-only view, which needs two). A `mount(2)` mount makes
-  `lowers-<m>/` there with links `0`, `1`, ... to its lowers, mounts from
-  a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
-  (containerd's way, ADR-0032, Q-151), and removes it again.
-- Exported layers keep only the `security.capability` xattr, as BuildKit
-  and kaniko (ADR-0032, Q-025). POSIX ACLs (`system.posix_acl_*`), SELinux
-  labels and IMA/EVM signatures (`security.ima`, `security.evm`) a `RUN`
-  sets are dropped too, as there.
+  (per-digest lock), keyed by chain ID as BuildKit, since a hardlink copied
+  from a lower makes an extraction depend on its stack (ADR-0032). It checks
+  that the tar hashes to the diff ID, and marks a layer whose tar has no `./`
+  entry with `user.ranikust.inherit-root`, so the stage root takes its
+  metadata from the layers below, as a flattening extractor would.
+- A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
+  from a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
+  (containerd's way, ADR-0032); the stage directory is
+  `builds/<id>/stages/<n>/` with `rootfs/`, `diff-<k>/`, `work-<k>/` and
+  `empty-<i>/` (a lower for `FROM scratch` and the read-only view, which
+  needs two).
+- Exported layers keep only the `security.capability` xattr, as BuildKit and
+  kaniko (ADR-0032); POSIX ACLs (`system.posix_acl_*`), SELinux labels and
+  IMA/EVM signatures a `RUN` sets are dropped too.
 
 ## Invariants
 
@@ -211,187 +155,115 @@ impl WalkDiff {
 - `layers/<id>` is immutable, only ever a lower, and is published through
   `rnk-store`: extracted into its `tmp/` entry, renamed, per-digest lock.
 - Exporter: whiteouts are converted before hardlinks are found by
-  `(dev, ino)`; `.wh.<name>` only where the lower stack shows the name,
-  with time 0; an entry unchanged by BuildKit's `sameDirent` is left out
-  (ADR-0034; contents compared when both times are whole seconds, and
-  over this build's own diffs whenever the stat matches), yet
-  every emitted entry's ancestors are emitted; an opaque directory over a
-  lower one becomes whiteouts of what it hides, never `.wh..wh..opq`; `*.overlay.*` xattrs are stripped,
-  `security.capability` kept; a redirect is an error; modes are raw; the
-  `rnk-layer` writer sorts, so the bytes never depend on thread count.
+  `(dev, ino)`; `.wh.<name>` only where the lower stack shows the name, with
+  time 0; an entry unchanged by BuildKit's `sameDirent` is left out
+  (ADR-0034) yet every emitted entry's ancestors are emitted; an opaque
+  directory over a lower one becomes whiteouts of what it hides, never
+  `.wh..wh..opq`; `*.overlay.*` xattrs are stripped, `security.capability`
+  kept; a redirect is an error; modes are raw; the `rnk-layer` writer sorts,
+  so the bytes never depend on thread count
+  ([rules](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer)).
 - Walk: directories open from the parent fd with `RESOLVE_BENEATH`,
   `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`; an entry
-  with another `mnt_id` is skipped; `/proc`, `/sys`, `/dev` and the ignore
-  list are never entered; nor is the state directory (ignored, ADR-0022).
-- Stat cache key `{dev, ino, size, mtime, ctime, mode, uid, gid}`, reused only
-  if `max(mtime, ctime)` is over 2 s before the scan started. A deletion is
-  one whiteout at the topmost deleted path.
+  with another `mnt_id` is skipped; `/proc`, `/sys`, `/dev`, the ignore list
+  and the state directory (ADR-0022) are never entered. A regular file is
+  pinned with `O_PATH`, checked against its `statx`, then reopened through
+  `/proc/self/fd`: a FIFO or device node swapped in is never opened. Stat
+  cache key `{dev, ino, size, mtime, ctime, mode, uid, gid}`, reused only if
+  `max(mtime, ctime)` is over 2 s before the scan started. Known limit:
+  xattrs are hashed on regular files and directories only.
 - Roots are emptied only through `rnk-rootfs` (`mnt_id`, never `st_dev`);
   per-stage roots are extracted or copied, never hardlinked (ADR-0017).
 
 ## Refs
 
-- **Design:** [`design/overlay-snapshot.md#one-layer-per-instruction`](../../design/overlay-snapshot.md#one-layer-per-instruction), [`#mounting`](../../design/overlay-snapshot.md#mounting), [`#the-volatile-lifecycle`](../../design/overlay-snapshot.md#the-volatile-lifecycle), [`#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer); [`design/kaniko-mode.md#walk-hash-and-diff`](../../design/kaniko-mode.md#walk-hash-and-diff), [`#per-stage-directories`](../../design/kaniko-mode.md#per-stage-directories), [`#lazy-snapshots`](../../design/kaniko-mode.md#lazy-snapshots); [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout)
-- **Decisions:** [ADR-0002](../../adr/0002-two-snapshot-modes.md) (two modes, one interface), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (accepted differences), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (sequential on `/`), [ADR-0016](../../adr/0016-overlay-mount-options.md) (options, `EXDEV`), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (no hardlink farms), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`layers/` through `rnk-store`), [ADR-0022](../../adr/0022-common-state-dir.md) (state directory ignored)
-- **Evidence:** [exp-01](../../research/experiments/01-overlay-semantics.md) (upper contents, limits), [exp-06](../../research/experiments/06-overlay-vs-walk.md) (`volatile`), [exp-06a](../../research/experiments/06a-root-rerun.md), [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (exporter), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) (walk of 269k entries in 0.10–0.15 s), [exp-10](../../research/experiments/10-exdev-package-managers.md), [exp-11](../../research/experiments/11-root-extras.md), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (kernel 5.15)
-- **kaniko:** `kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:116` `Init`, `:237`
-  `scanFullFilesystem` (syncfs, full walk), `:432` `addParentDirectories`;
-  `pkg/snapshot/layered_map.go:28` `LayeredMap`, `:156` `CheckFileChange`;
-  `pkg/util/stat_hash_cache.go:41` the 2 s window, `:54` `statKey`;
-  `pkg/filesystem/resolve.go:39` `ResolvePaths` (2.48 s of a W1 build,
-  exp-07); `pkg/executor/build.go:2179` `DeleteFilesystem` after each stage.
+- **Design:** [`design/overlay-snapshot.md#one-layer-per-instruction`](../../design/overlay-snapshot.md#one-layer-per-instruction), [`#mounting`](../../design/overlay-snapshot.md#mounting), [`#the-volatile-lifecycle`](../../design/overlay-snapshot.md#the-volatile-lifecycle), [`#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer); [`design/kaniko-mode.md#walk-hash-and-diff`](../../design/kaniko-mode.md#walk-hash-and-diff), [`#stage-roots-on-the-shared-root`](../../design/kaniko-mode.md#stage-roots-on-the-shared-root), [`#per-stage-directories`](../../design/kaniko-mode.md#per-stage-directories), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list) (what `ignore_list` builds from `IgnoreSpec`), [`#lazy-snapshots`](../../design/kaniko-mode.md#lazy-snapshots); [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout)
+- **Decisions:** [ADR-0002](../../adr/0002-two-snapshot-modes.md) (two modes, one interface), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (accepted differences), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (sequential on `/`), [ADR-0016](../../adr/0016-overlay-mount-options.md) (options, `EXDEV`), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (no hardlink farms), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`layers/` through `rnk-store`), [ADR-0022](../../adr/0022-common-state-dir.md) (state directory ignored), [ADR-0046](../../adr/0046-snapshotter-signature.md) (the traits)
+- **Open:** [#5](https://github.com/tran4774/ranikust/issues/5) (publishing read-only layer roots without root), [#18](https://github.com/tran4774/ranikust/issues/18) (one mount across instructions)
+- **Evidence:** [exp-01](../../research/experiments/01-overlay-semantics.md) (upper contents, limits), [exp-06](../../research/experiments/06-overlay-vs-walk.md) (`volatile`), [exp-06a](../../research/experiments/06a-root-rerun.md), [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (exporter), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) (walk of 269k entries in 0.10-0.15 s), [exp-10](../../research/experiments/10-exdev-package-managers.md), [exp-11](../../research/experiments/11-root-extras.md), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (kernel 5.15)
+- **kaniko:** `kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:116` `Init`, `:237` `scanFullFilesystem` (syncfs, full walk), `:432` `addParentDirectories`; `pkg/snapshot/layered_map.go:28` `LayeredMap`, `:156` `CheckFileChange`; `pkg/util/stat_hash_cache.go:41` the 2 s window, `:54` `statKey`; `pkg/filesystem/resolve.go:39` `ResolvePaths` (2.48 s of a W1 build, exp-07); `pkg/executor/build.go:2179` `DeleteFilesystem` after each stage
 - **External:** BuildKit `WriteUpperdir` <https://github.com/moby/buildkit/blob/master/util/overlay/overlay_linux.go>, <https://docs.kernel.org/filesystems/overlayfs.html>
 
 ## Tests
 
-- **T0:** kaniko per-stage directories (`src/kaniko/stages/tests.rs`,
-  ADR-0059): a private directory per stage (`0700`, the root `0755`),
-  `FROM <stage>` copied with no inode shared with the parent and no change
-  reaching it, a parent with a layer open refused, a layer that fails its
-  diff ID check leaves no directory, an unneeded stage never walked, a
-  done stage drops its walk and stays readable, stages side by side, an
-  anonymous store refused. Red team (`red_team_*`): a base layer climbing
-  out of `rootfs/` (`..`, a sibling's root, a hardlink to a sibling's
-  file, writes through links to `/` and the sibling, `./` at `0777`)
-  changes nothing outside it; a parent's hardlink to an outside setuid
-  file is copied, never linked or chmodded; newline and raw-byte names; a
-  16 TiB sparse file copied at the cost of its data; six children copied
-  at once share no inode; a directory swapped for a link out during the
-  copy never leaks or leaves a directory; a chain deeper than `PATH_MAX`;
-  64 KiB xattrs. Ignored reproducer of a finding: the copy and the walk
-  cost the cube of a chain's depth (`IgnoreList::covers` per entry).
-  Hand-over (ADR-0061): the only reader takes the parent's directory (the
-  same inode) and gets, entry for entry (directory sizes aside), what a
-  copy of the same parent gives (a FIFO, a socket, an ignored path, a setuid hardlink, links out,
-  directory times), and the same change gives the same layer digest; a
-  parent handed over is refused for any read and releases only its
-  directory; a parent root swapped for another directory is never handed
-  over and the new stage directory goes; a move that moved nothing, and a
-  parent holding a file hardlinked from outside its root, fall back to a
-  copy, the pruned parent refused after it too. Red team
-  (`red_team_*`, ADR-0061, ADR-0062): among them, the hand-over keeps no
-  xattr a copy leaves out (overlay's own on a file, a directory and the
-  root), a finding fixed in `prune`. Red team of the hand-over
-  (ADR-0061, ADR-0062): with the ignore list `ranikust` gives a stage
-  root (fixed paths, below-only, an `--ignore-path` glob and a literal),
-  whiteout-like names, hardlinks into ignored paths, FIFOs and sockets
-  nested and at the top, the child gets what a copy gets and the same
-  change the same layer; a `rootfs` swapped for a symlink out is refused
-  with nothing outside pruned or moved; the child's directory name
-  planted as a link out refuses the hand-over before any prune, the next
-  name taking the parent whole; a directory exchanged with a link
-  out during the hand-over never leaks; a chain deeper than `PATH_MAX` is
-  handed over and released. Ignored reproducer of a finding
-  (`red_team_a_hand_over_keeps_no_xattr_a_copy_leaves_out`): the
-  hand-over keeps the `user.overlay.*` xattrs a copy leaves out, on
-  files, directories and the root. T2 (`just test-vm unit`): device
-  nodes (one with two names), FIFOs and sockets never handed over; a
-  mount below the parent's root fails the hand-over, nothing on it
-  pruned, the parent's release not crossing it either.
-- **T0:** kaniko shared root (`src/kaniko/root/tests.rs`): a kept stage
-  read after the root is reused, only the paths asked for, deleted on
-  release, a second keep refused once the root was reused; a stage `FROM`
-  a kept one starting from its copy (baseline walk from it); a
-  `COPY --from` image unpacked beside the root while a stage holds it;
-  the `/` layout, keep area inside the root under an ignored `state/`
-  (left out of `Keep::All`; not ignored, the copy is refused as a
-  destination inside its source, never a recursion); a keep-area name
-  taken by a link never followed. Red team of the marker of a build on
-  `/` (ADR-0052 D1): `/ranikust` planted as a file, a FIFO, a socket, a
-  dangling link, a link out of the root, to the state directory, to `/`
-  or to itself refused before `/` changes, nothing opened or written; a
-  `.built` planted as a FIFO, a socket, a directory, a link out, a
-  dangling link or a hardlink to a file outside counts as a marker and is
-  never opened; `/ranikust` swapped with links (into `/` and out of the
-  root) while `mark_slash` runs never marks or chmods their targets; two
-  builds on hostile bases with the real ignore list (mountinfo of a
-  container): the second empties `/` but never `/.dockerenv`,
-  `/run/.containerenv`, a secret below `/run` reached through `/var/run`,
-  a volume, `/etc/resolv.conf`, the state directory or the marker. ADR-0058:
-  steps that only delete, replace a directory by an empty one, or change a
-  mode or an mtime never encode to the empty tar's diff ID; a step that
-  changes nothing, or undoes what it did, does.
-- **T0** red team of the keep area (`tests/keep.rs`), a host file beside
-  the root and an ignored `state/` in it, neither touched nor copied:
-  `COPY --from` image layers with `..` and absolute names, files,
-  hardlinks, whiteouts and opaque markers through links out, link chains
-  and loops, a directory replaced by a link, a device node and a FIFO
-  (left out), a setuid file, unpacked while a stage holds the root (each
-  refused or kept inside its copy, the copy deleted); `keep` given paths
-  through links out, `..`, loops, a FIFO and a socket (never blocking);
-  a hostile root kept whole and copied back for a stage `FROM` it, on a
-  workdir root and as on `/`, with modes (setuid, setgid, sticky,
-  `0700`), owners, mtimes, link targets, contents, a user xattr and
-  hardlinks as they were; a tree longer than `PATH_MAX` (520 levels) kept
-  and deleted.
-  Ignored finding: `Keep::Paths` through a link (`to-root/state/blob`)
-  copies the ignored state, the ignore check being on the path as given
-  (the builder passes physical paths only).
-- **T0:** exporter rules on a modelled upper and lower stack. kaniko walk
-  built (`src/kaniko/walk/tests.rs`): first diff adds all in path order,
+Tiers and commands: [`docs/testing.md`](../../testing.md#tiers). Many tests
+are red-team cases named `red_team_*`: attacks on the invariants (hostile
+layers, links, races, planted names), most of which never succeeded; the few
+that found a bug stay as its regression test.
+
+- **T0, overlay:** exporter rules on a modelled upper and lower stack
+  (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
+  `tests/layers.rs`).
+- **T0, walk and exporter** (`src/kaniko/walk/tests.rs`,
+  `src/kaniko/export/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type
-  change in every mode, topmost deletions and a directory replaced by a
-  file, symlinks hashed by target and never followed, hard links sharing
-  `(dev, ino)`, ignored paths neither walked nor deleted, 1 against 8
-  workers identical on a 1,360-entry tree, the stat cache and its racy
-  window, xattrs but overlay's, a tree deeper than `PATH_MAX`, a FIFO
-  listed and never opened, a FIFO or another file swapped in for a regular
-  file refused on the pinned fd, the read bounded by `statx`'s size
-  (`/dev/zero` included), 3,000 subdirectories in one directory, arena
-  offsets beyond `u32`; T2 (VM): a device node swapped in is never opened
-  (passed, kernel 6.8, 2026-10-31); `tests/spans.rs` the walk spans, and a
-  kaniko stage directory's `prepare` and `release` (its baseline waits for
-  the first layer). kaniko exporter built (`src/kaniko/export/tests.rs`):
-  an unchanged root gives an empty tar, a deleted directory one whiteout
-  under its parents, a deep new file its unchanged parents read from the
-  root, a link into a lower layer a regular file, links within the layer
-  tar hardlinks (a `chmod` of a linked inode writes every name), symlinks
-  and FIFOs written never followed or opened, a file or FIFO swapped in
-  since the walk refused, a directory's or FIFO's new times since the walk
-  passed and a file's or symlink's refused, 1 against 8 walk workers the
-  same digest, and the property `apply(base layer, diff layer) == tree` on
-  random trees (proptest, 48 cases; 3,000 passed once); `tests/spans.rs`
-  its spans. An unchanged step adds no layer (ADR-0058, `rnk-builder`
-  `tests/keep.rs`). To do: a benchmark of `--snapshot-mode=redo|time`
-  against `full` on W1–W3: they skip content reads and can miss a change,
-  so they stay only if significantly faster (ADR-0023 kept, ADR-0049).
-  Red team (T15): `tests/memory.rs`
-  `red_team_walking_a_deep_chain_takes_memory_linear_in_its_depth`: a
-  chain of 200 or 400 directories with 200-byte names, which a `RUN`
-  makes with `mkdir` and `cd`, is refused by the diff and the baseline
-  walk past `PATH_MAX`, as the overlay exporter refuses it, with under
-  4 MiB held (it held 33 MB and 17 MB at depth 400 before, the square
-  of the depth, as each `DirOut` and `Changed` keeps its full path);
-  `a_chain_within_path_max_is_still_walked` keeps the walk of a chain
-  within it.
+  change in every mode, topmost deletions, symlinks hashed by target, hard
+  links sharing `(dev, ino)`, ignored paths neither walked nor deleted, 1
+  against 8 workers the same digest, the stat cache and its racy window, a
+  FIFO listed and never opened, a file swapped in refused on the pinned fd, a
+  tree deeper than `PATH_MAX`; export: an unchanged root gives an empty tar
+  (ADR-0058), a deleted directory one whiteout, a deep new file its parents,
+  links into a lower layer a regular file, a file swapped in since the walk
+  refused, and the property `apply(base layer, diff layer) == tree` on random
+  trees. `tests/memory.rs`: a deep chain is refused past `PATH_MAX` with
+  linear memory (T15).
+- **T0, shared root** (`src/kaniko/root/tests.rs`, `tests/keep.rs`): a kept
+  stage read after the root is reused, only the paths asked for, a stage
+  `FROM` a kept one, `COPY --from` image unpacked beside the root, the `/`
+  layout with its keep area under an ignored `state/`; red team of the keep
+  area (hostile layers and roots, links out, `..`, FIFOs, a tree beyond
+  `PATH_MAX`) and of the `/ranikust` marker (ADR-0052 D1: planted files,
+  links and FIFOs refused before `/` changes; the second build empties `/`
+  but never `/.dockerenv`, `/run/.containerenv`, a volume, the state
+  directory or the marker). ADR-0058 (`src/kaniko/root/tests.rs`): steps that
+  only delete, replace a directory by an empty one, or change a mode or an
+  mtime never encode to the empty tar's diff ID; a step that changes nothing,
+  or undoes what it did, does.
+- **T0, per-stage directories** (`src/kaniko/stages/tests.rs`, ADR-0059,
+  ADR-0061, ADR-0062): a private directory per stage (`0700`, root `0755`),
+  `FROM <stage>` copied with no inode shared, a parent with a layer open
+  refused, a failed diff ID check leaves no directory, an unneeded stage
+  never walked; the hand-over of the only reader gives what a copy gives and
+  the same layer digest, falls back to a copy when it moved nothing or a
+  hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
+  bases cannot reach outside `rootfs/`.
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
-- **T2** (VM only): overlay as real root; kernel 5.15 fallback; kaniko mode
-  on `/`; flattened content against kaniko, BuildKit and the other mode.
+- **T2c** (rootful Docker, `just test-container unit-c`;
+  `#[ignore = "T2c: <profile>: ..."]`): profile `sysadmin`:
+  `tests/overlay.rs` (overlay mounts: the probe, a layer per instruction with
+  `lowerdir+` and with `mount(2)`, many lowers from a deep state directory, a
+  scratch stage) and a mount below a stage root crossed by neither `release`
+  nor a hand-over (`src/kaniko/stages/tests.rs`). Profile `default`
+  (`mknod`): a device node swapped in during the walk is never opened
+  (`src/kaniko/walk/tests.rs`), and a child never gets the device nodes a
+  parent made nor a hand-over gives them (`src/kaniko/stages/tests.rs`).
+- **T2** (VM; `just test-vm unit`): the reference before a merge touching
+  overlay mounts or deletion; kaniko mode on `/`, flattened content against
+  kaniko, BuildKit and the other mode.
+- **To do:** benchmark `--snapshot-mode=redo|time` against `full` on W1-W3:
+  they skip content reads and can miss a change, so they stay only if
+  significantly faster (ADR-0023, ADR-0049).
 
 ## Metrics
 
-- Record `rnk_snapshot.diff`; `mount`, `export` (`blocks_read`) and more;
-  Phase 2 walk spans ([rows](../../design/metrics.md#rnk-snapshot));
-  `rnk_snapshot.keep` (`paths`, 0 for the whole root) per kept stage.
-  `rnk_snapshot.hand_over` around a hand-over (ADR-0061), inside
-  `rnk_snapshot.prepare` (`handed_over = true`), with `rnk_rootfs.prune`
-  in it.
-- Overlay records `rnk_snapshot.diff` inside `export`, which is the walk
-  that classifies the entries, so a diff never exported is not recorded.
-  The kaniko exporter (`WalkDiff::export`) records the same pair:
-  `rnk_snapshot.export` (`entries`, `bytes_read`) around
-  `rnk_snapshot.diff` (`files_added`, `whiteouts`, `bytes`; the others 0),
-  which there only turns the walk's diff into entries.
-- The kaniko exporter writes what changed, not the targets of changed
-  symlinks kaniko adds, nor a socket's parents (`ADR-0045`).
+Rows: [design/metrics.md](../../design/metrics.md#rnk-snapshot).
+
+- Spans: `prepare` (`layers`), `mount`, `umount`, `empty`, `keep` (`paths`; 0
+  for the whole root), `hand_over` (inside `prepare` with `handed_over =
+  true`, `rnk_rootfs.prune` in it), `release`, `probe`; records `diff`
+  (`files_added`, `whiteouts`, `bytes`, ...), `walk` (`entries`,
+  `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads`),
+  `baseline` (`entries`), `export` (`entries`, `bytes_read`).
+- Overlay records `rnk_snapshot.diff` inside `export`, which is the walk that
+  classifies the entries, so a diff never exported is not recorded. The kaniko
+  exporter (`WalkDiff::export`) records the same pair: `export` around `diff`
+  (`files_added`, `whiteouts`, `bytes`; the others 0), which there only turns
+  the walk's diff into entries.
+- Walk workers count locally; totals are recorded once per walk.
   `blocks_read` is not recorded yet; `rnk_snapshot.extract` is not a span:
   base layers nest `rnk_store.fill`, `rnk_layer.decode` and
   `rnk_rootfs.extract`.
-- Walk workers count locally; totals are recorded once per walk. Built:
-  `rnk_snapshot.walk` (`entries`, `files_hashed`, `bytes_hashed`,
-  `stat_cache_hits`, `max_threads`) per walk, `rnk_snapshot.baseline`
-  (`entries`) around a baseline walk.
 
 ## Pitfalls
 
@@ -407,59 +279,41 @@ impl WalkDiff {
   headers let extractors recreate `/root` and `/tmp` as 755 (exp-07).
 - A state directory inside the walked root leaks into the diff unless
   ignored; 32 walk workers were slower than 8 (exp-09).
-- `rnk-sandbox` places stub mount targets (`/etc/resolv.conf`, `/proc`) in
-  the stage root and removes them after the `RUN`, restoring the parent's
-  times; on an overlay root the stub copies its parent (`/etc`) up, so the
-  upper keeps a directory whose metadata equals the lower's. The exporter
-  must leave such directories out, or `/etc` lands in every layer [inferred]
-  (host-safety review of `rnk-sandbox`; exp-12).
+- `rnk-sandbox` places stub mount targets in the stage root and removes them
+  after the `RUN`, restoring the parent's times; on an overlay root the stub
+  copies its parent (`/etc`) up, so the upper keeps a directory whose
+  metadata equals the lower's. The exporter must leave such directories out,
+  or `/etc` lands in every layer [inferred] (exp-12).
 - After a crash the overlay mount is gone, so the sandbox's journal replay
-  cannot find stubs left in an upper; that upper must be discarded with its
-  build, never reused [inferred].
-- Adding an entry to a copied-up directory moves its mtime, so it is
-  exported as changed; only a copy-up that nothing below changed is
-  skipped. Tests that fake a copy-up must set the times last.
-- The new upper root must not take the lower root's overlay xattrs: a
-  copied `user.overlay.opaque=y` would hide every lower layer.
+  cannot find stubs left in an upper; discard that upper with its build,
+  never reuse it [inferred].
+- Adding an entry to a copied-up directory moves its mtime, so it is exported
+  as changed; only a copy-up that nothing below changed is skipped. Tests
+  that fake a copy-up must set the times last.
+- The new upper root must not take the lower root's overlay xattrs (a copied
+  `user.overlay.opaque=y` would hide every lower layer), and its own stay in
+  the overlay form: escaped `user.overlay.overlay.*` stays escaped, or an
+  image's xattr would become overlay's own marker.
 - A container's own root is overlayfs, which overlay refuses as an upper
   directory: overlay mode in a container needs the state directory on a
   volume (the smoke suites mount one); otherwise the probe refuses and the
   outcome is kaniko mode.
-- Publishing renames a layer directory to another parent, which needs
-  write permission on it: a `0555` layer root works only as root
-  ([open: #5]).
+- Publishing renames a layer directory to another parent, which needs write
+  permission on it: a `0555` layer root works only as root ([open: #5]).
 - Unmounting is `MNT_DETACH`: open descriptors below the mount (a
-  `RootPath`) do not make it busy, and the upper is complete once
-  nothing writes.
-- **Contract for `rnk-builder` and `rnk-sandbox`:** every process of a
-  `RUN` is dead (reaped, its PID namespace gone) before `end_layer`.
-  `MNT_DETACH` leaves a surviving writer able to keep writing into the
-  upper while it is exported or used as a lower.
-- **Contract for `rnk-sandbox`:** its stubs (`/etc/resolv.conf`,
-  `/etc/hosts`, `/etc/hostname`, mount targets) are journalled and removed
-  from the upper, with the parent's times restored, before the diff is
-  exported; the exporter has no ignore list for them.
-- Root xattrs of the new upper stay in the overlay form: escaped
-  `user.overlay.overlay.*` stays escaped. Un-escaping it there would hand
-  an image's xattr to overlay as its own marker (host-safety review).
+  `RootPath`) do not make it busy, and the upper is complete once nothing
+  writes.
+- **Contract for `rnk-builder` and `rnk-sandbox`:** every process of a `RUN`
+  is dead (reaped, its PID namespace gone) before `end_layer`: `MNT_DETACH`
+  leaves a surviving writer able to keep writing into the upper while it is
+  exported or used as a lower.
+- **Contract for `rnk-sandbox`:** its stubs (`/etc/resolv.conf`, `/etc/hosts`,
+  `/etc/hostname`, mount targets) are journalled and removed from the upper,
+  with the parent's times restored, before the diff is exported; the exporter
+  has no ignore list for them.
 - The state directory's path must not hold `,` `:` `\` `=` or control
-  characters: `mount(2)` would read them as option syntax (a state
-  directory `/x,lowerdir=/` would add the host's `/` as a lower).
-  `Overlay::new` and `probe` refuse such a path.
+  characters: `mount(2)` would read them as option syntax (a state directory
+  `/x,lowerdir=/` would add the host's `/` as a lower). `Overlay::new` and
+  `probe` refuse such a path.
 - A stage built on another (`Base::Stage`) holds its parent's diffs as
   lowers: the parent's `release` refuses while the child lives.
-
-## Phase 1
-
-- Done (`feat/rnk-snapshot`): traits, `probe`, extraction into `layers/`
-  via `rnk-store`, lower stack and `begin_layer`/`end_layer` as root with
-  `lowerdir+` and the `mount(2)` fallback, the exporter, `view`,
-  `release`; `ranikust` runs `probe` at set-up. T0 for the exporter,
-  lookups, extraction and spans; T2 (`tests/overlay.rs`) for real mounts.
-- Left: the builder's use (task 11): lazy export, `RUN` in
-  `mount_point`, `COPY` through `root`; `blocks_read` on
-  `rnk_snapshot.export`; T1 mounting in a user namespace (Phase 3).
-- Deferred: the kaniko implementation, per-stage directories and lazy
-  snapshots (Phase 2); mounting in a user namespace (Phase 3).
-- The signature: ADR-0046 (Q-024). (Q-026, ADR-0032) Merging
-  layers near 500 lowers. [open: #18] One mount across instructions. [open: #5].

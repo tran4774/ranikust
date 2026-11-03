@@ -10,7 +10,8 @@ Linux only; nothing needs root. `rustup` reads `rust-toolchain.toml` (Rust
 1.99.1 = `rust-version` in `Cargo.toml`, bump both; rustfmt, clippy,
 rust-analyzer, x86_64 and aarch64 musl targets). Then, at CI's versions:
 `cargo install --locked just cargo-deny@0.20.2 mdbook@0.5.4`, plus
-`git-cliff` for release notes and `file`/`readelf` for `just build-static`.
+`git-cliff` for `just changelog` drafts and `file`/`readelf` for
+`just build-static`.
 The musl recipes (`just build-static`, `just check-aarch64`,
 `just test-aarch64`, so `just ci`)
 need zig 0.16.0 and `cargo install --locked cargo-zigbuild@0.24.0`: zig
@@ -58,6 +59,8 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just docs-lint` | `scripts/docs-lint.py` over the files `git ls-files` lists: every ADR indexed with its status, no duplicate question in `docs/open-questions.md`, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled `question` (in an ADR, a `question` issue open or closed; asks GitHub through `gh`; without `gh`, a logged-in `gh` or network, or after a response cut short twice (it retries once), the verdict says the check was skipped; any other `gh` failure is a problem) | `docs-lint` (with `DOCS_LINT_REQUIRE_GITHUB=1`, so a skip fails) |
 | `just test-ci` | `tests/ci/test_ci.py`: CI's lane detection and cache pruning (`scripts/ci.py`, [ADR-0095](../adr/0095-ci-runs-by-lanes-a-fast-lane-on-drafts-and-the-full-run-when-ready-behind-two-gate-checks.md)) and how the workflows wire them; fails on a tracked file no lane rule names | `changes` |
 | `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
+| `just prune-worktrees [--dry-run]` | `scripts/prune-worktrees.sh` ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)): removes the agent worktrees under `.claude/worktrees/` that hold nothing to lose, with their local branch and their `target/`: the branch's commit is the head of a pull request merged into `main` (asked through `gh`), or the branch has no commit of its own and the worktree has been idle a day; nothing changed, untracked or ignored outside `target/`, `graphify-out/` and `__pycache__/`; no live VM run; not locked, detached, on `main` or the caller's own. Run it when no fork works in a worktree it could remove: Claude Code does not always lock a running subagent's worktree | local only |
+| `just test-prune-worktrees` | `tests/agents/prune-worktrees-test.sh`: the script against a throwaway repository with a fake `gh` (merged, stacked, unmerged, fresh, idle, dirty, ignored, VM run, locked, detached, `main`, a path with a space) | local only |
 | `just ci` | all of the above that CI runs, in CI's order: what `ci.yml` runs on a full run | all |
 
 `just` lists them. A recipe that mirrors CI runs exactly the job's command:
@@ -113,10 +116,12 @@ Commit at every checkpoint (builds, `just check` passes, docs updated); see
 [rules.md](rules.md#branches-and-commits).
 
 `<type>(<scope>): <imperative summary, lower case, no full stop>`; body at 72
-columns; footers `BREAKING CHANGE:`, `Refs: #123`. `feat`, `fix`, `perf` go
-into release notes; `refactor`, `test`, `docs`, `ci`, `build`, `chore`,
-`style` do not. Scope: a crate or an area (`ci`, `book`, `adr`); `security`
-for security fixes; `!` for breaking changes. Truthful `Co-authored-by`.
+columns; footers `BREAKING CHANGE:`, `Refs: #123`. Release notes come from
+the pull requests' `## Changelog` sections; the title's type only places
+an entry written without a heading
+([CONTRIBUTING](../../CONTRIBUTING.md#commits-and-pull-requests)). Scope:
+a crate or an area (`ci`, `book`, `adr`); `security` for security fixes;
+`!` for breaking changes. Truthful `Co-authored-by`.
 
 ## Pull requests
 
@@ -152,37 +157,49 @@ request (`ADR-0088`).
    to the Project.
 2. **Branch** from the latest `main` ([Commits](#commits)); the Project item
    goes to In Progress.
-3. **Draft pull request:** `git push -u origin <branch>`, then
+3. **Review locally.** Commit on the branch and run the reviews the change
+   needs (`reviewer`; `host-safety` and `red-team` as the table below
+   says) on the local branch. The fix loop
+   ([below](#host-safety-fix-loop)) runs to the end, with no blocker left,
+   before anything is pushed: every push to a pull request starts CI and
+   notifies watchers, so the first push is a reviewed change, not a draft
+   of one ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)).
+4. **Draft pull request:** `git push -u origin <branch>`, then
    `gh pr create --draft` with the template filled, labels `agent` and the
-   area; the item goes to In review.
-4. **Checks and reviews.** A draft gets CI's fast lane, chosen by the
-   paths it changes (rustfmt, clippy, the x86_64 tests, cargo-deny, the
-   docs, docs-lint; gates `CI result (draft, fast lane)` and `T2 result
-   (draft, not run)`), never the static build, the native aarch64 tests
-   or T2 ([testing](../testing.md#ci-lanes), `ADR-0095`). The full run
-   comes when the pull request is marked ready, so ask the maintainer to
-   mark it ready when the work is done; or, when the maintainer asks (or
-   the pull request changes CI itself), add the `ci:full` label to the
-   draft, and remove it once the full run has finished (removing it
-   starts a fast-lane run). "Run workflow" in the Actions tab runs
-   everything on a branch, under gates named `... (manual run)` that do
-   not count for the pull request. After a label change the job rows show
-   "skipped"; read the gates, `CI result` and `T2 result`, the only
-   required checks. The test plan names the tiers run elsewhere.
-   `reviewer`, `host-safety` and `red-team` report to the main session as
-   before; their summary goes on the pull request as a comment once the
-   findings are fixed, never the details of an open weakness.
-5. **Merge.** The maintainer marks the pull request ready and squash-merges
+   area, and the summary of the review rounds (never the details of an
+   open weakness); the item goes to In review.
+5. **Checks.** CI runs on the pull request, in lanes
+   ([testing](../testing.md#ci-lanes), `ADR-0095`). A draft gets the fast
+   lane, chosen by the paths it changes (rustfmt, clippy, the x86_64
+   tests, cargo-deny, the docs, docs-lint; gates `CI result (draft, fast
+   lane)` and `T2 result (draft, not run)`), never the static build, the
+   native aarch64 tests or T2. The full run comes when the pull request is
+   marked ready, so ask the maintainer to mark it ready when the work is
+   done; or, when the maintainer asks (or the pull request changes CI
+   itself), add the `ci:full` label to the draft, and remove it once the
+   full run has finished (removing it starts a fast-lane run). "Run
+   workflow" in the Actions tab runs everything on a branch, under gates
+   named `... (manual run)` that do not count for the pull request. After
+   a label change the job rows show "skipped"; read the gates, `CI
+   result` and `T2 result`, the only required checks. The test plan names
+   the tiers run elsewhere. A fix for CI or for the maintainer's comments
+   goes through the same local loop before it is pushed; that round's
+   summary is a comment on the pull request.
+6. **Merge.** The maintainer marks the pull request ready and squash-merges
    it once the full run's gates pass, or tells the agent to; the branch is
    deleted, the issue closes and the Project's built-in workflow moves the
    item to Done.
+7. **Clean up.** After the merge, once no fork is working, the main
+   session runs `just prune-worktrees`: every agent worktree carries its
+   own `target/` of several GB, and 32 left behind once held about 125 GB. It
+   removes only worktrees that hold nothing to lose (recipe table above).
 
 What agents may do (`ADR-0087` D1, amended by `ADR-0093`, until the
 maintainer changes it):
 
 | Without asking | Only when the maintainer says so |
 |---|---|
-| open issues for planned work, `question` issues and `bug` issues; push branches other than `main`; open draft pull requests; comment and review on their own; set labels (but `ci:full` only as step 4 says), milestones, Project fields; post commit statuses and add sub-issues (both are `gh api` writes, so they prompt anyway) | mark ready (which starts the full CI run) or merge a pull request; push to `main`; create or push tags; create releases; change repository settings, rulesets or environments; reply to or close what other people opened |
+| open issues for planned work, `question` issues and `bug` issues; push branches other than `main`; open draft pull requests; comment and review on their own; set labels (but `ci:full` only as step 5 says), milestones, Project fields; post commit statuses and add sub-issues (both are `gh api` writes, so they prompt anyway) | mark ready (which starts the full CI run) or merge a pull request; push to `main`; create or push tags; create releases; change repository settings, rulesets or environments; reply to or close what other people opened |
 
 How each limit is held (`ADR-0093`):
 
@@ -325,17 +342,21 @@ agent with `SendMessage` rather than starting a new one.
 
 ### Host-safety fix loop
 
-For a branch written by a fork (an agent in its own worktree):
+For every branch, a fork's (an agent in its own worktree) or the main
+session's own; with `host-safety` as the reviewer here, and the same loop
+for `reviewer` and `red-team`:
 
 1. The `host-safety` subagent reports to the main session.
 2. The main session sends the findings back to the same fork (it keeps the
-   task's context); it never starts a new agent for the fix.
+   task's context; it never starts a new agent for the fix), or fixes them
+   itself on its own branch.
 3. The fork fixes on its branch, runs `just check` (and the VM suites when
-   set-up or the sandbox changed) and reports.
+   set-up or the sandbox changed), commits without pushing and reports.
 4. The main session asks the same reviewer to re-check only the fix
-   commits.
-5. No blocker left: a summary of the rounds goes on the pull request
-   ([GitHub flow](#github-flow)), and the maintainer merges it.
+   commits, on the local branch.
+5. No blocker left: the fork pushes and opens the draft pull request, or
+   the main session does it for the fork, with a summary of the rounds
+   ([GitHub flow](#github-flow)); the maintainer merges it.
 
 A test result counts only from the harness's exit status, never from an
 agent reading a printed table: a suite that prints a verdict table must

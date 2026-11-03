@@ -106,7 +106,8 @@ the lanes and rules are in [docs/testing.md](docs/testing.md#ci-lanes)):
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
 not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the
-short version of how to write code here.
+short version of how to write code here, comments and docs included
+([Writing](docs/agents/rules.md#writing)).
 
 ## Tests
 
@@ -227,9 +228,9 @@ request's dry run reports what it found.
    merged since the last tag
    ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)),
    listing the ones without an entry. Edit the section for users (what
-   changed for them, not how), delete the draft comment, commit it as
-   `chore(release): vX.Y.Z` and open the pull request with the `release`
-   label. The recipe never commits, tags or pushes.
+   changed for them, not how) and wrap it at about 80 columns, delete the
+   draft comment, commit it as `chore(release): vX.Y.Z` and open the pull
+   request with the `release` label. The recipe never commits, tags or pushes.
 2. **Merge** (the maintainer), once CI and the T2 tests are green; the
    `main` ruleset accepts changes only through a pull request whose gates,
    `CI result` and `T2 result`, passed on a full run.

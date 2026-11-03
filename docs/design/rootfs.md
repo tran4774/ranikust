@@ -1,9 +1,9 @@
 # Confined filesystem access
 
-How `rnk-rootfs` reaches paths inside a build root, an extracted layer or a
-store entry without ever leaving it, and how it writes metadata, extracts
-layers, looks up users and deletes trees on top of that. Every other crate
-reaches untrusted paths only through it.
+**TL;DR:** how `rnk-rootfs` reaches paths inside a build root, an extracted
+layer or a store entry without ever leaving it, and how it writes metadata,
+extracts layers, looks up users and deletes trees on top of that. Every other
+crate reaches untrusted paths only through it.
 
 Threats: [T1–T3, T7](../security/threat-model.md#5-threats-and-mitigations).
 Card: [rnk-rootfs](../agents/crates/rnk-rootfs.md).
@@ -51,7 +51,7 @@ Card: [rnk-rootfs](../agents/crates/rnk-rootfs.md).
   directory before it. A dangling symlink in the way fails with `ENOENT`, as
   `mkdir -p` does.
 - **Long paths.** One `openat2` fails with `ENAMETOOLONG` past 4,096 bytes
-  (`exp-09`). Callers that walk trees open each directory by
+  (`exp-09`); callers that walk trees open each directory by
   `(parent fd, name)` instead.
 
 ## Metadata
@@ -70,22 +70,18 @@ anything, then applies, in this order:
 
 `fchmod` and `fsetxattr` refuse `O_PATH` fds, and `rustix` has no
 `fchmodat2`. So mode and xattrs go through ranikust's own
-`/proc/self/fd/<n>`: `fchmodat` and `setxattr` follow that magic link to
-exactly the pinned inode, as glibc's `fchmodat(AT_SYMLINK_NOFOLLOW)` does.
-`/proc/self/fd` is checked to be procfs first. A symlink's xattrs are set
-with `lsetxattr` on `/proc/self/fd/<parent>/<name>`, which never follows the
-last name; the name is checked to still be the pinned symlink (same inode)
-before the sets and after them, as reading and stripping xattrs check it.
-That detects a swap but cannot prevent a write to an entry swapped in
-between (one in the same pinned parent), and a swap undone before the
-second check is not seen. `setxattrat(2)` (Linux 6.13) with `AT_EMPTY_PATH`
-on the `O_PATH` fd might close the window, if the kernel accepts an
-`O_PATH` fd there: unverified (the empty-path branch takes the fd with
-`fdget()`, which may refuse `O_PATH` files with `EBADF`, and a symlink can
-only be pinned with `O_PATH`); to settle with poc-runner in the hardening
-pass. Regular files
-being written use plain `fchown`, `fsetxattr`,
-`fchmod` and `futimens` on their open fd.
+`/proc/self/fd/<n>` (checked to be procfs first): `fchmodat` and `setxattr`
+follow that magic link to exactly the pinned inode, as glibc's
+`fchmodat(AT_SYMLINK_NOFOLLOW)` does. A symlink's xattrs are set with
+`lsetxattr` on `/proc/self/fd/<parent>/<name>`, which never follows the last
+name; the name is checked to still be the pinned symlink (same inode) before
+the sets and after them, as reading and stripping xattrs check it. That
+detects a swap but cannot prevent a write to an entry swapped in between (one
+in the same pinned parent), and a swap undone before the second check is not
+seen. `setxattrat(2)` (Linux 6.13) with `AT_EMPTY_PATH` on the `O_PATH` fd
+might close the window if the kernel accepts an `O_PATH` fd there: unverified
+(a symlink can only be pinned with `O_PATH`). Regular files being written use
+plain `fchown`, `fsetxattr`, `fchmod` and `futimens` on their open fd.
 
 ## Extraction
 
@@ -94,7 +90,7 @@ being written use plain `fchown`, `fsetxattr`,
 ([overlay snapshots](overlay-snapshot.md#exporting-a-diff-as-an-oci-layer),
 `ADR-0006`). The `tar` crate only parses (ustar, GNU long names and sparse
 files, PAX records); its `unpack`, which joins names onto a host path, is
-never called. A hand-written reader would repeat that parsing for no gain.
+never called.
 
 - **Names.** Each entry name and hardlink target is cleaned lexically; a
   `..` that climbs above the root is refused (`Error::Entry`), as Docker
@@ -108,10 +104,11 @@ never called. A hand-written reader would repeat that parsing for no gain.
   `linkat` or `mknodat`, none of which follow the last name; a directory
   over a directory merges. Missing parents are created `0755`.
 - **Mounts.** Extraction never crosses a mount inside the root: parents are
-  resolved with `RESOLVE_NO_XDEV`, and an existing entry on another mount
-  or at a mount root is never replaced, merged into or whited out; such
-  entries fail with `Error::Entry`. Skipping them, as kaniko's ignore list
-  does, waits for the ignore list in `extract` (Phase 2, kaniko mode).
+  resolved with `RESOLVE_NO_XDEV`, and an existing entry on another mount or at
+  a mount root is never replaced, merged into or whited out; such entries fail
+  with `Error::Entry`. Extraction into a live root (`extract_live`, kaniko
+  mode) takes an ignore list instead and skips what it covers, as kaniko does
+  ([kaniko-mode](kaniko-mode.md#ignore-list)).
 - **Bombs.** GNU sparse entries are refused: the `tar` crate writes their
   holes as zeros, so a tiny entry could claim 2^62 bytes. GNU long names,
   long links and PAX record sets, which the `tar` crate reads whole into
@@ -119,8 +116,8 @@ never called. A hand-written reader would repeat that parsing for no gain.
   `--limit`, ADR-0079): a reader in front of the `tar` crate follows the
   block framing as it does, PAX `size` included, and fails at the header of
   a larger one, before its body is read. The limit is the crate's only
-  process-wide setting (`set_extension_header_limit`). Fuzzing the
-  extractor stays a Phase 6 task (Q-056).
+  process-wide setting (`set_extension_header_limit`). Fuzzing the extractor
+  is a Phase 6 task.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may
@@ -139,10 +136,11 @@ never called. A hand-written reader would repeat that parsing for no gain.
   had an entry for `./`, so `rnk-snapshot` knows the layer's root
   metadata is its own) takes the lower layers' extracted
   directories, the nearest first as in `lowerdir=`, and copies the target
-  from the first one that shows it (Q-055). "Shows" follows overlay's merged
-  view: each layer, this one first, is walked by name without following a
-  symlink; a whiteout, a non-directory (a symlink included) on the way, or
-  a missing directory below an opaque one hides everything below; an
+  from the first one that shows it
+  ([ADR-0012](../adr/0012-accept-divergence-between-modes.md)). "Shows" follows
+  overlay's merged view: each layer, this one first, is walked by name without
+  following a symlink; a whiteout, a non-directory (a symlink included) on the
+  way, or a missing directory below an opaque one hides everything below; an
   opaque directory hides what its layer lacks. The copy is a regular file
   (or symlink, FIFO, device node) with the lower inode's owner, mode, times
   and xattrs as stored, overlay's own (`trusted.overlay.*`,
@@ -156,8 +154,8 @@ never called. A hand-written reader would repeat that parsing for no gain.
   type, size or mtime, so a later link copies it again rather than linking
   what took its place), so the bytes written stay bounded by the
   lower layers' size, however many names a layer links. Only the
-  `user.overlay.opaque=y` form ranikust writes is recognised
-  ((Q-121)). A target in no layer, hidden, or a directory is an
+  `user.overlay.opaque=y` form ranikust writes is recognised, as `layers/` is
+  written by ranikust alone. A target in no layer, hidden, or a directory is an
   `Error::Entry`; so is any missing target for plain `extract`. Lower
   layers are only read.
 - **`Whiteouts::Overlay`** (`layers/<id>`, mounted with `userxattr`,
@@ -174,9 +172,9 @@ never called. A hand-written reader would repeat that parsing for no gain.
   layer's entries" are those it still has: what it created is kept as a
   tree of names, each name once however long the (physical) paths through
   it, and a whiteout or a replacement that deletes an entry forgets it with
-  everything below, so the memory follows what the layer leaves on disk,
-  not how many entries it had (T15). Writing into a live root, mount points
-  included, is Phase 2 ([kaniko mode](kaniko-mode.md)). A directory the
+  everything below, so the memory follows what the layer leaves on disk, not
+  how many entries it had (T15). Extraction into a live root, mount points
+  included, is [kaniko mode](kaniko-mode.md)'s. A directory the
   layer listed and a later entry deleted gets no metadata at the end; when
   that deletion had to keep an ignored path, the directories below it that
   are still on disk keep theirs, whatever the ignore list says might have
@@ -192,7 +190,7 @@ never called. A hand-written reader would repeat that parsing for no gain.
 `copy(src, from, dst, to, opts)` copies one source of a `COPY` or local
 `ADD` between two roots: the context and a stage root, or two stage roots
 for `--from`. The builder expands wildcards and `.dockerignore` and derives
-`to` from the Dockerfile's destination (Q-080); `ADD`'s archive extraction
+`to` from the Dockerfile's destination (ADR-0032); `ADD`'s archive extraction
 is `extract`.
 
 - **Source.** `from` is resolved in `src` following symlinks there, the
@@ -200,7 +198,7 @@ is `extract`.
   (`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert_copy.go:283-293`);
   kaniko copies a symlinked source as a symlink
   (`kaniko@44aa7ddc0 pkg/commands/copy.go:150`). Where the two differ,
-  `copy` follows BuildKit (Q-120, `ADR-0032`). A directory has its
+  `copy` follows BuildKit (ADR-0032). A directory has its
   contents copied; anything else is copied to exactly `to`.
 - **Reading.** The source tree is walked by `(directory fd, name)`: each
   entry is pinned with `O_PATH | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, so the
@@ -243,7 +241,7 @@ is `extract`.
   overlay's own (`trusted.overlay.*`, `user.overlay.*`), with a warning
   for one the destination refuses. kaniko copies only
   `security.capability` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:1533`);
-  layers carry only that one either way (Q-025). Hardlinks inside the
+  layers carry only that one either way (ADR-0032). Hardlinks inside the
   copied tree stay hardlinks. Directories the copy creates above `to`, and
   `to` itself for a directory's contents, get an octal `--chmod`'s
   permission bits, else `0755` (BuildKit's `MkdirAll` in `fsutil
@@ -296,13 +294,13 @@ host's.
 [safe deletion](kaniko-mode.md#safe-deletion); the same walker removes a
 directory an extracted entry replaces, and applies OCI whiteouts.
 
-- Iterative, one frame per directory level holding an `O_RDONLY` fd and
-  its own name: no recursion, no `PATH_MAX` limit, one fd per level (a
-  3,004-level tree in T0). The path of the entry at hand is one buffer the
-  walk extends and shortens, never a copy per level, so memory is linear
-  in the entries on the stack (each level's name and the names of its
-  directory not yet visited), no longer quadratic in depth (a 400-level chain of 200-byte names: 32 MB before, 0.4 MB
-  now, `tests/memory.rs`; `prune` alike). Names are read before any is
+- Iterative, one frame per directory level holding an `O_RDONLY` fd and its
+  own name: no recursion, no `PATH_MAX` limit, one fd per level (a 3,004-level
+  tree in T0). The path of the entry at hand is one buffer the walk extends and
+  shortens, never a copy per level, so memory is linear in the entries on the
+  stack (each level's name and the names of its directory not yet visited), not
+  quadratic in depth (a 400-level chain of 200-byte names: 0.4 MB, against 32 MB
+  before; `tests/memory.rs`; `prune` alike). Names are read before any is
   removed.
 - Each entry gets `statx(AT_SYMLINK_NOFOLLOW)`. Another mount id or
   `STATX_ATTR_MOUNT_ROOT` keeps it untouched. A directory is opened with
@@ -324,14 +322,10 @@ directory an extracted entry replaces, and applies OCI whiteouts.
 
 ## Observability
 
-Coarse `tracing` spans only, named `<crate>.<operation>`, with counters
-recorded once at the end, never per entry
-([metrics](metrics.md#rnk-rootfs)): `rnk_rootfs.extract` (`mode`,
-`lowers`; `entries`, `files`, `dirs`, `symlinks`, `hardlinks`,
-`hardlinks_copied`, `nodes`, `whiteouts`, `bytes_in` read from the tar
-stream, `bytes_written`), `rnk_rootfs.copy` (`files`, `dirs`, `bytes`) and
-`rnk_rootfs.delete` (`entries`, `files`, `dirs`, `kept`). Tested with
-`rnk_metrics::Capture` (`crates/rnk-rootfs/tests/spans.rs`).
+Coarse `tracing` spans, `rnk_rootfs.extract`, `.copy`, `.delete` and `.prune`,
+with counters recorded once at the end, never per entry: the fields are listed
+in [metrics](metrics.md#rnk-rootfs). Tested with `rnk_metrics::Capture`
+(`crates/rnk-rootfs/tests/spans.rs`).
 
 ## Failure handling
 
@@ -341,13 +335,7 @@ stream, `bytes_written`), `rnk_rootfs.copy` (`files`, `dirs`, `bytes`) and
 
 ## Open questions
 
-- [Q-120](../open-questions.md#q-120-where-kaniko-and-buildkit-copy-differently-which-does-copy-follow)
-  Where kaniko and BuildKit copy differently, which does `copy` follow?
-- [Q-121](../open-questions.md#q-121-which-overlay-forms-does-the-lower-layer-lookup-recognise)
-  Which overlay forms does the lower-layer lookup recognise?
-  What is the minimum kernel, and who checks it?
-  How does overlay-form extraction handle a hardlink into a lower layer?
-  How are tar extension headers bounded?
+None.
 
 ## References
 

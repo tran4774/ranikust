@@ -1,20 +1,19 @@
 # Overlay snapshots
 
-How overlay mode builds a stage: one overlay mount per stage, one upper
+**TL;DR:** overlay mode builds a stage with one overlay mount, one upper
 directory per layer, and an exporter that turns an upper directory into an
 OCI layer.
 
 Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0012](../adr/0012-accept-divergence-between-modes.md),
 [ADR-0016](../adr/0016-overlay-mount-options.md),
-[ADR-0022](../adr/0022-common-state-dir.md),
-[ADR-0023](../adr/0023-mode-flag.md).
+[ADR-0023](../adr/0023-mode-flag.md),
+[ADR-0034](../adr/0034-unchanged-copy-ups-left-out-of-layers.md).
 
 ## Invariants
 
 - Every byte ranikust writes is under the state directory (store and build
-  areas; by default `/var/lib/ranikust`, ADR-0050) or in the requested
-  output.
+  areas; by default `/var/lib/ranikust`, ADR-0050) or in the requested output.
   Nothing is written to the host's `/`.
 - Extracted layers in `layers/` are immutable once published and are only
   ever used as lower directories.
@@ -25,38 +24,32 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 
 ## State directory layout
 
+The store (`blobs/`, `layers/`, `caches/`) is laid out in
+[cache-and-store](cache-and-store.md#store-layout). `builds/<id>` is private to
+one build and deleted afterwards; builds share the state directory and its
+store, each with its own `builds/<id>`:
+
 ```
-<state-dir>/                    default /var/lib/ranikust
-├── .ranikust-state             marker file
-├── blobs/sha256/<digest>       downloaded compressed blobs
-├── layers/<id>/                extracted layers, immutable, overlay whiteout form
-├── caches/<sha256(id)>/        RUN --mount=type=cache
-└── builds/<build-id>/
-    ├── overlay-probe/          the start-up probe's mount, emptied after it
-    ├── context/
-    └── stages/<n>/
-        ├── diff-<k>/           upper of instruction k = diff of layer k
-        ├── work-<k>/           overlay work directory of instruction k
-        ├── empty-<i>/          an empty lower: FROM scratch, the read-only view
-        ├── lowers-<m>/<i> -> <lower>   links of one mount(2), only while it mounts
-        └── rootfs/             mount point of stage n
+<state-dir>/builds/<build-id>/
+├── overlay-probe/          the start-up probe's mount, emptied after it
+├── context/
+└── stages/<n>/
+    ├── diff-<k>/           upper of instruction k = diff of layer k
+    ├── work-<k>/           overlay work directory of instruction k
+    ├── empty-<i>/          an empty lower: FROM scratch, the read-only view
+    ├── lowers-<m>/<i> -> <lower>   links of one mount(2), only while it mounts
+    └── rootfs/             mount point of stage n
 ```
 
-`layers/` is `layers/v3/<algorithm>/<hex>/`, named by the layer's chain ID,
-as BuildKit and containerd key unpacked snapshots (ADR-0032, Q-150): a
-hardlink into a lower layer is copied from the layers below (Q-055), so an
-extraction depends on its stack. A bottom layer's chain ID is its diff ID;
-the same diff on another stack is extracted again. Each layout is a new
-directory, so nothing extracted by an earlier rule is reused: `v2` layers
-may hold an image's `trusted.*` xattrs, which `v3` never sets, from the
-tar or copied up from a lower layer (ADR-0075). Earlier layouts stay on
-disk until `prune` (Phase 5) or the operator removes them.
-
-`blobs/`, `layers/` and `caches/` form the persistent store, shared between
-stages and builds and owned by `rnk-store`
-([cache-and-store](cache-and-store.md)). `builds/<id>` is private to one
-build and deleted afterwards. Builds share the state directory and its
-store; each has its own `builds/<id>`.
+`layers/` is `layers/v3/<algorithm>/<hex>/`, named by the layer's chain ID, as
+BuildKit and containerd key unpacked snapshots (ADR-0032): a hardlink into a
+lower layer is copied from the layers below, so an extraction depends on its
+stack. A bottom layer's chain ID is its diff ID; the same diff on another stack
+is extracted again. Each layout is a new directory, so nothing extracted by an
+earlier rule is reused: `v2` layers may hold an image's `trusted.*` xattrs,
+which `v3` never sets, from the tar or copied up from a lower layer
+(ADR-0075). Earlier layouts stay on disk until `prune` (Phase 5) or the
+operator removes them.
 
 ## One layer per instruction
 
@@ -81,13 +74,13 @@ For instruction `k` of stage `n`:
 
 `--snapshot-mode` has no effect here: it is accepted and ignored with a
 warning ([ADR-0023](../adr/0023-mode-flag.md)). Instructions that change
-only the image config (`ENV`, `LABEL`, `USER`, …) mount nothing and produce
-no layer. Keeping one mount across several
-consecutive instructions is a later optimization; see the `volatile` rules.
+only the image config (`ENV`, `LABEL`, `USER`, ...) mount nothing and produce
+no layer. Keeping one mount across several consecutive instructions is a later
+optimization ([open: #18]; see the `volatile` rules).
 
-In code (`rnk-snapshot`, interim signature, Q-024): `Snapshotter::prepare`
-makes a stage on `Base::Scratch`, `Base::Image(layers)` or
-`Base::Stage(parent)`; `StageRootfs::begin_layer` is steps 2 and 3,
+In code (`rnk-snapshot`, [ADR-0046](../adr/0046-snapshotter-signature.md)):
+`Snapshotter::prepare` makes a stage on `Base::Scratch`, `Base::Image(layers)`
+or `Base::Stage(parent)`; `StageRootfs::begin_layer` is steps 2 and 3,
 `end_layer` step 5 and returns the `LayerDiff` that step 6 exports. Every
 diff becomes the topmost lower of the next layer, empty or not. Between
 layers, `view` mounts the stack read-only on `rootfs/` (overlay without an
@@ -110,7 +103,7 @@ would hide every lower layer.
   with key `lowerdir+` per layer; `FSCONFIG_CMD_CREATE`; `fsmount`;
   `move_mount`. Path length does not matter.
 - **Older kernels:** `mount(2)` with a single option string, the lowers
-  relative names, as containerd mounts many lowers (ADR-0032, Q-151): each
+  relative names, as containerd mounts many lowers (ADR-0032): each
   mount makes a fresh `lowers-<m>/` in the stage directory with links `0`,
   `1`, ... to its lowers, mounts from a short-lived thread that does
   `unshare(CLONE_FS)` and `fchdir` into it, with `lowerdir=0:1:...`, and
@@ -135,8 +128,9 @@ would hide every lower layer.
     clear error.
   - `fsconfig(FSCONFIG_SET_STRING, "lowerdir", s)` takes at most 256 bytes;
     never pass a joined list there.
-  - Close to 500 layers, merge the oldest diffs into one temporary layer
-    (not built yet: more than 500 is refused with a clear error, Q-026).
+  - Layers are not merged near the limit: a stage that needs more lowers than
+    the kernel allows fails with a clear error, as BuildKit's overlay
+    snapshotter (ADR-0032).
 
 ## The `volatile` lifecycle
 
@@ -166,7 +160,7 @@ while streaming.
 | directory with `user.overlay.opaque=y` over a lower one | walked against the lower stack (continuity's double walk, as BuildKit): `.wh.<name>` for each name below that the upper lacks (one for a whole directory), the rest compared as any entry; never `.wh..wh..opq`, which containerd's writer never writes |
 | directory with `user.overlay.opaque=y` and nothing below | a plain directory (overlay also marks new directories that were renamed) |
 | any entry the lower stack also shows, unchanged by BuildKit's `sameDirent` | left out (ADR-0034): same inode, or same type and permission bits, owner, device numbers and `security.capability`; a non-directory also needs the same size and second, then, with zero nanoseconds on both sides, the same symlink target or bytes, else the same nanoseconds; a directory's time is not compared |
-| xattrs | only `security.capability` kept, as BuildKit and kaniko (ADR-0032, Q-025); overlay's own (`origin`, `impure`, `uuid`, `opaque`) and every other one stripped, POSIX ACLs, SELinux labels and IMA/EVM signatures included |
+| xattrs | only `security.capability` kept, as BuildKit and kaniko (ADR-0032); overlay's own (`origin`, `impure`, `uuid`, `opaque`) and every other one stripped, POSIX ACLs, SELinux labels and IMA/EVM signatures included |
 | `user.overlay.redirect` or `trusted.overlay.redirect` | error: cannot occur with `redirect_dir=nofollow` |
 | files, symlinks, hardlinks within the same upper | kept when changed; under an opaque directory an unchanged name sharing an inode with a changed one is written as a link to it (containerd's `inodeRefs`) |
 | whiteout time | 0, as containerd 2's `ChangeWriter` |
@@ -179,12 +173,13 @@ Requirements found by comparing images:
 - **Parent directory headers.** Every emitted entry's ancestor directories
   are emitted too, with their current metadata, even when unchanged; the
   `rnk-layer` writer adds the missing ones, asking the exporter for their
-  metadata through a lookup ((Q-013, ADR-0032), interim).
-  Otherwise extractors such as containers-storage create missing parents as
-  0755 and mask the real mode below (`/root` 700 → 755, `/tmp` 1777 → 755).
+  metadata through a lookup into the merged view, as containerd's
+  `includeParents` does for BuildKit (ADR-0032). Otherwise extractors such as
+  containers-storage create missing parents as 0755 and mask the real mode
+  below (`/root` 700 → 755, `/tmp` 1777 → 755).
   The `sameDirent` rule only stops an unchanged directory from being emitted
   on its own: the exporter skips it, and the writer adds it back through the
-  lookup when a descendant is emitted (same interim).
+  lookup when a descendant is emitted.
 - **Content comparison.** For a copied-up file whose metadata, size and
   whole-second time equal the lower one's, both copies are read through
   their `RootPath`s in 32 KiB blocks up to the first difference
@@ -206,11 +201,13 @@ Requirements found by comparing images:
   `/tmp` must stay 1777.
 - **Root directory metadata** comes from the lower root (step 2 above).
 - **Deterministic output.** Sorted entries, in the order the OCI layer
-  specification recommends (Q-053); same bytes for any thread count. Files
+  specification recommends (depth first, an opaque marker and whiteouts before
+  their siblings; files really named `.wh.*` are rejected); same bytes for any
+  thread count. Files
   keep the times they have on disk by default; under `--reproducible` a
   time later than the fixed epoch (`SOURCE_DATE_EPOCH` when set, else
   1970-01-01) is clamped to it, as BuildKit's `rewrite-timestamp` does
-  (Q-161, `ADR-0032`).
+  (ADR-0032).
 
 **The reverse direction**, extracting a base or cache layer into
 `layers/<id>`: `.wh.<name>` becomes `mknod c 0 0`; `.wh..wh..opq` becomes the
@@ -219,22 +216,16 @@ escaped as `user.overlay.overlay.*` (kernel ≥ 6.7); modes are set raw.
 `rnk-snapshot` chains `rnk-layer`'s decoder (gzip or zstd to a plain tar
 stream) into `rnk-rootfs::extract_overlay`, which writes into a temporary
 entry that `rnk-store` renames into place; it gets the layers below, so
-that a hardlink into one of them is copied from it (Q-055,
-[rootfs](rootfs.md#extraction)).
+that a hardlink into one of them is copied from it
+([rootfs](rootfs.md#extraction)).
 
 ## Lazy export
 
 The diff is already on disk. It is turned into tar, compressed and digested
-only when the layer is used:
-
-- the stage is pushed or is the `--target`;
-- `--cache` is on and the layer goes to the cache repository;
-- a tar or OCI layout of that stage is written.
-
-A stage used only through `COPY --from` or `FROM <stage>` is never encoded.
-When a layer is needed, it is exported as soon as it is complete, in parallel
-with the next instruction, while its pages are still in the page cache; a
-limit on compression threads keeps export from starving `RUN`.
+only when the layer is used (the rule is in
+[scheduler](scheduler.md#lazy-export)), and then as soon as it is complete, in
+parallel with the next instruction, while its pages are still in the page
+cache.
 
 ## Constraints and their handling
 
@@ -250,8 +241,7 @@ limit on compression threads keeps export from starving `RUN`.
 | Stage teardown | Unmount and delete `diff-*`; no walk-and-delete. |
 
 `COPY --from=<stage>` reads the source stage's final rootfs directly, mounted
-read-only. There is no copy into a dependency area and no deletion between
-stages as in kaniko.
+read-only: no copy and no deletion between stages, unlike kaniko.
 
 ## Failure handling
 
@@ -265,10 +255,8 @@ stages as in kaniko.
 ## Open questions
 
 - [Q-245](https://github.com/tran4774/ranikust/issues/18) Should one overlay mount serve consecutive instructions?
-- [Q-421](https://github.com/tran4774/ranikust/issues/29) Which performance conditions does Phase 6 measure? (Q-033's leftovers)
-- [Q-026](../open-questions.md#q-026-when-and-how-are-layers-merged-near-the-500-lower-limit) When and how are layers merged near the 500-lower limit?
+- [Q-421](https://github.com/tran4774/ranikust/issues/29) Which performance conditions does Phase 6 measure?
 - [Q-152](https://github.com/tran4774/ranikust/issues/5) How are read-only layer roots published without root?
-- [Q-013](../open-questions.md#q-013-how-does-the-layer-writer-learn-missing-parent-metadata) How does the layer writer learn missing parent metadata?
 
 ## References
 

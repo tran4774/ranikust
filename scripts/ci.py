@@ -112,6 +112,9 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     (".editorconfig", NONE),
     ("scripts/docs-lint.py", NONE),
     ("scripts/review-pack.py", NONE),
+    # Local only: the agent worktree clean-up and its test (ADR-0096).
+    ("scripts/prune-worktrees.sh", NONE),
+    ("tests/agents/**", NONE),
     ("tests/ci/**", NONE),
     # The Release workflow's, which has paths of its own (.github/release.yml
     # groups the release notes).
