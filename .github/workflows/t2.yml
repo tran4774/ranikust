@@ -301,9 +301,10 @@ jobs:
             exit 1
           fi
           # An output that is unset or misspelled would skip its jobs and
-          # still pass: every output must be "true" or "false".
-          if ! jq -e '.changes.outputs | to_entries | length > 0 and all(.value == "true" or .value == "false")' <<<"$NEEDS" >/dev/null; then
-            echo "::error::the changes job's outputs are not all true or false, so the lanes are unknown"
+          # still pass, and the runner drops an empty output altogether: each
+          # expected output, by name, must be "true" or "false".
+          if ! jq -e '.changes.outputs as $o | ["t2","full","label_only"] | all($o[.] == "true" or $o[.] == "false")' <<<"$NEEDS" >/dev/null; then
+            echo "::error::the changes job's outputs t2, full and label_only are not all true or false, so the lanes are unknown"
             exit 1
           fi
           bad="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<<"$NEEDS")"

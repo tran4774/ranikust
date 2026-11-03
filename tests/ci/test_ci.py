@@ -469,9 +469,29 @@ GATE_NAMES = {
     "ci.yml": gate_name("CI result", "draft, fast lane"),
     "t2.yml": gate_name("T2 result", "draft, not run"),
 }
-OUTPUTS_CHECK = (
-    "jq -e '.changes.outputs | to_entries | length > 0 and all(.value == \"true\" or .value == \"false\")'"
-)
+# The outputs each workflow's `changes` job maps from its `lanes` step, in
+# order. The runner drops an output whose value is empty, so a misspelt
+# mapping makes a key vanish: the gates check these keys by name.
+CHANGES_OUTPUTS = {
+    "ci.yml": ["rust", "book", "deny", "full", "label_only"],
+    "t2.yml": ["t2", "full", "label_only"],
+}
+
+
+def outputs_check(keys: list[str]) -> str:
+    names = ",".join(f'"{k}"' for k in keys)
+    return f"jq -e '.changes.outputs as $o | [{names}] | all($o[.] == \"true\" or $o[.] == \"false\")'"
+
+
+def block(lines: list[str], header: str, indent: str) -> list[str]:
+    """The lines right under `header` indented by exactly `indent`."""
+    start = lines.index(header) + 1
+    out = []
+    for line in lines[start:]:
+        if not line.startswith(indent) or line.startswith(indent + " "):
+            break
+        out.append(line)
+    return out
 
 
 class Workflows(unittest.TestCase):
@@ -485,11 +505,29 @@ class Workflows(unittest.TestCase):
                 self.assertEqual(job_line(js[job], "if"), want, f"{wf}: {job}")
             self.assertEqual(job_line(js["result"], "name"), GATE_NAMES[wf], wf)
 
-    def test_the_gates_check_the_lanes_outputs(self):
+    def test_the_gates_check_the_lanes_outputs_by_name(self):
         for wf in self.LANED:
             script = "\n".join(jobs(wf)["result"])
-            self.assertIn(OUTPUTS_CHECK, script, wf)
+            self.assertIn(outputs_check(CHANGES_OUTPUTS[wf]), script, wf)
             self.assertIn(".changes.result", script, wf)
+
+    def test_the_changes_outputs_are_pinned(self):
+        emitted = set(ci.LANES) | {"full", "label_only"}
+        for wf in self.LANED:
+            lines = jobs(wf)["changes"]
+            keys = CHANGES_OUTPUTS[wf]
+            self.assertLessEqual(set(keys), emitted, wf)
+            self.assertEqual(block(lines, "    outputs:", "      "),
+                             [f"      {k}: ${{{{ steps.lanes.outputs.{k} }}}}" for k in keys], wf)
+            # The step those outputs name is the one that runs the script.
+            self.assertEqual(lines.count("        id: lanes"), 1, wf)
+            step = lines[lines.index("        id: lanes"):]
+            step = step[:next((i for i, x in enumerate(step) if x.startswith("      - ")), len(step))]
+            self.assertIn("        run: python3 -I scripts/ci.py changes", step, wf)
+            # Every output the workflow reads is one the job maps.
+            text = (WORKFLOWS / wf).read_text()
+            read = set(re.findall(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)", text))
+            self.assertLessEqual(read, set(keys), wf)
 
     def test_the_gate_needs_every_job_and_always_runs(self):
         for wf in self.LANED:

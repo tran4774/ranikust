@@ -642,8 +642,9 @@ What runs, by event:
   its merge with `main`.
 - **Gates.** `CI result` and `T2 result` need every job of their workflow,
   run even when one failed or the run was cancelled, and fail when the
-  `changes` job did not succeed, when any of its outputs is not exactly
-  `true` or `false`, or when any job failed or was cancelled; a job
+  `changes` job did not succeed, when any output it should map (checked
+  by name: the runner drops an empty one) is not exactly `true` or
+  `false`, or when any job failed or was cancelled; a job
   skipped by its lane counts as passed. They are the only checks the
   `main` ruleset requires. They carry those names only on a full run of a
   pull request or of `main`: on a draft's fast lane they are named `CI
@@ -652,8 +653,8 @@ What runs, by event:
   check run of a name created last, so a draft or a manual run never
   stands in for a pull request's full run: after a draft is marked ready
   the pull request waits for its gates. A run cancelled by a newer one
-  leaves failing gates (`always()`, not `!cancelled()`, whose skipped
-  gate would count as passed).
+  leaves failing gates (`always()`, not `!cancelled()`, which may leave
+  the gate skipped, and a skipped gate counts as passed).
 - **Labels.** Only `ci:full` on a draft changes what runs (in any case:
   `CI:Full` too); adding or removing any other label (or `ci:full` on a
   pull request that is already ready) starts a run that tests nothing,

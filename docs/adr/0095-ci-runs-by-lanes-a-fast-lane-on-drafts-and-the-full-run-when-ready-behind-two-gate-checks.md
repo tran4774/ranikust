@@ -119,9 +119,12 @@ result` are the only required checks.
   `agent`, added right after a pull request opens, cancels nothing.
 - **Gates (B):** `CI result` (`ci.yml`) and `T2 result` (`t2.yml`) need
   every job of their workflow but the cache pruning, run `if: always()`,
-  fail when the `changes` job did not succeed, when any of its outputs is
-  not exactly `true` or `false` (an output unset or misspelled would skip
-  its jobs and pass), or when any needed job failed or was cancelled, and
+  fail when the `changes` job did not succeed, when any of its expected
+  outputs, checked by name, is not exactly `true` or `false` (an output
+  unset or misspelled would skip its jobs and pass, and the runner drops
+  an output whose value is empty, so a misspelt mapping leaves its key
+  out [external, actions/runner]), or when any needed job failed or was
+  cancelled, and
   pass when the rest succeeded or were skipped (a job skipped by `if:`
   reports success [external]). They become the `main` ruleset's only
   required checks, replacing the eleven job names. A gate carries its
@@ -139,7 +142,8 @@ result` are the only required checks.
   `always()` and not `!cancelled()`: a full run that a newer run cancels
   on the same commit (a `ci:full` run when the draft is marked ready) then
   leaves a failing `CI result` until the newer run's gate, where
-  `!cancelled()` would skip its gate, and a skipped check counts as
+  `!cancelled()` may leave its gate skipped (whether GitHub marks it
+  skipped or cancelled is unverified), and a skipped check counts as
   passed. The cost is a failing gate on a commit whose run was superseded.
 - **Who clicks:** agents use the maintainer's GitHub account, so GitHub
   cannot tell who marked a pull request ready or added a label. The guard
