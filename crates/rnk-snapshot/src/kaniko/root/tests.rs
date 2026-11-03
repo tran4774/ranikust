@@ -1036,6 +1036,39 @@ fn on_slash_a_spool_goes_with_the_last_use_the_build_announced() {
     );
 }
 
+#[test]
+fn on_slash_with_its_state_in_memory_a_spool_is_not_kept_for_later_stages() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (f, store) = Fixture::tars();
+    let (layers, source) = streamed_for(&f, "l1", &[("a", b"base")], 2);
+    // A state directory that takes no file: the store's files are memfds.
+    let state = f.host.join("state");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = state.join("probe");
+    if fs::File::create(&probe).is_ok() {
+        // Root or `CAP_DAC_OVERRIDE`: the files stay on disk here.
+        fs::remove_file(&probe).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    for (i, layer) in layers.iter().enumerate() {
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(layer)))
+            .unwrap();
+        assert_eq!(fs::read(f.host.join("a")).unwrap(), b"base");
+        root.release().unwrap();
+        assert!(store.files_in_memory());
+        assert!(
+            f.kaniko.shared.spools().values().all(|u| u.spool.is_none()),
+            "stage {i}: no spool kept in memory"
+        );
+    }
+    // Spooled for each stage, one layer in memory at a time.
+    assert_eq!(source.opens.load(Ordering::Relaxed), 2);
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
 // Red team, ADR-0052 D1 and ADR-0058 (threat model T1, T3, T4): hostile
 // `/ranikust` and `.built` planted by an image, a `RUN` or a daemon left
 // by an earlier build; a second build's emptying of `/` against the real

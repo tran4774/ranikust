@@ -641,6 +641,33 @@ fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
 }
 
 #[test]
+fn an_anonymous_store_says_when_its_files_are_in_memory() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    drop(store.scratch_file().unwrap());
+    assert!(
+        !store.files_in_memory(),
+        "on disk while the directory takes files"
+    );
+    // A state directory that takes no file any more: the next file is a
+    // memfd, and the store says so.
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = state.join("probe");
+    let takes_files = fs::File::create(&probe).is_ok();
+    if takes_files {
+        // Root or `CAP_DAC_OVERRIDE`: the permission stops nothing here.
+        fs::remove_file(&probe).unwrap();
+    }
+    drop(store.scratch_file().unwrap());
+    assert_eq!(store.files_in_memory(), !takes_files);
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    store.close().unwrap();
+}
+
+#[test]
 fn a_build_cut_short_keeps_the_next_builds_state_in_memory() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");

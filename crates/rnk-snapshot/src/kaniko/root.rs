@@ -441,7 +441,10 @@ impl Shared {
     /// spool for it: that stage extracts it again without downloading and
     /// decompressing it a second time to verify it (ADR-0081). The spool
     /// goes with the last use the build announced; one used more often
-    /// than announced is spooled anew. A blob of the store is read as it is.
+    /// than announced is spooled anew. While the store's files are in
+    /// memory (`memfd`), charged to the container's memory, no new spool is
+    /// kept: each use spools the layer anew, one layer at a time. A blob of
+    /// the store is read as it is.
     fn spool(&self, store: &Store, layer: &KanikoLayer) -> Result<Arc<Spooled>> {
         if !matches!(layer.source, LayerSource::Stream(_)) {
             return Spooled::of(store, layer).map(Arc::new);
@@ -458,10 +461,10 @@ impl Shared {
         };
         let mut spools = self.spools();
         if let Some(entry) = spools.get_mut(&layer.diff_id) {
-            if entry.used < entry.expected {
-                entry.spool = Some(Arc::clone(&spooled));
-            } else {
+            if entry.used >= entry.expected {
                 spools.remove(&layer.diff_id);
+            } else if !store.files_in_memory() {
+                entry.spool = Some(Arc::clone(&spooled));
             }
         }
         Ok(spooled)

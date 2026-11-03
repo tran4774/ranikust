@@ -110,7 +110,6 @@ impl AnonFiles {
     }
 
     /// Whether files are `memfd`s (memory) rather than files on disk.
-    #[cfg(test)]
     pub(crate) fn in_memory(&self) -> bool {
         self.way.load(Ordering::Relaxed) == MEMFD
     }
