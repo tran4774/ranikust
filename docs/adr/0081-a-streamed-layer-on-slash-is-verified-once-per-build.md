@@ -69,8 +69,9 @@ the last such use.
   such as `/proc/self/fd/<n>` looked up after a `RUN`.
 - While the store's files are in memory (the `memfd` fallback), no spool
   is kept for later uses: each stage spools its layers anew, one at a
-  time, so memory never holds more than one layer's spool. A spool kept on
-  disk before the store fell back to memory stays.
+  time, so memory never holds more than one base layer's spool (the tars
+  of `COPY --from` images and kept stages stay for their root's life, as
+  before). A spool kept on disk before the store fell back to memory stays.
 - Overlay mode and kaniko mode off `/` are unchanged: they do not spool.
 
 In kaniko mode, on `/` and off it, a layer's extraction reads its plain

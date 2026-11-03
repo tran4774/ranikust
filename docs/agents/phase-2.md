@@ -93,7 +93,7 @@ with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
       host, in a root of the state directory (ADR-0050).
 - [x] (met 2026-11-03, final ultra run: `other=0`, `config=0` against kaniko on W1–W3, noise only the known files; one W2 file, `/app/assets/MANIFEST.sha256`, differs for per-stage directories by the workload's own race of `find` against its redirect, as on 2026-10-30) Flattened content and config compared with kaniko's on W1–W3: only
       `ADR-0012` differences and the known non-deterministic files.
-- [ ] Time per build and per snapshot phase compared with kaniko's metrics
+- [x] (met 2026-11-03: final ultra run at `3992fde` gave walk and hash on W1 2.82 s (on `/`) and 2.19 s (per-stage) against 3.18 s, and every build faster than kaniko but kaniko mode on `/` on W2, +3.9 %; fixed by ADR-0081 (a base layer verified once per build on `/`, decompressed beside its extraction): W2 on `/` 14.49 s against kaniko's 15.15 s, W1 19.64 against 20.49, W3 16.04 against 26.26, narrow VM run of 3 rounds) Time per build and per snapshot phase compared with kaniko's metrics
       report: the walk and hash of every step take less than kaniko's
       `snapshot.walk` + `snapshot.hash` (3.18 s on W1, `exp-07`), and no
       build is slower than kaniko's.
