@@ -1,59 +1,53 @@
 # Introduction
 
 ranikust builds container images from Dockerfiles, like
-[kaniko](https://github.com/osscontainertools/kaniko). It ships as a single
-static Linux binary, with no daemon and no container runtime, and it is meant
-to run both inside a container and directly on a host or a VM.
+[kaniko](https://github.com/osscontainertools/kaniko). It is one static Linux
+binary, with no daemon and no container runtime, and runs inside a container
+or directly on a host or VM.
 
-> **Status: pre-alpha.** ranikust builds images as root, in overlay mode or
-> in kaniko mode, and its releases are pre-releases ([Installing](install.md)).
-> Rootless builds, the layer cache and some instructions come in later
-> phases; the pages say where something is not built yet. See
-> [Status and roadmap](status.md).
+> **Status: pre-alpha.** ranikust builds as root, in overlay mode or in kaniko
+> mode, and its releases are pre-releases ([Installing](install.md)).
+> Rootless builds, the layer cache and some instructions come later; each page
+> says what is not built yet. See [Status and roadmap](status.md).
 
 ## Why ranikust
 
-Where a builder runs decides what it is allowed to do. kaniko is made to run
-inside a container and finds what a `RUN` command changed by walking the
-whole filesystem.
-Builders that rely on mounts or user namespaces stop working where those are
-forbidden, which is the case in most locked-down CI containers and
-Kubernetes pods.
+Where a builder runs decides what it may do. kaniko runs in any container, but
+finds what a `RUN` changed by walking the whole filesystem. Builders that need
+mounts or user namespaces stop working where those are forbidden: most
+locked-down CI containers and Kubernetes pods.
 
-ranikust covers both sides with one binary:
+ranikust uses what the environment allows:
 
-- where it may mount filesystems, it uses overlayfs snapshots and builds
-  independent stages in parallel;
-- where it may not, it falls back to kaniko's approach;
+- where it may mount filesystems, overlayfs snapshots, with independent stages
+  built in parallel;
+- where it may not, kaniko's approach;
 - where neither works, it stops and tells you what to change.
 
-[How ranikust builds](how-it-builds.md) explains the two modes, and
-[Choosing where to run it](where-to-run.md) lists which mode each environment
+[How ranikust builds](how-it-builds.md) explains the two modes;
+[Choosing where to run it](where-to-run.md) lists the mode each environment
 gets.
 
 ## Relationship to kaniko
 
-- ranikust accepts kaniko's common command-line flags, so that existing
-  pipelines can switch with few changes
-  ([ADR-0011](https://github.com/tran4774/ranikust/blob/main/docs/adr/0011-accept-common-kaniko-flags.md)).
-- Where kaniko and BuildKit build a Dockerfile differently, the image
-  follows BuildKit (`docker build`), as the Dockerfile reference describes.
-  Images are written with OCI media types by default. A new `ENTRYPOINT`
-  clears a `CMD` inherited from the base image. History has one entry per
-  instruction. Every config gets a default `PATH`, and empty fields of the
-  base config are dropped. So the config bytes, and the image digest,
-  differ from kaniko's even when the files are the same
-  ([ADR-0032](https://github.com/tran4774/ranikust/blob/main/docs/adr/0032-observable-behaviour-follows-buildkit.md)).
-- Its layer cache is its own and is not shared with kaniko's
-  ([ADR-0005](https://github.com/tran4774/ranikust/blob/main/docs/adr/0005-own-versioned-cache-key.md)).
-- It does not include kaniko's `bake`, the cache warmer, or S3, GCS and
-  Azure build contexts
-  ([ADR-0008](https://github.com/tran4774/ranikust/blob/main/docs/adr/0008-out-of-scope-bake-warmer-cloud-contexts.md)).
-- Releases target x86_64 Linux first; aarch64 is kept buildable
-  ([ADR-0009](https://github.com/tran4774/ranikust/blob/main/docs/adr/0009-x86-64-first-aarch64-ready.md)).
+- It accepts kaniko's common flags, so existing pipelines switch with few
+  changes ([ADR-0011]); [Command line](usage.md) lists what each does.
+- Where kaniko and BuildKit build a Dockerfile differently, the image follows
+  BuildKit (`docker build`) ([ADR-0032]): OCI media types by default, a new
+  `ENTRYPOINT` clears an inherited `CMD`, one history entry per instruction, a
+  default `PATH` in every config, empty fields of the base config dropped. The
+  config, and so the image digest, differ from kaniko's even for the same
+  files.
+- Its layer cache is its own and is not shared with kaniko's ([ADR-0005]).
+- It leaves out kaniko's `bake`, the cache warmer, and S3, GCS and Azure build
+  contexts ([ADR-0008]).
+- Releases target x86_64 Linux; aarch64 is kept buildable ([ADR-0009]).
 
-## More documentation
+This guide is for people who run ranikust. Contributors start with the
+[README](https://github.com/tran4774/ranikust#readme).
 
-This guide is for people who will run ranikust. Contributors start with the
-[README](https://github.com/tran4774/ranikust#readme), which links the
-architecture, the decision records and the research behind them.
+[ADR-0005]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0005-own-versioned-cache-key.md
+[ADR-0008]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0008-out-of-scope-bake-warmer-cloud-contexts.md
+[ADR-0009]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0009-x86-64-first-aarch64-ready.md
+[ADR-0011]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0011-accept-common-kaniko-flags.md
+[ADR-0032]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0032-observable-behaviour-follows-buildkit.md

@@ -1,49 +1,43 @@
 # Status and roadmap
 
-## Where the project is
+ranikust is **pre-alpha**: every release is a pre-release, and there is no
+stable release yet ([Installing](install.md)).
 
-ranikust is **pre-alpha**: its releases are pre-releases
-([Installing](install.md)), with no stable release yet. The binary builds a
-Dockerfile in overlay mode as root, stages in parallel, or in kaniko mode
-where root may not mount (on a container's `/`, as kaniko, or a directory
-per stage elsewhere), and writes an OCI layout, a Docker tar or pushes
-([Command line](usage.md)). Both modes have been compared with kaniko on
-the test workloads in a VM, not yet on real projects. Its build metrics already work:
-with `--metrics-file=<path>`, it writes a
-JSON report of where the run spent time and resources when it exits.
+## What works
 
-What exists:
+As root, ranikust builds a Dockerfile in overlay mode (stages in parallel) or,
+where root may not mount, in kaniko mode (on a container's `/`, as kaniko, or
+in a directory per stage elsewhere). It pushes the image or writes an OCI
+layout or a Docker tar ([Command line](usage.md)). Both modes have been
+compared with kaniko on three test workloads in a VM, not yet on real
+projects. With `--metrics-file=<path>` it writes a JSON report of where the run
+spent time and resources.
 
-- a survey and experiments that tested the design before any code was
-  written ([research](https://github.com/tran4774/ranikust/tree/main/docs/research));
-- the decisions taken from them
-  ([architecture decision records](https://github.com/tran4774/ranikust/tree/main/docs/adr));
-- the crate layout of the workspace, a static musl build and CI.
+## What is not built yet
 
-## Roadmap
+The work is planned in phases, without dates. The
+[README](https://github.com/tran4774/ranikust#roadmap) lists them; the
+[Project](https://github.com/users/tran4774/projects/1) tracks them.
 
-The work is planned in phases. There are no dates.
+| Missing | Phase |
+|---|---|
+| Builds as a regular user (rootless overlay mode), `--seccomp`, `--userns` | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
+| The layer cache (`--cache`) | 4 |
+| `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack=true`; `COPY` and `ADD` with `--link` or `--exclude`; `COPY --parents`; `RUN --mount=type=bind`, `tmpfs`, `ssh` and `type=cache,from=` (on a container's `/`, whether and how bind, tmpfs and `from=` mounts work is open: [#24](https://github.com/tran4774/ranikust/issues/24)); `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; credential helpers; the `prune` subcommand | 5 |
+| kaniko's 200 integration Dockerfiles in every mode, fuzzing, the host-safety test suite, packaging | 6 |
 
-| Phase | Goal | Status |
-|---|---|---|
-| 0. Spike | Prove the risky parts: the `RUN` sandbox, overlay snapshots, mode detection | Mostly done by the pre-code experiments |
-| 1. First internal milestone | Overlay mode as root, parallel stages, local build context, the common Dockerfile instructions, registry pull and push, Docker tar and OCI layout output | Done |
-| 2. kaniko mode | Snapshot by filesystem walk; on a container's `/` stages one at a time, elsewhere a directory per stage built in parallel (`--parallel-stages` refused, ADR-0060) | Done: built, and measured against kaniko in a VM on the test workloads |
-| 3. Rootless and detection | Overlay mode in a user namespace, automatic mode selection, refusing with guidance, `--seccomp` and `--userns` | In part: automatic mode selection and refusing with guidance are built; overlay in a user namespace, `--seccomp` and `--userns` are not |
-| 4. Cache | Layer cache in a registry, with ranikust's own versioned keys | Not started |
-| 5. Feature coverage | `ADD` from URLs and git, more `RUN --mount` and `COPY` options, registry mirrors, credential helpers, `prune` | Not started |
-| 6. Hardening and release | kaniko's 200 integration Dockerfiles in every mode, fuzzing, the host-safety test suite, packaging | Not started |
+An instruction, or a kaniko flag, of a later phase stops the build with a
+message naming the phase. Version 1.0 needs all three ways of building:
+overlay as root, rootless overlay, and kaniko mode.
 
-Version 1.0 needs all three ways of building: overlay as root, rootless
-overlay, and kaniko mode.
+Not scheduled: the `push` subcommand (it would take an OCI layout,
+[ADR-0052](https://github.com/tran4774/ranikust/blob/main/docs/adr/0052-push-input-aliases-and-issue-mining-fixes.md))
+and `--dryrun`
+([ADR-0036](https://github.com/tran4774/ranikust/blob/main/docs/adr/0036-kaniko-flags-in-phase-1.md)).
 
-## Not planned
-
-Multi-platform builds, kaniko's `bake` and cache warmer, and S3, GCS or Azure
-build contexts
+Not planned: multi-platform builds, kaniko's `bake` and cache warmer, and S3,
+GCS or Azure build contexts
 ([ADR-0008](https://github.com/tran4774/ranikust/blob/main/docs/adr/0008-out-of-scope-bake-warmer-cloud-contexts.md)).
-
-## Following along
 
 Changes are listed in the
 [changelog](https://github.com/tran4774/ranikust/blob/main/CHANGELOG.md).

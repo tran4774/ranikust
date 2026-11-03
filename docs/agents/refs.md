@@ -1,8 +1,8 @@
 # References
 
 **TL;DR:** External specs, kernel docs, upstream code and the crates chosen
-or considered, with links checked on 2026-10-30. Crate versions and
-licenses are crates.io's latest at that date, not what `Cargo.lock` pins.
+or considered. Links last checked on 2026-10-30; licences are crates.io's at
+that date.
 
 ## Specs
 
@@ -46,53 +46,49 @@ licenses are crates.io's latest at that date, not what `Cargo.lock` pins.
 
 ## Crates
 
-From survey 03 §3 and `exp-05`. Status: **chosen** (an ADR or the survey
-picked it), **candidate** (later phases; see the [`question` issues](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion)),
+From survey 03 section 3 and `exp-05`. Versions are in `Cargo.lock`; licences
+are checked by `deny.toml`. Status: **chosen** (an ADR or the survey picked
+it), **candidate** (later phases; see the
+[`question` issues](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion)),
 **rejected**.
 
-| Crate | Version, license | Role | Status |
+| Crate | Licence | Role | Status |
 |---|---|---|---|
-| [oci-client](https://crates.io/crates/oci-client) | 0.18.0, Apache-2.0 | Registry client, behind a wrapper | chosen |
-| [oci-spec](https://crates.io/crates/oci-spec) | 0.10.0, Apache-2.0 | OCI types of `oci-client`; `rnk-oci` owns its own (hash-map order, no Docker-only config fields) | `oci-client` only |
-| [serde](https://crates.io/crates/serde), [serde_json](https://crates.io/crates/serde_json) | 1.0.229, 1.0.154, MIT OR Apache-2.0 | (De)serialization of image types, canonical JSON | chosen (`rnk-oci`) |
-| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Crate-level `Error` enums in libraries | chosen (`rnk-oci`) |
-| [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only), `std` feature only, no failure files | chosen (`rnk-oci`) |
-| [docker_credential](https://crates.io/crates/docker_credential) | 1.4.0, MIT OR Apache-2.0 | `config.json`, credential helpers | candidate for the Phase 5 helpers (Q-047); `rnk-registry` reads `config.json` itself (Q-012) |
-| [tar](https://crates.io/crates/tar) | 0.4.46, MIT OR Apache-2.0 | Reading layers in `rnk-rootfs` (`entries()` only, never `unpack`) and in `rnk-layer`'s tests; `rnk-layer` builds its PAX headers itself (`crates/rnk-layer/src/header.rs`); never `append_dir_all` | chosen |
-| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | `Error` enums of the library crates | chosen |
-| [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests | chosen (tests) |
-| [flate2](https://crates.io/crates/flate2), [zlib-rs](https://crates.io/crates/zlib-rs) | 1.1.10, MIT OR Apache-2.0; 0.6.8, Zlib | Deflate under the pigz-style gzip | chosen |
-| [zstd](https://crates.io/crates/zstd) | 0.14.3 (libzstd 1.5.7), BSD-3-Clause | zstd layers as independent 1 MiB frames compressed on `rnk-layer`'s workers (never libzstd's multithreading), and the decoder; no default features | chosen (`rnk-layer`) |
-| [gzp](https://crates.io/crates/gzp) | 2.0.4, Unlicense/MIT | Parallel gzip | rejected: not deterministic across thread counts (`exp-05`, Q-012) |
-| [rustls](https://crates.io/crates/rustls) | 0.23.46, Apache-2.0 OR ISC OR MIT | TLS, no OpenSSL (`ADR-0020`, `ADR-0024`) | chosen |
-| [ring](https://crates.io/crates/ring) | 0.17.14, Apache-2.0 AND ISC | rustls crypto provider; 5.1 MB static binary against 7.3 MB (`exp-05`) | chosen (`ADR-0024`) |
-| [aws-lc-rs](https://crates.io/crates/aws-lc-rs) | 1.19.0, ISC AND (Apache-2.0 OR ISC) | The other provider; reqwest 0.13's default, kept out of TLS | rejected (`ADR-0024`) |
-| [webpki-roots](https://crates.io/crates/webpki-roots), [webpki-root-certs](https://crates.io/crates/webpki-root-certs) | 1.0.11, CDLA-Permissive-2.0 | Embedded roots, trusted together with the host's CAs; `webpki-root-certs` gives the DER certificates `oci-client` takes | chosen (`ADR-0024`) |
-| [rustls-native-certs](https://crates.io/crates/rustls-native-certs) | 0.8.5, Apache-2.0 OR ISC OR MIT | Reads the host's CAs (`/etc/ssl/certs`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), as `exp-05` did | chosen (`ADR-0024`); used by `rnk-registry` |
-| [rustls-pki-types](https://crates.io/crates/rustls-pki-types) | 1.15.1, MIT OR Apache-2.0 | DER certificate type; PEM parsing of `--registry-certificate` files | chosen (`rnk-registry`) |
-| [sha2](https://crates.io/crates/sha2) | 0.11.1, MIT OR Apache-2.0 | sha256 in `rnk-layer`; `ring::digest` to be measured (Q-033) | chosen (Q-012) |
-| [reqwest](https://crates.io/crates/reqwest), [hyper](https://crates.io/crates/hyper) | 0.13.5, MIT OR Apache-2.0; 1.12.0, MIT | HTTP | `reqwest` chosen (Q-012): the one `oci-client` uses, `rustls-no-provider`, used by `rnk-registry` for the `/v2/` probe and the identity-token exchange; `hyper` only for its tests' fake registry |
-| [http-auth](https://crates.io/crates/http-auth) | 0.1.10, MIT OR Apache-2.0 | `WWW-Authenticate` parsing, the parser `oci-client` uses | chosen (`rnk-registry`) |
-| [base64](https://crates.io/crates/base64) | 0.22.1, MIT OR Apache-2.0 | The `auth` field of `config.json` | chosen (`rnk-registry`) |
-| [bytes](https://crates.io/crates/bytes), [futures-util](https://crates.io/crates/futures-util), [tokio-util](https://crates.io/crates/tokio-util) | 1.12.1, MIT; 0.3.34, MIT OR Apache-2.0; 0.7.20, MIT | Push bodies as the byte streams `oci-client` takes | chosen (`rnk-registry`) |
-| [http-body-util](https://crates.io/crates/http-body-util), [hyper-util](https://crates.io/crates/hyper-util) | 0.1.5, 0.1.21, MIT | The fake registry in `rnk-registry`'s tests | chosen (tests) |
-| [tokio](https://crates.io/crates/tokio) | 1.54.1, MIT | Async runtime | chosen |
-| [rayon](https://crates.io/crates/rayon) | 1.12.0, MIT OR Apache-2.0 | CPU parallelism: hashing, compression, the kaniko-mode walk (one task per directory over `getdents64`, `--snapshot-workers`, default 8, `ADR-0039`) | chosen |
-| [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | 1.1.6, Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; 0.31.3, MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | `rustix` chosen (Q-012), `nix` rejected |
-| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Derives each library crate's `Error` enum; no `anyhow` in libraries | candidate; used by `rnk-rootfs` |
-| [tempfile](https://crates.io/crates/tempfile) | 3.27.0, MIT OR Apache-2.0 | Temp dirs for T0 tests, removed on drop | candidate; used by `rnk-rootfs` tests |
-| [mimalloc](https://crates.io/crates/mimalloc) | 0.1.52, MIT | Global allocator on musl, required; set in `crates/ranikust/src/main.rs`, no features | chosen (`ADR-0020`) |
-| [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | 0.1.44, 0.3.23, MIT | Spans and logs in every crate; the subscriber, per-layer filters and the metrics layer in `rnk-metrics` ([docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/)); `fmt` and `registry` features only | chosen (`ADR-0025`) |
-| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | 0.33.1, Apache-2.0 | Trace and metric export | candidate (`[open: #21]`) |
-| [serde_json](https://crates.io/crates/serde_json) | 1.0.154, MIT OR Apache-2.0 | JSON: the metrics report (`rnk-metrics`) | chosen |
-| [libc](https://crates.io/crates/libc) | 0.2.191, MIT OR Apache-2.0 | `getrusage` in `rnk-metrics`, which `rustix` 1.1 lacks | chosen |
-| [clap](https://crates.io/crates/clap) | 4.6.7, MIT OR Apache-2.0 | CLI parsing (named in survey 03); derive, no colour | chosen for `ranikust` (Q-012) |
-| [xxhash-rust](https://crates.io/crates/xxhash-rust) | 0.8.19, BSL-1.0 | xxh3-128 content and xattr hash of the kaniko-mode walk; feature `xxh3` only | chosen (`ADR-0039`) |
-| [regex](https://crates.io/crates/regex) | 1.13.1, MIT OR Apache-2.0 | `rnk-ignore`'s compiled patterns (Go regexps translated; no Unicode tables) | chosen |
-| [thiserror](https://crates.io/crates/thiserror) | 2.0.21, MIT OR Apache-2.0 | Library `Error` enums | chosen |
-| [proptest](https://crates.io/crates/proptest) | 1.12.0, MIT OR Apache-2.0 | Property tests (dev only, `std` feature) | chosen |
-| [parse-dockerfile](https://crates.io/crates/parse-dockerfile), [ignore](https://crates.io/crates/ignore) | 0.1.8; 0.4.34 | Dockerfile parsing, `.dockerignore` | rejected (`ADR-0015`, `exp-04`) |
-| [libcontainer](https://crates.io/crates/libcontainer) | 0.7.0, Apache-2.0 | youki's runtime | reference only |
+| [oci-client](https://crates.io/crates/oci-client) | Apache-2.0 | Registry client, behind a wrapper | chosen |
+| [oci-spec](https://crates.io/crates/oci-spec) | Apache-2.0 | OCI types of `oci-client`; `rnk-oci` owns its own (0.10 serializes from hash maps, whose order changes the digest, and has no Docker-only config fields) | `oci-client` only |
+| [serde](https://crates.io/crates/serde), [serde_json](https://crates.io/crates/serde_json) | MIT OR Apache-2.0 | (De)serialization of image types, canonical JSON, the metrics report | chosen (`rnk-oci`, `rnk-metrics`) |
+| [thiserror](https://crates.io/crates/thiserror) | MIT OR Apache-2.0 | `Error` enums of the library crates; no `anyhow` in libraries | chosen |
+| [proptest](https://crates.io/crates/proptest) | MIT OR Apache-2.0 | Property tests (dev only), `std` feature only, no failure files | chosen |
+| [tempfile](https://crates.io/crates/tempfile) | MIT OR Apache-2.0 | Temp dirs for T0 tests, removed on drop | chosen (tests) |
+| [docker_credential](https://crates.io/crates/docker_credential) | MIT OR Apache-2.0 | `config.json`, credential helpers | candidate for the Phase 5 helpers; `rnk-registry` reads `config.json` itself |
+| [tar](https://crates.io/crates/tar) | MIT OR Apache-2.0 | Reading layers in `rnk-rootfs` (`entries()` only, never `unpack`) and in `rnk-layer`'s tests; `rnk-layer` builds its PAX headers itself (`crates/rnk-layer/src/header.rs`); never `append_dir_all` | chosen |
+| [flate2](https://crates.io/crates/flate2), [zlib-rs](https://crates.io/crates/zlib-rs) | MIT OR Apache-2.0; Zlib | Deflate under the pigz-style gzip | chosen |
+| [zstd](https://crates.io/crates/zstd) | BSD-3-Clause | zstd layers as independent 1 MiB frames compressed on `rnk-layer`'s workers (never libzstd's multithreading), and the decoder; no default features | chosen (`rnk-layer`) |
+| [gzp](https://crates.io/crates/gzp) | Unlicense/MIT | Parallel gzip | rejected: not deterministic across thread counts (`exp-05`) |
+| [rustls](https://crates.io/crates/rustls) | Apache-2.0 OR ISC OR MIT | TLS, no OpenSSL (`ADR-0020`, `ADR-0024`) | chosen |
+| [ring](https://crates.io/crates/ring) | Apache-2.0 AND ISC | rustls crypto provider; 5.1 MB static binary against 7.3 MB (`exp-05`) | chosen (`ADR-0024`) |
+| [aws-lc-rs](https://crates.io/crates/aws-lc-rs) | ISC AND (Apache-2.0 OR ISC) | The other provider; reqwest 0.13's default, kept out of TLS | rejected (`ADR-0024`) |
+| [webpki-roots](https://crates.io/crates/webpki-roots), [webpki-root-certs](https://crates.io/crates/webpki-root-certs) | CDLA-Permissive-2.0 | Embedded roots, trusted together with the host's CAs; `webpki-root-certs` gives the DER certificates `oci-client` takes | chosen (`ADR-0024`) |
+| [rustls-native-certs](https://crates.io/crates/rustls-native-certs) | Apache-2.0 OR ISC OR MIT | Reads the host's CAs (`/etc/ssl/certs`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), as `exp-05` did | chosen (`ADR-0024`); used by `rnk-registry` |
+| [rustls-pki-types](https://crates.io/crates/rustls-pki-types) | MIT OR Apache-2.0 | DER certificate type; PEM parsing of `--registry-certificate` files | chosen (`rnk-registry`) |
+| [sha2](https://crates.io/crates/sha2) | MIT OR Apache-2.0 | sha256 in `rnk-layer`; `ring::digest` not yet measured against it (`[open: #29]`) | chosen |
+| [reqwest](https://crates.io/crates/reqwest), [hyper](https://crates.io/crates/hyper) | MIT OR Apache-2.0; MIT | HTTP | `reqwest` chosen: the one `oci-client` uses, `rustls-no-provider`, used by `rnk-registry` for the `/v2/` probe and the identity-token exchange; `hyper` only for its tests' fake registry |
+| [http-auth](https://crates.io/crates/http-auth) | MIT OR Apache-2.0 | `WWW-Authenticate` parsing, the parser `oci-client` uses | chosen (`rnk-registry`) |
+| [base64](https://crates.io/crates/base64) | MIT OR Apache-2.0 | The `auth` field of `config.json` | chosen (`rnk-registry`) |
+| [bytes](https://crates.io/crates/bytes), [futures-util](https://crates.io/crates/futures-util), [tokio-util](https://crates.io/crates/tokio-util) | MIT; MIT OR Apache-2.0; MIT | Push bodies as the byte streams `oci-client` takes | chosen (`rnk-registry`) |
+| [http-body-util](https://crates.io/crates/http-body-util), [hyper-util](https://crates.io/crates/hyper-util) | MIT | The fake registry in `rnk-registry`'s tests | chosen (tests) |
+| [tokio](https://crates.io/crates/tokio) | MIT | Async runtime | chosen |
+| [rayon](https://crates.io/crates/rayon) | MIT OR Apache-2.0 | CPU parallelism: hashing, compression, the kaniko-mode walk (one task per directory over `getdents64`, `--snapshot-workers`, default 8, `ADR-0039`) | chosen |
+| [rustix](https://crates.io/crates/rustix), [nix](https://crates.io/crates/nix) | Apache-2.0 (LLVM) OR Apache-2.0 OR MIT; MIT | Syscalls; `rustix` preferred ([rules.md](rules.md#code-traps)) | `rustix` chosen, `nix` rejected |
+| [mimalloc](https://crates.io/crates/mimalloc) | MIT | Global allocator on musl, required; set in `crates/ranikust/src/main.rs`, no features | chosen (`ADR-0020`) |
+| [tracing](https://crates.io/crates/tracing), [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | MIT | Spans and logs in every crate; the subscriber, per-layer filters and the metrics layer in `rnk-metrics` ([docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/layer/)); `fmt` and `registry` features only | chosen (`ADR-0025`) |
+| [opentelemetry-otlp](https://crates.io/crates/opentelemetry-otlp) | Apache-2.0 | Trace and metric export | candidate (`[open: #21]`) |
+| [libc](https://crates.io/crates/libc) | MIT OR Apache-2.0 | `getrusage` in `rnk-metrics`, which `rustix` lacks | chosen |
+| [clap](https://crates.io/crates/clap) | MIT OR Apache-2.0 | CLI parsing; derive, no colour | chosen for `ranikust` |
+| [xxhash-rust](https://crates.io/crates/xxhash-rust) | BSL-1.0 | xxh3-128 content and xattr hash of the kaniko-mode walk; feature `xxh3` only | chosen (`ADR-0039`) |
+| [regex](https://crates.io/crates/regex) | MIT OR Apache-2.0 | `rnk-ignore`'s compiled patterns (Go regexps translated; no Unicode tables) | chosen |
+| [parse-dockerfile](https://crates.io/crates/parse-dockerfile), [ignore](https://crates.io/crates/ignore) | not recorded | Dockerfile parsing, `.dockerignore` | rejected (`ADR-0015`, `exp-04`) |
+| [libcontainer](https://crates.io/crates/libcontainer) | Apache-2.0 | youki's runtime | reference only |
 
 ## Tools and conventions
 
