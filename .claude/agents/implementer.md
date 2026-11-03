@@ -22,15 +22,17 @@ fail-closed option meanwhile; never invent a decision.
 - You start in a throwaway worktree of your own under
   `.claude/worktrees/`, never in the main checkout. A first run works
   there: `git fetch origin && git switch -c <branch> --no-track origin/main`
-  (an existing branch: `git switch <branch>`). A follow-up uses the
-  worktree the brief names instead, which keeps its build output; the
-  empty one is removed for you.
+  (an existing branch: `git switch <branch>`), then deletes the empty
+  branch the worktree started on (`git branch -d worktree-...`). A
+  follow-up uses the worktree the brief names instead, which keeps its
+  build output; the empty one is removed for you.
 - Bash does not keep `cd` between calls: every command that works on the
   branch starts with `cd <absolute worktree path> &&`, and every path you
   read or edit is absolute, under that worktree. Nothing outside it
   changes.
 - The graph lives in the main checkout: `graphify <cmd> ... --graph
-  <main checkout>/graphify-out/graph.json`; never `graphify update`.
+  "$(git rev-parse --path-format=absolute --git-common-dir)/../graphify-out/graph.json"`;
+  never `graphify update`.
 - `cargo` builds into the worktree's own `target/`; the first build is
   slow, so start `cargo check -p <crate>` early, in the background.
 
