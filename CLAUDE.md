@@ -51,8 +51,9 @@ The toolchain is pinned in `rust-toolchain.toml` (1.99.1, edition 2024);
   keys and reuses layers; `rnk-store` holds blobs, extracted layers and
   cache mounts under `--state-dir`. `crates/ranikust` is the CLI only: it
   runs the privilege probes and picks the mode (`--mode`).
-- Each crate's `lib.rs` has a `# Boundaries` section; it is authoritative
-  for what the crate must not do. `ARCHITECTURE.md` is the full map.
+- Each crate's root (`lib.rs`; `main.rs` for the `ranikust` binary) has a
+  `# Boundaries` section; it is authoritative for what the crate must not
+  do. `ARCHITECTURE.md` is the full map.
 - Why things are the way they are: `docs/adr/` (decisions),
   `docs/design/` (current design), `docs/research/` (frozen survey and
   experiments with the measurements).
@@ -111,9 +112,9 @@ Subagents (`.claude/agents/`; when to use each: `docs/agents/workflow.md`):
 - `reviewer` (opus): fresh-context review before merge.
 - `poc-runner` (sonnet): settles an unverified claim about Linux or a
   runtime by experiment, in the VM for anything privilege-related.
-- `upstream-oracle` (sonnet, formerly `kaniko-oracle`): what kaniko,
-  BuildKit or buildah do, from their source. Use it instead of reading
-  upstream source in the main session or a fork.
+- `upstream-oracle` (sonnet): what kaniko, BuildKit or buildah do, from
+  their source. Use it instead of reading upstream source in the main
+  session or a fork.
 - `scribe` (sonnet): records the maintainer's decisions as ADRs and syncs
   docs with a diff.
 - `bench-runner` (sonnet): W1–W3 and benchmarks, when no other VM runs.

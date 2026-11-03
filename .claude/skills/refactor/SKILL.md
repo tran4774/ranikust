@@ -24,9 +24,10 @@ In order of weight:
    `unwrap`/indexing reachable from untrusted input, fallible calls never
    silenced (`docs/agents/rules.md`). A refactor that makes one of these
    harder to see is not clean, however short.
-2. **Inside its boundaries.** Each crate's `# Boundaries` in `lib.rs` and
-   `ARCHITECTURE.md` hold; a refactor never moves a responsibility across
-   crates. That is an architecture change: ADR first.
+2. **Inside its boundaries.** Each crate's `# Boundaries` (in `lib.rs`;
+   `main.rs` for `ranikust`) and `ARCHITECTURE.md` hold; a refactor never
+   moves a responsibility across crates. That is an architecture change:
+   ADR first.
 3. **Readable by a stranger.** Names say what, doc comments say why, one
    level of abstraction per function, the surrounding code's idiom.
 4. **No duplicate knowledge.** One place for one rule (a resolve flag set,

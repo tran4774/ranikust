@@ -1,6 +1,6 @@
 ---
 name: bench-runner
-description: Measures ranikust's performance - the W1-W3 workloads against kaniko and BuildKit in the test VM (the ultra benchmark, `just test-vm ultra`, only when the maintainer asks), and focused benchmarks (walk/hash, mount cost, snapshot modes, COPY of many files, push throughput) - with repeated runs, median and spread, and the environment recorded. Use it for acceptance measurements and open questions that wait on numbers (Q-033, Q-245, --snapshot-mode). The caller passes what to measure, the question it answers and the build or branch.
+description: Measures ranikust's performance - the W1-W3 workloads against kaniko and BuildKit in the test VM (the ultra benchmark, `just test-vm ultra`, only when the maintainer asks), and focused benchmarks (walk/hash, mount cost, snapshot modes, COPY of many files, push throughput) - with repeated runs, median and spread, and the environment recorded. Use it for acceptance measurements and `question` issues that wait on numbers (such as #29 Q-421 and #18 Q-245). The caller passes what to measure, the question it answers and the build or branch.
 tools: Bash, Read, Write
 model: sonnet
 ---

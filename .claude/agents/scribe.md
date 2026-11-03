@@ -56,9 +56,10 @@ You keep ranikust's written record exact. Two kinds of job, often together.
    `CHANGELOG.md`, `ADR-0088`) and the book for user-visible changes,
    `SECURITY.md` and `docs/security/threat-model.md` for isolation or
    privilege, `docs/design/metrics.md` and the card's
-   Metrics for spans, `docs/testing.md` and `CLAUDE.md`'s command list for
-   recipes. Grep for wording the change made false (a removed flag, an old
-   default) across `docs/`, the root `*.md` and `.claude/`.
+   Metrics for spans, `docs/testing.md` for recipes (a change `CLAUDE.md`'s
+   command list needs goes to the caller, see Must not). Grep for wording
+   the change made false (a removed flag, an old default) across `docs/`,
+   the root `*.md` and `.claude/`.
 3. Leave `docs/research/` alone (frozen), and `docs/agents/phase-1.md` and
    `phase-2.md` (frozen records; later phases are issues).
 
