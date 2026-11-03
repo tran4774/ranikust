@@ -193,9 +193,13 @@ test-release:
     bash tests/release/check-static-test.sh
     python3 -I tests/release/test_release.py
 
-# Mechanical checks of the decision records over the files git ls-files lists (CI job `docs-lint`, which sets DOCS_LINT_REQUIRE_GITHUB=1): every ADR indexed with its status, no duplicate question in docs/open-questions.md, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled question (any question issue inside an ADR), asked of GitHub through gh; without gh, a logged-in gh or network that check is skipped and the verdict says so. Requires python3; gh for the issue check.
+# Mechanical checks of the decision records over the files git ls-files lists (CI job `docs-lint`, which sets DOCS_LINT_REQUIRE_GITHUB=1): every ADR indexed with its status, no duplicate question in docs/open-questions.md, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled question (any question issue inside an ADR), asked of GitHub through gh; without gh, a logged-in gh or network that check is skipped and the verdict says so; every relative Markdown link, link to this repository on github.com (blob/main, tree/main, the front page) and Markdown path named in a code span or in code resolving to a listed file and anchor; book links staying inside docs/book/src. Requires python3; gh for the issue check.
 docs-lint:
     python3 -I scripts/docs-lint.py
+
+# Tests of docs-lint's link check on a throwaway tree (CI: the `docs-lint` job, before docs-lint). No network. Requires python3.
+test-docs-lint:
+    python3 -I tests/docs/test_links.py
 
 # Tests of CI's lane detection and cache pruning, scripts/ci.py, and of how the workflows wire them (ADR-0095; CI: the `changes` job). Fails on a tracked file no lane rule names. No network, no privileges. Requires python3 3.11 or later and git.
 test-ci:
@@ -214,7 +218,7 @@ test-prune-worktrees:
     bash tests/agents/prune-worktrees-test.sh
 
 # Everything ci.yml runs on a full run (a push to `main`), in CI's order; on a pull request CI skips what the change does not need (ADR-0095).
-ci: test-ci fmt-check lint test build-static test-aarch64 deny doc book docs-lint
+ci: test-ci fmt-check lint test build-static test-aarch64 deny doc book test-docs-lint docs-lint
 
 # Until `rnk-builder` exists, `smoke` strings the finished crates together:
 # the `smoke-build` example pulls an image, extracts it, runs `RUN` commands
