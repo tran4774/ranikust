@@ -360,7 +360,7 @@ Differences that change how numbers read:
 - **Meta.** No Go fields, `feature_flags` or `vcs_*`; `options` comes with
   the CLI.
 - **Profiles.** No `KANIKO_PPROF_DIR` equivalent
-  ([Q-057](../open-questions.md#q-057-does-ranikust-offer-cpu-and-heap-profiling)).
+  ([Q-057](https://github.com/tran4774/ranikust/issues/19)).
 
 ## Failure handling
 
@@ -417,9 +417,9 @@ its outputs (Phase 1 task 11).
 ## Open questions
 
 - Profiling (CPU, heap) like `KANIKO_PPROF_DIR`:
-  [Q-057](../open-questions.md#q-057-does-ranikust-offer-cpu-and-heap-profiling).
+  [Q-057](https://github.com/tran4774/ranikust/issues/19).
 - Export formats besides the file (OTLP, Prometheus):
-  [Q-058](../open-questions.md#q-058-which-metric-export-formats-come-after-the-json-report).
+  [Q-058](https://github.com/tran4774/ranikust/issues/21).
 
 ## References
 

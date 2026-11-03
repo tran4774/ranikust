@@ -112,7 +112,7 @@ impl Drop for Wiped {
 /// [`Secret::load`] read them through. Not wiped: the copies made for a
 /// `RUN` (its variable, the file on its tmpfs), and the value itself when
 /// the build ends with another thread still holding it, which never drops
-/// it ([open: Q-444]).
+/// it ([open: #26]).
 pub struct SecretValue {
     bytes: Arc<[u8]>,
 }
@@ -295,7 +295,7 @@ pub(crate) fn run_mounts(
 
 /// Refuses the `RUN --mount` types and options this phase lacks, and the
 /// malformed ones, in every mode, before any secret is read or cache
-/// leased: `bind`, `tmpfs` and `ssh` (Phase 5) [open: Q-383],
+/// leased: `bind`, `tmpfs` and `ssh` (Phase 5) [open: #24],
 /// `cache,from=`, a cache without a target, a secret without an id, an
 /// `env=` that names no variable.
 pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {
@@ -343,10 +343,10 @@ pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {
 /// secret as a file is refused, as it would need the `RUN`'s own tmpfs
 /// (Q-380; ADR-0084 lifts the refusal and ADR-0085 decides the file goes at
 /// its target and is removed after the `RUN`: decided, not built yet; an
-/// existing target is [open: Q-454]); a cache mount is left out with a
+/// existing target is [open: #31]); a cache mount is left out with a
 /// warning, the `RUN` running without the cache (Q-381). By design for now: kaniko mode on `/` keeps
 /// nothing between builds, cache mounts included (ADR-0077); a safe way to
-/// keep them is [open: Q-441].
+/// keep them is [open: #30].
 pub(crate) fn direct_mounts(mounts: &[Mount]) -> Result<Vec<Mount>> {
     check_supported(mounts)?;
     let mut kept = Vec::with_capacity(mounts.len());

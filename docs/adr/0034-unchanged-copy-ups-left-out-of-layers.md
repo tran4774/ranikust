@@ -106,7 +106,7 @@ both modification times are whole seconds (option (a)).
 
 - Settles the filter part of Q-049; keeping one mount across instructions
   is split out as
-  [Q-245](../open-questions.md#q-245-should-one-overlay-mount-serve-consecutive-instructions).
+  [Q-245](https://github.com/tran4774/ranikust/issues/18).
 - Refines [ADR-0032](0032-observable-behaviour-follows-buildkit.md), which
   escalated the question.
 - How it works: [overlay-snapshot](../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer).

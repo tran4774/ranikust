@@ -85,7 +85,7 @@ and no `RUN` in any mode holds ranikust's own stream descriptors.
   secret is read or cache leased; under `Direct` the secret-file refusal and the cache
   drop come before that too. `Error::Direct` in the sandbox backs the
   builder's checks. `bind`, `tmpfs`, `ssh` and `from=` on `/` wait for
-  Phase 5 [open: Q-383].
+  Phase 5 [open: #24].
 - **Streams.** For every `RUN`, each of stdout and stderr it would
   inherit becomes a pipe (owned by the `RUN`'s ids when not root; an id
   ranikust cannot give leaves it root's), copied by one thread per `RUN`

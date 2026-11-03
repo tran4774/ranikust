@@ -86,7 +86,7 @@ Decided edges besides the chain (`[design]`):
 - Only `ranikust` → `rnk-metrics` (`ADR-0025`); every crate emits `tracing`
   spans ([design/metrics.md](../design/metrics.md#spans-per-crate)).
 
-`[open: Q-028]` edges: `ranikust` → `rnk-registry` (`login`, `push`);
+`[open: #7]` edges: `ranikust` → `rnk-registry` (`login`, `push`);
 `rnk-sched` → `rnk-dockerfile` (stage graph type; declared in the
 interim: the scheduler walks the graph); `rnk-cache` →
 `rnk-registry`; `rnk-context` → `rnk-ignore` (declared in the interim:

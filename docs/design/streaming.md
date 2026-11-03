@@ -84,7 +84,7 @@ existence check (a layer the registry has is not sent again), for a retry
 after a failed request (a stream cannot be replayed), and for the
 manifest. The file lives one layer's upload long, not the build's.
 Encoding into the request itself (`push_blob_stream_chunked`, the digest
-computed while sending) is [open: Q-370].
+computed while sending) is [open: #23].
 
 ### Bounded memory
 
@@ -217,5 +217,5 @@ digest is again the same.
 
 ## Open questions
 
-- [Q-370](../open-questions.md#q-370-should-a-built-layer-be-encoded-straight-into-its-upload)
+- [Q-370](https://github.com/tran4774/ranikust/issues/23)
   Should a built layer be encoded straight into its upload?

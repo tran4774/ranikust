@@ -1,7 +1,7 @@
 # rnk-registry
 
 > **Status:** Phase 1 done (task 6) · **Phase:** 1 ·
-> **Depends on:** `rnk-oci` (pulls go into sinks its caller takes from `rnk-store`) · **Used by:** `rnk-builder`, `rnk-cache` (`ranikust` for `login`/`push` [open: Q-028]) · **Path:** `crates/rnk-registry/`
+> **Depends on:** `rnk-oci` (pulls go into sinks its caller takes from `rnk-store`) · **Used by:** `rnk-builder`, `rnk-cache` (`ranikust` for `login`/`push` [open: #7]) · **Path:** `crates/rnk-registry/`
 
 **TL;DR:** A thin wrapper over `oci-client` 0.18 adding what it lacks:
 `config.json` auth, the identity-token exchange, retries, size limits,

@@ -72,7 +72,7 @@ enum Mode { Auto, Overlay, Kaniko }                          // built: --mode, A
 // src/setup.rs, built (task 8): Phase 1 has one outcome; the others refuse.
 enum Outcome { OverlayRoot { sandbox: rnk_sandbox::Caps, overlay: OverlayCaps } }
     // planned: OverlayRootless (3), KanikoCanMount, KanikoCannotMount (2) [decided] ADR-0002,
-    // ADR-0004; each library receives only its own part [open: Q-017]
+    // ADR-0004; each library receives only its own part [open: #3]
 // overlay: rnk_snapshot::OverlayCaps (the mount API: lowerdir+ or mount(2))
 struct Refusal { reason: String, guidance: &'static str }        // what failed, what to do
 struct Setup { outcome: Outcome, state_dir: PathBuf, store: Arc<rnk_store::Store>, sandbox: rnk_sandbox::Sandbox }  // the hand-off

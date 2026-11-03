@@ -36,9 +36,9 @@ Backend and its configuration (flag, then variable; the flag wins):
 
 | Flag | Variable | Meaning |
 |---|---|---|
-| `--git-backend=builtin\|external` | `RANIKUST_GIT_BACKEND` | Which backend clones. Default `builtin`. No silent fallback between them [open: Q-250]. |
+| `--git-backend=builtin\|external` | `RANIKUST_GIT_BACKEND` | Which backend clones. Default `builtin`. No silent fallback between them [open: #15]. |
 | `--git-binary=PATH` | `RANIKUST_GIT_BINARY` | The external binary; default `git` looked up in `PATH`. Only with `external`. |
-| `--git-config KEY=VALUE` (repeatable) | `RANIKUST_GIT_CONFIG` (`;`-separated) | Extra git configuration. External: passed through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, not on the command line. Built-in: applied as `gix` configuration overrides; a key the built-in does not understand is an error naming `--git-backend=external` [open: Q-252]. |
+| `--git-config KEY=VALUE` (repeatable) | `RANIKUST_GIT_CONFIG` (`;`-separated) | Extra git configuration. External: passed through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, not on the command line. Built-in: applied as `gix` configuration overrides; a key the built-in does not understand is an error naming `--git-backend=external` [open: #17]. |
 | `--git-arg ARG` (repeatable) | none | Extra global options for the external `git`, placed before the subcommand. Each must start with `-`; `-c`, `-C`, `--git-dir`, `--work-tree`, `--exec-path`, `--namespace` and `--config-env` are refused (use `--git-config`). External only. |
 | `--git-host-config` | `RANIKUST_GIT_HOST_CONFIG=1` | Let the external `git` read the host's system and user configuration (`HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` passed through), as BuildKit's `WithHostGitConfig`. Default off: the configuration is isolated. |
 | `--git KEY=VALUE` (repeatable) | none | kaniko's flag, same keys and meaning (`ADR-0011`): `branch`, `single-branch`, `depth`, `recurse-submodules`, `insecure-skip-tls`; both backends. |
@@ -80,7 +80,7 @@ Fragments, both forms (`ADR-0011` for kaniko's, `ADR-0032` for BuildKit's):
   `?ref=…&subdir=…`;
 - `#ref#commit` (kaniko): a second `#` selects kaniko's form; a commit hash
   in the first position is fetched and checked out, as kaniko does.
-  Combining kaniko's commit with a subdirectory is [open: Q-251].
+  Combining kaniko's commit with a subdirectory is [open: #16].
 
 Not covered: `ADD <git>` (`rnk-builder`, Phase 5) uses the same backend
 and options; credential helpers for registries (Q-047) are separate.

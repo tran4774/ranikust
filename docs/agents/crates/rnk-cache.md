@@ -31,16 +31,16 @@ pub struct CacheKey { version: u32, hash: [u8; 32] } // [design] key(k) = H(vers
 impl CacheKey {
     pub fn root(base: &Digest, platform: &Platform) -> Self;             // [design] resolved base digest [inferred]
     pub fn next(&self, instr: &ExpandedInstr, inputs: &KeyInputs) -> Self; // [design]
-    pub fn tag(&self) -> String;                                          // [open: Q-041] form in --cache-repo
+    pub fn tag(&self) -> String;                                          // [open: #13] form in --cache-repo
 }
-pub struct KeyInputs { /* sorted file digests, mount specs, args, env */ }   // [open: Q-041] fixed in Phase 4 with W2
+pub struct KeyInputs { /* sorted file digests, mount specs, args, env */ }   // [open: #13] fixed in Phase 4 with W2
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
     async fn lookup(&self, key: &CacheKey) -> Result<Option<CachedLayer>>;
     async fn push(&self, key: &CacheKey, layer: &EncodedLayer) -> Result<()>;  // asynchronous
 }
 ```
 
-`H` is a cryptographic hash; SHA-256 is likely but not decided [open: Q-041].
+`H` is a cryptographic hash; SHA-256 is likely but not decided [open: #13].
 
 ## Invariants
 

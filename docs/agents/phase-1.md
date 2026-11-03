@@ -34,7 +34,7 @@ the code.
 | [x] | Local directory context; locating the ignore file (`<Dockerfile>.dockerignore` first); the context walk as BuildKit's filtered walk (`ADR-0027`) | `rnk-context` |
 | [x] | Lazy export, config updates, image assembly; canonical JSON with sorted keys (`LayerDemand`, `LayerExporter` over the snapshot's diff, `assemble`; a layer is encoded right after its instruction, not overlapped with the next one yet) | `rnk-builder`, `rnk-oci` |
 | [~] | Outputs: parallel push with cross-repository mount and upload fallback, Docker tar, OCI layout; `--reproducible` (done and called by `ranikust build`; the OCI layout and Docker tar load in podman and Docker; one digest with `--jobs 1` and the default under `--reproducible`; left: a push to a real registry in an end-to-end run; OCI by default and clamped times under `SOURCE_DATE_EPOCH`, `ADR-0032`) | `rnk-builder`, `rnk-registry`, `rnk-layer` |
-| [~] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix (done; `ranikust`'s runner builds each stage on a thread of its own and takes a `--jobs` permit per `RUN`; left: the W3 digest test, the memory thresholds [open: Q-030]) | `rnk-sched` |
+| [~] | Stage DAG: up-front pulls, `--jobs` (default `available_parallelism()`, `ADR-0013`), memory limit, cancel on first failure, per-stage log prefix (done; `ranikust`'s runner builds each stage on a thread of its own and takes a `--jobs` permit per `RUN`; left: the W3 digest test, the memory thresholds [open: #9]) | `rnk-sched` |
 | [x] | Common kaniko flags and the subcommands (`ADR-0011`, `ADR-0036`): `build` and `version`; every kaniko flag accepted with its meaning, ignored with a warning, or refused with the phase; kaniko's variables honoured, refused or named in a warning; `--secret` and `--allow` (ADR-0032); `push` (an OCI layout only, ADR-0052), no `login` (ADR-0049) | `ranikust` |
 | [~] | aarch64 in CI: cargo-zigbuild cross-build of the static binary, T0 tests natively on GitHub's `ubuntu-24.04-arm` runner, or under qemu-user 9.1+ on x86_64 (`ADR-0009`, `just test-aarch64`); the binary is static-pie with symbols, linked by a gcc driver for aarch64 (Q-140) | CI |
 | [~] | T2 VM harness `just test-vm` (`docs/testing.md`): `unit` and `smoke` suites on Ubuntu 22.04 and 24.04 (done); cgroup v1, kernels before 5.11, the host-safety attack suite and a CI job with KVM to come | tests |
@@ -203,7 +203,7 @@ Also open, not blocking a start:
 - the final `--parallel-stages` name (Q-019, since kept as is in
   [ADR-0038](../adr/0038-kaniko-mode-settings-for-phase-2.md));
 - the memory-limit algorithm (`design/scheduler.md#limits`):
-  [Q-030](../open-questions.md#q-030-what-are-the-memory-limit-algorithm-and-thresholds).
+  [Q-030](https://github.com/tran4774/ranikust/issues/9).
 
 Settled by following BuildKit
 ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): the

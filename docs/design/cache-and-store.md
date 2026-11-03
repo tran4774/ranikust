@@ -26,10 +26,10 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 <state-dir>/
 ├── .ranikust-state
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
-├── layers/v3/sha256/<hex>/     extracted layers by chain ID, immutable [open: Q-015]
+├── layers/v3/sha256/<hex>/     extracted layers by chain ID, immutable [open: #1]
 ├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
-├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: Q-015]
+├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── builds/<build-id>.lock      held (flock) while the build runs
@@ -183,10 +183,10 @@ other and carry that mode's accepted differences
 
 ## Open questions
 
-- [Q-018](../open-questions.md#q-018-where-does-the-probe-mount-its-test-overlay) Where does the probe mount its test overlay?
-- [Q-016](../open-questions.md#q-016-how-is-the-store-lock-protocol-proven-under-crashes-and-races) How is the store lock protocol proven under crashes and races?
+- [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
+- [Q-016](https://github.com/tran4774/ranikust/issues/2) How is the store lock protocol proven under crashes and races?
 - [Q-043](../open-questions.md#q-043-what-are-the-prune-defaults) What are the prune defaults?
-- [Q-042](../open-questions.md#q-042-how-do-cache-lookahead-and-cached-stage-skipping-work) How do cache lookahead and cached-stage skipping work?
+- [Q-042](https://github.com/tran4774/ranikust/issues/14) How do cache lookahead and cached-stage skipping work?
 
 ## References
 

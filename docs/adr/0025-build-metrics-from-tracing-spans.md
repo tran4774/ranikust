@@ -128,9 +128,9 @@ only by the binary, aggregates them into one JSON report when
 - Refines survey 03's choice of `tracing`.
 - Open: [Q-023](../open-questions.md#q-023-which-other-kaniko-flags-and-variables-are-accepted)
   (`KANIKO_METRICS_FILE`),
-  [Q-057](../open-questions.md#q-057-does-ranikust-offer-cpu-and-heap-profiling)
+  [Q-057](https://github.com/tran4774/ranikust/issues/19)
   (profiling),
-  [Q-058](../open-questions.md#q-058-which-metric-export-formats-come-after-the-json-report)
+  [Q-058](https://github.com/tran4774/ranikust/issues/21)
   (OTLP, Prometheus).
 - Revisit when a long-running mode (a daemon, a CI service) needs live
   metrics rather than one report per build.
