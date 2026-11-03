@@ -66,9 +66,12 @@ just ci                   # everything CI runs, before you open a pull request
 
 Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
-documentation; `just docs-lint` (local only, needs python3) after an ADR or
-an open question changes. Every recipe that mirrors CI runs exactly the command of the
-CI job; if you change one, change the other.
+documentation; `just docs-lint` (local only, needs python3) after an ADR,
+a marker or an open question changes. Its check of the `[open: #N]`
+markers needs `gh` installed and logged in (`gh auth login`) with network
+access; without them it is skipped, and the last line says so. Every
+recipe that mirrors CI runs exactly the command of the CI job; if you
+change one, change the other.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
 not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the
@@ -103,8 +106,14 @@ git switch main && git pull --ff-only && git switch -c feat/rnk-oci-types
 Commit at each checkpoint, a step that builds and passes `just check` with
 its documentation already updated. Updating the affected documentation is
 part of every change, not a follow-up. Questions the design does not answer
-go to [`docs/open-questions.md`](docs/open-questions.md) instead of being
-guessed.
+become an issue with the **Design question** form, labelled
+[`question`](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion),
+instead of being guessed. A new question is named by its issue number and
+takes no `Q-NNN` number
+([ADR-0091](docs/adr/0091-a-new-design-question-is-named-by-its-issue-number.md));
+the 29 questions migrated from
+[`docs/open-questions.md`](docs/open-questions.md) keep their `Q-NNN:`
+title prefix, and that file keeps the answered ones.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/);
 [git-cliff](cliff.toml) groups them into release notes.
@@ -132,11 +141,17 @@ and Removed.
 
 Pull requests are squash-merged, so the pull request title becomes the
 commit message and must follow the same format. The
-[pull request template](.github/PULL_REQUEST_TEMPLATE.md) asks for a summary,
-a test plan, the docs you updated and whether AI tools helped. A pull request
-keeps the documentation in sync in the same change, following the "Keep in
-sync" list in [`docs/agents/rules.md`](docs/agents/rules.md); user-visible changes get an entry
-under `Unreleased` in [`CHANGELOG.md`](CHANGELOG.md).
+[pull request template](.github/PULL_REQUEST_TEMPLATE.md) asks for a summary
+with the issue it closes, a changelog entry, a test plan, the docs you
+updated and whether AI tools helped. A pull request keeps the documentation
+in sync in the same change, following the "Keep in sync" list in
+[`docs/agents/rules.md`](docs/agents/rules.md); a user-visible change gets
+its entry in the pull request's `## Changelog` section, not in
+[`CHANGELOG.md`](CHANGELOG.md), which is written from those sections when a
+release is prepared ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)).
+Planned work is on the
+[Project](https://github.com/users/tran4774/projects/1) and the phase
+milestones; issues labelled `good first issue` are a good start.
 
 ## How decisions are made
 
@@ -195,7 +210,12 @@ AI coding tools are welcome; the repository ships instructions for them
 - **Disclose it.** The pull request template asks which tools you used and
   for what. Keep `Co-authored-by` trailers truthful.
 - **No unattended contributions.** Agents do not open issues or pull
-  requests, or reply in reviews, on their own.
+  requests, or reply in reviews, on their own. The maintainer's agents work
+  within the limits of
+  [ADR-0087](docs/adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md)
+  as amended by
+  [ADR-0093](docs/adr/0093-agents-ask-rules-are-tightened-guardrails-and-agents-may-open-question-and-bug-issues.md)
+  and label what they open `agent`.
 - **Write the description yourself**, for a reader who never saw your
   session. Do not paste conversation logs.
 - **Respect licenses.** Generated code that reproduces other projects' code

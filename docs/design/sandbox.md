@@ -394,7 +394,7 @@ neither flag exists yet.
 
 ## Open questions
 
-- [Q-032](../open-questions.md#q-032-what-remains-to-verify-in-the-run-sandbox) What remains to verify in the RUN sandbox?
+- [Q-032](https://github.com/tran4774/ranikust/issues/10) What remains to verify in the RUN sandbox?
 - [Q-077](../open-questions.md#q-077-how-is-the-ms_move-fallback-kept-from-a-chroot-escape) How is the MS_MOVE fallback kept from a chroot escape?
 
 Settled: a `RUN` sees the fixed host name `ranikust`

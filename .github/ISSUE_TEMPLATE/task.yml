@@ -1,0 +1,33 @@
+name: Task
+description: A planned piece of work, usually a sub-issue of a phase's tracking issue (ADR-0088).
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A task is one pull request's worth of work. Set its milestone (the
+        phase, or Backlog), its `crate:<name>` labels, and `host-safety` when
+        it touches `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`
+        or set-up, `needs-t2` when it needs the privileged tests. Link it as
+        a sub-issue of the phase's tracking issue.
+
+        Not for security problems: report those privately (see SECURITY.md).
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What changes and why, for a reader who has not seen the discussion. Link the ADR or design section it implements.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The checks that close it (tests by tier, docs to update, reviews to run).
+    validations:
+      required: true
+  - type: textarea
+    id: depends
+    attributes:
+      label: Depends on
+      description: Issues or questions that must be settled first (#N), or "nothing".

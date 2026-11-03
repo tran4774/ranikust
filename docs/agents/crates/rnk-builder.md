@@ -40,7 +40,7 @@ impl BuildTime {
 }
 pub struct LayerDemand { pub push: bool, pub cache: bool, pub target: bool, pub output: bool, pub saved: bool }
 impl LayerDemand {
-    pub fn for_stage(in_target: bool, outputs: &Outputs, cache: bool) -> Self;  // [open: Q-029] rnk-sched calls it
+    pub fn for_stage(in_target: bool, outputs: &Outputs, cache: bool) -> Self;  // [open: #8] rnk-sched calls it
     pub fn saved(self, saved: bool) -> Self;  // kaniko mode: a later stage is built FROM it; encoded, never pushed or written
     pub fn needed(&self) -> bool;
 }
@@ -110,7 +110,7 @@ pub struct BuildCx<'a, S> { pub snapshotter: &'a S, pub sandbox: &'a Sandbox,
     pub platform: &'a Platform, pub run_gate: &'a dyn RunGate, pub cancelled: &'a (dyn Fn() -> bool + Sync) }
 pub enum Secret { File(PathBuf), Env(OsString) }         // a --secret's source
 impl Secret { pub fn load(&self, id: &str) -> Result<SecretValue>; }  // read once at the start, never by path again (ADR-0078): a regular file of at most MAX_SECRET_SIZE, opened without blocking; a variable, unset = empty
-pub struct SecretValue { /* Arc<[u8]> */ }               // shared by every RUN that mounts it; Debug hides it; zeroed when the last holder drops it ([open: Q-444] for a RUN's copies); from_bytes, len, is_empty
+pub struct SecretValue { /* Arc<[u8]> */ }               // shared by every RUN that mounts it; Debug hides it; zeroed when the last holder drops it ([open: #26] for a RUN's copies); from_bytes, len, is_empty
 pub const MAX_SECRET_SIZE: u64;                          // 500 KiB, as BuildKit
 pub trait RunGate: Sync { fn enter(&self) -> Option<Box<dyn Send>>; }  // a --jobs permit per RUN; Ungated for tests
 pub struct StageInput<'a, R, L> { pub index, pub graph: &StageGraph, pub stage: &Stage, pub base: StageBase<'a, R, L>,
@@ -347,7 +347,7 @@ through a descriptor of its directory.
   and binds read-only at the target or `/run/secrets/<id>`: no copy
   reaches a disk. Secret files are opened non-blocking and must be
   regular files. A cancel kills the running `RUN` (`Sandbox::cancel`).
-- [open: Q-029] Interim: `rnk-sched` builds each stage's demand with
+- [open: #8] Interim: `rnk-sched` builds each stage's demand with
   `LayerDemand::for_stage`; the rule lives here.
 - Q-006: OCI media types whatever the base and `--reproducible`; a layer
   without a Docker type still makes an image asked for as Docker OCI.

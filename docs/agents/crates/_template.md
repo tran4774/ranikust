@@ -18,7 +18,7 @@ agent must not get wrong here.
 ## API (planned)
 
 Names and one-line purposes; short Rust signature sketches where they fix a
-contract. Mark each item `[decided]`, `[design]` or `[open: Q-NNN]`.
+contract. Mark each item `[decided]`, `[design]` or `[open: #N]`.
 
 ```rust
 pub struct Example; // one-line purpose

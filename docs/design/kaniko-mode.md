@@ -82,7 +82,7 @@ the scheduler runs one stage at a time) or a private directory per stage
 
     Nothing is kept between builds in this mode: no layer cache, and cache
     mounts are left out (ADR-0057). That is by design for now, and a safe
-    cache is [open: Q-441]. The marker is made this build's again after
+    cache is [open: #30]. The marker is made this build's again after
     every `RUN` and at the end: whatever a `RUN` put under its name is
     replaced, the build then makes no more names, and the marker stays.
     The state directory is emptied after the store's files are closed,
@@ -822,7 +822,7 @@ them. The scheduler's memory limit counts page cache
 
 ## Open questions
 
-- [Q-421](../open-questions.md#q-421-which-performance-conditions-does-phase-6-measure) Which performance conditions does Phase 6 measure? (Q-033's leftovers)
+- [Q-421](https://github.com/tran4774/ranikust/issues/29) Which performance conditions does Phase 6 measure? (Q-033's leftovers)
 
 ## References
 

@@ -86,7 +86,7 @@ Decided edges besides the chain (`[design]`):
 - Only `ranikust` → `rnk-metrics` (`ADR-0025`); every crate emits `tracing`
   spans ([design/metrics.md](../design/metrics.md#spans-per-crate)).
 
-`[open: Q-028]` edges: `ranikust` → `rnk-registry` (`login`, `push`);
+`[open: #7]` edges: `ranikust` → `rnk-registry` (`login`, `push`);
 `rnk-sched` → `rnk-dockerfile` (stage graph type; declared in the
 interim: the scheduler walks the graph); `rnk-cache` →
 `rnk-registry`; `rnk-context` → `rnk-ignore` (declared in the interim:
@@ -112,8 +112,8 @@ One state directory serves every mode, `/var/lib/ranikust` unless
 | 0 | Spike: sandbox, overlay, detection | mostly done by the experiments (`docs/research/`, frozen 2026-10-29) |
 | 1 | MVP: overlay mode as root, parallel stages, outputs | done (acceptance runs 2026-10-30); [phase-1.md](phase-1.md) |
 | 2 | kaniko mode | done (acceptance runs 2026-11-03); [phase-2.md](phase-2.md) |
-| 3 | Rootless overlay, full probe, `--seccomp`, `--userns` | not started |
-| 4 | Registry layer cache | not started |
+| 3 | Rootless overlay, full probe, `--seccomp`, `--userns` | not started; tracking issue [#41](https://github.com/tran4774/ranikust/issues/41), milestone `Phase 3` |
+| 4 | Registry layer cache | not started; milestone `Phase 4` |
 | 5 | Feature completion (`ADD` URL/git, more mounts, mirrors, `prune`) | not started |
 | 6 | Hardening and release | not started |
 

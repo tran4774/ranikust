@@ -148,7 +148,7 @@ touched:
   the warning (Q-445), refined by [ADR-0085](../adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md):
   the file at its target (else `/run/secrets/<id>`), only its own path
   ignored, removed after its `RUN`, and both refusals lifted (Q-453);
-  [Q-454](../open-questions.md) (an existing target, missing parents)
+  [Q-454](https://github.com/tran4774/ranikust/issues/31) (an existing target, missing parents)
   first.
 - [ADR-0086](../adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)
   (lead 28 of the Phase 1-2 audit, fixed): run the T2 VM's passt in its

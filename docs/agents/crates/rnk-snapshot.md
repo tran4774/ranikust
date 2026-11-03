@@ -427,7 +427,7 @@ impl WalkDiff {
   outcome is kaniko mode.
 - Publishing renames a layer directory to another parent, which needs
   write permission on it: a `0555` layer root works only as root
-  ([open: Q-152]).
+  ([open: #5]).
 - Unmounting is `MNT_DETACH`: open descriptors below the mount (a
   `RootPath`) do not make it busy, and the upper is complete once
   nothing writes.
@@ -462,4 +462,4 @@ impl WalkDiff {
 - Deferred: the kaniko implementation, per-stage directories and lazy
   snapshots (Phase 2); mounting in a user namespace (Phase 3).
 - The signature: ADR-0046 (Q-024). (Q-026, ADR-0032) Merging
-  layers near 500 lowers. [open: Q-245] One mount across instructions. [open: Q-152].
+  layers near 500 lowers. [open: #18] One mount across instructions. [open: #5].

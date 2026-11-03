@@ -41,7 +41,7 @@ impl MemoryGate for Unlimited {
     }
 }
 
-// [open: Q-030] the algorithm and thresholds are to be measured; these are
+// [open: #9] the algorithm and thresholds are to be measured; these are
 // reversible placeholders: two constants and one function, behind a trait.
 
 /// Free memory below which no further stage starts: an eighth of the

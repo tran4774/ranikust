@@ -1,7 +1,7 @@
 # rnk-layer
 
 > **Status:** in progress · **Phase:** 1 ·
-> **Depends on:** none yet (`rnk-oci` planned) · **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder` (`rnk-cache`, `rnk-context` [open: Q-028]) · **Path:** `crates/rnk-layer/`
+> **Depends on:** none yet (`rnk-oci` planned) · **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder` (`rnk-cache`, `rnk-context` [open: #7]) · **Path:** `crates/rnk-layer/`
 
 **TL;DR:** Entries in, deterministic tar out, through parallel gzip or zstd,
 with diff ID and digest computed while streaming; and a gzip/zstd decoder

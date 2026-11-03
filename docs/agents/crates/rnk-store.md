@@ -74,7 +74,7 @@ impl Store {
 }
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer);
                       // path() -> &Path for messages only: write through file()/root()
-pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, Q-150) [open: Q-015]; digest() -> &Digest
+pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, Q-150) [open: #1]; digest() -> &Digest
 pub enum Error { NotAStateDir, NoFlock, Busy, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 ```
 
@@ -203,7 +203,7 @@ with no other build (ADR-0077). The test
   caller (`ranikust`, task 8) still has to open the store at set-up and
   `close` it at the end.
 - Deferred: `prune` (Phase 5).
-- [open: Q-015] Interim: layers named by the digest the caller gives
+- [open: #1] Interim: layers named by the digest the caller gives
   (`rnk-snapshot` uses the chain ID, Q-150), lock files under
   `locks/`. (Q-100, ADR-0032) Durability: a blob is `fsync`ed before its
   rename, a layer is not. The state directory's checks and kaniko mode's
