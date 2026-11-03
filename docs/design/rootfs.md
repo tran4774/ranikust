@@ -136,10 +136,11 @@ never called.
   had an entry for `./`, so `rnk-snapshot` knows the layer's root
   metadata is its own) takes the lower layers' extracted
   directories, the nearest first as in `lowerdir=`, and copies the target
-  from the first one that shows it (ADR-0032). "Shows" follows overlay's merged
-  view: each layer, this one first, is walked by name without following a
-  symlink; a whiteout, a non-directory (a symlink included) on the way, or
-  a missing directory below an opaque one hides everything below; an
+  from the first one that shows it
+  ([ADR-0012](../adr/0012-accept-divergence-between-modes.md)). "Shows" follows
+  overlay's merged view: each layer, this one first, is walked by name without
+  following a symlink; a whiteout, a non-directory (a symlink included) on the
+  way, or a missing directory below an opaque one hides everything below; an
   opaque directory hides what its layer lacks. The copy is a regular file
   (or symlink, FIFO, device node) with the lower inode's owner, mode, times
   and xattrs as stored, overlay's own (`trusted.overlay.*`,

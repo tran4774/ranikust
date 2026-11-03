@@ -27,14 +27,13 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ├── .ranikust-state
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
 ├── layers/v3/sha256/<hex>/     extracted layers by chain ID, immutable [open: #1]
-├── l/<short> -> ../layers/<id> overlay mode, mount(2) fallback only
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
 ├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── builds/<build-id>.lock      held (flock) while the build runs
 └── builds/<build-id>/          one per running build, deleted afterwards;
-                                kaniko mode off `/` builds in its rootfs/
+                                stage roots are stages/<n>/rootfs (ADR-0059)
 ```
 
 The store lives in the state directory: `/var/lib/ranikust` in every mode
@@ -162,8 +161,9 @@ other and carry that mode's accepted differences
   layer: `rnk-snapshot` chains `rnk-layer`'s decoder (gzip or zstd to a plain
   tar stream) into `rnk-rootfs::extract`, which writes the overlay whiteout
   form; `rnk-rootfs` does not depend on `rnk-layer`.
-- `rnk-snapshot` uses `layers/` as lower directories and makes the
-  `l/<short>` names of the `mount(2)` fallback.
+- `rnk-snapshot` uses `layers/` as lower directories; the `mount(2)`
+  fallback's links live in the stage directory
+  ([overlay-snapshot](overlay-snapshot.md#mounting)).
 - `caches/<id>`: the directory comes from `rnk-store`, the bind mount from
   `rnk-sandbox`.
 - Cache keys, lookup and push: `rnk-cache`; encoding: `rnk-layer`;

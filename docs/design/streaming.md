@@ -12,7 +12,7 @@ fixed-size buffers. Decided in
 
 | What | Kept until | Where |
 |---|---|---|
-| Base layer blobs, kaniko mode | not kept: streamed from the registry into the root | none (on `/` a verified spool, below) |
+| Base layer blobs, kaniko mode | not kept: streamed from the registry into the root, unless an output needs the bytes | none (on `/` a verified spool, below); with such an output, the store's `blobs/` |
 | Base layer blobs, overlay mode | the store's prune | the store (`blobs/`) |
 | Extracted base layers, overlay mode | the store's prune | `layers/` |
 | Built layer blobs | every destination has the layer and no output needs it | the build directory; on `/`, anonymous files (RAM under `memfd`) |
@@ -39,8 +39,9 @@ So in kaniko mode:
   streamed from the source registry to the destination through a bounded
   channel. Nothing of it is written locally.
 - When an output needs the bytes (`--tar-path`, `--oci-layout-path`), the
-  image's blobs are pulled into the build directory: those outputs are files
-  of the image's size anyway.
+  image's blobs are pulled into the store's `blobs/` as in overlay mode
+  (`crates/rnk-builder/src/pull.rs`): those outputs are files of the image's
+  size anyway.
 
 Overlay mode keeps extracted layers in the store for later builds, and the blob
 beside them: on disk, through fixed buffers, never in memory. It downloads and
@@ -125,9 +126,12 @@ layers uploading or waiting to is bounded by twice `--jobs`.
     the download's size, and keeps the rule that nothing unverified reaches `/`
     even when the publisher's diff ID is wrong.
   - On `/`, the spool goes with the last stage or `COPY --from` image the
-    build announced on its layer (ADR-0081): the disk holds one compressed
-    layer at a time plus the layers of a base later stages still use, and a
-    shared base is downloaded and verified once per build. A spool announced
+    build announced on its layer
+    ([ADR-0081](../adr/0081-a-streamed-layer-on-slash-is-verified-once-per-build.md)):
+    the disk holds one compressed layer at a time plus the layers of a base
+    later stages still use, and a shared base is downloaded and verified once
+    per build. Every extraction from a spool still checks the diff ID and reads
+    it through the descriptor held (`pread`), never by a path. A spool announced
     for a stage that never runs (a failed stage, `--target`) stays until the
     build ends. Under the `memfd` fallback no spool is kept for a later stage:
     memory holds one layer's spool at a time, and a shared base is downloaded
@@ -147,47 +151,66 @@ layers uploading or waiting to is bounded by twice `--jobs`.
 
 - `--no-push` without outputs: built layers are not even encoded (the layer
   demand); base layers are streamed into the root only.
-- `--tar-path` and `--oci-layout-path`: the image's blobs are kept in the build
-  directory until the outputs are written.
+- `--tar-path` and `--oci-layout-path`: the image's blobs are pulled into the
+  store's `blobs/` and kept until the outputs are written.
 - Digests do not depend on streaming: the same layers are encoded with the same
   options, and pushed bytes are the encoded file's.
 
 ## Cache (Phase 4)
 
-The cache reuses layers by cache key ([open: #13]) and may publish built blobs
-in the persistent store. A cache hit then needs no local blob either: the
-cached layer is mounted or streamed from the cache repository, as a base layer
-is. Publishing built blobs in the store for later builds is a choice of overlay
-mode and host builds; on `/` the state never outlives the process (ADR-0051).
+The cache reuses layers by cache key ([open: #13]) and publishes built blobs in
+the persistent store, under the digest computed while writing, for overlay mode
+and kaniko mode on a host
+([ADR-0052](../adr/0052-push-input-aliases-and-issue-mining-fixes.md)). A cache
+hit needs no local blob either: the cached layer is mounted or streamed from
+the cache repository, as a base layer is. On `/` the state never outlives the
+process (ADR-0051).
 
 ## Measurements
 
 2026-11-01, rootless podman on the development machine (kernel 7.0), a default
 container (`alpine:3.20`), kaniko mode on `/`, `FROM node:22-bookworm-slim`
 (via `mirror.gcr.io`) plus one `RUN`, `--no-push`, three rounds each. Figures
-from `--metrics-file`, before this design (main at `38f1dfd`) and after, with
-the spool on disk (ADR-0056):
+from `--metrics-file`, main before this design against this design, in two
+series:
+
+**Before ADR-0056, with the state in `memfd`** (the container's overlayfs root
+refuses `O_TMPFILE`; main at `76bd634`, both binaries patched alike for the
+missing build directory of an anonymous store):
 
 | | before | after |
 |---|---:|---:|
-| Stage peak memory (`rnk_sched.stage.max_memory_bytes`) | 157-170 MiB | 49-52 MiB |
+| Stage peak memory (`rnk_sched.stage.max_memory_bytes`) | 157-163 MiB | 49-54 MiB |
+| Container peak (`memory.peak`: ranikust, `RUN`, page cache, `memfd`) | 480-492 MiB | 387-390 MiB |
+| ranikust's own max RSS (`rusage_self`) | 143-150 MiB | 122-126 MiB |
+
+The stage peak falls by the compressed base image (about 100 MiB): its blobs no
+longer sit in `memfd`.
+
+**After ADR-0056 put the state on disk** (named files unlinked at once on the
+container's overlayfs; main at `38f1dfd` against this design with the spool on
+`/`, same build, no patch):
+
+| | before | after |
+|---|---:|---:|
+| Stage peak memory | 157-170 MiB | 49-52 MiB |
 | Container peak (`memory.peak`, no limit) | 481-485 MiB | 385-389 MiB |
 | ranikust's own max RSS | 140-147 MiB | 123-124 MiB |
 | `RUN`'s max RSS | 114-122 MiB | 98-100 MiB |
 | Under `--memory 128m --memory-swap 128m` | 3 builds of 6 | 6 of 6 |
 | Under `--memory 112m` or `96m` | killed | killed |
 
-- The stage peak falls by the compressed base image (about 100 MiB): its blobs
-  no longer sit in memory. With the state in `memfd` (the container's
-  overlayfs root refuses `O_TMPFILE`) it fell from 157-163 to 49-54 MiB.
 - The spool is the compressed blob (a first version spooled the decompressed
   tar: its container peak was 466-472 MiB).
-- With the state on disk, much of the container's peak is page cache, which the
-  kernel reclaims under a limit, so under a limit the build now passes where it
-  failed half the time. Below about 120 MiB the floor is ranikust's own heap
-  and the `RUN` (node), neither of which grows with the image.
-- The `--reproducible` digest is the same before and after.
+- With the state on disk, much of the container's peak is page cache (the
+  downloaded blobs before, the compressed spool and the extracted root after),
+  which the kernel reclaims under a limit, so under a limit the build now
+  passes where it failed half the time. Below about 120 MiB the floor is
+  ranikust's own heap and the `RUN` (node), neither of which grows with the
+  image.
+- The `--reproducible` digest is the same before and after, in both series.
 
 ## Open questions
 
 - [Q-370](https://github.com/tran4774/ranikust/issues/23) Should a built layer be encoded straight into its upload?
+- [Q-041](https://github.com/tran4774/ranikust/issues/13) What exactly goes into a cache key and its tag?

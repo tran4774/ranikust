@@ -29,10 +29,11 @@ describe. When code and design doc disagree, one of them is a bug.
 
 - Present tense, describing the design as it is meant to work now. History
   belongs in ADRs and research reports.
-- Each doc opens with a **TL;DR**, then invariants, design, failure handling,
-  open questions and references. Link instead of repeating.
-- Open questions are the GitHub issues labelled `question`; a doc lists the
-  ones it depends on, and marks the spot `[open: #N]`.
+- Each doc opens with a **TL;DR**. Invariants, failure handling, open
+  questions and references follow where the subject has them. Link instead of
+  repeating.
+- Open questions are the GitHub issues labelled `question`; a doc marks the
+  spot `[open: #N]` and lists the issues it depends on under "Open questions".
 - Numbers come from experiments and cite them. Behaviour not yet verified is
   labelled `[inferred]`.
 - How to write: [rules.md](../agents/rules.md#writing).

@@ -98,8 +98,10 @@ the scheduler runs one stage at a time) or a private directory per stage
     `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers).
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
-    The `RUN` child's capabilities are Docker's defaults, and one that cannot
-    drop the rest is refused ([sandbox](sandbox.md#direct-kaniko-mode-on-)).
+    The `RUN` child drops every capability outside Docker's defaults from its
+    bounding set (`CAP_SETPCAP`); without it, any capability outside them stops
+    the `RUN` ([sandbox](sandbox.md#direct-kaniko-mode-on-)); the ambient,
+    inheritable, permitted and effective sets go to the defaults in every case.
     ranikust itself keeps no more: `rnk_sandbox::trim_to_run_capabilities`,
     first thing in the set-up while single-threaded, cuts its bounding set to
     Docker's defaults (else the build is refused), clears its ambient and
@@ -565,15 +567,18 @@ Kaniko mode outside a container
      (`renameat2(RENAME_NOREPLACE)` between the stage directories' descriptors,
      device, inode and mount checked before and after).
 
-  What a `RUN` can still tell apart from a copy, and no layer holds: access and
-  change times, directory sizes, the order `readdir` lists a directory in, and
-  inode flags the copy does not carry (`chattr` flags a non-privileged owner may
-  set, such as `A` or `d`). It falls back to a copy of the pruned root when a
-  file there has a hardlink the prune did not find inside the root (moved, it
-  would reach outside), or when the move failed before anything moved (`EINVAL`
-  without `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over or such a
-  fallback the parent is read no more: its view, root, a second child and a
-  layer are refused, and its release deletes an empty directory.
+  The result has the copy's entries, contents, owners, modes, modification
+  times, xattrs, links and hardlinks. What a `RUN` can still tell apart from a
+  copy, and no layer holds: access and change times, directory sizes, the
+  order `readdir` lists a directory in, and inode flags the copy does not carry
+  (`chattr` flags a non-privileged owner may set, such as `A` or `d`).
+
+  It falls back to a copy of the pruned root when a file there has a hardlink
+  the prune did not find inside the root (moved, it would reach outside), or
+  when the move failed before anything moved (`EINVAL` without
+  `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over or such a fallback
+  the parent is read no more: its view, root, a second child and a layer are
+  refused, and its release deletes an empty directory.
 - **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
   `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as BuildKit,
   because every `RUN` enters the root `nodev` (the full sandbox). An image
@@ -607,6 +612,9 @@ Kaniko mode outside a container
   stages copies nothing); the copy is the data on ext4 and tmpfs, a reflink on
   xfs and btrfs. The peak is the roots read at the same time plus the copies
   being made, not every stage's root: a directory goes once nobody reads it.
+  Per-stage builds still hold more page cache than overlay mode, since each
+  stage has its own extracted base and re-reads its writes to hash and tar
+  them; the memory gate counts it ([scheduler](scheduler.md#limits)).
 - **Placed files:** `hosts`, `resolv.conf`, stub mount points and `/dev` nodes
   change the mtime of their parent, so `/etc` would enter every layer. The
   full sandbox records the parent's mtime before placing (m0) and after (m1);
@@ -733,6 +741,7 @@ during the build, so no deletion ever has to be detected after a skipped walk.
 
 ## Open questions
 
+- [Q-441](https://github.com/tran4774/ranikust/issues/30) How can kaniko mode on `/` keep a cache across builds safely?
 - [Q-421](https://github.com/tran4774/ranikust/issues/29) Which performance conditions does Phase 6 measure?
 
 ## References

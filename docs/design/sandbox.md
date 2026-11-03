@@ -94,8 +94,9 @@ The steps, in order:
      `Isolation::Direct` too. ranikust holds directories outside the root, and
      close-on-exec acts only at `execve`: until then `/proc/self/fd/<n>` of the
      `RUN`'s `proc` would lead a `WORKDIR`, a `PATH` entry or a mount target to
-     them (runc's CVE-2024-21626). The caller's stdio descriptors then go on
-     0-2, so that ranikust's own streams are gone too.
+     them (runc's CVE-2024-21626). None of those kept is a directory. The
+     caller's stdio descriptors then go on 0-2, so that ranikust's own streams
+     are gone too.
    - `/dev/null` is never opened by name in the child: a `RUN --mount` over
      `/dev` (or, in `Direct` on `/`, an earlier `RUN`) could make it a link to
      ranikust's stdout. The full sandbox opens the `null` node of its own `/dev`
@@ -226,9 +227,10 @@ The steps, in order:
    - Every child of ranikust resets every signal disposition to the default
      first, so the init has no handler and the kernel drops every signal a
      process of the namespace sends it. A `RUN` cannot signal, stop, trace or
-     read the memory of its init; it can read its zeroed `/proc/1/cmdline`,
-     lower its priority or pin it to a CPU (same uid), which slows its death
-     but cannot stop it (threat-model section 6).
+     read the memory of its init (not dumpable, and no `CAP_SYS_PTRACE`); it
+     can read its zeroed `/proc/1/cmdline`, lower its scheduling priority or
+     pin it to a CPU (same uid), which slows its death but cannot stop it
+     (threat-model section 6), and make itself the init's tracee.
    - `Direct` has no init: its child runs steps 6 to 8 itself.
 6. `setsid`: no controlling terminal, so a `RUN` cannot read the operator's
    keys or push input into the operator's shell (`TIOCSTI`); stdin is
@@ -347,12 +349,14 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
   leaves, `setsid` ones included, becomes its child and is killed and reaped by
   pid once the command exits.
 - **Capabilities:** the child drops every capability outside Docker's defaults
-  from its bounding set. A `RUN` that would keep `CAP_SYS_PTRACE` or
-  `CAP_DAC_READ_SEARCH` (no `CAP_SETPCAP` to drop them) is refused
-  ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
-  so a container granting capabilities ranikust cannot drop is refused at
-  `start_direct`. Before it, still single-threaded, `trim_to_run_capabilities`
-  gives ranikust's own process the sets its `RUN` keeps
+  from its bounding set (`CAP_SETPCAP`); its other sets go to the defaults in
+  every case. Without `CAP_SETPCAP`, a `RUN` that would keep any capability
+  outside Docker's defaults (`CAP_SYS_PTRACE`, `CAP_DAC_READ_SEARCH`,
+  `CAP_SYS_ADMIN`...) is refused at `start_direct`
+  ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md),
+  [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)).
+  Before it, still single-threaded, `trim_to_run_capabilities` gives
+  ranikust's own process the sets its `RUN` keeps
   ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
 - **Refusals** ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)):
   mounts, secret files and `--network=none` (`Error::Direct`; `rnk-builder`

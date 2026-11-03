@@ -412,6 +412,8 @@ not (`rnk-builder`'s `tests/spans.rs`).
 
 ## Open questions
 
+- [Q-030](https://github.com/tran4774/ranikust/issues/9) What are the memory-limit algorithm and thresholds? (the `rnk_sched.wait_memory` span)
+- [Q-245](https://github.com/tran4774/ranikust/issues/18) Should one overlay mount serve consecutive instructions? (the `rnk_snapshot.mount` span)
 - [Q-057](https://github.com/tran4774/ranikust/issues/19) Does ranikust offer CPU and heap profiling, like `KANIKO_PPROF_DIR`?
 - [Q-058](https://github.com/tran4774/ranikust/issues/21) Which metric export formats come after the JSON report (OTLP, Prometheus)?
 
