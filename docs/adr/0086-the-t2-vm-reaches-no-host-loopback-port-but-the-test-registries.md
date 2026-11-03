@@ -77,10 +77,12 @@ loopback ports it may reach are named in one place at the top of `vm.sh`
   is `vm.sh`'s own and moves one way only (shut, open, done; done never
   reopens). It opens once, when the guest reports the other suites
   finished with a status `guest/run.sh` gives only after its network check
-  passed (0 or 1; any other skips the push suite and fails the run), and
-  shuts when the guest reports the push step's end, or after 900 s
-  whatever the guest says (the step takes under a minute), which fails the
-  run. Root in the VM, or a process running as `rnk`, can bring the
+  passed (0 or 1; any other, such as 4 for a VM that is not the run's own,
+  skips the push suite and fails the run), and shuts when the guest
+  reports the push step's end, or after about 900 s whatever the guest
+  says (checked between polls of the guest, so up to one poll later; the
+  step takes under a minute), which fails the run. Root in the VM, or a
+  process running as `rnk`, can bring the
   opening forward or prolong it up to that bound, but not reopen it. When
   it shuts, `vm.sh` kills every forwarder still running, so no connection
   made while it was open outlives it. Each forwarder takes one of 16
@@ -144,7 +146,7 @@ connections come from the host itself.
   were named in.
 - Bad, because the gate's opening and closing follow what the guest
   reports: root in the VM, or a process running as `rnk`, can open it
-  while other suites still run, or hold it open for up to 900 s. It never
+  while other suites still run, or hold it open for about 900 s. It never
   reopens, and past the bound the run fails.
 - Bad, because every guest connection to a registry port starts a host
   `sh` (libslirp's `guestfwd` command), at no bounded rate, during the

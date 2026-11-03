@@ -141,7 +141,9 @@ REGISTRY_PORTS=(5000 5443)
 # FWD_SECONDS.
 FWD_SLOTS=16 FWD_SECONDS=600
 # The push step's deadline: it takes under a minute (about 15 s on the
-# development machine); past this the gate shuts and the run fails.
+# development machine); past this the gate shuts and the run fails. Checked
+# between polls of the guest, so it can run over by one poll (a few
+# seconds, up to about two minutes while SSH to the VM stalls).
 PUSH_DEADLINE=900
 # The oldest passt with every option used here (--dns-host), and those
 # options: what EGRESS_NETDEV (below) has QEMU pass, each checked at start.
@@ -505,7 +507,8 @@ stop() {
 # forwarder script's sh (its command line names it) and the timeout and
 # socat it becomes (theirs name this run's socat log).
 forwarders() {
-  pgrep -u "$(id -u)" -f -- "( -lf ${SOCKDIR//./\\.}/socat\\.log - TCP:127\\.0\\.0\\.1:|${SOCKDIR//./\\.}/registry-forward )[0-9]+\$"
+  local d=${SOCKDIR//./\\.}
+  pgrep -u "$(id -u)" -f -- "^/bin/sh $d/registry-forward [0-9]+\$| -lf $d/socat\\.log - TCP:127\\.0\\.0\\.1:[0-9]+\$"
 }
 
 # The registry gate's state, kept here and moved one way only: shut (not
@@ -1000,7 +1003,8 @@ guest_step() {
 # (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
 # once the guest reports the other suites finished, which root in the VM
 # (or a process running as rnk) could bring forward, and shuts when the
-# push step reports its end, or at PUSH_DEADLINE whatever the guest says.
+# push step reports its end, or at about PUSH_DEADLINE whatever the guest
+# says.
 OTHERS=()
 for s in "${SUITES[@]}"; do [ "$s" = push ] || OTHERS+=("$s"); done
 guest_step suite 0 ${OTHERS[@]+"${OTHERS[@]}"}
@@ -1020,7 +1024,8 @@ if wants push; then
       fi
       ;;
     3) log "the network check failed: the push suite does not run" ;;
-    *) log "error: the suites ended with status $status, which guest/run.sh gives only before its network check passed: the push suite does not run" ;;
+    4) log "error: the VM is not the run's own: the push suite does not run" ;;
+    *) log "error: the other suites ended with status $status, not 0 or 1 (the statuses guest/run.sh gives only after its network check passed): the push suite does not run" ;;
   esac
 fi
 T_SUITES=$SECONDS

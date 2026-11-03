@@ -10,8 +10,10 @@
 #                               registry gate open): no network check, the
 #                               summary and times appended to
 #
-# Exits 3 when the network check fails (no suite runs), 1 when a suite
-# fails, else 0.
+# Exits 4 when the VM is not the run's own (no suite runs, no network
+# check), 3 when the network check fails (no suite runs), 1 when a suite
+# fails, else 0: 0 and 1 only after a passed network check (or, with
+# --after, none).
 set -uo pipefail
 cd "$HOME/rnk"
 mkdir -p out
@@ -51,7 +53,7 @@ for k in /etc/ssh/ssh_host_*_key; do
 done
 if [ "$users" != rnk ] || [ "$keys" = 0 ] || [ "$own" = 0 ] || ! [[ "$boot" =~ ^[0-9]+$ ]]; then
   echo "error: this VM is not the run's own (users: '$users'; $keys host keys, all made since the boot at $boot: $own)" | tee out/summary.txt
-  exit 1
+  exit 4
 fi
 
 status=0

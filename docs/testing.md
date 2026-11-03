@@ -152,9 +152,10 @@ runs as root on the host:
    and opens their gate only around that step. The gate's state is
    `vm.sh`'s own and never reopens; it opens when the guest reports the
    other suites finished after a passed network check, and shuts when the
-   guest reports the push step's end or after 900 s, which fails the run
-   (root in the VM can bring the opening forward or prolong it up to that
-   bound). `vm.sh` kills every forwarder left when it shuts, and each
+   guest reports the push step's end or after about 900 s (checked between
+   polls), which fails the run (root in the VM can bring the opening
+   forward or prolong it up to that bound). `vm.sh` kills every forwarder
+   left when it shuts, and each
    connection runs `socat` (at most 16 per port, 600 s each). The run's
    seed holds a `network-config` that tells the NICs apart by MAC. Needs
    QEMU 10.1 or later with its passt backend, passt 2024_10_30 or later,
