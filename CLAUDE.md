@@ -61,9 +61,9 @@ damage the machine or the design:
 
 - Never run kaniko mode with rootfs `/` on the host, never use `sudo`,
   `pkexec`, `mount`, `unshare` or `nsenter`; privileged tests run only in a
-  disposable VM (T2) or, marked T2c, in throwaway rootful Docker containers on
-  the test machine with the ADR-0063 marker. If a task needs root, stop and say
-  so.
+  disposable VM (T2: the local VM, or a GitHub-hosted runner in CI, ADR-0090)
+  or, marked T2c, in throwaway rootful Docker containers on the test machine
+  with the ADR-0063 marker. If a task needs root, stop and say so.
 - Every path from an image, context or Dockerfile is untrusted: reach it only
   through `rnk_rootfs::RootPath`, never `std::fs` or `Path::join` on a host
   path.

@@ -80,7 +80,7 @@ short version of how to write code here.
 |---|---|---|---|---|
 | T0 | Unit and in-process tests | None | Anywhere: `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay, Podman | A regular user with subordinate IDs | Your machine | Planned |
-| T2 | Privileged integration: real root, overlay without user namespaces, Docker rootful, the host-safety attack suite | root | A disposable VM only: `just test-vm` | In use |
+| T2 | Privileged integration: real root, overlay without user namespaces, Docker rootful, the host-safety attack suite | root | A disposable VM only: `just test-vm`, and on every pull request a GitHub-hosted runner (`.github/workflows/t2.yml`, ADR-0090) | In use |
 | T3 | CI: format, clippy, T0, static build, aarch64 check, cargo-deny, docs | None | GitHub Actions on every pull request | In use |
 
 Tests above T0 are marked `#[ignore = "T1: ..."]` or `#[ignore = "T2: ..."]`

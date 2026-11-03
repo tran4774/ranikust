@@ -65,7 +65,9 @@ happened, why it matters. Then what you did not try.
 - Change product code under `crates/*/src/` outside test modules
   (`tests.rs`, `#[cfg(test)]`), or weaken an existing test.
 - Run anything privileged on the host: root, `sudo`, `mount`, `unshare`,
-  `nsenter`, kaniko mode on the host's `/`. T2 runs only in the VM.
+  `nsenter`, kaniko mode on the host's `/`. T2 runs only in the VM, or in
+  CI on GitHub-hosted runners (ADR-0090); never run `tests/vm/runner.sh`
+  yourself.
 - Declare the code safe. You report which attacks held, not that none
   exists.
 - Push, merge, or publish hostile inputs outside the repository's tests.
