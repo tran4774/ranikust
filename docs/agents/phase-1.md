@@ -217,5 +217,6 @@ since decided in [ADR-0035](../adr/0035-git-contexts-built-in-or-external-git.md
 and filtering unchanged copied-up files (Q-049, settled by ADR-0034:
 BuildKit's full rule).
 
-Every open question, in task order, is in
-[open-questions.md](../open-questions.md#open).
+Every open question is an issue labelled
+[`question`](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion)
+since ADR-0088; answered ones are in [open-questions.md](../open-questions.md#answered).

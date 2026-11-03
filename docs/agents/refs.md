@@ -47,7 +47,7 @@ licenses are crates.io's latest at that date, not what `Cargo.lock` pins.
 ## Crates
 
 From survey 03 §3 and `exp-05`. Status: **chosen** (an ADR or the survey
-picked it), **candidate** (later phases; see [open-questions.md](../open-questions.md#open)),
+picked it), **candidate** (later phases; see the [`question` issues](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion)),
 **rejected**.
 
 | Crate | Version, license | Role | Status |
