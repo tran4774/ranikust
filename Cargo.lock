@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "ranikust"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "clap",
  "mimalloc",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-builder"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -1274,11 +1274,11 @@ dependencies = [
 
 [[package]]
 name = "rnk-cache"
-version = "0.0.0"
+version = "0.0.1"
 
 [[package]]
 name = "rnk-context"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "rnk-ignore",
  "rnk-metrics",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-dockerfile"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "proptest",
  "serde_json",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-ignore"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "proptest",
  "regex",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-layer"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "flate2",
  "proptest",
@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-metrics"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "libc",
  "serde_json",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-oci"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "proptest",
  "serde",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-registry"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-rootfs"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "proptest",
  "rnk-metrics",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-sandbox"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "libc",
  "rnk-metrics",
@@ -1399,7 +1399,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-sched"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "futures-util",
  "proptest",
@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-snapshot"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "flate2",
  "proptest",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "rnk-store"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "rnk-metrics",
  "rnk-oci",
