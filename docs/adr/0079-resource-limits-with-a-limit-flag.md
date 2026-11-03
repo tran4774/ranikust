@@ -130,9 +130,9 @@ task.
   itself (manifest and blob pulls, token requests).
 - Neutral, because two gaps remain, each logged: a registry that sends one
   byte per interval still holds a pull, and its lock, as long as it keeps
-  sending [open: #28]; and on the push side `oci-client` still collects
+  sending [open: Q-448]; and on the push side `oci-client` still collects
   error bodies whole, from registries the operator named as destinations
-  [open: #27].
+  [open: Q-449].
 
 ## Evidence
 

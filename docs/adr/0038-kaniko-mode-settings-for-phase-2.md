@@ -57,7 +57,7 @@ flag `--parallel-stages`.
   "later needs a layer", and no deletion has to be found after the fact.
   `--cache` (Phase 4) may add stages whose layers are needed; it changes
   the input of the rule, not the rule
-  ([Q-042](https://github.com/tran4774/ranikust/issues/14)).
+  ([Q-042](../open-questions.md#q-042-how-do-cache-lookahead-and-cached-stage-skipping-work)).
 - **Ignore list (Q-035: a, c).** Mount points under the root from
   `/proc/self/mountinfo`, `--ignore-path`, `/proc`, `/sys`, `/dev`, all of
   `/ranikust` (as kaniko ignores all of `/kaniko`, so an image may keep the

@@ -66,7 +66,7 @@ list, never its directory, and the file placed for a `RUN` is removed after that
   The same start-up check for the context, the outputs and the metrics report
   stays.
 - **Not decided here.** What the placement does when the target already exists
-  in the image, or when its parent directories do not [open: #31].
+  in the image, or when its parent directories do not [open: Q-454].
 - **Implementation: a follow-up.** Nothing in `crates/` is built by this ADR.
   Until it is, both refusals stand as they are.
 
