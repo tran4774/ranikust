@@ -1,0 +1,27 @@
+# cargo-about configuration (ADR-0094): the licence notices of every crate
+# compiled into the released binary, written to THIRD-PARTY-LICENSES by the
+# release workflow (`just third-party-licenses` locally).
+#
+# `accepted` is the licence policy of deny.toml's [licenses] allow list, the
+# same set (tests/release/test_release.py checks it), in the order
+# cargo-about picks a licence from an `OR` expression: the shortest notice
+# first.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+]
+
+# The shipped binary only: x86_64 musl (ADR-0009), and neither build scripts'
+# nor tests' dependencies, which are not linked into it.
+targets = ["x86_64-unknown-linux-musl"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

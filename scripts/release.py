@@ -12,8 +12,9 @@ Subcommands:
   check-environment <owner/repo> <name>
                                 fail unless the GitHub environment exists with
                                 a required reviewer and deploys only `v*` tags
-  package <binary> <version> <outdir>
-                                write the release tarball and SHA256SUMS
+  package <binary> <third-party-licenses> <version> <outdir>
+                                write the release tarball, with the licence
+                                notices cargo-about generated, and SHA256SUMS
   prepare <version>             set the workspace version, refresh Cargo.lock
                                 and draft the CHANGELOG.md section from the
                                 `## Changelog` sections of the pull requests
@@ -51,6 +52,8 @@ DOCS = ["LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md"]
 SEMVER = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?"
 )
+# The first line of scripts/third-party-licenses.hbs's output.
+LICENSES_HEADER = "THIRD-PARTY LICENSES\n"
 # Keep a Changelog sections, in CHANGELOG.md's order.
 SECTIONS = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
 # More merged pull requests than this since one release and `prepare` stops
@@ -78,6 +81,9 @@ SHA256SUMS, with GitHub CLI 2.102.0 or later:
 The second command checks that the tarball was built from the tag v{version}
 by this repository's release workflow on a GitHub-hosted runner (build
 provenance). If either check fails, delete the files and do not run them.
+
+THIRD-PARTY-LICENSES holds the licence notices of the crates, and of the C
+code they build, that the binary contains.
 
 Install:
 
@@ -161,16 +167,26 @@ def is_newer(new: str, old: str) -> bool:
 # ---------------------------------------------------------------- tags
 
 
-def previous_tag(tag: str) -> str | None:
-    """The latest `v*` tag on the history of <tag>, <tag> itself excluded."""
+def describe(args: list[str]) -> str | None:
+    """`git describe --tags --abbrev=0 --match v[0-9]* <args>`: the tag, or
+    None when no release tag describes the commit; any other failure (a bad
+    ref, no repository) dies."""
     result = subprocess.run(
-        ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*",
-         "--exclude", tag, f"{tag}^{{commit}}"],
+        ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", *args],
         cwd=ROOT, check=False, capture_output=True, text=True,
     )
-    if result.returncode != 0:
-        return None  # the first release
-    return result.stdout.strip() or None
+    if result.returncode == 0:
+        return result.stdout.strip() or None
+    if "No names found" in result.stderr or "No tags can describe" in result.stderr:
+        return None
+    die(f"git describe {' '.join(args)} failed: {result.stderr.strip()}")
+    return None  # unreachable
+
+
+def previous_tag(tag: str) -> str | None:
+    """The latest `v*` tag on the history of <tag>, <tag> itself excluded;
+    None for the first release."""
+    return describe(["--exclude", tag, f"{tag}^{{commit}}"])
 
 
 def remote_tag_exists(tag: str) -> bool:
@@ -228,6 +244,15 @@ def environment_problems(env: dict, policies: dict) -> list[str]:
     ]
     if not reviewers:
         problems.append("it has no required reviewer, so nobody approves a release")
+    if any(
+        rule.get("prevent_self_review")
+        for rule in env.get("protection_rules") or []
+        if rule.get("type") == "required_reviewers"
+    ):
+        problems.append(
+            "'Prevent self-reviews' is on: the maintainer, who pushes the tag, "
+            "could not approve its release, and there is no other reviewer"
+        )
     policy = env.get("deployment_branch_policy") or {}
     if not policy.get("custom_branch_policies") or policy.get("protected_branches"):
         problems.append(
@@ -302,11 +327,27 @@ def add_file(tar: tarfile.TarFile, name: str, data: bytes, mode: int, mtime: int
     tar.addfile(info, io.BytesIO(data))
 
 
-def cmd_package(binary: str, version: str, outdir: str) -> None:
+def read_third_party_licenses(path: str) -> bytes:
+    """The file cargo-about generated (ADR-0094): a release without the
+    notices of the code it contains is not packaged."""
+    file = Path(path)
+    if not file.is_file():
+        die(f"{path} is not a file: generate it with cargo-about (`just third-party-licenses`)")
+    data = file.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    if not text.startswith(LICENSES_HEADER) or "\nLicence texts\n" not in text:
+        die(f"{path} is not the output of scripts/third-party-licenses.hbs")
+    if text.count("\n" + "=" * 80 + "\n") == 0:
+        die(f"{path} lists no licence text")
+    return data
+
+
+def cmd_package(binary: str, licenses: str, version: str, outdir: str) -> None:
     check_version(version)
     bin_path = Path(binary)
     if not bin_path.is_file():
         die(f"{binary} is not a file")
+    third_party = read_third_party_licenses(licenses)
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     stem = f"ranikust-{version}-{TARGET}"
@@ -321,6 +362,7 @@ def cmd_package(binary: str, version: str, outdir: str) -> None:
             INSTALL.format(version=version, target=TARGET, repo=repo).encode(),
             0o644,
         ),
+        ("THIRD-PARTY-LICENSES", third_party, 0o644),
     ]
     for doc in DOCS:
         entries.append((doc, (ROOT / doc).read_bytes(), 0o644))
@@ -365,16 +407,8 @@ def set_workspace_version(text: str, version: str) -> str:
 
 
 def last_tag() -> str | None:
-    result = subprocess.run(
-        ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None  # no release tag yet
-    return result.stdout.strip() or None
+    """The latest `v*` tag on HEAD's history; None before the first release."""
+    return describe([])
 
 
 def changelog_text(body: str | None) -> str | None:
@@ -449,10 +483,18 @@ def entries_of(text: str) -> list[tuple[str | None, list[str]]]:
 def merged_pull_requests(repo: str, since: str | None) -> list[dict]:
     revs = run(["git", "rev-list", f"{since}..HEAD" if since else "HEAD"])
     commits = set(revs.split())
+    # Only the pull requests merged since the day of the last tag's commit
+    # are asked for, so the cap applies to one release's worth of them.
+    search = []
+    if since:
+        day = run(["git", "log", "-1", "--format=%cs", f"{since}^{{commit}}"]).strip()
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day):
+            die(f"cannot read the date of {since}: {day!r}")
+        search = ["--search", f"merged:>={day}"]
     result = subprocess.run(
         [
             "gh", "pr", "list", "--repo", repo, "--state", "merged",
-            "--base", "main", "--limit", str(PR_LIMIT),
+            "--base", "main", "--limit", str(PR_LIMIT), *search,
             "--json", "number,title,body,labels,mergeCommit,url",
         ],
         cwd=ROOT,
@@ -469,7 +511,11 @@ def merged_pull_requests(repo: str, since: str | None) -> list[dict]:
         )
     listed = json.loads(result.stdout)
     if len(listed) >= PR_LIMIT:
-        die(f"gh listed {PR_LIMIT} merged pull requests, the limit: raise PR_LIMIT")
+        die(
+            f"gh listed {PR_LIMIT} pull requests merged since "
+            f"{since or 'the first commit'}, its limit, so some may be missing: "
+            "raise PR_LIMIT"
+        )
     prs = [pr for pr in listed if (pr.get("mergeCommit") or {}).get("oid") in commits]
     return sorted(prs, key=lambda pr: pr["number"])
 
@@ -618,7 +664,7 @@ def main(argv: list[str]) -> None:
         cmd_notes(args[0])
     elif command == "check-environment" and len(args) == 2:
         cmd_check_environment(*args)
-    elif command == "package" and len(args) == 3:
+    elif command == "package" and len(args) == 4:
         cmd_package(*args)
     elif command == "prepare" and len(args) == 1:
         cmd_prepare(args[0])

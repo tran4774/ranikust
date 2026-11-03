@@ -9,6 +9,7 @@ are replaced by fakes.
 from __future__ import annotations
 
 import importlib.util
+import json
 import io
 import os
 import stat
@@ -181,6 +182,15 @@ class Environment(unittest.TestCase):
     def test_protected_environment_passes(self):
         self.assertEqual(rel.environment_problems(self.GOOD_ENV, self.GOOD_POLICIES), [])
 
+    def test_prevent_self_review_is_a_problem_with_one_maintainer(self):
+        env = dict(self.GOOD_ENV, protection_rules=[
+            {"type": "required_reviewers", "prevent_self_review": True,
+             "reviewers": [{"type": "User", "reviewer": {"login": "m"}}]},
+        ])
+        problems = rel.environment_problems(env, self.GOOD_POLICIES)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Prevent self-reviews", problems[0])
+
     def test_unprotected_environments_fail(self):
         no_reviewer = dict(self.GOOD_ENV, protection_rules=[{"type": "branch_policy"}])
         empty_reviewers = dict(
@@ -225,6 +235,41 @@ class FakeTools(unittest.TestCase):
         with self.path_env():
             quiet(rel.merged_pull_requests, "o/r", None)
 
+    def fake_pr_list(self, count):
+        """A gh that records its arguments and lists `count` pull requests,
+        the first merged as commit c1 (in the range), the others elsewhere."""
+        prs = [{"number": 1, "title": "feat: a", "body": "", "labels": [], "url": "u",
+                "mergeCommit": {"oid": "c1"}}]
+        prs += [{"number": n, "title": "x", "body": "", "labels": [], "url": "u",
+                 "mergeCommit": {"oid": f"old{n}"}} for n in range(2, count + 1)]
+        (self.bin / "prs.json").write_text(json.dumps(prs[:count]))
+        self.fake("gh", f'printf "%s\\n" "$@" > "{self.bin}/args"\ncat "{self.bin}/prs.json"\n')
+
+    def git_stub(self, args, check=True):
+        if args[:2] == ["git", "rev-list"]:
+            return "c1\nc2\n"
+        if args[:2] == ["git", "log"]:
+            return "2026-11-01\n"
+        raise AssertionError(args)
+
+    def test_the_list_is_narrowed_to_the_release(self):
+        self.fake_pr_list(1)
+        with self.path_env(), mock.patch.object(rel, "run", self.git_stub):
+            prs = rel.merged_pull_requests("o/r", "v0.0.1")
+        self.assertEqual([pr["number"] for pr in prs], [1])
+        args = (self.bin / "args").read_text().split("\n")
+        self.assertIn("--search", args)
+        self.assertEqual(args[args.index("--search") + 1], "merged:>=2026-11-01")
+
+    def test_the_cap_dies_only_when_reached(self):
+        self.fake_pr_list(3)
+        with self.path_env(), mock.patch.object(rel, "run", self.git_stub), \
+                mock.patch.object(rel, "PR_LIMIT", 4):
+            self.assertEqual(len(rel.merged_pull_requests("o/r", "v0.0.1")), 1)
+        with self.path_env(), mock.patch.object(rel, "run", self.git_stub), \
+                mock.patch.object(rel, "PR_LIMIT", 3):
+            quiet(rel.merged_pull_requests, "o/r", "v0.0.1")
+
     def test_a_missing_environment_dies(self):
         self.fake("gh", "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n")
         with self.path_env():
@@ -260,6 +305,24 @@ class PreviousTag(unittest.TestCase):
             with mock.patch.object(rel, "ROOT", Path(d)), mock.patch.dict(os.environ, env):
                 self.assertEqual(rel.previous_tag("v0.0.2"), "v0.0.1")
                 self.assertIsNone(rel.previous_tag("v0.0.1"))
+                self.assertEqual(rel.last_tag(), "v0.0.2")
+                # A ref that does not exist is an error, not "no tag".
+                quiet(rel.previous_tag, "v9.9.9")
+
+    def test_no_release_tag_at_all(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null",
+                       GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                       GIT_COMMITTER_EMAIL="t@t")
+            rel.subprocess.run(["git", "-C", d, "init", "-q"], check=True, env=env)
+            rel.subprocess.run(["git", "-C", d, "commit", "-q", "--allow-empty", "-m", "a"],
+                               check=True, env=env)
+            with mock.patch.object(rel, "ROOT", Path(d)), mock.patch.dict(os.environ, env):
+                self.assertIsNone(rel.last_tag())
+        # Not a repository: an error, not "no tag".
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(rel, "ROOT", Path(d)), \
+                mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(Path(d).parent)}):
+            quiet(rel.last_tag)
 
 
 class Prepare(unittest.TestCase):
@@ -320,25 +383,71 @@ class Prepare(unittest.TestCase):
         self.assertEqual(self.changelog.read_text(), Changelog.TEXT)
 
 
+LICENSES_SAMPLE = (
+    "THIRD-PARTY LICENSES\n====================\n\nLicences\n--------\n- MIT License (MIT): 1 crate(s)\n\n"
+    "Licence texts\n-------------\n\n" + "=" * 80 + "\nMIT License (MIT), used by:\n- a 1.0.0\n"
+    + "-" * 80 + "\n\nPermission is hereby granted...\n"
+)
+
+
 class Package(unittest.TestCase):
+    def package(self, d, licenses_text, out="a"):
+        binary = Path(d) / "ranikust"
+        binary.write_bytes(b"\x7fELF fake")
+        licenses = Path(d) / "THIRD-PARTY-LICENSES"
+        if licenses_text is not None:
+            licenses.write_text(licenses_text)
+        with mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"}):
+            with redirect_stderr(io.StringIO()), mock.patch("sys.stdout", io.StringIO()):
+                rel.cmd_package(str(binary), str(licenses), "0.0.1", str(Path(d) / out))
+        return (Path(d) / out / "ranikust-0.0.1-x86_64-unknown-linux-musl.tar.gz").read_bytes()
+
     def test_reproducible_and_complete(self):
         with tempfile.TemporaryDirectory() as d:
-            binary = Path(d) / "ranikust"
-            binary.write_bytes(b"\x7fELF fake")
-            outs = []
-            with mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"}):
-                for name in ["a", "b"]:
-                    with redirect_stderr(io.StringIO()), mock.patch("sys.stdout", io.StringIO()):
-                        rel.cmd_package(str(binary), "0.0.1", str(Path(d) / name))
-                    outs.append((Path(d) / name / "ranikust-0.0.1-x86_64-unknown-linux-musl.tar.gz").read_bytes())
+            outs = [self.package(d, LICENSES_SAMPLE, out) for out in ["a", "b"]]
             self.assertEqual(outs[0], outs[1])
             with tarfile.open(fileobj=io.BytesIO(outs[0])) as tar:
                 members = {m.name: m for m in tar.getmembers()}
-            stem = "ranikust-0.0.1-x86_64-unknown-linux-musl"
-            for name in ["ranikust", "INSTALL", "LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md"]:
+                stem = "ranikust-0.0.1-x86_64-unknown-linux-musl"
+                shipped = tar.extractfile(f"{stem}/THIRD-PARTY-LICENSES").read().decode()
+            for name in ["ranikust", "INSTALL", "LICENSE-APACHE", "LICENSE-MIT", "NOTICE",
+                         "README.md", "THIRD-PARTY-LICENSES"]:
                 self.assertIn(f"{stem}/{name}", members)
+            self.assertEqual(shipped, LICENSES_SAMPLE)
             self.assertEqual(members[f"{stem}/ranikust"].mode, 0o755)
             self.assertEqual(members[f"{stem}/ranikust"].mtime, 1700000000)
+
+    def test_no_package_without_the_third_party_licenses(self):
+        with tempfile.TemporaryDirectory() as d:
+            quiet(self.package, d, None)
+            quiet(self.package, d, "")
+            quiet(self.package, d, "some other file\n")
+            quiet(self.package, d, LICENSES_SAMPLE.split("=" * 80)[0])
+            self.assertFalse((Path(d) / "a").exists() and any((Path(d) / "a").iterdir()))
+
+
+class ThirdPartyLicensesConfig(unittest.TestCase):
+    """about.toml and the template that cargo-about renders (ADR-0094)."""
+
+    def test_accepted_licences_are_deny_toml_policy(self):
+        import tomllib
+
+        about = tomllib.loads((ROOT / "about.toml").read_text())
+        deny = tomllib.loads((ROOT / "deny.toml").read_text())
+        self.assertEqual(sorted(about["accepted"]), sorted(deny["licenses"]["allow"]))
+        self.assertEqual(len(about["accepted"]), len(set(about["accepted"])))
+        self.assertEqual(about["targets"], [rel.TARGET])
+        self.assertTrue(about["ignore-build-dependencies"])
+        self.assertTrue(about["ignore-dev-dependencies"])
+
+    def test_template_renders_what_package_checks(self):
+        template = (ROOT / "scripts" / "third-party-licenses.hbs").read_text()
+        self.assertTrue(template.startswith(rel.LICENSES_HEADER))
+        self.assertIn("\nLicence texts\n", template)
+        self.assertIn("\n" + "=" * 80 + "\n", template)
+        # Plain text: licence texts and names must not be HTML-escaped.
+        self.assertIn("{{{text}}}", template)
+        self.assertNotIn("{{text}}", template.replace("{{{text}}}", ""))
 
     def test_install_note_has_the_strict_verification(self):
         text = rel.INSTALL.format(version="0.0.1", target=rel.TARGET, repo="tran4774/ranikust")

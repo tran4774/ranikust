@@ -21,6 +21,9 @@ on:
       - .github/release.yml
       - scripts/release.py
       - scripts/check-static.sh
+      - scripts/third-party-licenses.hbs
+      - about.toml
+      - deny.toml
       - tests/release/**
       - Cargo.toml
       - Cargo.lock
@@ -124,17 +127,25 @@ jobs:
           echo "$ZIG_SHA256  $archive" | sha256sum -c -
           tar -xJf "$archive" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
-      # Downloads a release binary and checks it against the action's own
-      # pinned sha256; uses no cache.
+      # Downloads release binaries and checks them against the action's own
+      # pinned sha256s; uses no cache.
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
-          tool: cargo-zigbuild@0.24.0
+          tool: cargo-zigbuild@0.24.0,cargo-about@0.9.2
       - name: Build
         run: |
           test "$(zig version)" = 0.16.0
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target "$TARGET" -p ranikust
       - name: Check that the binary is static-pie and runs
         run: scripts/check-static.sh "$BIN"
+      # The licence notices of every crate the binary contains (ADR-0094),
+      # from Cargo.lock for this target, offline (the build fetched the
+      # sources); a licence deny.toml does not allow fails the release.
+      - name: Generate the third-party licence notices
+        run: |
+          cargo about --version
+          cargo about generate --frozen --fail -m crates/ranikust/Cargo.toml -c about.toml \
+            --target "$TARGET" -o "$RUNNER_TEMP/THIRD-PARTY-LICENSES" scripts/third-party-licenses.hbs
       - name: Check that the binary reports the version
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -149,7 +160,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
-            python3 -I scripts/release.py package "$BIN" "$VERSION" dist
+            python3 -I scripts/release.py package "$BIN" "$RUNNER_TEMP/THIRD-PARTY-LICENSES" "$VERSION" dist
           cat dist/SHA256SUMS
           (cd dist && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

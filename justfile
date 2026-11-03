@@ -179,6 +179,12 @@ changelog *args:
 release-prepare version:
     python3 -I scripts/release.py prepare "$1"
 
+# The licence notices of every crate compiled into the released binary (ADR-0094), as the release workflow makes them: cargo-about over Cargo.lock for x86_64 musl, offline, failing on a licence deny.toml does not allow; writes target/THIRD-PARTY-LICENSES. Requires cargo-about 0.9.2 (`cargo install --locked cargo-about@0.9.2`).
+third-party-licenses:
+    cargo fetch --locked --target {{ musl_target }}
+    cargo about --version
+    cargo about generate --frozen --fail -m crates/ranikust/Cargo.toml -c about.toml --target {{ musl_target }} -o target/THIRD-PARTY-LICENSES scripts/third-party-licenses.hbs
+
 # Tests of the release scripts (CI: the `Release` workflow's build job): scripts/check-static.sh with a fake readelf, and scripts/release.py with fake gh and git remotes; no network, no privileges. Requires bash, python3 3.11 or later and git.
 test-release:
     bash tests/release/check-static-test.sh
