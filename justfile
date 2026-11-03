@@ -199,9 +199,13 @@ docs-lint:
 review-pack branch *args:
     python3 -I scripts/review-pack.py "$@"
 
-# Local only: remove the agent worktrees under .claude/worktrees/ whose branch is merged into origin/main, with their local branch; keeps locked (running), changed, detached and unmerged ones. `--dry-run` only lists. Requires git; gh to recognise squash merges.
+# Local only: remove the agent worktrees under .claude/worktrees/ that hold nothing to lose, with their local branch and build output (ADR-0096): a pull request merged into main with the branch's commit as head, or no commit of its own and idle a day; nothing changed, untracked or ignored outside target/; no live VM run; not locked, detached, on main or the caller's. `--dry-run` only lists (it still fetches origin/main). Requires git and a logged-in gh.
 prune-worktrees *args:
     bash scripts/prune-worktrees.sh "$@"
+
+# Local only: tests scripts/prune-worktrees.sh in a throwaway repository with a fake gh; no network.
+test-prune-worktrees:
+    bash tests/agents/prune-worktrees-test.sh
 
 # Everything CI runs, in CI's order.
 ci: fmt-check lint test build-static check-aarch64 test-aarch64 deny doc book

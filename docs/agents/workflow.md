@@ -57,7 +57,8 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just test-vm [suite]...` | T2 in a disposable QEMU/KVM VM, as the user: `unit` (the `T2:` ignored tests as root) and `smoke` (`smoke-build` as real root and in rootful Docker) by default; `quick` when named (the quick smoke cases as real root); `e2e` when named, for large benchmarks only (the `nextjs-kaniko` workloads against kaniko and BuildKit, [testing](../testing.md#end-to-end-workloads-e2e)); `push` when named (needs `just registry-up`, [testing](../testing.md#test-registries)); results in `target/vm/results/<release>/` ([testing](../testing.md#the-vm-harness-tier-t2)) | |
 | `just docs-lint` | `scripts/docs-lint.py` over the files `git ls-files` lists: every ADR indexed with its status, no duplicate question in `docs/open-questions.md`, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled `question` (in an ADR, a `question` issue open or closed; asks GitHub through `gh`; without `gh`, a logged-in `gh` or network, or after a response cut short twice (it retries once), the verdict says the check was skipped; any other `gh` failure is a problem) | local only for now |
 | `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
-| `just prune-worktrees [--dry-run]` | `scripts/prune-worktrees.sh`: removes the agent worktrees under `.claude/worktrees/` whose branch is merged into `origin/main` (a squash merge counts when the merged pull request's head is the branch's commit, asked through `gh`), with their local branch; keeps locked (running agent), changed, detached and unmerged ones | local only |
+| `just prune-worktrees [--dry-run]` | `scripts/prune-worktrees.sh` ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)): removes the agent worktrees under `.claude/worktrees/` that hold nothing to lose, with their local branch and their `target/`: the branch's commit is the head of a pull request merged into `main` (asked through `gh`), or the branch has no commit of its own and the worktree has been idle a day; nothing changed, untracked or ignored outside `target/`, `graphify-out/` and `__pycache__/`; no live VM run; not locked, detached, on `main` or the caller's own. Run it when no fork works in a worktree it could remove: Claude Code does not always lock a running subagent's worktree | local only |
+| `just test-prune-worktrees` | `tests/agents/prune-worktrees-test.sh`: the script against a throwaway repository with a fake `gh` (merged, stacked, unmerged, fresh, idle, dirty, ignored, VM run, locked, detached, `main`, a path with a space) | local only |
 | `just ci` | all of the above that CI runs, in CI's order | all |
 
 `just` lists them. A recipe that mirrors CI runs exactly the job's command:
@@ -154,23 +155,24 @@ request (`ADR-0088`).
    needs (`reviewer`; `host-safety` and `red-team` as the table below
    says) on the local branch. The fix loop
    ([below](#host-safety-fix-loop)) runs to the end, with no blocker left,
-   before anything is pushed: every push starts CI and notifies watchers,
-   so the first push is a reviewed change, not a draft of one.
+   before anything is pushed: every push to a pull request runs CI and T2
+   and notifies watchers, so the first push is a reviewed change, not a
+   draft of one ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)).
 4. **Draft pull request:** `git push -u origin <branch>`, then
    `gh pr create --draft` with the template filled, labels `agent` and the
    area, and the summary of the review rounds (never the details of an
    open weakness); the item goes to In review.
 5. **Checks.** CI runs on the pull request; the test plan names the tiers
    run elsewhere. A fix for CI or for the maintainer's comments goes
-   through the same local loop before it is pushed.
+   through the same local loop before it is pushed; that round's summary
+   is a comment on the pull request.
 6. **Merge.** The maintainer marks the pull request ready and squash-merges
    it, or tells the agent to; the branch is deleted, the issue closes and
    the Project's built-in workflow moves the item to Done.
-7. **Clean up.** After the merge, the main session runs
-   `just prune-worktrees`: every agent worktree carries its own `target/`
-   of several GB, and 32 left behind once filled 126 GB. It removes only
-   merged, unchanged worktrees no running agent holds, with their local
-   branch.
+7. **Clean up.** After the merge, once no fork is working, the main
+   session runs `just prune-worktrees`: every agent worktree carries its
+   own `target/` of several GB, and 32 left behind once filled 126 GB. It
+   removes only worktrees that hold nothing to lose (recipe table above).
 
 What agents may do (`ADR-0087` D1, amended by `ADR-0093`, until the
 maintainer changes it):
@@ -319,7 +321,9 @@ agent with `SendMessage` rather than starting a new one.
 
 ### Host-safety fix loop
 
-For a branch written by a fork (an agent in its own worktree):
+For every branch, a fork's (an agent in its own worktree) or the main
+session's own; with `host-safety` as the reviewer here, and the same loop
+for `reviewer` and `red-team`:
 
 1. The `host-safety` subagent reports to the main session.
 2. The main session sends the findings back to the same fork (it keeps the
@@ -328,9 +332,9 @@ For a branch written by a fork (an agent in its own worktree):
    set-up or the sandbox changed), commits without pushing and reports.
 4. The main session asks the same reviewer to re-check only the fix
    commits, on the local branch.
-5. No blocker left: the fork pushes, and a summary of the rounds goes on
-   the pull request ([GitHub flow](#github-flow)); the maintainer merges
-   it.
+5. No blocker left: the fork pushes and opens the draft pull request, or
+   the main session does it for the fork, with a summary of the rounds
+   ([GitHub flow](#github-flow)); the maintainer merges it.
 
 A test result counts only from the harness's exit status, never from an
 agent reading a printed table: a suite that prints a verdict table must

@@ -112,7 +112,7 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   ([workflow.md](workflow.md#commits)); small commits are fine, pull requests
   are squash-merged.
 - Push only after the local review loop has no blocker left, then open a
-  draft pull request (`ADR-0087`; [workflow.md](workflow.md#github-flow));
+  draft pull request (`ADR-0087`, `ADR-0096`; [workflow.md](workflow.md#github-flow));
   a later fix is reviewed locally before it is pushed too. Mark
   it ready, merge it, push to `main` or push a tag only when the maintainer
   asks ([workflow.md](workflow.md#github-flow)). Never force-push: bring a
