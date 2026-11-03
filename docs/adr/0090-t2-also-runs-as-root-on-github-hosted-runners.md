@@ -42,24 +42,32 @@ request would run its code as root on that machine. The third was chosen.
 
 The T2 suites `unit`, `smoke`, `quick` and `secrets`, and the T2c lane
 `unit-c`, run as root directly on GitHub-hosted `ubuntu-24.04` runners in
-`.github/workflows/t2.yml`, on every pull request and push to `main`; the
-local VM stays the reference for everything else.
+`.github/workflows/t2.yml`, on every pull request and push to `main` (and
+by hand, `workflow_dispatch`); the local VM stays the reference for
+everything else.
 
 - **Jobs (check names):** `T2 unit (root on the runner)`, `T2 smoke, quick,
   secrets (root on the runner)`, `T2c unit-c (rootful Docker on the
   runner)`. Making them required checks is the maintainer's: ADR-0087 has
   new required checks added to the `main` ruleset by the maintainer.
-- **Entry point:** `tests/vm/runner.sh`, which refuses unless GitHub
-  Actions reports a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
-  `RUNNER_ENVIRONMENT=github-hosted`) and the workflow sets
-  `RANIKUST_T2_ON_RUNNER=1`; it runs as the runner's user and uses `sudo`
-  per command, as the guest scripts do in the VM. It runs the same guest
-  scripts on the same tree at `~/rnk`: `tests/vm/stage.sh`, moved out of
-  `tests/vm/vm.sh` unchanged, stages it for both.
-- **T2c:** the job makes the lane's marker (ADR-0063) itself, root-owned
-  and named after the runner, which is the only machine that ever carries
-  it, and runs `tests/container/lane.sh` there; the profiles, controls and
-  terms of ADR-0063 are unchanged.
+- **Entry point:** `tests/vm/runner.sh`, which refuses (exit 2), before
+  anything else, unless GitHub Actions reports a GitHub-hosted runner
+  (`GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, no `ACT`),
+  the machine looks like one (user `runner`, `HOME=/home/runner`, system
+  vendor `Microsoft Corporation`, the Azure VM a runner is) and the
+  workflow sets `RANIKUST_T2_ON_RUNNER=1`. It runs as the runner's user and
+  uses `sudo` per command, as the guest scripts do in the VM, on the same
+  tree at `~/rnk`: `tests/vm/stage.sh`, moved out of `tests/vm/vm.sh`
+  unchanged, stages it for both (its `[stage +Ns]` log lines on the
+  caller's clock). Exit 1 is a failed suite, 3 a failed set-up (staging, a
+  build) with no results.
+- **T2c, amending ADR-0063's "Where":** ADR-0063 has the marker
+  `/etc/ranikust/throwaway-test-host` made once, by the owner, on the test
+  machine only. On a GitHub-hosted runner, `tests/vm/runner.sh` also makes
+  one, naming that runner, for its one job, behind the guard above, and
+  then runs `tests/container/lane.sh` there. The marker's form and checks,
+  the profiles, the control checks and every other term of ADR-0063 are
+  unchanged.
 - **Set-up to match the VM:** the packages the VM's base image adds
   (`busybox-static`, `zstd`, `pigz`); for the smoke job, Docker with
   containerd's image store, the default of the VM's Docker 29, whose
@@ -82,6 +90,21 @@ local VM stays the reference for everything else.
   would run a fork's code with a write token and the secrets); the Rust
   cache is saved only from `main`, so a pull request cannot fill the cache
   `main` reads; no self-hosted runner while the repository is public.
+- **Fork pull requests:** whether a fork's pull request runs these jobs
+  without the maintainer's approval is the repository setting "Approval for
+  running fork pull request workflows", the maintainer's; GitHub's default
+  asks only for first-time contributors [external]. Recommended: require
+  approval for all outside collaborators, since the jobs run their code as
+  root. Not changed by this ADR.
+- **Limits and results:** each job has a 30-minute timeout (runs took 3 to
+  6 minutes, cold); on failure, `~/rnk/out` (and, for T2c,
+  `target/container/results`) is kept as an artifact for 7 days, public
+  like the job log; no secret reaches either.
+- **Caches:** the three jobs' Rust caches (`t2-unit`, `t2-unit-c`,
+  `t2-smoke`) are saved only from `main` and share the repository's 10 GB
+  cache limit with `ci.yml`'s, the least recently used evicted first
+  [external]; the first run on `main` after the merge is the first to save
+  them, so until then every run builds cold.
 
 ### Consequences
 
@@ -100,8 +123,12 @@ local VM stays the reference for everything else.
   root there (on GitHub's machine, with GitHub's outbound network);
   GitHub's default approval of first-time contributors' workflows is the
   guard against abuse of it.
-- Neutral, because the image pulls of `smoke`, `quick` and `secrets` go
-  through `mirror.gcr.io`, as in the VM, so they depend on it.
+- Neutral, because the images the guest scripts name come from
+  `mirror.gcr.io` (`RANIKUST_VM_IMAGE_REGISTRY`, checked as `vm.sh` checks
+  it), as in the VM, so they depend on it; but Docker's own pulls of
+  `docker.io` names, such as the T2c image's `ubuntu@sha256:...` base, go
+  to Docker Hub directly: the runner's Docker, unlike the VM's, has no
+  registry mirror.
 
 ## Evidence
 
@@ -112,6 +139,9 @@ filesystem of 147,719 MiB with 82,479 to 86,061 MiB free (GitHub
 documents 14 GB of SSD [external]). The local VM for comparison: kernel
 6.8.0-147, Docker 29.1.3, 12 CPUs, 16 GiB, 20 GiB disk. Builds were cold:
 a pull request's run saves no cache.
+
+Run 41623116016 (later runs on the pull request: job times from 2 min 54 s
+to 5 min 56 s):
 
 | Job | Suite | Result | Suite time | Job time | Peak disk use over the start |
 |---|---|---|---|---|---|
@@ -125,15 +155,18 @@ a pull request's run saves no cache.
   layout `smoke-build` writes, under Docker 28's classic image store; the
   second (41623116016), with containerd's image store, passed every job.
   No test behaved differently on the runner's kernel.
-- `tests/vm/vm.sh` with the staging moved to `tests/vm/stage.sh`: `just
-  test-vm unit smoke` locally, see the pull request.
+- `tests/vm/vm.sh` with the staging moved to `tests/vm/stage.sh`, on the
+  maintainer's machine on 2026-11-03: `just test-vm unit smoke`, Ubuntu
+  24.04 (`noble`, kernel 6.8.0-147): network ok, `unit` 46 of 46, `smoke`
+  ok, exit 0, 325 s.
 - KVM on standard runners, the runner's resources, and the read-only token
   and absent secrets of a fork's pull request: GitHub's documentation and
   changelog (2024-04-02) [external].
 
 ## More Information
 
-Refines ADR-0063 (where root tests run) and the T2 tier of
+Refines ADR-0063 (where root tests run) and amends its "Where" for the
+T2c marker on a GitHub-hosted runner; refines the T2 tier of
 `docs/testing.md`; ADR-0086's VM network isolation stays for the local VM.
 Gives the pull-request flow of
 [ADR-0087](0087-work-flows-through-github-issues-pull-requests-and-a-project.md)

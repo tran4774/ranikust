@@ -138,7 +138,7 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 | Decision made or reversed | a new ADR; never rewrite an accepted one |
 | User-visible change (flag, default, output, mode behaviour) | `CHANGELOG.md` under Unreleased, and the book |
 | Isolation or privilege behaviour | `SECURITY.md`, `docs/security/` |
-| Test tiers, recipes or CI jobs | `justfile` and `ci.yml` identical; `docs/testing.md`, `CONTRIBUTING.md`, the command lists in `CLAUDE.md` and [workflow.md](workflow.md) |
+| Test tiers, recipes or CI jobs | `justfile` and `ci.yml` identical (`.github/workflows/t2.yml` is the deliberate exception: CI's alone, no `just` recipe, ADR-0090); `docs/testing.md`, `CONTRIBUTING.md`, the command lists in `CLAUDE.md` and [workflow.md](workflow.md) |
 | Code ported from kaniko or elsewhere | file header, `NOTICE` entry, source commit ([CONTRIBUTING.md](../../CONTRIBUTING.md#porting-code-from-kaniko)) |
 | Phase 1 task finished | tick it in [phase-1.md](phase-1.md) |
 | Span or span field added, renamed or removed | [`design/metrics.md`](../design/metrics.md#spans-per-crate) and the card's `## Metrics` |
