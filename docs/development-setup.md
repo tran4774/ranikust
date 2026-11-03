@@ -1,6 +1,7 @@
 # Setting up a development machine
 
-Step by step, from a fresh Linux machine to every test tier passing.
+Step by step, from a fresh Linux machine to every test tier passing (a
+throwaway edit that checks CI's lanes; never merged).
 [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) keeps the reference
 table of tools and why each is needed; this page is the walkthrough.
 Commands are for Ubuntu (24.04 and 26.04) and Debian; other distributions
