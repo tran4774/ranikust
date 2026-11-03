@@ -5,7 +5,8 @@
 #
 #   certs/ca.crt              the CA a client trusts (--registry-certificate)
 #   certs/server.{crt,key}    SANs: localhost, 127.0.0.1, ::1, 10.0.2.2 (the
-#                             host as the T2 VM sees it) and this host's name
+#                             registries as the T2 VM sees them) and this
+#                             host's name
 #   auth/htpasswd             user `ranikust`, bcrypt
 #   auth/credentials          `ranikust:<password>`, for clients
 set -euo pipefail

@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
-# Runs in the T2 VM: records the environment, then each suite given as an
-# argument. Each suite's output goes to ~/rnk/out/<suite>.log; the status of
-# every suite to ~/rnk/out/summary.txt, its wall time in seconds to
-# ~/rnk/out/suite-times.txt.
+# Runs in the T2 VM: records the environment, checks the network, then runs
+# each suite given as an argument. Each suite's output goes to
+# ~/rnk/out/<suite>.log; the status of every suite to ~/rnk/out/summary.txt,
+# its wall time in seconds to ~/rnk/out/suite-times.txt.
+#
+#   run.sh [suite]...           the network check, then the suites
+#   run.sh --after <suite>...   a later step of the same run (tests/vm/vm.sh
+#                               runs the push suite so, with the host's
+#                               registry gate open): no network check, the
+#                               summary and times appended to
+#
+# Exits 4 when the VM is not the run's own (no suite runs, no network
+# check), 3 when the network check fails (no suite runs), 1 when a suite
+# fails, else 0: 0 and 1 only after a passed network check (or, with
+# --after, none).
 set -uo pipefail
 cd "$HOME/rnk"
 mkdir -p out
 # RANIKUST_VM_IMAGE_REGISTRY and RANIKUST_VM_SIZE, from tests/vm/vm.sh.
 # shellcheck disable=SC1091
 [ -f vm.env ] && source vm.env
+after=0
+[ "${1:-}" != --after ] || { after=1; shift; }
 
 {
   echo "kernel: $(uname -r)"
@@ -40,12 +53,23 @@ for k in /etc/ssh/ssh_host_*_key; do
 done
 if [ "$users" != rnk ] || [ "$keys" = 0 ] || [ "$own" = 0 ] || ! [[ "$boot" =~ ^[0-9]+$ ]]; then
   echo "error: this VM is not the run's own (users: '$users'; $keys host keys, all made since the boot at $boot: $own)" | tee out/summary.txt
-  exit 1
+  exit 4
 fi
 
 status=0
-: >out/summary.txt
-: >out/suite-times.txt
+if [ "$after" = 0 ]; then
+  : >out/summary.txt
+  : >out/suite-times.txt
+  # The VM must not reach the host's loopback (ADR-0086): checked before any
+  # suite, which do not run otherwise.
+  echo "== network"
+  if bash guest/net.sh 2>&1 | tee out/network.log; then
+    echo "network: ok" >>out/summary.txt
+  else
+    echo "network: FAILED" | tee -a out/summary.txt
+    exit 3
+  fi
+fi
 for suite in "$@"; do
   echo "== suite $suite"
   t0=$SECONDS

@@ -137,8 +137,42 @@ runs as root on the host:
    name. `RANIKUST_VM_IMAGE_REGISTRY=docker.io` pulls from Docker Hub
    itself, which allows anonymous clients only a few pulls per hour.
 5. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
-   ACL, never `sudo`), user-mode networking, SSH forwarded to a free port
-   on `127.0.0.1` only, one SSH connection shared by every command. Every
+   ACL, never `sudo`), SSH forwarded to a free port on `127.0.0.1` only,
+   one SSH connection shared by every command. The network reaches nothing
+   on the host's loopback but what a suite needs
+   ([ADR-0086](adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)).
+   Egress (image pulls, apt, e2e fetches) goes through passt (QEMU's
+   `-netdev passt`), IPv4 only, which maps no guest address to the host's
+   loopback; DNS goes through it to the host's resolver (the guest asks
+   `192.0.2.53`; ports 53 and 853, TCP and UDP, on the host's first IPv4
+   nameserver, which answers the host's own names too). A second NIC on
+   QEMU's user network with `restrict=on` carries only SSH and, while the
+   `push` suite runs, the host's test registries as `10.0.2.2:5000` and
+   `10.0.2.2:5443`: `vm.sh` runs `push` last, in an SSH step of its own,
+   and opens their gate only around that step. The gate's state is
+   `vm.sh`'s own and never reopens; it opens when the guest reports the
+   other suites finished after a passed network check, and shuts when the
+   guest reports the push step's end or after about 900 s (checked between
+   polls), which fails the run (root in the VM can bring the opening
+   forward or prolong it up to that bound). `vm.sh` kills every forwarder
+   left when it shuts, and each
+   connection runs `socat` (at most 16 per port, 600 s each). The run's
+   seed holds a `network-config` that tells the NICs apart by MAC. Needs
+   QEMU 10.1 or later with its passt backend, passt 2024_10_30 or later,
+   and `socat` for `push`; `vm.sh` checks every option it uses before
+   boot. Before any suite, `tests/vm/guest/net.sh` probes a token `vm.sh`
+   serves over TCP and UDP on a free port of the host's `127.0.0.1` (and
+   `::1`): from root in the VM, a default and a `--privileged` `docker
+   run` and a ranikust `RUN`, at every address that could name the host,
+   and the registry ports, which must be shut then; each vantage must also
+   get out with the same tool. Root also writes raw frames straight to
+   each NIC's backend (`tests/vm/guest/rawprobe.py`), to the loopback,
+   unspecified and own addresses over IPv4 and IPv6, which must all go
+   unanswered while controls through the same socket answer (on the
+   harness NIC, a forward on `10.0.2.2:9` to QEMU's null device), and the
+   egress must have no IPv6. Any answer, a vantage that fails its control
+   or does not run, or a failed image pull fails the run (`network:
+   FAILED` in `summary.txt`, `network.log` in the results). Every
    suite gets 12 vCPUs (`RANIKUST_VM_CPUS`; at most the host's CPUs less
    2) and 16 GiB (`RANIKUST_VM_MEM`). The memory is measured once the
    previous run's VM has gone: when the host has less than 16 GiB plus
@@ -211,8 +245,9 @@ name, `127.0.0.1`, `::1` and `10.0.2.2`, and `auth/htpasswd` with a random
 password kept in `auth/credentials`. It then starts both and checks them
 with `tests/registry/check.sh`: an image pushed into each reads back, and
 the HTTPS one refuses an anonymous read. `just registry-down` stops them and
-keeps the data. The T2 VM reaches them as `10.0.2.2`, which QEMU's user
-network maps to the host's loopback, so they need no wider binding. On a
+keeps the data. The T2 VM reaches them as `10.0.2.2`, forwarded to the
+host's loopback by `guestfwd` rules of its harness NIC only while the
+`push` suite runs (ADR-0086), so they need no wider binding. On a
 host whose AppArmor restricts unprivileged user namespaces, only podman
 (which has a profile) can read local storage, so the check pushes with
 `podman push` and reads with `skopeo inspect`.

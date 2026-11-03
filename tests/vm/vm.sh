@@ -113,6 +113,94 @@ done
 
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
+# --- Network: nothing on the host's loopback but what a suite needs (ADR-0086) -
+#
+# The guest runs third-party code as root (images behind mutable tags, RUN
+# steps, npm installs), so it must not reach the developer host's
+# loopback-only services. It has two NICs:
+#   - egress (image pulls, apt, e2e fetches): passt, IPv4 only, which QEMU
+#     starts on a socket pair (-netdev passt), mapping no guest address to
+#     the host's loopback (--map-host-loopback none, --map-guest-addr none).
+#     Not passt's own listening socket, on which Ubuntu's passt
+#     0.0~git20260120 accepted no client ("Failed to add fd to epoll: Bad
+#     file descriptor");
+#   - harness: QEMU's user network with restrict=on, which forwards only
+#     its explicit rules: SSH from the host's 127.0.0.1, and the host's test
+#     registries through a gate open only while the push suite runs.
+# Everything on the host's loopback the guest reaches, and nothing else:
+#   - TCP REGISTRY_PORTS, as 10.0.2.2:<port>, only while the push suite runs
+#     (tests/registry, `just registry-up`: they listen on 127.0.0.1);
+#   - DNS, ports 53 and 853, TCP and UDP, on HOST_DNS (the first IPv4
+#     nameserver of /etc/resolv.conf, 127.0.0.53 under systemd-resolved),
+#     which passt forwards from GUEST_DNS. That resolver answers the host's
+#     own names too (/etc/hosts, split DNS, LLMNR, mDNS), as it did for
+#     QEMU's user network before.
+REGISTRY_PORTS=(5000 5443)
+# Each registry connection runs one socat (libslirp starts one per guest
+# connection): at most FWD_SLOTS at a time per port, each for at most
+# FWD_SECONDS.
+FWD_SLOTS=16 FWD_SECONDS=600
+# The push step's deadline: it takes under a minute (about 15 s on the
+# development machine); past this the gate shuts and the run fails. Checked
+# between polls of the guest, so it can run over by one poll (a few
+# seconds, up to about two minutes while SSH to the VM stalls).
+PUSH_DEADLINE=900
+# The oldest passt with every option used here (--dns-host), and those
+# options: what EGRESS_NETDEV (below) has QEMU pass, each checked at start.
+PASST_MIN=20241030
+PASST_OPTIONS=(--ipv4-only --tcp-ports --udp-ports --map-host-loopback --map-guest-addr --dns-forward --dns --dns-host --search --fd --pid)
+# A documentation address (RFC 5737), never a real host: the guest's DNS
+# server, which passt answers from the host's resolver, HOST_DNS.
+GUEST_DNS=192.0.2.53
+HOST_DNS="$(awk '$1 == "nameserver" && $2 ~ /^[0-9]+(\.[0-9]+){3}$/ { print $2; exit }' /etc/resolv.conf 2>/dev/null)"
+[ -n "$HOST_DNS" ] || die "no IPv4 nameserver in /etc/resolv.conf: the VM's DNS goes to the host's resolver (ADR-0086)"
+# The harness network: the guest is 10.0.2.15, the registries 10.0.2.2;
+# QEMU's own address moves to 10.0.2.254, since a guestfwd may not take it.
+HARNESS_NET=10.0.2.0/24 HARNESS_GUEST=10.0.2.15 HARNESS_HOST=10.0.2.254 REGISTRY_ADDR=10.0.2.2
+# The raw probe's control on the harness NIC: a forward to QEMU's null
+# character device, so it reaches nothing on the host and starts no
+# process, yet answers a SYN.
+HARNESS_CONTROL=$REGISTRY_ADDR:9
+# Fixed MACs: the guest's network-config (in the run's seed) tells the NICs
+# apart by them.
+MAC_EGRESS=52:54:00:6e:6b:01 MAC_HARNESS=52:54:00:6e:6b:02
+command -v passt >/dev/null || die "missing passt (the VM's egress, ADR-0086)"
+# Its version: 0.0~gitYYYYMMDD (Debian, Ubuntu) or YYYY_MM_DD (upstream).
+# One it cannot read is let through with a warning: each option is checked
+# below anyway.
+passt_date="$(passt --version 2>&1 | sed -nE '1{s/.*git([0-9]{8}).*/\1/p;s/.*([0-9]{4})_([0-9]{2})_([0-9]{2}).*/\1\2\3/p}' | head -1)"
+if ! [[ "$passt_date" =~ ^[0-9]{8}$ ]]; then
+  log "warning: cannot tell passt's version from '$(passt --version 2>&1 | head -1)'; the VM's egress needs passt 2024_10_30 or later (ADR-0086)"
+elif [ "$passt_date" -lt "$PASST_MIN" ]; then
+  die "passt $passt_date is too old: the VM's egress needs passt 2024_10_30 (0.0~git20241030) or later (ADR-0086)"
+fi
+passt_help="$(passt --help 2>&1 || true)"
+for opt in "${PASST_OPTIONS[@]}"; do
+  grep -qE -- "(^|[[:space:],])$opt([[:space:]]|$)" <<<"$passt_help" || die "passt has no $opt option, which the VM's egress uses (ADR-0086)"
+done
+grep -qx passt <<<"$(qemu-system-x86_64 -netdev help 2>&1 || true)" ||
+  die "this QEMU has no passt network backend: the VM's egress needs QEMU 10.1 or later built with it (ADR-0086)"
+qemu_passt_help="$(qemu-system-x86_64 -help 2>&1 | awk '/^-netdev passt/ { p = 1 } p && /^-netdev / && !/^-netdev passt/ { exit } p')"
+for opt in ipv6 map-host-loopback map-guest-addr dns-forward dns-host search tcp-ports udp-ports; do
+  grep -q "\[,$opt=" <<<"$qemu_passt_help" || die "this QEMU's passt backend has no $opt option, which the VM's egress uses (ADR-0086)"
+done
+if wants push; then
+  SOCAT="$(command -v socat)" || die "missing socat (the push suite forwards the host's test registries with it)"
+  [[ "$SOCAT" =~ ^/[A-Za-z0-9/._-]+$ ]] || die "socat's path ($SOCAT) must hold no space or comma: it goes into QEMU's options"
+  for tool in flock timeout; do command -v "$tool" >/dev/null || die "missing $tool (the push suite's registry forwarder)"; done
+fi
+# passt hands the guest the address and network of the host's default
+# route: the harness network must not overlap it.
+egress_if="$(ip -4 route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+if [ -n "$egress_if" ] && ip -4 -o addr show dev "$egress_if" | awk '{ print $4 }' | python3 -I -c '
+import ipaddress, sys
+harness = ipaddress.ip_network(sys.argv[1])
+overlap = any(ipaddress.ip_interface(a).network.overlaps(harness) for a in sys.stdin.read().split())
+sys.exit(0 if overlap else 1)
+' "$HARNESS_NET"; then
+  die "the host's network on $egress_if overlaps $HARNESS_NET, the VM's harness network (ADR-0086)"
+fi
+
 # The VM's disk: a qcow2 overlay over the cloud image that grows with what
 # the guest writes, up to about $DISK less the 2 GiB or so of the cloud
 # image's own content, which stays in the backing file. What really bounds
@@ -227,9 +315,9 @@ if wants e2e || wants ultra; then
   command -v podman >/dev/null || die "missing podman (e2e saves the reference images from it)"
 fi
 if wants push; then
-  # The host's test registries (tests/registry, `just registry-up`), which
-  # the guest reaches as 10.0.2.2: QEMU's user network maps it to the
-  # host's loopback, where they listen.
+  # The host's test registries (tests/registry, `just registry-up`), on the
+  # host's loopback, which the guest reaches as 10.0.2.2 through the harness
+  # NIC's guestfwd rules (REGISTRY_PORTS above).
   REGDATA="$REPO/tests/registry/_data"
   curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ &&
     curl -fsS -o /dev/null --cacert "$REGDATA/certs/ca.crt" -u "$(cat "$REGDATA/auth/credentials")" https://localhost:5443/v2/ ||
@@ -344,12 +432,15 @@ log "image $IMG_NAME sha256 $want (verified)"
 
 mkdir -p "$TARGET/vm"
 RUN="$(mktemp -d "$TARGET/vm/run.XXXXXX")"
-SOCKDIR=
+SOCKDIR= PASSTDIR= GATE=
 RESULTS="$TARGET/vm/results/$RELEASE"
 rm -rf "$RESULTS"
 QEMU_PID=
 QEMU_PIDFILE=
 MONITOR=
+# The host-side probe of guest/net.sh: a listener on the host's loopback
+# that the VM must not reach (ADR-0086).
+PROBE_PID=
 # Seconds since the start at each step, written to the results' timings.txt.
 T_BOOT='' T_SSH='' T_READY='' T_SUITES=''
 
@@ -380,6 +471,76 @@ except OSError:
 ' "$MONITOR" 2>/dev/null
 }
 
+# The QEMU -netdev of the egress NIC (ADR-0086): QEMU starts passt on a
+# socket pair, and passt quits when QEMU goes. In passt's default
+# configuration a class of raw frame reached the host's loopback; the
+# egress runs with a reduced configuration, which guest/net.sh's raw probe
+# confirms on every run (ADR-0086). IPv4 only (ipv6=off, passt's
+# --ipv4-only), no inbound port, no guest address mapped to the host's
+# loopback, DNS from GUEST_DNS forwarded to HOST_DNS.
+EGRESS_NETDEV="passt,id=n0,quiet=on,ipv6=off,tcp-ports=none,udp-ports=none,map-host-loopback=none,map-guest-addr=none"
+EGRESS_NETDEV+=",dns-forward=$GUEST_DNS,dns=$GUEST_DNS,dns-host=$HOST_DNS,search=none"
+
+# The passt processes QEMU started for this run, as <pid>:<pid file>
+# (start_qemu reads each from the pid file QEMU has it write in PASSTDIR).
+PASSTS=()
+
+# has_arg <pid> <argument>: that process still runs and has <argument> on
+# its command line, so it is not a recycled pid.
+has_arg() { [ -n "$1" ] && { tr '\0' '\n' <"/proc/$1/cmdline"; } 2>/dev/null | grep -qxF -- "$2"; }
+
+# stop <pid> <argument> <half-seconds>: waits that long for the process
+# (has_arg) to end by itself, then sends it SIGTERM, then SIGKILL; fails if
+# it outlives both.
+stop() {
+  local sig
+  for _ in $(seq "$3"); do has_arg "$1" "$2" || return 0; sleep 0.5; done
+  for sig in TERM KILL; do
+    has_arg "$1" "$2" || return 0
+    kill -s "$sig" "$1" 2>/dev/null
+    for _ in $(seq 10); do has_arg "$1" "$2" || return 0; sleep 0.2; done
+  done
+  ! has_arg "$1" "$2"
+}
+
+# forwarders: the pids of this run's registry forwarders still running: the
+# forwarder script's sh (its command line names it) and the timeout and
+# socat it becomes (theirs name this run's socat log).
+forwarders() {
+  local d=${SOCKDIR//./\\.}
+  pgrep -u "$(id -u)" -f -- "^/bin/sh $d/registry-forward [0-9]+\$| -lf $d/socat\\.log - TCP:127\\.0\\.0\\.1:[0-9]+\$"
+}
+
+# The registry gate's state, kept here and moved one way only: shut (not
+# yet open), open (while the push suite's own step runs), done (never open
+# again). What the guest writes can only make it open sooner or shut later
+# (see the push step), never move it back.
+GATE_STATE=shut
+gate_open() {
+  [ "$GATE_STATE" = shut ] || die "the registry gate opens once per run"
+  GATE_STATE=open
+  : >"$GATE"
+  log "registry gate open: the push suite runs"
+}
+# gate_close: done for good; the gate file goes, and every forwarder still
+# running is killed, so no connection made while it was open outlives it.
+# Fails if one survives.
+gate_close() {
+  local pids
+  [ "$GATE_STATE" = open ] && log "registry gate shut"
+  GATE_STATE=done
+  rm -f "$GATE"
+  # A forwarder that saw the gate just before it went may start after a
+  # kill: a few rounds.
+  for _ in 1 2 3 4 5; do
+    pids="$(forwarders)" || return 0
+    # shellcheck disable=SC2086
+    kill -9 $pids 2>/dev/null
+    sleep 0.2
+  done
+  ! pids="$(forwarders)" || { echo "error: registry forwarders (pid $(echo $pids)) are still running" >&2; return 1; }
+}
+
 # put <source> <name>: copies a file into $RESULTS through a new temporary
 # file renamed over <name>, so nothing the guest left there is written
 # through.
@@ -403,6 +564,20 @@ teardown() {
     for _ in $(seq 20); do qemu_alive || break; sleep 0.5; done
   fi
   ! qemu_alive || kill -9 "$QEMU_PID" 2>/dev/null
+  # Each passt quits once its QEMU has gone; one still there after a few
+  # seconds is killed.
+  local p pids
+  for p in ${PASSTS[@]+"${PASSTS[@]}"}; do
+    stop "${p%%:*}" "${p#*:}" 10 || { echo "error: passt (pid ${p%%:*}) is still running" >&2; status=1; }
+  done
+  # The registry gate is done whatever happened; any forwarder left is
+  # killed (QEMU has gone, so none can start again).
+  [ -z "$SOCKDIR" ] || gate_close || status=1
+  # The probe listener, only while it is still this run's (its command line
+  # names this run's directory).
+  if [ -n "$PROBE_PID" ]; then
+    stop "$PROBE_PID" "$RUN/probe" 0 || { echo "error: the network probe (pid $PROBE_PID) is still running" >&2; status=1; }
+  fi
   # Whatever reached the results, links and special files go before
   # anything is written there.
   mkdir -p "$RESULTS" && find "$RESULTS" ! -type f ! -type d -delete
@@ -414,7 +589,7 @@ teardown() {
     put "$RUN/timings.txt" timings.txt
   # (A directory the guest made 0555, cut short before the copy loop's chmod.)
   [ ! -d "$RUN/out" ] || chmod -R u+rwX -- "$RUN/out"
-  rm -rf "$RUN" ${SOCKDIR:+"$SOCKDIR"}
+  rm -rf "$RUN" ${SOCKDIR:+"$SOCKDIR"} ${PASSTDIR:+"$PASSTDIR"}
   if qemu_alive; then
     echo "error: QEMU (pid $QEMU_PID) is still running" >&2
     status=1
@@ -427,19 +602,117 @@ trap 'exit 130' INT TERM
 # A Unix socket path must fit in 108 bytes, which a run directory in a deep
 # checkout (a git worktree) does not.
 SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
+# Its registry forwarder goes into QEMU's options (split on commas) and
+# into the command line libslirp parses (split on spaces).
+[[ "$SOCKDIR" =~ ^/[A-Za-z0-9/._-]+$ ]] || die "the socket directory ($SOCKDIR) must hold no space or comma"
+# The registry gate: the forwarder passes connections only while it exists.
+GATE="$SOCKDIR/registry-gate"
+# QEMU's TMPDIR, where it has passt write its pid file: under /tmp, which
+# the AppArmor profile Debian and Ubuntu give passt lets it write (as the
+# home directory), unlike $XDG_RUNTIME_DIR.
+PASSTDIR="$(mktemp -d /tmp/rnk-vm-passt.XXXXXX)"
+
+# The probe of guest/net.sh: a random token served over TCP (HTTP) and UDP
+# on a free port of the host's loopback only, 127.0.0.1 and, where the host
+# has it, ::1. The VM must not reach it (ADR-0086); the guest fails the run
+# before any suite if it does. The listener dies with this script
+# (PR_SET_PDEATHSIG), whatever ends it.
+mkdir "$RUN/probe"
+PROBE_TOKEN="rnk-probe-$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')"
+printf '%s\n' "$PROBE_TOKEN" >"$RUN/probe/token"
+python3 -I -c '
+import ctypes, http.server, os, signal, socket, sys, threading
+root, parent = sys.argv[1], int(sys.argv[2])
+ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+if os.getppid() != parent:
+    sys.exit(0)
+token = open(os.path.join(root, "token"), "rb").read().strip() + b"\n"
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=root, **kwargs)
+    def log_message(self, *args):
+        pass
+class Server6(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+def answer(sock):
+    while True:
+        _, peer = sock.recvfrom(4096)
+        sock.sendto(token, peer)
+def udp(family, host, port):
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    s.bind((host, port))
+    return s
+for _ in range(50):
+    tcp4 = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = tcp4.server_address[1]
+    try:
+        udp4 = udp(socket.AF_INET, "127.0.0.1", port)
+        break
+    except OSError:
+        tcp4.server_close()
+else:
+    sys.exit("no port free for both TCP and UDP")
+streams, datagrams, v6 = [tcp4], [udp4], 0
+try:
+    tcp6 = Server6(("::1", port), Handler)
+    try:
+        datagrams.append(udp(socket.AF_INET6, "::1", port))
+        streams.append(tcp6)
+        v6 = 1
+    except OSError:
+        tcp6.server_close()
+except OSError:
+    pass
+for s in streams[1:]:
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+for d in datagrams:
+    threading.Thread(target=answer, args=(d,), daemon=True).start()
+with open(os.path.join(root, "port.part"), "w") as f:
+    f.write(f"{port} {v6}\n")
+os.rename(os.path.join(root, "port.part"), os.path.join(root, "port"))
+tcp4.serve_forever()
+' "$RUN/probe" "$$" >/dev/null 2>&1 9>&- &
+PROBE_PID=$!
+for _ in $(seq 50); do [ -f "$RUN/probe/port" ] && break; sleep 0.1; done
+read -r PROBE_PORT PROBE_V6 <"$RUN/probe/port" 2>/dev/null || die "the host-side network probe did not start"
+# probe_up <address>: the probe answers over TCP and UDP there.
+probe_up() {
+  [ "$(curl -fsS --noproxy '*' -g "http://$1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ] &&
+    python3 -I -c '
+import socket, sys
+host = sys.argv[1].strip("[]")
+s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2)
+s.sendto(b"?", (host, int(sys.argv[2])))
+sys.exit(s.recv(4096).strip() != sys.argv[3].encode())
+' "$1" "$PROBE_PORT" "$PROBE_TOKEN" 2>/dev/null
+}
+probe_up 127.0.0.1 || die "the host-side network probe does not answer on 127.0.0.1:$PROBE_PORT"
+[ "$PROBE_V6" = 0 ] || probe_up '[::1]' || die "the host-side network probe does not answer on [::1]:$PROBE_PORT"
+# The guest probes these besides the addresses it finds itself (its
+# gateways, its own): every other address that names the host or QEMU.
+{
+  printf 'export RANIKUST_VM_PROBE_PORT=%q\nexport RANIKUST_VM_PROBE_TOKEN=%q\n' "$PROBE_PORT" "$PROBE_TOKEN"
+  printf 'export RANIKUST_VM_PROBE_ADDRS=%q\nexport RANIKUST_VM_REGISTRY_PROBE=%q\n' \
+    "$REGISTRY_ADDR 10.0.2.3 $HARNESS_HOST $GUEST_DNS" "${REGISTRY_PORTS[*]/#/$REGISTRY_ADDR:}"
+  # The harness NIC, for the raw probe: the guest's address, QEMU's, the
+  # control forward.
+  printf 'export RANIKUST_VM_HARNESS=%q\n' "$HARNESS_GUEST $HARNESS_HOST $HARNESS_CONTROL"
+} >>"$STAGE/vm.env"
 
 # start_qemu <disk> <seed.iso> <serial log> <pidfile> <monitor> <mem> <cache>
 #            [extra QEMU arguments...]
 # Starts the VM detached; QEMU_PID and QEMU_AIO tell which. All virtio: the
 # disk on its own I/O thread, through io_uring where this QEMU and kernel
 # allow it (else the thread pool), an entropy source (no boot waits for
-# entropy), a balloon that hands freed memory back to the host.
+# entropy), a balloon that hands freed memory back to the host, and the
+# egress NIC (EGRESS_NETDEV), whose passt is added to PASSTS.
 start_qemu() {
-  local disk=$1 seed=$2 serial=$3 pidf=$4 mon=$5 mem=$6 cache=$7 aio
+  local disk=$1 seed=$2 serial=$3 pidf=$4 mon=$5 mem=$6 cache=$7 aio f pid
   shift 7
   for aio in io_uring threads; do
     rm -f "$pidf"
-    if qemu-system-x86_64 \
+    if TMPDIR="$PASSTDIR" qemu-system-x86_64 \
       -name ranikust-vm -enable-kvm -cpu host -smp "$CPUS" -m "$mem" -machine q35,accel=kvm \
       -object iothread,id=io0 \
       -drive file="$disk",if=none,id=disk0,format=qcow2,cache="$cache",aio="$aio",discard=unmap,detect-zeroes=unmap \
@@ -448,12 +721,28 @@ start_qemu() {
       -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-pci,rng=rng0 \
       -device virtio-balloon-pci,free-page-reporting=on \
       -display none -serial file:"$serial" -monitor unix:"$mon",server,nowait \
+      -netdev "$EGRESS_NETDEV" -device virtio-net-pci,netdev=n0,mac="$MAC_EGRESS" \
       "$@" -pidfile "$pidf" -daemonize 2>"$RUN/qemu.err"; then
       MONITOR=$mon QEMU_PID="$(cat "$pidf")" QEMU_AIO=$aio QEMU_PIDFILE=$pidf
       qemu_alive || { qemu_quit; die "the pid in $pidf is not this run's QEMU"; }
-      return 0
+      # The passt it started: the pid in the pid file it named (QEMU
+      # removes the file when it ends).
+      for _ in $(seq 20); do
+        for f in "$PASSTDIR"/passt-*.pid; do
+          if pid="$(cat "$f" 2>/dev/null)" && has_arg "$pid" "$f" && [[ " ${PASSTS[*]} " != *" $pid:$f "* ]]; then
+            PASSTS+=("$pid:$f")
+            # IPv4 only, as asked (ADR-0086): else stop before the guest runs.
+            has_arg "$pid" --ipv4-only || die "QEMU started passt without --ipv4-only (pid $pid)"
+            return 0
+          fi
+        done
+        sleep 0.1
+      done
+      die "QEMU started no passt this script can see (in $PASSTDIR)"
     fi
-    [ "$aio" = threads ] || log "QEMU did not start with aio=io_uring ($(head -c 300 "$RUN/qemu.err")); trying aio=threads"
+    # A passt that failed fails the same way with either aio.
+    if [ "$aio" = threads ] || grep -qi passt "$RUN/qemu.err"; then break; fi
+    log "QEMU did not start with aio=io_uring ($(head -c 300 "$RUN/qemu.err")); trying aio=threads"
   done
   cat "$RUN/qemu.err" >&2
   return 1
@@ -515,8 +804,9 @@ if [ "$GOLDEN_ON" = 1 ]; then
     printf 'instance-id: ranikust-base-%s\nlocal-hostname: ranikust-base\n' "$gkey" >"$g/seed/meta-data"
     xorriso -as mkisofs -quiet -output "$g/seed.iso" -volid cidata -joliet -rock "$g/seed/user-data" "$g/seed/meta-data"
     qemu-img create -q -f qcow2 -F qcow2 -b "$IMG" "$g/disk.qcow2" "${GOLDEN_GIB}G"
-    start_qemu "$g/disk.qcow2" "$g/seed.iso" "$g/serial.log" "$g/qemu.pid" "$SOCKDIR/base.sock" 4096 writeback \
-      -netdev user,id=n0 -device virtio-net-pci,netdev=n0 || die "QEMU did not start"
+    # Egress only (apt), through passt: no SSH, no host port (ADR-0086).
+    start_qemu "$g/disk.qcow2" "$g/seed.iso" "$g/serial.log" "$g/qemu.pid" "$SOCKDIR/base.sock" 4096 writeback ||
+      die "QEMU did not start"
     # The VM powers itself off once cloud-init is done (power_state).
     local deadline=$((SECONDS + 1200))
     while qemu_alive; do
@@ -566,8 +856,27 @@ if [ "$IMAGE_REGISTRY" = docker.io ]; then MIRRORS='[]'; else MIRRORS="[\"https:
 if [ "$GOLDEN_ON" = 1 ]; then : >"$RUN/packages.yaml"; else packages_yaml >"$RUN/packages.yaml"; fi
 render "$HERE/cloud-init/user-data" "$RUN/packages.yaml" "$RUN/key.pub" "$MIRRORS" >"$RUN/seed/user-data"
 printf 'instance-id: ranikust-vm-%s\nlocal-hostname: ranikust-vm\n' "$(basename "$RUN")" >"$RUN/seed/meta-data"
+# The two NICs (ADR-0086), told apart by MAC: egress takes passt's DHCP (its
+# default route, GUEST_DNS); the harness NIC has a fixed address and no
+# gateway, no DNS, no IPv6.
+cat >"$RUN/seed/network-config" <<EOF
+version: 2
+ethernets:
+  egress:
+    match:
+      macaddress: "$MAC_EGRESS"
+    dhcp4: true
+  harness:
+    match:
+      macaddress: "$MAC_HARNESS"
+    dhcp4: false
+    dhcp6: false
+    accept-ra: false
+    link-local: []
+    addresses: [$HARNESS_GUEST/${HARNESS_NET#*/}]
+EOF
 xorriso -as mkisofs -quiet -output "$RUN/seed.iso" -volid cidata -joliet -rock \
-  "$RUN/seed/user-data" "$RUN/seed/meta-data"
+  "$RUN/seed/user-data" "$RUN/seed/meta-data" "$RUN/seed/network-config"
 # Again: the builds and downloads above took space since the first check.
 check_host_free
 # The base image is only ever a backing file: QEMU opens it read-only, and
@@ -577,10 +886,48 @@ qemu-img create -q -f qcow2 -F qcow2 -b "$BASE_IMG" "$RUN/disk.qcow2" "$DISK"
 PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 log "booting $RELEASE ($VM_SIZE), SSH on 127.0.0.1:$PORT"
 T_BOOT=$SECONDS
+# The network (ADR-0086): egress through passt; the harness NIC forwards
+# only SSH from the host's 127.0.0.1 and, with the push suite, the test
+# registries (restrict=on: nothing else, not even DNS, leaves through it).
+# Each guest connection to a registry port gets its own run of the
+# forwarder below, which libslirp starts (one sh per connection, at no
+# bounded rate: accepted, it exits at once while the gate is shut): it
+# passes the connection to the host's registry only while the gate is open
+# (gate_open, gate_close), with at most FWD_SLOTS at a time per port, each
+# for at most FWD_SECONDS, and else closes it at once. The raw probe's
+# control on 10.0.2.2:9 is QEMU's null character device: no process.
+HARNESS="user,id=n1,ipv6=off,restrict=on,net=$HARNESS_NET,host=$HARNESS_HOST"
+HARNESS+=",hostfwd=tcp:127.0.0.1:$PORT-$HARNESS_GUEST:22"
+HARNESS+=",guestfwd=tcp:$HARNESS_CONTROL-null"
+if wants push; then
+  FORWARD="$SOCKDIR/registry-forward"
+  cat >"$FORWARD" <<EOF
+#!/bin/sh
+# One guest connection to $REGISTRY_ADDR:<port> (tests/vm/vm.sh, ADR-0086).
+case "\$1" in
+  $(IFS='|'; echo "${REGISTRY_PORTS[*]}")) ;;
+  *) exit 1 ;;
+esac
+[ -e "$GATE" ] || exit 0
+i=0
+while [ "\$i" -lt $FWD_SLOTS ]; do
+  i=\$((i + 1))
+  exec 3>"$SOCKDIR/registry-slot.\$1.\$i"
+  if $(command -v flock) -n 3; then
+    exec $(command -v timeout) $FWD_SECONDS $SOCAT -lf $SOCKDIR/socat.log - TCP:127.0.0.1:\$1
+  fi
+done
+exit 0
+EOF
+  chmod 0700 "$FORWARD"
+  for p in "${REGISTRY_PORTS[@]}"; do
+    HARNESS+=",guestfwd=tcp:$REGISTRY_ADDR:$p-cmd:$FORWARD $p"
+  done
+fi
 # The disk is thrown away with the run: cache=unsafe skips the guest's
 # flushes to the host's disk.
 start_qemu "$RUN/disk.qcow2" "$RUN/seed.iso" "$RUN/serial.log" "$RUN/qemu.pid" "$SOCKDIR/monitor.sock" "$MEM" unsafe \
-  -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$PORT"-:22 -device virtio-net-pci,netdev=n0 || die "QEMU did not start"
+  -netdev "$HARNESS" -device virtio-net-pci,netdev=n1,mac="$MAC_HARNESS" || die "QEMU did not start"
 
 # One SSH connection shared by every command (no handshake per poll); a
 # dropped one is opened again by the next command.
@@ -613,31 +960,79 @@ elif wants e2e; then
     vssh 'mkdir -p rnk/e2e && tar -C rnk/e2e -xf -'
 fi
 
-# The suites run detached in the guest, so that a dropped SSH connection
-# (the VM stalled while the host swapped) loses neither the run nor its
-# results: the host follows the log and reconnects.
-vssh "setsid nohup bash -c 'bash rnk/guest/run.sh ${SUITES[*]} >rnk/suite.log 2>&1; echo \$? >rnk/suite.rc' </dev/null >/dev/null 2>&1 &"
-shown=0 lost=0
-while :; do
-  # The whole log each time (small), printed from where the last poll
-  # stopped; then the exit status once the suites have finished.
-  # Each command succeeds in the guest whether or not the files exist yet,
-  # so a failure here is SSH itself.
-  if vssh 'cat rnk/suite.log 2>/dev/null; true' >"$RUN/suite.log" &&
-     rc="$(vssh 'cat rnk/suite.rc 2>/dev/null; true')"; then
-    lost=0
-    size=$(stat -c %s "$RUN/suite.log")
-    [ "$size" -le "$shown" ] || { tail -c +$((shown + 1)) "$RUN/suite.log"; shown=$size; }
-    [ -z "$rc" ] || { status=$rc; break; }
-  else
-    lost=$((lost + 1))
-    log "no SSH to the VM ($lost); the suites keep running"
-    [ "$lost" -lt 180 ] || die "the VM stopped answering SSH for 15 minutes"
-  fi
-  sleep 5
-done
+# guest_step <name> <deadline> <guest/run.sh arguments...>: runs
+# guest/run.sh detached in the guest, so that a dropped SSH connection (the
+# VM stalled while the host swapped) loses neither the run nor its results:
+# the host follows its log (rnk/<name>.log) and reconnects. Sets STEP_RC to
+# its exit status (0-255, else 1), or to "deadline" once <deadline> seconds
+# have gone by (0: none) without one.
+guest_step() {
+  local name=$1 deadline=$2 shown=0 lost=0 size rc t0=$SECONDS
+  shift 2
+  vssh "setsid nohup bash -c 'bash rnk/guest/run.sh $* >rnk/$name.log 2>&1; echo \$? >rnk/$name.rc' </dev/null >/dev/null 2>&1 &"
+  while :; do
+    if [ "$deadline" != 0 ] && [ $((SECONDS - t0)) -ge "$deadline" ]; then
+      STEP_RC=deadline
+      return 0
+    fi
+    # The whole log each time (small), printed from where the last poll
+    # stopped; then the exit status once the step has finished. Each
+    # command succeeds in the guest whether or not the files exist yet, so
+    # a failure here is SSH itself.
+    if vssh "cat rnk/$name.log 2>/dev/null; true" >"$RUN/$name.log" &&
+       rc="$(vssh "cat rnk/$name.rc 2>/dev/null; true")"; then
+      lost=0
+      size=$(stat -c %s "$RUN/$name.log")
+      [ "$size" -le "$shown" ] || { tail -c +$((shown + 1)) "$RUN/$name.log"; shown=$size; }
+      if [ -n "$rc" ]; then
+        [[ "$rc" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]] || rc=1
+        STEP_RC=$rc
+        return 0
+      fi
+    else
+      lost=$((lost + 1))
+      log "no SSH to the VM ($lost); the suites keep running"
+      [ "$lost" -lt 180 ] || die "the VM stopped answering SSH for 15 minutes"
+    fi
+    sleep 5
+  done
+}
+
+# Every suite but push, in the order given, after the network check; then
+# push, in a step of its own, the only time the registry gate is open
+# (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
+# once the guest reports the other suites finished, which root in the VM
+# (or a process running as rnk) could bring forward, and shuts when the
+# push step reports its end, or at about PUSH_DEADLINE whatever the guest
+# says.
+OTHERS=()
+for s in "${SUITES[@]}"; do [ "$s" = push ] || OTHERS+=("$s"); done
+guest_step suite 0 ${OTHERS[@]+"${OTHERS[@]}"}
+status=$STEP_RC
+if wants push; then
+  case "$status" in
+    # The two statuses guest/run.sh gives only after its network check passed.
+    0 | 1)
+      gate_open
+      guest_step suite-push "$PUSH_DEADLINE" --after push
+      gate_close || status=1
+      if [ "$STEP_RC" = deadline ]; then
+        log "error: the push step did not end within $PUSH_DEADLINE s: the registry gate is shut, the run fails"
+        status=1
+      elif [ "$STEP_RC" != 0 ] && [ "$status" = 0 ]; then
+        status=$STEP_RC
+      fi
+      ;;
+    3) log "the network check failed: the push suite does not run" ;;
+    4) log "error: the VM is not the run's own: the push suite does not run" ;;
+    *) log "error: the other suites ended with status $status, not 0 or 1 (the statuses guest/run.sh gives only after its network check passed): the push suite does not run" ;;
+  esac
+fi
 T_SUITES=$SECONDS
 log "suites done $((T_SUITES - T_READY)) s after cloud-init"
+# The probe listener must have lasted the whole run: a check against a
+# listener that had died would have proved nothing.
+probe_up 127.0.0.1 || { log "error: the host-side network probe died during the run"; status=1; }
 mkdir -p -- "$(dirname -- "$RESULTS")"
 for i in 1 2 3 4 5; do
   # The guest's results hold only regular files and directories: a link
