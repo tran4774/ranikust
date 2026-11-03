@@ -23,12 +23,16 @@ The work is planned in phases, without dates. The
 |---|---|
 | Builds as a regular user (rootless overlay mode), `--seccomp`, `--userns` | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
 | The layer cache (`--cache`) | 4 |
-| `ADD` of a URL, a git repository or an archive, `COPY --link`, `RUN --mount=type=bind` and `tmpfs`, `ONBUILD`, git, tar and HTTPS build contexts, registry mirrors, credential helpers, the `push` and `prune` subcommands | 5 |
+| `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack`; `COPY --link`, `--parents` and `--exclude`; `RUN --mount=type=bind`, `tmpfs`, `ssh` and `type=cache,from=`; `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; credential helpers; the `prune` subcommand | 5 |
 | kaniko's 200 integration Dockerfiles in every mode, fuzzing, the host-safety test suite, packaging | 6 |
 
-An instruction or flag of a later phase stops the build with a message naming
-the phase. Version 1.0 needs all three ways of building: overlay as root,
-rootless overlay, and kaniko mode.
+An instruction, or a kaniko flag, of a later phase stops the build with a
+message naming the phase. Version 1.0 needs all three ways of building:
+overlay as root, rootless overlay, and kaniko mode.
+
+Not scheduled: the `push` subcommand (it would take an OCI layout,
+[ADR-0052](https://github.com/tran4774/ranikust/blob/main/docs/adr/0052-push-input-aliases-and-issue-mining-fixes.md))
+and `--dryrun`.
 
 Not planned: multi-platform builds, kaniko's `bake` and cache warmer, and S3,
 GCS or Azure build contexts

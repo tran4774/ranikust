@@ -116,8 +116,9 @@ container's `/` stages run one at a time and only the uploads follow it);
 `--allow` (entitlements, ADR-0033); `--limit` (ADR-0079); `--metrics-file`;
 `--platform`. `--parallel-stages` is recognised and refused for good
 (`ADR-0060`); `--seccomp` and `--userns` (Phase 3) do not exist yet.
-Subcommands: `build` (the default) and `version`; `push` and `prune` come in
-Phase 5; `login` never will (ADR-0049).
+Subcommands: `build` (the default) and `version`; `prune` comes in Phase 5;
+`push` (an OCI layout, ADR-0052) has no phase yet; `login` never will
+(ADR-0049).
 
 ## Behaviour to match
 

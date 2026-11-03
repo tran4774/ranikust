@@ -82,10 +82,10 @@ provenance attestation. Check both before you run it: the
 [installation guide](docs/book/src/install.md) has the commands, and the
 container examples.
 
-Then, as root on a host (see the [book](docs/book/src/usage.md) for the flags):
+Then, on a host (the [book](docs/book/src/usage.md) lists the flags):
 
 ```sh
-ranikust --context=. --destination=registry.example.com/team/app:1.0
+sudo ranikust --context=. --destination=registry.example.com/team/app:1.0
 ```
 
 ## How it compares
@@ -126,11 +126,10 @@ benchmarks of a released tool; the method and caveats are in experiments
 ## Status
 
 Pre-alpha. Phase 1 (overlay mode as root) and Phase 2 (kaniko mode) are done,
-and v0.0.1 is a pre-release. Releases are built for `x86_64-unknown-linux-musl`;
-`aarch64` is kept buildable and tested in CI
+and the releases so far are pre-releases. Releases are built for
+`x86_64-unknown-linux-musl`; `aarch64` is kept buildable and tested in CI
 ([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)). ranikust requires
-Linux 5.8 or later
-([ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)).
+Linux 5.8 or later ([ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)).
 
 The design came out of a survey with 16 experiments (overlayfs semantics at
 every privilege level, `RUN` sandboxing, rootful Docker under cgroup v1 and v2,

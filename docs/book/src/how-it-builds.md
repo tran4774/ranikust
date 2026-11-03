@@ -1,7 +1,8 @@
 # How ranikust builds
 
-> This page describes the design as built. Rootless overlay mode (Phase 3) is
-> not built, nor is the AppArmor advice that goes with it ([status](status.md)).
+> This page describes what is built; where a part is not, it says so. Rootless
+> overlay mode (Phase 3) is not built, nor is the AppArmor advice that goes
+> with it ([status](status.md)).
 
 A Dockerfile build runs each instruction of each stage in a root filesystem
 and records what the instruction changed as an image layer. ranikust can do
@@ -57,18 +58,19 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
 ## kaniko mode
 
 Used when ranikust runs as root but may not mount: a Docker container with the
-default security profile, most Kubernetes pods. Built: sequential builds on a
-container's `/`, multi-stage included, and a directory per stage elsewhere,
-built in parallel. Refused for good: `--parallel-stages` ([ADR-0060]) and
-`--single-snapshot` ([ADR-0065]).
+default security profile, most Kubernetes pods. Changes are found by walking
+and hashing the filesystem after each instruction, as kaniko does.
+`--snapshot-mode=full|redo|time` means what it means in kaniko (what the walk
+compares; default `full`). Built: sequential builds on a container's `/`,
+multi-stage included, and a directory per stage elsewhere, built in parallel.
+Refused for good: `--parallel-stages` ([ADR-0060]) and `--single-snapshot`
+([ADR-0065]).
 
 ### On a container's `/`
 
 ranikust works the way kaniko does. The build root is the container's own
-`/`: base layers are unpacked there, `RUN` commands run there, and changes are
-found by walking and hashing the filesystem after each instruction.
-`--snapshot-mode=full|redo|time` means what it means in kaniko (what the walk
-compares; default `full`). Only one build at a time uses `/`.
+`/`: base layers are unpacked there and `RUN` commands run there. Only one
+build at a time uses `/`.
 
 **Stages and the root**
 
@@ -130,10 +132,11 @@ the first `RUN`, and it reads every `--secret` once at the start
 ([ADR-0051]). If the container grants `CAP_SYS_PTRACE` and ranikust cannot
 take it away from `RUN`, it refuses to build. On a container's own root
 filesystem, which takes no unnamed file on most kernels, each of those files
-is made by a random name and removed at once, while no `RUN` runs
-([ADR-0056]). After a build in the container was killed (ranikust not its
-first process), later builds there keep this state in memory and cannot
-`COPY --from` an earlier stage or an image: restart the container.
+is made by a random name and removed at once, while no `RUN` runs, so it stays
+on disk, not in the container's memory ([ADR-0056]). After a build in the
+container was killed (ranikust not its first process), later builds there keep
+this state in memory and cannot `COPY --from` an earlier stage or an image:
+restart the container, or give the state directory a volume (below).
 
 **What ranikust cannot hide** (it warns about each):
 

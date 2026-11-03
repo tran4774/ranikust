@@ -47,8 +47,9 @@ The binary: the CLI and the orchestration of a build across the library crates
 (ADR-0067). Parses the `build` (the default) and `version` subcommands, kaniko's
 common flags (those it does not accept are refused by name) and
 `--mode=auto|overlay|kaniko`
-([ADR-0023](docs/adr/0023-mode-flag.md)); `push` and `prune` come in Phase 5,
-there is no `login` (ADR-0049). Runs the set-up and the probes while
+([ADR-0023](docs/adr/0023-mode-flag.md)); `prune` comes in Phase 5, `push` (an
+OCI layout, ADR-0052) has no phase yet, and there is no `login` (ADR-0049).
+Runs the set-up and the probes while
 single-threaded, picks the mode and the root, runs `rnk-sched` with its own
 `StageRunner` (which drives `rnk-builder`, one thread per stage) and writes the
 outputs. **Must not** hold the rule of a single concern (Dockerfile semantics,
@@ -213,9 +214,9 @@ anything but the report, start a thread, or keep state per file.
 depend on higher ones. Besides the chain:
 
 - `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes, and
-  builds the registry client, the context and the outputs. It runs
-  `rnk-builder` for `rnk-sched` by implementing the `StageRunner` trait:
-  `rnk-sched` does not depend on `rnk-builder`.
+  builds the registry client, the context and the outputs (interim,
+  `[open: #7]`). It runs `rnk-builder` for `rnk-sched` by implementing the
+  `StageRunner` trait: `rnk-sched` does not depend on `rnk-builder`.
 - `rnk-snapshot` uses `rnk-layer` (decoder for extraction, writer for export)
   and `rnk-store`; `rnk-cache` uses `rnk-store`; `rnk-registry` does not: it
   writes pulls into a sink its caller gets from `rnk-store`.
@@ -234,9 +235,10 @@ declares none yet.
 1. **Set-up** (`ranikust`, single-threaded): parse flags; refuse a kernel older
    than Linux 5.8 (`rnk_rootfs::probe_support`,
    [ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)); install the logs and
-   the opt-in metrics; validate the flags into a `BuildConfig`; enter a private
-   mount namespace; check the state directory; clean up the store
-   (`rnk-store`); start the `RUN` spawner thread (`rnk-sandbox`).
+   the opt-in metrics; validate the flags into a `BuildConfig`; try to enter a
+   private mount namespace (failing means root may not mount); check the state
+   directory; clean up the store (`rnk-store`); start the `RUN` spawner thread
+   (`rnk-sandbox`).
 2. **Probe** (`ranikust`, running the probes of `rnk-sandbox` and
    `rnk-snapshot` in order): choose overlay, kaniko, or refuse;
    `--mode=overlay|kaniko` skips the choice but not the checks

@@ -32,7 +32,7 @@ document only when a card sends you there.
 | [kaniko-map.md](kaniko-map.md) | kaniko packages and flags to ranikust crates and flags, with source references; behaviour to match |
 | [glossary.md](glossary.md) | Terms used across code and docs |
 | [refs.md](refs.md) | Specs, upstream code, chosen crates and their docs |
-| [crates/](crates/) | One card per crate (template: [crates/_template.md](crates/_template.md)) |
+| [crates/](crates/) | One card per crate: what it owns and must not do, its API, invariants, references, tests, metrics and pitfalls (template: [crates/_template.md](crates/_template.md)) |
 
 The files carry no line counts: they change with every edit. Use `wc -l` to
 size a file before reading it.
@@ -59,12 +59,19 @@ size a file before reading it.
 
 ## Conventions in these files
 
+- **A card** opens with a status line (status, phase, depends on, used by,
+  path) and a TL;DR, then the same sections in the same order: `## Owns`,
+  `## Must not`, `## API`, `## Invariants`, `## Refs`, `## Tests`,
+  `## Metrics`, `## Pitfalls`. So `rg '^## Pitfalls' docs/agents/crates` and
+  similar queries work across cards. A card links the design docs and ADRs and
+  never restates them.
 - **Status** on every card: `planned` (no code), `skeleton` (crate exists,
   docs only), `in progress`, `done`. Trust the code over the card; fix the
   card in the same PR when they disagree.
 - **Labels:** `[decided]` (backed by an ADR), `[design]` (current design, may
   change), `[open: #N]` (undecided; issue #N, labelled `question`: do not
-  invent an answer).
+  invent an answer). Planned API items carry `[design]` or `[decided]`; a
+  planned crate says `(planned)` in the `## API` heading.
 - **References** are short and greppable:
   - `ADR-0016`: `../adr/0016-overlay-mount-options.md`;
   - `design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`: a design doc
@@ -75,15 +82,13 @@ size a file before reading it.
     [`../research/README.md`](../research/README.md#source-snapshot));
   - external links in full.
 - Every file opens with a **TL;DR** of 1-3 lines.
-- Headings are fixed per file type, so `rg '^## Pitfalls' docs/agents` and
-  similar queries work across cards.
 
 ## Keeping it current
 
 - Change a crate's API, status or boundaries: update its card in the same PR.
 - A task's pull request closes its issue (`Closes #N`). Phases 1 and 2 are
   done and their files frozen; later phases live in issues (`ADR-0088`).
-- A card or file grows past about 140 lines: move detail into `docs/design/`
-  and link it.
+- A card or file that grows long or restates a design doc: move the detail
+  into `docs/design/` and link it.
 - Never copy long passages from ADRs, design docs or research: summarise in a
   line and link.
