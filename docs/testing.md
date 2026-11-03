@@ -149,10 +149,13 @@ runs as root on the host:
    QEMU's user network with `restrict=on` carries only SSH and, while the
    `push` suite runs, the host's test registries as `10.0.2.2:5000` and
    `10.0.2.2:5443`: `vm.sh` runs `push` last, in an SSH step of its own,
-   opens their gate only around that step (its state is `vm.sh`'s own,
-   never driven by what the guest writes, and never reopens), kills every
-   forwarder left when it shuts, and each connection runs `socat` (at most
-   16 per port, 600 s each). The run's
+   and opens their gate only around that step. The gate's state is
+   `vm.sh`'s own and never reopens; it opens when the guest reports the
+   other suites finished after a passed network check, and shuts when the
+   guest reports the push step's end or after 900 s, which fails the run
+   (root in the VM can bring the opening forward or prolong it up to that
+   bound). `vm.sh` kills every forwarder left when it shuts, and each
+   connection runs `socat` (at most 16 per port, 600 s each). The run's
    seed holds a `network-config` that tells the NICs apart by MAC. Needs
    QEMU 10.1 or later with its passt backend, passt 2024_10_30 or later,
    and `socat` for `push`; `vm.sh` checks every option it uses before

@@ -73,14 +73,21 @@ loopback ports it may reach are named in one place at the top of `vm.sh`
   and `10.0.2.2:5443` starts a forwarder per guest connection, which hands
   it to the host's `127.0.0.1` of the same port only while a gate is open.
   `vm.sh` runs the push suite last, in an SSH step of its own after every
-  other suite, and opens the gate only around that step: no text the
-  guest writes moves it. The gate's state lives in `vm.sh` and moves one
-  way only (shut, open, done; done never reopens), and when it shuts,
-  `vm.sh` kills every forwarder still running, so no connection made while
-  it was open outlives it. Each forwarder takes one of 16 `flock` slots per
-  port and runs `socat` under `timeout 600`. Nothing else leaves through
-  this NIC, not even DNS. The guest keeps `10.0.2.2` for the registries,
-  so the registries' certificate (whose SANs hold it) is unchanged.
+  other suite, and opens the gate only around that step. The gate's state
+  is `vm.sh`'s own and moves one way only (shut, open, done; done never
+  reopens). It opens once, when the guest reports the other suites
+  finished with a status `guest/run.sh` gives only after its network check
+  passed (0 or 1; any other skips the push suite and fails the run), and
+  shuts when the guest reports the push step's end, or after 900 s
+  whatever the guest says (the step takes under a minute), which fails the
+  run. Root in the VM, or a process running as `rnk`, can bring the
+  opening forward or prolong it up to that bound, but not reopen it. When
+  it shuts, `vm.sh` kills every forwarder still running, so no connection
+  made while it was open outlives it. Each forwarder takes one of 16
+  `flock` slots per port and runs `socat` under `timeout 600`. Nothing
+  else leaves through this NIC, not even DNS. The guest keeps `10.0.2.2`
+  for the registries, so the registries' certificate (whose SANs hold it)
+  is unchanged.
 - **Guest**: a `network-config` in the run's seed tells the NICs apart by
   fixed MACs: DHCP on egress, a fixed `10.0.2.15/24` with no gateway, no
   DNS and no IPv6 on the harness NIC. The provisioning boot of the base
@@ -94,11 +101,12 @@ loopback ports it may reach are named in one place at the top of `vm.sh`
   answer then. Each vantage must also reach the internet with the tool of
   its probe (curl for root in the VM, whose own busybox `wget` segfaults
   on jammy; alpine's busybox `wget` elsewhere) and print that its probe
-  ran through; one that does not, or does not run, fails the run. Root also writes raw frames straight
-  to each NIC's backend (`tests/vm/guest/rawprobe.py`; `CAP_NET_RAW`,
-  which a `--privileged` container or a `RUN` on the VM's network also
-  holds): TCP and UDP to the loopback, unspecified and own addresses, in
-  IPv4 and IPv6 frames, one at a time with a liveness check after each.
+  ran through; one that does not, or does not run, fails the run. Root
+  also writes raw frames straight to each NIC's backend
+  (`tests/vm/guest/rawprobe.py`; `CAP_NET_RAW`, which a `--privileged`
+  container or a `RUN` on the VM's network also holds): TCP and UDP to the
+  loopback, unspecified and own addresses, in IPv4 and IPv6 frames, one at
+  a time with a liveness check after each.
   On the egress NIC, controls through the same socket come first (a SYN to
   the registry, a DNS query), and the registry must get no answer over
   IPv6; on the harness NIC the control is a `guestfwd` on `10.0.2.2:9` to
@@ -134,6 +142,10 @@ connections come from the host itself.
   Debian 13's 10.0) is refused.
 - Bad, because the push suite always runs last, whatever order the suites
   were named in.
+- Bad, because the gate's opening and closing follow what the guest
+  reports: root in the VM, or a process running as `rnk`, can open it
+  while other suites still run, or hold it open for up to 900 s. It never
+  reopens, and past the bound the run fails.
 - Bad, because every guest connection to a registry port starts a host
   `sh` (libslirp's `guestfwd` command), at no bounded rate, during the
   whole run: an accepted residual. While the gate is shut it exits at

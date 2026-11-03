@@ -140,6 +140,9 @@ REGISTRY_PORTS=(5000 5443)
 # connection): at most FWD_SLOTS at a time per port, each for at most
 # FWD_SECONDS.
 FWD_SLOTS=16 FWD_SECONDS=600
+# The push step's deadline: it takes under a minute (about 15 s on the
+# development machine); past this the gate shuts and the run fails.
+PUSH_DEADLINE=900
 # The oldest passt with every option used here (--dns-host), and those
 # options: what EGRESS_NETDEV (below) has QEMU pass, each checked at start.
 PASST_MIN=20241030
@@ -498,13 +501,17 @@ stop() {
   ! has_arg "$1" "$2"
 }
 
-# forwarders: the pids of this run's registry forwarders (timeout and socat,
-# whose command lines name this run's socat log) still running.
-forwarders() { pgrep -u "$(id -u)" -f -- " -lf ${SOCKDIR//./\\.}/socat\\.log - TCP:127\\.0\\.0\\.1:[0-9]+\$"; }
+# forwarders: the pids of this run's registry forwarders still running: the
+# forwarder script's sh (its command line names it) and the timeout and
+# socat it becomes (theirs name this run's socat log).
+forwarders() {
+  pgrep -u "$(id -u)" -f -- "( -lf ${SOCKDIR//./\\.}/socat\\.log - TCP:127\\.0\\.0\\.1:|${SOCKDIR//./\\.}/registry-forward )[0-9]+\$"
+}
 
 # The registry gate's state, kept here and moved one way only: shut (not
 # yet open), open (while the push suite's own step runs), done (never open
-# again). Nothing the guest writes moves it.
+# again). What the guest writes can only make it open sooner or shut later
+# (see the push step), never move it back.
 GATE_STATE=shut
 gate_open() {
   [ "$GATE_STATE" = shut ] || die "the registry gate opens once per run"
@@ -950,15 +957,21 @@ elif wants e2e; then
     vssh 'mkdir -p rnk/e2e && tar -C rnk/e2e -xf -'
 fi
 
-# guest_step <name> <guest/run.sh arguments...>: runs guest/run.sh detached
-# in the guest, so that a dropped SSH connection (the VM stalled while the
-# host swapped) loses neither the run nor its results: the host follows its
-# log (rnk/<name>.log) and reconnects. Sets STEP_RC to its exit status.
+# guest_step <name> <deadline> <guest/run.sh arguments...>: runs
+# guest/run.sh detached in the guest, so that a dropped SSH connection (the
+# VM stalled while the host swapped) loses neither the run nor its results:
+# the host follows its log (rnk/<name>.log) and reconnects. Sets STEP_RC to
+# its exit status (0-255, else 1), or to "deadline" once <deadline> seconds
+# have gone by (0: none) without one.
 guest_step() {
-  local name=$1 shown=0 lost=0 size rc
-  shift
+  local name=$1 deadline=$2 shown=0 lost=0 size rc t0=$SECONDS
+  shift 2
   vssh "setsid nohup bash -c 'bash rnk/guest/run.sh $* >rnk/$name.log 2>&1; echo \$? >rnk/$name.rc' </dev/null >/dev/null 2>&1 &"
   while :; do
+    if [ "$deadline" != 0 ] && [ $((SECONDS - t0)) -ge "$deadline" ]; then
+      STEP_RC=deadline
+      return 0
+    fi
     # The whole log each time (small), printed from where the last poll
     # stopped; then the exit status once the step has finished. Each
     # command succeeds in the guest whether or not the files exist yet, so
@@ -969,7 +982,7 @@ guest_step() {
       size=$(stat -c %s "$RUN/$name.log")
       [ "$size" -le "$shown" ] || { tail -c +$((shown + 1)) "$RUN/$name.log"; shown=$size; }
       if [ -n "$rc" ]; then
-        [[ "$rc" =~ ^[0-9]{1,3}$ ]] || rc=1
+        [[ "$rc" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]] || rc=1
         STEP_RC=$rc
         return 0
       fi
@@ -984,20 +997,31 @@ guest_step() {
 
 # Every suite but push, in the order given, after the network check; then
 # push, in a step of its own, the only time the registry gate is open
-# (ADR-0086). vm.sh alone moves the gate, and only one way.
+# (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
+# once the guest reports the other suites finished, which root in the VM
+# (or a process running as rnk) could bring forward, and shuts when the
+# push step reports its end, or at PUSH_DEADLINE whatever the guest says.
 OTHERS=()
 for s in "${SUITES[@]}"; do [ "$s" = push ] || OTHERS+=("$s"); done
-guest_step suite ${OTHERS[@]+"${OTHERS[@]}"}
+guest_step suite 0 ${OTHERS[@]+"${OTHERS[@]}"}
 status=$STEP_RC
 if wants push; then
-  if [ "$status" = 3 ]; then
-    log "the network check failed: the push suite does not run"
-  else
-    gate_open
-    guest_step suite-push --after push
-    gate_close || status=1
-    [ "$STEP_RC" = 0 ] || [ "$status" != 0 ] || status=$STEP_RC
-  fi
+  case "$status" in
+    # The two statuses guest/run.sh gives only after its network check passed.
+    0 | 1)
+      gate_open
+      guest_step suite-push "$PUSH_DEADLINE" --after push
+      gate_close || status=1
+      if [ "$STEP_RC" = deadline ]; then
+        log "error: the push step did not end within $PUSH_DEADLINE s: the registry gate is shut, the run fails"
+        status=1
+      elif [ "$STEP_RC" != 0 ] && [ "$status" = 0 ]; then
+        status=$STEP_RC
+      fi
+      ;;
+    3) log "the network check failed: the push suite does not run" ;;
+    *) log "error: the suites ended with status $status, which guest/run.sh gives only before its network check passed: the push suite does not run" ;;
+  esac
 fi
 T_SUITES=$SECONDS
 log "suites done $((T_SUITES - T_READY)) s after cloud-init"

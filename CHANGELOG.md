@@ -48,19 +48,17 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   through passt, which maps nothing to the host's loopback, and a second,
   restricted NIC carries only SSH and, while the `push` suite runs (now
   always last, in a step of its own), the two test registries. One
-  exception remains on purpose: the
-  guest's DNS goes to the host's resolver (ports 53 and 853, TCP and UDP,
-  on the host's first IPv4 nameserver, often `127.0.0.53`), which answers
-  the host's own names too, as before. Every run first checks, from root
-  in the VM, from Docker containers and from a ranikust `RUN`, that a
-  token served on the host's loopback is out of reach, raw frames
-  included, and that the registries are shut outside `push` (ADR-0086).
-  In passt's default configuration, a class of raw frame reached the
-  host's loopback; the egress runs with a reduced configuration, which the
-  raw probe confirms (details withheld until reported upstream). The
-  harness now needs QEMU
-  10.1 or later with its passt backend, passt 2024_10_30 or later, and
-  `socat` for `push`.
+  exception remains on purpose: the guest's DNS goes to the host's
+  resolver (ports 53 and 853, TCP and UDP, on the host's first IPv4
+  nameserver, often `127.0.0.53`), which answers the host's own names too,
+  as before. Every run first checks, from root in the VM, from Docker
+  containers and from a ranikust `RUN`, that a token served on the host's
+  loopback is out of reach, raw frames included, and that the registries
+  are shut outside `push` (ADR-0086). In passt's default configuration, a
+  class of raw frame reached the host's loopback; the egress runs with a
+  reduced configuration, which the raw probe confirms (details withheld
+  until reported upstream). The harness now needs QEMU 10.1 or later with
+  its passt backend, passt 2024_10_30 or later, and `socat` for `push`.
 
 ### Added
 
