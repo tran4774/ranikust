@@ -137,8 +137,25 @@ runs as root on the host:
    name. `RANIKUST_VM_IMAGE_REGISTRY=docker.io` pulls from Docker Hub
    itself, which allows anonymous clients only a few pulls per hour.
 5. **Boot** QEMU as the invoking user (`/dev/kvm` through its group or an
-   ACL, never `sudo`), user-mode networking, SSH forwarded to a free port
-   on `127.0.0.1` only, one SSH connection shared by every command. Every
+   ACL, never `sudo`), SSH forwarded to a free port on `127.0.0.1` only,
+   one SSH connection shared by every command. The network reaches nothing
+   on the host's loopback but what a suite needs
+   ([ADR-0086](adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)):
+   egress (image pulls, apt, e2e fetches) goes through passt (QEMU's
+   `-netdev passt`), which maps no guest address to the host's loopback,
+   and DNS through it to the host's resolver (the guest asks
+   `192.0.2.53`); a second NIC on QEMU's user network with `restrict=on`
+   carries only SSH and, with the `push` suite, the host's test registries
+   as `10.0.2.2:5000` and `10.0.2.2:5443` (`guestfwd` through `socat`).
+   The run's seed holds a `network-config` that tells the NICs apart by
+   MAC. Needs QEMU 10.1 or later with its passt backend, passt 2024_08_21
+   or later (for `--map-host-loopback`), and `socat` for `push`. Before any suite,
+   `tests/vm/guest/net.sh` probes a token `vm.sh` serves on a free port of
+   the host's `127.0.0.1` (and `::1`) from root in the VM, a default and a
+   `--privileged` `docker run` and a ranikust `RUN`, at every address that
+   could name the host; any answer, or a failed image pull or HTTPS
+   request, fails the run (`network: FAILED` in `summary.txt`,
+   `network.log` in the results). Every
    suite gets 12 vCPUs (`RANIKUST_VM_CPUS`; at most the host's CPUs less
    2) and 16 GiB (`RANIKUST_VM_MEM`). The memory is measured once the
    previous run's VM has gone: when the host has less than 16 GiB plus
@@ -211,8 +228,9 @@ name, `127.0.0.1`, `::1` and `10.0.2.2`, and `auth/htpasswd` with a random
 password kept in `auth/credentials`. It then starts both and checks them
 with `tests/registry/check.sh`: an image pushed into each reads back, and
 the HTTPS one refuses an anonymous read. `just registry-down` stops them and
-keeps the data. The T2 VM reaches them as `10.0.2.2`, which QEMU's user
-network maps to the host's loopback, so they need no wider binding. On a
+keeps the data. The T2 VM reaches them as `10.0.2.2`, forwarded to the
+host's loopback by `guestfwd` rules of its harness NIC only while the
+`push` suite runs (ADR-0086), so they need no wider binding. On a
 host whose AppArmor restricts unprivileged user namespaces, only podman
 (which has a profile) can read local storage, so the check pushes with
 `podman push` and reads with `skopeo inspect`.

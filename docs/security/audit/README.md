@@ -35,8 +35,8 @@ asks for private disclosure.
 The report above is kept as written at `ed718fb`. This table records what
 the hardening pass that followed did with each lead; the commits are on
 `main`, each branch reviewed by `host-safety` (and `reviewer` where no
-host-safety file changed) before its merge. Leads 1-3 were reproduced in
-the VM on the unfixed code before they were fixed; lead 10 failed a T0 test
+host-safety file changed) before its merge. Leads 1-3 and 28 were
+reproduced in the VM on the unfixed code before they were fixed; lead 10 failed a T0 test
 first; the others are fixed against the traces in NEEDS-VALIDATION.md.
 
 | Lead | Status | Where |
@@ -55,7 +55,7 @@ first; the others are fixed against the traces in NEEDS-VALIDATION.md.
 | 23 | Fixed: untrusted names escaped on stderr | `fix/error-message-hygiene` |
 | 25 | Accepted and documented: `--network=none` isolates the `RUN` only | threat model section 6, Q-447 |
 | 26, 27 | Fixed; the allowlist rules are guardrails, not a boundary | `fix/tooling-permission-rules` |
-| 28 | Open: the T2 VM's user-mode network still reaches the developer host's loopback | — |
+| 28 | Fixed; reproduced first (root in the VM, a default and a `--privileged` container, a ranikust `RUN`). Egress through passt maps nothing to the host's loopback; a restricted second NIC carries SSH and, for `push` only, the test registries; every VM run checks it | `fix/vm-network-no-host-loopback`, ADR-0086 |
 
 A red-team pass over the merged result then found three more breaks, all
 fixed before Phase 2 closed: a `RUN` outliving a killed ranikust (T8; a

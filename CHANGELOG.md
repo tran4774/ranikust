@@ -40,6 +40,17 @@ Conventional Commit messages with git-cliff; the draft is then edited by hand.
   A change to a secret file during the build is no longer seen. In kaniko
   mode on `/`, each `--secret src=` file now gets a warning: every `RUN`
   there can read it.
+- The test VM (`just test-vm`) no longer reaches the developer host's
+  loopback. Its only network was QEMU's user network, which turns a guest
+  connection to `10.0.2.2:<port>` into one to the host's `127.0.0.1:<port>`
+  for every port, so an image or `RUN` the suites ran as root in the VM
+  could reach the workstation's loopback-only services. Egress now goes
+  through passt, which maps nothing to the host's loopback, and a second,
+  restricted NIC carries only SSH and, for the `push` suite, the two test
+  registries. Every run first checks, from root in the VM, from Docker
+  containers and from a ranikust `RUN`, that a token served on the host's
+  loopback is out of reach (ADR-0086). The harness now needs QEMU 10.1 or
+  later with its passt backend, passt itself, and `socat` for `push`.
 
 ### Added
 
