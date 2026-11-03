@@ -1,6 +1,6 @@
 # rnk-registry
 
-> **Status:** in progress · **Phase:** 1 (mirrors, credential helpers: 5) ·
+> **Status:** in progress · **Phase:** 1-2 (mirrors, credential helpers: 5) ·
 > **Depends on:** `rnk-oci` (pulls go into sinks its caller takes from
 > `rnk-store`) ·
 > **Used by:** `rnk-builder`, `ranikust` (the client), `rnk-cache` (planned) ·
@@ -198,9 +198,7 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   and stores a pushed manifest with its `Content-Type`: without these,
   mounts and per-repository reads were never exercised.
 - `oci-client` panics in `push_manifest_raw` when a registry omits `Location`
-  and the reference has a digest, and unwraps a header built from a token:
-  `push_manifest` takes tags only, and identity-token responses with
-  non-header characters are refused.
+  and the reference has a digest: `push_manifest` takes tags only.
 - `oci-client` keeps the first authorization stored per registry and reads
   every body whole (`Response::bytes()`/`text()`), so pulls do not go through
   it: manifest and blob `GET`s and anonymous or basic token requests are sent

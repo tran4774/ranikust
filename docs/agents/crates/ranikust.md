@@ -71,11 +71,14 @@ Modules of `crates/ranikust/src/` (all crate-private):
   and `--single-snapshot` (ADR-0065); `Unneeded` (ranikust changes nothing),
   `--force` (ADR-0050), `--ignore-var-run`, `--whitelist-var-run` (ADR-0052
   D4); `NotYet`, until Phase 4: `--materialize` (ADR-0064), `--cache*`;
-  `OutOfScope`: cloud contexts and registry configuration (ADR-0008);
-  `Renamed`: kaniko's old spellings (ADR-0052). `--workdir` is not refused:
-  it is an unknown flag, a clap error with exit 2 (ADR-0050). Planned:
-  `--seccomp`, `--userns` (Phase 3). Ours: `--mode`, `--state-dir`, `--jobs`,
-  `--network`, `--secret`, `--allow`, `--limit`, `--metrics-file`,
+  until Phase 5: git contexts, registry mirrors and maps, credential
+  helpers, `--registry-client-cert`; not scheduled: `--dryrun`; `OutOfScope`
+  (ADR-0008): cloud contexts and registry configuration, `--cache-dir` (the
+  warmer); `Renamed`: kaniko's old spellings (ADR-0052) and `--kaniko-dir`,
+  kaniko's state directory, now `--state-dir` (ADR-0050). `--workdir` is not
+  refused: it is an unknown flag, a clap error with exit 2 (ADR-0050).
+  Planned: `--seccomp`, `--userns` (Phase 3). Ours: `--mode`, `--state-dir`,
+  `--jobs`, `--network`, `--secret`, `--allow`, `--limit`, `--metrics-file`,
   `--snapshot-workers`.
 - `--snapshot-mode` is kaniko's (`full|redo|time`) and keeps that meaning in
   kaniko mode; the mode is `--mode`. Overlay mode warns and ignores it
@@ -143,8 +146,10 @@ Each step before the next; design in
    a persistent store or held by another build is refused with the store's
    own message, `store_refusal`, ADR-0077) and `Sandbox::start_direct`
    (ADR-0051); after the trim, `exposure::warn_credential_holders`. Off `/`:
-   the state directory, `Store::open`, the sandbox probe, `KanikoStages` and
-   `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured). Credentials
+   the state directory, `Store::open`, the sandbox probe and
+   `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured); when
+   `set_up_kaniko` returns, `main.rs` builds `KanikoStages`
+   (`stages_snapshotter`). Credentials
    go only over verified TLS (`verified_credentials_only`, `build.rs`).
    Then the ignore list (`kaniko_snapshotter`: mountinfo, the flags, the
    state directory when inside the root, physical paths; a state directory

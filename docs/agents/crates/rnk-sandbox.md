@@ -250,15 +250,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.
 - **T2, VM smoke suite** (`tests/vm/guest/smoke.sh`, `just test-vm smoke`):
-  the real binary's build as real root in three environments (the host,
-  `--privileged` Docker with `pivot_root`, `SYS_ADMIN` under Docker's seccomp
-  with `MS_MOVE`; `smoke_checks` of `tests/smoke/lib.bash` as in T1), plus
-  what only real root can check: chroot escapes (`..`, from a descriptor,
-  nested) under `pivot_root` and `MS_MOVE` with a plain chroot as their
-  control, a write to `/proc/sys`, `mknod` of `/dev/null`'s 1:3 and open,
-  ranikust refused inside a plain chroot, and, in the host variant, SIGKILL
-  and SIGINT of ranikust during `RUN sleep 300` (and SIGKILL during a `RUN`
-  that cleared its own death signal) leave no `RUN` process.
+  the `smoke-build` example (`crates/ranikust/examples/smoke-build.rs`: pull,
+  extract, sandboxed `--run` commands, a one-layer OCI layout) as real root
+  in three environments (the host, `--privileged` Docker with `pivot_root`,
+  `SYS_ADMIN` under Docker's seccomp with `MS_MOVE`). Its `--run`s are the
+  `smoke_checks` of `tests/smoke/lib.bash` as in T1 plus what only real root
+  can check: chroot escapes (`..`, from a descriptor, nested) with a plain
+  chroot as their control, a write to `/proc/sys`, `mknod` of `/dev/null`'s
+  1:3 and open; the example is also refused inside a plain chroot. The
+  `ranikust` binary then builds `tests/smoke/e2e` in each environment and
+  is refused inside a plain chroot too; in the host variant it is sent
+  SIGKILL and SIGINT during `RUN sleep 300` (and SIGKILL during a `RUN` that
+  cleared its own death signal), which leave no `RUN` process.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid
