@@ -1,0 +1,43 @@
+{
+  "run_id": "ranikust-run-1",
+  "repo": "ranikust (github.com/tran4774/ranikust)",
+  "target": "repository root (github.com/tran4774/ranikust)",
+  "source_ref": "ed718fb047e15309a25da0b611477cbd42c276fd (clean worktree)",
+  "profile": "deep",
+  "scope_paths": [
+    "crates/",
+    "xtask/",
+    "justfile",
+    "Cargo.toml",
+    "Cargo.lock",
+    "deny.toml",
+    ".github/",
+    "tests/",
+    "scripts/",
+    ".claude/",
+    "CLAUDE.md",
+    "AGENTS.md"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "execution_note": "No target-controlled code runs in this run: the only OS sandbox available on the host (bwrap, user namespaces) is forbidden by the project's host rules (no unshare/mount on the host), and the disposable VM has external network. Every check is source-only; decisive runtime facts become needs_validation with a VM/T2c plan.",
+  "companions_selected": [
+    "MEMORY-SAFETY-AND-BINARY.md",
+    "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md",
+    "DATA-ISOLATION-AND-LIFECYCLE.md",
+    "CLOUD-AND-DEPLOYMENT.md",
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md",
+    "WEB-PROTOCOL-AND-AUTH.md",
+    "AI-AND-LLM.md"
+  ],
+  "prior_runs": [],
+  "prior_runs_note": "No prior coverage-ledger.json or findings.json exists for this repo.",
+  "shared_file_owner": "parent (main Claude Code session)",
+  "maintainer_request": "2026-11-02: end-of-Phase-2 security scan, profile deep, whole workspace; findings only, fixes in hardening",
+  "run_status": "complete",
+  "scope_note": "2026-11-02: .claude/ agent automation added to scope after critic c4 found the AI-AND-LLM exclusion unjustified (the repository ships an agent permission allowlist, hook and subagents).",
+  "completed": "2026-11-02",
+  "final_critic": "c12-final-clean: stop=true (0 missing units, 0 reassignments)",
+  "output_note": "Run output was written outside the repository during the run; the deliverables were moved here afterwards."
+}

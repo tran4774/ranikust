@@ -143,7 +143,7 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 | Decision; before a PR | `/adr`; `/sync-docs [base]` (user-invoked) |
 | Any diff; `rnk-rootfs`, `rnk-sandbox`, `rnk-layer`, `rnk-registry` | `/code-review`; `/security-review` |
 | Rust review; flag design; property tests | Trail of Bits `rust-review`, `sharp-edges`, `property-based-testing` (user scope, if installed) |
-| Milestones only | vendored `security-audit` (spawns many agents) |
+| Milestones only | vendored `security-audit` (spawns many agents); the run writes outside the repository, then its deliverables move to `docs/security/audit/<scope>/` (see that README), and the next run reads them as prior input |
 | End of a phase, when the maintainer asks | `refactor` skill: behaviour-preserving clean-up, one crate per branch, digests held fixed |
 
 `.claude/settings.json` allows without a prompt: `cargo` `build`, `check`,
