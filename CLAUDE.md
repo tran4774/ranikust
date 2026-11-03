@@ -28,7 +28,7 @@ cargo test -p rnk-rootfs <name>   # a single test (name filter)
 just test <filter>                # name filter across the whole workspace
 just ci                           # what ci.yml runs on a full run (also static musl build, aarch64 tests, deny, docs, docs-lint); PRs run lanes (ADR-0095)
 just fmt | just lint | just deny | just doc | just book
-just docs-lint                    # ADR index, question headings, [open: #N] markers naming open `question` issues (asks GitHub; CI job docs-lint)
+just docs-lint                    # ADR index, question headings, [open: #N] markers naming open `question` issues (asks GitHub), links and anchors (CI job docs-lint)
 just test-ci                      # tests of CI's lane rules (scripts/ci.py): a new path needs its lane there
 just review-pack <branch>         # the brief for the host-safety subagent (local only)
 just prune-worktrees              # after a merge: remove agent worktrees that hold nothing to lose (local only; ADR-0096)

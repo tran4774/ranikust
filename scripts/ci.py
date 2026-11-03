@@ -111,6 +111,7 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     (".gitignore", NONE),
     (".editorconfig", NONE),
     ("scripts/docs-lint.py", NONE),
+    ("tests/docs/**", NONE),
     ("scripts/review-pack.py", NONE),
     # Local only: the agent worktree clean-up and its test (ADR-0096).
     ("scripts/prune-worktrees.sh", NONE),

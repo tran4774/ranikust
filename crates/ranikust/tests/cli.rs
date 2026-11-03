@@ -338,6 +338,24 @@ fn a_seccomp_block_gets_its_own_message() {
 }
 
 #[test]
+fn enosys_on_a_new_kernel_does_not_blame_the_kernel() {
+    // An x86_64 binary under Rosetta (an amd64 container on Apple Silicon)
+    // gets ENOSYS from openat2 on a 7.2 kernel.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push"],
+        &[("RANIKUST_DEBUG_FAULT", "kernel-hidden")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains("7.2.12-simulated"), "{err}");
+    assert!(err.contains("Rosetta"), "{err}");
+    assert!(err.contains("architecture"), "{err}");
+    assert!(!err.contains("needs Linux 5.8 or later"), "{err}");
+}
+
+#[test]
 fn version_works_on_any_kernel() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let out = ranikust(

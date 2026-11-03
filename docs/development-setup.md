@@ -1,10 +1,11 @@
 # Setting up a development machine
 
-Step by step, from a fresh Linux machine to every test tier passing.
-[CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) keeps the reference
-table of tools and why each is needed; this page is the walkthrough.
-Commands are for Ubuntu (24.04 and 26.04) and Debian; other distributions
-need the same tools under their own package names.
+**TL;DR:** From a fresh Linux machine to every test tier passing, step by
+step. This page owns the install commands and the version pins (they match
+CI); [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) has the table
+of what each tool is for. Commands are for Ubuntu (24.04 and 26.04) and
+Debian; other distributions need the same tools under their own package
+names.
 
 Nothing in the development loop runs as root. `sudo` appears below only to
 install packages and to give yourself access to `/dev/kvm`, once.
@@ -17,16 +18,39 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a n
 cargo install --locked just cargo-deny@0.20.2 mdbook@0.5.4 cargo-zigbuild@0.24.0
 ```
 
-Install zig 0.16.0 into your home as
-[CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) shows (one tarball,
-checked against Zig's signing key). Then, in the repository:
+zig 0.16.0 is one tarball: install it into your home and check it against
+Zig's signing key (from [ziglang.org/download](https://ziglang.org/download/)).
+
+```sh
+v=0.16.0 a=x86_64                     # or a=aarch64
+f=zig-$a-linux-$v.tar.xz
+curl -fLO https://ziglang.org/download/$v/$f
+curl -fLO https://ziglang.org/download/$v/$f.minisig
+minisign -Vm "$f" -P RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U
+mkdir -p ~/.local/share/zig ~/.local/bin
+tar -C ~/.local/share/zig -xf "$f"
+ln -sf ~/.local/share/zig/zig-$a-linux-$v/zig ~/.local/bin/zig
+zig version
+```
+
+Without `minisign`, compare `sha256sum "$f"` with the tarball's `shasum` in
+<https://ziglang.org/download/index.json>. `~/.cargo/bin` and `~/.local/bin`
+must be on `PATH`. Then, in the repository:
 
 ```sh
 just check            # fmt, clippy, T0 tests; rustup installs the pinned toolchain on first use
 just build-static     # the static-pie x86_64 musl binary
 ```
 
-`~/.cargo/bin` and `~/.local/bin` must be on `PATH`.
+Also install `gh` and log in (`gh auth login`): `just docs-lint` checks its
+`[open: #N]` markers through it, and the release recipes read pull requests
+with it. For release work, `cargo-about` and `git-cliff` are optional:
+
+```sh
+cargo install --locked cargo-about@0.9.2 git-cliff
+```
+
+CONTRIBUTING's table says what needs each tool.
 
 ## 2. aarch64 (when you touch anything platform-specific)
 
@@ -60,15 +84,16 @@ just test-aarch64     # static-pie aarch64 binary, then the T0 tests under qemu-
   ```
 
 - `qemu-user-binfmt` lets the kernel run aarch64 binaries directly, so the
-  tests that spawn the binary (ranikust's `cli` and `metrics`, rnk-store's
-  `processes`) run too; without it the recipe skips them with a warning.
+  tests that spawn the binary run too; without it the recipe skips them with
+  a warning ([testing](testing.md#aarch64-under-qemu-user)).
 - On an aarch64 machine none of the emulation is needed.
 
 ## 3. Rootless containers (T1 smoke tests, test registries)
 
 ```sh
 sudo apt install podman podman-compose skopeo openssl python3-bcrypt
-just smoke            # the smoke cases in rootless podman
+just smoke            # smoke-build and the tests/smoke/e2e build, in rootless podman
+just smoke-case       # the quick smoke cases (tests/smoke/cases)
 just registry-up      # HTTP and self-signed HTTPS test registries (tests/registry)
 just registry-down
 ```
@@ -80,26 +105,31 @@ created.
 ## 4. The disposable VM (T2: anything that needs real root)
 
 Real root never runs on your machine: `just test-vm` boots a throwaway
-QEMU/KVM VM as you ([testing](testing.md#the-vm-harness-tier-t2)).
+QEMU/KVM VM as you ([testing](testing.md#the-vm-harness-tier-t2)). It needs
+QEMU 10.1 or later with its passt backend and passt 2024_10_30 or later
+(Ubuntu 26.04's packages; the QEMU of Ubuntu 24.04, 8.2, and of Debian 13,
+10.0, is refused,
+[ADR-0086](adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)).
 
 ```sh
-sudo apt install qemu-system-x86 qemu-utils xorriso openssh-client
+sudo apt install qemu-system-x86 qemu-utils passt xorriso socat openssh-client
 sudo usermod -aG kvm "$USER"      # once; log out and in, then check:
 test -r /dev/kvm -a -w /dev/kvm && echo "kvm ok"
 just test-vm unit                 # first run downloads the Ubuntu cloud image
 ```
 
+- `socat` is for the `push` suite only.
 - The verified cloud images are cached in `tests/e2e/_vm-image/` of the main
   checkout (gitignored) and shared by every git worktree; only one VM runs
-  at a time, a second run waits for the first.
-- A VM takes 12 vCPUs and 16 GiB (`RANIKUST_VM_CPUS`/`_MEM`), shrunk to
-  what the host can spare (at least 4 GiB, 8 GiB for `e2e` and `ultra`);
-  the first run after a new cloud image builds a base image with Docker
-  installed, a few minutes, once.
+  at a time, a second run waits for the first. The first run after a new
+  cloud image builds a base image with Docker installed, a few minutes,
+  once.
+- The VM takes 12 vCPUs and 16 GiB, shrunk to what the host can spare
+  ([testing](testing.md#the-vm-harness-tier-t2) has the variables).
 - Day to day, VM smoke tests and proofs of concept use the small cases in
-  `tests/smoke/cases`; the large nextjs-kaniko workloads (`just test-vm
-  ultra`) are only for benchmarks and acceptance measurements the
-  maintainer asks for (docs/testing.md#which-test-for-what).
+  `tests/smoke/cases`; the large nextjs-kaniko workloads are only for
+  benchmarks the maintainer asks for
+  ([testing](testing.md#which-test-for-what)).
 
 ## 5. End-to-end benchmarks (optional)
 

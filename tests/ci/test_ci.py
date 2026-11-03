@@ -96,7 +96,8 @@ class Classify(unittest.TestCase):
     def test_what_other_workflows_or_nobody_reads_runs_nothing(self):
         self.check(["tests/release/test_release.py", "scripts/release.py", "licenses/README.md",
                     "about.toml", "NOTICE", "LICENSE-MIT", "LICENSE-APACHE", "cliff.toml",
-                    "scripts/docs-lint.py", "scripts/review-pack.py", "tests/ci/test_ci.py",
+                    "scripts/docs-lint.py", "tests/docs/test_links.py",
+                    "scripts/review-pack.py", "tests/ci/test_ci.py",
                     "scripts/prune-worktrees.sh", "tests/agents/prune-worktrees-test.sh",
                     "tests/bench/walk-hash/Cargo.toml", "tests/e2e/run.sh",
                     "tests/registry/compose.yaml", ".github/release.yml", ".gitignore",
