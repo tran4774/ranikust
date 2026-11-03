@@ -117,10 +117,12 @@ result` are the only required checks.
   carries its plain name only on a full run; on a draft's fast lane it is
   `CI result (draft, fast lane)` and `T2 result (draft, not run)`, and on
   a `label_only` run `... (label change, nothing run)`. GitHub judges a
-  required check by the latest check run of that name on the commit
-  [external], so a fast lane or a label change must not post a passing
-  `CI result` over the commit's full run, or before it: after a draft is
-  marked ready, the required checks wait for the full run.
+  required check by the check run of that name created last on the
+  commit, and creates a gate's check run only when the gate starts, after
+  the jobs it needs (both measured, Evidence), so a fast lane or a label
+  change must not post a passing `CI result` over the commit's full run,
+  or before it: after a draft is marked ready, the required checks wait
+  for the full run.
 - **Who clicks:** agents use the maintainer's GitHub account, so GitHub
   cannot tell who marked a pull request ready or added a label. The guard
   is the agents' ask rules: `gh pr ready` already asks
@@ -222,9 +224,37 @@ result` are the only required checks.
   satisfies a required check; a workflow skipped by `paths`, branch
   filters or a commit message leaves its checks pending; a job whose
   dependency failed is skipped, so a gate needs `always()`.
-- The verification on this change's own pull request (the job matrix of
-  its draft run, its `ci:full` run, and the Markdown-only case) is
-  recorded on that pull request.
+- Pull request #51, which brings this in, on 2026-11-03 [measured]:
+  - Draft, commit `abed882` (the diff touches the workflows, so every
+    lane): `CI` ran `changes` 18 s, `rustfmt` 21 s, `clippy` 36 s, `test
+    (x86_64 gnu)` 157 s, `cargo-deny` 31 s, `docs` 34 s, `docs-lint` 7 s
+    and `CI result (draft, fast lane)`, 186 s of wall time; the static
+    build and the aarch64 tests were skipped. `T2` ran `changes` and `T2
+    result (draft, not run)` only, 31 s. Removing `ci:full` later gave the
+    same fast lane (168 s).
+  - `ci:full` added to the draft: `CI` ran every job (static build 118 s,
+    native aarch64 tests 233 s, `test (x86_64 gnu)` 140 s), `CI result`
+    passed, 272 s of wall time; `T2` ran `T2 unit` 223 s, `T2c unit-c`
+    217 s and `T2 smoke, quick, secrets` 322 s (all cold: no `t2-tests`
+    entry yet), `T2 result` passed, 369 s.
+  - A throwaway draft pull request stacked on #51 whose own diff was one
+    Markdown line (`docs/development-setup.md`, lane "no lane"): `CI` ran
+    `changes`, `docs-lint` and its gate, every Rust job skipped, 33 s;
+    `T2` 30 s. (A second commit on #51 itself could not show this: a pull
+    request's lanes come from its whole diff, which touches the
+    workflows.)
+  - `gh pr create --label agent --label area:ci` sent four `labeled`
+    events: four runs per workflow ran `changes` and a `... (label change,
+    nothing run)` gate in 16 to 35 s each and cancelled nothing; the draft
+    run started with them finished.
+  - Required checks under the old ruleset on that commit: `gh pr checks
+    --required` reported `rustfmt`, `clippy` and the rest as "skipping",
+    from the label-change runs, although the draft run had passed them.
+    Of the five `rustfmt` check runs on the commit, GitHub showed the one
+    created last (a skipped one, created at 18:09:34), not the passing one
+    that completed last (18:09:52). While a run's other jobs ran, its gate
+    was not yet among its jobs: the check run is created when the gate
+    starts.
 
 ## More Information
 
