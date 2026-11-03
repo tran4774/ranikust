@@ -113,6 +113,13 @@ machine on those networks.
   addresses, the token also on `::1`); the image pull and HTTPS egress
   work from the VM and from the `RUN`; SSH is up 10 s after boot, as
   before [measured].
+- With the change, on noble: `unit smoke quick secrets` (46/46 T2 tests),
+  `e2e` (W0, every builder) and `push` (the registries at `10.0.2.2:5000`
+  and `:5443` answer from root, a default container and a `RUN`, while the
+  probe port at `10.0.2.2` stays out of reach) pass; so do a base image
+  provisioned over passt alone (64 s) and booted, the plain cloud image
+  (`RANIKUST_VM_GOLDEN=0`, apt at boot), and a jammy guest (kernel 5.15).
+  No passt or socat process outlives a run [measured].
 - passt 0.0~git20260120 on its own listening socket accepted no client
   (`Failed to add fd to epoll: Bad file descriptor`, also without
   `--one-off`); on a socket pair (`--fd`, which QEMU's backend uses) it
