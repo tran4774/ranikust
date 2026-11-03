@@ -249,7 +249,7 @@ class FakeTools(unittest.TestCase):
         if args[:2] == ["git", "rev-list"]:
             return "c1\nc2\n"
         if args[:2] == ["git", "log"]:
-            return "2026-11-01\n"
+            return "1793534400\n"  # 2026-11-01T12:00:00Z
         raise AssertionError(args)
 
     def test_the_list_is_narrowed_to_the_release(self):
@@ -259,7 +259,28 @@ class FakeTools(unittest.TestCase):
         self.assertEqual([pr["number"] for pr in prs], [1])
         args = (self.bin / "args").read_text().split("\n")
         self.assertIn("--search", args)
-        self.assertEqual(args[args.index("--search") + 1], "merged:>=2026-11-01")
+        # The day before the commit's UTC day.
+        self.assertEqual(args[args.index("--search") + 1], "merged:>=2026-10-31")
+
+    def test_an_early_morning_commit_east_of_utc_misses_nothing(self):
+        # Tagged at 05:00 +07:00 on 2026-11-02, which is 2026-11-01T22:00Z:
+        # its local date (2026-11-02) would leave out a pull request merged
+        # at 2026-11-01T23:00Z, after the tag.
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null",
+                       GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                       GIT_COMMITTER_EMAIL="t@t", GIT_COMMITTER_DATE="2026-11-02T05:00:00+07:00",
+                       GIT_AUTHOR_DATE="2026-11-02T05:00:00+07:00")
+            for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "release"],
+                         ["tag", "-a", "v0.0.1", "-m", "v0.0.1"]):
+                rel.subprocess.run(["git", "-C", d, *args], check=True, env=env)
+            self.fake_pr_list(1)
+            with self.path_env(), mock.patch.object(rel, "ROOT", Path(d)):
+                rel.merged_pull_requests("o/r", "v0.0.1")
+        args = (self.bin / "args").read_text().split("\n")
+        day = args[args.index("--search") + 1].removeprefix("merged:>=")
+        self.assertLessEqual(day, "2026-11-01")
+        self.assertEqual(day, "2026-10-31")
 
     def test_the_cap_dies_only_when_reached(self):
         self.fake_pr_list(3)
@@ -288,6 +309,19 @@ class FakeTools(unittest.TestCase):
 
 
 class PreviousTag(unittest.TestCase):
+    def test_describe_runs_untranslated(self):
+        seen = {}
+
+        def fake_run(args, **kwargs):
+            seen.update(kwargs)
+            return mock.Mock(returncode=128, stdout="",
+                             stderr="fatal: No names found, cannot describe anything.\n")
+
+        with mock.patch.object(rel.subprocess, "run", fake_run), \
+                mock.patch.dict(os.environ, {"LANG": "vi_VN.UTF-8", "LC_ALL": "vi_VN.UTF-8"}):
+            self.assertIsNone(rel.last_tag())
+        self.assertEqual(seen["env"]["LC_ALL"], "C")
+
     def test_previous_release_tag_on_the_history(self):
         with tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null",
@@ -383,11 +417,53 @@ class Prepare(unittest.TestCase):
         self.assertEqual(self.changelog.read_text(), Changelog.TEXT)
 
 
-LICENSES_SAMPLE = (
+# What cargo-about renders through scripts/third-party-licenses.hbs, and the
+# file `notices` makes of it.
+GENERATED_SAMPLE = (
     "THIRD-PARTY LICENSES\n====================\n\nLicences\n--------\n- MIT License (MIT): 1 crate(s)\n\n"
     "Licence texts\n-------------\n\n" + "=" * 80 + "\nMIT License (MIT), used by:\n- a 1.0.0\n"
     + "-" * 80 + "\n\nPermission is hereby granted...\n"
 )
+LICENSES_SAMPLE = rel.notices_text(GENERATED_SAMPLE)
+
+
+class Notices(unittest.TestCase):
+    """The toolchain's notices appended to cargo-about's output (ADR-0094)."""
+
+    def test_the_toolchain_texts_follow_the_crates(self):
+        musl = (ROOT / "licenses" / "musl-1.2.5-COPYRIGHT").read_text()
+        rust = (ROOT / "licenses" / "rust-1.99.1-COPYRIGHT").read_text()
+        self.assertTrue(LICENSES_SAMPLE.startswith(GENERATED_SAMPLE.rstrip("\n")))
+        toolchain = LICENSES_SAMPLE[LICENSES_SAMPLE.index("Toolchain components\n"):]
+        self.assertIn(musl.rstrip("\n"), toolchain)
+        self.assertIn(rust.rstrip("\n"), toolchain)
+        self.assertIn("Copyright © 2005-2020 Rich Felker", toolchain)
+        for pinned in [
+            "https://github.com/rust-lang/rust/blob/1.99.1/COPYRIGHT",
+            "https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT?h=v1.2.5",
+            "https://github.com/rust-lang/llvm-project/blob/"
+            "1b9c0d5ff9bbe7634aead059efe6b11a7eeba145/libunwind/LICENSE.TXT",
+            "used under Apache-2.0,\n  whose text is LICENSE-APACHE in this tarball",
+        ]:
+            self.assertIn(pinned, toolchain)
+
+    def test_a_changed_toolchain_file_is_refused(self):
+        title, url, path, _ = rel.TOOLCHAIN_FILES[1]
+        with mock.patch.object(rel, "TOOLCHAIN_FILES", [(title, url, path, "0" * 64)]):
+            quiet(rel.notices_text, GENERATED_SAMPLE)
+
+    def test_notices_runs_once(self):
+        quiet(rel.notices_text, LICENSES_SAMPLE)
+
+    def test_the_command_writes_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            generated, out = Path(d) / "cargo-about.txt", Path(d) / "THIRD-PARTY-LICENSES"
+            generated.write_text(GENERATED_SAMPLE)
+            with mock.patch("sys.stdout", io.StringIO()):
+                rel.cmd_notices(str(generated), str(out))
+            self.assertEqual(out.read_text(), LICENSES_SAMPLE)
+            generated.write_text("not cargo-about's output\n")
+            quiet(rel.cmd_notices, str(generated), str(out))
 
 
 class Package(unittest.TestCase):
@@ -423,6 +499,8 @@ class Package(unittest.TestCase):
             quiet(self.package, d, "")
             quiet(self.package, d, "some other file\n")
             quiet(self.package, d, LICENSES_SAMPLE.split("=" * 80)[0])
+            # cargo-about's output alone, without the toolchain's notices.
+            quiet(self.package, d, GENERATED_SAMPLE)
             self.assertFalse((Path(d) / "a").exists() and any((Path(d) / "a").iterdir()))
 
 
@@ -448,6 +526,10 @@ class ThirdPartyLicensesConfig(unittest.TestCase):
         # Plain text: licence texts and names must not be HTML-escaped.
         self.assertIn("{{{text}}}", template)
         self.assertNotIn("{{text}}", template.replace("{{{text}}}", ""))
+        # ring's declared licence, as in its Cargo.toml.
+        self.assertIn("ring: declared `Apache-2.0 AND ISC`", template)
+        # The toolchain's part comes from `notices`, not the template.
+        self.assertNotIn(rel.TOOLCHAIN_HEADER, template)
 
     def test_install_note_has_the_strict_verification(self):
         text = rel.INSTALL.format(version="0.0.1", target=rel.TARGET, repo="tran4774/ranikust")

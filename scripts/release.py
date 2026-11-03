@@ -12,6 +12,10 @@ Subcommands:
   check-environment <owner/repo> <name>
                                 fail unless the GitHub environment exists with
                                 a required reviewer and deploys only `v*` tags
+  notices <cargo-about-output> <out>
+                                write THIRD-PARTY-LICENSES: cargo-about's
+                                output, then the toolchain's notices from
+                                licenses/ (SHA-256 checked)
   package <binary> <third-party-licenses> <version> <outdir>
                                 write the release tarball, with the licence
                                 notices cargo-about generated, and SHA256SUMS
@@ -54,6 +58,49 @@ SEMVER = re.compile(
 )
 # The first line of scripts/third-party-licenses.hbs's output.
 LICENSES_HEADER = "THIRD-PARTY LICENSES\n"
+# The section `notices` appends after cargo-about's output: what the Rust
+# toolchain links into the binary, which cargo-about does not see
+# (ADR-0094; provenance in licenses/README.md). Each file is checked against
+# its SHA-256 before it is shipped.
+TOOLCHAIN_HEADER = "Toolchain components\n--------------------\n"
+RUST_RELEASE = "1.99.1"
+MUSL_RELEASE = "1.2.5"
+# rust-lang/llvm-project at the commit Rust 1.99.1's src/llvm-project points
+# to: LLVM 23.1.1.
+LLVM_COMMIT = "1b9c0d5ff9bbe7634aead059efe6b11a7eeba145"
+TOOLCHAIN_FILES = [
+    (
+        f"Rust {RUST_RELEASE} COPYRIGHT",
+        f"https://github.com/rust-lang/rust/blob/{RUST_RELEASE}/COPYRIGHT",
+        Path("licenses") / f"rust-{RUST_RELEASE}-COPYRIGHT",
+        "172020dbfd5b53a226dfde77616190a48dcff519b0bc0e6deb91a8450782c4af",
+    ),
+    (
+        f"musl libc {MUSL_RELEASE} COPYRIGHT",
+        f"https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT?h=v{MUSL_RELEASE}",
+        Path("licenses") / f"musl-{MUSL_RELEASE}-COPYRIGHT",
+        "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af",
+    ),
+]
+TOOLCHAIN_INTRO = f"""\
+The Rust toolchain ({RUST_RELEASE}) links these into the binary too:
+
+- The Rust standard library and compiler-builtins, used under Apache-2.0,
+  whose text is LICENSE-APACHE in this tarball (Rust is offered under
+  MIT OR Apache-2.0). Rust {RUST_RELEASE}'s COPYRIGHT follows; the notices
+  of the standard library's own third-party code are in
+  COPYRIGHT-library.html, shipped with every Rust release in
+  share/doc/rust/. compiler-builtins also holds code from LLVM's
+  compiler-rt, under Apache-2.0 WITH LLVM-exception (as libunwind below).
+- musl libc {MUSL_RELEASE}, as Rust {RUST_RELEASE} builds it for
+  x86_64-unknown-linux-musl (with security patches): MIT. Its COPYRIGHT
+  follows.
+- LLVM's libunwind, from LLVM 23.1.1 as Rust {RUST_RELEASE} uses it
+  (rust-lang/llvm-project {LLVM_COMMIT[:7]}): Apache-2.0 WITH
+  LLVM-exception, whose exception waives the notice conditions for code
+  embedded in a binary, so its text is not reproduced:
+  https://github.com/rust-lang/llvm-project/blob/{LLVM_COMMIT}/libunwind/LICENSE.TXT
+"""
 # Keep a Changelog sections, in CHANGELOG.md's order.
 SECTIONS = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
 # More merged pull requests than this since one release and `prepare` stops
@@ -82,8 +129,9 @@ The second command checks that the tarball was built from the tag v{version}
 by this repository's release workflow on a GitHub-hosted runner (build
 provenance). If either check fails, delete the files and do not run them.
 
-THIRD-PARTY-LICENSES holds the licence notices of the crates, and of the C
-code they build, that the binary contains.
+THIRD-PARTY-LICENSES holds the licence notices of what the binary
+contains: the crates, the C code they build, and the Rust toolchain's
+standard library and musl libc.
 
 Install:
 
@@ -171,9 +219,12 @@ def describe(args: list[str]) -> str | None:
     """`git describe --tags --abbrev=0 --match v[0-9]* <args>`: the tag, or
     None when no release tag describes the commit; any other failure (a bad
     ref, no repository) dies."""
+    # LC_ALL=C: the messages below are matched in English, whatever the
+    # locale git would translate them into.
     result = subprocess.run(
         ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", *args],
         cwd=ROOT, check=False, capture_output=True, text=True,
+        env={**os.environ, "LC_ALL": "C"},
     )
     if result.returncode == 0:
         return result.stdout.strip() or None
@@ -327,18 +378,64 @@ def add_file(tar: tarfile.TarFile, name: str, data: bytes, mode: int, mtime: int
     tar.addfile(info, io.BytesIO(data))
 
 
-def read_third_party_licenses(path: str) -> bytes:
-    """The file cargo-about generated (ADR-0094): a release without the
-    notices of the code it contains is not packaged."""
-    file = Path(path)
-    if not file.is_file():
-        die(f"{path} is not a file: generate it with cargo-about (`just third-party-licenses`)")
-    data = file.read_bytes()
-    text = data.decode("utf-8", errors="replace")
+SEPARATOR = "\n" + "=" * 80 + "\n"
+
+
+def check_generated(path: str, text: str) -> None:
+    """cargo-about's output through scripts/third-party-licenses.hbs."""
     if not text.startswith(LICENSES_HEADER) or "\nLicence texts\n" not in text:
         die(f"{path} is not the output of scripts/third-party-licenses.hbs")
-    if text.count("\n" + "=" * 80 + "\n") == 0:
+    if SEPARATOR not in text:
         die(f"{path} lists no licence text")
+
+
+def toolchain_section() -> str:
+    """The licence notices of the toolchain's components, from the committed
+    files, each checked against its SHA-256."""
+    parts = [TOOLCHAIN_HEADER, TOOLCHAIN_INTRO]
+    for title, url, path, sha256 in TOOLCHAIN_FILES:
+        try:
+            data = (ROOT / path).read_bytes()
+        except OSError as error:
+            die(f"cannot read {path}: {error}")
+        if hashlib.sha256(data).hexdigest() != sha256:
+            die(f"{path} does not have the SHA-256 recorded in scripts/release.py "
+                "(licenses/README.md says where it comes from)")
+        parts.append(
+            SEPARATOR.lstrip("\n") + f"{title}\n{url}\n" + "-" * 80 + "\n\n"
+            + data.decode("utf-8").rstrip("\n") + "\n"
+        )
+    return "\n".join(parts)
+
+
+def notices_text(generated: str) -> str:
+    """THIRD-PARTY-LICENSES: cargo-about's output, then the toolchain's."""
+    if TOOLCHAIN_HEADER in generated:
+        die("the generated file already has a toolchain section")
+    return generated.rstrip("\n") + "\n\n\n" + toolchain_section()
+
+
+def cmd_notices(generated: str, out: str) -> None:
+    try:
+        text = Path(generated).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        die(f"cannot read {generated}: {error}")
+    check_generated(generated, text)
+    Path(out).write_text(notices_text(text), encoding="utf-8")
+    print(out)
+
+
+def read_third_party_licenses(path: str) -> bytes:
+    """THIRD-PARTY-LICENSES as `notices` wrote it (ADR-0094): a release
+    without the notices of the code it contains is not packaged."""
+    file = Path(path)
+    if not file.is_file():
+        die(f"{path} is not a file: generate it with `just third-party-licenses`")
+    data = file.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    check_generated(path, text)
+    if not text.endswith(toolchain_section()):
+        die(f"{path} does not end with the toolchain section `notices` adds")
     return data
 
 
@@ -483,14 +580,19 @@ def entries_of(text: str) -> list[tuple[str | None, list[str]]]:
 def merged_pull_requests(repo: str, since: str | None) -> list[dict]:
     revs = run(["git", "rev-list", f"{since}..HEAD" if since else "HEAD"])
     commits = set(revs.split())
-    # Only the pull requests merged since the day of the last tag's commit
-    # are asked for, so the cap applies to one release's worth of them.
+    # Only the pull requests merged since about the last tag's commit are
+    # asked for, so the cap applies to one release's worth of them. GitHub
+    # reads `merged:>=DAY` in UTC, and the commit's own date is local, so the
+    # query starts a day before the commit's UTC day; the earlier pull
+    # requests it brings are dropped by the commit set above.
     search = []
     if since:
-        day = run(["git", "log", "-1", "--format=%cs", f"{since}^{{commit}}"]).strip()
-        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day):
-            die(f"cannot read the date of {since}: {day!r}")
-        search = ["--search", f"merged:>={day}"]
+        stamp = run(["git", "log", "-1", "--format=%ct", f"{since}^{{commit}}"]).strip()
+        if not re.fullmatch(r"[0-9]+", stamp):
+            die(f"cannot read the time of {since}: {stamp!r}")
+        utc_day = datetime.datetime.fromtimestamp(int(stamp), datetime.timezone.utc).date()
+        day = utc_day - datetime.timedelta(days=1)
+        search = ["--search", f"merged:>={day.isoformat()}"]
     result = subprocess.run(
         [
             "gh", "pr", "list", "--repo", repo, "--state", "merged",
@@ -664,6 +766,8 @@ def main(argv: list[str]) -> None:
         cmd_notes(args[0])
     elif command == "check-environment" and len(args) == 2:
         cmd_check_environment(*args)
+    elif command == "notices" and len(args) == 2:
+        cmd_notices(*args)
     elif command == "package" and len(args) == 4:
         cmd_package(*args)
     elif command == "prepare" and len(args) == 1:
