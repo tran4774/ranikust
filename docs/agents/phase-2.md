@@ -145,8 +145,11 @@ touched:
   leaves the init's uid unmapped with Phase 3's `--userns` (Q-452 (b)).
 - [ADR-0084](../adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md):
   secret files in kaniko mode on `/`, their place on the ignore list and
-  the warning (Q-445), once
-  [Q-453](../open-questions.md) says where the file goes.
+  the warning (Q-445), refined by [ADR-0085](../adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md):
+  the file at its target (else `/run/secrets/<id>`), only its own path
+  ignored, removed after its `RUN`, and both refusals lifted (Q-453);
+  [Q-454](../open-questions.md) (an existing target, missing parents)
+  first.
 - Open questions left for their phases: Q-438 (context reads with the
   owner's credentials, Phase 5), Q-441 (a cache for kaniko mode on `/`,
   with Phase 4's layer cache), Q-444 (`zeroize`, Phase 6), Q-447
