@@ -265,6 +265,38 @@ def changelog_section(text: str, version: str) -> str | None:
     return None
 
 
+MARKDOWN_BLOCK = re.compile(r"(#{1,6} |[-*+] |\d+[.)] |>|\||<!--|```|~~~)")
+
+
+def unwrap_markdown(text: str) -> str:
+    """Join hard-wrapped lines into one line per paragraph or list item.
+
+    CHANGELOG.md wraps prose at about 80 columns, but GitHub renders every
+    newline of a release body as a line break. A line joins the one before it
+    unless it is blank or starts a block (heading, list item, quote, table,
+    comment, code fence); headings, tables and comments take no continuation,
+    and code fences are copied as they are. Words and their order are kept.
+    """
+    out: list[str] = []
+    in_fence = False
+    joinable = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            out.append(line)
+            joinable = False
+        elif in_fence or not stripped:
+            out.append(line)
+            joinable = False
+        elif joinable and not MARKDOWN_BLOCK.match(stripped):
+            out[-1] = out[-1].rstrip() + " " + stripped
+        else:
+            out.append(line.rstrip())
+            joinable = not stripped.startswith(("#", "|", "<!--", ">"))
+    return "\n".join(out)
+
+
 def cmd_notes(version: str) -> None:
     check_version(version)
     body = changelog_section(CHANGELOG.read_text(encoding="utf-8"), version)
@@ -277,7 +309,7 @@ def cmd_notes(version: str) -> None:
             f"CHANGELOG.md's '## [{version}]' section still holds the draft "
             "marker of `just release-prepare`: edit it and remove the marker"
         )
-    print(body)
+    print(unwrap_markdown(body))
 
 
 # ---------------------------------------------------------------- environment

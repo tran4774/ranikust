@@ -236,7 +236,10 @@ request's dry run reports what it found.
 5. **Approve** (the maintainer), within 30 days, as long as the built files
    are kept: the publishing job waits for the `release` environment's
    approval. It then creates a **draft** pre-release whose notes are the
-   tag's `CHANGELOG.md` section, followed by the pull requests merged since
+   tag's `CHANGELOG.md` section, joined into one line per paragraph or list
+   item (GitHub shows every newline of a release body as a line break, so
+   the file's 80-column wrapping is undone there; `release.py notes`),
+   followed by the pull requests merged since
    the previous release tag, which GitHub lists by label
    (`.github/release.yml`).
 6. **Publish** (the maintainer): read the draft, publish it on the
