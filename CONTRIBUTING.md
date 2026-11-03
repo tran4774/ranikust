@@ -25,7 +25,7 @@ up a machine step by step; the table below is the reference.
 | [just](https://github.com/casey/just) | Runs the recipes in [`justfile`](justfile) | `cargo install --locked just` |
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | `cargo install --locked cargo-deny@0.20.2` |
 | [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
-| Python 3.11 or later | `just docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
+| Python 3.11 or later | `just docs-lint`, `just test-docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
 | [GitHub CLI](https://cli.github.com/) (`gh`) | `just release-prepare` reads the merged pull requests; checking a release's attestation needs 2.102.0 or later | your distribution, or cli.github.com |
 | [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | `cargo install --locked cargo-about@0.9.2` |
 | [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
@@ -74,10 +74,9 @@ Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
 documentation; `just docs-lint` (needs python3; CI runs it on every pull
 request) after an ADR, a marker, an open question, a link or a heading
-changes. Its check of
-the `[open: #N]` markers needs `gh` installed and logged in (`gh auth
-login`) with network access; without them it is skipped locally, and the
-last line says so. Every recipe that mirrors CI runs exactly the command
+changes. Its check of the `[open: #N]` markers needs `gh` installed and
+logged in (`gh auth login`) with network access; without them it is
+skipped locally, and the last line says so. Every recipe that mirrors CI runs exactly the command
 of the CI job; if you change one, change the other. A new top-level path,
 or a file a CI job starts to read, needs its lane in `scripts/ci.py`
 (`just test-ci` fails otherwise; see below).

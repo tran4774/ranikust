@@ -193,7 +193,7 @@ test-release:
     bash tests/release/check-static-test.sh
     python3 -I tests/release/test_release.py
 
-# Mechanical checks of the decision records over the files git ls-files lists (CI job `docs-lint`, which sets DOCS_LINT_REQUIRE_GITHUB=1): every ADR indexed with its status, no duplicate question in docs/open-questions.md, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled question (any question issue inside an ADR), asked of GitHub through gh; without gh, a logged-in gh or network that check is skipped and the verdict says so; every relative Markdown link, link to this repository on github.com and Markdown path named in a code span or in code resolving to a file and anchor that exist. Requires python3; gh for the issue check.
+# Mechanical checks of the decision records over the files git ls-files lists (CI job `docs-lint`, which sets DOCS_LINT_REQUIRE_GITHUB=1): every ADR indexed with its status, no duplicate question in docs/open-questions.md, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled question (any question issue inside an ADR), asked of GitHub through gh; without gh, a logged-in gh or network that check is skipped and the verdict says so; every relative Markdown link, link to this repository on github.com (blob/main, tree/main, the front page) and Markdown path named in a code span or in code resolving to a listed file and anchor; book links staying inside docs/book/src. Requires python3; gh for the issue check.
 docs-lint:
     python3 -I scripts/docs-lint.py
 
