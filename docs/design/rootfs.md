@@ -22,7 +22,11 @@ Card: [rnk-rootfs](../agents/crates/rnk-rootfs.md).
 - No string-based fallback. When `openat2` or the `statx` mount id is
   missing (before Linux 5.8) or blocked by seccomp, the call fails with
   `Error::Unsupported`. The binary checks for Linux 5.8 at start-up
-  ([ADR-0028](../adr/0028-minimum-kernel-linux-5-8.md)).
+  ([ADR-0028](../adr/0028-minimum-kernel-linux-5-8.md)). That start-up
+  check reports `ENOSYS`, or `statx` without the mount id, on a 5.8 or
+  later release as coming from something in between (`Cause::Hidden`: an
+  emulator such as Rosetta, or a seccomp filter answering `ENOSYS`), not
+  from an old kernel; the release only shapes the message.
 
 ## Resolution
 
