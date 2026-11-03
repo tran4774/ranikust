@@ -18,9 +18,9 @@ The commands are in `CLAUDE.md`, `docs/agents/workflow.md#dev-loop` and the
 0. Locate before you read: `graphify query "<question>"`, then `explain`
    or `affected "<symbol>"`, and read only the lines it names, in the same
    message as your other read-only calls (`git`, `sed -n`, `rg`). Exit 3
-   (ambiguous): retry with `path::Symbol` or the node id listed; exit 4:
-   `rg`. In an agent worktree set `GRAPHIFY_OUT` to the main checkout's
-   `graphify-out` (`CLAUDE.md#graphify`).
+   (ambiguous): retry with `path::Symbol` or the node id listed; exit 4,
+   or `No unique node match` from `affected`: `rg`. In an agent worktree
+   run `graphify` from the main checkout (`CLAUDE.md#graphify`).
 1. Edit. The PostToolUse hook runs `rustfmt` on each `.rs` file you touch.
    Comment why, not what, in one short line above the code it explains
    (`docs/agents/rules.md#comments`).

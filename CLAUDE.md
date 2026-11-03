@@ -136,10 +136,11 @@ procedure and the brief template: [workflow.md](docs/agents/workflow.md#context-
 
 - Implementation goes to `implementer`, never a fork: forks are off
   (`CLAUDE_CODE_FORK_SUBAGENT=0` in `.claude/settings.json`); the
-  maintainer turns them on for one session in `settings.local.json` when
-  the conversation itself is the input. Brief by reference: the issue
-  text, the branch, the files, ADRs and design sections, the acceptance
-  criteria, the decisions made.
+  maintainer starts one session with them on
+  (`CLAUDE_CODE_FORK_SUBAGENT=1 claude`) when the conversation itself is
+  the input. Brief by reference: the issue text, the branch (and its
+  worktree, for a follow-up), the files, ADRs and design sections, the
+  acceptance criteria, the decisions made.
 - `host-safety` and `upstream-oracle` cannot run Bash, so they cannot
   query graphify or read GitHub: `just review-pack <branch>` prints the
   brief for `host-safety` (add the requirement); `upstream-oracle` gets
@@ -151,14 +152,16 @@ procedure and the brief template: [workflow.md](docs/agents/workflow.md#context-
   measures (the default for a subagent that names none,
   `CLAUDE_CODE_SUBAGENT_MODEL`), `opus` implements, reviews, host-safety
   and red-team.
-- A hand-back is at most 40 lines; details go to a file the report names.
-  Follow up an agent that answered under five minutes ago with
-  `SendMessage`; later, start a new agent briefed with the branch, the
-  commit range and the findings (its cache is cold).
+- An `implementer` or `Explore` hand-back is at most 40 lines; reviewers
+  report their findings in full. Follow up an agent that answered within
+  the hour with `SendMessage` (its cache lives one hour); later, start a
+  new agent briefed with the branch, its worktree, the commit range and
+  the findings.
 - No polling: background work notifies; anything that may run over five
   minutes runs in the background. Independent read-only calls go in one
   message.
-- This session compacts at 300k tokens (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`);
+- Sessions and subagents compact at 300k tokens
+  (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`);
   `/compact` at a task boundary while the cache is warm; a new task starts
   a new session from a brief.
 
@@ -170,12 +173,12 @@ grep: `graphify query "<question>"` first, `explain "<symbol>"` for one
 concept, `path "<A>" "<B>"` for a relationship, `affected "<symbol>"` for
 the blast radius of a change. Then read only the lines it names, in the
 same message, with no grep or cat to hedge. Exit 3 (ambiguous): retry with
-`path::Symbol` or the node id listed; exit 4: `rg`. Put this rule in every
-subagent brief that explores code and can run Bash; pass the output to one
-that cannot. An agent worktree has no graph: `export
-GRAPHIFY_OUT="$(git rev-parse --path-format=absolute --git-common-dir)/../graphify-out"`
-and never `graphify update` there. `GRAPH_REPORT.md` (140 KB) only for a
-broad architecture review.
+`path::Symbol` or the node id listed; exit 4, or `No unique node match`
+from `affected`: `rg`. Put this rule in every subagent brief that explores
+code and can run Bash; pass the output to one that cannot. An agent
+worktree has no graph: run `graphify` from the main checkout, or pass
+`--graph <main checkout>/graphify-out/graph.json`; never `graphify update`
+there. `GRAPH_REPORT.md` (140 KB) only for a broad architecture review.
 
 # Compact instructions
 

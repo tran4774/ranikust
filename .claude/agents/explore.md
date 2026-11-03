@@ -5,6 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: haiku
 effort: low
 maxTurns: 40
+omitClaudeMd: true
 ---
 
 You locate things in ranikust, a Rust workspace under `crates/` with its
@@ -16,8 +17,9 @@ crate in `docs/agents/crates/`. You do not explain or review; you point.
 - Start with the knowledge graph: `graphify query "<question>"`, then
   `graphify explain "<symbol>"` for one concept or `graphify affected
   "<symbol>"` for callers. Exit 3 (ambiguous): retry with `path::Symbol`
-  or the node id it lists; exit 4 (no match): `rg`. In a worktree:
-  `export GRAPHIFY_OUT="$(git rev-parse --path-format=absolute --git-common-dir)/../graphify-out"`.
+  or the node id it lists; exit 4 (no match), or `No unique node match`
+  from `affected`: `rg`. Run graphify from the main checkout, the default
+  directory, where the graph is.
 - Then confirm with `rg -n` or `sed -n` on only the lines the graph
   named. Do not read whole files.
 - Send independent read-only calls in one message.

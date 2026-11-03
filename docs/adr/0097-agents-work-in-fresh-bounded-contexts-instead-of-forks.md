@@ -45,41 +45,42 @@ Agents work in fresh, bounded contexts: implementation goes to a briefed
 main session compacts at 300k tokens, and the model follows the task.
 
 - **No forks by default.** `.claude/settings.json` sets
-  `CLAUDE_CODE_FORK_SUBAGENT=0`. The maintainer turns forks on for one
-  session in `.claude/settings.local.json` when the conversation itself is
-  the input (a long design discussion to carry into the work).
+  `CLAUDE_CODE_FORK_SUBAGENT=0`. The maintainer starts one session with
+  forks on (`CLAUDE_CODE_FORK_SUBAGENT=1 claude`) when the conversation
+  itself is the input (a long design discussion to carry into the work).
 - **The `implementer` subagent** (`.claude/agents/implementer.md`, Opus,
-  own worktree, `maxTurns: 400`, `autoCompactWindow: 300000`, the
-  `dev-loop` and `test` skills preloaded) does every implementation, fix
-  and refactor. Its brief is by reference: the issue text, the branch to
-  start from, the files, ADRs and design sections that matter, the
-  acceptance criteria and the decisions already made. It runs the
-  `reviewer` rounds itself (at most three), commits without pushing and
-  hands back one report of at most 40 lines. `host-safety` and `red-team`
-  stay with the main session (ADR-0096).
-- **Context budget.** The main session compacts at 300k
-  (`CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`) with the `Compact
-  instructions` of `CLAUDE.md`; a new task starts a new session from a
-  brief; hand-backs are at most 40 lines with details in a file; no
-  polling under ten minutes and nothing blocking over five; independent
-  read-only calls go in one message.
-- **Follow-ups go to a fresh agent.** `SendMessage` only to an agent that
-  answered under five minutes ago; later, a new agent briefed with the
-  branch, the commit range and the findings. Subagent prompt caches live
-  one hour (`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`) so a review round
-  or a build that takes longer than five minutes does not rewrite the
-  context.
+  `maxTurns: 400`, the `dev-loop` and `test` skills preloaded) does every
+  implementation, fix and refactor, in a worktree it creates under
+  `.claude/worktrees/` and reuses for follow-ups. Its brief is by
+  reference: the issue text, the branch to start from, the files, ADRs and
+  design sections that matter, the acceptance criteria and the decisions
+  already made. It runs the `reviewer` rounds itself (at most three),
+  commits without pushing and hands back one report of at most 40 lines.
+  `host-safety` and `red-team` stay with the main session (ADR-0096).
+- **Context budget.** Sessions and subagents compact at 300k
+  (`CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`), the main session with the
+  `Compact instructions` of `CLAUDE.md`; a new task starts a new session
+  from a brief; `implementer` and `Explore` hand-backs are at most 40
+  lines; no polling; anything that may run over five minutes runs in the
+  background; independent read-only calls go in one message.
+- **Follow-ups within the hour go to the same agent.** Subagent prompt
+  caches live one hour (`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`), so
+  `SendMessage` to an agent that answered within the hour reads a warm
+  cache and keeps its worktree and build output; later, a new agent
+  briefed with the branch, its worktree, the commit range and the
+  findings.
 - **A model per task.** An unnamed subagent runs on Sonnet
-  (`CLAUDE_CODE_SUBAGENT_MODEL=sonnet`); `Explore` is overridden by a
-  project agent on Haiku; Opus only for `implementer`, `reviewer`,
-  `host-safety` and `red-team`. Every project agent carries a `maxTurns`
-  cap sized at about twice its measured median, so a runaway returns a
-  partial result instead of running on.
+  (`CLAUDE_CODE_SUBAGENT_MODEL=sonnet`; the vendored `security-audit`
+  skill names none, so its agents are started with `model: opus`);
+  `Explore` is overridden by a project agent on Haiku; Opus only for
+  `implementer`, `reviewer`, `host-safety` and `red-team`. Every project
+  agent carries a `maxTurns` cap sized from the measured runs, generous
+  enough that only a runaway hits it and returns a partial result.
 - **graphify once, then the lines it names.** A codebase question starts
   with `graphify query`, then reads only what it points to, in the same
   message, with no grep or cat to hedge; ambiguous names are retried as
-  `path::Symbol` or by node id. Agent worktrees use the main checkout's
-  graph through `GRAPHIFY_OUT` and never run `graphify update`. A
+  `path::Symbol` or by node id. Agent worktrees run `graphify` from the
+  main checkout (or pass `--graph`) and never `graphify update`. A
   `.graphifyignore` keeps frozen research, audit reports, CI and the test
   harnesses out of the graph; `review-pack` drops same-file hits.
 - Not covered: the maintainer's own hooks in `.claude/settings.local.json`
@@ -104,6 +105,8 @@ main session compacts at 300k tokens, and the model follows the task.
   pass.
 - Bad, because one-hour cache writes cost more than five-minute ones; the
   saving holds while agents idle between rounds, which was 10.9% of spend.
+  A brief that names an existing worktree keeps its build output; a new
+  worktree rebuilds `target/` from scratch.
   Revisit if `/usage` shows cache writes growing.
 - Neutral, because the `implementer` can still start `reviewer` runs
   (subagents nest up to three levels), so the fix loop of ADR-0096 is
@@ -155,8 +158,9 @@ on the hard cases). No controlled fork-versus-fresh benchmark exists
 Amends ADR-0087 (what agents do), ADR-0093 (settings as guardrails) and
 ADR-0096 (the local review loop; the loop's steps now name the
 `implementer`). Implemented by `.claude/settings.json`, `.claude/agents/`,
-`CLAUDE.md`, [`docs/agents/workflow.md`](../agents/workflow.md#claude-code)
-and the `dev-loop` skill. Revisit after two weeks of use with the
-attribution and prompt-cache lines of `/usage`: whether cache writes grew,
+`CLAUDE.md`, [`docs/agents/workflow.md`](../agents/workflow.md#claude-code),
+the `dev-loop` skill, `.graphifyignore` and `scripts/review-pack.py`.
+Revisit after two weeks of use with the attribution and prompt-cache lines
+of `/usage`: whether cache writes grew,
 whether thin briefs cost round trips, and whether a Sonnet `reviewer`
 first pass with Opus only on the host-safety crates holds accuracy.

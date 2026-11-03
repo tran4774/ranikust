@@ -65,7 +65,7 @@ is the `dev-loop` skill.
 | `just test-docs-lint` | `tests/docs/test_links.py`: the link check on a throwaway tree | `docs-lint`, before docs-lint |
 | `just test-ci` | `tests/ci/test_ci.py`: CI's lane detection and cache pruning (`scripts/ci.py`, [ADR-0095](../adr/0095-ci-runs-by-lanes-a-fast-lane-on-drafts-and-the-full-run-when-ready-behind-two-gate-checks.md)) and how the workflows wire them; fails on a tracked file no lane rule names | `changes` |
 | `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
-| `just prune-worktrees [--dry-run]` | `scripts/prune-worktrees.sh` ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)): removes the agent worktrees under `.claude/worktrees/` that hold nothing to lose, with their local branch and `target/` (the conditions are in the recipe's comment). Run it when no fork works in a worktree it could remove: Claude Code does not always lock a running subagent's worktree | local only |
+| `just prune-worktrees [--dry-run]` | `scripts/prune-worktrees.sh` ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)): removes the agent worktrees under `.claude/worktrees/` that hold nothing to lose, with their local branch and `target/` (the conditions are in the recipe's comment). Run it when no implementer works in a worktree it could remove: Claude Code does not always lock a running subagent's worktree | local only |
 | `just test-prune-worktrees` | `tests/agents/prune-worktrees-test.sh`: the script against a throwaway repository with a fake `gh` | local only |
 | `just ci` | all of the above that CI runs, in CI's order: what `ci.yml` runs on a full run | all |
 
@@ -283,7 +283,7 @@ check it in the VM or a throwaway session.
 | Decision; before a PR | `/adr`; `/sync-docs [base]` (user-invoked) |
 | Any diff; `rnk-rootfs`, `rnk-sandbox`, `rnk-layer`, `rnk-registry` | `/code-review`; `/security-review` |
 | Rust review; flag design; property tests | Trail of Bits `rust-review`, `sharp-edges`, `property-based-testing` (user scope, if installed) |
-| Milestones only | vendored `security-audit` (spawns many agents); the run writes outside the repository, then its deliverables move to `docs/security/audit/<scope>/` (see that README), and the next run reads them as prior input |
+| Milestones only | vendored `security-audit` (spawns many agents, which name no model: start them with `model: opus`, since an unnamed subagent now runs on Sonnet, ADR-0097); the run writes outside the repository, then its deliverables move to `docs/security/audit/<scope>/` (see that README), and the next run reads them as prior input |
 | End of a phase, when the maintainer asks | `refactor` skill: behaviour-preserving clean-up, one crate per branch, digests held fixed |
 
 Which model each subagent runs on and how to brief it:
@@ -298,32 +298,34 @@ agent starts at about 35k tokens. So:
 
 - **One task, one session.** Start a new session from a brief: the issue,
   what was decided, what was ruled out. The main session is a router: it
-  briefs, reads hand-backs, decides and records; it does not read source,
-  build or edit beyond a one-line fix.
+  briefs, reads hand-backs, decides and records; it reads source, builds
+  and edits only for a docs-only change on a branch of its own.
 - **Brief the `implementer` by reference**, not by pasting: the issue text
-  (it cannot read GitHub in time to matter), the branch to start from, the
-  files and crate cards, the ADRs and design sections, the acceptance
-  criteria, the decisions already made with their dates, the ADR numbers
-  it may use, and what is out of scope. It runs the `dev-loop`, its own
-  `reviewer` rounds and `just check`, commits without pushing and hands
-  back at most 40 lines.
-- **Follow-ups are new runs.** `SendMessage` only reaches a warm cache for
-  five minutes; after that, a new agent briefed with the branch, the
-  commit range and the findings costs less than resuming.
+  (it cannot read GitHub in time to matter), the branch to start from (and
+  its worktree under `.claude/worktrees/`, for a follow-up), the files and
+  crate cards, the ADRs and design sections, the acceptance criteria, the
+  decisions already made with their dates, the ADR numbers it may use, and
+  what is out of scope. It runs the `dev-loop`, its own `reviewer` rounds
+  and `just check`, commits without pushing and hands back at most 40
+  lines. A hand-back whose last reviewer round did not finish gets one
+  from the main session before the push.
+- **Follow-ups within the hour go to the same agent.** `SendMessage`
+  reaches a warm cache for one hour; after that, a new agent briefed with
+  the branch, its worktree, the commit range and the findings costs less
+  than resuming.
 - **Compact at a task boundary** (`/compact`, with what to keep), while
   the cache is warm, not when the window is full; the session compacts
   itself at 300k tokens. Compact before leaving a session idle for an hour
   or more.
 - **No polling.** Background work and subagents notify; a check every 20
-  seconds or every CI job costs a full context read each. Anything that
-  may run over five minutes runs in the background.
+  seconds or every CI job costs a full context read each.
 - **Models follow the task** (the list in `CLAUDE.md`): a subagent that
   names no model runs on Sonnet. Every project agent has a `maxTurns`
-  cap of about twice its usual length; a capped run returns a partial
-  result the caller can resume or re-brief.
-- **Worktrees** share the main checkout's graph through `GRAPHIFY_OUT`
-  (`CLAUDE.md#graphify`) and are removed with `just prune-worktrees`
-  after the merge.
+  cap sized from the measured runs, generous enough that only a runaway
+  hits it; a capped run returns a partial result the caller can resume or
+  re-brief.
+- **Worktrees** use the main checkout's graph (`CLAUDE.md#graphify`) and
+  are removed with `just prune-worktrees` after the merge.
 
 ## Merging parallel branches
 
@@ -337,8 +339,8 @@ agent starts at about 35k tokens. So:
   `main` merged into it (no force-push) before it merges. Files whose
   lines change in place (crate cards, design docs) keep normal merges.
 - Each parallel `implementer` gets its own range of ADR numbers in its
-  brief; questions need
-  none, since a new question is named by its issue number (`ADR-0091`).
+  brief; questions need none, since a new question is named by its issue
+  number (`ADR-0091`).
 - After merging, `just docs-lint` catches what the merge left behind.
 
 ## Host-safety fix loop
@@ -349,15 +351,16 @@ worktree) or the main session's own. `host-safety` is the reviewer below;
 loop itself before it hands back.
 
 1. The `host-safety` subagent reports to the main session.
-2. The main session briefs a new `implementer` run with the branch, the
-   commit range and the findings (an agent that answered under five
-   minutes ago can be continued with `SendMessage` instead), or fixes them
-   itself on its own branch.
+2. The main session sends the findings to the implementer with
+   `SendMessage` when it answered within the hour, else briefs a new
+   `implementer` run with the branch, its worktree, the commit range and
+   the findings; on a branch of its own (a docs-only change) it fixes them
+   itself.
 3. The implementer fixes on its branch, runs `just check` (and the VM
    suites when set-up or the sandbox changed), commits without pushing and
    reports.
-4. The main session asks a new `host-safety` run to re-check only the fix
-   commits, on the local branch.
+4. The main session asks a new `host-safety` run, briefed with the
+   earlier findings, to re-check only the fix commits, on the local branch.
 5. No blocker left: the main session pushes and opens the draft pull
    request with a summary of the rounds ([GitHub flow](#github-flow)); the
    maintainer merges it.
@@ -372,5 +375,5 @@ costly low ones, or ones that belong to a later task, become task issues
 in the phase's milestone and do not block, unless they describe an open
 weakness, which stays with the maintainer (D6). A finding that needs a
 design choice goes to the maintainer as a `question` issue while the
-implementer builds the fail-closed option as the interim. After three rounds still
-blocked, stop and report to the maintainer.
+implementer builds the fail-closed option as the interim. After three
+rounds still blocked, stop and report to the maintainer.
