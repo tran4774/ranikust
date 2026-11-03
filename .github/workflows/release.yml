@@ -139,10 +139,13 @@ jobs:
       - name: Check that the binary is static-pie and runs
         run: scripts/check-static.sh "$BIN"
       # The licence notices of every crate the binary contains (ADR-0094),
-      # from Cargo.lock for this target, offline (the build fetched the
-      # sources); a licence deny.toml does not allow fails the release.
+      # from Cargo.lock for this target; a licence deny.toml does not allow
+      # fails the release. `cargo metadata`, which cargo-about runs, needs
+      # every package of Cargo.lock, other targets' too, so they are fetched
+      # (checked against Cargo.lock) before cargo-about runs offline.
       - name: Generate the third-party licence notices
         run: |
+          cargo fetch --locked
           cargo about --version
           cargo about generate --frozen --fail -m crates/ranikust/Cargo.toml -c about.toml \
             --target "$TARGET" -o "$RUNNER_TEMP/THIRD-PARTY-LICENSES" scripts/third-party-licenses.hbs

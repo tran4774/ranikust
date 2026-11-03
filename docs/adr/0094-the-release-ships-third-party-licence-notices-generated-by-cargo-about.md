@@ -54,9 +54,11 @@ static binary before v0.0.1: "cargo-about trước 0.0.1 (Recommended)"
   is, the release target only (`targets` in `about.toml`), without
   build-script or test dependencies (`ignore-build-dependencies`,
   `ignore-dev-dependencies`), which are not linked into the binary.
-  `--frozen` keeps it offline: the build has fetched the sources, and only
-  the files in each crate's package are read, so the output depends on
-  `Cargo.lock` alone.
+  `--frozen` keeps it offline: `cargo fetch --locked` first fetches every
+  package of `Cargo.lock` (the `cargo metadata` cargo-about runs needs all
+  of them, other targets' included) and checks them against its
+  checksums; then only the files in each crate's package are read, so the
+  output depends on `Cargo.lock` alone.
 - **Policy:** `about.toml`'s `accepted` is the same set as `deny.toml`'s
   `[licenses] allow` (a test compares them), ordered so that an `OR`
   expression is satisfied by the shortest notice. A crate whose licence
