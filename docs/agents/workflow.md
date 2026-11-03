@@ -219,7 +219,7 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 | When | Use |
 |---|---|
 | Changing code in `crates/` | `dev-loop` skill |
-| What kaniko or BuildKit does | `kaniko-parity` or `buildkit-parity` skill; for anything beyond a quick look, the `upstream-oracle` subagent (formerly `kaniko-oracle`) with the resolved checkout paths (`${KANIKO_SRC:-../kaniko}`, `../buildkit`), never reading upstream source in the main session or a fork |
+| What kaniko or BuildKit does | `kaniko-parity` or `buildkit-parity` skill; for anything beyond a quick look, the `upstream-oracle` subagent with the resolved checkout paths (`${KANIKO_SRC:-../kaniko}`, `../buildkit`), never reading upstream source in the main session or a fork |
 | Changing `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`, or set-up | plan mode first; `host-safety` subagent on the diff with `just review-pack <branch>` as its brief, then the fix loop below; then `red-team` |
 | A claim about Linux or a runtime is unverified (`[inferred]`, "not checkable from the code") | `poc-runner` subagent: a minimal experiment, in the VM for anything privilege-related |
 | Attack tests for a change, regression tests from upstream issues | `red-team` subagent: hostile inputs and T0–T2 tests, never product code |
