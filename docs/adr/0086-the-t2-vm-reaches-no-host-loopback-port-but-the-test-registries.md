@@ -176,13 +176,14 @@ connections come from the host itself.
   `tcp_input.c`, `slirp_add_exec`].
 - With the change, on noble: `unit smoke quick secrets` (46/46 T2 tests),
   `e2e` (W0, every builder) and `push` pass, the network check and both
-  raw passes first in each; in `quick push`, the network check and `quick`
-  find the registry ports shut, the gate opens with `push`, both ports
-  answer from root, both containers and the build's `RUN`, and the gate
-  shuts at the summary. Earlier, before the IPv4-only change: a base image
-  provisioned over passt alone (64 s), the plain cloud image
-  (`RANIKUST_VM_GOLDEN=0`) and a jammy guest (kernel 5.15). No passt or
-  socat process outlives a run [measured].
+  raw passes first in each. In `push quick`, `quick` runs first with the
+  registry ports shut, then `push` in its own step: the gate opens, both
+  ports answer from root, both containers and the build's `RUN`, and the
+  gate shuts after the step. `quick` also passes on a jammy guest (kernel
+  5.15), on the plain cloud image (`RANIKUST_VM_GOLDEN=0`, packages
+  installed over passt at boot), and on a base image provisioned over
+  passt alone (75 s) in a private cache. No passt or socat process
+  outlives a run [measured].
 
 ## More Information
 
