@@ -326,50 +326,12 @@ fi
 
 # --- Build: static binaries and the guest tree -------------------------------
 
+# tests/vm/stage.sh stages the tree for the VM and for a GitHub-hosted runner
+# alike (ADR-0090). Without the lock's descriptor: a build server or podman's
+# pause process left running must not hold the one-VM lock after this script.
 STAGE="$TARGET/vm/stage"
-rm -rf "$STAGE" && mkdir -p "$STAGE/bin/tests"
-cp -r "$HERE/guest" "$STAGE/guest"
-cp "$REPO/tests/smoke/lib.bash" "$STAGE/guest/smoke-lib.bash"
-# The smoke suite's build context; not `guest/e2e`, which holds the e2e
-# suite's scripts.
-cp -r "$REPO/tests/smoke/e2e" "$STAGE/guest/smoke-e2e"
-# The checks of a RUN in a network namespace a user namespace owns.
-cp "$REPO/tests/smoke/netns-check.py" "$STAGE/guest/netns-check.py"
-# The quick smoke cases and their runner.
-cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
-cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
-cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
-# Quoted: `RANIKUST_QUICK_CASES="run copy"` names two cases.
-[[ ${RANIKUST_QUICK_BENCH:-} =~ ^1?$ ]] || die "RANIKUST_QUICK_BENCH must be 1 or unset"
-[[ ${RANIKUST_QUICK_BENCH_ROUNDS:-1} =~ ^[1-9][0-9]?$ ]] || die "RANIKUST_QUICK_BENCH_ROUNDS must be 1-99"
-: >"$STAGE/quick.env"
-for v in RANIKUST_QUICK_CASES RANIKUST_QUICK_MODE RANIKUST_QUICK_BENCH RANIKUST_QUICK_BENCH_ROUNDS; do
-  [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/quick.env"
-done
-# Without the lock's descriptor: a build server or podman's pause process
-# left running must not hold the one-VM lock after this script.
-zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}" 9>&-; }
-
-if wants unit; then
-  # Root tests: every `#[ignore = "T2: ..."]` and `"T2c: ..."` (the VM is the
-  # reference for the container lane too, ADR-0063) and the fn under it.
-  (cd "$REPO" && grep -rn --include='*.rs' -A3 '#\[ignore = "T2' crates) |
-    sed -nE 's/^.*fn ([A-Za-z0-9_]+).*$/\1/p' | sort -u >"$STAGE/t2-tests.txt"
-  # The crates holding them.
-  mapfile -t crates < <(cd "$REPO" && grep -rl --include='*.rs' '#\[ignore = "T2' crates |
-    cut -d/ -f2 | sort -u)
-  [ -s "$STAGE/t2-tests.txt" ] || die "no T2 tests found"
-  log "building the test binaries of ${crates[*]} ($(wc -l <"$STAGE/t2-tests.txt") T2 tests)"
-  pkgs=(); for c in "${crates[@]}"; do pkgs+=(-p "$c"); done
-  (cd "$REPO" && zigbuild test --no-run --message-format=json "${pkgs[@]}") |
-    jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
-    while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
-fi
-if wants smoke || wants quick || wants e2e || wants ultra || wants push || wants secrets; then
-  log "building the smoke-build example and the ranikust binary"
-  (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
-  cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
-fi
+rm -rf "$STAGE" && mkdir -p "$STAGE"
+bash "$HERE/stage.sh" "$STAGE" "${SUITES[@]}" 9>&-
 
 if wants e2e || wants ultra; then
   # The reference images, saved once from the host's podman (where

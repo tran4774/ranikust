@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Stages what the T2 suites run: the guest scripts with the smoke files they
+# read, quick.env, and the static musl binaries the named suites need (the
+# root tests' binaries and their list for `unit`; the ranikust binary and the
+# smoke-build example for the others). One tree for both places T2 runs:
+# tests/vm/vm.sh copies it into its VM as ~/rnk, tests/vm/runner.sh puts it
+# at ~/rnk on a GitHub-hosted runner (ADR-0090). Builds as the invoking user;
+# nothing here needs root.
+#
+#   tests/vm/stage.sh <empty stage directory> [suite]...
+set -euo pipefail
+
+log() { printf '[stage] %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+[ $# -ge 1 ] || die "usage: tests/vm/stage.sh <empty stage directory> [suite]..."
+STAGE="$1"
+shift
+SUITES=("$@")
+# The caller makes it, and empties it: this script deletes nothing.
+case "$STAGE" in /*) ;; *) die "the stage directory must be an absolute path (got '$STAGE')" ;; esac
+[ -d "$STAGE" ] && [ ! -L "$STAGE" ] || die "$STAGE is not a directory"
+[ -z "$(ls -A "$STAGE")" ] || die "$STAGE is not empty"
+for s in ${SUITES[@]+"${SUITES[@]}"}; do
+  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra) ;; *) die "unknown suite '$s'" ;; esac
+done
+wants() { local s; for s in ${SUITES[@]+"${SUITES[@]}"}; do [ "$s" = "$1" ] && return 0; done; return 1; }
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HERE="$REPO/tests/vm"
+TARGET="$(realpath -m -- "${CARGO_TARGET_DIR:-$REPO/target}")"
+MUSL=x86_64-unknown-linux-musl
+
+mkdir -p "$STAGE/bin/tests"
+cp -r "$HERE/guest" "$STAGE/guest"
+cp "$REPO/tests/smoke/lib.bash" "$STAGE/guest/smoke-lib.bash"
+# The smoke suite's build context; not `guest/e2e`, which holds the e2e
+# suite's scripts.
+cp -r "$REPO/tests/smoke/e2e" "$STAGE/guest/smoke-e2e"
+# The checks of a RUN in a network namespace a user namespace owns.
+cp "$REPO/tests/smoke/netns-check.py" "$STAGE/guest/netns-check.py"
+# The quick smoke cases and their runner.
+cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
+cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
+cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
+# Quoted: `RANIKUST_QUICK_CASES="run copy"` names two cases.
+[[ ${RANIKUST_QUICK_BENCH:-} =~ ^1?$ ]] || die "RANIKUST_QUICK_BENCH must be 1 or unset"
+[[ ${RANIKUST_QUICK_BENCH_ROUNDS:-1} =~ ^[1-9][0-9]?$ ]] || die "RANIKUST_QUICK_BENCH_ROUNDS must be 1-99"
+: >"$STAGE/quick.env"
+for v in RANIKUST_QUICK_CASES RANIKUST_QUICK_MODE RANIKUST_QUICK_BENCH RANIKUST_QUICK_BENCH_ROUNDS; do
+  [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}" >>"$STAGE/quick.env"
+done
+# Without vm.sh's lock descriptor: a build server or podman's pause process
+# left running must not hold the one-VM lock after the run.
+zigbuild() { CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo-zigbuild "$1" --locked --target "$MUSL" "${@:2}" 9>&-; }
+
+if wants unit; then
+  # Root tests: every `#[ignore = "T2: ..."]` and `"T2c: ..."` (the VM is the
+  # reference for the container lane too, ADR-0063) and the fn under it.
+  (cd "$REPO" && grep -rn --include='*.rs' -A3 '#\[ignore = "T2' crates) |
+    sed -nE 's/^.*fn ([A-Za-z0-9_]+).*$/\1/p' | sort -u >"$STAGE/t2-tests.txt"
+  # The crates holding them.
+  mapfile -t crates < <(cd "$REPO" && grep -rl --include='*.rs' '#\[ignore = "T2' crates |
+    cut -d/ -f2 | sort -u)
+  [ -s "$STAGE/t2-tests.txt" ] || die "no T2 tests found"
+  log "building the test binaries of ${crates[*]} ($(wc -l <"$STAGE/t2-tests.txt") T2 tests)"
+  pkgs=(); for c in "${crates[@]}"; do pkgs+=(-p "$c"); done
+  (cd "$REPO" && zigbuild test --no-run --message-format=json "${pkgs[@]}") |
+    jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
+    while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
+fi
+if wants smoke || wants quick || wants e2e || wants ultra || wants push || wants secrets; then
+  log "building the smoke-build example and the ranikust binary"
+  (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
+  cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
+fi
