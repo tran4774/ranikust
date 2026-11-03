@@ -13,6 +13,12 @@
 # printed; the loopback image is pulled and run by Docker; the tarball and
 # the OCI layout are loaded into Docker and run, and every blob of the
 # layout is checked against its name.
+#
+# The host's registries are reachable only while this suite runs: vm.sh
+# opens their gate once the guest's log shows this suite started
+# (ADR-0086), so the suite first waits for them. Both ports must then
+# answer from root in the VM (curl), from a default and a `--privileged`
+# container and from the build's own `RUN` (alpine's wget).
 set -euo pipefail
 cd "$HOME/rnk"
 
@@ -24,8 +30,30 @@ W=/var/tmp/rnk-push
 REPO=rnk/push
 TAG="push-$(date +%s)"
 
+echo "=== the host's registries (their gate opens with this suite)"
+for i in $(seq 60); do
+  curl -fsS -o /dev/null http://10.0.2.2:5000/v2/ 2>/dev/null && break
+  [ "$i" = 60 ] && { echo "error: the host's registry at 10.0.2.2:5000 did not answer within 60 s" >&2; exit 1; }
+  sleep 1
+done
+curl -fsS -o /dev/null http://10.0.2.2:5000/v2/
+code="$(curl -sS -o /dev/null -w '%{http_code}' --cacert "$CA" https://10.0.2.2:5443/v2/)"
+[ "$code" = 401 ] || { echo "error: the HTTPS registry answered $code, not 401, to an anonymous request" >&2; exit 1; }
+echo "root in the VM: 10.0.2.2:5000 and 10.0.2.2:5443 answer"
+# Both ports with alpine's wget: 200 from the plain one, 401 from the HTTPS
+# one (no credentials).
+REACH="wget -S -T 10 -O /dev/null http://10.0.2.2:5000/v2/ 2>&1 | grep -q 'HTTP/1\\.[01] 200' &&"
+REACH+=" wget -S -T 10 --no-check-certificate -O /dev/null https://10.0.2.2:5443/v2/ 2>&1 | grep -q 'HTTP/1\\.[01] 401'"
+for flags in "" "--privileged"; do
+  # shellcheck disable=SC2086
+  sudo docker run --rm $flags "$REG/library/alpine:3.20" sh -c "$REACH" ||
+    { echo "error: docker run ${flags:-(default)}: the host's registries do not answer" >&2; exit 1; }
+  echo "docker run ${flags:-(default)}: 10.0.2.2:5000 and 10.0.2.2:5443 answer"
+done
+
 sudo rm -rf "$W" && sudo mkdir -m 700 -p "$W/ctx" "$W/work" "$W/docker"
-printf 'FROM %s/library/alpine:3.20\nRUN echo "pushed by ranikust" > /pushed\nCMD ["cat", "/pushed"]\n' "$REG" |
+# The RUN that checks the registries changes no file, so adds no layer.
+printf 'FROM %s/library/alpine:3.20\nRUN %s\nRUN echo "pushed by ranikust" > /pushed\nCMD ["cat", "/pushed"]\n' "$REG" "$REACH" |
   sudo tee "$W/ctx/Dockerfile" >/dev/null
 printf '{"auths":{"10.0.2.2:5443":{"auth":"%s"}}}\n' "$(printf '%s' "$CREDS" | base64 -w0)" |
   sudo tee "$W/docker/config.json" >/dev/null

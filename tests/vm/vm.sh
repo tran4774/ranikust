@@ -493,6 +493,19 @@ stop() {
 # whose command lines name this run's socat log) still running.
 forwarders() { pgrep -u "$(id -u)" -f -- " -lf ${SOCKDIR//./\\.}/socat\\.log - TCP:127\\.0\\.0\\.1:[0-9]+\$"; }
 
+# gate_sync: with the push suite, the registry gate follows the guest's
+# log: open from its first "== suite push" line to the next "== suite" or
+# "== summary" line, and never again after. The log is the guest's: root in
+# the VM could print that line early and open the gate until the next suite
+# starts; the real push suite then finds it shut for good and fails.
+gate_sync() {
+  wants push || return 0
+  case "$(awk '$0 == "== suite push" && !seen { seen = 1; open = 1; next } open && /^== (suite |summary)/ { open = 0 } END { print open ? "open" : "shut" }' "$RUN/suite.log")" in
+    open) [ -e "$GATE" ] || { : >"$GATE"; log "registry gate open (the push suite runs)"; } ;;
+    *) [ ! -e "$GATE" ] || { rm -f "$GATE"; log "registry gate shut"; } ;;
+  esac
+}
+
 # put <source> <name>: copies a file into $RESULTS through a new temporary
 # file renamed over <name>, so nothing the guest left there is written
 # through.
@@ -566,6 +579,8 @@ SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
 # Its registry forwarder goes into QEMU's options (split on commas) and
 # into the command line libslirp parses (split on spaces).
 [[ "$SOCKDIR" =~ ^/[A-Za-z0-9/._-]+$ ]] || die "the socket directory ($SOCKDIR) must hold no space or comma"
+# The registry gate: the forwarder passes connections only while it exists.
+GATE="$SOCKDIR/registry-gate"
 # QEMU's TMPDIR, where it has passt write its pid file: under /tmp, which
 # the AppArmor profile Debian and Ubuntu give passt lets it write (as the
 # home directory), unlike $XDG_RUNTIME_DIR.
@@ -845,13 +860,37 @@ log "booting $RELEASE ($VM_SIZE), SSH on 127.0.0.1:$PORT"
 T_BOOT=$SECONDS
 # The network (ADR-0086): egress through passt; the harness NIC forwards
 # only SSH from the host's 127.0.0.1 and, with the push suite, the test
-# registries, each connection to its own socat (restrict=on: nothing else,
-# not even DNS, leaves through it).
+# registries (restrict=on: nothing else, not even DNS, leaves through it).
+# Each guest connection to a registry port gets its own run of the
+# forwarder below, which libslirp starts: it passes the connection to the
+# host's registry only while the gate is open (gate_sync), with at most
+# FWD_SLOTS at a time per port, each for at most FWD_SECONDS, and else
+# closes it at once.
 HARNESS="user,id=n1,ipv6=off,restrict=on,net=$HARNESS_NET,host=$HARNESS_HOST"
 HARNESS+=",hostfwd=tcp:127.0.0.1:$PORT-$HARNESS_GUEST:22"
 if wants push; then
+  FORWARD="$SOCKDIR/registry-forward"
+  cat >"$FORWARD" <<EOF
+#!/bin/sh
+# One guest connection to $REGISTRY_ADDR:<port> (tests/vm/vm.sh, ADR-0086).
+case "\$1" in
+  $(IFS='|'; echo "${REGISTRY_PORTS[*]}")) ;;
+  *) exit 1 ;;
+esac
+[ -e "$GATE" ] || exit 0
+i=0
+while [ "\$i" -lt $FWD_SLOTS ]; do
+  i=\$((i + 1))
+  exec 3>"$SOCKDIR/registry-slot.\$1.\$i"
+  if $(command -v flock) -n 3; then
+    exec $(command -v timeout) $FWD_SECONDS $SOCAT -lf $SOCKDIR/socat.log - TCP:127.0.0.1:\$1
+  fi
+done
+exit 0
+EOF
+  chmod 0700 "$FORWARD"
   for p in "${REGISTRY_PORTS[@]}"; do
-    HARNESS+=",guestfwd=tcp:$REGISTRY_ADDR:$p-cmd:$SOCAT -lf /dev/null - TCP:127.0.0.1:$p"
+    HARNESS+=",guestfwd=tcp:$REGISTRY_ADDR:$p-cmd:$FORWARD $p"
   done
 fi
 # The disk is thrown away with the run: cache=unsafe skips the guest's
@@ -905,6 +944,7 @@ while :; do
     lost=0
     size=$(stat -c %s "$RUN/suite.log")
     [ "$size" -le "$shown" ] || { tail -c +$((shown + 1)) "$RUN/suite.log"; shown=$size; }
+    gate_sync
     [ -z "$rc" ] || { status=$rc; break; }
   else
     lost=$((lost + 1))
@@ -913,8 +953,12 @@ while :; do
   fi
   sleep 5
 done
+rm -f "$GATE"
 T_SUITES=$SECONDS
 log "suites done $((T_SUITES - T_READY)) s after cloud-init"
+# The probe listener must have lasted the whole run: a check against a
+# listener that had died would have proved nothing.
+probe_up 127.0.0.1 || { log "error: the host-side network probe died during the run"; status=1; }
 mkdir -p -- "$(dirname -- "$RESULTS")"
 for i in 1 2 3 4 5; do
   # The guest's results hold only regular files and directories: a link
