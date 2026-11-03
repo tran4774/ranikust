@@ -350,6 +350,9 @@ rm -rf "$RESULTS"
 QEMU_PID=
 QEMU_PIDFILE=
 MONITOR=
+# The host-side probe of guest/net.sh: a listener on the host's loopback
+# that the VM must not reach (ADR-0086).
+PROBE_PID=
 # Seconds since the start at each step, written to the results' timings.txt.
 T_BOOT='' T_SSH='' T_READY='' T_SUITES=''
 
@@ -403,6 +406,11 @@ teardown() {
     for _ in $(seq 20); do qemu_alive || break; sleep 0.5; done
   fi
   ! qemu_alive || kill -9 "$QEMU_PID" 2>/dev/null
+  # The probe listener, only while it is still this run's (its command line
+  # names this run's directory).
+  if [ -n "$PROBE_PID" ] && tr '\0' '\n' <"/proc/$PROBE_PID/cmdline" 2>/dev/null | grep -qxF -- "$RUN/probe"; then
+    kill "$PROBE_PID" 2>/dev/null
+  fi
   # Whatever reached the results, links and special files go before
   # anything is written there.
   mkdir -p "$RESULTS" && find "$RESULTS" ! -type f ! -type d -delete
@@ -427,6 +435,26 @@ trap 'exit 130' INT TERM
 # A Unix socket path must fit in 108 bytes, which a run directory in a deep
 # checkout (a git worktree) does not.
 SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
+
+# The probe of guest/net.sh: a random token served on a free port of the
+# host's loopback only. The VM must not reach it (ADR-0086); the guest
+# fails the run before any suite if it does.
+mkdir "$RUN/probe"
+PROBE_TOKEN="rnk-probe-$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')"
+printf '%s\n' "$PROBE_TOKEN" >"$RUN/probe/token"
+PROBE_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+python3 -I -m http.server --bind 127.0.0.1 --directory "$RUN/probe" "$PROBE_PORT" >/dev/null 2>&1 9>&- &
+PROBE_PID=$!
+for _ in $(seq 50); do
+  [ "$(curl -fsS --noproxy "*" "http://127.0.0.1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ] && break
+  sleep 0.1
+done
+[ "$(curl -fsS --noproxy "*" "http://127.0.0.1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ] ||
+  die "the host-side network probe did not start on 127.0.0.1:$PROBE_PORT"
+HOST_REGISTRIES=0
+! wants push || HOST_REGISTRIES=1
+printf 'export RANIKUST_VM_PROBE_PORT=%q\nexport RANIKUST_VM_PROBE_TOKEN=%q\nexport RANIKUST_VM_HOST_REGISTRIES=%q\n' \
+  "$PROBE_PORT" "$PROBE_TOKEN" "$HOST_REGISTRIES" >>"$STAGE/vm.env"
 
 # start_qemu <disk> <seed.iso> <serial log> <pidfile> <monitor> <mem> <cache>
 #            [extra QEMU arguments...]

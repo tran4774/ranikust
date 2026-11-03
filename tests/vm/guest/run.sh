@@ -46,6 +46,15 @@ fi
 status=0
 : >out/summary.txt
 : >out/suite-times.txt
+# The VM must not reach the host's loopback (ADR-0086): checked before any
+# suite, which do not run otherwise.
+echo "== network"
+if bash guest/net.sh 2>&1 | tee out/network.log; then
+  echo "network: ok" >>out/summary.txt
+else
+  echo "network: FAILED" | tee -a out/summary.txt
+  exit 1
+fi
 for suite in "$@"; do
   echo "== suite $suite"
   t0=$SECONDS
