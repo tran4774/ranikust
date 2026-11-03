@@ -1,14 +1,16 @@
 name: Release
 
-# The release process of ADR-0089. Pushing a tag `vX.Y.Z` (the maintainer
-# only, after the release pull request is merged) builds the static x86_64
+# The release process of ADR-0089 and ADR-0092. Pushing a tag `vX.Y.Z` (the
+# maintainer only: the `release tags` ruleset) builds the static x86_64
 # binary from the tag, packages it with SHA256SUMS, attests its build
 # provenance and, after the maintainer approves the `release` environment,
 # creates a draft pre-release whose notes are the tag's CHANGELOG.md section.
 #
-# `workflow_dispatch`, and pull requests that change what this workflow runs,
-# take the dry-run path: build, check, package and checksum, without
-# attestation or release. The publishing jobs run only for a pushed tag.
+# `workflow_dispatch`, and pull requests that change what goes into a
+# release (this workflow, its scripts and tests, the toolchain, the locked
+# dependencies, the packaged files), take the dry-run path: test the
+# scripts, build, check, package and checksum, without attestation or
+# release. The attesting and publishing jobs run only for a pushed `v*` tag.
 
 on:
   push:
@@ -16,8 +18,17 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/release.yml
       - scripts/release.py
       - scripts/check-static.sh
+      - tests/release/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - LICENSE-APACHE
+      - LICENSE-MIT
+      - NOTICE
+      - README.md
   workflow_dispatch:
 
 permissions:
@@ -36,50 +47,103 @@ jobs:
     name: build (x86_64 musl)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      # Reads the `release` environment's protection (check-environment).
+      actions: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      previous_tag: ${{ steps.tag.outputs.previous_tag }}
     env:
       BIN: target/x86_64-unknown-linux-musl/release/ranikust
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The whole history: the tag must be on main, and the tarball's
-          # timestamps come from the tagged commit.
+          # The whole history: the tag must be on main, the notes start at
+          # the previous tag, and the tarball's timestamps come from the
+          # tagged commit.
           fetch-depth: 0
+      - name: Test the release scripts
+        run: |
+          bash tests/release/check-static-test.sh
+          python3 -I tests/release/test_release.py
       - name: Read the version
         id: version
         run: |
           version="$(python3 -I scripts/release.py version)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "version $version"
-      - name: Check the tag against the version and main
-        if: github.ref_type == 'tag'
+      # Everything that can stop a release is checked here, before the
+      # build, the attestation and the approval.
+      - name: Check the tag, its changelog section and the release environment
+        id: tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 -I scripts/release.py check-tag "$TAG"
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::$TAG is not on main: release only a merged release pull request"
             exit 1
           fi
+          python3 -I scripts/release.py notes "$VERSION" > /dev/null
+          # A job naming a missing environment creates it unprotected.
+          python3 -I scripts/release.py check-environment "$GITHUB_REPOSITORY" release
+          previous="$(python3 -I scripts/release.py previous-tag "$TAG")"
+          echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
+          echo "previous release tag: ${previous:-none}"
+      - name: Report the release environment (dry run, informational)
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if out="$(python3 -I scripts/release.py check-environment "$GITHUB_REPOSITORY" release 2>&1)"; then
+            echo "$out"
+          else
+            echo "::notice::a tag would stop here: $out"
+          fi
       - name: Install Rust toolchain
         run: rustup toolchain install
-      # No rust-cache, no zig cache: a release is built from nothing but the
-      # tagged source, the pinned toolchain and the locked dependencies, so no
-      # cache an earlier run wrote can reach it. The same tools as CI's
-      # `static-build` job (ADR-0020).
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.16.0
-          use-cache: false
+      # No cache at all: a release is built from nothing but the tagged
+      # source, the pinned toolchain and the locked dependencies, so nothing
+      # an earlier run stored can reach it (ADR-0089, ADR-0092). The same
+      # tool versions as CI's `static-build` job (ADR-0020); Zig comes from
+      # ziglang.org with a pinned checksum, since mlugg/setup-zig restores
+      # its archive from the Actions cache whatever `use-cache` says.
+      - name: Install Zig (pinned checksum, no cache)
+        env:
+          ZIG_VERSION: 0.16.0
+          ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+        run: |
+          archive="$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$archive" \
+            "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          echo "$ZIG_SHA256  $archive" | sha256sum -c -
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
+      # Downloads a release binary and checks it against the action's own
+      # pinned sha256; uses no cache.
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-zigbuild@0.24.0
       - name: Build
-        run: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target "$TARGET" -p ranikust
+        run: |
+          test "$(zig version)" = 0.16.0
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target "$TARGET" -p ranikust
       - name: Check that the binary is static-pie and runs
         run: scripts/check-static.sh "$BIN"
+      - name: Check that the binary reports the version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          reported="$("$BIN" version)"
+          if [ "$reported" != "ranikust $VERSION" ]; then
+            echo "::error::the binary reports '$reported', expected 'ranikust $VERSION'"
+            exit 1
+          fi
       - name: Package
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -93,13 +157,15 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
-          retention-days: 7
+          # As long as a deployment may wait for approval (30 days).
+          retention-days: 30
 
   # A job of its own, so the OIDC token that signs the attestation is never
-  # available to the build (and its build scripts).
+  # available to the build (and its build scripts). Only for a pushed `v*`
+  # tag: the trigger allows no other push, and the condition says it again.
   attest:
     name: attest build provenance
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -120,18 +186,25 @@ jobs:
 
   publish:
     name: draft the GitHub release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     needs: [build, attest]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The maintainer approves this environment before anything is published.
+    # It must exist, protected, before the first tag (ADR-0092): the build
+    # job refuses to go on otherwise, and the first step checks it again.
     environment: release
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check the release environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/release.py check-environment "$GITHUB_REPOSITORY" release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
@@ -147,12 +220,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.build.outputs.version }}
+          PREVIOUS: ${{ needs.build.outputs.previous_tag }}
         run: |
           # Every release before 1.0, and every X.Y.Z-suffix, is a pre-release.
           prerelease=()
           case "$VERSION" in
             0.*|*-*) prerelease=(--prerelease) ;;
           esac
+          # The generated list starts at the previous release tag on the
+          # tag's history, not at GitHub's guess among pre-releases.
+          start=()
+          if [ -n "$PREVIOUS" ]; then
+            start=(--notes-start-tag "$PREVIOUS")
+          fi
           # The CHANGELOG section comes first; GitHub appends the merged pull
           # requests, grouped by the labels of .github/release.yml.
           gh release create "$TAG" dist/* \
@@ -162,4 +242,5 @@ jobs:
             "${prerelease[@]}" \
             --title "ranikust $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            --generate-notes
+            --generate-notes \
+            "${start[@]}"
