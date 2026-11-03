@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-03
 decision-makers: Tran Nguyen (maintainer)
 ---
@@ -39,6 +39,10 @@ runner lacks. The fourth is ruled out: on a public repository a fork's pull
 request would run its code as root on that machine. The third was chosen.
 
 ## Decision Outcome
+
+Accepted by the maintainer on 2026-11-03, asked "Chấp nhận ADR nào đang ở
+trạng thái proposed?" (which proposed ADRs to accept): "ADR-0090
+(Recommended)".
 
 The T2 suites `unit`, `smoke`, `quick` and `secrets`, and the T2c lane
 `unit-c`, run as root directly on GitHub-hosted `ubuntu-24.04` runners in
@@ -120,9 +124,9 @@ everything else.
   the VM.
 - Bad, because the runner's disposability is GitHub's word [external], not
   something this repository can check, and a hostile pull request runs as
-  root there (on GitHub's machine, with GitHub's outbound network);
-  GitHub's default approval of first-time contributors' workflows is the
-  guard against abuse of it.
+  root there (on GitHub's machine, with GitHub's outbound network); the
+  guard against abuse of it is the maintainer's "Approval for running fork
+  pull request workflows" setting (see Security terms above).
 - Neutral, because the images the guest scripts name come from
   `mirror.gcr.io` (`RANIKUST_VM_IMAGE_REGISTRY`, checked as `vm.sh` checks
   it), as in the VM, so they depend on it; but Docker's own pulls of
@@ -156,9 +160,11 @@ to 5 min 56 s):
   second (41623116016), with containerd's image store, passed every job.
   No test behaved differently on the runner's kernel.
 - `tests/vm/vm.sh` with the staging moved to `tests/vm/stage.sh`, on the
-  maintainer's machine on 2026-11-03: `just test-vm unit smoke`, Ubuntu
+  maintainer's machine on 2026-11-03, `just test-vm unit smoke`, Ubuntu
   24.04 (`noble`, kernel 6.8.0-147): network ok, `unit` 46 of 46, `smoke`
-  ok, exit 0, 325 s.
+  ok, exit 0, 325 s; run again on the final staging code (15c134a, after
+  the log-clock change): the same results, 274 s, the `[stage +Ns]` lines
+  on `vm.sh`'s clock.
 - KVM on standard runners, the runner's resources, and the read-only token
   and absent secrets of a fork's pull request: GitHub's documentation and
   changelog (2024-04-02) [external].

@@ -66,7 +66,7 @@ change both together. `just test -p <crate>` still tests the whole workspace
 |---|---|---|---|---|
 | T0 | Unit and in-process tests | none | anywhere: `just test` | in use |
 | T1 | User namespaces, rootless overlay, sandbox in a user namespace, Podman | user with `/etc/subuid` entries | developer machine; `just smoke`; `just test-rootless` TODO | smoke test only |
-| T2 | Overlay as root, `pivot_root`, `mknod`, Docker variants, kaniko mode on `/`, host-safety attacks | root | disposable VM only: `just test-vm`; on every pull request also a GitHub-hosted runner (`.github/workflows/t2.yml`: `unit`, `smoke`, `quick`, `secrets` and the T2c `unit-c`, ADR-0090) | `unit`, `smoke`, `quick`, `secrets`, `e2e` and `push` suites |
+| T2 | Overlay as root, `pivot_root`, `mknod`, Docker variants, kaniko mode on `/`, host-safety attacks | root | disposable VM only: `just test-vm`; on every pull request also a GitHub-hosted runner (`.github/workflows/t2.yml`: `unit`, `smoke`, `quick`, `secrets` and the T2c `unit-c`, ADR-0090) | `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push` and `ultra` suites |
 | T3 | fmt, clippy, T0, static build, aarch64 check, aarch64 T0 under qemu-user, deny, docs | none | GitHub Actions: `just ci` | in use |
 
 Planned suites: [`docs/testing.md`](../testing.md#planned-test-suites).
