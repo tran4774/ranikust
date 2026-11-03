@@ -40,7 +40,6 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
@@ -605,7 +604,11 @@ impl Snapshotter for Kaniko {
                     }
                     Some(Kept::Tar { file }) => {
                         // Our own snapshot of a tree: `.wh.` names are files.
-                        extract_live_literal(&shared.root, reopen(file)?, &shared.ignore)?;
+                        extract_live_literal(
+                            &shared.root,
+                            ReadAt::from_start(file)?,
+                            &shared.ignore,
+                        )?;
                     }
                     Some(Kept::Image { .. }) | None => {
                         return Err(Error::State("a stage built on an unpacked image"));
@@ -802,16 +805,34 @@ fn make_dir(shared: &Shared, name: &str) -> Result<Made> {
     }
 }
 
-/// A new descriptor of an anonymous file, read from its start, through this
-/// process's own `/proc/self/fd` (checked to be procfs when the store
-/// opened).
-fn reopen(file: &File) -> Result<File> {
-    let path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
-    File::open(&path).map_err(|source| Error::Io {
-        op: "reopen",
-        path,
-        source,
-    })
+/// An anonymous file of the store read from its start through the
+/// descriptor held, at offsets of its own (`pread`): no path is looked up,
+/// after `RUN`s either, and readers of one file never move each other's
+/// offset, nor the writer's.
+struct ReadAt {
+    /// A duplicate of the held descriptor (`F_DUPFD_CLOEXEC`).
+    file: File,
+    at: u64,
+}
+
+impl ReadAt {
+    fn from_start(file: &File) -> Result<Self> {
+        let file = file.try_clone().map_err(|source| Error::Io {
+            op: "duplicate the descriptor of",
+            path: PathBuf::from("an anonymous file of the store"),
+            source,
+        })?;
+        Ok(Self { file, at: 0 })
+    }
+}
+
+impl std::io::Read for ReadAt {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::unix::fs::FileExt as _;
+        let n = self.file.read_at(buf, self.at)?;
+        self.at += u64::try_from(n).map_err(std::io::Error::other)?;
+        Ok(n)
+    }
 }
 
 /// Writes `what` of the root as a plain tar into a new anonymous file of
@@ -1024,7 +1045,7 @@ impl Spooled {
         match &self.0 {
             SpooledBlob::Blob(layer) => extract_blob(root, ignore, layer),
             SpooledBlob::File { file, diff_id } => {
-                extract_checked(root, ignore, Box::new(reopen(file)?), diff_id)
+                extract_checked(root, ignore, Box::new(ReadAt::from_start(file)?), diff_id)
             }
         }
     }
@@ -1326,7 +1347,9 @@ impl KanikoRoot {
                 // Our own snapshot of a tree: `.wh.` names are files. Device
                 // nodes and FIFOs are made here too: no `RUN` runs while the
                 // directory exists.
-                Some(Kept::Tar { file }) => extract(&root, reopen(file)?, Whiteouts::Literal)?,
+                Some(Kept::Tar { file }) => {
+                    extract(&root, ReadAt::from_start(file)?, Whiteouts::Literal)?;
+                }
                 Some(Kept::Image {
                     tars: Some(tars), ..
                 }) => {
