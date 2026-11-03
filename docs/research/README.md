@@ -56,6 +56,7 @@ method, results and limitations.
 | 14 | [Real builds without /proc](experiments/14-real-builds-without-proc.md) | `next build` of W1, Maven/Gradle on several JDKs, tsc/esbuild/vite |
 | 15 | [Java, Next.js and concurrency](experiments/15-java-next-concurrency.md) | Java OOM under memory limits, JDK toolchains, Next 16/Turbopack, concurrent fake /proc |
 | 16 | [cgroup v1 and cpuset](experiments/16-cgroup-v1-cpuset.md) | JVM container awareness per JDK, Node tools, W3 under v1, cpuset, final fake /proc sets |
+| 17 | [ranikust on Apple Silicon](experiments/17-apple-silicon-rosetta.md) | Why the x86_64 binary refuses under Rosetta, and an aarch64 build in an arm64 OrbStack container |
 
 ## Workloads
 

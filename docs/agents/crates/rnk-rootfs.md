@@ -78,7 +78,7 @@ pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Resul
 pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // --chown (rnk-builder): gid = uid without a group
-pub fn probe_support() -> Result<(), Unsupported>;             // start-up check (ADR-0028); Cause::{Missing, Blocked}, kernel release
+pub fn probe_support() -> Result<(), Unsupported>;             // start-up check (ADR-0028); Cause::{Missing, Blocked, Hidden}, kernel release
 ```
 
 ## Invariants

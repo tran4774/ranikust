@@ -254,8 +254,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--from` values planned or refused, never a panic, kaniko-oss#724) and the
   bare `COPY --from` refusal.
 - **T0, the binary** (`tests/cli.rs`, `tests/metrics.rs`): exit codes of
-  `--help`, `version`, refusals and validation; the kernel refusal and the
-  seccomp message through `RANIKUST_DEBUG_FAULT=kernel-missing|kernel-blocked`;
+  `--help`, `version`, refusals and validation; the kernel refusal, the
+  seccomp message and the emulator message (Rosetta) through
+  `RANIKUST_DEBUG_FAULT=kernel-missing|kernel-blocked|kernel-hidden`;
   `--metrics-file` over the variable; the report on every exit path, panic
   included (`RANIKUST_DEBUG_FAULT=panic|error`); a refused flag exits 2 before
   any work (no state directory, the value never echoed, no `RANIKUST_*`
