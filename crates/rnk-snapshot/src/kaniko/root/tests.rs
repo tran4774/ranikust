@@ -1554,7 +1554,119 @@ fn a_corrupt_layer_fails_its_reader_and_a_reader_that_stops_early_ends_the_threa
     let thread = decoding.thread.take().unwrap();
     drop(decoding);
     assert!(
-        thread.join().unwrap().0.is_err(),
+        thread.join().unwrap().unwrap().0.is_err(),
         "the thread saw its reader go"
     );
+}
+
+/// A blob that holds back everything past `gate_at` until `open` is set,
+/// counting the bytes it gave.
+struct Gated {
+    bytes: Vec<u8>,
+    pos: usize,
+    gate_at: usize,
+    open: Arc<AtomicBool>,
+    /// Set once a read waits at the gate.
+    waiting: Arc<AtomicBool>,
+    given: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl std::io::Read for Gated {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.gate_at {
+            self.waiting.store(true, Ordering::Relaxed);
+            while !self.open.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        let limit = if self.pos < self.gate_at {
+            self.gate_at
+        } else {
+            self.bytes.len()
+        };
+        let n = buf.len().min(limit - self.pos);
+        buf[..n].copy_from_slice(&self.bytes[self.pos..self.pos + n]);
+        self.pos += n;
+        self.given.fetch_add(n, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+#[test]
+fn a_reader_that_stops_early_stops_the_blob_even_among_empty_gzip_members() {
+    use std::io::Write as _;
+    // Two chunks of data, then empty gzip members a decoder skips inside
+    // one read of its own, giving nothing: only the blob sees the stop.
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&vec![7_u8; DECODE_CHUNK * 2]).unwrap();
+    let mut bytes = gz.finish().unwrap();
+    let gate_at = bytes.len();
+    let empty = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast())
+        .finish()
+        .unwrap();
+    for _ in 0..100_000 {
+        bytes.extend_from_slice(&empty);
+    }
+    let total = bytes.len();
+    let open = Arc::new(AtomicBool::new(false));
+    let given = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let waiting = Arc::new(AtomicBool::new(false));
+    let mut decoding = Decoding::new(Box::new(Gated {
+        bytes,
+        pos: 0,
+        gate_at,
+        open: Arc::clone(&open),
+        waiting: Arc::clone(&waiting),
+        given: Arc::clone(&given),
+    }))
+    .unwrap();
+    // The gate opens once the reader has said it stops, while the thread
+    // waits on the blob past the data.
+    let opener = {
+        let stop = Arc::clone(&decoding.stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            open.store(true, Ordering::Relaxed);
+        })
+    };
+    let mut first = [0_u8; 512];
+    decoding.read_exact(&mut first).unwrap();
+    // The reader goes while the thread is inside a read of the decoder,
+    // between two reads of the blob. (A failed wait drops the reader too,
+    // which opens the gate: nothing hangs.)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !waiting.load(Ordering::Relaxed) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the thread never reached the gate"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    drop(decoding);
+    opener.join().unwrap();
+    // At most one more buffer of the decoder's (32 KiB) past the gate, not
+    // the 2 MB of empty members.
+    let given = given.load(Ordering::Relaxed);
+    assert!(
+        given <= gate_at + 64 * 1024,
+        "{given} of {total} bytes read"
+    );
+    assert!(total > gate_at + 1_000_000);
+}
+
+#[test]
+fn without_a_thread_a_layer_is_decompressed_by_its_reader() {
+    let (gz, plain) = gzipped_tar(DECODE_CHUNK + 777);
+    NO_DECODE_THREAD.with(|refused| refused.set(true));
+    let decoding = Decoding::new(Box::new(std::io::Cursor::new(gz)));
+    NO_DECODE_THREAD.with(|refused| refused.set(false));
+    let mut decoding = decoding.unwrap();
+    assert!(decoding.thread.is_none() && decoding.inline.is_some());
+    let mut out = Vec::new();
+    decoding.read_to_end(&mut out).unwrap();
+    assert_eq!(out, plain);
+    let digest = decoding.finish().unwrap();
+    assert_eq!(digest.as_bytes(), Sha256::digest(&plain).as_slice());
 }

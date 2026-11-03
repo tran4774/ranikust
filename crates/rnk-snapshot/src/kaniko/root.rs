@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use rnk_layer::{Compression, EncodeOptions, LayerDigests};
@@ -1111,8 +1111,9 @@ fn extract_checked(
     Ok(())
 }
 
-/// How many chunks of plain tar a layer's decompression runs ahead of its
-/// extraction ([`Decoding`]): memory bounded at this many times
+/// How many chunks of plain tar a layer's decompression queues ahead of its
+/// extraction ([`Decoding`]). With the chunk the thread fills and the one
+/// the extraction reads, memory is bounded at `DECODE_AHEAD + 2` times
 /// [`DECODE_CHUNK`] per layer being extracted.
 const DECODE_AHEAD: usize = 4;
 
@@ -1121,21 +1122,28 @@ const DECODE_AHEAD: usize = 4;
 const DECODE_CHUNK: usize = 1 << 20;
 
 /// A layer's blob decompressed, and its diff ID computed, on a thread of
-/// its own, at most [`DECODE_AHEAD`] chunks ahead of the reader: the
+/// its own, at most [`DECODE_AHEAD`] chunks queued ahead of the reader: the
 /// extraction's writes overlap the decompression (ADR-0081). The thread
 /// only reads `blob` and decompresses it; it writes no file. A read error
 /// of the blob or of the decompression reaches the reader as an
-/// [`std::io::Error`] of the same kind. Dropped before its end, the
-/// reader goes, the thread stops at its next chunk and is joined.
+/// [`std::io::Error`] of the same kind. Dropped before its end, the reader
+/// sets `stop`: the blob gives no more bytes, the thread ends at its next
+/// read, and is joined. Where no thread can be started (a tight `pids`
+/// limit), the reader decompresses itself, as before.
 ///
 /// The decoder, and its `rnk_layer.decode` span, are made and dropped on
 /// the caller's thread: a span closed on a thread without the caller's
 /// subscriber would never release its parent span.
 struct Decoding {
+    /// The decoder itself when no thread could be started.
+    inline: Option<LayerDecoder>,
     chunks: Option<std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>>,
     chunk: Vec<u8>,
     at: usize,
-    thread: Option<std::thread::JoinHandle<(DecodeEnd, LayerDecoder)>>,
+    /// Set when the reader goes: the blob's next read fails
+    /// ([`Stoppable`]), and so does the thread's next read of the decoder.
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Option<(DecodeEnd, LayerDecoder)>>>,
 }
 
 /// What the decompression thread ends with: the tar stream's digest.
@@ -1146,8 +1154,11 @@ type LayerDecoder = rnk_layer::Decoder<Box<dyn std::io::Read + Send>>;
 
 impl Drop for Decoding {
     fn drop(&mut self) {
-        // The thread's next send fails, so it ends at its next chunk; its
-        // decoder is dropped here, on the caller's thread.
+        // The blob gives no more bytes, so the thread stops inside a read
+        // of the decoder too (one that skips empty gzip members or zstd
+        // skippable frames reads on without giving any); its next send
+        // fails. Its decoder is dropped here, on the caller's thread.
+        self.stop.store(true, Ordering::Relaxed);
         self.chunks = None;
         if let Some(thread) = self.thread.take() {
             drop(thread.join());
@@ -1155,30 +1166,108 @@ impl Drop for Decoding {
     }
 }
 
+/// The blob of a [`Decoding`]: fails every read once its reader is gone.
+struct Stoppable {
+    inner: Box<dyn std::io::Read + Send>,
+    stop: Arc<AtomicBool>,
+}
+
+impl std::io::Read for Stoppable {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Err(stopped());
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// The error the decompression ends with when its reader is gone.
+fn stopped() -> std::io::Error {
+    std::io::Error::other("the extraction stopped reading the layer")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: the decompression thread cannot be started, as under a
+    /// tight `pids` limit.
+    static NO_DECODE_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Starts the decompression thread running `f`.
+fn spawn_decode<F, T>(f: F) -> std::io::Result<std::thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    #[cfg(test)]
+    if NO_DECODE_THREAD.with(std::cell::Cell::get) {
+        return Err(Errno::AGAIN.into());
+    }
+    std::thread::Builder::new()
+        .name("rnk-decode".to_owned())
+        .spawn(f)
+}
+
 impl Decoding {
-    /// Sniffs the compression here, then decompresses on the new thread.
+    /// Sniffs the compression here, then decompresses on the new thread,
+    /// or here when no thread can be started.
     fn new(blob: Box<dyn std::io::Read + Send>) -> Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let blob: Box<dyn std::io::Read + Send> = Box::new(Stoppable {
+            inner: blob,
+            stop: Arc::clone(&stop),
+        });
         let decoder = rnk_layer::Decoder::new(blob)?;
         let (tx, chunks) = std::sync::mpsc::sync_channel(DECODE_AHEAD);
-        let thread = std::thread::Builder::new()
-            .name("rnk-decode".to_owned())
-            .spawn(move || decode_into(decoder, &tx))
-            .map_err(|source| Error::Io {
-                op: "start the decompression thread for",
-                path: PathBuf::from("a layer"),
-                source,
-            })?;
+        // The decoder goes to the thread once it runs, so a thread that
+        // cannot start leaves it here.
+        let (give, take) = std::sync::mpsc::sync_channel::<LayerDecoder>(1);
+        let thread_stop = Arc::clone(&stop);
+        let spawned = spawn_decode(move || {
+            take.recv()
+                .ok()
+                .map(|decoder| decode_into(decoder, &tx, &thread_stop))
+        });
+        let decoder = match spawned {
+            Ok(thread) => match give.send(decoder) {
+                Ok(()) => {
+                    return Ok(Self {
+                        inline: None,
+                        chunks: Some(chunks),
+                        chunk: Vec::new(),
+                        at: 0,
+                        stop,
+                        thread: Some(thread),
+                    });
+                }
+                // The thread is gone already: it panicked before it could
+                // take the decoder.
+                Err(std::sync::mpsc::SendError(decoder)) => {
+                    drop(thread.join());
+                    decoder
+                }
+            },
+            Err(e) => {
+                tracing::debug!("no decompression thread ({e}): the extraction decompresses");
+                decoder
+            }
+        };
         Ok(Self {
-            chunks: Some(chunks),
+            inline: Some(decoder),
+            chunks: None,
             chunk: Vec::new(),
             at: 0,
-            thread: Some(thread),
+            stop,
+            thread: None,
         })
     }
 
     /// Reads to the end of the tar stream and returns its digest, as
     /// [`rnk_layer::Decoder::finish`].
     fn finish(mut self) -> Result<rnk_layer::Sha256Digest> {
+        if let Some(decoder) = self.inline.take() {
+            return Ok(decoder.finish()?);
+        }
         std::io::copy(&mut self, &mut std::io::sink()).map_err(rnk_layer::Error::from)?;
         self.chunks = None;
         let thread = self
@@ -1187,7 +1276,8 @@ impl Decoding {
             .ok_or(Error::State("the decompression thread was joined already"))?;
         let (digest, decoder) = thread
             .join()
-            .map_err(|_| Error::State("the decompression thread panicked"))?;
+            .map_err(|_| Error::State("the decompression thread panicked"))?
+            .ok_or(Error::State("the decompression thread got no decoder"))?;
         drop(decoder);
         Ok(digest?)
     }
@@ -1199,8 +1289,9 @@ impl Decoding {
 fn decode_into(
     mut decoder: LayerDecoder,
     tx: &std::sync::mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+    stop: &AtomicBool,
 ) -> (DecodeEnd, LayerDecoder) {
-    let end = decode_chunks(&mut decoder, tx);
+    let end = decode_chunks(&mut decoder, tx, stop);
     (end, decoder)
 }
 
@@ -1208,12 +1299,16 @@ fn decode_into(
 fn decode_chunks(
     decoder: &mut LayerDecoder,
     tx: &std::sync::mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+    stop: &AtomicBool,
 ) -> DecodeEnd {
     use std::io::Read as _;
     loop {
         let mut chunk = vec![0_u8; DECODE_CHUNK];
         let mut filled = 0;
         while filled < chunk.len() {
+            if stop.load(Ordering::Relaxed) {
+                return Err(rnk_layer::Error::Io(stopped()));
+            }
             match decoder.read(chunk.get_mut(filled..).unwrap_or_default()) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
@@ -1229,9 +1324,7 @@ fn decode_chunks(
         let end = filled < chunk.len();
         chunk.truncate(filled);
         if !chunk.is_empty() && tx.send(Ok(chunk)).is_err() {
-            return Err(rnk_layer::Error::Io(std::io::Error::other(
-                "the extraction stopped reading the layer",
-            )));
+            return Err(rnk_layer::Error::Io(stopped()));
         }
         if end {
             // The read of 0 bytes above set the diff ID.
@@ -1244,6 +1337,9 @@ fn decode_chunks(
 
 impl std::io::Read for Decoding {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(decoder) = &mut self.inline {
+            return decoder.read(buf);
+        }
         if buf.is_empty() {
             return Ok(0);
         }
