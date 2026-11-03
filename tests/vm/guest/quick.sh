@@ -346,6 +346,63 @@ rt_auto_privileged_container() {
   return "$bad"
 }
 
+# Phase 2 acceptance criterion 5: a second kaniko-mode build on `/` in one
+# default container, started while the first one runs, is refused by the
+# flock on `/` (`lock_slash`) before it writes anything (its state
+# directory, another one than the first's, is never made), and the first
+# build ends as if nothing happened. FROM scratch: the RUN runs the
+# container's own sleep on its `/`, as kaniko's RUNs do; nothing is pulled.
+slash_lock_refuses_a_second_build() {
+  local c="rnk-slash-lock-$$" rc=0
+  slash_lock_in "$c" || rc=1
+  # Removed on every path, with whatever still runs in it.
+  sudo docker rm -f "$c" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+slash_lock_in() {
+  local c="$1" ctx="$W/slash-lock" rc=0 out i first=
+  sudo mkdir -p "$ctx" &&
+    printf 'FROM scratch\nRUN sleep 15\n' | sudo tee "$ctx/Dockerfile" >/dev/null || return 1
+  sudo docker run -d --name "$c" -v "$RNK:/ranikust/bin/ranikust:ro" -v "$ctx:/ranikust/ctx:ro" \
+    "$BASE" sleep 300 >/dev/null || return 1
+  sudo docker exec -d "$c" sh -c '/ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx \
+    --no-push >/ranikust/first.log 2>&1; echo $? >/ranikust/first.rc' || return 1
+  # The first build holds the lock from its set-up to its end: wait until
+  # its RUN runs.
+  for i in $(seq 120); do
+    sudo docker exec "$c" pgrep -f '^sleep 15$' >/dev/null 2>&1 && break
+    if [ "$i" = 120 ]; then
+      echo "error: slash lock: the first build's RUN never started" >&2
+      sudo docker exec "$c" cat /ranikust/first.log >&2 || true
+      return 1
+    fi
+    sleep 0.5
+  done
+  out="$(sudo docker exec "$c" /ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx \
+    --no-push --state-dir /var/lib/rnk-second 2>&1)" || rc=$?
+  if [ "$rc" != 1 ] || ! grep -qF 'another ranikust build is using / in this container' <<<"$out"; then
+    echo "error: slash lock: a second build on / during the first: exit $rc, want 1 and the lock's refusal" >&2
+    echo "$out" >&2
+    return 1
+  fi
+  if sudo docker exec "$c" test -e /var/lib/rnk-second; then
+    echo "error: slash lock: the refused build made its state directory /var/lib/rnk-second" >&2
+    return 1
+  fi
+  for i in $(seq 180); do
+    first="$(sudo docker exec "$c" cat /ranikust/first.rc 2>/dev/null || true)"
+    [ -n "$first" ] && break
+    sleep 0.5
+  done
+  if [ "$first" != 0 ]; then
+    echo "error: slash lock: the first build ended with '${first:-nothing}' after the refusal, want 0" >&2
+    sudo docker exec "$c" cat /ranikust/first.log >&2 || true
+    return 1
+  fi
+  echo "slash lock: a second kaniko-mode build on / refused by the flock (exit 1, nothing written); the first built (exit 0)"
+}
+
 # A plain command: under `||` errexit would be off inside the cases.
 set +e
 # shellcheck disable=SC2086
@@ -360,6 +417,7 @@ if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
   rt_auto_on_ramfs || rc=1
   rt_no_mount_root_with_a_container_signal || rc=1
   rt_auto_privileged_container || rc=1
+  slash_lock_refuses_a_second_build || rc=1
 fi
 set -e
 

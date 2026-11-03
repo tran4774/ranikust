@@ -405,3 +405,53 @@ fn red_team_probe_failures_other_than_a_refused_mount_never_route() {
     let r = overlay_refusal(&probe("mount", mount(Errno::INVAL)), USER);
     assert_eq!(route(&r, false), Route::Refuse);
 }
+
+/// Phase 2 acceptance criterion 5: a second kaniko-mode build on `/` in one
+/// container is refused by the `flock` on `/` itself, whatever its state
+/// directory. `lock_slash` is the lock `set_up_kaniko` takes on `/` before
+/// it writes anything (the state directory comes after it). Each call opens
+/// `/` anew, so two calls are two open file descriptions, as two builds
+/// are: the second is refused while the first holds the lock, and takes it
+/// once the first lets go. The descriptor is `/`'s own inode, not a path a
+/// `RUN` could replace (it cannot replace `/`). `T2c` (and the VM, a
+/// disposable root): an advisory lock on the machine's `/`, held for the
+/// test only; end to end, with two builds, in the VM's quick suite
+/// (`slash_lock_refuses_a_second_build`).
+#[test]
+#[ignore = "T2c: default: flock on the container's / as root, as two kaniko-mode builds would"]
+fn a_second_build_on_slash_is_refused_by_the_lock() {
+    let first =
+        lock_slash().unwrap_or_else(|r| panic!("the first build cannot lock /: {}", r.reason));
+    let st = rustix::fs::fstat(&first).unwrap();
+    let slash = rustix::fs::stat("/").unwrap();
+    assert_eq!(
+        (st.st_dev, st.st_ino),
+        (slash.st_dev, slash.st_ino),
+        "the lock is on / itself"
+    );
+    let Err(refusal) = lock_slash() else {
+        panic!("a second build on / took the lock the first holds");
+    };
+    assert_eq!(
+        refusal.reason,
+        "another ranikust build is using / in this container"
+    );
+    assert_eq!(
+        refusal.guidance,
+        "run one kaniko-mode build at a time per container"
+    );
+    assert_eq!(
+        refusal.kind,
+        Kind::Other,
+        "never a reason for --mode=auto to route elsewhere"
+    );
+    // Still refused: the refusal took nothing from the first build.
+    assert!(
+        lock_slash().is_err(),
+        "the first build lost its lock to a refused one"
+    );
+    drop(first);
+    let again =
+        lock_slash().unwrap_or_else(|r| panic!("/ stays locked after the build: {}", r.reason));
+    drop(again);
+}
