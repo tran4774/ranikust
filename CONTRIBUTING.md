@@ -27,7 +27,7 @@ the build needs root, and nothing in the dev loop should ever be run with
 | [just](https://github.com/casey/just) | Runs the recipes in [`justfile`](justfile) | `cargo install --locked just` |
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
-| Python 3.11 or later | `just docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
+| Python 3.11 or later | `just docs-lint`, `just test-docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
 | [GitHub CLI](https://cli.github.com/) (`gh`) | `just release-prepare` reads the merged pull requests; checking a release's attestation needs 2.102.0 or later | your distribution, or cli.github.com |
 | [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
@@ -57,11 +57,12 @@ just ci                   # everything CI runs on a full run, before you open a 
 Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
 documentation; `just docs-lint` (needs python3; CI runs it on every pull
-request) after an ADR, a marker or an open question changes. Its check of
-the `[open: #N]` markers needs `gh` installed and logged in (`gh auth
-login`) with network access; without them it is skipped locally, and the
-last line says so. Every recipe that mirrors CI runs exactly the command
-of the CI job; if you change one, change the other. A new top-level path,
+request) after an ADR, a marker, an open question, a link or a heading
+changes. Its check of the `[open: #N]` markers needs `gh` installed and
+logged in (`gh auth login`) with network access; without them it is
+skipped locally, and the last line says so. Every recipe that mirrors CI
+runs exactly the command of the CI job; if you change one, change the
+other. A new top-level path,
 or a file a CI job starts to read, needs its lane in `scripts/ci.py`
 (`just test-ci` fails otherwise; see below).
 

@@ -227,10 +227,11 @@ jobs:
       - if: needs.changes.outputs.book == 'true'
         run: mdbook build docs/book
 
-  # The decision records on every pull request, whatever changed: ADR index,
-  # question numbers and `[open: #N]` markers against GitHub's issues, which
-  # must be reachable here (DOCS_LINT_REQUIRE_GITHUB). `just docs-lint` runs
-  # the same command.
+  # The decision records and the links on every pull request, whatever
+  # changed: ADR index, question numbers, `[open: #N]` markers against
+  # GitHub's issues, which must be reachable here (DOCS_LINT_REQUIRE_GITHUB),
+  # and Markdown links and anchors, after the link check's own tests.
+  # `just test-docs-lint` and `just docs-lint` run the same commands.
   docs-lint:
     name: docs-lint
     needs: changes
@@ -244,6 +245,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - run: python3 -I tests/docs/test_links.py
       - run: python3 -I scripts/docs-lint.py
         env:
           DOCS_LINT_REQUIRE_GITHUB: "1"

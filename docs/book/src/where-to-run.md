@@ -33,6 +33,27 @@ and the
 [mode selection chapter](https://github.com/tran4774/ranikust/blob/main/docs/research/survey/06-overlay-and-parallelism.md).
 Real Kubernetes clusters have not been tested yet.
 
+## An amd64 container on Apple Silicon
+
+On an Apple Silicon Mac, OrbStack runs `linux/amd64` containers through
+Rosetta, which lacks `openat2`, so the x86_64 release stops at start-up
+there although the kernel is new enough; the message names the emulator
+rather than the kernel (measured). Docker Desktop with its Rosetta setting on
+should behave the same (inferred); with QEMU instead, it depends on the QEMU
+version.
+
+An untested workaround, not a supported set-up: there is no aarch64 release
+and CI does not cover this use ([ADR-0009]). Build ranikust for
+`aarch64-unknown-linux-musl` from a checkout
+(`cargo zigbuild --release --locked --target aarch64-unknown-linux-musl -p ranikust`,
+with the toolchain of the
+[development set-up](https://github.com/tran4774/ranikust/blob/main/docs/development-setup.md))
+and run it in an arm64 container. The image it builds is still `linux/amd64`,
+the only platform accepted so far, and its `RUN` steps go through Rosetta.
+[Experiment 17](https://github.com/tran4774/ranikust/blob/main/docs/research/experiments/17-apple-silicon-rosetta.md)
+tried it once, on OrbStack 2.2.5 and macOS 26.7: an `alpine` image with one
+`RUN`, in kaniko mode.
+
 ## A seccomp profile without `open_tree` and `move_mount`
 
 Where `RUN` gets the full sandbox (overlay mode, kaniko mode off `/`) but a
@@ -59,4 +80,5 @@ two calls in the profile.
   it treats the root filesystem as the build root and empties it between
   stages.
 
+[ADR-0009]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0009-x86-64-first-aarch64-ready.md
 [ADR-0028]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0028-minimum-kernel-linux-5-8.md

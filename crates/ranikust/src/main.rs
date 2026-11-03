@@ -61,9 +61,10 @@ use crate::config::BuildConfig;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Hidden test hook. `panic` panics and aborts and `error` fails with exit
-/// code 1, after metrics are set up; `kernel-missing` and `kernel-blocked`
-/// make the kernel check fail. It lets the tests run the real binary through
-/// these paths, including a release build, where `panic = "abort"`.
+/// code 1, after metrics are set up; `kernel-missing`, `kernel-blocked` and
+/// `kernel-hidden` make the kernel check fail. It lets the tests run the real
+/// binary through these paths, including a release build, where
+/// `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
 /// Exit code of a usage error, as clap uses.
