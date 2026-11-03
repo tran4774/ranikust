@@ -131,7 +131,7 @@ for suite in "$@"; do
   t0=$SECONDS
   rc=0
   if [ "$suite" = unit-c ]; then
-    make_marker || { kill "$sampler" 2>/dev/null; setup_failed "making the T2c marker"; }
+    make_marker || { kill "$sampler" 2>/dev/null || true; setup_failed "making the T2c marker"; }
     RANIKUST_CONTAINER_LANE=1 bash "$REPO/tests/container/lane.sh" unit-c 2>&1 | tee "$OUT/$suite.log" || rc=$?
   else
     (cd "$R" && bash "guest/$suite.sh") 2>&1 | tee "$OUT/$suite.log" || rc=$?
