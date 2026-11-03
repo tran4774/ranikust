@@ -15,7 +15,7 @@ use crate::{Error, Result};
 /// A source of build contexts. New kinds (tar, git, HTTPS) implement it.
 ///
 /// Synchronous for now: Phase 1 has only local directories
-/// ([open: #6]).
+/// (\[open: #6]).
 pub trait ContextSource {
     /// Makes the context available and opens it.
     ///

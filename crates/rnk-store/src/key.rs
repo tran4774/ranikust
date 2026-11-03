@@ -25,7 +25,7 @@ pub enum EntryKey {
     /// layer), so that the gzip and zstd blobs of one layer share it and
     /// an extraction that depends on the layers below never crosses stacks
     /// (ADR-0032, Q-150): the directory `layers/v3/<algorithm>/<hex>/`
-    /// [open: #1].
+    /// \[open: #1].
     Layer(Digest),
 }
 

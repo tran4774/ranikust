@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanical checks on the decision records (`just docs-lint`).
+r"""Mechanical checks on the decision records (`just docs-lint`).
 
 - every ADR file is listed in docs/adr/README.md, and every listed ADR exists;
 - an ADR's front-matter status matches its status in the index;
@@ -8,7 +8,9 @@
   ADR-0088, and their markers are `[open: #N]`;
 - every `[open: #N]` marker, in code or docs, names an open issue (not a
   pull request) of the repository, which is asked of the GitHub API with
-  `gh` (one paginated call).
+  `gh` (one paginated call). In rustdoc comments the marker is written
+  `\[open: #N]` so rustdoc does not read it as a link; the check finds it
+  either way.
 
 Offline, or without `gh`, the issue check is skipped with a warning and the
 other checks still run; set DOCS_LINT_REQUIRE_GITHUB=1 to make a skipped
