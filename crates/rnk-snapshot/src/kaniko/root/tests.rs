@@ -1036,6 +1036,82 @@ fn on_slash_a_spool_goes_with_the_last_use_the_build_announced() {
     );
 }
 
+/// The spool `f` keeps for a later stage.
+fn kept_spool(f: &Fixture) -> Arc<Spooled> {
+    f.kaniko
+        .shared
+        .spools()
+        .values()
+        .find_map(|u| u.spool.clone())
+        .expect("a spool kept for a later stage")
+}
+
+#[test]
+fn on_slash_a_kept_spool_changed_after_its_check_fails_the_next_stage() {
+    use std::os::unix::fs::FileExt as _;
+    for truncated in [false, true] {
+        let (f, _store) = Fixture::tars();
+        let (layers, source) = streamed_for(&f, "l1", &[("a", b"verified")], 2);
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(&layers[0])))
+            .unwrap();
+        root.release().unwrap();
+        let spool = kept_spool(&f);
+        let SpooledBlob::File { file, .. } = &spool.0 else {
+            panic!("a streamed layer's spool is a file");
+        };
+        if truncated {
+            // Cut before the end-of-archive blocks: the tar reads as ended
+            // at an entry's boundary, and its digest differs.
+            let verified = fs::read(&source.blob).unwrap();
+            file.set_len(u64::try_from(verified.len() - 1024).unwrap())
+                .unwrap();
+        } else {
+            // Another well-formed layer in its place.
+            let other = f.layer("l2", &[("a", b"tampered")]);
+            file.set_len(0).unwrap();
+            file.write_all_at(&fs::read(other.blob().unwrap()).unwrap(), 0)
+                .unwrap();
+        }
+        drop(spool);
+        let e = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(&layers[1])))
+            .unwrap_err();
+        assert!(
+            matches!(e, Error::DiffIdMismatch { .. }),
+            "truncated {truncated}: {e}"
+        );
+        // The kept spool was read, not a new download.
+        assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[test]
+fn on_slash_a_spool_announced_but_never_used_goes_with_the_snapshotter() {
+    let (f, store) = Fixture::tars();
+    let (layers, _source) = streamed_for(&f, "l1", &[("a", b"base")], 3);
+    let root = f
+        .kaniko
+        .prepare(Base::Image(std::slice::from_ref(&layers[0])))
+        .unwrap();
+    root.release().unwrap();
+    let spool = Arc::downgrade(&kept_spool(&f));
+    assert!(
+        spool.upgrade().is_some(),
+        "kept for the two stages announced"
+    );
+    // The build ends before those stages run (a failed stage, `--target`).
+    drop(layers);
+    drop(store);
+    drop(f);
+    assert!(
+        spool.upgrade().is_none(),
+        "the spool went with the snapshotter"
+    );
+}
+
 #[test]
 fn on_slash_with_its_state_in_memory_a_spool_is_not_kept_for_later_stages() {
     use std::os::unix::fs::PermissionsExt as _;
