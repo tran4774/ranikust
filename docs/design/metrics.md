@@ -1,10 +1,8 @@
 # Build metrics
 
-How ranikust measures a build: the spans every crate emits, how
-`rnk-metrics` turns them into one JSON report, and how that report compares
-with kaniko's `metrics.json`. The goal is that the numbers show where each
-part of a build spends time, CPU, memory, disk and network, so each part can
-be improved.
+**TL;DR:** every crate emits `tracing` spans; the opt-in `rnk-metrics` turns
+them into one JSON report that shows where a build spends time, CPU, memory,
+disk and network, and that reads like kaniko's `metrics.json`.
 
 Decision: [ADR-0025](../adr/0025-build-metrics-from-tracing-spans.md).
 Code: `crates/rnk-metrics`, wired in `crates/ranikust/src/main.rs`.
@@ -36,38 +34,39 @@ Code: `crates/rnk-metrics`, wired in `crates/ranikust/src/main.rs`.
 | `--metrics-file=<path>` (a flag, `ADR-0037`) | Collect, and write the report there at exit. A relative path is resolved at start-up; a path in the build context, or through a symlink, is refused before the report is set up (ADR-0076); the parent directory is created by descriptor, never through a symlink; the file is written to a temporary name and renamed (the binary's `Config::write_file`). |
 | `RANIKUST_METRICS_SUMMARY=1` | Collect, and print a short summary to stderr at exit (anything but empty or `0`). |
 
-The report path comes only from `--metrics-file`, a flag of every
-subcommand; `RANIKUST_METRICS_FILE` is no longer read, and when it is set
-ranikust says so in a warning ([ADR-0037](../adr/0037-metrics-report-path-from-the-flag-only.md)). kaniko's `KANIKO_METRICS_FILE` is not honoured: it
-is named in the start-up warning about unread `KANIKO_*` variables
-([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)). The log level and
-format (`--verbosity`, `--log-format`, `--log-timestamp`) apply to the log
-layer only and never change the report.
+The report path comes only from `--metrics-file`, a flag of every subcommand;
+`RANIKUST_METRICS_FILE` is no longer read, and when it is set ranikust says so
+in a warning ([ADR-0037](../adr/0037-metrics-report-path-from-the-flag-only.md)).
+kaniko's `KANIKO_METRICS_FILE` is not honoured: the start-up warning about
+unread `KANIKO_*` variables names it
+([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)).
 
-Logs are a separate layer: stderr, at kaniko's `--verbosity` and written as
-kaniko's `--log-format` and `--log-timestamp` write it, other crates at
-`INFO` at most ([ADR-0036](../adr/0036-kaniko-flags-in-phase-1.md)). Each
-layer has its own filter, so the log level never hides a metric span.
+**Logs** are a separate layer: stderr, at kaniko's `--verbosity`, written as
+kaniko's `--log-format` and `--log-timestamp` write it, other crates at `INFO`
+at most (ADR-0036). Each layer has its own filter, so the log level never hides
+a metric span, and the log flags never change the report.
 
-Messages carry names ranikust does not choose: a base image's tar entry
-names, build-context names, registry text. What ranikust writes to stderr
-itself is escaped where it is written, never in the libraries' errors,
-whose text programs read too: the colored format, kaniko's default, writes
-the message with every control character (line feed, carriage return,
-tab, escape, DEL, C1), Unicode line and paragraph separator (U+2028,
-U+2029) and bidi control as Rust writes it in a string (`\n`, `\u{1b}`,
-`rnk_metrics::terminal_text`); the text and JSON formats quote values as
-JSON, with DEL, C1, the separators and bidi controls as `\uXXXX` too; and
-`ranikust`'s fatal `ranikust: error:` line escapes its message the same
-way, with a refusal's advice, ranikust's own text, on an indented line of
-its own. So a name can neither set the terminal's title or clipboard nor
-print a line that looks like ranikust's own. A backslash is not escaped:
-`\n` in a line is never a line break. A `RUN`'s output is the `RUN`'s,
-copied as it is (`threat-model.md`, T7), and the metrics report is JSON.
+**Terminal-safe text.** Messages carry names ranikust does not choose: a base
+image's tar entry names, build-context names, registry text. What ranikust
+writes to stderr itself is escaped where it is written, never in the
+libraries' errors, whose text programs read too:
+
+- the colored format (kaniko's default) writes the message with every control
+  character, Unicode line and paragraph separator and bidi control as Rust
+  writes it in a string (`\n`, `\u{1b}`; `rnk_metrics::terminal_text`);
+- the text and JSON formats quote values as JSON, with DEL, C1, the separators
+  and bidi controls as `\uXXXX` too;
+- `ranikust`'s fatal `ranikust: error:` line escapes its message the same way,
+  with a refusal's advice, ranikust's own text, on an indented line of its own.
+
+So a name can neither set the terminal's title or clipboard nor print a line
+that looks like ranikust's own. A backslash is not escaped: `\n` in a line is
+never a line break. A `RUN`'s output is the `RUN`'s, copied as it is
+(`threat-model.md`, T7); the metrics report is JSON.
 
 ## Emitting spans
 
-The rules every crate follows; `rules.md` repeats the short form.
+The rules every crate follows.
 
 - **Name:** `<crate>.<operation>` with the crate's underscore name:
   `rnk_layer.encode`, `rnk_registry.push_blob`. The table under
@@ -136,9 +135,9 @@ counted again.
 ## Spans per crate
 
 The instrumentation contract. "Why" names the question the span answers and
-the experiment whose numbers it lets us reproduce. Spans of later phases are
-listed so the names are settled; each crate adds its rows when it gets the
-code. All names are `[design]`.
+the experiment (`exp-NN`) whose numbers it lets us reproduce. Spans of later
+phases are listed so the names are settled; each crate adds its rows when it
+gets the code.
 
 ### `ranikust`
 
@@ -178,23 +177,22 @@ No span: pure data. Serializing configs and manifests is charged to
 |---|---|---|
 | `rnk_registry.auth` | `host`, `requests` | The `/v2/` probe when a registry is first used, and token round trips per registry. |
 | `rnk_registry.pull_manifest` | `host`, `requests`, `retries`, `bytes_in` | Resolving base images (all up front). |
-| `rnk_registry.pull_blob` | `host`, `requests`, `retries`, `bytes_in` | One blob into the store: bytes per host, retries; the pull part of `exp-07`'s base pull + extract (0.88 s kaniko, 0.37 s overlay). |
-| `rnk_registry.push_blob` | `host`, `requests`, `retries`, `bytes_out`, `mounted`, `existed` | One blob: uploaded, cross-repository mounted, or already there; `exp-07`/`exp-08` push (0.72 s on W1). |
+| `rnk_registry.pull_blob` | `host`, `requests`, `retries`, `bytes_in` | One blob into the store: bytes per host, retries; the pull part of `exp-07`'s base pull + extract. |
+| `rnk_registry.push_blob` | `host`, `requests`, `retries`, `bytes_out`, `mounted`, `existed` | One blob: uploaded, cross-repository mounted, or already there; `exp-07`, `exp-08`. |
 | `rnk_registry.push_manifest` | `host`, `requests`, `bytes_out` | The manifest PUT. |
 
-`requests` counts HTTP requests including retries; `retries` the re-sent
-ones. No span per HTTP request or body chunk. `requests` is the count of
-the requests each call makes; token refreshes `oci-client` makes on its
-own, on the push side, are not seen. `bytes_in`/`bytes_out` include retried
-attempts.
+`requests` counts the HTTP requests each call makes, retries included;
+`retries` the re-sent ones. Token refreshes `oci-client` makes on its own, on
+the push side, are not seen. `bytes_in`/`bytes_out` include retried attempts.
+No span per HTTP request or body chunk.
 
 ### `rnk-rootfs`
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_rootfs.extract` | `mode`, `entries`, `files`, `whiteouts`, `ignored`, `hardlinks`, `xattrs_skipped`, `bytes_in`, `bytes_written` | One layer into a directory: kaniko's `layer.extract` (bytes = tar content, items = entries). `mode` `Live` is kaniko mode's extraction into the root, where `ignored` counts the entries skipped for the ignore list or a mount and `nodes_skipped` the device nodes and FIFOs not created (ADR-0041). `xattrs_skipped` counts the layer's `trusted.*` xattrs, never set in any mode (ADR-0075). |
+| `rnk_rootfs.extract` | `mode`, `lowers`, `entries`, `files`, `dirs`, `symlinks`, `hardlinks`, `hardlinks_copied`, `nodes`, `nodes_skipped`, `xattrs_skipped`, `whiteouts`, `ignored`, `bytes_in`, `bytes_written` | One layer into a directory: kaniko's `layer.extract` (bytes = tar content, items = entries). `mode` `Live` is kaniko mode's extraction into the root, where `ignored` counts the entries skipped for the ignore list or a mount and `nodes_skipped` the device nodes and FIFOs not created (ADR-0041). `xattrs_skipped` counts the layer's `trusted.*` xattrs, never set in any mode (ADR-0075). |
 | `rnk_rootfs.copy` | `files`, `dirs`, `bytes` | One `COPY`/`ADD` source set into a root. |
-| `rnk_rootfs.delete` | `entries` | One safe deletion of a tree: kaniko's `fs.delete`; `exp-09`. |
+| `rnk_rootfs.delete` | `entries`, `files`, `dirs`, `kept` | One safe deletion of a tree: kaniko's `fs.delete`; `exp-09`. |
 | `rnk_rootfs.prune` | `entries`, `files`, `dirs`, `kept` | One root pruned in place of what a stage copy leaves out, directory times set back (ADR-0061); no kaniko equivalent. |
 
 ### `rnk-store`
@@ -210,7 +208,7 @@ attempts.
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_sandbox.run` | `user_ns`, `sys_ns`, `max_rss_kb`, `minflt`, `majflt`, `inblock`, `oublock`, `nvcsw`, `nivcsw`, `failed` | One `RUN` process from fork to reap; rusage from `wait4` (the child and the descendants it waited for). Becomes kaniko's `run.child`, `child_*` and `overhead_ns`; `exp-02` sandbox overhead, `exp-15` peak memory of JVM and Next.js builds. |
+| `rnk_sandbox.run` | `user_ns`, `sys_ns`, `max_rss_kb`, `minflt`, `majflt`, `inblock`, `oublock`, `nvcsw`, `nivcsw`, `failed` | One `RUN` process from fork to reap; rusage from `wait4` (the child and the descendants it waited for). Becomes kaniko's `run.child`, `child_*` and `overhead_ns`; `exp-02`, `exp-15`. |
 | `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, the files a `Direct` `RUN` on a workdir gets (counted in `stubs`), journal. |
 | `rnk_sandbox.probe` | `ok` | One probe step (userns, `proc`, `pivot_root`, `sysfs`); start-up cost. |
 
@@ -222,14 +220,12 @@ attempts.
 | `rnk_snapshot.empty` | | Kaniko mode: the shared root emptied (before a base, on release, at the end of the build), `rnk_rootfs.delete` inside. |
 | `rnk_snapshot.keep` | `paths` | Kaniko mode: what later stages read of a finished stage copied into the keep area before the root is reused; `paths` the entries kept, 0 for the whole root; `rnk_rootfs.copy` inside. |
 | `rnk_snapshot.hand_over` | | Kaniko mode off `/`: a stage's directory handed to the only stage that reads it (ADR-0062), inside that stage's `rnk_snapshot.prepare` (`handed_over = true`); `rnk_rootfs.prune` inside, then the move (ADR-0061). |
-| `rnk_snapshot.mount` | `lowers` | One instruction's overlay mount; with `umount`, the cost overlay adds per instruction (`exp-06`; mount reuse, `Q-245`). |
+| `rnk_snapshot.mount` | `lowers` | One instruction's overlay mount; with `umount`, the cost overlay adds per instruction (`exp-06`; mount reuse is [open: #18]). |
 | `rnk_snapshot.umount` | | One instruction's unmount. |
-| `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs` (always 0 since ADR-0034), `bytes`, `unchanged`, `bytes_compared` | Record: one instruction's diff; kaniko's `snapshot.command`. `exp-06`: 0.51–0.58 s overlay against 2.3–3.7 s walk for five steps. |
-| `rnk_snapshot.baseline` | `entries` | Record, Phase 2 (built, `Walker::baseline`): the walk a kaniko-mode stage starts from; kaniko's `snapshot.init` (0.36 s on W1, `exp-07`). |
-| `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | Phase 2 (built, `Walker`): one walk with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (3.18 s, `exp-07`). |
-| `rnk_snapshot.resolve` | | Not recorded, no such step: kaniko's `snapshot.resolve` (2.48 s, `exp-07`) adds the targets and parents of changed symlinks, which the kaniko-mode exporter does not write (`ADR-0045`); its parents come from the layer writer, inside `rnk_snapshot.export`. |
-| `rnk_snapshot.syncfs` | | Not recorded, no such step: kaniko calls `syncfs` before each walk (`snapshot.syncfs`, 0.48 s, `exp-07`); ranikust's walk reads through the page cache, where a finished `RUN`'s writes already are, and never syncs. |
-| `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`: an overlay upper directory (`LayerDiff::export`) or a kaniko walk diff (`WalkDiff::export`, `rnk_snapshot.diff` inside it as in overlay mode). `blocks_read` is the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread: the disk re-reads `exp-07` and `exp-08` found under memory pressure (183–538 MB per layer). Omitted if reads fan out to a pool. Not recorded yet: both exporters record `entries` and `bytes_read`. |
+| `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs` (always 0 since ADR-0034), `bytes`, `unchanged`, `bytes_compared` | Record: one instruction's diff; kaniko's `snapshot.command`; `exp-06`. |
+| `rnk_snapshot.baseline` | `entries` | Record, Phase 2 (built, `Walker::baseline`): the walk a kaniko-mode stage starts from; kaniko's `snapshot.init` (`exp-07`). |
+| `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | Phase 2 (built, `Walker`): one walk with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (`exp-07`). |
+| `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`: an overlay upper directory (`LayerDiff::export`) or a kaniko walk diff (`WalkDiff::export`, `rnk_snapshot.diff` inside it as in overlay mode). Both exporters record `entries` and `bytes_read`; `blocks_read` (the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread, for the disk re-reads `exp-07` and `exp-08` found under memory pressure; omitted if reads fan out to a pool) is not recorded yet. |
 | `rnk_snapshot.release` | `entries` | Deleting diff directories or a stage root (overlay mode), or a kaniko-mode stage directory (`KanikoStages`, `rnk_rootfs.delete` inside); kaniko's `fs.delete`. |
 | `rnk_snapshot.probe` | `ok`, `api` | One overlay mount attempt of the probe: `api` is `LowerdirPlus` or `Mount2`, tried in that order. |
 
@@ -237,7 +233,7 @@ attempts.
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_layer.encode` | `entries`, `parents_added`, `bytes_in`, `bytes_out`, `max_threads` | One layer: tar, compression and digests. `bytes_in` is tar bytes, `bytes_out` compressed bytes (kaniko's `layer.compress` bytes); the ratio and throughput of parallel gzip and zstd (`exp-05` Q3); tar + gzip on the critical path (2.58 s kaniko, 0.77–3.95 s overlay, `exp-07`). Compression threads do not open spans. |
+| `rnk_layer.encode` | `entries`, `parents_added`, `bytes_in`, `bytes_out`, `max_threads` | One layer: tar, compression and digests. `bytes_in` is tar bytes, `bytes_out` compressed bytes (kaniko's `layer.compress` bytes); the ratio and throughput of parallel gzip and zstd (`exp-05` Q3); tar + gzip on the critical path (`exp-07`). Compression threads do not open spans. |
 | `rnk_layer.decode` | `bytes_in`, `bytes_out` | One pulled blob decompressed (usually nested in `rnk_rootfs.extract`'s caller). |
 
 ### `rnk-sched`
@@ -247,7 +243,7 @@ attempts.
 | `rnk_sched.run` | `stages`, `jobs`, `max_running` | The whole DAG: kaniko's `build.total`; `max_running` stages at once. |
 | `rnk_sched.stage` | `stage`, `name`, `base`, `max_memory_bytes` | Record: one stage from its task's start to its end. Start and wall time per stage give `exp-12`'s per-stage parallel times; `max_memory_bytes` is the highest `memory.current` the memory gate saw. |
 | `rnk_sched.wait_deps` | | Waiting for dependency stages. |
-| `rnk_sched.wait_memory` | | Blocked by the memory gate (`Q-030`): memory, not CPU, bound W3 (`exp-08`, `exp-12`). |
+| `rnk_sched.wait_memory` | | Blocked by the memory gate ([open: #9]): memory, not CPU, bound W3 (`exp-08`, `exp-12`). |
 | `rnk_sched.wait_jobs` | | Waiting for a `--jobs` `RUN` permit, inside the instruction. |
 
 Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
@@ -259,7 +255,7 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 | `rnk_builder.stage` | `instructions`, `layers` | Building one stage once scheduled. |
 | `rnk_builder.instruction` | `stage`, `index`, `line`, `kind`, `text`, `cache_hit` | Record: per-instruction totals, kaniko's `commands[]`. |
 | `rnk_builder.execute` | | The executor itself; kaniko's `command.exec`. |
-| `rnk_builder.layer` | `skipped` | One layer's lazy-export decision and encoding (`rnk_layer.encode` nested); kaniko's `command.layer`. Lazy export saved 1.3–6.6 s on W3 (`exp-08`). |
+| `rnk_builder.layer` | `skipped` | One layer's lazy-export decision and encoding (`rnk_layer.encode` nested); kaniko's `command.layer`. `exp-08`. |
 | `rnk_builder.assemble` | `bytes_out` | Config and manifest, their sizes; kaniko's `stage.finalize`. |
 | `rnk_builder.upload` | `bytes` | One built layer pushed to every destination while the build runs (ADR-0055); `rnk_registry.push_blob` nested per destination. |
 | `rnk_builder.output` | `layers`, `bytes_out` | One per OCI layout, Docker tar and push destination; `bytes_out` is what was written to disk, or the blobs uploaded (not mounted or already there) plus the manifest; kaniko's `push.total`. |
@@ -318,7 +314,8 @@ needs only a map of phase names and named fields in place of `bytes` and
 | `run.child` | `rnk_sandbox.run` | ranikust's includes the sandbox set-up in the child |
 | `snapshot.command` (bytes, items) | `rnk_snapshot.diff` (`bytes`, `files_added` + `whiteouts`) | kaniko's bytes are the tar size |
 | `snapshot.scan_full`, `snapshot.walk`, `snapshot.hash` | `rnk_snapshot.walk` (`entries`, `files_hashed`, `bytes_hashed`) | one span: hashing happens inside the walk |
-| `snapshot.resolve`, `snapshot.syncfs` | none | no such step in ranikust ([rows](#rnk-snapshot)); count them on kaniko's side only |
+| `snapshot.resolve` | none | kaniko adds the targets and parents of changed symlinks; the kaniko-mode exporter writes only what changed (ADR-0045), and its parents come from the layer writer, inside `rnk_snapshot.export` |
+| `snapshot.syncfs` | none | ranikust's walk reads through the page cache, where a finished `RUN`'s writes already are, and never syncs; count it on kaniko's side only |
 | `snapshot.tar` | inside `rnk_layer.encode` | tar and compression stream into each other |
 | `command.layer` | `rnk_builder.layer` | |
 | `layer.compress` (bytes) | `rnk_layer.encode` (`bytes_out`) | |
@@ -385,12 +382,11 @@ abort, on a closed or full stderr.
 ## Determinism
 
 The report is the only file metrics write, at exit, after the last snapshot,
-export and push; in kaniko mode, even a path inside `/` is written after
-every walk. No library reads metric state, and span fields are only
-recorded, so layer and config bytes do not depend on metrics being on. The
-check, as in kaniko: a `--reproducible` build gives the same digests with
-`--metrics-file` given and not; `rnk-builder` adds it as a test with
-its outputs (Phase 1 task 11).
+export and push; in kaniko mode, even a path inside `/` is written after every
+walk. No library reads metric state, and span fields are only recorded, so
+layer and config bytes do not depend on metrics being on. As in kaniko, a
+`--reproducible` build gives the same digests with `--metrics-file` given and
+not (`rnk-builder`'s `tests/spans.rs`).
 
 ## Testing hooks
 
@@ -416,10 +412,8 @@ its outputs (Phase 1 task 11).
 
 ## Open questions
 
-- Profiling (CPU, heap) like `KANIKO_PPROF_DIR`:
-  [Q-057](https://github.com/tran4774/ranikust/issues/19).
-- Export formats besides the file (OTLP, Prometheus):
-  [Q-058](https://github.com/tran4774/ranikust/issues/21).
+- [Q-057](https://github.com/tran4774/ranikust/issues/19) Does ranikust offer CPU and heap profiling, like `KANIKO_PPROF_DIR`?
+- [Q-058](https://github.com/tran4774/ranikust/issues/21) Which metric export formats come after the JSON report (OTLP, Prometheus)?
 
 ## References
 
