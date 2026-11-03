@@ -869,8 +869,8 @@ fn state_in_root(
 /// them, unless the ignore list keeps them (a volume, `/ranikust`,
 /// `--ignore-path`). Checked before the root changes. A path that does
 /// not exist yet is judged by its nearest existing ancestor. For a file
-/// secret on `/`, ADR-0084 has ranikust put the directory that holds it on
-/// that list itself [open: Q-453].
+/// secret on `/`, ADR-0085 decides that ranikust puts the file's own path on
+/// that list itself, not its directory: decided, not built yet.
 fn paths_outside_the_root(
     config: &BuildConfig,
     metrics_file: Option<&Path>,

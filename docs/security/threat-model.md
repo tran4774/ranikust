@@ -160,8 +160,9 @@ These follow from decisions and are documented to users rather than fixed:
   Dockerfile author's decision
   ([ADR-0084](../adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md)).
   ADR-0084 also decides that a secret as a file for a `RUN`, refused on `/`
-  today, is allowed and its directory ignored by the snapshot (not built
-  yet, [open: Q-453]).
+  today, is allowed: its own path, not its directory, is ignored by the
+  snapshot, and the file placed for a `RUN` is removed after it
+  ([ADR-0085](../adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md); decided, not built yet).
   A `RUN` may edit `/etc/hosts` and `/etc/resolv.conf` (bind mounts the
   ignore list keeps) and so redirect ranikust's later requests: credentials
   go only over verified TLS there, but an anonymous pull of a tag, or any
