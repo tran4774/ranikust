@@ -148,9 +148,11 @@ runs as root on the host:
    nameserver, which answers the host's own names too). A second NIC on
    QEMU's user network with `restrict=on` carries only SSH and, while the
    `push` suite runs, the host's test registries as `10.0.2.2:5000` and
-   `10.0.2.2:5443`: `vm.sh` opens their gate when the guest's log shows
-   `== suite push` and shuts it at the next suite for good, and each
-   connection runs `socat` (at most 16 per port, 600 s each). The run's
+   `10.0.2.2:5443`: `vm.sh` runs `push` last, in an SSH step of its own,
+   opens their gate only around that step (its state is `vm.sh`'s own,
+   never driven by what the guest writes, and never reopens), kills every
+   forwarder left when it shuts, and each connection runs `socat` (at most
+   16 per port, 600 s each). The run's
    seed holds a `network-config` that tells the NICs apart by MAC. Needs
    QEMU 10.1 or later with its passt backend, passt 2024_10_30 or later,
    and `socat` for `push`; `vm.sh` checks every option it uses before
@@ -163,7 +165,7 @@ runs as root on the host:
    each NIC's backend (`tests/vm/guest/rawprobe.py`), to the loopback,
    unspecified and own addresses over IPv4 and IPv6, which must all go
    unanswered while controls through the same socket answer (on the
-   harness NIC, a forward on `10.0.2.2:9` that runs `true`), and the
+   harness NIC, a forward on `10.0.2.2:9` to QEMU's null device), and the
    egress must have no IPv6. Any answer, a vantage that fails its control
    or does not run, or a failed image pull fails the run (`network:
    FAILED` in `summary.txt`, `network.log` in the results). Every

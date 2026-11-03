@@ -40,10 +40,10 @@ host's loopback.
 
 ## Decision Outcome
 
-Chosen: (b), with passt's IPv6 off. The guest has two NICs, both started by
-`vm.sh` as the invoking user, and the host's loopback ports it may reach
-are named in one place at the top of `vm.sh` (`REGISTRY_PORTS`,
-`GUEST_DNS`, `HOST_DNS`).
+Chosen: (b), with passt in a reduced configuration. The guest has two
+NICs, both started by `vm.sh` as the invoking user, and the host's
+loopback ports it may reach are named in one place at the top of `vm.sh`
+(`REGISTRY_PORTS`, `GUEST_DNS`, `HOST_DNS`).
 
 - **Egress**: QEMU's own passt backend (`-netdev passt`, QEMU 10.1 and
   later), which starts passt on a socket pair (`--fd`), with
@@ -53,11 +53,12 @@ are named in one place at the top of `vm.sh` (`REGISTRY_PORTS`,
   stays the guest's. passt quits when its QEMU goes; the teardown stops one
   still running (its pid from the pid file QEMU has it write, TERM then
   KILL) and fails the run if it cannot.
-- **Why IPv4 only** (decided 2026-11-03, after the first review): with IPv6
-  on, passt forwarded a class of raw frame to the host's loopback, which
-  the raw-frame probe below found. IPv6 is off on the egress NIC, and the
-  probe checks it on every run; details are withheld until the passt
-  maintainers have them. The VM needs no IPv6.
+- **Why a reduced configuration** (decided 2026-11-03, after the first
+  review): in passt's default configuration, a class of raw frame reached
+  the host's loopback, which the raw-frame probe below found. The egress
+  runs with a reduced configuration, which the probe confirms on every
+  run; details are withheld until the passt maintainers have them. The VM
+  loses nothing it needs.
 - **DNS**: the guest's resolver is `192.0.2.53` (a documentation address,
   RFC 5737), which passt forwards to `HOST_DNS`, the host's first IPv4
   nameserver in `/etc/resolv.conf`, usually systemd-resolved's
@@ -70,13 +71,16 @@ are named in one place at the top of `vm.sh` (`REGISTRY_PORTS`,
   may not take it). It forwards SSH from the host's `127.0.0.1:<free port>`
   to `10.0.2.15:22`. With the push suite, a `guestfwd` for `10.0.2.2:5000`
   and `10.0.2.2:5443` starts a forwarder per guest connection, which hands
-  it to the host's `127.0.0.1` of the same port only while a gate is open:
-  `vm.sh` opens it when the guest's log shows `== suite push` and shuts it
-  at the next suite, the summary or the end, never again after. Each
-  forwarder takes one of 16 `flock` slots per port and runs `socat` under
-  `timeout 600`. Nothing else leaves through this NIC, not even DNS. The
-  guest keeps `10.0.2.2` for the registries, so the registries'
-  certificate (whose SANs hold it) is unchanged.
+  it to the host's `127.0.0.1` of the same port only while a gate is open.
+  `vm.sh` runs the push suite last, in an SSH step of its own after every
+  other suite, and opens the gate only around that step: no text the
+  guest writes moves it. The gate's state lives in `vm.sh` and moves one
+  way only (shut, open, done; done never reopens), and when it shuts,
+  `vm.sh` kills every forwarder still running, so no connection made while
+  it was open outlives it. Each forwarder takes one of 16 `flock` slots per
+  port and runs `socat` under `timeout 600`. Nothing else leaves through
+  this NIC, not even DNS. The guest keeps `10.0.2.2` for the registries,
+  so the registries' certificate (whose SANs hold it) is unchanged.
 - **Guest**: a `network-config` in the run's seed tells the NICs apart by
   fixed MACs: DHCP on egress, a fixed `10.0.2.15/24` with no gateway, no
   DNS and no IPv6 on the harness NIC. The provisioning boot of the base
@@ -96,8 +100,9 @@ are named in one place at the top of `vm.sh` (`REGISTRY_PORTS`,
   IPv4 and IPv6 frames, one at a time with a liveness check after each.
   On the egress NIC, controls through the same socket come first (a SYN to
   the registry, a DNS query), and the registry must get no answer over
-  IPv6; on the harness NIC the control is a `guestfwd` on `10.0.2.2:9`
-  that runs `true`, which reaches nothing on the host but answers a SYN.
+  IPv6; on the harness NIC the control is a `guestfwd` on `10.0.2.2:9` to
+  QEMU's null character device, which reaches nothing on the host and
+  starts no process but answers a SYN.
   The egress NIC must have no global IPv6 address and no IPv6 default
   route. The push suite then checks both registry ports from root, both
   containers and a `RUN`.
@@ -126,9 +131,12 @@ connections come from the host itself.
 - Bad, because the harness now needs QEMU 10.1 or later and a recent passt
   on the host (and socat for `push`): an older QEMU (Ubuntu 24.04's 8.2,
   Debian 13's 10.0) is refused.
-- Bad, because a root process in the VM can print the push suite's marker
-  early and open the registry gate until the next suite; the real push
-  suite then fails, so it shows.
+- Bad, because the push suite always runs last, whatever order the suites
+  were named in.
+- Bad, because every guest connection to a registry port starts a host
+  `sh` (libslirp's `guestfwd` command), at no bounded rate, during the
+  whole run: an accepted residual. While the gate is shut it exits at
+  once; while it is open, the slots and the timeout bound what it runs.
 - Neutral, because egress from the VM is as before but IPv4 only: passt
   copies the host's address and routes, as libslirp NATed.
 
@@ -141,14 +149,14 @@ connections come from the host itself.
   the host's `127.0.0.1` at `10.0.2.2`; raw frames to the loopback and
   unspecified addresses, over IPv4 and IPv6, TCP and UDP, reached it too
   [measured].
-- With passt and IPv6 on (passt 0.0~git20260120): no ordinary socket in the
-  VM reached the token, but one class of raw frame did, with an answer from
-  the host's loopback; passt stayed up throughout [measured; details
-  withheld until reported upstream].
-- With IPv6 off: every raw frame of the probe goes unanswered on the egress
-  NIC, except that a TCP SYN to the guest's own address is refused by the
-  host's own LAN address (see "Not covered"); the controls pass; the VM has
-  no IPv6 egress. On the restricted harness NIC, libslirp refuses the TCP
+- With passt's default configuration (passt 0.0~git20260120): no ordinary
+  socket in the VM reached the token, but one class of raw frame did, with
+  an answer from the host's loopback; passt stayed up throughout
+  [measured; details withheld until reported upstream].
+- With the reduced configuration: every raw frame of the probe goes
+  unanswered on the egress NIC, except that a TCP SYN to the guest's own
+  address is refused by the host's own LAN address (see "Not covered"); the
+  controls pass. On the restricted harness NIC, libslirp refuses the TCP
   SYNs itself (a RST) and drops the rest; its control forward answers
   [measured].
 - passt 0.0~git20260120 on its own listening socket accepted no client
@@ -179,14 +187,14 @@ connections come from the host itself.
 
 - Fixes lead 28 of the [Phase 1-2 audit](../security/audit/README.md).
 - Implemented in `tests/vm/vm.sh` (network section, `EGRESS_NETDEV`,
-  `start_qemu`, the registry forwarder and `gate_sync`, the run's
-  `network-config`), `tests/vm/guest/net.sh` and
-  `tests/vm/guest/rawprobe.py`; described in
-  [docs/testing.md](../testing.md#the-vm-harness-tier-t2).
+  `start_qemu`, the registry forwarder, `gate_open` and `gate_close`, the
+  push step, the run's `network-config`), `tests/vm/guest/run.sh`
+  (`--after`), `tests/vm/guest/net.sh` and `tests/vm/guest/rawprobe.py`;
+  described in [docs/testing.md](../testing.md#the-vm-harness-tier-t2).
 - Follow-ups: run passt in its own network namespace under pasta (defense
   in depth; needs a user namespace on the host, checked against the rules
-  first); IPv6 egress again once passt is fixed upstream and the raw probe
-  passes with it.
+  first); passt's default configuration again once it is fixed upstream and
+  the raw probe passes with it.
 - Revisit if the harness must run on a QEMU older than 10.1: passt can then
   be started by `vm.sh` on a socket pair and handed to `-netdev stream`
   (`addr.type=fd`), not on its own listening socket, which failed here.
