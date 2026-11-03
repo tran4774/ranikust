@@ -134,7 +134,8 @@ or a note in the report when it is out of scope.
   refactor of <crate>" and nothing else.
 - Docs: a refactor rarely changes them; when it renames or moves a public
   item, update the card, `ARCHITECTURE.md` and design references
-  (`/sync-docs`). No CHANGELOG entry unless users can see it.
+  (`/sync-docs`). The pull request's `## Changelog` section says "none"
+  unless users can see the change (ADR-0088).
 
 ### 5. Report
 

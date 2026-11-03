@@ -107,7 +107,9 @@ part of every change, not a follow-up. Questions the design does not answer
 become an issue with the **Design question** form, labelled
 [`question`](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion),
 instead of being guessed. A new question is named by its issue number and
-takes no `Q-NNN` number; the 29 questions migrated from
+takes no `Q-NNN` number
+([ADR-0091](docs/adr/0091-a-new-design-question-is-named-by-its-issue-number.md));
+the 29 questions migrated from
 [`docs/open-questions.md`](docs/open-questions.md) keep their `Q-NNN:`
 title prefix, and that file keeps the answered ones.
 

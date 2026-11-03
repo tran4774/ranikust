@@ -52,7 +52,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just registry-up`, `just registry-down` | the HTTP and HTTPS test registries on the host's loopback, data in `tests/registry/_data` ([testing](../testing.md#test-registries)) | |
 | `just smoke-case [name]...` | T1: the quick smoke cases of `tests/smoke/cases` (small Dockerfiles, one concern each) built by the `ranikust` binary in rootless podman; the default for a smoke test or proof of concept ([testing](../testing.md#quick-smoke-cases)) | |
 | `just test-vm [suite]...` | T2 in a disposable QEMU/KVM VM, as the user: `unit` (the `T2:` ignored tests as root) and `smoke` (`smoke-build` as real root and in rootful Docker) by default; `quick` when named (the quick smoke cases as real root); `e2e` when named, for large benchmarks only (the `nextjs-kaniko` workloads against kaniko and BuildKit, [testing](../testing.md#end-to-end-workloads-e2e)); `push` when named (needs `just registry-up`, [testing](../testing.md#test-registries)); results in `target/vm/results/<release>/` ([testing](../testing.md#the-vm-harness-tier-t2)) | |
-| `just docs-lint` | `scripts/docs-lint.py`: every ADR indexed with its status, no duplicate question in the answered archive, no old `[open: Q-NNN]` marker, every `[open: #N]` naming an open issue (asks GitHub through `gh`; offline it warns and skips that check) | local only for now |
+| `just docs-lint` | `scripts/docs-lint.py` over the files `git ls-files` lists: every ADR indexed with its status, no duplicate question in `docs/open-questions.md`, no old `[open: Q-NNN]` marker outside the ADRs, every `[open: #N]` naming an open issue labelled `question` (asks GitHub through `gh`; without `gh` or network the verdict says the check was skipped, any other `gh` failure is a problem) | local only for now |
 | `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
 | `just ci` | all of the above that CI runs, in CI's order | all |
 
@@ -138,9 +138,10 @@ request (`ADR-0088`).
 
 1. **Issue.** A task (a sub-issue of its phase's `tracking` issue, with
    the phase's milestone) or a `question`, named by its issue number (no
-   new `Q-NNN`; the 29 migrated questions keep theirs). An agent opens
-   issues only for work already in a plan, labels them `agent`, `task` or
-   `question` and `crate:<name>`, and adds them to the Project.
+   new `Q-NNN`, `ADR-0091`; the 29 migrated questions keep theirs). An
+   agent opens issues only for work already in a plan, labels them
+   `agent`, `task` or `question` and `crate:<name>`, and adds them to the
+   Project.
 2. **Branch** from the latest `main` ([Commits](#commits)); the Project item
    goes to In Progress.
 3. **Draft pull request:** `git push -u origin <branch>`, then
@@ -193,7 +194,7 @@ The matrix lives in [rules.md](rules.md#keep-in-sync).
 | Changing `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`, or set-up | plan mode first; `host-safety` subagent on the diff with `just review-pack <branch>` as its brief, then the fix loop below; then `red-team` |
 | A claim about Linux or a runtime is unverified (`[inferred]`, "not checkable from the code") | `poc-runner` subagent: a minimal experiment, in the VM for anything privilege-related |
 | Attack tests for a change, regression tests from upstream issues | `red-team` subagent: hostile inputs and T0–T2 tests, never product code |
-| The maintainer decided; a diff needs its docs | `scribe` subagent: ADRs, answered questions, markers, cards, design, CHANGELOG, then `just docs-lint` |
+| The maintainer decided; a diff needs its docs | `scribe` subagent: ADRs, the `Closes #N` of answered questions, markers, cards, design, the pull request's `## Changelog` section, then `just docs-lint` |
 | Performance numbers (W1–W3, benchmarks, Q-033, Q-245) | `bench-runner` subagent, only when no other VM runs |
 | Final review | `reviewer` subagent: only the scope and the requirement, not your suspicions |
 | Decision; before a PR | `/adr`; `/sync-docs [base]` (user-invoked) |
@@ -259,10 +260,10 @@ agent with `SendMessage` rather than starting a new one.
   `merge=union` in a local merge. GitHub's server-side merge is expected
   not to apply it `[inferred]`: pull requests no longer edit `CHANGELOG.md`
   (`ADR-0088`), and an ADR pull request whose index row conflicts gets
-  `main` merged into it (no force-push) before it merges. Files whose lines change in place
-  (crate cards, design docs) keep normal merges.
+  `main` merged into it (no force-push) before it merges. Files whose
+  lines change in place (crate cards, design docs) keep normal merges.
 - Each fork gets its own range of ADR numbers in its brief; questions need
-  none, since a new question is named by its issue number.
+  none, since a new question is named by its issue number (`ADR-0091`).
 - After merging, `just docs-lint` catches what the merge left behind.
 
 ### Host-safety fix loop
@@ -289,5 +290,5 @@ costly low ones, or ones that belong to a later task, become task issues
 in the phase's milestone and do not block, unless they describe an open
 weakness, which stays with the maintainer (D6). A finding that needs a
 design choice goes to the maintainer as a `question` issue while the fork
-builds the fail-closed option as the interim. After three rounds still blocked, stop
-and report to the maintainer.
+builds the fail-closed option as the interim. After three rounds still
+blocked, stop and report to the maintainer.

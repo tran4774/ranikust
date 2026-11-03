@@ -27,7 +27,7 @@ cargo test -p rnk-rootfs <name>   # a single test (name filter)
 just test <filter>                # name filter across the whole workspace
 just ci                           # exactly what CI runs (also static musl build, aarch64 check, deny, docs)
 just fmt | just lint | just deny | just doc | just book
-just docs-lint                    # ADR index, answered-question archive, [open: #N] markers naming open issues (local only; asks GitHub)
+just docs-lint                    # ADR index, question headings, [open: #N] markers naming open `question` issues (local only; asks GitHub)
 just review-pack <branch>         # the brief for the host-safety subagent (local only)
 ```
 
@@ -89,8 +89,8 @@ damage the machine or the design:
 - Decisions go into a new ADR (`/adr`); never rewrite an accepted ADR. Never
   guess an undecided question: open a `question` issue (the Design question
   form) and mark the spot `[open: #N]`. A new question has no `Q-NNN`
-  number, its issue number names it; the 29 migrated questions keep their
-  `Q-NNN:` title prefix so older ADRs still resolve.
+  number, its issue number names it (`ADR-0091`); the 29 migrated
+  questions keep their `Q-NNN:` title prefix so older ADRs still resolve.
 - Everything committed is English. The maintainer may write in Vietnamese.
 
 ## Claude Code setup

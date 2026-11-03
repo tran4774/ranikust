@@ -119,7 +119,7 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
 - Never guess a decision that no ADR or design doc makes. Open a `question`
   issue with the **Design question** form, titled by the question alone:
   a new question has no `Q-NNN` number, its issue number `#N` names it
-  (`ADR-0088`; [`docs/open-questions.md`](../open-questions.md#how-to-use-it)).
+  (`ADR-0091`; [`docs/open-questions.md`](../open-questions.md#how-to-use-it)).
   The 29 questions migrated on 2026-11-03 keep their `Q-NNN:` title prefix
   so older ADRs still resolve. Mark the spot `[open: #N]` (`\[open: #N]`
   in a `///` or `//!` comment, which rustdoc would otherwise read as a
@@ -165,6 +165,9 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 
 - Never edit this file or `CLAUDE.md` on your own; propose rules under
   "Suggested agent rule additions" in the PR description.
+- Where the work stands (plans, tasks, open questions, what is in review)
+  is read from the [Project](https://github.com/users/tran4774/projects/1)
+  and its issues, not from local memory (`ADR-0088`).
 - Durable decisions go into an ADR, not auto memory. Issues, pull requests
   and comments only within the limits of
   [workflow.md](workflow.md#github-flow) (`ADR-0087`): never reply to or
