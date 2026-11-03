@@ -171,7 +171,7 @@ request (`ADR-0088`).
    the Project's built-in workflow moves the item to Done.
 7. **Clean up.** After the merge, once no fork is working, the main
    session runs `just prune-worktrees`: every agent worktree carries its
-   own `target/` of several GB, and 32 left behind once filled 126 GB. It
+   own `target/` of several GB, and 32 left behind once held about 125 GB. It
    removes only worktrees that hold nothing to lose (recipe table above).
 
 What agents may do (`ADR-0087` D1, amended by `ADR-0093`, until the
