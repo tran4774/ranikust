@@ -6,10 +6,13 @@ allowed-tools: Read Grep Glob
 
 # Parity with kaniko
 
-ranikust aims to build what kaniko builds and to accept kaniko's common flags
-(ADR-0011). It does not share kaniko's cache (ADR-0005), and its two snapshot
-modes may differ from each other in accepted ways (ADR-0012). A claim about
-what kaniko does is only valid with a citation into kaniko's source.
+ranikust decides undecided behaviour by security first, then performance;
+between options equal on both, kaniko's (or BuildKit's) behaviour decides
+(ADR-0049, which supersedes ADR-0011's goal of accepting kaniko's common
+flags: a kaniko flag that changes nothing is refused). It does not share
+kaniko's cache (ADR-0005), and its two snapshot modes may differ from each
+other in accepted ways (ADR-0012). A claim about what kaniko does is only
+valid with a citation into kaniko's source.
 
 ## Find the source
 
@@ -58,10 +61,8 @@ what kaniko does is only valid with a citation into kaniko's source.
      needs a new ADR.
 
 For broad questions that need a lot of reading, delegate to the
-`upstream-oracle` subagent and pass it the resolved path. If
-`<path>/graphify-out/graph.json` exists, run
-`graphify query "<question>" --graph <path>/graphify-out/graph.json` first
-and include the output in its prompt so it starts at the right files.
+`upstream-oracle` subagent with the resolved path and the checkout's
+graphify output (CLAUDE.md, "Delegating to subagents").
 
 Reading kaniko to learn its behaviour is fine. Translating its code closely
 makes the result a derivative of Apache-2.0 code: follow "Porting code from

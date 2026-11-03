@@ -118,9 +118,8 @@ or a note in the report when it is out of scope.
 
 ### 4. Verify (after the last commit)
 
-- `just check`; `just doc` when public items or docs changed; `just deny`
-  when dependencies changed; `just check-aarch64` when `cfg`, syscalls or
-  integer widths were touched.
+- `just check`, plus what the diff needs of `just doc`, `just deny` and
+  `just check-aarch64` (`docs/agents/workflow.md#dev-loop`).
 - Public API unchanged, or changed only by removing what nothing used;
   every caller in the workspace updated in the same branch.
 - The baseline digests rebuilt and identical. A digest that moves is a
@@ -129,11 +128,12 @@ or a note in the report when it is out of scope.
   `tests/spans.rs` passes.
 - `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`, or any diff
   touching paths, fds, mounts, deletion or `RUN`: the `host-safety`
-  subagent on the diff, with the graphify context it cannot fetch itself
-  (CLAUDE.md). Their T2 tests in the VM (`just test-vm unit`, the
-  `vm-test` skill).
-- `reviewer` subagent on the branch with the scope "behaviour-preserving
-  refactor of <crate>" and nothing else.
+  subagent on the diff, with the context it cannot fetch itself
+  (`just review-pack`, CLAUDE.md), then the fix loop
+  (`docs/agents/workflow.md#host-safety-fix-loop`). Their T2 tests in the
+  VM (`just test-vm unit`, the `vm-test` skill).
+- `reviewer` subagent on the local branch, before the push, with the scope
+  "behaviour-preserving refactor of <crate>" and nothing else.
 - Docs: a refactor rarely changes them; when it renames or moves a public
   item, update the card, `ARCHITECTURE.md` and design references
   (`/sync-docs`). The pull request's `## Changelog` section says "none"

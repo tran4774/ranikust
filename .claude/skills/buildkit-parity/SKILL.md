@@ -59,9 +59,8 @@ BuildKit's source.
      BuildKit does.
 
 For broad questions, delegate to the `upstream-oracle` subagent with the
-resolved path instead of reading in the main session. If
-`<path>/graphify-out/graph.json` exists, run `graphify query "<question>"
---graph <path>/graphify-out/graph.json` first and pass the output.
+resolved path and the checkout's graphify output (CLAUDE.md, "Delegating to
+subagents") instead of reading in the main session.
 
 Reading BuildKit to learn its behaviour is fine. Translating its code
 closely makes the result a derivative of Apache-2.0 code: follow "Porting
