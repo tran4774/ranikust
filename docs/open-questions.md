@@ -5,7 +5,8 @@ Since 2026-11-03 open design questions live on GitHub, not here
 each is an issue labelled
 [`question`](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion),
 on the [ranikust Project](https://github.com/users/tran4774/projects/1).
-This file keeps the [Answered](#answered) archive, which ADRs and design
+This file keeps the [Answered](#answered) archive and a heading for each
+question [moved to an issue](#moved-to-issues), which ADRs and design
 documents link to; nothing new is added to it.
 
 ## How to use it
@@ -13,11 +14,13 @@ documents link to; nothing new is added to it.
 - **Raising.** Do not guess an undecided question. Open an issue with the
   **Design question** form (Context, Options, Recommendation, Interim,
   Blocks, Area), titled by the question alone: a new question takes no
-  `Q-NNN` number, its issue number `#N` names it. Labels: `question`, the
-  `crate:<name>` labels of its area and `needs-decision` when it waits on
-  the maintainer. Mark the place that needs the answer with `[open: #N]`,
-  and continue with work that does not depend on it, or with the smallest
-  reversible choice, recorded under "Interim" in the issue.
+  `Q-NNN` number, its issue number `#N` names it
+  ([ADR-0091](adr/0091-a-new-design-question-is-named-by-its-issue-number.md)).
+  Labels: `question`, the `crate:<name>` labels of its area and
+  `needs-decision` when it waits on the maintainer. Mark the place that
+  needs the answer with `[open: #N]`, and continue with work that does not
+  depend on it, or with the smallest reversible choice, recorded under
+  "Interim" in the issue.
 - **Answering.** The maintainer answers in an issue comment. The decision is
   recorded where it belongs (a new ADR, a design doc, a crate card) by a pull
   request that says `Closes #N` and removes the `[open: #N]` markers;
@@ -25,6 +28,128 @@ documents link to; nothing new is added to it.
 - **Migrated.** The 29 questions open on 2026-11-03 became issues #1–#31
   (with gaps); their titles keep their `Q-NNN:` prefix, so the ADRs and
   this archive that name them still resolve.
+
+## Moved to issues
+
+The questions open on 2026-11-03, kept as headings so links from ADRs
+and older documents still land somewhere. Each lives on as the issue
+named under it.
+
+### Q-015: Which digest names an extracted layer, and where do locks live?
+
+Moved to [#1](https://github.com/tran4774/ranikust/issues/1) (ADR-0088).
+
+### Q-016: How is the store lock protocol proven under crashes and races?
+
+Moved to [#2](https://github.com/tran4774/ranikust/issues/2) (ADR-0088).
+
+### Q-017: Which type carries the probe outcome to the libraries?
+
+Moved to [#3](https://github.com/tran4774/ranikust/issues/3) (ADR-0088).
+
+### Q-018: Where does the probe mount its test overlay?
+
+Moved to [#4](https://github.com/tran4774/ranikust/issues/4) (ADR-0088).
+
+### Q-152: How are read-only layer roots published without root?
+
+Moved to [#5](https://github.com/tran4774/ranikust/issues/5) (ADR-0088).
+
+### Q-027: Is the ContextSource trait sync or async?
+
+Moved to [#6](https://github.com/tran4774/ranikust/issues/6) (ADR-0088).
+
+### Q-028: Which planned crate dependencies are allowed?
+
+Moved to [#7](https://github.com/tran4774/ranikust/issues/7) (ADR-0088).
+
+### Q-029: Which crate computes LayerDemand?
+
+Moved to [#8](https://github.com/tran4774/ranikust/issues/8) (ADR-0088).
+
+### Q-030: What are the memory-limit algorithm and thresholds?
+
+Moved to [#9](https://github.com/tran4774/ranikust/issues/9) (ADR-0088).
+
+### Q-032: What remains to verify in the RUN sandbox?
+
+Moved to [#10](https://github.com/tran4774/ranikust/issues/10) (ADR-0088).
+
+### Q-039: Which environments must the probe be tested in?
+
+Moved to [#11](https://github.com/tran4774/ranikust/issues/11) (ADR-0088).
+
+### Q-040: What happens to a rootless user without subuid ranges?
+
+Moved to [#12](https://github.com/tran4774/ranikust/issues/12) (ADR-0088).
+
+### Q-041: What exactly goes into a cache key and its tag?
+
+Moved to [#13](https://github.com/tran4774/ranikust/issues/13) (ADR-0088).
+
+### Q-042: How do cache lookahead and cached-stage skipping work?
+
+Moved to [#14](https://github.com/tran4774/ranikust/issues/14) (ADR-0088).
+
+### Q-250: Does a git context fall back between the two backends?
+
+Moved to [#15](https://github.com/tran4774/ranikust/issues/15) (ADR-0088).
+
+### Q-251: Can kaniko's `#ref#commit` fragment name a subdirectory?
+
+Moved to [#16](https://github.com/tran4774/ranikust/issues/16) (ADR-0088).
+
+### Q-252: Which `--git-config` keys does the built-in backend honour?
+
+Moved to [#17](https://github.com/tran4774/ranikust/issues/17) (ADR-0088).
+
+### Q-245: Should one overlay mount serve consecutive instructions?
+
+Moved to [#18](https://github.com/tran4774/ranikust/issues/18) (ADR-0088).
+
+### Q-057: Does ranikust offer CPU and heap profiling?
+
+Moved to [#19](https://github.com/tran4774/ranikust/issues/19) (ADR-0088).
+
+### Q-058: Which metric export formats come after the JSON report?
+
+Moved to [#21](https://github.com/tran4774/ranikust/issues/21) (ADR-0088).
+
+### Q-370: Should a built layer be encoded straight into its upload?
+
+Moved to [#23](https://github.com/tran4774/ranikust/issues/23) (ADR-0088).
+
+### Q-383: How do `bind`, `tmpfs` and `from=` mounts work for a `Direct` `RUN` on `/`?
+
+Moved to [#24](https://github.com/tran4774/ranikust/issues/24) (ADR-0088).
+
+### Q-447: Should `--network=none` also keep ranikust's own registry requests off internal addresses?
+
+Moved to [#25](https://github.com/tran4774/ranikust/issues/25) (ADR-0088).
+
+### Q-444: How are secrets wiped from ranikust's memory?
+
+Moved to [#26](https://github.com/tran4774/ranikust/issues/26) (ADR-0088).
+
+### Q-449: Should push-side error bodies be bounded too?
+
+Moved to [#27](https://github.com/tran4774/ranikust/issues/27) (ADR-0088).
+
+### Q-448: Should a pull have an overall deadline or minimum rate?
+
+Moved to [#28](https://github.com/tran4774/ranikust/issues/28) (ADR-0088).
+
+### Q-421: Which performance conditions does Phase 6 measure?
+
+Moved to [#29](https://github.com/tran4774/ranikust/issues/29) (ADR-0088).
+
+### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
+
+Moved to [#30](https://github.com/tran4774/ranikust/issues/30) (ADR-0088).
+
+### Q-454: What does a placed secret file do when its target exists or its parent directories are missing?
+
+Moved to [#31](https://github.com/tran4774/ranikust/issues/31) (ADR-0088).
 
 ## Answered
 
