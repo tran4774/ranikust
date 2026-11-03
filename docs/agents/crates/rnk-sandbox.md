@@ -172,7 +172,8 @@ from `rnk-store`, secret file) and passes `--network`.
   `/proc/self/exe`) is refused (`ELOOP`) before `execve`. Not covered: a
   `#!/proc/self/exe` line, which the kernel opens itself, or a symlink
   swapped after the check; ranikust's binary then runs in the sandbox and
-  refuses its arguments [open: Q-422].
+  refuses its arguments. ADR-0082: the full sandbox will bind the binary
+  read-only over itself (not built yet); `Direct` keeps these barriers.
 - `Direct`: no namespace, mount or capability change; the command gets its
   own session, whose process group is killed with `SIGKILL` once the
   command exits (waited with `WNOWAIT`, so the group id cannot be reused),

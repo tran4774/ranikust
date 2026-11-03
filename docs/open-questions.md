@@ -481,43 +481,6 @@ Entry format:
 - **Interim:** (a).
 - **Raised:** 2026-11-02
 
-### Q-445: Should kaniko mode on `/` refuse `--secret` files?
-
-- **Blocks:** nothing yet; **Area:** `ranikust`
-- **Context:** in kaniko mode on `/`, a `--secret src=` file is a file on
-  the `/` every `RUN` shares, so any `RUN` can read it, not only the one
-  that mounts it (threat model, section 6). ranikust reads it once at the
-  start (ADR-0078) but cannot hide it.
-- **Options:** (a) warn for each one and document it; (b) refuse a file
-  secret there, and accept secrets only from ranikust's environment; (c)
-  read it at the start, then require the operator's tooling to remove it
-  before the first `RUN` (unenforceable).
-- **Recommendation:** (b), if security comes before kaniko's
-  `--secret`-file habit: a secret the maintainer hands to one `RUN`
-  should not reach every `RUN`. (a) keeps such builds working.
-- **Interim:** (a): a warning per file secret in kaniko mode on `/`.
-- **Raised:** 2026-11-02
-
-### Q-446: Should kaniko mode on `/` read the resolver files once?
-
-- **Blocks:** nothing yet; **Area:** `rnk-registry`, `ranikust`
-- **Context:** the C library reads `/etc/hosts` and `/etc/resolv.conf` at
-  every lookup. In kaniko mode on `/` a `RUN` can edit both and redirect
-  ranikust's later requests. ADR-0051 sends credentials only over verified
-  TLS there, so a redirect can only fail a request, or answer an
-  anonymous pull of a tag (digests are still checked). ADR-0078 reads
-  ranikust's own configuration once; these files are the system's, read
-  per lookup.
-- **Options:** (a) keep it, as ADR-0051 accepts; (b) give `reqwest` a
-  resolver that reads both files once, at the start (hickory or a
-  custom `Resolve`); (c) resolve every registry the build names at the
-  start and pin the addresses.
-- **Recommendation:** (a) until a measurement shows a case that (a) does
-  not cover; (b) if one does. (c) breaks registries behind DNS
-  round-robin or short TTLs.
-- **Interim:** (a).
-- **Raised:** 2026-11-02
-
 ### Q-449: Should push-side error bodies be bounded too?
 
 - **Blocks:** nothing yet; **Area:** `rnk-registry`
@@ -583,8 +546,85 @@ Entry format:
 - **Interim:** none
 - **Raised:** 2026-11-01
 
+### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
+
+- **Blocks:** nothing yet (backlog); **Area:** `rnk-store`, `rnk-builder`
+- **Context:** kaniko mode on `/` keeps nothing between builds. It refuses
+  a persistent store and empties its state directory at the end, because
+  a `Direct` `RUN` is root on that directory's filesystem and could
+  change what later builds reuse without hashing again
+  ([ADR-0077](adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+  So it has no local layer cache, and `RUN --mount=type=cache` is left out
+  with a warning (ADR-0057, Q-381). The maintainer asked, on 2026-11-02,
+  for a way to mount a cache there later ("sẽ tìm giải pháp mount cache
+  trực tiếp sau").
+- **Options:**
+  - (a) A store outside every `RUN`'s reach: a directory no path of the
+    container's `/` leads to while a `RUN` runs, such as a volume the
+    store holds only by descriptor and closes off with the fence of
+    ADR-0056.
+  - (b) A store whose content is checked again on every reuse: hash each
+    blob, and keep a digest of each extracted tree checked before it is
+    used. This costs time on every build. A digest a `RUN` can rewrite
+    proves nothing, so the digests need a key no `RUN` can reach (held
+    outside the container, or by a process the `RUN` cannot signal or
+    read). That is also what any sharing of a state volume between kaniko
+    mode on `/` and other builds would need, since a `RUN` can end the
+    build before the store empties the directory (ADR-0077).
+  - (c) A per-build snapshot of the cache: copied in before the first
+    `RUN` and checked or discarded after the last one.
+  - (d) Keep only a registry cache (Phase 4) in that mode.
+- **Recommendation:** none yet. Decide with the Phase 4 layer cache; (d)
+  stays the default until then.
+- **Interim:** no cache in kaniko mode on `/` (ADR-0077).
+- **Raised:** 2026-11-02
+
+### Q-453: Where does kaniko mode on `/` put a secret file, and which directory does the snapshot ignore?
+
+- **Blocks:** the implementation of
+  [ADR-0084](adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md);
+  **Area:** `ranikust`, `rnk-builder`, `rnk-sandbox`, `rnk-snapshot`
+- **Context:** ADR-0084 lets a secret be a file in kaniko mode on `/` and puts
+  "the directory that holds the secret files" on the snapshot ignore list
+  (the maintainer, 2026-11-03: "Bỏ qua thư mục này khi build"). His words do
+  not say which directory. Two kinds of file are involved:
+  - a `--secret src=` file, wherever the operator put it, read once at the
+    start (ADR-0078); today it must be on a volume or an `--ignore-path`, or
+    the build is refused (`paths_outside_the_root`);
+  - the file a `RUN --mount=type=secret` reads. On `/` there is no tmpfs for
+    the `RUN` (ADR-0057), so ranikust would write it into the `/` all `RUN`s
+    share before the `RUN`. BuildKit's place is the mount's `target=`, else
+    `/run/secrets/<id>`, mode `0400` (`secret_mount` in `mounts.rs`).
+  An ignored entry covers everything below it, which the walk skips, base
+  extraction does not replace and emptying the root does not delete
+  (`IgnoreList`; a path is physical, so `/var/run` ignores the symlink and not
+  `/run`). Ignoring the directory of `--secret src=/etc/token` would be
+  ignoring `/etc`.
+- **Options:** which entry goes on the list: (a) the secret file's own path
+  only (the `src=` file, the placed file at its target); (b) the file's
+  directory, whatever it is; (c) a directory ranikust fixes for placed files,
+  `/run/secrets`, with a `target=` outside it refused, and the `src=` file's
+  own path as in (a). Independently, for the placed file: (d) removed after its
+  `RUN` ends, so a later `RUN` cannot read it and a crash leaves it only until
+  the container ends; (e) left until the build ends.
+- **Recommendation:** (a) with (d): the narrowest ignore, so no sibling file
+  of the image drops out of a layer, and the placed file readable by other
+  `RUN`s only while its own `RUN` lasts; (b) can hide a system directory.
+- **Interim:** both refusals stand as they are (`paths_outside_the_root`,
+  `direct_mounts`), the `--secret src=` warning stays; nothing is built.
+- **Raised:** 2026-11-03
+
+## Answered
+
 ### Q-422: How is ranikust's own binary kept out of a `RUN`'s reach before `execve`?
 
+- **Answer (2026-11-03):** "Q-422: (b) cho Full sandbox, (d) cho Direct
+  trên /": option (b) for the full sandbox: ranikust binds its own binary
+  read-only over itself in the build's mount namespace, as runc 1.2 does;
+  option (d) for `Direct` on `/`: the barriers below stay and the residual
+  is documented. Options (a) and (c) are not taken. The implementation is a
+  follow-up. Recorded in
+  [ADR-0082](adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md).
 - **Blocks:** nothing yet; **Area:** `rnk-sandbox`, security (T7)
 - **Context:** until `execve`, the `RUN` child is a copy of ranikust, so
   `/proc/self/exe` is ranikust's binary on the host. The child refuses an
@@ -619,8 +659,74 @@ Entry format:
 - **Interim:** (d): the barriers above, with the tests that pin them.
 - **Raised:** 2026-11-03
 
+### Q-445: Should kaniko mode on `/` refuse `--secret` files?
+
+- **Answer (2026-11-03):** "Bật lại --secret. Bỏ qua thư mục này khi build
+  (ignore). Còn việc câu lệnh RUN của dockerfile có copy nó đi đâu hay không
+  thì đó là quyết định của người dùng. Nên ghi cảnh báo vào tài liệu.":
+  option (b), refusing file secrets, is not taken. In kaniko mode on `/`
+  `--secret` files work: the directory that holds the secret files is put on
+  the snapshot ignore list so that none reaches a layer, which lifts two
+  refusals (the start-up refusal of a `--secret src=` file that lies in the
+  root outside the ignore list, and ADR-0057's refusal of a `RUN
+  --mount=type=secret` as a file); whether a `RUN` copies the file anywhere
+  is the user's decision, and the book and the threat model warn that every
+  `RUN` on `/` can read it. The implementation is a follow-up, and which
+  directory, where the file is placed and its removal are
+  [Q-453](#q-453-where-does-kaniko-mode-on--put-a-secret-file-and-which-directory-does-the-snapshot-ignore).
+  Recorded in
+  [ADR-0084](adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md).
+- **Blocks:** nothing yet; **Area:** `ranikust`
+- **Context:** in kaniko mode on `/`, a `--secret src=` file is a file on
+  the `/` every `RUN` shares, so any `RUN` can read it, not only the one
+  that mounts it (threat model, section 6). ranikust reads it once at the
+  start (ADR-0078) but cannot hide it.
+- **Options:** (a) warn for each one and document it; (b) refuse a file
+  secret there, and accept secrets only from ranikust's environment; (c)
+  read it at the start, then require the operator's tooling to remove it
+  before the first `RUN` (unenforceable).
+- **Recommendation:** (b), if security comes before kaniko's
+  `--secret`-file habit: a secret the maintainer hands to one `RUN`
+  should not reach every `RUN`. (a) keeps such builds working.
+- **Interim:** (a): a warning per file secret in kaniko mode on `/`.
+- **Raised:** 2026-11-02
+
+### Q-446: Should kaniko mode on `/` read the resolver files once?
+
+- **Answer (2026-11-03):** "Q-446: theo đề xuất": option (a), the
+  recommendation: kaniko mode on `/` keeps reading `/etc/hosts` and
+  `/etc/resolv.conf` at every lookup, as ADR-0051 accepts. Option (b) is
+  taken up only if a measurement shows a case that (a) does not cover (the
+  recommendation noted that (c) breaks registries behind DNS round-robin or
+  short TTLs). No new ADR: ADR-0051 and ADR-0078 stand, and the threat model
+  (section 6) and the kaniko-mode design say it.
+- **Blocks:** nothing yet; **Area:** `rnk-registry`, `ranikust`
+- **Context:** the C library reads `/etc/hosts` and `/etc/resolv.conf` at
+  every lookup. In kaniko mode on `/` a `RUN` can edit both and redirect
+  ranikust's later requests. ADR-0051 sends credentials only over verified
+  TLS there, so a redirect can only fail a request, or answer an
+  anonymous pull of a tag (digests are still checked). ADR-0078 reads
+  ranikust's own configuration once; these files are the system's, read
+  per lookup.
+- **Options:** (a) keep it, as ADR-0051 accepts; (b) give `reqwest` a
+  resolver that reads both files once, at the start (hickory or a
+  custom `Resolve`); (c) resolve every registry the build names at the
+  start and pin the addresses.
+- **Recommendation:** (a) until a measurement shows a case that (a) does
+  not cover; (b) if one does. (c) breaks registries behind DNS
+  round-robin or short TTLs.
+- **Interim:** (a).
+- **Raised:** 2026-11-02
+
 ### Q-451: Should a `RUN`'s init be a small executed binary instead of a copy of ranikust?
 
+- **Answer (2026-11-03):** "Q-451: (a) với mức chi phí hiện tại": option (a):
+  the init of a full-sandbox `RUN` stays a copy-on-write copy of ranikust,
+  at the cost measured above. Option (b), an executed small init, is not
+  built; it was the same mechanism as Q-422's option (c), which
+  [ADR-0082](adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)
+  does not take. Answered here only: ADR-0080 is accepted, so its body is
+  not edited beyond its marker, and ADR-0082 notes the answer.
 - **Blocks:** nothing yet; **Area:** `rnk-sandbox`, memory
 - **Context:** the init of every full-sandbox `RUN`
   ([ADR-0080](adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md))
@@ -648,6 +754,13 @@ Entry format:
 
 ### Q-452: How is a root `RUN` kept from delaying its init's death?
 
+- **Answer (2026-11-03):** "Q-452: (a) khi có cgroup delegate, (b) khi tới
+  Phase 3": option (a) where a delegated cgroup v2 tree exists (the command in
+  a cgroup of its own, apart from the init's, ended with `cgroup.kill`), and
+  option (b) in Phase 3 (`--userns` leaves the init's uid unmapped); option
+  (c) is the state until each is built, not the choice. The implementation is
+  a follow-up for each. Recorded in
+  [ADR-0083](adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md).
 - **Blocks:** nothing yet; **Area:** `rnk-sandbox`, T8
 - **Context:** when ranikust dies, the init of a full-sandbox `RUN`
   ([ADR-0080](adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md))
@@ -676,41 +789,6 @@ Entry format:
   Phase 3.
 - **Interim:** (c).
 - **Raised:** 2026-11-03
-
-### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
-
-- **Blocks:** nothing yet (backlog); **Area:** `rnk-store`, `rnk-builder`
-- **Context:** kaniko mode on `/` keeps nothing between builds. It refuses
-  a persistent store and empties its state directory at the end, because
-  a `Direct` `RUN` is root on that directory's filesystem and could
-  change what later builds reuse without hashing again
-  ([ADR-0077](adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
-  So it has no local layer cache, and `RUN --mount=type=cache` is left out
-  with a warning (ADR-0057, Q-381). The maintainer asked, on 2026-11-02,
-  for a way to mount a cache there later ("sẽ tìm giải pháp mount cache
-  trực tiếp sau").
-- **Options:**
-  - (a) A store outside every `RUN`'s reach: a directory no path of the
-    container's `/` leads to while a `RUN` runs, such as a volume the
-    store holds only by descriptor and closes off with the fence of
-    ADR-0056.
-  - (b) A store whose content is checked again on every reuse: hash each
-    blob, and keep a digest of each extracted tree checked before it is
-    used. This costs time on every build. A digest a `RUN` can rewrite
-    proves nothing, so the digests need a key no `RUN` can reach (held
-    outside the container, or by a process the `RUN` cannot signal or
-    read). That is also what any sharing of a state volume between kaniko
-    mode on `/` and other builds would need, since a `RUN` can end the
-    build before the store empties the directory (ADR-0077).
-  - (c) A per-build snapshot of the cache: copied in before the first
-    `RUN` and checked or discarded after the last one.
-  - (d) Keep only a registry cache (Phase 4) in that mode.
-- **Recommendation:** none yet. Decide with the Phase 4 layer cache; (d)
-  stays the default until then.
-- **Interim:** no cache in kaniko mode on `/` (ADR-0077).
-- **Raised:** 2026-11-02
-
-## Answered
 
 ### Q-438: Does ranikust refuse a context file its owner could not read?
 

@@ -60,8 +60,8 @@ pub(crate) fn warn_build_args(args: &[BuildArg]) {
 
 /// The warning for each `--secret` read from a file: on `/` it is a file
 /// like any other, which every `RUN` can read, not only the one that mounts
-/// it (threat model, section 6). Whether to refuse such files there is
-/// [open: Q-445].
+/// it (threat model, section 6). ADR-0084 keeps such files allowed, with
+/// this warning, and leaves what a `RUN` does with one to the user.
 pub(crate) fn file_secret_warnings(secrets: &[(String, rnk_builder::Secret)]) -> Vec<String> {
     secrets
         .iter()

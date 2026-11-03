@@ -2,7 +2,7 @@
 
 **TL;DR:** ranikust builds OCI images from Dockerfiles like kaniko, as one
 static binary: overlayfs snapshots when it may mount, a kaniko-style walk and
-hash otherwise. Pre-alpha: Phase 1 is done; Phase 2 (kaniko mode) is in progress.
+hash otherwise. Pre-alpha: Phases 1 and 2 (overlay mode, kaniko mode) are done.
 
 ## What ranikust is
 
@@ -111,14 +111,14 @@ One state directory serves every mode, `/var/lib/ranikust` unless
 |---|---|---|
 | 0 | Spike: sandbox, overlay, detection | mostly done by the experiments (`docs/research/`, frozen 2026-10-29) |
 | 1 | MVP: overlay mode as root, parallel stages, outputs | done (acceptance runs 2026-10-30); [phase-1.md](phase-1.md) |
-| 2 | kaniko mode | in progress; [phase-2.md](phase-2.md) |
+| 2 | kaniko mode | done (acceptance runs 2026-11-03); [phase-2.md](phase-2.md) |
 | 3 | Rootless overlay, full probe, `--seccomp`, `--userns` | not started |
 | 4 | Registry layer cache | not started |
 | 5 | Feature completion (`ADD` URL/git, more mounts, mirrors, `prune`) | not started |
 | 6 | Hardening and release | not started |
 
 Code today: 15 crates, each card giving its status. The binary builds
-Dockerfiles in overlay mode as root and pushes or writes the image;
-`--mode=kaniko` is refused until Phase 2 lands; `rnk-cache` is a
-skeleton (Phase 4). CI runs what `just ci` runs. 1.0 needs all three
+Dockerfiles in overlay mode as root, and in kaniko mode (on a container's
+`/` or in a directory per stage), and pushes or writes the image; `rnk-cache`
+is a skeleton (Phase 4). CI runs what `just ci` runs. 1.0 needs all three
 paths: overlay root, rootless overlay, kaniko mode.

@@ -341,7 +341,8 @@ pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {
 /// can be mounted) runs with, checked before any secret is read
 /// (ADR-0057): a secret only as a variable (`env=` without `target=`); a
 /// secret as a file is refused, as it would need the `RUN`'s own tmpfs
-/// (Q-380); a cache mount is left out with a warning, the `RUN` running
+/// (Q-380; ADR-0084 lifts the refusal, and where the file goes on `/` is
+/// [open: Q-453]); a cache mount is left out with a warning, the `RUN` running
 /// without the cache (Q-381). By design for now: kaniko mode on `/` keeps
 /// nothing between builds, cache mounts included (ADR-0077); a safe way to
 /// keep them is [open: Q-441].

@@ -26,8 +26,8 @@ The work is planned in phases. There are no dates.
 | Phase | Goal | Status |
 |---|---|---|
 | 0. Spike | Prove the risky parts: the `RUN` sandbox, overlay snapshots, mode detection | Mostly done by the pre-code experiments |
-| 1. First internal milestone | Overlay mode as root, parallel stages, local build context, the common Dockerfile instructions, registry pull and push, Docker tar and OCI layout output | Builds end to end; acceptance runs left |
-| 2. kaniko mode | Snapshot by filesystem walk; on a container's `/` stages one at a time, elsewhere a directory per stage built in parallel (`--parallel-stages` refused, ADR-0060) | Built; closing checks left |
+| 1. First internal milestone | Overlay mode as root, parallel stages, local build context, the common Dockerfile instructions, registry pull and push, Docker tar and OCI layout output | Done |
+| 2. kaniko mode | Snapshot by filesystem walk; on a container's `/` stages one at a time, elsewhere a directory per stage built in parallel (`--parallel-stages` refused, ADR-0060) | Done: built, and measured against kaniko in a VM on the test workloads |
 | 3. Rootless and detection | Overlay mode in a user namespace, automatic mode selection, refusing with guidance, `--seccomp` and `--userns` | In part: automatic mode selection and refusing with guidance are built; overlay in a user namespace, `--seccomp` and `--userns` are not |
 | 4. Cache | Layer cache in a registry, with ranikust's own versioned keys | Not started |
 | 5. Feature coverage | `ADD` from URLs and git, more `RUN --mount` and `COPY` options, registry mirrors, credential helpers, `prune` | Not started |

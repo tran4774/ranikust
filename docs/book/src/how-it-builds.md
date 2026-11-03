@@ -91,7 +91,9 @@ with the default security profile or in most Kubernetes pods.
   nothing. A secret as a file
   (`/run/secrets/…`) and `--network=none` (the flag, or `RUN
   --network=none`) are refused with the reason rather than run without
-  them; use overlay mode, in a container that may mount, for those.
+  them; use overlay mode, in a container that may mount, for those. It is
+  decided to allow a secret as a file here, its directory kept out of the
+  layers ([ADR-0084](https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md)); that is not built yet.
 
 - It works the way kaniko does. The build root is the container's own `/`:
   base image layers are unpacked there, `RUN` commands run there, and changes
@@ -137,8 +139,10 @@ with the default security profile or in most Kubernetes pods.
   pass secrets with `--secret`), credentials held in the environment of
   another process of the container (start ranikust as the container's
   first process, `exec` it, rather than from a shell that keeps them),
-  a `--secret src=` file (every `RUN` can read it: pass the secret in
-  ranikust's environment with `--secret id=…,env=VAR`), and
+  a `--secret src=` file (every `RUN` can read it, and can copy it into
+  the image, which is the Dockerfile author's choice: pass the secret in
+  ranikust's environment with `--secret id=…,env=VAR` if no `RUN` should
+  read it), and
   any file mounted into the container (pass registry credentials in
   `DOCKER_AUTH_CONFIG` rather than a mounted `config.json`).
   On a container's own root filesystem, which takes no unnamed file on
