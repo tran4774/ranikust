@@ -27,7 +27,7 @@ REGISTRY_PORTS="${RANIKUST_VM_REGISTRY_PROBE:-10.0.2.2:5000 10.0.2.2:5443}"
 IMAGE="$REG/library/alpine:3.20"
 W=/var/tmp/rnk-net
 failed=0
-for tool in curl python3 busybox; do
+for tool in curl python3; do
   command -v "$tool" >/dev/null || { echo "error: no $tool in the VM" >&2; exit 1; }
 done
 
@@ -44,18 +44,27 @@ for a in 10.0.2.2 ${RANIKUST_VM_PROBE_ADDRS:-} \
 done
 echo "host addresses probed: ${ADDRS[*]} port $PORT; registry ports: $REGISTRY_PORTS"
 
-# The probe each vantage runs as is, with busybox's wget (the VM's or
-# alpine's): "REACHED <what>" for each address that serves the token and
-# each registry port that answers HTTP at all (the HTTPS one answers plain
-# HTTP with a 400); "EGRESS" when an HTTP request to the image registry is
-# answered, any status (the positive control: plain HTTP, since jammy's
-# busybox speaks no TLS the registry accepts); "PROBED" once it ran through.
+# The probe the containers and the RUN run as is, with alpine's busybox
+# wget: "REACHED <what>" for each address that serves the token and each
+# registry port that answers HTTP at all (the HTTPS one answers plain HTTP
+# with a 400); "EGRESS" when an HTTP request to the image registry is
+# answered, any status (the positive control, with the same tool on the
+# same way out); "PROBED" once it ran through.
 PROBE="for a in ${ADDRS[*]}; do"
 PROBE+=" if wget -q -T 2 -O - http://\$a:$PORT/token 2>/dev/null | grep -qx '$TOKEN'; then echo \"REACHED \$a:$PORT\"; fi;"
 PROBE+=" done; for r in $REGISTRY_PORTS; do"
 PROBE+=" if wget -S -T 2 -O /dev/null http://\$r/v2/ 2>&1 | grep -q 'HTTP/1\\.[01] [0-9]'; then echo \"REACHED \$r (registry)\"; fi;"
 PROBE+=" done; if wget -S -T 10 -O /dev/null http://$REG/v2/ 2>&1 | grep -q 'HTTP/1\\.[01] [0-9]'; then echo EGRESS; fi;"
 PROBE+=" echo PROBED"
+# The same probe for root in the VM, with the VM's curl: the VM's own
+# busybox wget is no tool to trust (jammy's segfaults on every request,
+# which the control caught). An HTTP status of 000 is no answer.
+PROBE_CURL="for a in ${ADDRS[*]}; do"
+PROBE_CURL+=" if curl -sS -m 2 --noproxy '*' http://\$a:$PORT/token 2>/dev/null | grep -qx '$TOKEN'; then echo \"REACHED \$a:$PORT\"; fi;"
+PROBE_CURL+=" done; for r in $REGISTRY_PORTS; do"
+PROBE_CURL+=" c=\$(curl -s -m 2 --noproxy '*' -o /dev/null -w '%{http_code}' http://\$r/v2/); [ \"\${c:-000}\" = 000 ] || echo \"REACHED \$r (registry)\";"
+PROBE_CURL+=" done; c=\$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://$REG/v2/); [ \"\${c:-000}\" = 000 ] || echo EGRESS;"
+PROBE_CURL+=" echo PROBED"
 
 # judge <vantage> <probe output>: the probe ran through (PROBED), reached
 # nothing (no REACHED) and got out (EGRESS).
@@ -100,7 +109,7 @@ for i in 1 2 3 4 5; do
 done
 echo "ok   vm: image pull (egress)"
 
-vantage "root in the VM" sudo busybox sh -c "$PROBE"
+vantage "root in the VM" sudo sh -c "$PROBE_CURL"
 for flags in "" "--privileged"; do
   # shellcheck disable=SC2086
   vantage "docker run ${flags:-(default)}" sudo docker run --rm $flags "$IMAGE" sh -c "$PROBE"

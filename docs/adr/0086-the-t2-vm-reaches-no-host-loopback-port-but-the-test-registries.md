@@ -91,9 +91,10 @@ loopback ports it may reach are named in one place at the top of `vm.sh`
   a ranikust `RUN` probe every address that could name the host
   (`10.0.2.2`, `10.0.2.3`, `10.0.2.254`, `192.0.2.53`, the default gateway,
   the guest's own addresses), and the two registry ports, which must not
-  answer then. Each vantage must also reach the internet with the same
-  tool (busybox `wget`) and print that its probe ran through; one that does
-  not, or does not run, fails the run. Root also writes raw frames straight
+  answer then. Each vantage must also reach the internet with the tool of
+  its probe (curl for root in the VM, whose own busybox `wget` segfaults
+  on jammy; alpine's busybox `wget` elsewhere) and print that its probe
+  ran through; one that does not, or does not run, fails the run. Root also writes raw frames straight
   to each NIC's backend (`tests/vm/guest/rawprobe.py`; `CAP_NET_RAW`,
   which a `--privileged` container or a `RUN` on the VM's network also
   holds): TCP and UDP to the loopback, unspecified and own addresses, in
