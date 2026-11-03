@@ -190,6 +190,14 @@ error, a refused kaniko flag, an invalid combination, and for now every
 
 ## Tests
 
+- Phase 2 criterion 5, the `flock` on `/`: T2c `setup/tests.rs`
+  `a_second_build_on_slash_is_refused_by_the_lock` (a second lock on `/`
+  is refused with "another ranikust build is using / in this container",
+  the first keeps it, and `/` is free again once it lets go; the lock is
+  on `/`'s own inode); end to end in the VM's kaniko quick suite
+  (`tests/vm/guest/quick.sh` `slash_lock_refuses_a_second_build`: two
+  builds in one default container, the second refused before it writes
+  its state directory, the first built).
 - Red team of ADR-0060: `cli/tests.rs`
   `parallel_stages_cannot_be_turned_on_by_any_spelling` (values,
   repeats, after `build` or a value flag, prefixes, case, `--`,
