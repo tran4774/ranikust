@@ -121,48 +121,27 @@ else
   failed=1
 fi
 
-# IPv6, from root in the VM (Docker's bridge has none), with curl: the
-# default gateways (a link-local one with its zone) and the VM's own
-# addresses, where the host's probe also listens on ::1. The control: the
-# image registry over IPv6, when it has an IPv6 address.
-V6=()
-if [ "${RANIKUST_VM_PROBE_V6:-0}" = 1 ] && ip -6 route show default | grep -q .; then
-  while read -r via dev; do
-    case "$via" in fe80:*) V6+=("[$via%25$dev]") ;; *) V6+=("[$via]") ;; esac
-  done < <(ip -6 route show default | awk '{ v = d = ""; for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1) } if (v != "") print v, d }')
-  while read -r a; do V6+=("[$a]"); done < <(ip -6 -o addr show scope global | awk '{ sub(/\/.*/, "", $4); print $4 }')
-  echo "host IPv6 addresses probed: ${V6[*]:-none}"
-  out=""
-  for a in ${V6[@]+"${V6[@]}"}; do
-    rc=0 got="$(sudo curl -gsS -m 2 --noproxy '*' "http://$a:$PORT/token" 2>/dev/null)" || rc=$?
-    if [ "$got" = "$TOKEN" ]; then
-      out+="REACHED $a:$PORT"$'\n'
-    elif [ "$rc" = 3 ]; then
-      # A URL curl cannot parse would pass for "not reachable".
-      echo "error: curl cannot parse the IPv6 probe's URL for $a" >&2
-      exit 1
-    fi
-  done
-  if getent ahostsv6 "$REG" >/dev/null; then
-    code="$(sudo curl -6 -sS -m 10 -o /dev/null -w '%{http_code}' "http://$REG/v2/" 2>/dev/null)" || true
-    [ "${code:-000}" = 000 ] || out+="EGRESS"$'\n'
-  else
-    echo "note: $REG has no IPv6 address: no IPv6 control"
-    out+="EGRESS"$'\n'
-  fi
-  judge "root in the VM (IPv6)" "${out}PROBED"
+read -r gw egress_if < <(ip -4 route show default | awk '{ v = d = ""; for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1) } print v, d; exit }')
+[ -n "$gw" ] && [ -n "$egress_if" ] || { echo "error: no IPv4 default route in the VM" >&2; exit 1; }
+
+# IPv6 is off on the egress (ADR-0086): no global IPv6 address on its NIC
+# and no IPv6 default route; the raw probe below also finds that passt
+# answers no IPv6 frame.
+v6="$(ip -6 -o addr show dev "$egress_if" scope global; ip -6 route show default)"
+if [ -z "$v6" ]; then
+  echo "ok   vm: IPv6 egress is off (no global IPv6 address on $egress_if, no IPv6 default route)"
+else
+  echo "FAIL vm: IPv6 egress is on: $(echo "$v6" | awk '{ print $1, $2, $3, $4 }' | paste -sd';')"
+  failed=1
 fi
 
 # Raw frames from root in the VM, straight to passt (the egress NIC's
 # gateway), to the loopback addresses themselves; controls through the same
 # socket: a SYN to the registry, a DNS query.
-read -r gw egress_if < <(ip -4 route show default | awk '{ v = d = ""; for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1) } print v, d; exit }')
 dns="$(awk '$1 == "nameserver" { print $2; exit }' /run/systemd/resolve/resolv.conf 2>/dev/null || true)"
-v6flag=()
-[ "${#V6[@]}" = 0 ] || v6flag=(--ipv6)
 rc=0
 out="$(sudo python3 -I guest/rawprobe.py --iface "$egress_if" --gateway "$gw" --port "$PORT" --token "$TOKEN" \
-  --dns "$dns" --registry "$REG" ${v6flag[@]+"${v6flag[@]}"} 2>&1)" || rc=$?
+  --dns "$dns" --registry "$REG" 2>&1)" || rc=$?
 echo "$out" | sed 's/^/  /'
 if [ "$rc" != 0 ] || ! grep -qx PROBED <<<"$out"; then
   echo "FAIL raw frames: the probe or a control failed (status $rc)"

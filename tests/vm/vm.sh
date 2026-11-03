@@ -118,22 +118,32 @@ wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done
 # The guest runs third-party code as root (images behind mutable tags, RUN
 # steps, npm installs), so it must not reach the developer host's
 # loopback-only services. It has two NICs:
-#   - egress (image pulls, apt, e2e fetches): passt, which QEMU starts on a
-#     socket pair (-netdev passt), mapping no guest address to the host's
-#     loopback (--map-host-loopback none, --map-guest-addr none). Not
-#     passt's own listening socket, on which Ubuntu's passt
+#   - egress (image pulls, apt, e2e fetches): passt, IPv4 only, which QEMU
+#     starts on a socket pair (-netdev passt), mapping no guest address to
+#     the host's loopback (--map-host-loopback none, --map-guest-addr none).
+#     Not passt's own listening socket, on which Ubuntu's passt
 #     0.0~git20260120 accepted no client ("Failed to add fd to epoll: Bad
 #     file descriptor");
 #   - harness: QEMU's user network with restrict=on, which forwards only
-#     its explicit rules: SSH from the host's 127.0.0.1, and with the push
-#     suite the host's test registries.
+#     its explicit rules: SSH from the host's 127.0.0.1, and the host's test
+#     registries through a gate open only while the push suite runs.
 # Everything on the host's loopback the guest reaches, and nothing else:
-#   - TCP REGISTRY_PORTS, as 10.0.2.2:<port>, only when the push suite runs
+#   - TCP REGISTRY_PORTS, as 10.0.2.2:<port>, only while the push suite runs
 #     (tests/registry, `just registry-up`: they listen on 127.0.0.1);
-#   - DNS (ports 53 and 853) to the host's resolver, the first IPv4
-#     nameserver of /etc/resolv.conf (127.0.0.53 under systemd-resolved),
-#     which passt forwards from GUEST_DNS.
+#   - DNS, ports 53 and 853, TCP and UDP, on HOST_DNS (the first IPv4
+#     nameserver of /etc/resolv.conf, 127.0.0.53 under systemd-resolved),
+#     which passt forwards from GUEST_DNS. That resolver answers the host's
+#     own names too (/etc/hosts, split DNS, LLMNR, mDNS), as it did for
+#     QEMU's user network before.
 REGISTRY_PORTS=(5000 5443)
+# Each registry connection runs one socat (libslirp starts one per guest
+# connection): at most FWD_SLOTS at a time per port, each for at most
+# FWD_SECONDS.
+FWD_SLOTS=16 FWD_SECONDS=600
+# The oldest passt with every option used here (--dns-host), and those
+# options: what EGRESS_NETDEV (below) has QEMU pass, each checked at start.
+PASST_MIN=20241030
+PASST_OPTIONS=(--ipv4-only --tcp-ports --udp-ports --map-host-loopback --map-guest-addr --dns-forward --dns --dns-host --search --fd --pid)
 # A documentation address (RFC 5737), never a real host: the guest's DNS
 # server, which passt answers from the host's resolver, HOST_DNS.
 GUEST_DNS=192.0.2.53
@@ -146,13 +156,25 @@ HARNESS_NET=10.0.2.0/24 HARNESS_GUEST=10.0.2.15 HARNESS_HOST=10.0.2.254 REGISTRY
 # apart by them.
 MAC_EGRESS=52:54:00:6e:6b:01 MAC_HARNESS=52:54:00:6e:6b:02
 command -v passt >/dev/null || die "missing passt (the VM's egress, ADR-0086)"
-grep -q -- --map-host-loopback <<<"$(passt --help 2>&1 || true)" ||
-  die "passt has no --map-host-loopback: the VM's egress needs passt 2024_08_21 or later (ADR-0086)"
+# Its version: 0.0~gitYYYYMMDD (Debian, Ubuntu) or YYYY_MM_DD (upstream).
+passt_date="$(passt --version 2>&1 | sed -nE '1{s/.*git([0-9]{8}).*/\1/p;s/.*([0-9]{4})_([0-9]{2})_([0-9]{2}).*/\1\2\3/p}' | head -1)"
+[[ "$passt_date" =~ ^[0-9]{8}$ ]] || die "cannot tell passt's version from '$(passt --version 2>&1 | head -1)': the VM's egress needs passt 2024_10_30 or later (ADR-0086)"
+[ "$passt_date" -ge "$PASST_MIN" ] ||
+  die "passt $passt_date is too old: the VM's egress needs passt 2024_10_30 (0.0~git20241030) or later (ADR-0086)"
+passt_help="$(passt --help 2>&1 || true)"
+for opt in "${PASST_OPTIONS[@]}"; do
+  grep -qE -- "(^|[[:space:],])$opt([[:space:]]|$)" <<<"$passt_help" || die "passt has no $opt option, which the VM's egress uses (ADR-0086)"
+done
 grep -qx passt <<<"$(qemu-system-x86_64 -netdev help 2>&1 || true)" ||
   die "this QEMU has no passt network backend: the VM's egress needs QEMU 10.1 or later built with it (ADR-0086)"
+qemu_passt_help="$(qemu-system-x86_64 -help 2>&1 | awk '/^-netdev passt/ { p = 1 } p && /^-netdev / && !/^-netdev passt/ { exit } p')"
+for opt in ipv6 map-host-loopback map-guest-addr dns-forward dns-host search tcp-ports udp-ports; do
+  grep -q "\[,$opt=" <<<"$qemu_passt_help" || die "this QEMU's passt backend has no $opt option, which the VM's egress uses (ADR-0086)"
+done
 if wants push; then
   SOCAT="$(command -v socat)" || die "missing socat (the push suite forwards the host's test registries with it)"
   [[ "$SOCAT" =~ ^/[A-Za-z0-9/._-]+$ ]] || die "socat's path ($SOCAT) must hold no space or comma: it goes into QEMU's options"
+  for tool in flock timeout; do command -v "$tool" >/dev/null || die "missing $tool (the push suite's registry forwarder)"; done
 fi
 # passt hands the guest the address and network of the host's default
 # route: the harness network must not overlap it.
@@ -437,10 +459,12 @@ except OSError:
 }
 
 # The QEMU -netdev of the egress NIC (ADR-0086): QEMU starts passt on a
-# socket pair, and passt quits when QEMU goes. No inbound port, no guest
-# address mapped to the host's loopback, DNS from GUEST_DNS forwarded to
-# HOST_DNS.
-EGRESS_NETDEV="passt,id=n0,quiet=on,tcp-ports=none,udp-ports=none,map-host-loopback=none,map-guest-addr=none"
+# socket pair, and passt quits when QEMU goes. IPv4 only (ipv6=off, passt's
+# --ipv4-only): with IPv6 on, passt forwarded a class of raw frame to the
+# host's loopback; guest/net.sh checks it no longer does. No inbound port,
+# no guest address mapped to the host's loopback, DNS from GUEST_DNS
+# forwarded to HOST_DNS.
+EGRESS_NETDEV="passt,id=n0,quiet=on,ipv6=off,tcp-ports=none,udp-ports=none,map-host-loopback=none,map-guest-addr=none"
 EGRESS_NETDEV+=",dns-forward=$GUEST_DNS,dns=$GUEST_DNS,dns-host=$HOST_DNS,search=none"
 
 # The passt processes QEMU started for this run, as <pid>:<pid file>
@@ -662,8 +686,12 @@ start_qemu() {
       # removes the file when it ends).
       for _ in $(seq 20); do
         for f in "$PASSTDIR"/passt-*.pid; do
-          pid="$(cat "$f" 2>/dev/null)" && has_arg "$pid" "$f" &&
-            [[ " ${PASSTS[*]} " != *" $pid:$f "* ]] && PASSTS+=("$pid:$f") && return 0
+          if pid="$(cat "$f" 2>/dev/null)" && has_arg "$pid" "$f" && [[ " ${PASSTS[*]} " != *" $pid:$f "* ]]; then
+            PASSTS+=("$pid:$f")
+            # IPv4 only, as asked (ADR-0086): else stop before the guest runs.
+            has_arg "$pid" --ipv4-only || die "QEMU started passt without --ipv4-only (pid $pid)"
+            return 0
+          fi
         done
         sleep 0.1
       done

@@ -8,17 +8,18 @@ routing would send. This probe does that: it writes Ethernet frames on the
 egress NIC, addressed to the gateway's MAC (passt), with TCP SYNs and UDP
 datagrams to the addresses that would land on the host's loopback if passt
 forwarded them unchanged: 127.0.0.1, 0.0.0.0 and the guest's own address,
-and with IPv6 ::1, ::ffff:127.0.0.1, :: and the guest's own address. The
-port is the one where tests/vm/vm.sh serves its token on the host's
+and in IPv6 frames ::1, ::ffff:127.0.0.1, :: and the guest's own address.
+The port is the one where tests/vm/vm.sh serves its token on the host's
 loopback, over TCP and UDP. A SYN-ACK, or any UDP datagram back, is a
 reach.
 
 Controls through the same socket, NIC and gateway, sent first: a SYN to
 the image registry's port 443 must be answered with a SYN-ACK, and a DNS
-query to the guest's DNS address with a datagram; with IPv6, a SYN to the
-registry's IPv6 address too, when it has one. One frame at a time, and
-after each probe the kernel's own DNS query must still be answered, so
-that a frame that stops passt shows as such rather than as "no answer".
+query to the guest's DNS address with a datagram. passt runs IPv4 only, so
+a SYN to the registry's IPv6 address, when it has one, must get no answer.
+One frame at a time, and after each probe the kernel's own DNS query must
+still be answered, so that a frame that stops passt shows as such rather
+than as "no answer".
 
 Prints one line per control ("control ok ..." or "CONTROL FAILED ...") and
 per probe ("REACHED ..." or "ok ..."), then "PROBED". Exits 1 when a
@@ -95,16 +96,18 @@ def ip_json(*args):
 
 
 def own_addresses(iface):
-    v4 = v6 = None
+    """The first global IPv4 address, global IPv6 address and link-local
+    IPv6 address of iface, each None when it has none."""
+    v4 = v6 = link6 = None
     for link in ip_json("addr", "show", "dev", iface):
         for a in link.get("addr_info", []):
-            if a.get("scope") != "global":
-                continue
-            if a["family"] == "inet" and v4 is None:
+            if a["family"] == "inet" and a.get("scope") == "global" and v4 is None:
                 v4 = a["local"]
-            elif a["family"] == "inet6" and v6 is None:
+            elif a["family"] == "inet6" and a.get("scope") == "global" and v6 is None:
                 v6 = a["local"]
-    return v4, v6
+            elif a["family"] == "inet6" and a.get("scope") == "link" and link6 is None:
+                link6 = a["local"]
+    return v4, v6, link6
 
 
 def gateway_mac(iface, gateway):
@@ -162,13 +165,12 @@ def main():
     ap.add_argument("--token", required=True)
     ap.add_argument("--dns", required=True, help="the guest's DNS server address")
     ap.add_argument("--registry", required=True, help="a host name answering on port 443")
-    ap.add_argument("--ipv6", action="store_true")
     ap.add_argument("--debug", action="store_true", help="print every TCP or UDP frame that comes in")
     args = ap.parse_args()
 
     own_mac = bytes.fromhex(open(f"/sys/class/net/{args.iface}/address").read().strip().replace(":", ""))
     gw_mac = bytes.fromhex(gateway_mac(args.iface, args.gateway).replace(":", ""))
-    own4, own6 = own_addresses(args.iface)
+    own4, own6, link6 = own_addresses(args.iface)
     if own4 is None:
         raise SystemExit(f"error: no IPv4 address on {args.iface}")
 
@@ -194,15 +196,20 @@ def main():
         raise SystemExit(f"error: {args.registry} has no IPv4 address")
     controls.append((f"tcp {reg4}:443 ({args.registry})", TCP, 4, reg4, 443, new_port(), b""))
     controls.append((f"udp {args.dns}:53 (DNS)", UDP, 4, args.dns, 53, new_port(), dns_query(args.registry)))
-    if args.ipv6 and own6:
-        for dst in ["::1", "::ffff:127.0.0.1", "::", own6]:
-            probes.append((f"tcp [{dst}]:{args.port}", TCP, 6, dst, args.port, new_port(), b""))
-            probes.append((f"udp [{dst}]:{args.port}", UDP, 6, dst, args.port, new_port(), args.token.encode()))
-        reg6 = resolve(args.registry, socket.AF_INET6)
-        if reg6:
-            controls.append((f"tcp [{reg6}]:443 ({args.registry})", TCP, 6, reg6, 443, new_port(), b""))
-    elif args.ipv6:
-        print(f"note: no global IPv6 address on {args.iface}: no IPv6 frames")
+    # IPv6 frames go out whatever the guest's IPv6 set-up, from its own
+    # address (global, else link-local, else a documentation one): passt
+    # runs IPv4 only (ADR-0086), so none may be answered, the registry over
+    # IPv6 included.
+    src6 = own6 or link6 or "2001:db8::2"
+    for dst in ["::1", "::ffff:127.0.0.1", "::", src6]:
+        probes.append((f"tcp [{dst}]:{args.port}", TCP, 6, dst, args.port, new_port(), b""))
+        probes.append((f"udp [{dst}]:{args.port}", UDP, 6, dst, args.port, new_port(), args.token.encode()))
+    silent = []
+    reg6 = resolve(args.registry, socket.AF_INET6)
+    if reg6:
+        silent.append((f"tcp [{reg6}]:443 ({args.registry})", TCP, 6, reg6, 443, new_port(), b""))
+    else:
+        print(f"note: {args.registry} has no IPv6 address: IPv6 egress checked by the probes only")
 
     # Liveness: the kernel's own DNS query, from an ordinary socket, gets an
     # answer; checked before the first frame and after each probe, so that a
@@ -222,7 +229,7 @@ def main():
             return False
 
     def send(kind, family, dst, dport, sport, payload):
-        src = own4 if family == 4 else own6
+        src = own4 if family == 4 else src6
         l4 = tcp_syn(family, src, dst, sport, dport) if kind == TCP else udp_datagram(family, src, dst, sport, dport, payload)
         ethertype = ETH_P_IP if family == 4 else ETH_P_IPV6
         sock.send(gw_mac + own_mac + struct.pack("!H", ethertype) + ip_packet(family, src, dst, kind, l4))
@@ -254,6 +261,12 @@ def main():
         got = listen(kind, sport, 3)
         ok = got is not None and (kind == UDP or got[4] & (SYN | ACK) == SYN | ACK)
         print(f"{'control ok' if ok else 'CONTROL FAILED'} raw {label}")
+        failed |= not ok
+    for label, kind, family, dst, dport, sport, payload in silent:
+        send(kind, family, dst, dport, sport, payload)
+        got = listen(kind, sport, 3)
+        ok = got is None
+        print(f"{'control ok' if ok else 'CONTROL FAILED'} raw {label}: IPv6 egress {'off' if ok else 'ON'}")
         failed |= not ok
     for label, kind, family, dst, dport, sport, payload in probes:
         send(kind, family, dst, dport, sport, payload)
