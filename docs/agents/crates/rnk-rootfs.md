@@ -145,8 +145,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_prune_*`): equals `copy_filtered` entry for entry, never follows a
   link out, reports `linked_outside` in every walk order, a racing directory
   exchange deletes nothing outside; `move_sub_root` refuses `/` and a
-  swapped name. The glob matcher is linear (`the_linear_matcher_agrees_with_every_split`,
-  proptest against the old matcher as oracle). `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
+  swapped name. The glob matcher is linear
+  (`the_linear_matcher_agrees_with_every_split`, proptest against the old
+  matcher as oracle).
+  `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
   (`src/extract/limit/tests.rs`, proptest): the `tar-header` bound never
   changes what the `tar` crate hands on and never lets a name or PAX record
   over the bound through. `red_team_names_swapped_during_an_output_never_redirect_it`

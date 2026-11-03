@@ -63,9 +63,9 @@ Modules of `crates/ranikust/src/` (all crate-private):
   (`Refusal::NotYet`, `Unneeded` or `Renamed`) and in
   [kaniko-map.md#flags](../kaniko-map.md#flags) (ADR-0036); it is refused by
   name with the reason, never left to clap's "unexpected argument".
-- Flags worth knowing, with their refusals: the context is a plain path (`dir://` refused, exit 2, ADR-0053,
-  ADR-0054; `--context-sub-path` applies to fetched contexts only, a local
-  one with it is refused); `--ignore-path` globs (`/` and bad patterns
+- Flags worth knowing, with their refusals: the context is a plain path
+  (`dir://` refused, exit 2, ADR-0053, ADR-0054; `--context-sub-path`
+  applies to fetched contexts only, a local one with it is refused); `--ignore-path` globs (`/` and bad patterns
   refused early); refused for good: `--single-snapshot` (ADR-0065),
   `--parallel-stages` (ADR-0060), `--force` and `--workdir` (ADR-0050),
   `--ignore-var-run`, `--whitelist-var-run` (ADR-0052 D4); refused until

@@ -110,19 +110,19 @@ pub use tokio_util::sync::CancellationToken;
 
 ## Invariants
 
+Design: [scheduler](../../design/scheduler.md) (graph, limits, failure and
+cancellation).
+
 - Layers, config and manifest depend only on content: `--jobs 1` and the
-  default give identical digests, enforced by a test (ADR-0012).
-- Instructions in a stage run in order; parallelism is only between stages
-  and in I/O (pulls, compression, pushes).
+  default give identical digests, enforced by a test (ADR-0012). Instructions
+  in a stage run in order; parallelism is only between stages and in I/O.
 - `--jobs` counts `RUN`s across all stages; the default honours the cgroup
   CPU quota and the affinity mask and is at least 1.
-- A unit whose root is `Shared` (`/`) never overlaps another shared unit,
-  and shared units run in the order given; pulls (`prepare`) and
-  compression stay parallel (`run_units`).
-- Edges: `FROM <stage>`, `COPY --from`, `RUN --mount=...,from=<stage>`,
-  `ONBUILD` of a base stage. Stages off the path to `--target` (or the last
-  stage) are dropped; overlay mode never squashes stages, sequential
-  kaniko mode runs `rnk_dockerfile::squash_for_shared_root`'s units.
+- A `Shared` unit (`/`) never overlaps another shared unit and shared units
+  run in the order given; pulls (`prepare`) and compression stay parallel.
+  Stages off the path to `--target` (or the last stage) are dropped; overlay
+  mode never squashes stages, sequential kaniko mode runs
+  `rnk_dockerfile::squash_for_shared_root`'s units.
 - The first failure cancels the others (their `RUN` trees die with their PID
   namespaces); the exit code is the first failure's, as in BuildKit.
 - No global state: `BuildPaths` and configuration travel as values. Log

@@ -240,7 +240,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `the_run_is_pid_2_under_an_init_that_reports_its_status`;
   `red_team_no_run_outlives_the_thread_that_cloned_it`;
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
-  delays, threat model section 6), and `direct_runs_in_a_chroot_with_placed_files_as_root`.
+  delays, threat model section 6), and
+  `direct_runs_in_a_chroot_with_placed_files_as_root`.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid

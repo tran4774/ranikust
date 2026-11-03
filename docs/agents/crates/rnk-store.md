@@ -90,60 +90,52 @@ directory's checks and the `flock` on `/` belong to `ranikust` (ADR-0050).
 
 ## Invariants
 
+Design: [locks](../../design/cache-and-store.md#locks),
+[atomic publication](../../design/cache-and-store.md#atomic-publication),
+[failure handling](../../design/cache-and-store.md#failure-handling).
+
 - An entry appears only by `rename` from `tmp/`, on the same filesystem,
-  after it was verified (blob digest; layer extracted completely). Published
-  entries are immutable and never rewritten (ADR-0006, threat T13).
-- The per-digest lock is taken before looking for the entry, so two builds
-  never fetch or extract one digest at once; a waiter finds it published.
-  It holds twice: an in-process lock among the store's threads, then `flock`
-  among processes, because NFS, CIFS and some FUSE filesystems emulate
-  `flock` per process.
-- Locks are `flock` on lock files in the state directory, released by the
-  kernel when the process dies; no `flock` support is a start-up error
-  (`Error::NoFlock`). Per-digest lock files are
-  `locks/{blobs,layers/v3}/<algorithm>/<hex>` and are never removed (until
-  `prune`), so no lock is ever taken on an unlinked file.
-- A build is alive while it holds the lock on `builds/<id>.lock`; it takes it
-  before creating `builds/<id>` and `tmp/<id>`, so a clean-up never sees the
-  directories of a build that is still registering.
-- A crash leaves only `tmp/<id>` entries and `builds/<id>`; both go at the
-  next start (T0 test with `SIGKILL`). An upper written under `volatile` is
-  never reused.
+  after it was verified; published entries are immutable (ADR-0006, T13).
+  The per-digest lock is taken before looking for the entry, so a waiter
+  finds it published.
 - A non-empty state directory without a regular `.ranikust-state` file is
   refused, so clean-up never runs in a directory the user pointed at by
   mistake. A new state directory is `0700`; one owned by another user or
   writable by others is used with a warning.
+- The per-digest lock holds twice: an in-process lock among the store's
+  threads, then `flock` among processes, because NFS, CIFS and some FUSE
+  filesystems emulate `flock` per process. No `flock` support is a start-up
+  error (`Error::NoFlock`). Lock files
+  (`locks/{blobs,layers/v3}/<algorithm>/<hex>`, `builds/<id>.lock`) are
+  never removed (until `prune`), so no lock is taken on an unlinked file,
+  and must be regular files, checked before they are opened for I/O (a FIFO
+  would block, a device would be opened as root).
 - Only the store's own kind of entry counts as published: a regular file for
   a blob, a directory for a layer, on the state directory's mount. A symlink,
   another type or a mount under an entry's name is `Error::BadEntry`, never
-  followed or replaced. Lock files must be regular files too, checked before
-  they are opened for I/O (a FIFO would block, a device would be opened as
-  root).
+  followed or replaced.
 - Deletion (`remove_tree`, clean-up and `close`) unlinks a symlink at the top,
   refuses a mount point there, and deletes only the directory it stat'ed: the
-  opened directory's inode, device and mount must match.
-- **Anonymous store** (kaniko mode on `/`): writes only `.ranikust-building`
-  (`BUILDING_MARKER`: PID namespace and boot id), removed after a clean build
-  (ADR-0056, ADR-0066), and holds an exclusive `flock` on the state directory
-  (`Error::Busy` for a second build); a persistent store holds it shared, so
-  neither opens while the other holds the directory (ADR-0077). It refuses
-  anything there but its marker and leftovers (a persistent store first,
-  `Error::StateNotEmpty`), and a persistent store refuses a directory holding
-  `.ranikust-building` (`Error::UsedOnSlash`). Blobs are anonymous files
-  (`O_TMPFILE|O_EXCL`, memfd with `MFD_NOEXEC_SEAL` as fallback) named
-  `/proc/self/fd/<n>`, refused unless `/proc/self/fd` is procfs; without
-  `O_TMPFILE` a name is unlinked at once, refused on NFS, FUSE, SMB or AFS
-  (`statfs`), when the file is still linked after the unlink and when the
-  unlink fails (`Error::NameOutlivesUnlink`; a persistent store is not
-  checked). `close` makes the marker this build's, closes the files, empties
-  the state directory through descriptors, removes the marker only if nothing
-  is left and the build was clean, and unlocks last. Details:
-  [design/kaniko-mode.md](../../design/kaniko-mode.md#invariants).
+  opened directory's inode, device and mount must match. An upper written
+  under `volatile` is never reused after a crash.
+- **Anonymous store** (kaniko mode on `/`, ADR-0051, ADR-0056, ADR-0066,
+  ADR-0077; design: [per state directory locks](../../design/cache-and-store.md#locks),
+  [kaniko mode](../../design/kaniko-mode.md#invariants)): writes only
+  `.ranikust-building` (`BUILDING_MARKER`: PID namespace and boot id), removed
+  after a clean build. Blobs are anonymous files (`O_TMPFILE|O_EXCL`, memfd
+  with `MFD_NOEXEC_SEAL` as fallback) named `/proc/self/fd/<n>`, refused
+  unless `/proc/self/fd` is procfs; without `O_TMPFILE` a name is unlinked at
+  once, refused on NFS, FUSE, SMB or AFS (`statfs`), when the file is still
+  linked after the unlink and when the unlink fails
+  (`Error::NameOutlivesUnlink`; a persistent store is not checked). `close`
+  makes the marker this build's, closes the files, empties the state directory
+  through descriptors, removes the marker only if nothing is left and the
+  build was clean, and unlocks last (`Error::NotEmptied` fails the build).
 - `prune` takes the same locks as a build and never removes an entry a
   running build uses [inferred: in-use tracking is not designed].
 - In kaniko mode on `/` the state directory is on the ignore list: nothing
-  walks, snapshots or deletes it as part of a root.
-- Every descriptor is `O_CLOEXEC`; none reaches `RUN` (threat T7).
+  walks, snapshots or deletes it as part of a root. Every descriptor is
+  `O_CLOEXEC`; none reaches `RUN` (T7).
 
 ## Refs
 

@@ -42,7 +42,7 @@ Boundaries: `crates/rnk-metrics/src/lib.rs`. In short:
 ## API
 
 ```rust
-pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY"; // [design]
+pub const SUMMARY_ENV: &str = "RANIKUST_METRICS_SUMMARY";
 pub const SCHEMA: &str = "ranikust.metrics/v1";            // [decided]
 pub struct Config { pub file: Option<PathBuf>, pub summary: bool, pub logs: LogOptions,
                     pub write_file: Option<WriteFile> }  // from_env(), is_enabled()
