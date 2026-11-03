@@ -16,50 +16,34 @@ issue.
 
 ranikust builds and runs on Linux only. x86_64 is the release target; aarch64
 must keep compiling ([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)).
-[docs/development-setup.md](docs/development-setup.md) walks through setting
-up a machine step by step; the table below is the reference.
+[docs/development-setup.md](docs/development-setup.md) installs everything
+step by step, zig included; the table says what each tool is for. Nothing in
+the build needs root, and nothing in the dev loop should ever be run with
+`sudo`.
 
 | Tool | Why | Install |
 |---|---|---|
 | [rustup](https://rustup.rs/) | Reads [`rust-toolchain.toml`](rust-toolchain.toml) and installs the pinned compiler, `rustfmt`, `clippy`, `rust-analyzer` and both musl targets on the first `cargo` command | your distribution, or rustup.rs |
 | [just](https://github.com/casey/just) | Runs the recipes in [`justfile`](justfile) | `cargo install --locked just` |
-| [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | `cargo install --locked cargo-deny@0.20.2` |
-| [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
+| [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
+| [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | Python 3.11 or later | `just docs-lint`, `just test-docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
 | [GitHub CLI](https://cli.github.com/) (`gh`) | `just release-prepare` reads the merged pull requests; checking a release's attestation needs 2.102.0 or later | your distribution, or cli.github.com |
-| [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | `cargo install --locked cargo-about@0.9.2` |
+| [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
 | `file`, `readelf` | `just build-static` and `just test-aarch64` check the binary is static | `file` and `binutils` packages |
 | A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
-| [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
-| [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | `cargo install --locked cargo-zigbuild@0.24.0` |
-| `aarch64-linux-gnu-gcc` | Links the aarch64 binary as static-pie with its symbol table in `just test-aarch64` on x86_64 (on aarch64 the native `cc` does); without it the recipe links with zig and cannot check static-pie (Q-140) | `gcc-aarch64-linux-gnu` package |
+| [zig](https://ziglang.org/) | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
+| [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
+| `aarch64-linux-gnu-gcc` | Links the aarch64 binary as static-pie in `just test-aarch64` on x86_64 (on aarch64 the native `cc` does); without it the recipe links with zig and cannot check static-pie (Q-140) | `gcc-aarch64-linux-gnu` package |
 | `qemu-aarch64` (QEMU user mode) 9.1 or later | `just test-aarch64`, so `just ci`, on an x86_64 machine: the aarch64 tests under emulation (8.2 has no `openat2`); a binfmt_misc entry also runs ranikust's own CLI tests. Not needed on aarch64, where they run natively (as in CI) | `qemu-user` package if 9.1 or later, else Debian 13's `qemu-user` unpacked with `dpkg -x`; `QEMU_AARCH64=<path>` |
-| rootless [Podman](https://podman.io/) | Only for `just smoke` and `just smoke-case`, the T1 smoke tests ([docs/testing.md](docs/testing.md)), `just test-vm e2e` and `ultra`, which save the reference images from it, and `just registry-up` (`podman compose`, with `openssl`, python3's `bcrypt` and `skopeo`) | `podman`, `podman-compose` or `docker-compose`, `python3-bcrypt`, `skopeo` packages |
-| A [`nextjs-kaniko`](docs/testing.md#end-to-end-workloads-e2e) checkout next to the repository, with its registry and verdaccio storage filled and its `kaniko-bench:stream`, BuildKit, `registry:2` and verdaccio images in podman | Only for `just test-vm ultra`, the ultra benchmark; read, never written | `RANIKUST_NEXTJS_KANIKO=<path>` |
-| QEMU 10.1 or later with KVM and its passt backend, [passt](https://passt.top/) 2024_10_30 or later, `xorriso`, `jq`; `socat` for the `push` suite | Only for `just test-vm`, the T2 VM harness; `/dev/kvm` must be readable and writable by you (its group or an ACL), never through `sudo`. passt is the VM's egress, which reaches nothing on your loopback but your DNS resolver, and the test registries during `push` ([ADR-0086](docs/adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)) | `qemu-system-x86`, `qemu-utils`, `passt`, `xorriso`, `jq`, `socat` packages |
+| rootless [Podman](https://podman.io/) | `just smoke` and `just smoke-case` (the T1 smoke tests, [docs/testing.md](docs/testing.md)), `just test-vm e2e` and `ultra` (they save the reference images from it), and `just registry-up` (`podman compose`, with `openssl`, python3's `bcrypt` and `skopeo`) | `podman`, `podman-compose` or `docker-compose`, `python3-bcrypt`, `skopeo` packages |
+| A [`nextjs-kaniko`](docs/testing.md#end-to-end-workloads-e2e) checkout next to the repository, with its registry and verdaccio storage filled and its images in podman | Only `just test-vm ultra`, the ultra benchmark; read, never written | `RANIKUST_NEXTJS_KANIKO=<path>` |
+| QEMU 10.1 or later with KVM and its passt backend, [passt](https://passt.top/) 2024_10_30 or later, `xorriso`, `jq`; `socat` for the `push` suite | Only `just test-vm`, the T2 VM harness; `/dev/kvm` must be readable and writable by you (its group or an ACL), never through `sudo`. passt is the VM's egress ([ADR-0086](docs/adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)) | `qemu-system-x86`, `qemu-utils`, `passt`, `xorriso`, `jq`, `socat` packages |
 
-The versions of cargo-deny, mdBook, zig and cargo-zigbuild match CI. Nothing
-in the build needs root, and nothing in the dev loop should ever be run with
-`sudo`.
-
-zig is one tarball; install it into your home and check it against Zig's
-signing key (from [ziglang.org/download](https://ziglang.org/download/)):
-
-```sh
-v=0.16.0 a=x86_64                     # or a=aarch64
-f=zig-$a-linux-$v.tar.xz
-curl -fLO https://ziglang.org/download/$v/$f
-curl -fLO https://ziglang.org/download/$v/$f.minisig
-minisign -Vm "$f" -P RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U
-mkdir -p ~/.local/share/zig ~/.local/bin
-tar -C ~/.local/share/zig -xf "$f"
-ln -sf ~/.local/share/zig/zig-$a-linux-$v/zig ~/.local/bin/zig
-zig version
-```
-
-Without `minisign`, compare `sha256sum "$f"` with the tarball's `shasum` in
-<https://ziglang.org/download/index.json>.
+[docs/development-setup.md](docs/development-setup.md) owns the install
+commands and the version pins of cargo-deny, mdBook, zig, cargo-zigbuild and
+cargo-about; they match CI, so install those versions, not the latest.
 
 ## Development loop
 
@@ -99,33 +83,35 @@ the lanes and rules are in [docs/testing.md](docs/testing.md#ci-lanes)):
   `ci:full` label to a draft, from "Run workflow" in the Actions tab
   (`workflow_dispatch`, any branch), and on every push to `main`.
 - **The required checks** are two gates, `CI result` and `T2 result`, which
-  fail if any job failed or was cancelled. A draft's gates carry other
-  names (`... (draft, fast lane)`), and so do a manual run's on a branch
-  (`... (manual run)`: it tests the branch, not its merge with `main`), so
-  a pull request is mergeable only after its own full run. After a label
-  change the job rows show "skipped"; the gates keep the verdict.
+  fail if any job failed or was cancelled. A draft's or a manual run's gates
+  carry other names (`... (draft, fast lane)`, `... (manual run)`), so a
+  pull request is mergeable only after its own full run.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
-not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the
-short version of how to write code here, comments and docs included
-([Writing](docs/agents/rules.md#writing)).
+not catch and the host-safety rules. Read it even if you do not use an AI
+agent: it is the short version of how to write code here, comments and docs
+included ([Writing](docs/agents/rules.md#writing)).
 
 ## Tests
 
-| Tier | What | Privileges | Where | Status |
-|---|---|---|---|---|
-| T0 | Unit and in-process tests | None | Anywhere: `just test` | In use |
-| T1 | Rootless integration: user namespaces, rootless overlay, Podman | A regular user with subordinate IDs | Your machine | Planned |
-| T2 | Privileged integration: real root, overlay without user namespaces, Docker rootful, the host-safety attack suite | root | A disposable VM only: `just test-vm`, and on a full CI run a GitHub-hosted runner (`.github/workflows/t2.yml`, ADR-0090) | In use |
-| T3 | CI: format, clippy, T0, cargo-deny, docs, docs-lint; on a full run also the static build and the native aarch64 tests | None | GitHub Actions, by lanes ([above](#what-ci-runs)) | In use |
+Tests are split into tiers by the privileges they need
+([docs/testing.md](docs/testing.md) has the harnesses, the CI lanes and the
+rules):
 
-Tests above T0 are marked `#[ignore = "T1: ..."]` or `#[ignore = "T2: ..."]`
-and run only through their harness. **Never run a T2 test, or ranikust in
-kaniko mode, on your own machine**: kaniko mode empties its root filesystem.
-T2 tests run in a VM that `just test-vm` boots and deletes;
-[`docs/testing.md`](docs/testing.md) has the details.
+| Tier | What | Where |
+|---|---|---|
+| T0 | Unit and in-process tests | Anywhere: `just test` |
+| T1 | Rootless integration (user namespaces, rootless Podman); today the smoke tests only | Your machine: `just smoke` |
+| T2 | Privileged integration: real root, overlay, rootful Docker, host-safety attacks. T2c: the root tests that mean the same in a throwaway container | A disposable VM only: `just test-vm`; on a full CI run, a GitHub-hosted runner. T2c also runs through `just test-container`, on the maintainer's marked test machine only |
+| T3 | CI: format, clippy, T0, cargo-deny, docs, docs-lint; on a full run also the static build and the native aarch64 tests | GitHub Actions, by lanes ([above](#what-ci-runs)) |
 
-A bug fix comes with a test that fails without the fix.
+Tests above T0 are marked `#[ignore = "T1: ..."]`, `"T2c: ..."` or
+`"T2: ..."` and run only through their harness. **Never run a T2 or T2c
+test on your own machine, nor ranikust in kaniko mode as root outside a
+throwaway container**: in a container it empties that container's `/`, and
+on a host it needs a fresh temporary `--state-dir`
+([rules](docs/agents/rules.md#host-safety)). A bug fix comes with a test
+that fails without the fix.
 
 ## Commits and pull requests
 
@@ -181,15 +167,17 @@ commit message and must follow the same format. The
 with the issue it closes, a changelog entry, a test plan, the docs you
 updated and whether AI tools helped. A pull request keeps the documentation
 in sync in the same change, following the "Keep in sync" list in
-[`docs/agents/rules.md`](docs/agents/rules.md); a user-visible change gets
-its entry in the pull request's `## Changelog` section, not in
+[`docs/agents/rules.md`](docs/agents/rules.md#keep-in-sync).
+
+**The `## Changelog` section.** A user-visible change gets its entry in the
+pull request's `## Changelog` section, not in
 [`CHANGELOG.md`](CHANGELOG.md), which is written from those sections when a
 release is prepared ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)).
 Write the entry as bullets for users under Keep a Changelog headings
 (`### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`,
 `### Security`), or as bullets alone, placed by the title's type; write
-`none` when users see no change. `just release-prepare` reads exactly
-this.
+`none` when users see no change. `just release-prepare` reads exactly this.
+
 Planned work is on the
 [Project](https://github.com/users/tran4774/projects/1) and the phase
 milestones; issues labelled `good first issue` are a good start.
@@ -198,12 +186,11 @@ milestones; issues labelled `good first issue` are a good start.
 
 Releases follow
 [ADR-0089](docs/adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md).
-Before 1.0 every release is a pre-release: a
-minor version marks the end of a phase, a patch version ships fixes and
-user-visible changes once `main` is green, the privileged T2 tests
-included. A release is one static `x86_64-unknown-linux-musl` binary in a
-tarball, with the licence notices of the code it contains
-(`THIRD-PARTY-LICENSES`,
+Before 1.0 every release is a pre-release: a minor version marks the end of
+a phase, a patch version ships fixes and user-visible changes once `main` is
+green, the privileged T2 tests included. A release is one static
+`x86_64-unknown-linux-musl` binary in a tarball, with the licence notices of
+the code it contains (`THIRD-PARTY-LICENSES`,
 [ADR-0094](docs/adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)),
 `SHA256SUMS` and a GitHub build provenance attestation; there is no
 container image and no aarch64 build yet.
@@ -214,10 +201,10 @@ deployments limited to the tag rule `v*` (Settings → Environments;
 [ADR-0092](docs/adr/0092-a-release-is-verified-by-workflow-and-tag-and-built-without-cache-or-unprotected-environment.md)).
 Leave "Prevent self-reviews" off: the maintainer pushes the tag and is the
 only reviewer, so with it on nobody could approve the release. A job that
-names a missing environment creates it with no protection, so
-the workflow checks it (`scripts/release.py check-environment`) before it
-builds and again before it publishes, and stops a tag otherwise; a pull
-request's dry run reports what it found.
+names a missing environment creates it with no protection, so the workflow
+checks it (`scripts/release.py check-environment`) before it builds and
+again before it publishes, and stops a tag otherwise; a pull request's dry
+run reports what it found.
 
 1. **Release pull request** (anyone, agents included; an agent asks before
    any tag or release,
@@ -231,7 +218,8 @@ request's dry run reports what it found.
    listing the ones without an entry. Edit the section for users (what
    changed for them, not how) and wrap it at about 80 columns, delete the
    draft comment, commit it as `chore(release): vX.Y.Z` and open the pull
-   request with the `release` label. The recipe never commits, tags or pushes.
+   request with the `release` label. The recipe never commits, tags or
+   pushes.
 2. **Merge** (the maintainer), once CI and the T2 tests are green; the
    `main` ruleset accepts changes only through a pull request whose gates,
    `CI result` and `T2 result`, passed on a full run.
@@ -251,26 +239,25 @@ request's dry run reports what it found.
    section for it, and that the `release` environment is protected; builds
    the binary from the tag without any cache (Zig downloaded with a pinned
    checksum); checks it is static-pie, runs and reports the version
-   (`scripts/check-static.sh`, as CI and `just build-static` do);
-   packages it all reproducibly (`scripts/release.py package`) with
-   `THIRD-PARTY-LICENSES`, which a job of its own generates with
-   cargo-about from `Cargo.lock` for the release target, stopping on a
-   licence `deny.toml` does not allow, and completes with the toolchain's
-   notices from `licenses/` (`just third-party-licenses` locally); and
-   attests the tarball's build provenance in a job of its own. When
-   `rust-toolchain.toml` changes, replace the files in `licenses/` and
-   their hashes in `scripts/release.py` (`licenses/README.md` says how).
+   (`scripts/check-static.sh`, as CI and `just build-static` do); packages
+   it reproducibly (`scripts/release.py package`) with
+   `THIRD-PARTY-LICENSES` (a job of its own runs cargo-about on `Cargo.lock`
+   for the release target, stopping on a licence `deny.toml` does not allow,
+   and adds the toolchain's notices from `licenses/`; `just
+   third-party-licenses` does the same locally); and attests the tarball's
+   build provenance in a job of its own. When `rust-toolchain.toml` changes,
+   replace the files in `licenses/` and their hashes in `scripts/release.py`
+   (`licenses/README.md` says how).
 5. **Approve** (the maintainer), within 30 days, as long as the built files
    are kept: the publishing job waits for the `release` environment's
    approval. It then creates a **draft** pre-release whose notes are the
    tag's `CHANGELOG.md` section, joined into one line per paragraph or list
    item (GitHub shows every newline of a release body as a line break, so
    the file's 80-column wrapping is undone there; `release.py notes`),
-   followed by the pull requests merged since
-   the previous release tag, which GitHub lists by label
-   (`.github/release.yml`).
-6. **Publish** (the maintainer): read the draft, publish it on the
-   releases page, and announce it in the repository's Discussions.
+   followed by the pull requests merged since the previous release tag,
+   which GitHub lists by label (`.github/release.yml`).
+6. **Publish** (the maintainer): read the draft, publish it on the releases
+   page, and announce it in the repository's Discussions.
 
 Users check a release with `sha256sum -c SHA256SUMS` and
 `gh attestation verify` naming the release workflow and the tag
@@ -280,12 +267,11 @@ Users check a release with `sha256sum -c SHA256SUMS` and
 A pull request that changes how a release is made (the workflow, its
 scripts and tests, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
 `about.toml`, `deny.toml`, `licenses/`) runs the build path as a dry run
-(tests, build, check, licence notices, package, checksums; no
-attestation, no release), and so does a manual run (`workflow_dispatch`)
-on any branch. Editing a file the tarball only copies (`README.md`,
-`NOTICE`, the `LICENSE` files) does not start it (ADR-0095).
-`about.toml`'s accepted licences must stay the set `deny.toml` allows;
-`just test-release` compares them.
+(tests, build, check, licence notices, package, checksums; no attestation,
+no release), and so does a manual run (`workflow_dispatch`) on any branch.
+Editing a file the tarball only copies (`README.md`, `NOTICE`, the `LICENSE`
+files) does not start it (ADR-0095). `about.toml`'s accepted licences must
+stay the set `deny.toml` allows; `just test-release` compares them.
 
 ## How decisions are made
 
@@ -335,8 +321,8 @@ cannot be ported.
 ## AI-assisted contributions
 
 AI coding tools are welcome; the repository ships instructions for them
-([`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md), [`docs/agents/`](docs/agents/README.md),
-`.claude/`). The rules:
+([`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md),
+[`docs/agents/`](docs/agents/README.md), `.claude/`). The rules:
 
 - **You are responsible for what you submit.** Read, understand and test
   every line, whoever or whatever wrote it. "The AI wrote it" is not an
@@ -355,8 +341,8 @@ AI coding tools are welcome; the repository ships instructions for them
 - **Respect licenses.** Generated code that reproduces other projects' code
   follows the same attribution rules as any other port.
 - Propose changes to `CLAUDE.md` or `docs/agents/rules.md` in the pull
-  request description, under "Suggested agent rule additions", instead of editing them
-  as a side effect of other work.
+  request description, under "Suggested agent rule additions", instead of
+  editing them as a side effect of other work.
 
 ## License
 
