@@ -1,6 +1,6 @@
 # rnk-dockerfile
 
-> **Status:** done for Phases 1 and 2 · **Phase:** 1 ·
+> **Status:** done · **Phase:** 1-2 ·
 > **Depends on:** nothing (pure data) ·
 > **Used by:** `rnk-builder`, `rnk-sched`, `ranikust` ·
 > **Path:** `crates/rnk-dockerfile/`
@@ -33,18 +33,18 @@ All built.
 
 ```rust
 pub fn parse_ast(src: &str) -> Result<Ast, Error>;                       // raw tree, BuildKit parser.Parse
-pub struct Ast { pub escape: char, pub directives, pub nodes: Vec<Node>, pub warnings } //; Node = parser.Node, dump()
+pub struct Ast { pub escape: char, pub directives, pub nodes: Vec<Node>, pub warnings }  // Node = parser.Node, dump()
 pub fn parse(src: &str) -> Result<Dockerfile, Error>;                    // parse_ast + instructions.Parse
 pub struct Dockerfile { pub escape: char, pub directives, pub meta_args: Vec<Located<Vec<ArgDecl>>>,
-                        pub stages: Vec<Stage>, pub warnings }             //
+                        pub stages: Vec<Stage>, pub warnings }
 pub struct Stage { pub name: Option<String>, pub base: String, pub platform: Option<String>, pub lines, pub code,
                    pub comments, pub instructions: Vec<Located<Instruction>> } // base unexpanded, name lower-cased
-pub struct Located<T> { pub value: T, pub lines: Lines, pub keyword: String, pub code: String, pub comments } //
+pub struct Located<T> { pub value: T, pub lines: Lines, pub keyword: String, pub code: String, pub comments }
 pub enum Instruction { Run(Run), Copy(Copy), Add(Add), Env(Vec<KeyValue>), Arg(Vec<ArgDecl>), Label(Vec<KeyValue>),
     Workdir(String), User(String), Expose(Vec<String>), Volume(Vec<String>), Entrypoint(CmdLine), Cmd(CmdLine),
-    Shell(Vec<String>), StopSignal(String), Healthcheck(Healthcheck), Onbuild(String), Maintainer(String) } //
-pub struct Run { pub cmd: CmdLine, pub mount_specs, pub mounts: Vec<Mount>, pub network, pub security, pub devices, .. } //
-pub struct Heredoc { pub name, pub file_descriptor: u64, pub expand: bool, pub chomp: bool, pub content } //
+    Shell(Vec<String>), StopSignal(String), Healthcheck(Healthcheck), Onbuild(String), Maintainer(String) }
+pub struct Run { pub cmd: CmdLine, pub mount_specs, pub mounts: Vec<Mount>, pub network, pub security, pub devices, .. }
+pub struct Heredoc { pub name, pub file_descriptor: u64, pub expand: bool, pub chomp: bool, pub content }
 pub fn parse_heredoc_marker(word: &str) -> Option<Heredoc>;              // MustParseHeredoc, for RUN dispatch
 pub struct Lexer { .. } // lex.go: process_word(), process_words(), process_word_with_matches()
 pub trait Env { fn get(&self, name: &str) -> Option<&str>; }            // EnvGetter
@@ -52,8 +52,8 @@ impl Located<Instruction> { pub fn expand(&mut self, lex: &Lexer, env: &dyn Env)
 pub fn stage_graph(df: &Dockerfile, opts: &GraphOptions) -> Result<StageGraph, Error>; // dockerfile2llb resolution
 pub struct GraphOptions { pub build_args, pub build_platform: Platform, pub target_platform: Platform,
                           pub targets: Vec<String> }                       // list of targets; ranikust passes one (ADR-0049)
-pub struct StageGraph { pub global_args: EnvList, pub stages: Vec<StageNode>, pub targets: Vec<usize>, pub needed: Vec<usize>, .. } //
-pub struct StageNode { pub base: Base, pub platform, pub triggers, pub references: Vec<Reference>, .. } //
+pub struct StageGraph { pub global_args: EnvList, pub stages: Vec<StageNode>, pub targets: Vec<usize>, pub needed: Vec<usize>, .. }
+pub struct StageNode { pub base: Base, pub platform, pub triggers, pub references: Vec<Reference>, .. }
 pub struct StageScope { .. } // apply(&Located<Instruction>) -> expanded; env(), config_env(), args()
 pub struct Error { kind: ErrorKind, lines: Option<Lines>, message } // Syntax|Instruction|Expansion|Graph
 pub fn squash_for_shared_root(g: &StageGraph) -> Vec<SquashedStage>;     // kaniko MakeKanikoStages/Squash; units in file order

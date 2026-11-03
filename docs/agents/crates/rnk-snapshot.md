@@ -1,10 +1,9 @@
 # rnk-snapshot
 
-> **Status:** done for Phases 1 and 2 (overlay as root, kaniko mode); mounting
-> in a user namespace is Phase 3 · **Phase:** 1-2 ·
-> **Depends on:** `rnk-rootfs`, `rnk-layer`, `rnk-store` ·
-> **Used by:** `rnk-builder`, `rnk-sched` (root sharing only), `ranikust`
-> (probes) · **Path:** `crates/rnk-snapshot/`
+> **Status:** in progress · **Phase:** 1-2 (mounting in a user namespace: 3) ·
+> **Depends on:** `rnk-rootfs`, `rnk-layer`, `rnk-store`, `rnk-oci` ·
+> **Used by:** `rnk-builder`, `ranikust` (probes) ·
+> **Path:** `crates/rnk-snapshot/`
 
 **TL;DR:** Gives each stage a root (`StageRootfs`) and turns each change into
 a `LayerDiff`: overlay mode mounts a fresh upper per instruction, kaniko mode
@@ -178,7 +177,7 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
 
 ## Refs
 
-- **Design:** [`design/overlay-snapshot.md#one-layer-per-instruction`](../../design/overlay-snapshot.md#one-layer-per-instruction), [`#mounting`](../../design/overlay-snapshot.md#mounting), [`#the-volatile-lifecycle`](../../design/overlay-snapshot.md#the-volatile-lifecycle), [`#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer); [`design/kaniko-mode.md#walk-hash-and-diff`](../../design/kaniko-mode.md#walk-hash-and-diff), [`#stage-roots-on-the-shared-root`](../../design/kaniko-mode.md#stage-roots-on-the-shared-root), [`#per-stage-directories`](../../design/kaniko-mode.md#per-stage-directories), [`#lazy-snapshots`](../../design/kaniko-mode.md#lazy-snapshots); [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout)
+- **Design:** [`design/overlay-snapshot.md#one-layer-per-instruction`](../../design/overlay-snapshot.md#one-layer-per-instruction), [`#mounting`](../../design/overlay-snapshot.md#mounting), [`#the-volatile-lifecycle`](../../design/overlay-snapshot.md#the-volatile-lifecycle), [`#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer); [`design/kaniko-mode.md#walk-hash-and-diff`](../../design/kaniko-mode.md#walk-hash-and-diff), [`#stage-roots-on-the-shared-root`](../../design/kaniko-mode.md#stage-roots-on-the-shared-root), [`#per-stage-directories`](../../design/kaniko-mode.md#per-stage-directories), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list) (what `ignore_list` builds from `IgnoreSpec`), [`#lazy-snapshots`](../../design/kaniko-mode.md#lazy-snapshots); [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout)
 - **Decisions:** [ADR-0002](../../adr/0002-two-snapshot-modes.md) (two modes, one interface), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (accepted differences), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (sequential on `/`), [ADR-0016](../../adr/0016-overlay-mount-options.md) (options, `EXDEV`), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (no hardlink farms), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`layers/` through `rnk-store`), [ADR-0022](../../adr/0022-common-state-dir.md) (state directory ignored), [ADR-0046](../../adr/0046-snapshotter-signature.md) (the traits)
 - **Open:** [#5](https://github.com/tran4774/ranikust/issues/5) (publishing read-only layer roots without root), [#18](https://github.com/tran4774/ranikust/issues/18) (one mount across instructions)
 - **Evidence:** [exp-01](../../research/experiments/01-overlay-semantics.md) (upper contents, limits), [exp-06](../../research/experiments/06-overlay-vs-walk.md) (`volatile`), [exp-06a](../../research/experiments/06a-root-rerun.md), [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (exporter), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) (walk of 269k entries in 0.10-0.15 s), [exp-10](../../research/experiments/10-exdev-package-managers.md), [exp-11](../../research/experiments/11-root-extras.md), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (kernel 5.15)
@@ -188,7 +187,9 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
 ## Tests
 
 Tiers and commands: [`docs/testing.md`](../../testing.md#tiers). Many tests
-are red-team cases named `red_team_*`; each pins a finding that was fixed.
+are red-team cases named `red_team_*`: attacks on the invariants (hostile
+layers, links, races, planted names), most of which never succeeded; the few
+that found a bug stay as its regression test.
 
 - **T0, overlay:** exporter rules on a modelled upper and lower stack
   (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
@@ -214,7 +215,10 @@ are red-team cases named `red_team_*`; each pins a finding that was fixed.
   `PATH_MAX`) and of the `/ranikust` marker (ADR-0052 D1: planted files,
   links and FIFOs refused before `/` changes; the second build empties `/`
   but never `/.dockerenv`, `/run/.containerenv`, a volume, the state
-  directory or the marker).
+  directory or the marker). ADR-0058 (`src/kaniko/root/tests.rs`): steps that
+  only delete, replace a directory by an empty one, or change a mode or an
+  mtime never encode to the empty tar's diff ID; a step that changes nothing,
+  or undoes what it did, does.
 - **T0, per-stage directories** (`src/kaniko/stages/tests.rs`, ADR-0059,
   ADR-0061, ADR-0062): a private directory per stage (`0700`, root `0755`),
   `FROM <stage>` copied with no inode shared, a parent with a layer open
@@ -225,12 +229,15 @@ are red-team cases named `red_team_*`; each pins a finding that was fixed.
   bases cannot reach outside `rootfs/`.
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
-- **T2c** (rootful Docker, `sysadmin`, `just test-container unit-c`;
-  `#[ignore = "T2c: ..."]`): `tests/overlay.rs` (overlay mounts: the probe,
-  a layer per instruction with `lowerdir+` and with `mount(2)`, many lowers
-  from a deep state directory, a scratch stage), a device node swapped in
-  during the walk never opened, a hand-over never giving device nodes, a
-  mount below a stage root crossed by neither `release` nor a hand-over.
+- **T2c** (rootful Docker, `just test-container unit-c`;
+  `#[ignore = "T2c: <profile>: ..."]`): profile `sysadmin`:
+  `tests/overlay.rs` (overlay mounts: the probe, a layer per instruction with
+  `lowerdir+` and with `mount(2)`, many lowers from a deep state directory, a
+  scratch stage) and a mount below a stage root crossed by neither `release`
+  nor a hand-over (`src/kaniko/stages/tests.rs`). Profile `default`
+  (`mknod`): a device node swapped in during the walk is never opened
+  (`src/kaniko/walk/tests.rs`), and a child never gets the device nodes a
+  parent made nor a hand-over gives them (`src/kaniko/stages/tests.rs`).
 - **T2** (VM; `just test-vm unit`): the reference before a merge touching
   overlay mounts or deletion; kaniko mode on `/`, flattened content against
   kaniko, BuildKit and the other mode.

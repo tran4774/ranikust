@@ -1,6 +1,6 @@
 # rnk-rootfs
 
-> **Status:** done for Phases 1 and 2 · **Phase:** 1 ·
+> **Status:** done · **Phase:** 1-2 ·
 > **Depends on:** no internal crate (never `rnk-layer`) ·
 > **Used by:** `rnk-snapshot`, `rnk-sandbox`, `rnk-builder`, `rnk-store`,
 > `rnk-context`, `ranikust` · **Path:** `crates/rnk-rootfs/`
@@ -135,7 +135,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   symlinks in the lowers. `tests/model.rs`: `open_at` against a model
   resolver on 150 random trees. `tests/spans.rs`: the metrics.
   `tests/limits.rs`: a 64 MiB GNU long name, long link or PAX set refused at
-  its header with under 2 MiB held (ADR-0079).
+  its header with under 2 MiB held, a control with the limit off that holds
+  the whole name, and a 2 MiB PAX set that passes once the limit is raised,
+  its file extracted (ADR-0079). `copy_data` (`src/copy/tests.rs`,
+  ADR-0059): sparse, empty and dense files copy exactly, a source holding
+  more than its size is refused, and one cut short between `SEEK_DATA` calls
+  is refused rather than zero-filled (a red-team finding, fixed).
 - **T0, red team:** `/var/run` (ADR-0052 D4, `src/extract/tests.rs`): through
   a container's `/var/run -> ../run`, ignored `/run/secrets` and
   `/run/.containerenv` skipped at their physical path, an opaque marker below

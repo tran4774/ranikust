@@ -51,7 +51,8 @@ pub enum Error { LineTooLong { line }, IllegalExclusion, BadPattern { pattern },
 ```
 
 Matching returns `Result` because Go validates patterns only partly in
-`New`: a pattern can fail to compile when first evaluated (`a*[`).
+`New`: a pattern can fail to compile when first evaluated (`a*[`), and one
+never evaluated never fails.
 
 ## Invariants
 
@@ -79,10 +80,11 @@ All T0.
   Go's `Clean`/`Dir`/`Match` tables, the regexp translator.
 - Golden (`tests/golden.rs`; files in `tests/golden/`, written by
   `gen/gen.sh`, Go 1.26.9 in podman, `GEN_SCALE=N` for a larger local run):
-  exp-04's cases × paths, kaniko's `.dockerignore` files, random pattern
-  sets (`MatchesOrParentMatches` and the walk chain, errors included),
-  `ReadAll` inputs, BuildKit (`fsutil`) walks of a tree. A 40× run found only
-  the surrogate case below.
+  exp-04's 38 cases × 42 paths, kaniko's three `.dockerignore` files, 1,200
+  random pattern sets (12,470 cells: `MatchesOrParentMatches` and the walk
+  chain, errors included), 645 `ReadAll` inputs, 641 BuildKit (`fsutil`)
+  walks of a 51-entry tree. `GEN_SCALE=40` ran 434,660 cells once and found
+  only the surrogate case below.
 - Property (`tests/props.rs`): no panic; `p` then `!p` re-includes; `./p` and
   `/p` equal `p`; the walk equals the parent check without exceptions;
   agreement with a direct glob interpreter for `* ? ** / .` patterns.

@@ -1,6 +1,6 @@
 # rnk-sched
 
-> **Status:** done for Phases 1 and 2 · **Phase:** 1 ·
+> **Status:** in progress · **Phase:** 1-2 ·
 > **Depends on:** `rnk-dockerfile`, `tokio`, `tokio-util`, `futures-util`
 > ([open: #7], interim) · **Used by:** `ranikust` (it implements
 > `StageRunner` over `rnk-builder`) · **Path:** `crates/rnk-sched/`

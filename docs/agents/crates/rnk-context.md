@@ -1,7 +1,6 @@
 # rnk-context
 
-> **Status:** done for local directories (tar, git, HTTPS: Phase 5) ·
-> **Phase:** 1 ·
+> **Status:** in progress · **Phase:** 1 (tar, git, HTTPS: 5) ·
 > **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, [open: #7]) ·
 > **Used by:** `rnk-builder`, `ranikust` · **Path:** `crates/rnk-context/`
 

@@ -1,10 +1,10 @@
 # rnk-store
 
-> **Status:** done for Phases 1 and 2 (`prune`: Phase 5) · **Phase:** 1 ·
+> **Status:** in progress · **Phase:** 1-2 (`prune`: 5) ·
 > **Depends on:** `rnk-rootfs` (deletion, every path), `rnk-oci` (`Digest`);
 > `sha2` (cache ids) ·
-> **Used by:** `rnk-registry`, `rnk-snapshot`, `rnk-builder`, `ranikust`
-> (`prune`), `rnk-cache` (planned) · **Path:** `crates/rnk-store/`
+> **Used by:** `rnk-snapshot`, `rnk-builder`, `ranikust` (`prune`),
+> `rnk-cache` (planned) · **Path:** `crates/rnk-store/`
 
 **TL;DR:** The persistent, content-addressed store in the state directory:
 `blobs/`, `layers/`, `caches/`, `tmp/`, with per-digest locks, atomic rename,

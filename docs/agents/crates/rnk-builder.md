@@ -1,7 +1,6 @@
 # rnk-builder
 
-> **Status:** done for Phases 1 and 2 (cache checks: Phase 4) ·
-> **Phase:** 1-2 ·
+> **Status:** in progress · **Phase:** 1-2 (cache checks: 4) ·
 > **Depends on:** `rnk-snapshot`, `rnk-sandbox`, `rnk-layer`, `rnk-registry`,
 > `rnk-context`, `rnk-ignore`, `rnk-dockerfile`, `rnk-store`, `rnk-rootfs`,
 > `rnk-oci` (`rnk-cache` planned) ·
@@ -180,9 +179,10 @@ pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, p
   descriptor of its directory. A secret's id is `id=`, else `source=`, else
   the target's name; with `env=` it is a variable of that `RUN` only (a NUL
   byte is refused, naming the id), otherwise a `rnk_sandbox::SecretFile`
-  (default `0400`, root's) that the sandbox writes on the `RUN`'s own tmpfs
-  and binds read-only at the target or `/run/secrets/<id>`: no copy reaches a
-  disk. A cancel kills the running `RUN` (`Sandbox::cancel`).
+  (default `0400`, root's; permission bits only) that the sandbox writes on
+  the `RUN`'s own tmpfs and binds read-only at the target or
+  `/run/secrets/<id>`: no copy reaches a disk. A cancel kills the running
+  `RUN` (`Sandbox::cancel`).
 - A `#!` `RUN` heredoc runs as a script `/dev/pipes/<name>`, as BuildKit's:
   its directory (in the build directory, mode 0755) is bound read-only at
   `/dev/pipes`, which `rnk-sandbox` makes in the `/dev` tmpfs. Under
@@ -198,13 +198,14 @@ pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, p
   `mounts::check_supported` refuses, in every mode, the mount types this
   phase lacks and malformed mounts, and `run_mounts` a `required` secret
   missing from `--secret`, before any secret is read or cache leased.
-- Refused with a message (Phase 5 unless noted): `ONBUILD` triggers, `ADD` of
-  a URL, a repository or a local archive, `ADD --checksum/--keep-git-dir/
+- Refused with a message, not built yet (Phase 5): `ONBUILD` triggers, `ADD`
+  of a URL, a repository or a local archive, `ADD --checksum/--keep-git-dir/
   --unpack`, `COPY --link/--parents/--exclude`, `RUN --mount` other than
-  `cache` and `secret` (and `cache,from=`), `RUN --security=insecure` and
-  `--device` (for good), `RUN --network=host` under the operator's
-  `--network=none` without `--allow network.host` (BuildKit's entitlement,
-  ADR-0032), a heredoc name with `/`.
+  `cache` and `secret` (and `cache,from=`). Refused for good: `RUN
+  --security=insecure` and `--device`; a heredoc name that is not one path
+  component (`check_heredoc_name`). An entitlement rule, not a missing
+  feature: `RUN --network=host` under the operator's `--network=none`
+  without `--allow network.host` (BuildKit's, ADR-0032).
 
 ## Invariants
 
@@ -271,6 +272,14 @@ noted.
   `dst=`, `destination=`, a repeated `target=` or `env=`, `type=` twice,
   `required=false`) are refused as files before any read, or kept as one
   variable and never a file; cache mounts of any spelling are dropped.
+- **Quick smoke case `run`** (`tests/smoke/cases/run/`, `just smoke-case`
+  and the VM `quick` suite, [testing](../../testing.md#quick-smoke-cases)):
+  `Dockerfile` in the full sandbox (shell, exec and heredoc forms, a `#!`
+  heredoc as `/dev/pipes/<name>`, cache and secret mounts, `--network=none`,
+  an unchanged `RUN`); `direct.Dockerfile` in kaniko mode on `/` (the `Direct`
+  forms, the dropped-cache warning, each `Direct` refusal: a secret as a
+  file, `--network=none`); `direct-attack.Dockerfile` (ADR-0057 red team:
+  the sealed heredoc, descriptors, streams, and refused spellings).
 - **T1/T2:** `just smoke` and `just test-vm smoke` build `tests/smoke/e2e`
   with the binary and run the image; `--reproducible` gives one digest with
   `--jobs 1` and the default, in rootless podman and as real root. W1 and W3

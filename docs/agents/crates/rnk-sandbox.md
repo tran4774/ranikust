@@ -1,6 +1,6 @@
 # rnk-sandbox
 
-> **Status:** done for Phases 1 and 2 · **Phase:** 1 (`Direct` from 2) ·
+> **Status:** in progress · **Phase:** 1-2 (`Direct` from 2; rootless: 3) ·
 > **Depends on:** `rnk-rootfs` (`RootPath`, `USER` lookup) ·
 > **Used by:** `rnk-builder`; `ranikust` (probes, process set-up) ·
 > **Path:** `crates/rnk-sandbox/`
@@ -15,9 +15,11 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 ## Owns
 
 - Process set-up, called by `ranikust` while single-threaded: private mount
-  namespace, spawner thread, stub-journal replay; and the probes of its own
-  steps (namespaces, uid map, `proc`, `pivot_root`/`MS_MOVE`, `sysfs`, bind
-  mounts, `mknod`), which `ranikust` runs with `rnk-snapshot`'s.
+  namespace, spawner thread, stub-journal replay; and the probe of its own
+  steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
+  the `Full` per-`RUN` sequence in an empty root (`probe.rs`) and reports
+  only `root_entry`; the full probe and its guidance (uid map, `sysfs`, bind
+  mounts, `mknod`) are Phase 3.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`.
 - `Isolation::Direct`: the sequential kaniko-mode `RUN` on `/`, with no
@@ -223,25 +225,40 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed
   heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
-  reading its own stream back), the init's status records, the spans
+  reading its own stream back), the init's status records,
+  `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
+  fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
-  nothing; `red_team_hostile_mount_point_names_are_matched_exactly`.
+  nothing.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`, host name, capability sets `a80425fb` with
   empty inheritable and ambient, `nodev` root and `/dev`, read-only
   `/proc/sys` and `/dev/null`, masked kernel files, no terminal, only stdio
   descriptors, no stub in the layer). Not yet: the fallbacks.
-- **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`): the `Full`
-  tests in `src/spawner.rs` (`probe_reaches_exec_as_root`; `nodev` below the
+- **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
+  `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
+  (`src/probe.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
+  (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
   `the_run_is_pid_2_under_an_init_that_reports_its_status`;
   `red_team_no_run_outlives_the_thread_that_cloned_it`;
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
-  delays, threat model section 6), and
+  delays, threat model section 6; `a_running_binary_cannot_be_opened_for_writing`),
+  `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.
+- **T2, VM smoke suite** (`tests/vm/guest/smoke.sh`, `just test-vm smoke`):
+  the real binary's build as real root in three environments (the host,
+  `--privileged` Docker with `pivot_root`, `SYS_ADMIN` under Docker's seccomp
+  with `MS_MOVE`; `smoke_checks` of `tests/smoke/lib.bash` as in T1), plus
+  what only real root can check: chroot escapes (`..`, from a descriptor,
+  nested) under `pivot_root` and `MS_MOVE` with a plain chroot as their
+  control, a write to `/proc/sys`, `mknod` of `/dev/null`'s 1:3 and open,
+  ranikust refused inside a plain chroot, and, in the host variant, SIGKILL
+  and SIGINT of ranikust during `RUN sleep 300` (and SIGKILL during a `RUN`
+  that cleared its own death signal) leave no `RUN` process.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid
