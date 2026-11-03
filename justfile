@@ -43,29 +43,8 @@ test *args:
 
 # Static x86_64 musl release binary, checked to need no loader or shared libraries (CI job `static-build`). Requires zig and cargo-zigbuild.
 build-static:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    BIN={{ static_bin }}
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust
-    file "$BIN"
-    if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter'; then
-      echo "error: $BIN requests a dynamic loader" >&2
-      exit 1
-    fi
-    if readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
-      echo "error: $BIN depends on shared libraries" >&2
-      exit 1
-    fi
-    if ! readelf --file-header --wide "$BIN" | grep -q 'Type: *DYN'; then
-      echo "error: $BIN is not position-independent (static-pie)" >&2
-      exit 1
-    fi
-    if ! readelf --section-headers --wide "$BIN" | grep -q '\.symtab'; then
-      echo "error: $BIN has no symbol table" >&2
-      exit 1
-    fi
-    ls -l "$BIN"
-    "$BIN" version
+    scripts/check-static.sh {{ static_bin }}
 
 # Type-check for aarch64 musl so no architecture-specific code slips in (CI job `check-aarch64`). Requires zig and cargo-zigbuild.
 check-aarch64:
@@ -195,6 +174,22 @@ book:
 # Draft release notes for unreleased commits; requires git-cliff (`cargo install --locked git-cliff`).
 changelog *args:
     git cliff --unreleased "$@"
+
+# Prepare a release (ADR-0089; CONTRIBUTING.md, Releasing): set the workspace version, refresh Cargo.lock offline, and draft the CHANGELOG.md section from the `## Changelog` sections of the pull requests merged since the last tag. Edits files only: never commits, tags or pushes. Requires python3, cargo and gh.
+release-prepare version:
+    python3 -I scripts/release.py prepare "$1"
+
+# THIRD-PARTY-LICENSES as the release ships it (ADR-0094), from the same steps as the release workflow's `notices` job: cargo-about over Cargo.lock for x86_64 musl, offline after `cargo fetch`, failing on a licence deny.toml does not allow, then the toolchain's notices from licenses/; writes target/THIRD-PARTY-LICENSES. Requires cargo-about 0.9.2 (`cargo install --locked cargo-about@0.9.2`) and python3.
+third-party-licenses:
+    cargo fetch --locked
+    cargo about --version
+    cargo about generate --frozen --fail -m crates/ranikust/Cargo.toml -c about.toml --target {{ musl_target }} -o target/cargo-about.txt scripts/third-party-licenses.hbs
+    python3 -I scripts/release.py notices target/cargo-about.txt target/THIRD-PARTY-LICENSES
+
+# Tests of the release scripts (CI: the `Release` workflow's build job): scripts/check-static.sh with a fake readelf, and scripts/release.py with fake gh and git remotes; no network, no privileges. Requires bash, python3 3.11 or later and git.
+test-release:
+    bash tests/release/check-static-test.sh
+    python3 -I tests/release/test_release.py
 
 # Local only, not in CI yet: mechanical checks of the decision records over the files git ls-files lists (every ADR indexed with its status, no duplicate question in docs/open-questions.md, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled question (any question issue inside an ADR), asked of GitHub through gh; without gh, a logged-in gh or network that check is skipped and the verdict says so). Requires python3; gh for the issue check.
 docs-lint:

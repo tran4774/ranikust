@@ -1,9 +1,12 @@
 # Contributing to ranikust
 
-Thank you for your interest. ranikust is pre-alpha: the workspace exists, the
-features do not yet. Before starting anything larger than a small fix, open
-an issue so the work fits the plan in [`ARCHITECTURE.md`](ARCHITECTURE.md) and
-the decisions in [`docs/adr/`](docs/adr/).
+Thank you for your interest. ranikust is pre-alpha: it builds images as
+root, in overlay mode or in kaniko mode, and its releases are pre-releases;
+rootless builds, the layer cache and more instructions come in later phases
+(the [roadmap](README.md#roadmap)). Before starting anything larger than a
+small fix, open an issue so the work fits the plan in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and the decisions in
+[`docs/adr/`](docs/adr/).
 
 Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 Security problems go through [`SECURITY.md`](SECURITY.md), never a public
@@ -22,7 +25,10 @@ up a machine step by step; the table below is the reference.
 | [just](https://github.com/casey/just) | Runs the recipes in [`justfile`](justfile) | `cargo install --locked just` |
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | `cargo install --locked cargo-deny@0.20.2` |
 | [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
-| [git-cliff](https://git-cliff.org/) | Drafts release notes; only needed by whoever prepares a release | `cargo install --locked git-cliff` |
+| Python 3.11 or later | `just docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
+| [GitHub CLI](https://cli.github.com/) (`gh`) | `just release-prepare` reads the merged pull requests; checking a release's attestation needs 2.102.0 or later | your distribution, or cli.github.com |
+| [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | `cargo install --locked cargo-about@0.9.2` |
+| [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
 | `file`, `readelf` | `just build-static` and `just test-aarch64` check the binary is static | `file` and `binutils` packages |
 | A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
 | [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
@@ -115,8 +121,11 @@ the 29 questions migrated from
 [`docs/open-questions.md`](docs/open-questions.md) keep their `Q-NNN:`
 title prefix, and that file keeps the answered ones.
 
-Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/);
-[git-cliff](cliff.toml) groups them into release notes.
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+The release notes come from the pull requests' `## Changelog` sections
+(below), not from commits; the type of a pull request's title only places
+an entry written without a heading, as the table shows. (`just changelog`,
+with [git-cliff](cliff.toml), can still draft notes from commits.)
 
 ```
 <type>(<scope>): <summary in the imperative, lower case, no full stop>
@@ -126,18 +135,18 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 <footers: BREAKING CHANGE: ..., Refs: #123>
 ```
 
-| Type | Use for | In release notes |
+| Type | Use for | An entry without a heading goes under |
 |---|---|---|
 | `feat` | New user-visible behaviour | Added |
 | `fix` | Bug fix | Fixed |
 | `perf` | Faster, same behaviour | Changed |
-| `refactor`, `test`, `docs`, `ci`, `build`, `chore`, `style` | Everything else | Not listed |
+| `refactor`, `test`, `docs`, `ci`, `build`, `chore`, `style` | Everything else | Usually no entry (`none`); Changed otherwise |
 
 The scope is the crate name (`rnk-rootfs`, `ranikust`) or an area (`ci`,
 `book`, `adr`). Mark breaking changes with `!` after the type or a
-`BREAKING CHANGE:` footer; use the `security` scope for security fixes.
-Summaries starting with "deprecate" or "remove" are listed under Deprecated
-and Removed.
+`BREAKING CHANGE:` footer; use the `security` scope (or the `security`
+label) for security fixes, whose entries go under Security. Summaries
+starting with "deprecate" or "remove" go under Deprecated and Removed.
 
 Pull requests are squash-merged, so the pull request title becomes the
 commit message and must follow the same format. The
@@ -149,9 +158,102 @@ in sync in the same change, following the "Keep in sync" list in
 its entry in the pull request's `## Changelog` section, not in
 [`CHANGELOG.md`](CHANGELOG.md), which is written from those sections when a
 release is prepared ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)).
+Write the entry as bullets for users under Keep a Changelog headings
+(`### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`,
+`### Security`), or as bullets alone, placed by the title's type; write
+`none` when users see no change. `just release-prepare` reads exactly
+this.
 Planned work is on the
 [Project](https://github.com/users/tran4774/projects/1) and the phase
 milestones; issues labelled `good first issue` are a good start.
+
+## Releasing
+
+Releases follow
+[ADR-0089](docs/adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md).
+Before 1.0 every release is a pre-release: a
+minor version marks the end of a phase, a patch version ships fixes and
+user-visible changes once `main` is green, the privileged T2 tests
+included. A release is one static `x86_64-unknown-linux-musl` binary in a
+tarball, with the licence notices of the code it contains
+(`THIRD-PARTY-LICENSES`,
+[ADR-0094](docs/adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)),
+`SHA256SUMS` and a GitHub build provenance attestation; there is no
+container image and no aarch64 build yet.
+
+**Before the first tag** (the maintainer, once): the repository needs an
+environment named `release` with the maintainer as required reviewer and
+deployments limited to the tag rule `v*` (Settings → Environments;
+[ADR-0092](docs/adr/0092-a-release-is-verified-by-workflow-and-tag-and-built-without-cache-or-unprotected-environment.md)).
+Leave "Prevent self-reviews" off: the maintainer pushes the tag and is the
+only reviewer, so with it on nobody could approve the release. A job that
+names a missing environment creates it with no protection, so
+the workflow checks it (`scripts/release.py check-environment`) before it
+builds and again before it publishes, and stops a tag otherwise; a pull
+request's dry run reports what it found.
+
+1. **Release pull request** (anyone, agents included; an agent asks before
+   any tag or release,
+   [ADR-0087](docs/adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md)).
+   From the latest `main`, on a branch `release/vX.Y.Z`, run
+   `just release-prepare X.Y.Z`. It sets the workspace version, refreshes
+   `Cargo.lock` offline and drafts the `## [X.Y.Z]` section of
+   `CHANGELOG.md` from the `## Changelog` sections of the pull requests
+   merged since the last tag
+   ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)),
+   listing the ones without an entry. Edit the section for users (what
+   changed for them, not how), delete the draft comment, commit it as
+   `chore(release): vX.Y.Z` and open the pull request with the `release`
+   label. The recipe never commits, tags or pushes.
+2. **Merge** (the maintainer), once CI and the T2 tests are green; the
+   `main` ruleset accepts changes only through a pull request with the CI
+   checks passed.
+3. **Tag** (the maintainer only: the `release tags` ruleset lets only the
+   maintainer create, move or delete `v*` tags): tag the merge commit and
+   push the tag.
+
+   ```sh
+   git switch main && git pull --ff-only
+   git tag -s vX.Y.Z -m "ranikust X.Y.Z"   # -a instead of -s without a signing key
+   git push origin vX.Y.Z
+   ```
+
+4. **Build** (the `Release` workflow, `.github/workflows/release.yml`). It
+   tests its scripts (`just test-release`); checks that the tag equals the
+   workspace version and lies on `main`, that `CHANGELOG.md` has a finished
+   section for it, and that the `release` environment is protected; builds
+   the binary from the tag without any cache (Zig downloaded with a pinned
+   checksum); checks it is static-pie, runs and reports the version
+   (`scripts/check-static.sh`, as CI and `just build-static` do);
+   packages it all reproducibly (`scripts/release.py package`) with
+   `THIRD-PARTY-LICENSES`, which a job of its own generates with
+   cargo-about from `Cargo.lock` for the release target, stopping on a
+   licence `deny.toml` does not allow, and completes with the toolchain's
+   notices from `licenses/` (`just third-party-licenses` locally); and
+   attests the tarball's build provenance in a job of its own. When
+   `rust-toolchain.toml` changes, replace the files in `licenses/` and
+   their hashes in `scripts/release.py` (`licenses/README.md` says how).
+5. **Approve** (the maintainer), within 30 days, as long as the built files
+   are kept: the publishing job waits for the `release` environment's
+   approval. It then creates a **draft** pre-release whose notes are the
+   tag's `CHANGELOG.md` section, followed by the pull requests merged since
+   the previous release tag, which GitHub lists by label
+   (`.github/release.yml`).
+6. **Publish** (the maintainer): read the draft, publish it on the
+   releases page, and announce it in the repository's Discussions.
+
+Users check a release with `sha256sum -c SHA256SUMS` and
+`gh attestation verify` naming the release workflow and the tag
+(`--signer-workflow`, `--source-ref`, `--deny-self-hosted-runners`; the
+[installation guide](docs/book/src/install.md) has the command).
+
+A pull request that changes what goes into a release (the workflow, its
+scripts and tests, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
+`about.toml`, `deny.toml`, the packaged files) runs the build path as a dry
+run (tests, build, check, licence notices, package, checksums; no
+attestation, no release), and so does a manual run (`workflow_dispatch`)
+on any branch. `about.toml`'s accepted licences must stay the set
+`deny.toml` allows; `just test-release` compares them.
 
 ## How decisions are made
 
