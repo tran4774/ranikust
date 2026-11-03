@@ -27,8 +27,9 @@
 # Exit status: 0 when every suite passed; 1 when a suite failed (a refusal
 # inside tests/container/lane.sh counts as unit-c failing); 2 when this
 # script refused (not this runner, a bad argument), before anything ran;
-# 3 when the set-up failed (staging, a build): no suite ran and ~/rnk/out
-# holds no results.
+# 3 when the set-up failed (staging, a build, the T2c marker): no suite
+# ran, or none after the one that needed it, and ~/rnk/out holds no
+# results of it.
 set -euo pipefail
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
@@ -104,10 +105,10 @@ used_mib() { df -BM --output=used / | tail -1 | tr -dc 0-9; }
 # names this runner, which GitHub deletes after the job, and only the guard
 # above lets it be made. Owned by root, written by no one else.
 make_marker() {
-  sudo install -d -m 0755 -o root -g root /etc/ranikust
-  uname -n | sudo tee /etc/ranikust/throwaway-test-host >/dev/null
-  sudo chown root:root /etc/ranikust/throwaway-test-host
-  sudo chmod 0644 /etc/ranikust/throwaway-test-host
+  sudo install -d -m 0755 -o root -g root /etc/ranikust &&
+    uname -n | sudo tee /etc/ranikust/throwaway-test-host >/dev/null &&
+    sudo chown root:root /etc/ranikust/throwaway-test-host &&
+    sudo chmod 0644 /etc/ranikust/throwaway-test-host
 }
 
 : >"$OUT/summary.txt"
@@ -130,7 +131,7 @@ for suite in "$@"; do
   t0=$SECONDS
   rc=0
   if [ "$suite" = unit-c ]; then
-    make_marker
+    make_marker || { kill "$sampler" 2>/dev/null; setup_failed "making the T2c marker"; }
     RANIKUST_CONTAINER_LANE=1 bash "$REPO/tests/container/lane.sh" unit-c 2>&1 | tee "$OUT/$suite.log" || rc=$?
   else
     (cd "$R" && bash "guest/$suite.sh") 2>&1 | tee "$OUT/$suite.log" || rc=$?

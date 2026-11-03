@@ -14,7 +14,7 @@
 set -euo pipefail
 
 T0="${RANIKUST_LOG_T0:-0}"
-[[ "$T0" =~ ^[0-9]{1,9}$ ]] || T0=0
+[[ "$T0" =~ ^(0|[1-9][0-9]{0,8})$ ]] || T0=0
 log() { printf '[stage +%ss] %s\n' "$((T0 + SECONDS))" "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
