@@ -83,7 +83,7 @@ không thì đó là quyết định của người dùng. Nên ghi cảnh báo 
   never descends into it, so no secret file reaches a layer through the
   snapshot. Which directory that is for a `--secret src=` file, where ranikust
   places a secret file for a `RUN` on `/`, and whether it removes the file after
-  the `RUN`, the maintainer's words do not say [open: Q-453].
+  the `RUN`, the maintainer's words do not say (Q-453, answered in ADR-0085).
 - **What a `RUN` does with it is the user's.** Every `RUN` on `/` can read a
   secret file that exists, and can copy it into the image or anywhere else;
   ranikust does not stop it, and the Dockerfile's author decides.

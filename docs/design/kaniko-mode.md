@@ -122,8 +122,9 @@ the scheduler runs one stage at a time) or a private directory per stage
     still gets a warning: every `RUN` there can read it, and copying it
     into the image is the user's choice
     ([ADR-0084](../adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md),
-    which also decides that a secret file works on `/` with its directory on
-    the ignore list: not built yet, [open: Q-453]);
+    which also decides that a secret file works on `/`, with only the file's
+    own path on the ignore list, placed at its target for a `RUN` and
+    removed after it, [ADR-0085](../adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md): decided, not built yet);
   - registry credentials only over verified TLS: a `RUN` may edit
     `/etc/hosts` and `/etc/resolv.conf`, read per lookup as ADR-0051
     accepts (Q-446);
@@ -230,8 +231,8 @@ settles them (Q-024):
   and file secrets
   are refused before the root changes when they lie in it, unless the
   ignore list keeps them (a volume, `/ranikust`, `--ignore-path`; for a file
-  secret on `/`, ADR-0084 will put its directory on the list, not built
-  yet). In
+  secret on `/`, ADR-0085 has ranikust put the file's own path on the list:
+  decided, not built yet). In
   every mode, an output must also lie outside the build context and be
   reached without a symlink, and `--context` must have no symlink in it
   (ADR-0076).

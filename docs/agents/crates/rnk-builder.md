@@ -172,7 +172,8 @@ runs from a sealed memfd, the argv kept only for the history; a cache
 mount is left out with a warning, and a secret as a file (no `env=`, or a
 `target=`) and `--network=none` are refused before any secret is read
 (`mounts::direct_mounts`, `refuse_direct_network`; ADR-0057; ADR-0084 lifts
-the refusal of the secret file, not built yet, [open: Q-453]). In every
+the refusal of the secret file, and ADR-0085 has the file placed at its target
+and removed after the `RUN`: decided, not built yet). In every
 mode, `mounts::check_supported` refuses the mount types this phase lacks
 and malformed mounts, and `run_mounts` a `required` secret missing from
 `--secret`, before any secret is read or cache leased; a dropped

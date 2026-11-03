@@ -579,39 +579,27 @@ Entry format:
 - **Interim:** no cache in kaniko mode on `/` (ADR-0077).
 - **Raised:** 2026-11-02
 
-### Q-453: Where does kaniko mode on `/` put a secret file, and which directory does the snapshot ignore?
+### Q-454: What does a placed secret file do when its target exists or its parent directories are missing?
 
 - **Blocks:** the implementation of
-  [ADR-0084](adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md);
-  **Area:** `ranikust`, `rnk-builder`, `rnk-sandbox`, `rnk-snapshot`
-- **Context:** ADR-0084 lets a secret be a file in kaniko mode on `/` and puts
-  "the directory that holds the secret files" on the snapshot ignore list
-  (the maintainer, 2026-11-03: "Bỏ qua thư mục này khi build"). His words do
-  not say which directory. Two kinds of file are involved:
-  - a `--secret src=` file, wherever the operator put it, read once at the
-    start (ADR-0078); today it must be on a volume or an `--ignore-path`, or
-    the build is refused (`paths_outside_the_root`);
-  - the file a `RUN --mount=type=secret` reads. On `/` there is no tmpfs for
-    the `RUN` (ADR-0057), so ranikust would write it into the `/` all `RUN`s
-    share before the `RUN`. BuildKit's place is the mount's `target=`, else
-    `/run/secrets/<id>`, mode `0400` (`secret_mount` in `mounts.rs`).
-  An ignored entry covers everything below it, which the walk skips, base
-  extraction does not replace and emptying the root does not delete
-  (`IgnoreList`; a path is physical, so `/var/run` ignores the symlink and not
-  `/run`). Ignoring the directory of `--secret src=/etc/token` would be
-  ignoring `/etc`.
-- **Options:** which entry goes on the list: (a) the secret file's own path
-  only (the `src=` file, the placed file at its target); (b) the file's
-  directory, whatever it is; (c) a directory ranikust fixes for placed files,
-  `/run/secrets`, with a `target=` outside it refused, and the `src=` file's
-  own path as in (a). Independently, for the placed file: (d) removed after its
-  `RUN` ends, so a later `RUN` cannot read it and a crash leaves it only until
-  the container ends; (e) left until the build ends.
-- **Recommendation:** (a) with (d): the narrowest ignore, so no sibling file
-  of the image drops out of a layer, and the placed file readable by other
-  `RUN`s only while its own `RUN` lasts; (b) can hide a system directory.
-- **Interim:** both refusals stand as they are (`paths_outside_the_root`,
-  `direct_mounts`), the `--secret src=` warning stays; nothing is built.
+  [ADR-0085](adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md);
+  **Area:** `rnk-sandbox`, `rnk-builder`
+- **Context:** ADR-0085 places the file of a `RUN --mount=type=secret` at its
+  target (`target=`, else `/run/secrets/<id>`) in the `/` of kaniko mode and
+  removes it after the `RUN`. Unlike in the other modes, nothing is mounted
+  over the target there, so writing the file replaces what the image holds at
+  that path, and removing it leaves the path empty **[inferred]**; and the target's
+  parent directories, if ranikust creates them, are in the next walk's diff
+  once the file is gone, since only the file's own path is on the ignore list.
+- **Options:** (a) refuse the `RUN` when the target exists or a parent
+  directory is missing; (b) refuse an existing target, create the missing
+  parents and remove the ones ranikust created after the `RUN`; (c) replace an
+  existing file and restore it afterwards from a copy kept out of every
+  `RUN`'s reach (ADR-0056's anonymous files), at the cost of that copy.
+- **Recommendation:** (b): the default target `/run/secrets/<id>` often has no
+  parent directory, so (a) would refuse the common case, and (b) never
+  overwrites what the image has.
+- **Interim:** nothing is built; both refusals of ADR-0084 stand.
 - **Raised:** 2026-11-03
 
 ## Answered
@@ -788,6 +776,49 @@ Entry format:
 - **Recommendation:** (a) where a delegated cgroup exists; (b) with
   Phase 3.
 - **Interim:** (c).
+- **Raised:** 2026-11-03
+
+### Q-453: Where does kaniko mode on `/` put a secret file, and which directory does the snapshot ignore?
+
+- **Answer (2026-11-03):** "Q-453 chọn (a)+(d), gỡ cả hai luật": options (a)
+  and (d). Only the secret file's own path goes on the snapshot ignore list
+  (the `src=` file, the placed file at its target), never its directory; the
+  file placed for a `RUN` is removed after that `RUN`; both refusals that
+  ADR-0084 lifts go (the start-up check `paths_outside_the_root` and ADR-0057's
+  refusal in `direct_mounts`). Options (b), (c) and (e) are not taken. The
+  implementation is a follow-up. Recorded in
+  [ADR-0085](adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md).
+- **Blocks:** the implementation of
+  [ADR-0084](adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md);
+  **Area:** `ranikust`, `rnk-builder`, `rnk-sandbox`, `rnk-snapshot`
+- **Context:** ADR-0084 lets a secret be a file in kaniko mode on `/` and puts
+  "the directory that holds the secret files" on the snapshot ignore list
+  (the maintainer, 2026-11-03: "Bỏ qua thư mục này khi build"). His words do
+  not say which directory. Two kinds of file are involved:
+  - a `--secret src=` file, wherever the operator put it, read once at the
+    start (ADR-0078); today it must be on a volume or an `--ignore-path`, or
+    the build is refused (`paths_outside_the_root`);
+  - the file a `RUN --mount=type=secret` reads. On `/` there is no tmpfs for
+    the `RUN` (ADR-0057), so ranikust would write it into the `/` all `RUN`s
+    share before the `RUN`. BuildKit's place is the mount's `target=`, else
+    `/run/secrets/<id>`, mode `0400` (`secret_mount` in `mounts.rs`).
+  An ignored entry covers everything below it, which the walk skips, base
+  extraction does not replace and emptying the root does not delete
+  (`IgnoreList`; a path is physical, so `/var/run` ignores the symlink and not
+  `/run`). Ignoring the directory of `--secret src=/etc/token` would be
+  ignoring `/etc`.
+- **Options:** which entry goes on the list: (a) the secret file's own path
+  only (the `src=` file, the placed file at its target); (b) the file's
+  directory, whatever it is; (c) a directory ranikust fixes for placed files,
+  `/run/secrets`, with a `target=` outside it refused, and the `src=` file's
+  own path as in (a). Independently, for the placed file: (d) removed after its
+  `RUN` ends, so a later `RUN` cannot read it and a crash leaves it only until
+  the container ends; (e) left until the build ends.
+- **Recommendation:** (a) with (d): the narrowest ignore, so no sibling file
+  of the image drops out of a layer, and the placed file readable by other
+  `RUN`s only while its own `RUN` lasts; (b) can hide a system directory.
+- **Interim:** both refusals stand as they are (`paths_outside_the_root`,
+  `direct_mounts`), the `--secret src=` warning stays; nothing is built.
 - **Raised:** 2026-11-03
 
 ### Q-438: Does ranikust refuse a context file its owner could not read?
