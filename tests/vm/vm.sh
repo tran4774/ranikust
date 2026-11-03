@@ -331,7 +331,7 @@ fi
 # pause process left running must not hold the one-VM lock after this script.
 STAGE="$TARGET/vm/stage"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-bash "$HERE/stage.sh" "$STAGE" "${SUITES[@]}" 9>&-
+RANIKUST_LOG_T0=$SECONDS bash "$HERE/stage.sh" "$STAGE" "${SUITES[@]}" 9>&-
 
 if wants e2e || wants ultra; then
   # The reference images, saved once from the host's podman (where

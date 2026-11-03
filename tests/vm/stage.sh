@@ -8,9 +8,14 @@
 # nothing here needs root.
 #
 #   tests/vm/stage.sh <empty stage directory> [suite]...
+#
+# RANIKUST_LOG_T0, the caller's seconds since its start, puts the `[stage
+# +Ns]` lines on the caller's clock, so a run's log keeps one timeline.
 set -euo pipefail
 
-log() { printf '[stage] %s\n' "$*" >&2; }
+T0="${RANIKUST_LOG_T0:-0}"
+[[ "$T0" =~ ^[0-9]{1,9}$ ]] || T0=0
+log() { printf '[stage +%ss] %s\n' "$((T0 + SECONDS))" "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [ $# -ge 1 ] || die "usage: tests/vm/stage.sh <empty stage directory> [suite]..."

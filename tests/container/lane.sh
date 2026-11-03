@@ -3,8 +3,10 @@
 # tests as root in throwaway rootful Docker containers, one per profile,
 # on a disposable test machine. Never on a developer's machine: it refuses
 # unless the machine carries the root-owned marker /etc/ranikust/throwaway-
-# test-host (made once, by hand, only on the test machine: docs/testing.md)
-# and RANIKUST_CONTAINER_LANE=1 (tests/container/remote.sh sets it there).
+# test-host (made once, by hand, only on the test machine: docs/testing.md;
+# or, for one job on a GitHub-hosted runner, by tests/vm/runner.sh behind its
+# own guard, ADR-0090) and RANIKUST_CONTAINER_LANE=1 (tests/container/
+# remote.sh sets it on the test machine, tests/vm/runner.sh on the runner).
 # The sysadmin and netadmin profiles are as good as root on the machine's
 # kernel, so the marker is what keeps them off any other machine.
 # Containers are never --privileged, mount no host directory (the test

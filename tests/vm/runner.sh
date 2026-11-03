@@ -4,14 +4,15 @@
 # passwordless sudo: it takes the place of tests/vm/vm.sh's QEMU VM, and the
 # same guest scripts run on it, staged at ~/rnk by tests/vm/stage.sh. The
 # workflow .github/workflows/t2.yml is the only caller: this script refuses
-# to run anywhere GitHub Actions does not say is a GitHub-hosted runner.
+# to run anywhere but a GitHub-hosted runner, before anything else.
 #
 #   RANIKUST_T2_ON_RUNNER=1 tests/vm/runner.sh <suite>...
 #
 # Suites: unit, smoke, quick and secrets (tests/vm/guest/<suite>.sh, as in
 # the VM), and unit-c (the T2c lane of ADR-0063: tests/container/lane.sh,
-# its rootful Docker containers on this runner, which carries the lane's
-# marker for the job). Not here: e2e and ultra (benchmarks: a shared
+# its rootful Docker containers on this runner; this script makes the lane's
+# marker naming the runner, for the job, ADR-0090). Not here: e2e and ultra
+# (benchmarks: a shared
 # runner's times are noise, and the workloads need more disk than a runner
 # has) and push (the developer host's test registries).
 #
@@ -21,7 +22,13 @@
 #
 # Writes ~/rnk/out: env.txt, <suite>.log, summary.txt (one line per suite)
 # and suite-times.txt (suite, seconds, peak MiB used on /, MiB used on /
-# before it). Exits 1 when a suite fails, 2 on a refusal.
+# before it).
+#
+# Exit status: 0 when every suite passed; 1 when a suite failed (a refusal
+# inside tests/container/lane.sh counts as unit-c failing); 2 when this
+# script refused (not this runner, a bad argument), before anything ran;
+# 3 when the set-up failed (staging, a build): no suite ran and ~/rnk/out
+# holds no results.
 set -euo pipefail
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
@@ -29,13 +36,26 @@ log() { printf '[runner +%ss] %s\n' "$SECONDS" "$*" >&2; }
 
 # First of all: only on a GitHub-hosted runner, and only when the workflow
 # asks. Never on a developer's machine, which this script would change as
-# root (files under /, /etc/ranikust, Docker containers and images).
-[ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] ||
-  die "not a GitHub-hosted runner (GITHUB_ACTIONS=${GITHUB_ACTIONS:-}, RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-}); on your machine use \`just test-vm\` (ADR-0090)"
+# root (files under /, the T2c marker in /etc/ranikust, Docker containers
+# and images). The environment alone is not enough (`act` sets
+# GITHUB_ACTIONS=true and passes a step's variables), so the machine must
+# also look like GitHub's runner: its user and home, and the Azure VM it is.
+not_runner() { die "not a GitHub-hosted runner ($1); on your machine use \`just test-vm\` (ADR-0090)"; }
+[ "${GITHUB_ACTIONS:-}" = true ] || not_runner "GITHUB_ACTIONS=${GITHUB_ACTIONS:-}"
+[ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || not_runner "RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-}"
+[ -z "${ACT:-}" ] || not_runner "ACT is set: this is act"
+[ "$(id -un)" = runner ] || not_runner "user $(id -un), not runner"
+[ "${HOME:-}" = /home/runner ] || not_runner "HOME=${HOME:-}, not /home/runner"
+vendor="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)"
+[ "$vendor" = "Microsoft Corporation" ] || not_runner "system vendor '$vendor', not Azure's"
 [ "${RANIKUST_T2_ON_RUNNER:-}" = 1 ] ||
   die "RANIKUST_T2_ON_RUNNER=1 is not set: only .github/workflows/t2.yml runs this (ADR-0090)"
-[ "$(id -u)" != 0 ] || die "run as the runner's user, not root: each privileged command uses sudo"
 sudo -n true 2>/dev/null || die "no passwordless sudo"
+# Where the guest scripts pull Docker Hub images from: a host name with an
+# optional port, as tests/vm/vm.sh requires; it goes into ~/rnk/vm.env.
+REGISTRY="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
+[[ "$REGISTRY" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$ ]] ||
+  die "RANIKUST_VM_IMAGE_REGISTRY must be a host name with an optional port (got '$REGISTRY')"
 
 [ $# -gt 0 ] || die "name the suites: unit, unit-c, smoke, quick, secrets"
 for s in "$@"; do
@@ -47,22 +67,21 @@ for s in "$@"; do
 done
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-case "$HOME" in /?*) ;; *) die "HOME is not an absolute path" ;; esac
-[ "$HOME" != / ] || die "HOME is /"
 R="$HOME/rnk"
 OUT="$R/out"
 
 # The guest scripts read ~/rnk, as in the VM.
 guest=()
 for s in "$@"; do [ "$s" = unit-c ] || guest+=("$s"); done
-rm -rf "$R" && mkdir -p "$R"
+setup_failed() { printf 'error: the set-up failed (%s): no suite ran\n' "$*" >&2; exit 3; }
+{ rm -rf "$R" && mkdir -p "$R"; } || setup_failed "making $R"
 if [ "${#guest[@]}" -gt 0 ]; then
   log "staging ${guest[*]} at $R"
-  bash "$REPO/tests/vm/stage.sh" "$R" "${guest[@]}"
+  RANIKUST_LOG_T0=$SECONDS bash "$REPO/tests/vm/stage.sh" "$R" "${guest[@]}" || setup_failed "staging"
 fi
-mkdir -p "$OUT"
+mkdir -p "$OUT" || setup_failed "making $OUT"
 printf 'export RANIKUST_VM_IMAGE_REGISTRY=%q\nexport RANIKUST_VM_SIZE=%q\n' \
-  "${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}" "github-hosted runner" >"$R/vm.env"
+  "$REGISTRY" "github-hosted runner" >"$R/vm.env"
 
 {
   echo "kernel: $(uname -r)"
@@ -80,9 +99,10 @@ printf 'export RANIKUST_VM_IMAGE_REGISTRY=%q\nexport RANIKUST_VM_SIZE=%q\n' \
 
 used_mib() { df -BM --output=used / | tail -1 | tr -dc 0-9; }
 
-# The T2c lane's marker, made for this job: the runner is disposable and the
-# only machine that ever carries it (ADR-0063, ADR-0090). Named after this
-# machine, owned by root, written by no one else.
+# The T2c lane's marker, made for this job (ADR-0090 amends ADR-0063's
+# "made once by the machine's owner" for GitHub-hosted runners only): it
+# names this runner, which GitHub deletes after the job, and only the guard
+# above lets it be made. Owned by root, written by no one else.
 make_marker() {
   sudo install -d -m 0755 -o root -g root /etc/ranikust
   uname -n | sudo tee /etc/ranikust/throwaway-test-host >/dev/null
