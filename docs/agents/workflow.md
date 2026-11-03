@@ -6,9 +6,9 @@ run on the host. Conventional Commits; the PR title becomes the commit.
 
 ## Setup
 
-Linux only; nothing needs root. Follow
-[development-setup.md](../development-setup.md); the tool table is in
-[CONTRIBUTING.md](../../CONTRIBUTING.md#development-setup).
+Linux only; nothing needs root. The tools, their versions and the zig
+install are in
+[development-setup.md](../development-setup.md#1-the-build-every-contributor).
 
 - `rustup` installs the toolchain pinned in `rust-toolchain.toml` on the first
   `cargo` command. Bump it together with `rust-version` in `Cargo.toml`.
