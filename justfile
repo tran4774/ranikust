@@ -43,29 +43,8 @@ test *args:
 
 # Static x86_64 musl release binary, checked to need no loader or shared libraries (CI job `static-build`). Requires zig and cargo-zigbuild.
 build-static:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    BIN={{ static_bin }}
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust
-    file "$BIN"
-    if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter'; then
-      echo "error: $BIN requests a dynamic loader" >&2
-      exit 1
-    fi
-    if readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
-      echo "error: $BIN depends on shared libraries" >&2
-      exit 1
-    fi
-    if ! readelf --file-header --wide "$BIN" | grep -q 'Type: *DYN'; then
-      echo "error: $BIN is not position-independent (static-pie)" >&2
-      exit 1
-    fi
-    if ! readelf --section-headers --wide "$BIN" | grep -q '\.symtab'; then
-      echo "error: $BIN has no symbol table" >&2
-      exit 1
-    fi
-    ls -l "$BIN"
-    "$BIN" version
+    scripts/check-static.sh {{ static_bin }}
 
 # Type-check for aarch64 musl so no architecture-specific code slips in (CI job `check-aarch64`). Requires zig and cargo-zigbuild.
 check-aarch64:
@@ -195,6 +174,10 @@ book:
 # Draft release notes for unreleased commits; requires git-cliff (`cargo install --locked git-cliff`).
 changelog *args:
     git cliff --unreleased "$@"
+
+# Prepare a release (ADR-0089; CONTRIBUTING.md, Releasing): set the workspace version, refresh Cargo.lock offline, and draft the CHANGELOG.md section from the `## Changelog` sections of the pull requests merged since the last tag. Edits files only: never commits, tags or pushes. Requires python3, cargo and gh.
+release-prepare version:
+    python3 -I scripts/release.py prepare "$1"
 
 # Local only, not in CI yet: mechanical checks of the decision records (every ADR indexed with its status, no duplicate question, no `[open: Q-NNN]` left for an answered question). Requires python3.
 docs-lint:

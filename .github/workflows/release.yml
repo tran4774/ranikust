@@ -1,0 +1,165 @@
+name: Release
+
+# The release process of ADR-0089. Pushing a tag `vX.Y.Z` (the maintainer
+# only, after the release pull request is merged) builds the static x86_64
+# binary from the tag, packages it with SHA256SUMS, attests its build
+# provenance and, after the maintainer approves the `release` environment,
+# creates a draft pre-release whose notes are the tag's CHANGELOG.md section.
+#
+# `workflow_dispatch`, and pull requests that change what this workflow runs,
+# take the dry-run path: build, check, package and checksum, without
+# attestation or release. The publishing jobs run only for a pushed tag.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/release.py
+      - scripts/check-static.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build:
+    name: build (x86_64 musl)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      BIN: target/x86_64-unknown-linux-musl/release/ranikust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The whole history: the tag must be on main, and the tarball's
+          # timestamps come from the tagged commit.
+          fetch-depth: 0
+      - name: Read the version
+        id: version
+        run: |
+          version="$(python3 -I scripts/release.py version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version $version"
+      - name: Check the tag against the version and main
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 -I scripts/release.py check-tag "$TAG"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG is not on main: release only a merged release pull request"
+            exit 1
+          fi
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      # No rust-cache, no zig cache: a release is built from nothing but the
+      # tagged source, the pinned toolchain and the locked dependencies, so no
+      # cache an earlier run wrote can reach it. The same tools as CI's
+      # `static-build` job (ADR-0020).
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      - name: Build
+        run: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target "$TARGET" -p ranikust
+      - name: Check that the binary is static-pie and runs
+        run: scripts/check-static.sh "$BIN"
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            python3 -I scripts/release.py package "$BIN" "$VERSION" dist
+          cat dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # A job of its own, so the OIDC token that signs the attestation is never
+  # available to the build (and its build scripts).
+  attest:
+    name: attest build provenance
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Check the checksums
+        run: cd dist && sha256sum -c SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+  publish:
+    name: draft the GitHub release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [build, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The maintainer approves this environment before anything is published.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Check the checksums
+        run: cd dist && sha256sum -c SHA256SUMS
+      - name: Take the notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: python3 -I scripts/release.py notes "$VERSION" > "$RUNNER_TEMP/notes.md"
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          # Every release before 1.0, and every X.Y.Z-suffix, is a pre-release.
+          prerelease=()
+          case "$VERSION" in
+            0.*|*-*) prerelease=(--prerelease) ;;
+          esac
+          # The CHANGELOG section comes first; GitHub appends the merged pull
+          # requests, grouped by the labels of .github/release.yml.
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            "${prerelease[@]}" \
+            --title "ranikust $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --generate-notes

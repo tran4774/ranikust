@@ -1,0 +1,34 @@
+# Groups for the pull request list GitHub generates under a release's notes
+# (`gh release create --generate-notes` in .github/workflows/release.yml,
+# ADR-0089). The curated notes above that list come from CHANGELOG.md.
+# A pull request lands in the first category whose labels it carries.
+changelog:
+  exclude:
+    labels:
+      - release
+      - duplicate
+      - invalid
+      - wontfix
+  categories:
+    - title: Security
+      labels:
+        - security
+    - title: New features
+      labels:
+        - enhancement
+    - title: Bug fixes
+      labels:
+        - bug
+    - title: Documentation
+      labels:
+        - documentation
+    - title: CI, tests and tooling
+      labels:
+        - area:ci
+        - area:tests
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: Other changes
+      labels:
+        - "*"

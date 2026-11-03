@@ -85,26 +85,8 @@ jobs:
           tool: cargo-zigbuild@0.24.0
       - run: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target x86_64-unknown-linux-musl -p ranikust
       - name: Check that the binary is static-pie and runs
-        run: |
-          file "$BIN"
-          if readelf --program-headers --wide "$BIN" | grep -q 'program interpreter'; then
-            echo "::error::$BIN requests a dynamic loader"
-            exit 1
-          fi
-          if readelf --dynamic --wide "$BIN" | grep -q '(NEEDED)'; then
-            echo "::error::$BIN depends on shared libraries"
-            exit 1
-          fi
-          if ! readelf --file-header --wide "$BIN" | grep -q 'Type: *DYN'; then
-            echo "::error::$BIN is not position-independent (static-pie)"
-            exit 1
-          fi
-          if ! readelf --section-headers --wide "$BIN" | grep -q '\.symtab'; then
-            echo "::error::$BIN has no symbol table"
-            exit 1
-          fi
-          ls -l "$BIN"
-          "$BIN" version
+        # The same script as `just build-static` and the release workflow.
+        run: scripts/check-static.sh "$BIN"
 
   check-aarch64:
     name: check (aarch64 musl)
