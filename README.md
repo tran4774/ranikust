@@ -5,12 +5,14 @@
 **Build container images from Dockerfiles. Anywhere. One static binary.**
 
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)](#status)
+[![Release](https://img.shields.io/github/v/release/tran4774/ranikust?include_prereleases&sort=semver)](https://github.com/tran4774/ranikust/releases)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Rust 1.99](https://img.shields.io/badge/rust-1.99-dea584?logo=rust)](https://www.rust-lang.org)
 [![Platform: Linux x86_64](https://img.shields.io/badge/platform-linux%20x86__64-lightgrey?logo=linux&logoColor=white)](#status)
 
 [Why](#why-ranikust) ·
 [How it works](#how-it-works) ·
+[Install](#install) ·
 [Compared to](#how-it-compares) ·
 [Early numbers](#early-numbers) ·
 [Roadmap](#roadmap) ·
@@ -25,9 +27,10 @@ static Linux binary that works inside a locked-down CI container as well as
 directly on a host or VM.
 
 > [!WARNING]
-> **ranikust is pre-alpha and does not build images yet.** The design is
-> complete and backed by 16 experiments; the implementation has just started.
-> Star or watch the repository to follow along.
+> **ranikust is pre-alpha.** It builds and pushes images as root, in overlay
+> mode or in kaniko mode, and has been measured against kaniko on test
+> workloads in a VM, not yet on real projects. Releases are pre-releases:
+> try it, report what breaks, and do not rely on it in production yet.
 
 ## Why ranikust
 
@@ -76,9 +79,29 @@ one. Writing a uid map, for rootless mode, comes in Phase 3. See
 | Regular user on Debian, Fedora or RHEL | refuses: run as root or in a container (rootless overlay planned, Phase 3) |
 | Regular user on Ubuntu 24.04+, PSS-restricted pod | refuses; for Ubuntu 24.04+ an AppArmor profile is the planned remedy, with rootless overlay (Phase 3) |
 
+## Install
+
+Pre-alpha releases are on the
+[releases page](https://github.com/tran4774/ranikust/releases): one static
+binary for x86_64 Linux (5.8 or later), with its SHA-256 checksum and a
+build provenance attestation. Check both before you run it:
+
+```sh
+v=0.0.1  # the release you downloaded
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify "ranikust-$v-x86_64-unknown-linux-musl.tar.gz" --repo tran4774/ranikust
+tar -xzf "ranikust-$v-x86_64-unknown-linux-musl.tar.gz"
+sudo install -m 0755 "ranikust-$v-x86_64-unknown-linux-musl/ranikust" /usr/local/bin/
+```
+
+In a container, bind-mount the binary at `/ranikust/bin/ranikust`, where
+kaniko mode leaves it alone. The [installation guide](docs/book/src/install.md)
+has the details and the container examples.
+
 ## How it compares
 
-Target design; nothing here is released yet.
+Pre-alpha: where ranikust has a ✅, it works on the test workloads, not yet
+in wide use.
 
 | | ranikust | kaniko | BuildKit | buildah |
 |---|:---:|:---:|:---:|:---:|
@@ -118,15 +141,17 @@ full method, environment and caveats are in experiments
 
 ## Status
 
-The survey phase is complete. It answered whether this is feasible and how,
-with 16 experiments covering overlayfs semantics at every privilege level,
-`RUN` sandboxing, real rootful Docker under cgroup v1 and v2, parallel stages
-without mount rights, and real-world builds (Next.js, Maven, Gradle). Every
-decision that came out of it is recorded as an
+Pre-alpha. Phase 1 (overlay mode as root) and Phase 2 (kaniko mode) are
+done; the first releases are pre-releases ([Install](#install)). The design
+came out of a survey with 16 experiments covering overlayfs semantics at
+every privilege level, `RUN` sandboxing, real rootful Docker under cgroup v1
+and v2, parallel stages without mount rights, and real-world builds
+(Next.js, Maven, Gradle). Every decision is recorded as an
 [architecture decision record](docs/adr/).
 
-Releases will target `x86_64-unknown-linux-musl` first, with `aarch64` kept
-buildable from day one. ranikust requires Linux 5.8 or later
+Releases are built for `x86_64-unknown-linux-musl`; `aarch64` is kept
+buildable and tested in CI
+([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)). ranikust requires Linux 5.8 or later
 ([ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)).
 
 ## Roadmap

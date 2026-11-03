@@ -7,9 +7,10 @@ the [threat model](docs/security/threat-model.md).
 
 ## Supported versions
 
-ranikust is pre-alpha and has no release yet. Until 1.0, only the latest
-release will receive security fixes; before the first release, fixes land on
-the `main` branch.
+ranikust is pre-alpha; its releases are pre-releases. Until 1.0, only the
+latest release receives security fixes: a fix lands on the `main` branch
+and ships in the next release, and there are no fixes to older releases.
+Report a problem against the latest release or `main`.
 
 ## Reporting a vulnerability
 

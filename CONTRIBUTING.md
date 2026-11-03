@@ -138,6 +138,53 @@ keeps the documentation in sync in the same change, following the "Keep in
 sync" list in [`docs/agents/rules.md`](docs/agents/rules.md); user-visible changes get an entry
 under `Unreleased` in [`CHANGELOG.md`](CHANGELOG.md).
 
+## Releasing
+
+Releases follow ADR-0089. Before 1.0 every release is a pre-release: a
+minor version marks the end of a phase, a patch version ships fixes and
+user-visible changes once `main` is green, the privileged T2 tests
+included. A release is one static `x86_64-unknown-linux-musl` binary in a
+tarball, with `SHA256SUMS` and a GitHub build provenance attestation; there
+is no container image and no aarch64 build yet.
+
+1. **Release pull request** (anyone, agents included). From the latest
+   `main`, on a branch `release/vX.Y.Z`, run `just release-prepare X.Y.Z`.
+   It sets the workspace version, refreshes `Cargo.lock` offline and drafts
+   the `## [X.Y.Z]` section of `CHANGELOG.md` from the `## Changelog`
+   sections of the pull requests merged since the last tag, listing the
+   ones without an entry. Edit the section for users (what changed for
+   them, not how), delete the draft comment, commit it as
+   `chore(release): vX.Y.Z` and open the pull request with the `release`
+   label. The recipe never commits, tags or pushes.
+2. **Merge** (the maintainer), once CI and the T2 tests are green.
+3. **Tag** (the maintainer only; a ruleset keeps `v*` tags to the
+   maintainer): tag the merge commit and push the tag.
+
+   ```sh
+   git switch main && git pull --ff-only
+   git tag -s vX.Y.Z -m "ranikust X.Y.Z"   # -a instead of -s without a signing key
+   git push origin vX.Y.Z
+   ```
+
+4. **Build** (the `Release` workflow, `.github/workflows/release.yml`). It
+   checks that the tag equals the workspace version and lies on `main`,
+   builds the binary from the tag without any cache, checks it is
+   static-pie and runs (`scripts/check-static.sh`, as CI and
+   `just build-static` do), packages it reproducibly
+   (`scripts/release.py package`), and attests the tarball's build
+   provenance in a job of its own.
+5. **Approve** (the maintainer): the publishing job waits for the
+   `release` environment's approval. It then creates a **draft**
+   pre-release whose notes are the tag's `CHANGELOG.md` section, followed
+   by the merged pull requests GitHub lists by label
+   (`.github/release.yml`).
+6. **Publish** (the maintainer): read the draft, then publish it on the
+   releases page.
+
+A pull request that changes the workflow or its scripts runs the build
+path as a dry run (build, check, package, checksums; no attestation, no
+release), and so does a manual run (`workflow_dispatch`) on any branch.
+
 ## How decisions are made
 
 - **Why** something is the way it is lives in an Architecture Decision Record

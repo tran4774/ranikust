@@ -2,7 +2,8 @@
 
 ## Where the project is
 
-ranikust is **pre-alpha**. There is no release. The binary builds a
+ranikust is **pre-alpha**: its releases are pre-releases
+([Installing](install.md)), with no stable release yet. The binary builds a
 Dockerfile in overlay mode as root, stages in parallel, or in kaniko mode
 where root may not mount (on a container's `/`, as kaniko, or a directory
 per stage elsewhere), and writes an OCI layout, a Docker tar or pushes

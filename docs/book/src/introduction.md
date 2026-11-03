@@ -5,9 +5,11 @@ ranikust builds container images from Dockerfiles, like
 static Linux binary, with no daemon and no container runtime, and it is meant
 to run both inside a container and directly on a host or a VM.
 
-> **Status: pre-alpha. Nothing described in this guide works yet.** There is
-> no release, and the binary does not build images. The pages describe the
-> design the code is being written to. See [Status and roadmap](status.md).
+> **Status: pre-alpha.** ranikust builds images as root, in overlay mode or
+> in kaniko mode, and its releases are pre-releases ([Installing](install.md)).
+> Rootless builds, the layer cache and some instructions come in later
+> phases; the pages say where something is not built yet. See
+> [Status and roadmap](status.md).
 
 ## Why ranikust
 
