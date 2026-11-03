@@ -136,7 +136,9 @@ is made by a random name and removed at once, while no `RUN` runs, so it stays
 on disk, not in the container's memory ([ADR-0056]). After a build in the
 container was killed (ranikust not its first process), later builds there keep
 this state in memory and cannot `COPY --from` an earlier stage or an image:
-restart the container, or give the state directory a volume (below).
+restart the container, or run ranikust as the container's first process
+([ADR-0066]). On a volume (below) the state stays on disk even then, but
+`COPY --from` still fails.
 
 **What ranikust cannot hide** (it warns about each):
 
@@ -259,6 +261,7 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0060]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md
 [ADR-0061]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0061-per-stage-directories-hand-over-to-the-last-reader-and-release-early.md
 [ADR-0065]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0065-single-snapshot-refused-for-good.md
+[ADR-0066]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md

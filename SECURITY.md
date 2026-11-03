@@ -86,10 +86,12 @@ These are documented properties, not vulnerabilities:
   ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 - **`RUN` shares the host network** unless `--network=none` is given
   ([ADR-0010](docs/adr/0010-run-network-host-or-none.md)).
-- **Refusing to run** where no mode works. Today that is every regular user,
-  and root outside a container where it may not mount; the rootless mode and
-  its AppArmor advice for Ubuntu 24.04 or later are Phase 3
-  ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
+- **Refusing to run** where no mode works. Today that includes every regular
+  user, root outside a container where it may not mount, and root in a
+  container whose `/proc/sys` is writable
+  ([ADR-0054](docs/adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md));
+  the rootless mode and its AppArmor advice for Ubuntu 24.04 or later are
+  Phase 3 ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
 - Vulnerabilities in base images, in the tools a Dockerfile runs, or in the
   kernel. Report kernel bugs to the kernel.
 
