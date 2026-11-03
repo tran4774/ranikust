@@ -78,7 +78,8 @@ damage the machine or the design:
 - New work starts from the latest `main` on its own branch:
   `git switch main && git pull --ff-only && git switch -c <type>/<scope>-<topic>`.
   Commit at every checkpoint (builds, `just check` passes, docs updated);
-  push the branch and open a draft pull request; marking it ready, merging,
+  run the reviews locally until no blocker is left, then push the branch
+  and open a draft pull request; marking it ready, merging,
   pushing to `main`, tags and releases only when the maintainer asks
   (`docs/agents/workflow.md#github-flow`). Issues for planned work,
   `question` issues and `bug` issues (a flaky test) may be opened without
@@ -110,7 +111,7 @@ Subagents (`.claude/agents/`; when to use each: `docs/agents/workflow.md`):
   `rnk-snapshot`, `rnk-store` or set-up; then the fix loop of workflow.md.
 - `red-team` (opus): hostile inputs and attack tests after `host-safety`;
   never product code.
-- `reviewer` (opus): fresh-context review before merge.
+- `reviewer` (opus): fresh-context review before the first push.
 - `poc-runner` (sonnet): settles an unverified claim about Linux or a
   runtime by experiment, in the VM for anything privilege-related.
 - `upstream-oracle` (sonnet): what kaniko, BuildKit or buildah do, from

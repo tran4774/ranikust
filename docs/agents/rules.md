@@ -111,7 +111,9 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   `just check` and already has its docs updated. Conventional Commits
   ([workflow.md](workflow.md#commits)); small commits are fine, pull requests
   are squash-merged.
-- Push your branch and open a draft pull request for it (`ADR-0087`); mark
+- Push only after the local review loop has no blocker left, then open a
+  draft pull request (`ADR-0087`; [workflow.md](workflow.md#github-flow));
+  a later fix is reviewed locally before it is pushed too. Mark
   it ready, merge it, push to `main` or push a tag only when the maintainer
   asks ([workflow.md](workflow.md#github-flow)). Never force-push: bring a
   branch up to date by merging `main` into it.

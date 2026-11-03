@@ -150,18 +150,23 @@ request (`ADR-0088`).
    to the Project.
 2. **Branch** from the latest `main` ([Commits](#commits)); the Project item
    goes to In Progress.
-3. **Draft pull request:** `git push -u origin <branch>`, then
+3. **Review locally.** Commit on the branch and run the reviews the change
+   needs (`reviewer`; `host-safety` and `red-team` as the table below
+   says) on the local branch. The fix loop
+   ([below](#host-safety-fix-loop)) runs to the end, with no blocker left,
+   before anything is pushed: every push starts CI and notifies watchers,
+   so the first push is a reviewed change, not a draft of one.
+4. **Draft pull request:** `git push -u origin <branch>`, then
    `gh pr create --draft` with the template filled, labels `agent` and the
-   area; the item goes to In review.
-4. **Checks and reviews.** CI runs on the pull request; the test plan names
-   the tiers run elsewhere. `reviewer`, `host-safety` and `red-team` report
-   to the main session as before; their summary goes on the pull request
-   as a comment once the findings are fixed, never the details of an open
-   weakness.
-5. **Merge.** The maintainer marks the pull request ready and squash-merges
+   area, and the summary of the review rounds (never the details of an
+   open weakness); the item goes to In review.
+5. **Checks.** CI runs on the pull request; the test plan names the tiers
+   run elsewhere. A fix for CI or for the maintainer's comments goes
+   through the same local loop before it is pushed.
+6. **Merge.** The maintainer marks the pull request ready and squash-merges
    it, or tells the agent to; the branch is deleted, the issue closes and
    the Project's built-in workflow moves the item to Done.
-6. **Clean up.** After the merge, the main session runs
+7. **Clean up.** After the merge, the main session runs
    `just prune-worktrees`: every agent worktree carries its own `target/`
    of several GB, and 32 left behind once filled 126 GB. It removes only
    merged, unchanged worktrees no running agent holds, with their local
@@ -320,11 +325,12 @@ For a branch written by a fork (an agent in its own worktree):
 2. The main session sends the findings back to the same fork (it keeps the
    task's context); it never starts a new agent for the fix.
 3. The fork fixes on its branch, runs `just check` (and the VM suites when
-   set-up or the sandbox changed) and reports.
+   set-up or the sandbox changed), commits without pushing and reports.
 4. The main session asks the same reviewer to re-check only the fix
-   commits.
-5. No blocker left: a summary of the rounds goes on the pull request
-   ([GitHub flow](#github-flow)), and the maintainer merges it.
+   commits, on the local branch.
+5. No blocker left: the fork pushes, and a summary of the rounds goes on
+   the pull request ([GitHub flow](#github-flow)); the maintainer merges
+   it.
 
 A test result counts only from the harness's exit status, never from an
 agent reading a printed table: a suite that prints a verdict table must
