@@ -91,8 +91,12 @@ Propose one before using it.
 - Before starting a long run, check nothing else is up:
   `pgrep -f '^qemu-system'` (anchor the pattern, or it matches your own
   shell). Run it in the background and wait for its notification.
-- After a run, no QEMU, no `target/vm/run.*` and no monitor socket dir
-  should be left. If one is, it was not torn down: report it, then stop it.
+- After a run, no QEMU, no passt, no registry forwarder (`socat`, or the
+  `sh` of `registry-forward`), no network-probe listener (its command line
+  names `target/vm/run.*/probe`), no `target/vm/run.*`, no monitor socket
+  dir (`$XDG_RUNTIME_DIR/rnk-vm.*`) and no `/tmp/rnk-vm-passt.*` should be
+  left (ADR-0086). If one is, it was not torn down: report it, then stop
+  it.
 
 ## Clean up what a test leaves
 

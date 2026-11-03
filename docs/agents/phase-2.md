@@ -150,6 +150,10 @@ touched:
   ignored, removed after its `RUN`, and both refusals lifted (Q-453);
   [Q-454](../open-questions.md) (an existing target, missing parents)
   first.
+- [ADR-0086](../adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)
+  (lead 28 of the Phase 1-2 audit, fixed): run the T2 VM's passt in its
+  own network namespace under pasta, as defence in depth (it needs a user
+  namespace on the host, checked against the rules first).
 - Open questions left for their phases: Q-438 (context reads with the
   owner's credentials, Phase 5), Q-441 (a cache for kaniko mode on `/`,
   with Phase 4's layer cache), Q-444 (`zeroize`, Phase 6), Q-447
