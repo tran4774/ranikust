@@ -25,7 +25,8 @@ gh attestation verify "ranikust-$v-x86_64-unknown-linux-musl.tar.gz" \
 
 The first command checks that the download is complete. The second checks
 the tarball's build provenance: that GitHub Actions built it from this
-repository's release workflow, from the tagged source. It needs the
+repository's release workflow, from the tagged source
+([ADR-0089](https://github.com/tran4774/ranikust/blob/main/docs/adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md)). It needs the
 [GitHub CLI](https://cli.github.com/), version 2.49 or later.
 
 ## Install on a host

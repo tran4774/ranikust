@@ -1,7 +1,9 @@
 # Contributing to ranikust
 
-Thank you for your interest. ranikust is pre-alpha: the workspace exists, the
-features do not yet. Before starting anything larger than a small fix, open
+Thank you for your interest. ranikust is pre-alpha: it builds images as
+root, in overlay mode or in kaniko mode, and its releases are pre-releases;
+rootless builds, the layer cache and more instructions come in later phases
+(the [roadmap](README.md#roadmap)). Before starting anything larger than a small fix, open
 an issue so the work fits the plan in [`ARCHITECTURE.md`](ARCHITECTURE.md) and
 the decisions in [`docs/adr/`](docs/adr/).
 
@@ -140,25 +142,34 @@ under `Unreleased` in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Releasing
 
-Releases follow ADR-0089. Before 1.0 every release is a pre-release: a
+Releases follow
+[ADR-0089](docs/adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md).
+Before 1.0 every release is a pre-release: a
 minor version marks the end of a phase, a patch version ships fixes and
 user-visible changes once `main` is green, the privileged T2 tests
 included. A release is one static `x86_64-unknown-linux-musl` binary in a
 tarball, with `SHA256SUMS` and a GitHub build provenance attestation; there
 is no container image and no aarch64 build yet.
 
-1. **Release pull request** (anyone, agents included). From the latest
-   `main`, on a branch `release/vX.Y.Z`, run `just release-prepare X.Y.Z`.
-   It sets the workspace version, refreshes `Cargo.lock` offline and drafts
-   the `## [X.Y.Z]` section of `CHANGELOG.md` from the `## Changelog`
-   sections of the pull requests merged since the last tag, listing the
-   ones without an entry. Edit the section for users (what changed for
-   them, not how), delete the draft comment, commit it as
+1. **Release pull request** (anyone, agents included; an agent asks before
+   any tag or release,
+   [ADR-0087](docs/adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md)).
+   From the latest `main`, on a branch `release/vX.Y.Z`, run
+   `just release-prepare X.Y.Z`. It sets the workspace version, refreshes
+   `Cargo.lock` offline and drafts the `## [X.Y.Z]` section of
+   `CHANGELOG.md` from the `## Changelog` sections of the pull requests
+   merged since the last tag
+   ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)),
+   listing the ones without an entry. Edit the section for users (what
+   changed for them, not how), delete the draft comment, commit it as
    `chore(release): vX.Y.Z` and open the pull request with the `release`
    label. The recipe never commits, tags or pushes.
-2. **Merge** (the maintainer), once CI and the T2 tests are green.
-3. **Tag** (the maintainer only; a ruleset keeps `v*` tags to the
-   maintainer): tag the merge commit and push the tag.
+2. **Merge** (the maintainer), once CI and the T2 tests are green; the
+   `main` ruleset accepts changes only through a pull request with the CI
+   checks passed.
+3. **Tag** (the maintainer only: the `release tags` ruleset lets only the
+   maintainer create, move or delete `v*` tags): tag the merge commit and
+   push the tag.
 
    ```sh
    git switch main && git pull --ff-only
@@ -178,8 +189,8 @@ is no container image and no aarch64 build yet.
    pre-release whose notes are the tag's `CHANGELOG.md` section, followed
    by the merged pull requests GitHub lists by label
    (`.github/release.yml`).
-6. **Publish** (the maintainer): read the draft, then publish it on the
-   releases page.
+6. **Publish** (the maintainer): read the draft, publish it on the
+   releases page, and announce it in the repository's Discussions.
 
 A pull request that changes the workflow or its scripts runs the build
 path as a dry run (build, check, package, checksums; no attestation, no
