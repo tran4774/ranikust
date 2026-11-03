@@ -73,7 +73,8 @@ just ci                   # everything CI runs on a full run, before you open a 
 Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
 documentation; `just docs-lint` (needs python3; CI runs it on every pull
-request) after an ADR, a marker or an open question changes. Its check of
+request) after an ADR, a marker, an open question, a link or a heading
+changes. Its check of
 the `[open: #N]` markers needs `gh` installed and logged in (`gh auth
 login`) with network access; without them it is skipped locally, and the
 last line says so. Every recipe that mirrors CI runs exactly the command

@@ -16,6 +16,15 @@ r"""Mechanical checks on the decision records (`just docs-lint`).
   paginated call). In rustdoc comments the marker is written `\[open: #N]`
   so rustdoc does not read it as a link; the check finds it either way.
 
+- every relative link in Markdown (inline, reference definition or image),
+  and every link to this repository's `main` on github.com, names a file
+  that exists and, for a Markdown file, a heading or `<a name>` anchor it
+  has (GitHub's anchor rules; mdBook's agree for the book); a Markdown path
+  named in a code span or in code (`docs/agents/rules.md#writing` in a
+  Rust comment) must resolve the same way, from the repository root or from the
+  naming file's directory. Accepted ADRs cannot be edited, so a link from
+  one that breaks is fixed at its target (an `<a name>` alias).
+
 The files checked are the ones `git ls-files` lists (tracked, plus untracked
 ones not ignored), so agent worktrees, `target/` and other ignored trees are
 never read.
@@ -39,6 +48,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 ROOT = Path.cwd()
 REPO = "tran4774/ranikust"
@@ -84,6 +94,28 @@ STATUS = re.compile(r"^status:\s*([a-z-]+)", re.M)
 QUESTION = re.compile(r"^### (Q-\d+):", re.M)
 OLD_MARKER = re.compile(r"\[open: (Q-\d+)\]")
 MARKER = re.compile(r"\[open: #(\d+)\]")
+
+# Link checks. Templates hold placeholder links by design; the link check's
+# own tests hold broken ones on purpose.
+LINK_SKIP = ("docs/adr/template.md", "docs/research/TEMPLATE.md", "tests/docs/")
+CODE_SUFFIXES = (".rs", ".sh", ".py", ".toml", ".yml", ".yaml")
+REPO_URL = re.compile(r"^https://github\.com/" + re.escape(REPO) + r"/(?:blob|tree)/main/([^#?]+)(?:#(.*))?$")
+MD_LINK = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+# A reference definition is the whole line: `[label]: target "title"`.
+REF_DEF = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?\s*(?:\"[^\"]*\"|'[^']*'|\([^)]*\))?\s*$")
+CODE_SPAN = re.compile(r"(`+)(.+?)\1")
+FENCE = re.compile(r"^\s{0,3}(```|~~~)")
+HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$")
+HTML_ANCHOR = re.compile(r"<a\s+(?:name|id)=\"([^\"]+)\"")
+# A Markdown path named in a code span or in code. It must exist only when
+# it points into a documentation directory, so a bare name (`SKILL.md`), test
+# data (`docs/keep.md`) or a placeholder (`phase-N.md`) is not a reference;
+# with an anchor it is checked wherever it resolves.
+PATH_MENTION = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+\.md)(?:#([\w-]+))?")
+DOC_DIRS = re.compile(r"^(?:docs/(?:adr|agents|book|design|research|security)/|\.claude/(?:agents|skills)/)")
+PLACEHOLDER = re.compile(r"NNNN|N{2}-|-N\b|X\.Y\.Z|<|example")
+# Paths in test code are test data, not references.
+TEST_CODE = re.compile(r"(^|/)tests(/|\.rs$)|(^|/)test_[^/]*\.py$")
 
 
 def adr_checks(problems):
@@ -259,9 +291,118 @@ def question_checks(problems):
     return None
 
 
+def slug(text):
+    """GitHub's anchor for a heading: markup dropped, lower case, punctuation gone."""
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = text.replace("`", "").replace("*", "")
+    return re.sub(r"[^\w\- ]", "", text.strip().lower()).replace(" ", "-")
+
+
+_anchors = {}
+
+
+def anchors(path):
+    """The anchors a Markdown file defines: its headings, numbered like GitHub's duplicates, and `<a name>`."""
+    if path not in _anchors:
+        found, seen, fenced = set(), {}, False
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if FENCE.match(line):
+                fenced = not fenced
+                continue
+            if fenced:
+                continue
+            found.update(HTML_ANCHOR.findall(line))
+            m = HEADING.match(line)
+            if m:
+                s = slug(m.group(1))
+                n = seen.get(s, 0)
+                found.add(s if n == 0 else f"{s}-{n}")
+                seen[s] = n + 1
+        _anchors[path] = found
+    return _anchors[path]
+
+
+def check_target(rel, i, target, problems, mention=False):
+    """Checks one link or path; `mention` is a path named in code, not a link."""
+    if target.startswith(("http://", "https://")):
+        m = REPO_URL.match(target)
+        if not m:
+            return
+        candidates, frag = [ROOT / unquote(m.group(1)).rstrip("/")], m.group(2)
+    elif re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("//"):
+        return
+    else:
+        path, _, frag = target.partition("#")
+        base = (ROOT / rel).parent
+        if not path:
+            candidates = [ROOT / rel]
+        elif mention:
+            candidates = [ROOT / unquote(path), base / unquote(path)]
+        else:
+            candidates = [base / unquote(path)]
+    dest = next((c for c in candidates if c.exists()), None)
+    if dest is None:
+        name = target.partition("#")[0]
+        if not mention or (DOC_DIRS.match(name) and not PLACEHOLDER.search(name)):
+            problems.append(f"{rel}:{i}: {target}: no such file")
+        return
+    frag = unquote(frag or "")
+    if frag and dest.suffix == ".md" and dest.is_file() and frag not in anchors(dest):
+        problems.append(f"{rel}:{i}: {target}: {dest.relative_to(ROOT)} has no anchor #{frag}")
+
+
+def link_checks(problems, files):
+    for rel in files:
+        if rel.startswith(LINK_SKIP) or not (rel.endswith(".md") or rel.endswith(CODE_SUFFIXES) or rel == "justfile"):
+            continue
+        try:
+            lines = (ROOT / rel).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not rel.endswith(".md"):
+            if TEST_CODE.search(rel):
+                continue
+            for i, line in enumerate(lines, 1):
+                for path, frag in PATH_MENTION.findall(line):
+                    check_target(rel, i, path + (f"#{frag}" if frag else ""), problems, mention=True)
+            continue
+        fenced = False
+        for i, line in enumerate(lines, 1):
+            if FENCE.match(line):
+                fenced = not fenced
+                continue
+            if fenced:
+                continue
+            for span in (m.group(2) for m in CODE_SPAN.finditer(line)):
+                for path, frag in PATH_MENTION.findall(span):
+                    check_target(rel, i, path + (f"#{frag}" if frag else ""), problems, mention=True)
+            prose = CODE_SPAN.sub("", line)
+            targets = MD_LINK.findall(prose)
+            m = REF_DEF.match(prose)
+            if m:
+                targets.append(m.group(1))
+            for target in targets:
+                check_target(rel, i, target, problems)
+
+
+def tracked_files(problems):
+    """The repository's files, as `git ls-files` lists them (tracked, or untracked and not ignored)."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True, timeout=60, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        problems.append(f"cannot list the repository's files with git ls-files: {e}")
+        return []
+    return sorted({p for p in out.stdout.decode("utf-8", "replace").split("\0") if p})
+
+
 def main():
     problems = []
     adr_checks(problems)
+    link_checks(problems, tracked_files(problems))
     skipped = question_checks(problems)
     for p in problems:
         print(p)
