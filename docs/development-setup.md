@@ -1,7 +1,8 @@
 # Setting up a development machine
 
 **TL;DR:** From a fresh Linux machine to every test tier passing, step by
-step. [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) has the table
+step. This page owns the install commands and the version pins (they match
+CI); [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) has the table
 of what each tool is for. Commands are for Ubuntu (24.04 and 26.04) and
 Debian; other distributions need the same tools under their own package
 names.
@@ -41,9 +42,15 @@ just check            # fmt, clippy, T0 tests; rustup installs the pinned toolch
 just build-static     # the static-pie x86_64 musl binary
 ```
 
-For release work, also install `gh` (and log in with `gh auth login`);
-`cargo-about` and `git-cliff` are optional. CONTRIBUTING's table says what
-needs each.
+Also install `gh` and log in (`gh auth login`): `just docs-lint` checks its
+`[open: #N]` markers through it, and the release recipes read pull requests
+with it. For release work, `cargo-about` and `git-cliff` are optional:
+
+```sh
+cargo install --locked cargo-about@0.9.2 git-cliff
+```
+
+CONTRIBUTING's table says what needs each tool.
 
 ## 2. aarch64 (when you touch anything platform-specific)
 
@@ -85,7 +92,8 @@ just test-aarch64     # static-pie aarch64 binary, then the T0 tests under qemu-
 
 ```sh
 sudo apt install podman podman-compose skopeo openssl python3-bcrypt
-just smoke            # the smoke cases in rootless podman
+just smoke            # smoke-build and the tests/smoke/e2e build, in rootless podman
+just smoke-case       # the quick smoke cases (tests/smoke/cases)
 just registry-up      # HTTP and self-signed HTTPS test registries (tests/registry)
 just registry-down
 ```
@@ -99,7 +107,8 @@ created.
 Real root never runs on your machine: `just test-vm` boots a throwaway
 QEMU/KVM VM as you ([testing](testing.md#the-vm-harness-tier-t2)). It needs
 QEMU 10.1 or later with its passt backend and passt 2024_10_30 or later
-(Ubuntu 26.04's packages; 24.04's QEMU 8.2 is refused,
+(Ubuntu 26.04's packages; the QEMU of Ubuntu 24.04, 8.2, and of Debian 13,
+10.0, is refused,
 [ADR-0086](adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)).
 
 ```sh

@@ -25,23 +25,25 @@ the build needs root, and nothing in the dev loop should ever be run with
 |---|---|---|
 | [rustup](https://rustup.rs/) | Reads [`rust-toolchain.toml`](rust-toolchain.toml) and installs the pinned compiler, `rustfmt`, `clippy`, `rust-analyzer` and both musl targets on the first `cargo` command | your distribution, or rustup.rs |
 | [just](https://github.com/casey/just) | Runs the recipes in [`justfile`](justfile) | `cargo install --locked just` |
-| [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | `cargo install --locked cargo-deny@0.20.2` |
-| [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
+| [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
+| [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | Python 3.11 or later | `just docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
 | [GitHub CLI](https://cli.github.com/) (`gh`) | `just release-prepare` reads the merged pull requests; checking a release's attestation needs 2.102.0 or later | your distribution, or cli.github.com |
-| [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | `cargo install --locked cargo-about@0.9.2` |
+| [cargo-about](https://github.com/EmbarkStudios/cargo-about) | Optional: `just third-party-licenses` writes the licence notices the release ships (ADR-0094); the release workflow installs its own | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
 | `file`, `readelf` | `just build-static` and `just test-aarch64` check the binary is static | `file` and `binutils` packages |
 | A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
-| [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
-| [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | `cargo install --locked cargo-zigbuild@0.24.0` |
+| [zig](https://ziglang.org/) | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
+| [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | `aarch64-linux-gnu-gcc` | Links the aarch64 binary as static-pie in `just test-aarch64` on x86_64 (on aarch64 the native `cc` does); without it the recipe links with zig and cannot check static-pie (Q-140) | `gcc-aarch64-linux-gnu` package |
 | `qemu-aarch64` (QEMU user mode) 9.1 or later | `just test-aarch64`, so `just ci`, on an x86_64 machine: the aarch64 tests under emulation (8.2 has no `openat2`); a binfmt_misc entry also runs ranikust's own CLI tests. Not needed on aarch64, where they run natively (as in CI) | `qemu-user` package if 9.1 or later, else Debian 13's `qemu-user` unpacked with `dpkg -x`; `QEMU_AARCH64=<path>` |
 | rootless [Podman](https://podman.io/) | `just smoke` and `just smoke-case` (the T1 smoke tests, [docs/testing.md](docs/testing.md)), `just test-vm e2e` and `ultra` (they save the reference images from it), and `just registry-up` (`podman compose`, with `openssl`, python3's `bcrypt` and `skopeo`) | `podman`, `podman-compose` or `docker-compose`, `python3-bcrypt`, `skopeo` packages |
 | A [`nextjs-kaniko`](docs/testing.md#end-to-end-workloads-e2e) checkout next to the repository, with its registry and verdaccio storage filled and its images in podman | Only `just test-vm ultra`, the ultra benchmark; read, never written | `RANIKUST_NEXTJS_KANIKO=<path>` |
 | QEMU 10.1 or later with KVM and its passt backend, [passt](https://passt.top/) 2024_10_30 or later, `xorriso`, `jq`; `socat` for the `push` suite | Only `just test-vm`, the T2 VM harness; `/dev/kvm` must be readable and writable by you (its group or an ACL), never through `sudo`. passt is the VM's egress ([ADR-0086](docs/adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)) | `qemu-system-x86`, `qemu-utils`, `passt`, `xorriso`, `jq`, `socat` packages |
 
-The versions of cargo-deny, mdBook, zig and cargo-zigbuild match CI.
+[docs/development-setup.md](docs/development-setup.md) owns the install
+commands and the version pins of cargo-deny, mdBook, zig, cargo-zigbuild and
+cargo-about; they match CI, so install those versions, not the latest.
 
 ## Development loop
 
@@ -99,13 +101,13 @@ rules):
 |---|---|---|
 | T0 | Unit and in-process tests | Anywhere: `just test` |
 | T1 | Rootless integration (user namespaces, rootless Podman); today the smoke tests only | Your machine: `just smoke` |
-| T2 | Privileged integration: real root, overlay, rootful Docker, host-safety attacks (T2c: the root tests that mean the same in a throwaway container) | A disposable VM only: `just test-vm`; on a full CI run, a GitHub-hosted runner |
-| T3 | CI: format, clippy, T0, cargo-deny, docs, docs-lint, the static build, the native aarch64 tests | GitHub Actions, by lanes ([above](#what-ci-runs)) |
+| T2 | Privileged integration: real root, overlay, rootful Docker, host-safety attacks. T2c: the root tests that mean the same in a throwaway container | A disposable VM only: `just test-vm`; on a full CI run, a GitHub-hosted runner. T2c also runs through `just test-container`, on the maintainer's marked test machine only |
+| T3 | CI: format, clippy, T0, cargo-deny, docs, docs-lint; on a full run also the static build and the native aarch64 tests | GitHub Actions, by lanes ([above](#what-ci-runs)) |
 
 Tests above T0 are marked `#[ignore = "T1: ..."]`, `"T2c: ..."` or
 `"T2: ..."` and run only through their harness. **Never run a T2 or T2c
-test, or ranikust in kaniko mode, on your own machine**: kaniko mode empties
-its root filesystem, and the rest needs real root
+test on your own machine, nor ranikust in kaniko mode as root outside a
+throwaway container**: there it empties `/`
 ([rules](docs/agents/rules.md#host-safety)). A bug fix comes with a test
 that fails without the fix.
 
