@@ -34,6 +34,7 @@ BuildKit's source.
 | Build options, contexts, `.dockerignore` | `frontend/dockerui/` |
 | `COPY` semantics (chown, chmod, wildcards, symlinks) | `solver/llbsolver/file/`, `solver/llbsolver/ops/file.go`, vendored `github.com/tonistiigi/fsutil` |
 | `RUN` environment, hosts, resolv.conf, network | `executor/oci/`, `executor/runcexecutor/`, `solver/llbsolver/ops/exec.go` |
+| Secrets, SSH forwarding | `session/` |
 | Overlay diffs and layers | `util/overlay/overlay_linux.go`, `snapshot/`, vendored containerd `pkg/archive/` |
 | Image config, media types, compression | `exporter/containerimage/`, `util/compression/` |
 | Cache keys | `solver/`, `cache/`, `solver/llbsolver/ops/` (`CacheMap`) |
@@ -58,9 +59,8 @@ BuildKit's source.
      BuildKit does.
 
 For broad questions, delegate to the `upstream-oracle` subagent with the
-resolved path instead of reading in the main session. If
-`<path>/graphify-out/graph.json` exists, run `graphify query "<question>"
---graph <path>/graphify-out/graph.json` first and pass the output.
+resolved path and the checkout's graphify output (CLAUDE.md, "Delegating to
+subagents") instead of reading in the main session.
 
 Reading BuildKit to learn its behaviour is fine. Translating its code
 closely makes the result a derivative of Apache-2.0 code: follow "Porting

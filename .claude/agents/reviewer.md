@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Fresh-context review of a ranikust change before commit or pull request, against docs/agents/rules.md, the crate boundaries in ARCHITECTURE.md and the threat model. Give it only the scope (commit range, branch or files) and the requirement the change implements, not your own suspicions. Reports findings; never edits.
+description: Fresh-context review of a ranikust change on the local branch, before commit or push (ADR-0096), against docs/agents/rules.md, the crate boundaries in ARCHITECTURE.md and the threat model. Give it only the scope (commit range, branch or files) and the requirement the change implements, not your own suspicions. Reports findings; never edits.
 tools: Read, Grep, Glob, Bash
 model: opus
 ---

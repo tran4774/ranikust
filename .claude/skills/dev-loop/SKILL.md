@@ -5,10 +5,11 @@ description: How to change Rust code in ranikust - check narrow then wide, write
 
 # Development loop
 
-The commands are in `CLAUDE.md`, `docs/agents/workflow.md` and the `justfile`; this skill is about the
-order and the discipline. The ideas in "Test first", "Debugging" and "Done
-means verified" are adapted from the `test-driven-development`,
-`systematic-debugging` and `verification-before-completion` skills of
+The commands are in `CLAUDE.md`, `docs/agents/workflow.md#dev-loop` and the
+`justfile`; this skill is about the order and the discipline. The ideas in
+"Test first", "Debugging" and "Done means verified" are adapted from the
+`test-driven-development`, `systematic-debugging` and
+`verification-before-completion` skills of
 [obra/superpowers](https://github.com/obra/superpowers) (MIT), commit
 `2ce8aa1`. No text was copied.
 
@@ -16,19 +17,16 @@ means verified" are adapted from the `test-driven-development`,
 
 1. Edit. The PostToolUse hook runs `rustfmt` on each `.rs` file you touch.
    Comment why, not what, in one short line above the code it explains
-   (`docs/agents/rules.md#writing`).
-2. Read rust-analyzer diagnostics, or `cargo check -p <crate>`.
-3. `cargo test -p <crate> <filter>`: only the tests for what you changed.
-4. `cargo clippy -p <crate> --all-targets -- -D warnings`.
-5. `just check` (fmt check, clippy and all T0 tests) before you report the
+   (`docs/agents/rules.md#comments`).
+2. `cargo check -p <crate>` (or rust-analyzer diagnostics), then
+   `cargo test -p <crate> <filter>`: only the tests for what you changed,
+   then `cargo clippy -p <crate> --all-targets -- -D warnings`.
+3. `just check` (fmt check, clippy and all T0 tests) before you report the
    task as done.
-6. Only when relevant:
-   - `just check-aarch64`, then `just test-aarch64` (T0, natively on aarch64 or under qemu-user on x86_64),
-     after touching syscalls, `cfg`, FFI or integer widths;
-   - `just deny` after adding or updating a dependency;
-   - `just doc` after changing public items or doc comments;
-   - `just book` after editing `docs/book/`;
-   - `just ci` before opening a pull request.
+4. Only when relevant: `just check-aarch64` and `just test-aarch64`
+   (syscalls, `cfg`, FFI, integer widths), `just deny` (dependencies),
+   `just doc` (public items or doc comments), `just book` (`docs/book/`),
+   `just ci` before opening a pull request.
 
 Fix a failure at the narrowest level that shows it, then widen again.
 
@@ -41,13 +39,12 @@ Fix a failure at the narrowest level that shows it, then widen again.
   write just enough code to pass, then tidy up with the tests green.
 - Test behaviour through the public API of the crate, not private details.
 - Tests run unprivileged and write only below a fresh temporary directory.
-  Anything that needs user namespaces, mounts or root belongs to tier T1 or
-  T2 (`docs/testing.md`): mark it `#[ignore = "T2c: <profile>: <why>"]` if
-  it means the same in a throwaway rootful Docker container (run it with
-  `just test-container unit-c`, ADR-0063), else `#[ignore = "T2: <why>"]`;
-  run it with `just test-vm unit` (the `vm-test` skill, which runs both), or
-  say in your report that it was not run. Never run it on the host to "just
-  check".
+  Anything that needs user namespaces, mounts or root belongs to tier T1,
+  T2c or T2 and carries its `#[ignore = "..."]` marker
+  (`docs/testing.md#rules`). Run it only through its harness
+  (`just test-container unit-c`, ADR-0063; `just test-vm unit`, the
+  `vm-test` skill, which runs both), or say in your report that it was not
+  run. Never run it on the host to "just check".
 
 ## Debugging
 

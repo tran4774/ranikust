@@ -24,15 +24,14 @@ you run the smallest experiment that settles one.
 
 - **Anything about privileges, capabilities, ptrace, mounts, devices or
   root behaviour runs in the disposable test VM**, as root there or in
-  Docker inside it: `tests/vm/vm.sh` and the `vm-test` skill; kernels via
-  `RANIKUST_VM_RELEASE=noble|jammy`. Rootless podman maps root to a user
+  Docker inside it (`vm-test` skill, `tests/vm/vm.sh`; kernels via
+  `RANIKUST_VM_RELEASE=noble|jammy`). Rootless podman maps root to a user
   and has given wrong answers before (`mknod` EPERM that Docker rootful
   does not give); use it only for claims about rootless podman itself,
   and say so.
-- One VM at a time: check `pgrep -f '^qemu-system'` first; the harness
-  holds a lock, do not work around it. If this session lacks the `kvm`
-  group (`/dev/kvm` not writable), run the VM command as
-  `sg kvm -c '<command>'`.
+- One VM at a time: check `pgrep -f '^qemu-system'` first and do not work
+  around the harness's lock. Without the `kvm` group, run the VM command
+  as `sg kvm -c '<command>'`.
 - Unprivileged claims (file formats, syscall return values as a user) may
   run on the host under a fresh temporary directory.
 - Experiments live in a new directory under `/tmp` (or the session

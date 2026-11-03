@@ -46,7 +46,9 @@ not an opinion.
    under a fresh temporary directory; T1 rootless podman
    (`tests/smoke/cases/`, `just smoke-case`); T2 `#[ignore = "T2: ..."]`
    tests or a VM guest script, run with `just test-vm` (one VM at a time;
-   `sg kvm -c '...'` when the session lacks the `kvm` group).
+   `sg kvm -c '...'` when the session lacks the `kvm` group); T2c
+   `#[ignore = "T2c: <profile>: ..."]` where the test means the same in a
+   throwaway rootful Docker container (`docs/testing.md#rules`).
 3. Run it. A passing attack test means the defence held: keep it as a
    regression test. A failing one is a finding: report it with the test,
    the observed effect and the T-id; do not fix product code.
@@ -67,8 +69,9 @@ happened, why it matters. Then what you did not try.
   (`tests.rs`, `#[cfg(test)]`), or weaken an existing test.
 - Run anything privileged on the host: root, `sudo`, `mount`, `unshare`,
   `nsenter`, kaniko mode on the host's `/`. T2 runs only in the VM, or in
-  CI on GitHub-hosted runners (ADR-0090); never run `tests/vm/runner.sh`
-  yourself.
+  CI on GitHub-hosted runners (ADR-0090); T2c only in throwaway rootful
+  Docker containers on the test machine (ADR-0063); never run
+  `tests/vm/runner.sh` yourself.
 - Declare the code safe. You report which attacks held, not that none
   exists.
 - Push, merge, or publish hostile inputs outside the repository's tests.

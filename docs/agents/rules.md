@@ -40,13 +40,13 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   (`ADR-0048`), locked, with the state directory on the ignore list;
   otherwise one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs`,
   copied from its parent stage, never hardlinked (`ADR-0059`, `ADR-0017`).
-  The state directory is checked by
-  descriptor: owned by the running user, `0700`, its ancestors not writable
-  by group or others (root-owned sticky directories excepted).
-- `RUN` enters via `pivot_root` (`MS_MOVE` + `chroot` if seccomp blocks it);
-  never a bare `chroot`: `--parallel-stages` is refused (`ADR-0060`, T5); the
-  whole root tree is `nodev` (T18). Bounding and inheritable
-  capabilities drop to Docker's defaults for every `USER` (T6).
+  The state directory is checked by descriptor: owned by the running user,
+  `0700`, its ancestors not writable by group or others (root-owned sticky
+  directories excepted).
+- `RUN` enters via `pivot_root` (`MS_MOVE` + `chroot` if seccomp blocks it),
+  never a bare `chroot`: `--parallel-stages` is refused (`ADR-0060`, T5). The
+  whole root tree is `nodev` (T18). Bounding and inheritable capabilities drop
+  to Docker's defaults for every `USER` (T6).
 - `USER` from the root's `/etc/passwd`/`/etc/group` (`rnk-rootfs`), never
   the host's; every descriptor `O_CLOEXEC`, none reaches `RUN` (T7).
 - Credentials and secrets never reach logs, layers, the config, cache keys,
@@ -98,8 +98,9 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
 - A bug fix comes with a test that fails without it.
 - T0 tests need no privileges or network and write only below a fresh temp
   dir, cleaned up on failure too. Tests needing user namespaces or root are
-  `#[ignore = "T1: ..."]`/`"T2: ..."`; never un-ignore them or run T2 on the
-  host. See [`docs/testing.md`](../testing.md#rules).
+  `#[ignore = "T1: ..."]`, `"T2c: <profile>: ..."` or `"T2: ..."`; never
+  un-ignore them or run T2 or T2c on the host. See
+  [`docs/testing.md`](../testing.md#rules).
 
 ## Branches and commits
 
@@ -108,9 +109,10 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   `git switch main && git pull --ff-only && git switch -c <type>/<scope>-<topic>`,
   for example `feat/rnk-oci-types` or `fix/rnk-rootfs-symlink-escape`.
 - Commit at every checkpoint: a coherent step that builds, passes
-  `just check` and already has its docs updated. Conventional Commits
-  ([workflow.md](workflow.md#commits)); small commits are fine, pull requests
-  are squash-merged.
+  `just check` and already has its docs updated. Commit messages and the
+  pull request title follow Conventional Commits
+  ([CONTRIBUTING.md](../../CONTRIBUTING.md#commits-and-pull-requests)); small
+  commits are fine, pull requests are squash-merged.
 - Push only after the local review loop has no blocker left, then open a
   draft pull request (`ADR-0087`, `ADR-0096`; [workflow.md](workflow.md#github-flow));
   a later fix is reviewed locally before it is pushed too. Mark
@@ -144,8 +146,8 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 
 | Change | Update |
 |---|---|
-| Crate added, removed or responsibility moved; API or status changed | `ARCHITECTURE.md` and the crate's `# Boundaries` doc (structure), its card in [crates/](crates/), the [README.md](README.md) table |
-| Design changed | the matching `docs/design/*.md` |
+| Crate added, removed or responsibility moved; a dependency added between internal crates; API or status changed | `ARCHITECTURE.md` (code map, boundaries, intended dependency direction) and the crate's `# Boundaries` doc (structure), its card in [crates/](crates/), the [README.md](README.md) table |
+| Design changed (for example mode detection, overlay snapshots, kaniko mode, scheduling, the `RUN` sandbox, path resolution and deletion, layer streaming, cache keys, the store) | the matching `docs/design/*.md` (`modes-and-detection`, `overlay-snapshot`, `kaniko-mode`, `scheduler`, `sandbox`, `rootfs`, `streaming`, `cache-and-store`, `metrics`) |
 | Decision made or reversed | a new ADR; never rewrite an accepted one |
 | User-visible change (flag, default, output, mode behaviour) | the pull request's `## Changelog` section, never `CHANGELOG.md` (`ADR-0088`), and the book |
 | Isolation or privilege behaviour | `SECURITY.md`, `docs/security/` |
@@ -160,10 +162,7 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 
 Write so that a person or an agent can act on it after one read.
 
-- English for code, comments, docs and commits. Conventional Commits
-  (`feat(rnk-rootfs): ...`), the pull request title too: it becomes the
-  squash commit's title, and its type only places a changelog entry written
-  without a heading ([CONTRIBUTING.md](../../CONTRIBUTING.md#commits-and-pull-requests)).
+- English for code, comments, docs and commits.
 - Write for a reader who never saw your session: no conversation history or
   "as discussed" in code, commits or PRs.
 - Claims about kaniko cite `kaniko@<commit> path:line`.

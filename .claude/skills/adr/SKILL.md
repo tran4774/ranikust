@@ -42,16 +42,15 @@ The conventions live in `docs/adr/README.md`; read it and
 5. **Index.** Append a row to the table under "Index" in `docs/adr/README.md`
    with the same columns as the existing rows (link, title, status, date,
    origin). Update the row of a superseded ADR too.
-6. **Follow-ups.** List which of these the decision changes, and offer to
-   update them in the same change: `ARCHITECTURE.md` (crate boundaries),
-   `docs/design/*.md` (how it works), `docs/book/` (user-visible behaviour),
-   the pull request's `## Changelog` section (user-visible changes; never
-   `CHANGELOG.md`, ADR-0088), `SECURITY.md` and
-   `docs/security/threat-model.md` (isolation or privilege).
+6. **Follow-ups.** List which docs of the "Keep in sync" table in
+   `docs/agents/rules.md` the decision changes (`ARCHITECTURE.md`,
+   `docs/design/*.md`, the book, the pull request's `## Changelog` section,
+   `SECURITY.md` and the threat model), and offer to update them in the
+   same change.
 7. **Questions.** If the ADR answers `question` issues (ADR-0088), name
    them in the ADR by issue number (`#N`; the 29 migrated ones also by
-   their `Q-NNN`, new ones have none, ADR-0091) and list `Closes #N` for
-   each, for the pull request that carries the ADR; each new ADR is its
-   own pull request, and merging it is accepting it.
+   their `Q-NNN`, `docs/agents/rules.md#open-questions`) and list
+   `Closes #N` for each, for the pull request that carries the ADR; each
+   new ADR is its own pull request, and merging it is accepting it.
 8. Show the user the new file path, the index row, the issues it closes and
    the follow-up list.

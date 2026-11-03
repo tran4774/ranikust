@@ -15,7 +15,8 @@ the rules that hold across all of them.
 |---|---|---|
 | T0 | `cargo test`, `just check` | everything that needs no privilege: parsers, encoders, path handling on temp dirs, the CLI as a black box |
 | T1 | `just smoke-case [name]`, `just smoke` (rootless podman) | the binary in a container without root |
-| T2 | `just test-vm [unit\|smoke\|quick\|push\|e2e]` | real root, mounts, `pivot_root`, rootful Docker; never on the host |
+| T2 | `just test-vm [unit\|smoke\|quick\|secrets\|push\|e2e]` | real root, mounts, `pivot_root`, rootful Docker; never on the host |
+| T2c | `just test-container unit-c` (ADR-0063) | root tests that mean the same in a throwaway rootful Docker container, on the test machine only |
 
 A T2-only check still gets a T0 test for its logic where one is possible.
 
@@ -28,11 +29,11 @@ test-vm quick` (`RANIKUST_QUICK_CASES="<name> ..."`) as real root. Add a
 case there rather than reaching for a big project; one concern per case,
 its checks in `case.sh` (helpers in `tests/smoke/cases.bash`).
 
-`just test-vm e2e` is the light e2e (W0 by every builder, a few
-minutes): the check of a change to the e2e harness. The nextjs-kaniko
-workloads (`just test-vm ultra`: W1–W3, tens of minutes per round) are
-the ultra benchmark, run only when the maintainer asks for performance
-numbers or an acceptance run (docs/testing.md#which-test-for-what).
+`just test-vm e2e` (W0 by every builder, a few minutes) is for a change to
+the e2e harness. The nextjs-kaniko workloads (`just test-vm ultra`: W1–W3,
+tens of minutes per round) run only when the maintainer asks for
+performance numbers or an acceptance run
+(docs/testing.md#which-test-for-what).
 
 ## Write tests the way large Rust CLIs do
 
@@ -81,16 +82,16 @@ Propose one before using it.
 
 - `tests/vm/vm.sh` keeps the verified cloud images and the e2e reference
   images in `tests/e2e/_vm-image/` of the **main checkout** (gitignored).
-  Every worktree finds the main checkout through `git rev-parse
-  --git-common-dir` and uses that one cache: never point
-  `RANIKUST_VM_CACHE` at a worktree copy, never download a second image.
+  Every worktree finds it through `git rev-parse --git-common-dir` and uses
+  that one cache: never point `RANIKUST_VM_CACHE` at a worktree copy, never
+  download a second image.
 - A run holds `flock` on `_vm-image/.vm.lock` until teardown; a second run
   waits (`RANIKUST_VM_LOCK_WAIT`, default 3600 s). Do not work around the
   lock or boot QEMU yourself. The host has 29 GiB: two VMs (4–12 GiB each)
   push it into swap and hang the e2e VM.
-- Before starting a long run, check nothing else is up:
-  `pgrep -f '^qemu-system'` (anchor the pattern, or it matches your own
-  shell). Run it in the background and wait for its notification.
+- Before a long run, check nothing else is up: `pgrep -f '^qemu-system'`
+  (anchor the pattern, or it matches your own shell). Run it in the
+  background and wait for its notification.
 - After a run, no QEMU, no passt, no registry forwarder (`socat`, or the
   `sh` of `registry-forward`), no network-probe listener (its command line
   names `target/vm/run.*/probe`), no `target/vm/run.*`, no monitor socket
