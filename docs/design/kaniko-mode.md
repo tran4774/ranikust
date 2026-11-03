@@ -119,9 +119,14 @@ the scheduler runs one stage at a time) or a private directory per stage
     report) then reaches only what that `RUN` could reach itself;
   - every `--secret` is read once while the build is prepared and never
     opened by path again (`Secret::load`); a `--secret src=` file on `/`
-    still gets a warning: every `RUN` there can read it ([open: Q-445]);
+    still gets a warning: every `RUN` there can read it, and copying it
+    into the image is the user's choice
+    ([ADR-0084](../adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md),
+    which also decides that a secret file works on `/` with its directory on
+    the ignore list: not built yet, [open: Q-453]);
   - registry credentials only over verified TLS: a `RUN` may edit
-    `/etc/hosts` and `/etc/resolv.conf` ([open: Q-446]);
+    `/etc/hosts` and `/etc/resolv.conf`, read per lookup as ADR-0051
+    accepts (Q-446);
   - kaniko mode on `/` where root may mount, or where `/proc/sys` is not
     a read-only mount, is refused ([ADR-0054](../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)); devices passed with
     `--device` stay the operator's choice;
@@ -224,7 +229,9 @@ settles them (Q-024):
   (`--tar-path`, `--oci-layout-path`, the digest files), `--metrics-file`
   and file secrets
   are refused before the root changes when they lie in it, unless the
-  ignore list keeps them (a volume, `/ranikust`, `--ignore-path`). In
+  ignore list keeps them (a volume, `/ranikust`, `--ignore-path`; for a file
+  secret on `/`, ADR-0084 will put its directory on the list, not built
+  yet). In
   every mode, an output must also lie outside the build context and be
   reached without a symlink, and `--context` must have no symlink in it
   (ADR-0076).
@@ -269,7 +276,9 @@ settles them (Q-024):
   a variable works, a cache mount is left out with a warning (the `RUN`
   runs without it, and what it writes at the target lands in its layer), and a secret as a file and `--network=none` are
   refused before any secret is read
-  ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)).
+  ([ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md);
+  [ADR-0084](../adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md)
+  lifts the refusal of a secret as a file, not built yet).
 - **What later units read is kept** before the root is reused, in the
   build's keep area `<state>/builds/<id>/kept`, beside the root and never
   inside it (on `/` it lies in the ignored state directory). At the end of

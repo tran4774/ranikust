@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-11-02
+status: accepted
+date: 2026-11-03
 decision-makers: Tran Nguyen (maintainer)
 ---
 
@@ -78,8 +78,8 @@ mode, on 2026-11-03, on kernels 5.15 and 6.8 (see Evidence).
 - Bad, because the measurement did not cover everything the sentence reaches.
   Still [inferred]: kaniko mode with a directory per stage; the `Direct`
   `chroot` case of ADR-0047; "Docker without user-namespace remapping behaves
-  the same"; kernels other than 5.15 and 6.8; and `--userns`. This ADR stays
-  `proposed` until the maintainer accepts it.
+  the same"; kernels other than 5.15 and 6.8; and `--userns`. The
+  maintainer accepted it on 2026-11-03 with these gaps open.
 - Neutral, because nothing in the code changes: it never depended on the
   statement.
 

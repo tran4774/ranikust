@@ -108,7 +108,7 @@ namespace, which runs the command as PID 2 (the maintainer, 2026-11-03).
   inits lived; `memory.current` peaked at 207.8 against 204.0 MiB
   **[measured]**. The worst case is one copy of ranikust's resident memory
   per live init **[inferred]**. An executed minimal init would remove it,
-  the same mechanism as Q-422's trampoline [open: Q-451].
+  the same mechanism as Q-422's trampoline (not built: Q-451, ADR-0082).
 - Bad, because a root `RUN` can still slow its init's death, though not stop
   it: as a process of the same uid it may make the init `SCHED_IDLE` and pin
   it to one CPU, then keep that CPU busy. Measured in the VM (kernel 6.8):
@@ -118,7 +118,7 @@ namespace, which runs the command as PID 2 (the maintainer, 2026-11-03).
   uid of its own does not help, since a root `RUN` holds `CAP_SETUID` and
   switches to it **[measured]**; a cgroup for the command apart from the
   init's, with `cgroup.kill` as a second line, or a user namespace that does
-  not map the init's uid (`--userns`) would; not built [open: Q-452].
+  not map the init's uid (`--userns`) would; not built (ADR-0083).
 - Neutral, because the command is no longer PID 1: `$$` is 2, and a command
   that expects to be PID 1 (to reap, or for PID 1's signal semantics) runs as
   under `docker run --init`. kaniko's `RUN` is a child of the executor, never

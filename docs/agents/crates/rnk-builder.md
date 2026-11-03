@@ -171,7 +171,8 @@ mode on `/`) the body goes to `RunSpec::script` instead, which the sandbox
 runs from a sealed memfd, the argv kept only for the history; a cache
 mount is left out with a warning, and a secret as a file (no `env=`, or a
 `target=`) and `--network=none` are refused before any secret is read
-(`mounts::direct_mounts`, `refuse_direct_network`; ADR-0057). In every
+(`mounts::direct_mounts`, `refuse_direct_network`; ADR-0057; ADR-0084 lifts
+the refusal of the secret file, not built yet, [open: Q-453]). In every
 mode, `mounts::check_supported` refuses the mount types this phase lacks
 and malformed mounts, and `run_mounts` a `required` secret missing from
 `--secret`, before any secret is read or cache leased; a dropped

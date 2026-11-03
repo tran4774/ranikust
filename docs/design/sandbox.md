@@ -271,8 +271,10 @@ rtnetlink first; the ADR lists them as residual risk.
    The check covers the candidate's path only: the kernel opens a `#!`
    script's interpreter itself, so a `#!/proc/self/exe` line, or a symlink
    swapped between the check and `execve`, still runs ranikust's binary in
-   the sandbox, which then refuses its arguments (threat-model section 6)
-   [open: Q-422].
+   the sandbox, which then refuses its arguments (threat-model section 6).
+   [ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)
+   has the full sandbox bind the binary read-only over itself (not built
+   yet); `Direct` on `/` keeps these barriers.
 
 Between `clone` and `execve` the child of a multi-threaded process only
 makes system calls on arguments built before the clone: no allocation, no
