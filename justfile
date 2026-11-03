@@ -199,6 +199,10 @@ docs-lint:
 review-pack branch *args:
     python3 -I scripts/review-pack.py "$@"
 
+# Local only: remove the agent worktrees under .claude/worktrees/ whose branch is merged into origin/main, with their local branch; keeps locked (running), changed, detached and unmerged ones. `--dry-run` only lists. Requires git; gh to recognise squash merges.
+prune-worktrees *args:
+    bash scripts/prune-worktrees.sh "$@"
+
 # Everything CI runs, in CI's order.
 ci: fmt-check lint test build-static check-aarch64 test-aarch64 deny doc book
 

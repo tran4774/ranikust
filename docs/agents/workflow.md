@@ -57,6 +57,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just test-vm [suite]...` | T2 in a disposable QEMU/KVM VM, as the user: `unit` (the `T2:` ignored tests as root) and `smoke` (`smoke-build` as real root and in rootful Docker) by default; `quick` when named (the quick smoke cases as real root); `e2e` when named, for large benchmarks only (the `nextjs-kaniko` workloads against kaniko and BuildKit, [testing](../testing.md#end-to-end-workloads-e2e)); `push` when named (needs `just registry-up`, [testing](../testing.md#test-registries)); results in `target/vm/results/<release>/` ([testing](../testing.md#the-vm-harness-tier-t2)) | |
 | `just docs-lint` | `scripts/docs-lint.py` over the files `git ls-files` lists: every ADR indexed with its status, no duplicate question in `docs/open-questions.md`, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled `question` (in an ADR, a `question` issue open or closed; asks GitHub through `gh`; without `gh`, a logged-in `gh` or network, or after a response cut short twice (it retries once), the verdict says the check was skipped; any other `gh` failure is a problem) | local only for now |
 | `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
+| `just prune-worktrees [--dry-run]` | `scripts/prune-worktrees.sh`: removes the agent worktrees under `.claude/worktrees/` whose branch is merged into `origin/main` (a squash merge counts when the merged pull request's head is the branch's commit, asked through `gh`), with their local branch; keeps locked (running agent), changed, detached and unmerged ones | local only |
 | `just ci` | all of the above that CI runs, in CI's order | all |
 
 `just` lists them. A recipe that mirrors CI runs exactly the job's command:
@@ -160,6 +161,11 @@ request (`ADR-0088`).
 5. **Merge.** The maintainer marks the pull request ready and squash-merges
    it, or tells the agent to; the branch is deleted, the issue closes and
    the Project's built-in workflow moves the item to Done.
+6. **Clean up.** After the merge, the main session runs
+   `just prune-worktrees`: every agent worktree carries its own `target/`
+   of several GB, and 32 left behind once filled 126 GB. It removes only
+   merged, unchanged worktrees no running agent holds, with their local
+   branch.
 
 What agents may do (`ADR-0087` D1, amended by `ADR-0093`, until the
 maintainer changes it):

@@ -29,6 +29,7 @@ just ci                           # exactly what CI runs (also static musl build
 just fmt | just lint | just deny | just doc | just book
 just docs-lint                    # ADR index, question headings, [open: #N] markers naming open `question` issues (local only; asks GitHub)
 just review-pack <branch>         # the brief for the host-safety subagent (local only)
+just prune-worktrees              # after a merge: remove merged agent worktrees and their branches (local only)
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` (1.99.1, edition 2024);
