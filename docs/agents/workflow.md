@@ -44,13 +44,13 @@ it fail. After three failed fixes, stop and report. The discipline is the
 | `just test [args]` | `cargo test --workspace --locked [args]` (T0) | `test` |
 | `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; `scripts/check-static.sh` fails on a loader, `NEEDED`, non-PIE or no `.symtab` and runs `ranikust version` (the release workflow runs the same script) | `static-build` (full run) |
 | `just check-aarch64` | `cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl`, a quick type check | local only (`test-aarch64` builds the target in CI, ADR-0095) |
-| `just test-aarch64 [args]` | static aarch64 musl release build (same static check), then the T0 tests: natively on an aarch64 host (CI's `ubuntu-24.04-arm`), else under qemu-user, skipping three tests qemu cannot pass and, without a binfmt entry, ranikust's `cli` and `metrics` tests ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` (full run) |
+| `just test-aarch64 [args]` | static aarch64 musl release build (same static check), then the T0 tests: natively on an aarch64 host (CI's `ubuntu-24.04-arm`), else under qemu-user with a documented skip list ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` (full run) |
 | `just deny` | `cargo deny --locked check` | `deny` |
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |
 | `just changelog [args]` | `git cliff --unreleased`, a draft to stdout (only the bare form is allowlisted; with arguments it asks) | |
-| `just release-prepare <version>` | the release pull request's edits ([ADR-0089](../adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md); [CONTRIBUTING](../../CONTRIBUTING.md#releasing)): workspace version, `Cargo.lock` offline, a draft `CHANGELOG.md` section from the merged pull requests' `## Changelog` sections (read with `gh`); never commits, tags or pushes; not allowlisted | `Release` workflow (dry run on pull requests) |
-| `just third-party-licenses` | `target/THIRD-PARTY-LICENSES`, the licence notices the release ships ([ADR-0094](../adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)): cargo-about over `Cargo.lock`, offline, failing on a licence `deny.toml` does not allow, then the toolchain's notices from `licenses/` (SHA-256 checked); needs cargo-about | `Release` workflow's `notices` job |
-| `just test-release` | the release scripts' tests: `scripts/check-static.sh` with a fake `readelf`, `scripts/release.py` with fake `gh` and git remotes; no network | `Release` workflow's build job |
+| `just release-prepare <version>` | the release pull request's edits ([ADR-0089](../adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md); [CONTRIBUTING](../../CONTRIBUTING.md#releasing)): version, `Cargo.lock`, a draft `CHANGELOG.md` section from the merged pull requests' `## Changelog` sections (read with `gh`); never commits, tags or pushes; not allowlisted | `Release` workflow (dry run on pull requests) |
+| `just third-party-licenses` | `target/THIRD-PARTY-LICENSES`, the licence notices the release ships ([ADR-0094](../adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)); fails on a licence `deny.toml` does not allow; needs cargo-about | `Release` workflow's `notices` job |
+| `just test-release` | the release scripts' tests (`scripts/check-static.sh`, `scripts/release.py`); no network | `Release` workflow's build job |
 | `just smoke [image]` | T1: the `smoke-build` example (pull, extract, sandboxed `RUN`s, a one-layer image podman then runs) inside rootless `podman run --privileged` ([testing](../testing.md#smoke-test-until-the-builder-exists-tier-t1)) | |
 | `just registry-up`, `just registry-down` | the HTTP and HTTPS test registries on the host's loopback, data in `tests/registry/_data` ([testing](../testing.md#test-registries)) | |
 | `just smoke-case [name]...` | T1: the quick smoke cases of `tests/smoke/cases` (small Dockerfiles, one concern each) built by the `ranikust` binary in rootless podman; the default for a smoke test or proof of concept ([testing](../testing.md#quick-smoke-cases)) | |
@@ -135,9 +135,8 @@ request (`ADR-0088`).
 1. **Issue.** A task (a sub-issue of its phase's `tracking` issue, with
    the phase's milestone), a `question` or a `bug`, named by its issue number
    (no new `Q-NNN`, `ADR-0091`; the 29 migrated questions keep theirs). An
-   agent opens, without asking, issues for work already in a plan,
-   `question` issues and `bug` issues such as a flaky test (`ADR-0093`); it
-   labels them `agent`, `task`, `question` or `bug` and `crate:<name>`, keeps
+   agent may open them without asking (table below, `ADR-0093`); it labels
+   them `agent`, `task`, `question` or `bug` and `crate:<name>`, keeps
    unfixed-weakness details out (D6), and adds them to the Project.
 2. **Branch** from the latest `main` ([rules.md](rules.md#branches-and-commits));
    the Project item goes to In Progress.
