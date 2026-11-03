@@ -3,9 +3,10 @@
 Thank you for your interest. ranikust is pre-alpha: it builds images as
 root, in overlay mode or in kaniko mode, and its releases are pre-releases;
 rootless builds, the layer cache and more instructions come in later phases
-(the [roadmap](README.md#roadmap)). Before starting anything larger than a small fix, open
-an issue so the work fits the plan in [`ARCHITECTURE.md`](ARCHITECTURE.md) and
-the decisions in [`docs/adr/`](docs/adr/).
+(the [roadmap](README.md#roadmap)). Before starting anything larger than a
+small fix, open an issue so the work fits the plan in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and the decisions in
+[`docs/adr/`](docs/adr/).
 
 Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 Security problems go through [`SECURITY.md`](SECURITY.md), never a public
@@ -24,7 +25,9 @@ up a machine step by step; the table below is the reference.
 | [just](https://github.com/casey/just) | Runs the recipes in [`justfile`](justfile) | `cargo install --locked just` |
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | License, advisory and source checks | `cargo install --locked cargo-deny@0.20.2` |
 | [mdBook](https://github.com/rust-lang/mdBook) | Builds the user guide in `docs/book` | `cargo install --locked mdbook@0.5.4` |
-| [git-cliff](https://git-cliff.org/) | Drafts release notes; only needed by whoever prepares a release | `cargo install --locked git-cliff` |
+| Python 3.11 or later | `just docs-lint`, `just review-pack`, and the release scripts (`just release-prepare`, `just test-release`; `tomllib`) | your distribution |
+| [GitHub CLI](https://cli.github.com/) (`gh`) | `just release-prepare` reads the merged pull requests; checking a release's attestation needs 2.102.0 or later | your distribution, or cli.github.com |
+| [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
 | `file`, `readelf` | `just build-static` and `just test-aarch64` check the binary is static | `file` and `binutils` packages |
 | A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
 | [zig](https://ziglang.org/) 0.16.0 | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | see below |
@@ -151,6 +154,15 @@ included. A release is one static `x86_64-unknown-linux-musl` binary in a
 tarball, with `SHA256SUMS` and a GitHub build provenance attestation; there
 is no container image and no aarch64 build yet.
 
+**Before the first tag** (the maintainer, once): the repository needs an
+environment named `release` with the maintainer as required reviewer and
+deployments limited to the tag rule `v*` (Settings → Environments;
+[ADR-0092](docs/adr/0092-a-release-is-verified-by-workflow-and-tag-and-built-without-cache-or-unprotected-environment.md)).
+A job that names a missing environment creates it with no protection, so
+the workflow checks it (`scripts/release.py check-environment`) before it
+builds and again before it publishes, and stops a tag otherwise; a pull
+request's dry run reports what it found.
+
 1. **Release pull request** (anyone, agents included; an agent asks before
    any tag or release,
    [ADR-0087](docs/adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md)).
@@ -178,23 +190,33 @@ is no container image and no aarch64 build yet.
    ```
 
 4. **Build** (the `Release` workflow, `.github/workflows/release.yml`). It
-   checks that the tag equals the workspace version and lies on `main`,
-   builds the binary from the tag without any cache, checks it is
-   static-pie and runs (`scripts/check-static.sh`, as CI and
-   `just build-static` do), packages it reproducibly
-   (`scripts/release.py package`), and attests the tarball's build
-   provenance in a job of its own.
-5. **Approve** (the maintainer): the publishing job waits for the
-   `release` environment's approval. It then creates a **draft**
-   pre-release whose notes are the tag's `CHANGELOG.md` section, followed
-   by the merged pull requests GitHub lists by label
+   tests its scripts (`just test-release`); checks that the tag equals the
+   workspace version and lies on `main`, that `CHANGELOG.md` has a finished
+   section for it, and that the `release` environment is protected; builds
+   the binary from the tag without any cache (Zig downloaded with a pinned
+   checksum); checks it is static-pie, runs and reports the version
+   (`scripts/check-static.sh`, as CI and `just build-static` do); packages
+   it reproducibly (`scripts/release.py package`); and attests the
+   tarball's build provenance in a job of its own.
+5. **Approve** (the maintainer), within 30 days, as long as the built files
+   are kept: the publishing job waits for the `release` environment's
+   approval. It then creates a **draft** pre-release whose notes are the
+   tag's `CHANGELOG.md` section, followed by the pull requests merged since
+   the previous release tag, which GitHub lists by label
    (`.github/release.yml`).
 6. **Publish** (the maintainer): read the draft, publish it on the
    releases page, and announce it in the repository's Discussions.
 
-A pull request that changes the workflow or its scripts runs the build
-path as a dry run (build, check, package, checksums; no attestation, no
-release), and so does a manual run (`workflow_dispatch`) on any branch.
+Users check a release with `sha256sum -c SHA256SUMS` and
+`gh attestation verify` naming the release workflow and the tag
+(`--signer-workflow`, `--source-ref`, `--deny-self-hosted-runners`; the
+[installation guide](docs/book/src/install.md) has the command).
+
+A pull request that changes what goes into a release (the workflow, its
+scripts and tests, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the
+packaged files) runs the build path as a dry run (tests, build, check,
+package, checksums; no attestation, no release), and so does a manual run
+(`workflow_dispatch`) on any branch.
 
 ## How decisions are made
 

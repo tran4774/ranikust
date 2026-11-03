@@ -20,14 +20,23 @@ files: `ranikust-<version>-x86_64-unknown-linux-musl.tar.gz` and
 v=0.0.1   # the version you downloaded
 sha256sum -c SHA256SUMS --ignore-missing
 gh attestation verify "ranikust-$v-x86_64-unknown-linux-musl.tar.gz" \
-  --repo tran4774/ranikust
+  --repo tran4774/ranikust \
+  --signer-workflow tran4774/ranikust/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$v" \
+  --deny-self-hosted-runners
 ```
 
 The first command checks that the download is complete. The second checks
-the tarball's build provenance: that GitHub Actions built it from this
-repository's release workflow, from the tagged source
-([ADR-0089](https://github.com/tran4774/ranikust/blob/main/docs/adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md)). It needs the
-[GitHub CLI](https://cli.github.com/), version 2.49 or later.
+the tarball's build provenance: that it was built from the tag `v$v` by this
+repository's release workflow on a GitHub-hosted runner
+([ADR-0089](https://github.com/tran4774/ranikust/blob/main/docs/adr/0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md)).
+Keep all four options: with `--repo` alone, the check accepts an
+attestation made by any workflow of the repository, on any branch, so it
+would not tell a release from a file a modified workflow attested on a
+branch. It needs the [GitHub CLI](https://cli.github.com/) 2.102.0 or
+later: earlier versions match `--signer-workflow` by its beginning only and
+`--source-ref` without regard to case. If either check fails, delete the
+files and do not run them.
 
 ## Install on a host
 
@@ -63,9 +72,9 @@ docker run --rm \
 ranikust prints the image digest on stdout; name a registry with
 `--destination` to push instead. Any image that can start the binary will
 do: it only provides the container, and kaniko mode builds over its files.
-In a
-`--privileged` container ranikust uses overlay mode instead, which needs
-its state directory on a volume:
+
+In a `--privileged` container ranikust uses overlay mode instead, which
+needs its state directory on a volume:
 
 ```sh
 docker run --rm --privileged \

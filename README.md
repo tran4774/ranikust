@@ -84,12 +84,18 @@ one. Writing a uid map, for rootless mode, comes in Phase 3. See
 Pre-alpha releases are on the
 [releases page](https://github.com/tran4774/ranikust/releases): one static
 binary for x86_64 Linux (5.8 or later), with its SHA-256 checksum and a
-build provenance attestation. Check both before you run it:
+build provenance attestation. Check both before you run it, with GitHub
+CLI 2.102.0 or later and all four options of the second command (with
+`--repo` alone it accepts an attestation from any workflow on any branch):
 
 ```sh
 v=0.0.1  # the release you downloaded
 sha256sum -c SHA256SUMS --ignore-missing
-gh attestation verify "ranikust-$v-x86_64-unknown-linux-musl.tar.gz" --repo tran4774/ranikust
+gh attestation verify "ranikust-$v-x86_64-unknown-linux-musl.tar.gz" \
+  --repo tran4774/ranikust \
+  --signer-workflow tran4774/ranikust/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$v" \
+  --deny-self-hosted-runners
 tar -xzf "ranikust-$v-x86_64-unknown-linux-musl.tar.gz"
 sudo install -m 0755 "ranikust-$v-x86_64-unknown-linux-musl/ranikust" /usr/local/bin/
 ```
@@ -109,7 +115,7 @@ in wide use.
 | Runs directly on a host or VM | ✅ | ❌ container only | ✅ | ✅ |
 | Runs in a default, unprivileged container or pod | ✅ | ✅ | ⚠️ needs relaxed seccomp/AppArmor | ❌ |
 | Overlay snapshots, no full filesystem scan | ✅ when allowed | ❌ | ✅ | ✅ |
-| Parallel stages | ✅ | ❌ | ✅ | ✅ |
+| Parallel stages | ✅ except kaniko mode on a container's `/` | ❌ | ✅ | ✅ |
 | No daemon | ✅ | ✅ | ⚠️ one temporary daemon per build | ✅ |
 | Accepts kaniko's flags | ✅ | ✅ | ❌ | ❌ |
 
