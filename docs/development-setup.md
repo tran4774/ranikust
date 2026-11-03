@@ -121,7 +121,7 @@ copied into the VM per ultra run.
 | `just test-aarch64` | static-pie aarch64 binary and its tests |
 | `just smoke` | rootless podman (T1) |
 | `just test-vm unit` | KVM access and the VM harness (T2) |
-| `just ci` | everything CI runs |
+| `just ci` | everything CI's full run does (`.github/workflows/ci.yml`) |
 
 If a recipe says a tool is missing, its row in
 [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) says which package

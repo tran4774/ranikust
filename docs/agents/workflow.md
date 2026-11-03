@@ -42,9 +42,9 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just fmt` / `fmt-check` | `cargo fmt --all` (`--check`) | `fmt` |
 | `just lint` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | `clippy` |
 | `just test [args]` | `cargo test --workspace --locked [args]` (T0) | `test` |
-| `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; `scripts/check-static.sh` fails on a loader, `NEEDED`, non-PIE or no `.symtab` and runs `ranikust version` (the release workflow runs the same script) | `static-build` |
-| `just check-aarch64` | `cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl` | `check-aarch64` |
-| `just test-aarch64 [args]` | static aarch64 musl release build (no loader, no `NEEDED`; runs `ranikust version`), then the T0 tests: natively on an aarch64 host (CI's `ubuntu-24.04-arm`), else under qemu-user through cargo's target runner, skipping three tests qemu cannot pass and, without a binfmt entry, ranikust's `cli` and `metrics` tests ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` |
+| `just build-static` | release musl build of `ranikust` with `cargo zigbuild`, linked by `cc`; `scripts/check-static.sh` fails on a loader, `NEEDED`, non-PIE or no `.symtab` and runs `ranikust version` (the release workflow runs the same script) | `static-build` (full run) |
+| `just check-aarch64` | `cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl`, a quick type check | local only (`test-aarch64` builds the target in CI, ADR-0095) |
+| `just test-aarch64 [args]` | static aarch64 musl release build (no loader, no `NEEDED`; runs `ranikust version`), then the T0 tests: natively on an aarch64 host (CI's `ubuntu-24.04-arm`), else under qemu-user through cargo's target runner, skipping three tests qemu cannot pass and, without a binfmt entry, ranikust's `cli` and `metrics` tests ([testing](../testing.md#aarch64-under-qemu-user)) | `test-aarch64` (full run) |
 | `just deny` | `cargo deny --locked check` | `deny` |
 | `just doc` / `book` | rustdoc with `-D warnings` / `mdbook build docs/book` | `docs` |
 | `just changelog [args]` | `git cliff --unreleased`, a draft to stdout (only the bare form is allowlisted; with arguments it asks) | |
@@ -55,12 +55,15 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just registry-up`, `just registry-down` | the HTTP and HTTPS test registries on the host's loopback, data in `tests/registry/_data` ([testing](../testing.md#test-registries)) | |
 | `just smoke-case [name]...` | T1: the quick smoke cases of `tests/smoke/cases` (small Dockerfiles, one concern each) built by the `ranikust` binary in rootless podman; the default for a smoke test or proof of concept ([testing](../testing.md#quick-smoke-cases)) | |
 | `just test-vm [suite]...` | T2 in a disposable QEMU/KVM VM, as the user: `unit` (the `T2:` ignored tests as root) and `smoke` (`smoke-build` as real root and in rootful Docker) by default; `quick` when named (the quick smoke cases as real root); `e2e` when named, for large benchmarks only (the `nextjs-kaniko` workloads against kaniko and BuildKit, [testing](../testing.md#end-to-end-workloads-e2e)); `push` when named (needs `just registry-up`, [testing](../testing.md#test-registries)); results in `target/vm/results/<release>/` ([testing](../testing.md#the-vm-harness-tier-t2)) | |
-| `just docs-lint` | `scripts/docs-lint.py` over the files `git ls-files` lists: every ADR indexed with its status, no duplicate question in `docs/open-questions.md`, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled `question` (in an ADR, a `question` issue open or closed; asks GitHub through `gh`; without `gh`, a logged-in `gh` or network, or after a response cut short twice (it retries once), the verdict says the check was skipped; any other `gh` failure is a problem) | local only for now |
+| `just docs-lint` | `scripts/docs-lint.py` over the files `git ls-files` lists: every ADR indexed with its status, no duplicate question in `docs/open-questions.md`, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled `question` (in an ADR, a `question` issue open or closed; asks GitHub through `gh`; without `gh`, a logged-in `gh` or network, or after a response cut short twice (it retries once), the verdict says the check was skipped; any other `gh` failure is a problem) | `docs-lint` (with `DOCS_LINT_REQUIRE_GITHUB=1`, so a skip fails) |
+| `just test-ci` | `tests/ci/test_ci.py`: CI's lane detection and cache pruning (`scripts/ci.py`, [ADR-0095](../adr/0095-ci-runs-by-lanes-a-fast-lane-on-drafts-and-the-full-run-when-ready-behind-two-gate-checks.md)) and how the workflows wire them; fails on a tracked file no lane rule names | `changes` |
 | `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
-| `just ci` | all of the above that CI runs, in CI's order | all |
+| `just ci` | all of the above that CI runs, in CI's order: what `ci.yml` runs on a full run | all |
 
 `just` lists them. A recipe that mirrors CI runs exactly the job's command:
-change both together. `just test -p <crate>` still tests the whole workspace
+change both together. CI runs a job only when the change needs it
+([testing](../testing.md#ci-lanes)); a new path needs its lane in
+`scripts/ci.py`. `just test -p <crate>` still tests the whole workspace
 (`--workspace` wins); for one crate use `cargo test -p <crate>`.
 
 ## Test tiers
@@ -69,8 +72,8 @@ change both together. `just test -p <crate>` still tests the whole workspace
 |---|---|---|---|---|
 | T0 | Unit and in-process tests | none | anywhere: `just test` | in use |
 | T1 | User namespaces, rootless overlay, sandbox in a user namespace, Podman | user with `/etc/subuid` entries | developer machine; `just smoke`; `just test-rootless` TODO | smoke test only |
-| T2 | Overlay as root, `pivot_root`, `mknod`, Docker variants, kaniko mode on `/`, host-safety attacks | root | disposable VM only: `just test-vm`; on every pull request also a GitHub-hosted runner (`.github/workflows/t2.yml`: `unit`, `smoke`, `quick`, `secrets` and the T2c `unit-c`, ADR-0090) | `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push` and `ultra` suites |
-| T3 | fmt, clippy, T0, static build, aarch64 check, aarch64 T0 under qemu-user, deny, docs | none | GitHub Actions: `just ci` | in use |
+| T2 | Overlay as root, `pivot_root`, `mknod`, Docker variants, kaniko mode on `/`, host-safety attacks | root | disposable VM only: `just test-vm`; on a full CI run also a GitHub-hosted runner (`.github/workflows/t2.yml`: `unit`, `smoke`, `quick`, `secrets` and the T2c `unit-c`, ADR-0090, ADR-0095) | `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push` and `ultra` suites |
+| T3 | fmt, clippy, T0, deny, docs, docs-lint on every pull request; the static build and the native aarch64 T0 on a full run ([lanes](../testing.md#ci-lanes)) | none | GitHub Actions: `just ci` | in use |
 
 Planned suites: [`docs/testing.md`](../testing.md#planned-test-suites).
 
@@ -152,21 +155,31 @@ request (`ADR-0088`).
 3. **Draft pull request:** `git push -u origin <branch>`, then
    `gh pr create --draft` with the template filled, labels `agent` and the
    area; the item goes to In review.
-4. **Checks and reviews.** CI runs on the pull request; the test plan names
-   the tiers run elsewhere. `reviewer`, `host-safety` and `red-team` report
-   to the main session as before; their summary goes on the pull request
-   as a comment once the findings are fixed, never the details of an open
-   weakness.
+4. **Checks and reviews.** A draft gets CI's fast lane, chosen by the
+   paths it changes (rustfmt, clippy, the x86_64 tests, cargo-deny, the
+   docs, docs-lint; gates `CI result (draft, fast lane)` and `T2 result
+   (draft, not run)`), never the static build, the native aarch64 tests
+   or T2 ([testing](../testing.md#ci-lanes), `ADR-0095`). The full run
+   comes when the pull request is marked ready, so ask the maintainer to
+   mark it ready when the work is done; or, when the maintainer asks (or
+   the pull request changes CI itself), add the `ci:full` label to the
+   draft, and remove it afterwards. "Run workflow" in the Actions tab runs
+   everything on a branch. Read the gates, `CI result` and `T2 result`,
+   the only required checks. The test plan names the tiers run elsewhere.
+   `reviewer`, `host-safety` and `red-team` report to the main session as
+   before; their summary goes on the pull request as a comment once the
+   findings are fixed, never the details of an open weakness.
 5. **Merge.** The maintainer marks the pull request ready and squash-merges
-   it, or tells the agent to; the branch is deleted, the issue closes and
-   the Project's built-in workflow moves the item to Done.
+   it once the full run's gates pass, or tells the agent to; the branch is
+   deleted, the issue closes and the Project's built-in workflow moves the
+   item to Done.
 
 What agents may do (`ADR-0087` D1, amended by `ADR-0093`, until the
 maintainer changes it):
 
 | Without asking | Only when the maintainer says so |
 |---|---|
-| open issues for planned work, `question` issues and `bug` issues; push branches other than `main`; open draft pull requests; comment and review on their own; set labels, milestones, Project fields; post commit statuses and add sub-issues (both are `gh api` writes, so they prompt anyway) | mark ready or merge a pull request; push to `main`; create or push tags; create releases; change repository settings, rulesets or environments; reply to or close what other people opened |
+| open issues for planned work, `question` issues and `bug` issues; push branches other than `main`; open draft pull requests; comment and review on their own; set labels (but `ci:full` only as step 4 says), milestones, Project fields; post commit statuses and add sub-issues (both are `gh api` writes, so they prompt anyway) | mark ready (which starts the full CI run) or merge a pull request; push to `main`; create or push tags; create releases; change repository settings, rulesets or environments; reply to or close what other people opened |
 
 How each limit is held (`ADR-0093`):
 
@@ -180,7 +193,8 @@ How each limit is held (`ADR-0093`):
   executing `tests/vm/runner.sh` (deny).
 - **The rule alone:** replying to or closing other people's issues and
   pull requests (`gh issue comment`/`close`, `gh pr comment`/`close` look
-  the same for anyone's); which issues an agent opens; the allowed
+  the same for anyone's); which issues an agent opens; when an agent adds
+  `ci:full` (`ADR-0095`: GitHub cannot tell who labelled); the allowed
   read-only `gh` commands taking a URL or `-R` and so reading another
   repository or another host; and any command wrapped in another
   (`bash -c`, a script, an alias) or spelled differently, which no pattern

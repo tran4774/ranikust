@@ -67,17 +67,40 @@ Without `minisign`, compare `sha256sum "$f"` with the tarball's `shasum` in
 just                      # list the recipes
 cargo test -p rnk-rootfs   # narrow: the crate you changed (add a test name filter)
 just check                # fmt check + clippy -D warnings + all T0 tests
-just ci                   # everything CI runs, before you open a pull request
+just ci                   # everything CI runs on a full run, before you open a pull request
 ```
 
 Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
-documentation; `just docs-lint` (local only, needs python3) after an ADR,
-a marker or an open question changes. Its check of the `[open: #N]`
-markers needs `gh` installed and logged in (`gh auth login`) with network
-access; without them it is skipped, and the last line says so. Every
-recipe that mirrors CI runs exactly the command of the CI job; if you
-change one, change the other.
+documentation; `just docs-lint` (needs python3; CI runs it on every pull
+request) after an ADR, a marker or an open question changes. Its check of
+the `[open: #N]` markers needs `gh` installed and logged in (`gh auth
+login`) with network access; without them it is skipped locally, and the
+last line says so. Every recipe that mirrors CI runs exactly the command
+of the CI job; if you change one, change the other. A new top-level path,
+or a file a CI job starts to read, needs its lane in `scripts/ci.py`
+(`just test-ci` fails otherwise; see below).
+
+### What CI runs
+
+CI picks its jobs from what a pull request changes
+([ADR-0095](docs/adr/0095-ci-runs-by-lanes-a-fast-lane-on-drafts-and-the-full-run-when-ready-behind-two-gate-checks.md);
+the lanes and rules are in [docs/testing.md](docs/testing.md#ci-lanes)):
+
+- **A draft pull request** gets the fast lane: rustfmt, clippy, the x86_64
+  tests and the docs when Rust code changed, cargo-deny when the manifests
+  or `deny.toml` changed, mdBook when the book changed, and docs-lint
+  always. A pull request that changes only documentation runs little more
+  than docs-lint.
+- **A full run** adds the static release build, the native aarch64 tests
+  and the privileged T2 jobs, when the change needs them. It runs when the
+  pull request is marked ready for review, when a maintainer adds the
+  `ci:full` label to a draft, from "Run workflow" in the Actions tab
+  (`workflow_dispatch`, any branch), and on every push to `main`.
+- **The required checks** are two gates, `CI result` and `T2 result`, which
+  fail if any job failed or was cancelled. A draft's gates carry other
+  names (`... (draft, fast lane)`), so a pull request is mergeable only
+  after a full run.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
 not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the
@@ -89,8 +112,8 @@ short version of how to write code here.
 |---|---|---|---|---|
 | T0 | Unit and in-process tests | None | Anywhere: `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay, Podman | A regular user with subordinate IDs | Your machine | Planned |
-| T2 | Privileged integration: real root, overlay without user namespaces, Docker rootful, the host-safety attack suite | root | A disposable VM only: `just test-vm`, and on every pull request a GitHub-hosted runner (`.github/workflows/t2.yml`, ADR-0090) | In use |
-| T3 | CI: format, clippy, T0, static build, aarch64 check, cargo-deny, docs | None | GitHub Actions on every pull request | In use |
+| T2 | Privileged integration: real root, overlay without user namespaces, Docker rootful, the host-safety attack suite | root | A disposable VM only: `just test-vm`, and on a full CI run a GitHub-hosted runner (`.github/workflows/t2.yml`, ADR-0090) | In use |
+| T3 | CI: format, clippy, T0, cargo-deny, docs, docs-lint; on a full run also the static build and the native aarch64 tests | None | GitHub Actions, by lanes ([above](#what-ci-runs)) | In use |
 
 Tests above T0 are marked `#[ignore = "T1: ..."]` or `#[ignore = "T2: ..."]`
 and run only through their harness. **Never run a T2 test, or ranikust in
@@ -206,8 +229,8 @@ request's dry run reports what it found.
    `chore(release): vX.Y.Z` and open the pull request with the `release`
    label. The recipe never commits, tags or pushes.
 2. **Merge** (the maintainer), once CI and the T2 tests are green; the
-   `main` ruleset accepts changes only through a pull request with the CI
-   checks passed.
+   `main` ruleset accepts changes only through a pull request whose gates,
+   `CI result` and `T2 result`, passed on a full run.
 3. **Tag** (the maintainer only: the `release tags` ruleset lets only the
    maintainer create, move or delete `v*` tags): tag the merge commit and
    push the tag.
@@ -250,13 +273,15 @@ Users check a release with `sha256sum -c SHA256SUMS` and
 (`--signer-workflow`, `--source-ref`, `--deny-self-hosted-runners`; the
 [installation guide](docs/book/src/install.md) has the command).
 
-A pull request that changes what goes into a release (the workflow, its
+A pull request that changes how a release is made (the workflow, its
 scripts and tests, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
-`about.toml`, `deny.toml`, the packaged files) runs the build path as a dry
-run (tests, build, check, licence notices, package, checksums; no
+`about.toml`, `deny.toml`, `licenses/`) runs the build path as a dry run
+(tests, build, check, licence notices, package, checksums; no
 attestation, no release), and so does a manual run (`workflow_dispatch`)
-on any branch. `about.toml`'s accepted licences must stay the set
-`deny.toml` allows; `just test-release` compares them.
+on any branch. Editing a file the tarball only copies (`README.md`,
+`NOTICE`, the `LICENSE` files) does not start it (ADR-0095).
+`about.toml`'s accepted licences must stay the set `deny.toml` allows;
+`just test-release` compares them.
 
 ## How decisions are made
 

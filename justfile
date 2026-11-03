@@ -1,7 +1,9 @@
 # Development tasks for ranikust. Run `just` to list the recipes.
 #
 # The recipes that mirror CI run exactly the commands of the matching job in
-# `.github/workflows/ci.yml`. Change both together.
+# `.github/workflows/ci.yml`. Change both together. CI runs a job only when
+# its lane needs it (ADR-0095, scripts/ci.py); `just ci` runs them all, as
+# CI's full run on `main` does.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -46,7 +48,7 @@ build-static:
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc cargo zigbuild --release --locked --target {{ musl_target }} -p ranikust
     scripts/check-static.sh {{ static_bin }}
 
-# Type-check for aarch64 musl so no architecture-specific code slips in (CI job `check-aarch64`). Requires zig and cargo-zigbuild.
+# Type-check for aarch64 musl so no architecture-specific code slips in; quicker than `test-aarch64`. Local only: CI's `test-aarch64` job builds and tests that target (ADR-0095). Requires zig and cargo-zigbuild.
 check-aarch64:
     cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl
 
@@ -191,16 +193,20 @@ test-release:
     bash tests/release/check-static-test.sh
     python3 -I tests/release/test_release.py
 
-# Local only, not in CI yet: mechanical checks of the decision records over the files git ls-files lists (every ADR indexed with its status, no duplicate question in docs/open-questions.md, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled question (any question issue inside an ADR), asked of GitHub through gh; without gh, a logged-in gh or network that check is skipped and the verdict says so). Requires python3; gh for the issue check.
+# Mechanical checks of the decision records over the files git ls-files lists (CI job `docs-lint`, which sets DOCS_LINT_REQUIRE_GITHUB=1): every ADR indexed with its status, no duplicate question in docs/open-questions.md, no old `[open: Q-NNN]` marker outside ADR-0001 to ADR-0089, every `[open: #N]` naming an open issue labelled question (any question issue inside an ADR), asked of GitHub through gh; without gh, a logged-in gh or network that check is skipped and the verdict says so. Requires python3; gh for the issue check.
 docs-lint:
     python3 -I scripts/docs-lint.py
+
+# Tests of CI's lane detection and cache pruning, scripts/ci.py, and of how the workflows wire them (ADR-0095; CI: the `changes` job). Fails on a tracked file no lane rule names. No network, no privileges. Requires python3 3.11 or later and git.
+test-ci:
+    python3 -I tests/ci/test_ci.py
 
 # Local only: print the brief the `host-safety` subagent needs for a branch against main (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries). Requires python3; graphify optional.
 review-pack branch *args:
     python3 -I scripts/review-pack.py "$@"
 
-# Everything CI runs, in CI's order.
-ci: fmt-check lint test build-static check-aarch64 test-aarch64 deny doc book
+# Everything ci.yml runs on a full run (a push to `main`), in CI's order; on a pull request CI skips what the change does not need (ADR-0095).
+ci: test-ci fmt-check lint test build-static test-aarch64 deny doc book docs-lint
 
 # Until `rnk-builder` exists, `smoke` strings the finished crates together:
 # the `smoke-build` example pulls an image, extracts it, runs `RUN` commands

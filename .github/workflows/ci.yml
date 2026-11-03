@@ -1,27 +1,79 @@
 name: CI
 
+# Lanes (ADR-0095). The `changes` job reads what a pull request changed
+# (scripts/ci.py) and each job runs only when its lane is needed: the fast
+# lane (rustfmt, clippy, the x86_64 tests, cargo-deny, the docs, docs-lint)
+# on every pull request, drafts included; the full lane (the static release
+# build, the native aarch64 tests) only on a full run: a pull request that is
+# ready for review, a draft labelled `ci:full`, a manual run
+# (workflow_dispatch, "Run workflow" in the Actions tab) or a push to `main`,
+# which always runs every job. A job skipped by its `if:` reports success,
+# so the gate `CI result` is the one check the `main` ruleset requires: it
+# fails when any job failed or was cancelled. Never `on: paths` here: a
+# workflow skipped as a whole leaves its required check pending.
 on:
   push:
     branches: [main]
   pull_request:
+    # labeled and unlabeled for `ci:full` only; any other label change runs
+    # nothing (scripts/ci.py, label_only).
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A newer run of the same pull request cancels the older one, except a run
+  # for a label change that changes no lane (any label but `ci:full` on a
+  # draft): it gets a group of its own, so it cancels nothing. The condition
+  # is scripts/ci.py's label_only; tests/ci checks the two workflows agree.
+  group: ${{ github.workflow }}-${{ github.ref }}${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && !(github.event.label.name == 'ci:full' && github.event.pull_request.draft) && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
-# Every job installs the toolchain pinned in `rust-toolchain.toml` with plain
-# rustup, so CI and local builds use the same compiler, components and targets.
+# Every Rust job installs the toolchain pinned in `rust-toolchain.toml` with
+# plain rustup, so CI and local builds use the same compiler, components and
+# targets.
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      rust: ${{ steps.lanes.outputs.rust }}
+      book: ${{ steps.lanes.outputs.book }}
+      deny: ${{ steps.lanes.outputs.deny }}
+      full: ${{ steps.lanes.outputs.full }}
+      label_only: ${{ steps.lanes.outputs.label_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The pull request's base and head commits, for `git diff`.
+          fetch-depth: 0
+      - name: Test the lane detection
+        run: python3 -I tests/ci/test_ci.py
+      - name: Pick the lanes
+        id: lanes
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_ACTION: ${{ github.event.action }}
+          CI_LABEL: ${{ github.event.label.name }}
+          CI_DRAFT: ${{ github.event.pull_request.draft }}
+          CI_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          CI_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 -I scripts/ci.py changes
+
   fmt:
     name: rustfmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,7 +84,10 @@ jobs:
 
   clippy:
     name: clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,7 +101,10 @@ jobs:
 
   test:
     name: test (x86_64 gnu)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,7 +118,10 @@ jobs:
 
   static-build:
     name: static release build (x86_64 musl)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       BIN: target/x86_64-unknown-linux-musl/release/ranikust
     steps:
@@ -88,34 +149,18 @@ jobs:
         # The same script as `just build-static` and the release workflow.
         run: scripts/check-static.sh "$BIN"
 
-  check-aarch64:
-    name: check (aarch64 musl)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Build scripts compile the C dependencies for aarch64 with zig.
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.16.0
-          use-cache: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
-        with:
-          tool: cargo-zigbuild@0.24.0
-      - run: cargo-zigbuild check --workspace --locked --target aarch64-unknown-linux-musl
-
   # The static aarch64 binary and the T0 tests on GitHub's free aarch64
   # runner (ADR-0009), natively: no emulation, nothing skipped. `just
   # test-aarch64` runs the same; on an x86_64 machine it uses qemu-user.
+  # Building the tests for aarch64 also covers what the `check (aarch64
+  # musl)` job checked before ADR-0095 (`just check-aarch64` stays a local
+  # recipe).
   test-aarch64:
     name: test (aarch64 musl, native)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -136,7 +181,10 @@ jobs:
 
   deny:
     name: cargo-deny
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -148,24 +196,118 @@ jobs:
           tool: cargo-deny@0.20.2
       - run: cargo deny --locked check
 
-  # API docs and the user guide. `just doc` and `just book` run the same
+  # API docs when the Rust lane runs, the user guide when the book changed
+  # (both on a push to `main`). `just doc` and `just book` run the same
   # commands locally.
   docs:
     name: docs (rustdoc, mdBook)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.book == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Rust toolchain
+        if: needs.changes.outputs.rust == 'true'
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: needs.changes.outputs.rust == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo doc --workspace --no-deps --locked
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: needs.changes.outputs.book == 'true'
         with:
           tool: mdbook@0.5.4
-      - run: mdbook build docs/book
+      - if: needs.changes.outputs.book == 'true'
+        run: mdbook build docs/book
+
+  # The decision records on every pull request, whatever changed: ADR index,
+  # question numbers and `[open: #N]` markers against GitHub's issues, which
+  # must be reachable here (DOCS_LINT_REQUIRE_GITHUB). `just docs-lint` runs
+  # the same command.
+  docs-lint:
+    name: docs-lint
+    needs: changes
+    if: needs.changes.outputs.label_only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -I scripts/docs-lint.py
+        env:
+          DOCS_LINT_REQUIRE_GITHUB: "1"
+          GH_TOKEN: ${{ github.token }}
+
+  # On a push to `main`, after the jobs that save Rust caches: delete each
+  # of their cache entries that a newer entry with the same restore key
+  # supersedes (one per Cargo.lock change otherwise lingers until GitHub
+  # evicts it). `main`'s entries only; the names are these jobs' rust-cache
+  # names (tests/ci checks them).
+  caches:
+    name: prune superseded Rust caches
+    needs: [clippy, test, static-build, test-aarch64, docs]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Delete the superseded entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh cache list --ref refs/heads/main --limit 1000 --json id,key,ref,createdAt >"$RUNNER_TEMP/caches.json"
+          python3 -I scripts/ci.py stale-caches clippy test static-build test-aarch64 docs <"$RUNNER_TEMP/caches.json" >"$RUNNER_TEMP/stale.tsv"
+          n=0
+          while IFS=$'\t' read -r id key; do
+            if gh cache delete "$id"; then
+              echo "deleted $id $key"
+              n=$((n + 1))
+            else
+              echo "::warning::could not delete cache $id ($key)"
+            fi
+          done <"$RUNNER_TEMP/stale.tsv"
+          echo "$n superseded cache entries deleted"
+
+  # The one required check of this workflow (ADR-0095). Named `CI result`
+  # only on a full run; a draft's fast lane and a label change that runs
+  # nothing report under other names, so neither stands in for the full run
+  # on the same commit. A failed `changes` job leaves the name `CI result`
+  # and fails it.
+  result:
+    name: ${{ needs.changes.outputs.label_only == 'true' && 'CI result (label change, nothing run)' || needs.changes.outputs.full == 'false' && 'CI result (draft, fast lane)' || 'CI result' }}
+    needs: [changes, fmt, clippy, test, static-build, test-aarch64, deny, docs, docs-lint]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          if [ "$(jq -r '.changes.result' <<<"$NEEDS")" != success ]; then
+            echo "::error::the changes job did not succeed, so the lanes are unknown"
+            exit 1
+          fi
+          bad="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<<"$NEEDS")"
+          if [ -n "$bad" ]; then
+            echo "::error::failed or cancelled: $bad"
+            exit 1
+          fi

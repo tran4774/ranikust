@@ -120,5 +120,6 @@ One state directory serves every mode, `/var/lib/ranikust` unless
 Code today: 15 crates, each card giving its status. The binary builds
 Dockerfiles in overlay mode as root, and in kaniko mode (on a container's
 `/` or in a directory per stage), and pushes or writes the image; `rnk-cache`
-is a skeleton (Phase 4). CI runs what `just ci` runs. 1.0 needs all three
+is a skeleton (Phase 4). CI's full run is what `just ci` runs; a pull
+request runs only the lanes its change needs (ADR-0095). 1.0 needs all three
 paths: overlay root, rootless overlay, kaniko mode.
