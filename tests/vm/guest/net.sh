@@ -65,16 +65,18 @@ for i in 1 2 3 4 5; do
 done
 control "vm" "image pull (egress)" 0
 
-# Root in the VM itself (busybox's wget, the same tool everywhere).
+command -v curl >/dev/null || { echo "error: no curl in the VM" >&2; exit 1; }
+# Root in the VM itself: the probe with busybox's wget, the same tool
+# everywhere; egress with curl, since jammy's busybox speaks no TLS that
+# the registry accepts (any HTTP status proves it: no -f).
 verdict "root in the VM" "$(sudo busybox sh -c "$PROBE")"
-st=0; sudo busybox sh -c "$EGRESS" || st=$?
+st=0; sudo curl -sS -m 10 -o /dev/null "https://$REG/v2/" || st=$?
 control "root in the VM" "HTTPS egress" "$st"
 
 # IPv6, from root in the VM (Docker's bridge has none): the default
 # gateways (a link-local one with its zone) and the VM's own addresses,
 # where the host's probe also listens on ::1.
 if [ "${RANIKUST_VM_PROBE_V6:-0}" = 1 ]; then
-  command -v curl >/dev/null || { echo "error: no curl in the VM for the IPv6 probe" >&2; exit 1; }
   V6=()
   while read -r via dev; do
     case "$via" in fe80:*) V6+=("[$via%25$dev]") ;; *) V6+=("[$via]") ;; esac
