@@ -202,11 +202,14 @@ request's dry run reports what it found.
    the binary from the tag without any cache (Zig downloaded with a pinned
    checksum); checks it is static-pie, runs and reports the version
    (`scripts/check-static.sh`, as CI and `just build-static` do);
-   generates `THIRD-PARTY-LICENSES` with cargo-about from `Cargo.lock` for
-   the release target, stopping on a licence `deny.toml` does not allow
-   (`just third-party-licenses` locally); packages it all reproducibly
-   (`scripts/release.py package`); and attests the tarball's build
-   provenance in a job of its own.
+   packages it all reproducibly (`scripts/release.py package`) with
+   `THIRD-PARTY-LICENSES`, which a job of its own generates with
+   cargo-about from `Cargo.lock` for the release target, stopping on a
+   licence `deny.toml` does not allow, and completes with the toolchain's
+   notices from `licenses/` (`just third-party-licenses` locally); and
+   attests the tarball's build provenance in a job of its own. When
+   `rust-toolchain.toml` changes, replace the files in `licenses/` and
+   their hashes in `scripts/release.py` (`licenses/README.md` says how).
 5. **Approve** (the maintainer), within 30 days, as long as the built files
    are kept: the publishing job waits for the `release` environment's
    approval. It then creates a **draft** pre-release whose notes are the

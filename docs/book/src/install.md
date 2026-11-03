@@ -47,13 +47,16 @@ ranikust version
 ```
 
 The tarball also holds ranikust's licences, `NOTICE`, the README, a short
-`INSTALL` note and `THIRD-PARTY-LICENSES`: the licence notices of every
-crate compiled into the binary and of the C code some of them build
-(mimalloc, zstd, ring's), generated from `Cargo.lock` when the release is
-built
-([ADR-0094](https://github.com/tran4774/ranikust/blob/main/docs/adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)).
-It names, without their texts, what the Rust toolchain links in: the
-standard library, musl libc and LLVM's libunwind. On a host ranikust builds as root, in overlay mode
+`INSTALL` note and `THIRD-PARTY-LICENSES`
+([ADR-0094](https://github.com/tran4774/ranikust/blob/main/docs/adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)):
+the licence notices of every crate compiled into the binary and of the C
+code some of them build (mimalloc, zstd, ring's), generated from
+`Cargo.lock` when the release is built, then those of what the Rust
+toolchain links in: the standard library (under Apache-2.0, with Rust's
+`COPYRIGHT`), musl libc (its `COPYRIGHT`) and LLVM's libunwind (named,
+its licence waiving the notice for binaries).
+
+On a host ranikust builds as root, in overlay mode
 ([Choosing where to run it](where-to-run.md)):
 
 ```sh

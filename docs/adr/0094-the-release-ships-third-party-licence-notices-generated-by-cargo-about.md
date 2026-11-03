@@ -11,8 +11,9 @@ decision-makers: Tran Nguyen (maintainer)
 The released binary is linked statically
 ([ADR-0020](0020-static-musl-via-cargo-zigbuild.md)): it contains the code of
 186 crates, ranikust's own included, and the C code three of them compile (mimalloc in
-`libmimalloc-sys`, zstd in `zstd-sys`, BoringSSL- and OpenSSL-derived code
-in `ring`). Their licences (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0
+`libmimalloc-sys`, zstd in `zstd-sys`, code taken from BoringSSL in
+`ring`), plus what the Rust toolchain links in: the standard library, musl
+libc and LLVM's libunwind. Their licences (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0
 and others, all allowed by `deny.toml`) ask that their copyright and
 licence notices go with every copy, binaries included. The tarball of
 [ADR-0089](0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md)
@@ -36,15 +37,19 @@ carry the others, before 0.0.1?
 
 The release workflow generates `THIRD-PARTY-LICENSES` with a pinned
 cargo-about for exactly the shipped binary's dependency graph, refuses a
-licence `deny.toml` does not allow, and ships the file in the tarball.
+licence `deny.toml` does not allow, appends the notices of the toolchain's
+components, and ships the file in the tarball.
 
 Maintainer, 2026-11-03, asked how to handle the dependencies' code in the
 static binary before v0.0.1: "cargo-about trước 0.0.1 (Recommended)"
 (cargo-about before 0.0.1).
 
 - **Tool:** cargo-about 0.9.2, installed by `taiki-e/install-action`
-  (pinned by commit), which checks the binary against its pinned SHA-256
-  and uses no cache ([ADR-0092](0092-a-release-is-verified-by-workflow-and-tag-and-built-without-cache-or-unprotected-environment.md)).
+  (pinned by commit), which downloads it from its own manifest, checks it
+  against the pinned SHA-256 and uses no cache
+  ([ADR-0092](0092-a-release-is-verified-by-workflow-and-tag-and-built-without-cache-or-unprotected-environment.md));
+  `fallback: none` makes a version missing from the manifest fail instead
+  of falling back to cargo-binstall.
   0.9.2 (August 2026) rather than 0.9.3 (released eight days before this
   decision): 0.9.3 changes manifest synthesis and the CA bundle of its
   network fetches, and this use is offline.
@@ -76,18 +81,35 @@ static binary before v0.0.1: "cargo-about trước 0.0.1 (Recommended)"
   expression and the licence files it finds anywhere in the crate's
   package, so vendored C code is covered when the crate ships its licence:
   mimalloc's MIT notice (Microsoft) from `libmimalloc-sys`, zstd's
-  BSD-3-Clause texts from `zstd-sys`, ring's ISC and OpenSSL-derived files.
+  BSD-3-Clause texts from `zstd-sys`, and ring's licence files: ring is
+  declared `Apache-2.0 AND ISC`, its own code under ISC and the code it
+  took from BoringSSL under Apache-2.0 or ISC, each file saying which.
   The template names these three crates and their C code.
+- **The toolchain's components**, which cargo-about does not see, are
+  appended by `scripts/release.py notices` from files committed in
+  `licenses/`, each checked against its SHA-256 (provenance in
+  `licenses/README.md`):
+  - the Rust standard library and compiler-builtins, used under
+    Apache-2.0, whose text is `LICENSE-APACHE` in the tarball, with Rust
+    1.99.1's `COPYRIGHT`;
+  - musl libc 1.2.5, the version Rust 1.99.1 builds for
+    `x86_64-unknown-linux-musl`, with its `COPYRIGHT` (MIT) from the
+    signed musl 1.2.5 tarball;
+  - LLVM's libunwind (LLVM 23.1.1, `rust-lang/llvm-project` `1b9c0d5`)
+    is named with a link to its licence at that commit, not reproduced:
+    Apache-2.0 WITH LLVM-exception waives the notice conditions for code
+    embedded in a binary.
 - **Not covered:** C code whose licence file a crate does not package
   (cargo-about cannot see it; the three crates above do package theirs);
-  and what the Rust toolchain links in rather than a crate: the standard
-  library and compiler-builtins (MIT OR Apache-2.0), musl libc (MIT) and
-  LLVM's libunwind (Apache-2.0 WITH LLVM-exception). The file names these
-  with links to their licences but does not reproduce their texts.
-- **Where it runs:** in the release workflow's build job, for tags and
-  for the pull-request dry run, and locally with
-  `just third-party-licenses` (`target/THIRD-PARTY-LICENSES`).
-  `scripts/release.py package` refuses to package without the file.
+  the notices of the standard library's own third-party code, which Rust
+  ships as `COPYRIGHT-library.html` and the file points to.
+- **Where it runs:** in a job of its own in the release workflow, with
+  only the source checkout, so cargo-about never runs where the release
+  binary is built; the build job packages the file from that job's
+  artifact. For tags and for the pull-request dry run; locally with
+  `just third-party-licenses` (`target/THIRD-PARTY-LICENSES`, the same
+  steps). `scripts/release.py package` refuses a file without the
+  toolchain's section.
 
 ### Consequences
 
@@ -97,9 +119,9 @@ static binary before v0.0.1: "cargo-about trước 0.0.1 (Recommended)"
   stops the release, as `cargo deny` stops CI.
 - Bad, because the licence lists of `deny.toml` and `about.toml` must
   change together (the test catches a difference).
-- Bad, because the toolchain's own components (the standard library, musl,
-  libunwind) are named but their texts are not shipped; adding them is a
-  follow-up.
+- Bad, because the files in `licenses/` and their hashes in
+  `scripts/release.py` must be replaced when the pinned Rust toolchain or
+  the musl it bundles changes.
 - Neutral, because proc-macro crates are listed although their code is not
   in the binary: the list errs on the side of more notices.
 
@@ -114,19 +136,32 @@ static binary before v0.0.1: "cargo-about trước 0.0.1 (Recommended)"
   ("failed to satisfy license requirements").
 - [measured] The release binary links LLVM's libunwind (`_Unwind_*` and
   `libunwind::` symbols) and musl statically.
+- [code] The musl version: Rust's `src/ci/docker/scripts/musl.sh` at tag
+  `1.99.1` sets `MUSL=musl-1.2.5` (and applies CVE patches), and the
+  toolchain's `self-contained/libc.a` holds the string `1.2.5`.
+  [measured] The tarball that script downloads,
+  `musl-1.2.5.tar.gz` (SHA-256 `a9a118bb…75e4`), has a good signature from
+  musl's key `8364 8929 0BB6 B70F 99FF DA05 56BC DB59 3020 450F`; its
+  `COPYRIGHT` has SHA-256 `f9bc4423…55af`.
+- [code] Rust 1.99.1's `src/llvm-project` points to
+  `rust-lang/llvm-project` `1b9c0d5`, whose `LLVMVersion.cmake` says
+  23.1.1.
+- [code] ring 0.17.14's `Cargo.toml`: `license = "Apache-2.0 AND ISC"`.
 - [external] cargo-about documentation: `accepted`, `targets`,
   `ignore-build-dependencies`, `--frozen`, `--fail`
   (<https://embarkstudios.github.io/cargo-about/>).
 - [code] `tests/release/test_release.py`: `about.toml` against
-  `deny.toml`, the template's plain-text output, and packaging refused
-  without the file.
+  `deny.toml`, the template's plain-text output, the toolchain's section
+  (pinned links, both texts, a changed file refused), and packaging
+  refused without the file or without the toolchain's section.
 
 ## More Information
 
 - Refines [ADR-0089](0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md);
   the tool is installed under [ADR-0092](0092-a-release-is-verified-by-workflow-and-tag-and-built-without-cache-or-unprotected-environment.md)'s
   no-cache rule.
-- Follow-up: ship the licence texts of the standard library, musl and
-  libunwind too.
-- Revisit when an aarch64 release is added (another `targets` entry) or a
+- The description of pull request #42 records the changes made to this
+  ADR before it reached `main`: ring's declared licence corrected, and
+  the toolchain's notices added after the re-check of the pull request.
+- Revisit when the pinned Rust toolchain changes (`licenses/`), when an aarch64 release is added (another `targets` entry) or a
   dependency starts bundling C code without its licence file.
