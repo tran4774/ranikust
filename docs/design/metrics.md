@@ -223,8 +223,8 @@ No span per HTTP request or body chunk.
 | `rnk_snapshot.mount` | `lowers` | One instruction's overlay mount; with `umount`, the cost overlay adds per instruction (`exp-06`; mount reuse is [open: #18]). |
 | `rnk_snapshot.umount` | | One instruction's unmount. |
 | `rnk_snapshot.diff` | `files_added`, `whiteouts`, `opaque_dirs` (always 0 since ADR-0034), `bytes`, `unchanged`, `bytes_compared` | Record: one instruction's diff; kaniko's `snapshot.command`; `exp-06`. |
-| `rnk_snapshot.baseline` | `entries` | Record, Phase 2 (built, `Walker::baseline`): the walk a kaniko-mode stage starts from; kaniko's `snapshot.init` (`exp-07`). |
-| `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | Phase 2 (built, `Walker`): one walk with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (`exp-07`). |
+| `rnk_snapshot.baseline` | `entries` | Record (kaniko mode, `Walker::baseline`): the walk a kaniko-mode stage starts from; kaniko's `snapshot.init` (`exp-07`). |
+| `rnk_snapshot.walk` | `entries`, `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads` | One kaniko-mode walk (`Walker`) with its hashing (not separable without per-file timers); kaniko's `snapshot.walk` + `snapshot.hash` (`exp-07`). |
 | `rnk_snapshot.export` | `entries`, `bytes_read`, `blocks_read` | One diff fed to `rnk-layer`: an overlay upper directory (`LayerDiff::export`) or a kaniko walk diff (`WalkDiff::export`, `rnk_snapshot.diff` inside it as in overlay mode). Both exporters record `entries` and `bytes_read`; `blocks_read` (the `RUSAGE_THREAD` `ru_inblock` delta of the reading thread, for the disk re-reads `exp-07` and `exp-08` found under memory pressure; omitted if reads fan out to a pool) is not recorded yet. |
 | `rnk_snapshot.release` | `entries` | Deleting diff directories or a stage root (overlay mode), or a kaniko-mode stage directory (`KanikoStages`, `rnk_rootfs.delete` inside); kaniko's `fs.delete`. |
 | `rnk_snapshot.probe` | `ok`, `api` | One overlay mount attempt of the probe: `api` is `LowerdirPlus` or `Mount2`, tried in that order. |

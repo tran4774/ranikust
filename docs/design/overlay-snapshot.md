@@ -79,8 +79,8 @@ no layer. Keeping one mount across several consecutive instructions is a later
 optimization ([open: #18]; see the `volatile` rules).
 
 In code (`rnk-snapshot`, [ADR-0046](../adr/0046-snapshotter-signature.md)):
-`Snapshotter::prepare` makes a stage on `Base::Scratch`, `Base::Image(layers)` or
-`Base::Stage(parent)`; `StageRootfs::begin_layer` is steps 2 and 3,
+`Snapshotter::prepare` makes a stage on `Base::Scratch`, `Base::Image(layers)`
+or `Base::Stage(parent)`; `StageRootfs::begin_layer` is steps 2 and 3,
 `end_layer` step 5 and returns the `LayerDiff` that step 6 exports. Every
 diff becomes the topmost lower of the next layer, empty or not. Between
 layers, `view` mounts the stack read-only on `rootfs/` (overlay without an
@@ -174,8 +174,9 @@ Requirements found by comparing images:
   are emitted too, with their current metadata, even when unchanged; the
   `rnk-layer` writer adds the missing ones, asking the exporter for their
   metadata through a lookup into the merged view, as containerd's
-  `includeParents` does for BuildKit (ADR-0032). Otherwise extractors such as containers-storage create missing parents as
-  0755 and mask the real mode below (`/root` 700 → 755, `/tmp` 1777 → 755).
+  `includeParents` does for BuildKit (ADR-0032). Otherwise extractors such as
+  containers-storage create missing parents as 0755 and mask the real mode
+  below (`/root` 700 → 755, `/tmp` 1777 → 755).
   The `sameDirent` rule only stops an unchanged directory from being emitted
   on its own: the exporter skips it, and the writer adds it back through the
   lookup when a descendant is emitted.

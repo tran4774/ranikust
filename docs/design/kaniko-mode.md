@@ -98,17 +98,16 @@ the scheduler runs one stage at a time) or a private directory per stage
     `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers).
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
-    The `RUN` child drops every capability outside Docker's defaults from its
-    bounding set (`CAP_SETPCAP`; without it, any capability outside them
-    stops the `RUN`); its ambient, inheritable, permitted and effective sets
-    go to the defaults. ranikust itself keeps no more:
-    `rnk_sandbox::trim_to_run_capabilities`, first thing in the set-up while
-    single-threaded, cuts its bounding set to Docker's defaults (else the
-    build is refused), clears its ambient and inheritable sets and trims the
-    rest; every later thread inherits them. A link a `RUN` plants at an
-    operator path (an output, the metrics report) then reaches only what that
-    `RUN` could reach itself. ranikust's own soft `RLIMIT_CORE` is 0; the
-    `RUN` gets the original back, as it gets `RLIMIT_NOFILE`.
+    The `RUN` child's capabilities are Docker's defaults, and one that cannot
+    drop the rest is refused ([sandbox](sandbox.md#direct-kaniko-mode-on-)).
+    ranikust itself keeps no more: `rnk_sandbox::trim_to_run_capabilities`,
+    first thing in the set-up while single-threaded, cuts its bounding set to
+    Docker's defaults (else the build is refused), clears its ambient and
+    inheritable sets and trims the rest; every later thread inherits them. A
+    link a `RUN` plants at an operator path (an output, the metrics report)
+    then reaches only what that `RUN` could reach itself. ranikust's own soft
+    `RLIMIT_CORE` is 0; the `RUN` gets the original back, as it gets
+    `RLIMIT_NOFILE`.
   - **Secrets are read once** while the build is prepared and never opened by
     path again (`Secret::load`). A `--secret src=` file on `/` still gets a
     warning: every `RUN` there can read it, and copying it into the image is
@@ -123,14 +122,13 @@ the scheduler runs one stage at a time) or a private directory per stage
     mount
     ([ADR-0054](../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md));
     devices passed with `--device` stay the operator's choice.
-  - **No process outlives its `RUN`.** ranikust is a child subreaper
-    (`Sandbox::start_direct`). After each `RUN` it kills everything that
-    became its child during the `RUN`, and their descendants, through a pidfd
-    after checking the parent and start time again, and reaps them by pid
-    without blocking, never `waitpid(-1)`. Where seccomp refuses
-    `pidfd_open`, a plain `kill` for its own children only (a pid stays
-    theirs until reaped); deeper processes follow on the next rounds, once
-    reparented to ranikust.
+  - **No process outlives its `RUN`.** ranikust is a child subreaper. After
+    each `RUN` it kills everything that became its child during the `RUN`, and
+    their descendants, through a pidfd after checking the parent and start time
+    again, and reaps them by pid without blocking, never `waitpid(-1)`. Where
+    seccomp refuses `pidfd_open`, a plain `kill` for its own children only (a
+    pid stays theirs until reaped); deeper processes follow on the next rounds,
+    once reparented to ranikust.
   - **Warnings for what it cannot close:** a `--build-arg NAME=value` whose
     name looks like a secret (`/proc/<pid>/cmdline`), another process holding
     `DOCKER_AUTH_CONFIG` in its environment, a `--secret` file.
@@ -269,14 +267,9 @@ pkg/dockerfile/dockerfile.go:297-415`.
 - **On `/`, what is kept lives in anonymous files** (ADR-0056).
   - A kept stage is a plain tar in an anonymous file, written by a
     metadata-only walk and the walk's exporter. A `COPY --from=<image>` stays
-    its blobs (a streamed one spooled and verified on first read, before any
-    directory is made, ADR-0055).
-  - A streamed base layer's verified spool stays while stages or `COPY
-    --from` images the build made on the layer are still to read it, so a base
-    several stages share is downloaded and verified once per build. Every
-    extraction from it still checks the diff ID and reads it through the
-    descriptor held (`pread`), never by a path. While the store's files are in
-    memory (`memfd`), no spool is kept for later uses (ADR-0081).
+    its blobs, spooled and verified on first read, before any directory is
+    made (ADR-0055); the spool's lifetime and its verification are in
+    [streaming](streaming.md#credentials-and-failures).
   - Every layer extraction of kaniko mode reads its plain tar from a thread
     that decompresses the blob and computes the diff ID up to 5 MiB ahead (4
     queued chunks of 1 MiB and the one it fills; 6 MiB held with the one being
@@ -295,14 +288,13 @@ pkg/dockerfile/dockerfile.go:297-415`.
   Off `/` the stages do not share a root: see
   [Per-stage directories](#per-stage-directories).
 
-`Kaniko` also takes a directory as its root, its keep area beside it. The
-binary does not use it that way since ADR-0059; tests do. Such a root is
-private, by ADR-0047's rule moved to the state directory by ADR-0050: it lies
-below the state directory, owned by the user running ranikust, mode `0700`,
-every parent likewise and not writable by others (root's sticky directories
-excepted), walked by descriptor before anything is created. Each emptying
-gives the root its own owner and mode back, and the sandbox is started with
-the root's descriptor and refuses a `RUN` on any other path. It is emptied
+`Kaniko` also takes a directory as its root, its keep area beside it; the
+binary does not use it that way since ADR-0059, tests do. Such a root is private
+by ADR-0047's rule moved to the state directory by ADR-0050: below the state
+directory, owned by the user running ranikust, `0700`, every parent likewise
+and not writable by others (root's sticky directories excepted), walked by
+descriptor before anything is created. Each emptying gives it its own owner and
+mode back, and the sandbox refuses a `RUN` on any other path. It is emptied
 before the first base too, and at the end of a build in which a stage changed
 it (`Kaniko::finish`), then removed with the build directory; a build that
 fails before its first base touches neither.
@@ -557,36 +549,31 @@ Kaniko mode outside a container
   [ADR-0062](../adr/0062-stage-directory-hand-over-decided-from-the-stage-graph.md)).
   From the stage graph the build counts, per stage, the stages that read its
   root after it is built: each `FROM` it counts one, each stage reading it with
-  `COPY --from` or `RUN --mount from=` one (a stage doing both counts twice).
-  A stage built `FROM` a stage whose count is exactly one takes that stage's
+  `COPY --from` or `RUN --mount from=` one (a stage doing both counts twice). A
+  stage built `FROM` a stage whose count is exactly one takes that stage's
   directory over (`Snapshotter::prepare_last`, `take_base` in `rnk-builder`)
   instead of copying it; every other `FROM <stage>` copies. The choice never
-  depends on scheduling, because a directory taken over is not byte for byte
-  the copy: ext4 and xfs keep the size of a directory emptied in place, a copy
-  makes it compact, and the walk compares directory sizes. The steps:
+  depends on scheduling, because a directory taken over is not byte for byte the
+  copy: ext4 and xfs keep the size of a directory emptied in place, a copy makes
+  it compact, and the walk compares directory sizes. The steps:
   1. `rnk_rootfs::prune` deletes in place what the copy leaves out (the ignore
      list, device nodes, FIFOs, sockets; through descriptors, the machine's own
      `/` and a mount below the root refused), sets each directory's times back,
-     and removes overlay's own xattrs (`rnk_rootfs::is_overlay_own`, the
-     predicate the copy uses) from every entry it keeps and from the root.
-  2. `RootPath::move_sub_root` moves `stages/<p>/rootfs` to
-     `stages/<c>/rootfs` (`renameat2(RENAME_NOREPLACE)` between the stage
-     directories' descriptors, device, inode and mount checked before and
-     after).
+     and removes overlay's own xattrs (`rnk_rootfs::is_overlay_own`, as the copy
+     does).
+  2. `RootPath::move_sub_root` moves `stages/<p>/rootfs` to `stages/<c>/rootfs`
+     (`renameat2(RENAME_NOREPLACE)` between the stage directories' descriptors,
+     device, inode and mount checked before and after).
 
-  The result has the copy's entries, contents, owners, modes, modification
-  times, xattrs, links and hardlinks. What a `RUN` can still tell apart, and no
-  layer holds: access and change times, directory sizes, the order `readdir`
-  lists a directory in, and inode flags the copy does not carry (`chattr` flags
-  a non-privileged owner may set, such as `A` or `d`).
-
-  It falls back to a copy of the pruned root when a file there has a hardlink
-  the prune did not find inside the root (moved, it would reach outside), or
-  when the move failed before anything moved (`EINVAL` without
-  `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over, and after such a
-  fallback (its root was pruned), the parent is read no more: its view, root,
-  a second child and a layer are refused, and its release deletes an empty
-  directory.
+  What a `RUN` can still tell apart from a copy, and no layer holds: access and
+  change times, directory sizes, the order `readdir` lists a directory in, and
+  inode flags the copy does not carry (`chattr` flags a non-privileged owner may
+  set, such as `A` or `d`). It falls back to a copy of the pruned root when a
+  file there has a hardlink the prune did not find inside the root (moved, it
+  would reach outside), or when the move failed before anything moved (`EINVAL`
+  without `RENAME_NOREPLACE`, `EBUSY`, `EXDEV`). After a hand-over or such a
+  fallback the parent is read no more: its view, root, a second child and a
+  layer are refused, and its release deletes an empty directory.
 - **Special files and `COPY`** (scope of ADR-0060): here, unlike on `/`,
   `COPY` and `COPY --from` keep device nodes, FIFOs and sockets, as BuildKit,
   because every `RUN` enters the root `nodev` (the full sandbox). An image
@@ -680,46 +667,38 @@ which file is in [experiment 12a](../research/experiments/12a-fake-proc.md).
   `/proc/sys` or `cpufreq`; never set `LD_ORIGIN_PATH` or `LD_LIBRARY_PATH`;
   never substitute environment variables such as `GOMAXPROCS`: each produced
   silently wrong results in the experiments.
-- **Fixed:** `os.cpus()` returning 0; CPU quota and memory limits for libuv,
-  V8, Go and Rust; `next build`; JVM limits under cgroup v1, and under v2 for
-  JDKs that still read `/proc/cgroups`.
-- **Not fixed:** `/dev/fd`, `/dev/std*` and `<(...)`; `/proc/self/exe` and so
-  `$ORIGIN` (distro JDKs, TypeScript 7, `current_exe`); `ps` and `/proc/<pid>`;
-  live values (frozen at the snapshot); JVMs >= 21.0.12 and >= 17.0.20 under
-  cgroup v2, which detect the cgroup with `statfs`. Each stage sees the whole
-  container's quota, as in BuildKit.
+- What it fixes and what it cannot (`/dev/fd`, `/proc/self/exe` and so
+  `$ORIGIN`, `ps`, live values, JVMs >= 21.0.12 and >= 17.0.20 under cgroup v2)
+  is in experiments 12a, 14 and 15. Each stage sees the whole container's
+  quota, as in BuildKit.
 
 ### Java
 
-- **`JAVA_TOOL_OPTIONS`** is injected under cgroup limits as
-  [ADR-0019](../adr/0019-java-tool-options-on-parallel-path.md) specifies, and
-  never includes GC flags.
-- **Early warnings**, after the stage root is prepared and before the first
-  `RUN`: for each `*/bin/java`, if `libjli.so` resolved by the dynamic loader's
-  cache is missing or is not `<jdk>/lib/libjli.so`, that this JDK will not
-  start or will load another JDK's launcher (distro JDKs from apt, apk or dnf
-  fail; Temurin images pass because they run `ldconfig`); and, if `memory.max`
-  < 1792 MiB and a stage contains Java, that the JVM will choose G1 instead of
-  SerialGC and may be OOM-killed.
-- JDKs downloaded during a `RUN` by a toolchain (Gradle foojay,
-  maven-toolchains) cannot be detected in advance.
+`JAVA_TOOL_OPTIONS` is injected under cgroup limits as
+[ADR-0019](../adr/0019-java-tool-options-on-parallel-path.md) specifies, and
+never includes GC flags. Before the first `RUN`, ranikust would warn when a
+`*/bin/java` cannot start because `libjli.so` resolves outside its JDK (distro
+JDKs from apt, apk or dnf; Temurin images run `ldconfig` and pass), and when
+`memory.max` < 1792 MiB and a stage contains Java (the JVM picks G1 instead of
+SerialGC and may be OOM-killed). JDKs a toolchain downloads during a `RUN`
+(Gradle foojay, maven-toolchains) cannot be detected in advance.
 
 ### After a failed `RUN`
 
 If stderr contains `libjli.so`, `readlink /proc/self/exe`,
 `uv_resident_set_memory`, `/dev/fd/`, `Unpacked JDK archive does not contain a
-Java home` or `getMainType`, ranikust suggests running without
+Java home` or `getMainType`, ranikust would suggest running without
 `--parallel-stages`. It never retries by itself: the failed `RUN` may have
 written part of its output.
 
 ### Tool families
 
-- **Safe with the fake `/proc`:** Node (Next 15 and 16, webpack, terser, jest,
-  tsc 5, esbuild, vite, npm, pnpm) and Java on Temurin images with one JDK (the
-  latter under cgroup limits only with `JAVA_TOOL_OPTIONS`).
-- **Needs sequential mode:** several JDKs in one root (toolchains), a JDK from
-  apt, apk or dnf, TypeScript 7 (`tsgo`) and binaries calling `current_exe` at
-  start, scripts using `<(...)`, `/dev/fd`, `ps` or `/proc/<pid>`.
+Node tools (Next 15 and 16, webpack, jest, tsc 5, esbuild, vite, npm, pnpm) and
+Java on a Temurin image with one JDK are safe with the fake `/proc` (the latter
+under cgroup limits only with `JAVA_TOOL_OPTIONS`). Several JDKs in one root, a
+JDK from apt, apk or dnf, TypeScript 7 (`tsgo`), binaries calling `current_exe`
+at start and scripts using `<(...)`, `/dev/fd`, `ps` or `/proc/<pid>` need
+sequential mode.
 
 ## Lazy snapshots
 
