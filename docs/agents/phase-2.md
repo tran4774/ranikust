@@ -6,7 +6,12 @@ comes from a parallel walk and hash, the root is emptied safely between
 stages, and stages run one at a time unless per-stage directories are
 possible or `--parallel-stages` asks for them. Measured against kaniko on
 W1–W3. Its open questions are settled (`ADR-0038`, `ADR-0039`) except the
-`Snapshotter` signature, revisited at task 6 (Q-024).
+`Snapshotter` signature, revisited at task 6 (Q-024). **Done** (every
+acceptance criterion ticked, 2026-11-03, after the refactor, the security
+audit in [`docs/security/audit/phase-1-2/`](../security/audit/README.md)
+and its hardening pass); the next phase's plan is not written yet
+([roadmap](../../README.md#roadmap)). What Phase 2 leaves to later phases
+is under [Carried over to later phases](#carried-over-to-later-phases).
 
 Source: survey 04 §3 (5–6 weeks for one person `[inferred]`),
 [design/kaniko-mode.md](../design/kaniko-mode.md), experiments 09, 12, 12a
@@ -123,6 +128,37 @@ Not blocking Phase 2; each lands when its owner is next touched:
   ([Q-187](../open-questions.md#q-187-how-does-the-w3-digest-check-treat-the-workloads-du-output));
 - W1 and W3 metrics reports compared with kaniko's by the bench harness;
 - T2 on cgroup v1 and kernels before 5.11, and a CI job with KVM.
+
+## Carried over to later phases
+
+Decided, not built; each lands with its phase or when its owner is next
+touched:
+
+- [ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md):
+  bind ranikust's binary read-only over itself in the full sandbox's mount
+  namespace (Q-422 (b)), with a T2 test; `Direct` on `/` keeps its barriers
+  (Q-422 (d)). Reword the "open question Q-422" comments in
+  `rnk-sandbox` `spawner.rs` and `tests/smoke/cases/self-exe` then.
+- [ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md):
+  a cgroup of its own and `cgroup.kill` for a `RUN`'s command where a
+  delegated cgroup v2 tree exists (Q-452 (a)); a user namespace that
+  leaves the init's uid unmapped with Phase 3's `--userns` (Q-452 (b)).
+- [ADR-0084](../adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md):
+  secret files in kaniko mode on `/`, their place on the ignore list and
+  the warning (Q-445), once
+  [Q-453](../open-questions.md) says where the file goes.
+- Open questions left for their phases: Q-438 (context reads with the
+  owner's credentials, Phase 5), Q-441 (a cache for kaniko mode on `/`,
+  with Phase 4's layer cache), Q-444 (`zeroize`, Phase 6), Q-447
+  (`--network=none` and ranikust's own requests), Q-448 (a pull's overall
+  deadline), Q-449 (push-side bodies).
+- Backlog raised for the hardening pass and not built: cosign signing of
+  images and cache entries; `chain()` on `rnk_sched` job types to drop
+  `ranikust`'s `unit_chain`; the `unescape` shared by `rnk-sandbox` and
+  `rnk-snapshot`; the Phase 1 `_` arms in `rnk-sandbox` `plan.rs` and
+  `journal.rs`.
+- The Phase 1 items listed above under Carried over from Phase 1 that are
+  still open.
 
 ## Deferred
 

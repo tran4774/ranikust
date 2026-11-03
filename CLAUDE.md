@@ -5,12 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ranikust is a daemonless container image builder in Rust, a successor to
 kaniko: it reads a Dockerfile, runs it, and pushes an OCI image from one
 static musl binary that works inside a container or directly on a host.
-Pre-alpha: Phase 1 (MVP, overlay mode as root) is done; Phase 2 (kaniko
-mode) is in progress, planned in `docs/agents/phase-2.md`.
+Pre-alpha: Phase 1 (MVP, overlay mode as root) and Phase 2 (kaniko mode)
+are done (`docs/agents/phase-1.md`, `docs/agents/phase-2.md`); the next
+phase is not planned yet (the roadmap is in `README.md`).
 
 **For anything beyond this page, start at
 [`docs/agents/README.md`](docs/agents/README.md):** it routes each kind of task
-to the few short files worth reading (crate cards, rules, Phase 2 plan,
+to the few short files worth reading (crate cards, rules, phase plans,
 kaniko map, glossary, refs). Load long documents only when a card points to
 them.
 
@@ -33,7 +34,8 @@ The toolchain is pinned in `rust-toolchain.toml` (1.99.1, edition 2024);
 ## Big picture
 
 - **Two snapshot modes, chosen by probing at startup.** Overlay mode (may
-  mount: root, privileged, rootless user namespaces) captures each
+  mount: root or privileged; rootless user namespaces are planned for
+  Phase 3) captures each
   instruction as an overlay upperdir and builds stages in parallel. kaniko
   mode (root but may not mount: default Docker, most pods) walks and hashes
   the rootfs like kaniko, sequentially by default. Elsewhere the tool
