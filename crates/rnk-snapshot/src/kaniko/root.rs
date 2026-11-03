@@ -1069,14 +1069,16 @@ pub(super) fn extract_blob(
 }
 
 /// Decompresses `blob` into `root` and checks the tar's digest against
-/// `diff_id` at its end.
+/// `diff_id` at its end. The decompression and the digest run on a thread
+/// of their own ([`Decoding`]), overlapping the extraction's writes; the
+/// bytes extracted, in their order, are the same.
 fn extract_checked(
     root: &RootPath,
     ignore: &IgnoreList,
     blob: Box<dyn std::io::Read + Send>,
     diff_id: &Digest,
 ) -> Result<()> {
-    let mut decoder = rnk_layer::Decoder::new(blob)?;
+    let mut decoder = Decoding::new(blob)?;
     extract_live(root, &mut decoder, ignore)?;
     let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
     if actual != *diff_id {
@@ -1086,6 +1088,169 @@ fn extract_checked(
         });
     }
     Ok(())
+}
+
+/// How many chunks of plain tar a layer's decompression runs ahead of its
+/// extraction ([`Decoding`]): memory bounded at this many times
+/// [`DECODE_CHUNK`] per layer being extracted.
+const DECODE_AHEAD: usize = 4;
+
+/// The size of one chunk of plain tar handed from the decompression to the
+/// extraction.
+const DECODE_CHUNK: usize = 1 << 20;
+
+/// A layer's blob decompressed, and its diff ID computed, on a thread of
+/// its own, at most [`DECODE_AHEAD`] chunks ahead of the reader: the
+/// extraction's writes overlap the decompression (ADR-0081). The thread
+/// only reads `blob` and decompresses it; it writes no file. A read error
+/// of the blob or of the decompression reaches the reader as an
+/// [`std::io::Error`] of the same kind. Dropped before its end, the
+/// reader goes, the thread stops at its next chunk and is joined.
+///
+/// The decoder, and its `rnk_layer.decode` span, are made and dropped on
+/// the caller's thread: a span closed on a thread without the caller's
+/// subscriber would never release its parent span.
+struct Decoding {
+    chunks: Option<std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>>,
+    chunk: Vec<u8>,
+    at: usize,
+    thread: Option<std::thread::JoinHandle<(DecodeEnd, LayerDecoder)>>,
+}
+
+/// What the decompression thread ends with: the tar stream's digest.
+type DecodeEnd = std::result::Result<rnk_layer::Sha256Digest, rnk_layer::Error>;
+
+/// The decoder the thread reads with, handed back when it ends.
+type LayerDecoder = rnk_layer::Decoder<Box<dyn std::io::Read + Send>>;
+
+impl Drop for Decoding {
+    fn drop(&mut self) {
+        // The thread's next send fails, so it ends at its next chunk; its
+        // decoder is dropped here, on the caller's thread.
+        self.chunks = None;
+        if let Some(thread) = self.thread.take() {
+            drop(thread.join());
+        }
+    }
+}
+
+impl Decoding {
+    /// Sniffs the compression here, then decompresses on the new thread.
+    fn new(blob: Box<dyn std::io::Read + Send>) -> Result<Self> {
+        let decoder = rnk_layer::Decoder::new(blob)?;
+        let (tx, chunks) = std::sync::mpsc::sync_channel(DECODE_AHEAD);
+        let thread = std::thread::Builder::new()
+            .name("rnk-decode".to_owned())
+            .spawn(move || decode_into(decoder, &tx))
+            .map_err(|source| Error::Io {
+                op: "start the decompression thread for",
+                path: PathBuf::from("a layer"),
+                source,
+            })?;
+        Ok(Self {
+            chunks: Some(chunks),
+            chunk: Vec::new(),
+            at: 0,
+            thread: Some(thread),
+        })
+    }
+
+    /// Reads to the end of the tar stream and returns its digest, as
+    /// [`rnk_layer::Decoder::finish`].
+    fn finish(mut self) -> Result<rnk_layer::Sha256Digest> {
+        std::io::copy(&mut self, &mut std::io::sink()).map_err(rnk_layer::Error::from)?;
+        self.chunks = None;
+        let thread = self
+            .thread
+            .take()
+            .ok_or(Error::State("the decompression thread was joined already"))?;
+        let (digest, decoder) = thread
+            .join()
+            .map_err(|_| Error::State("the decompression thread panicked"))?;
+        drop(decoder);
+        Ok(digest?)
+    }
+}
+
+/// The decompression thread of [`Decoding`]: full chunks to `tx` until the
+/// end of the tar stream, then the stream's digest, and the decoder back.
+/// Stops when the reader is gone.
+fn decode_into(
+    mut decoder: LayerDecoder,
+    tx: &std::sync::mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+) -> (DecodeEnd, LayerDecoder) {
+    let end = decode_chunks(&mut decoder, tx);
+    (end, decoder)
+}
+
+/// [`decode_into`]'s loop.
+fn decode_chunks(
+    decoder: &mut LayerDecoder,
+    tx: &std::sync::mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+) -> DecodeEnd {
+    use std::io::Read as _;
+    loop {
+        let mut chunk = vec![0_u8; DECODE_CHUNK];
+        let mut filled = 0;
+        while filled < chunk.len() {
+            match decoder.read(chunk.get_mut(filled..).unwrap_or_default()) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    let again = std::io::Error::new(e.kind(), e.to_string());
+                    // The reader sees the error itself; the join gets a copy.
+                    let _ = tx.send(Err(e));
+                    return Err(rnk_layer::Error::Io(again));
+                }
+            }
+        }
+        let end = filled < chunk.len();
+        chunk.truncate(filled);
+        if !chunk.is_empty() && tx.send(Ok(chunk)).is_err() {
+            return Err(rnk_layer::Error::Io(std::io::Error::other(
+                "the extraction stopped reading the layer",
+            )));
+        }
+        if end {
+            // The read of 0 bytes above set the diff ID.
+            return decoder.diff_id().ok_or_else(|| {
+                rnk_layer::Error::Io(std::io::Error::other("the tar stream did not end"))
+            });
+        }
+    }
+}
+
+impl std::io::Read for Decoding {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        while self.at >= self.chunk.len() {
+            let Some(chunks) = &self.chunks else {
+                return Ok(0);
+            };
+            match chunks.recv() {
+                Ok(Ok(chunk)) => {
+                    self.chunk = chunk;
+                    self.at = 0;
+                }
+                Ok(Err(e)) => return Err(e),
+                // The thread is done: the stream's end.
+                Err(_) => {
+                    self.chunks = None;
+                    return Ok(0);
+                }
+            }
+        }
+        let rest = self.chunk.get(self.at..).unwrap_or_default();
+        let n = rest.len().min(buf.len());
+        buf.get_mut(..n)
+            .unwrap_or_default()
+            .copy_from_slice(rest.get(..n).unwrap_or_default());
+        self.at += n;
+        Ok(n)
+    }
 }
 
 /// A stage on the shared root.

@@ -1486,3 +1486,75 @@ fn only_a_step_that_changes_nothing_encodes_to_the_empty_layer() {
     assert_eq!(undone, empty);
     root.release().unwrap();
 }
+
+/// A gzipped tar of one file of `len` pseudo-random bytes, and the plain
+/// tar.
+fn gzipped_tar(len: usize) -> (Vec<u8>, Vec<u8>) {
+    use std::io::Write as _;
+    let mut data = vec![0_u8; len];
+    let mut x = 0x9e37_79b9_u32;
+    for b in &mut data {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *b = x.to_le_bytes()[0];
+    }
+    let mut b = tar::Builder::new(Vec::new());
+    let mut h = Header::new_gnu();
+    h.set_entry_type(EntryType::Regular);
+    h.set_mode(0o644);
+    h.set_size(u64::try_from(len).unwrap());
+    b.append_data(&mut h, "big", data.as_slice()).unwrap();
+    let plain = b.into_inner().unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&plain).unwrap();
+    (gz.finish().unwrap(), plain)
+}
+
+#[test]
+fn a_layer_decompressed_on_its_own_thread_reads_as_the_decoder_and_has_its_digest() {
+    // Several chunks, the last one partial.
+    let (gz, plain) = gzipped_tar(DECODE_CHUNK * 3 + 12_345);
+    let mut decoding = Decoding::new(Box::new(std::io::Cursor::new(gz.clone()))).unwrap();
+    let mut out = Vec::new();
+    // Small reads, as the tar crate does.
+    let mut buf = [0_u8; 700];
+    loop {
+        let n = decoding.read(&mut buf).unwrap();
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(out, plain);
+    let digest = decoding.finish().unwrap();
+    let expected = rnk_layer::Decoder::new(std::io::Cursor::new(gz))
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert_eq!(digest.as_bytes(), expected.as_bytes());
+    assert_eq!(digest.as_bytes(), Sha256::digest(&plain).as_slice());
+}
+
+#[test]
+fn a_corrupt_layer_fails_its_reader_and_a_reader_that_stops_early_ends_the_thread() {
+    let (mut gz, _) = gzipped_tar(DECODE_CHUNK * 2);
+    let at = gz.len() / 2;
+    gz[at] ^= 0xff;
+    gz[at + 1] ^= 0xff;
+    let mut decoding = Decoding::new(Box::new(std::io::Cursor::new(gz))).unwrap();
+    let e = std::io::copy(&mut decoding, &mut std::io::sink()).unwrap_err();
+    assert_ne!(e.kind(), std::io::ErrorKind::Interrupted, "{e}");
+    // A reader dropped after its first bytes: the thread stops instead of
+    // decompressing the rest for nobody, and nothing waits for it.
+    let (gz, _) = gzipped_tar(DECODE_CHUNK * (DECODE_AHEAD + 4));
+    let mut decoding = Decoding::new(Box::new(std::io::Cursor::new(gz))).unwrap();
+    let mut first = [0_u8; 512];
+    decoding.read_exact(&mut first).unwrap();
+    let thread = decoding.thread.take().unwrap();
+    drop(decoding);
+    assert!(
+        thread.join().unwrap().0.is_err(),
+        "the thread saw its reader go"
+    );
+}
