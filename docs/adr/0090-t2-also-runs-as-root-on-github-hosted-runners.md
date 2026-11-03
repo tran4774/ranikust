@@ -11,9 +11,11 @@ decision-makers: Tran Nguyen (maintainer)
 Tests that need real root (tier T2) ran only in the local QEMU/KVM VM
 (`just test-vm`), one VM at a time on the maintainer's machine, and the
 T2c tests also in throwaway rootful Docker containers on the VPS
-(ADR-0063). With work moving onto GitHub pull requests (the maintainer,
-2026-11-03), a pull request had no privileged result of its own unless
-someone ran the VM locally and reported it. The maintainer asked whether
+(ADR-0063). With work moving onto GitHub pull requests
+([ADR-0087](0087-work-flows-through-github-issues-pull-requests-and-a-project.md):
+"GitHub CI, the T2 results and the reviews posted on the pull request"), a
+pull request had no privileged result of its own unless someone ran the VM
+locally and reported it. The maintainer asked whether
 T2 can run on GitHub's free runners, and chose to run it directly on the
 runner: "Chắc theo hướng chạy T2 trực tiếp trên runner" (2026-11-03). A
 GitHub-hosted runner is a fresh VM GitHub makes for one job and deletes
@@ -45,7 +47,8 @@ local VM stays the reference for everything else.
 
 - **Jobs (check names):** `T2 unit (root on the runner)`, `T2 smoke, quick,
   secrets (root on the runner)`, `T2c unit-c (rootful Docker on the
-  runner)`. Making them required checks is the maintainer's (the ruleset).
+  runner)`. Making them required checks is the maintainer's: ADR-0087 has
+  new required checks added to the `main` ruleset by the maintainer.
 - **Entry point:** `tests/vm/runner.sh`, which refuses unless GitHub
   Actions reports a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
   `RUNNER_ENVIRONMENT=github-hosted`) and the workflow sets
@@ -132,6 +135,9 @@ a pull request's run saves no cache.
 
 Refines ADR-0063 (where root tests run) and the T2 tier of
 `docs/testing.md`; ADR-0086's VM network isolation stays for the local VM.
+Gives the pull-request flow of
+[ADR-0087](0087-work-flows-through-github-issues-pull-requests-and-a-project.md)
+its T2 results without the maintainer's machine.
 Revisit when the repository becomes private (runner resources and
 minutes change), if GitHub's runners stop being per-job VMs, or when a
 nested VM on the runner is needed to test kernel 5.15.
