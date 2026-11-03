@@ -12,9 +12,9 @@ than a regular user never run on a developer's machine.
 |---|---|---|---|---|---|
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
-| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host: the local VM, and on every pull request a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push` and `ultra` suites |
+| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host: the local VM, and on a full CI run ([CI lanes](#ci-lanes)) a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push` and `ultra` suites |
 | T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), and in CI a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)), never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)); CI's `.github/workflows/t2.yml` | `unit-c` |
-| T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, aarch64 T0 under qemu-user, cargo-deny, rustdoc, mdBook. The `Release` workflow's dry run on pull requests that change what goes into a release: the release scripts' tests, then the release build, its checks, the third-party licence notices (cargo-about, failing on a licence `deny.toml` does not allow), the tarball and `SHA256SUMS`, without attestation or release (a `v*` tag runs it in full) | None | GitHub Actions (`.github/workflows/ci.yml`, `.github/workflows/release.yml`) | `just ci`; `just test-release` for the release scripts | In use |
+| T3 | CI, in lanes chosen by what a pull request changes ([below](#ci-lanes)): on every pull request, drafts included, `fmt`, `clippy`, T0 (x86_64), cargo-deny, rustdoc, mdBook and docs-lint; on a full run also the static musl build and the native aarch64 T0. The `Release` workflow's dry run on pull requests that change how a release is made: the release scripts' tests, then the release build, its checks, the third-party licence notices (cargo-about, failing on a licence `deny.toml` does not allow), the tarball and `SHA256SUMS`, without attestation or release (a `v*` tag runs it in full) | None | GitHub Actions (`.github/workflows/ci.yml`, `.github/workflows/release.yml`) | `just ci` (everything `ci.yml` runs); `just test-release` for the release scripts | In use |
 
 ### Rules
 
@@ -601,10 +601,98 @@ why:
 | `direct_runs_in_a_chroot_with_placed_files_as_root` | `rnk-sandbox` | (3) raises the `RLIMIT_CORE` hard limit, which needs `CAP_SYS_RESOURCE` |
 | `red_team_a_run_with_every_mount_holds_only_its_stdio`, `red_team_a_run_cannot_change_the_hosts_dev_nodes`, `red_team_no_run_outlives_the_thread_that_cloned_it` | `rnk-sandbox` | (3) they require `RootEntry::PivotRoot`, which Docker's seccomp profile refuses |
 
+## CI lanes
+
+CI does not run every job on every push
+([ADR-0095](adr/0095-ci-runs-by-lanes-a-fast-lane-on-drafts-and-the-full-run-when-ready-behind-two-gate-checks.md)).
+A `changes` job in `.github/workflows/ci.yml` and in
+`.github/workflows/t2.yml` runs `scripts/ci.py changes`, which reads what a
+pull request changed (`git diff --name-only --no-renames
+<base>...<head>`) and picks the lanes; every other job runs only when its
+lane is needed, and skips itself otherwise.
+
+| Lane | Paths that need it |
+|---|---|
+| `rust` | `crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/**`, rustfmt and clippy configuration, `justfile`, `scripts/check-static.sh` |
+| `book` | `docs/book/**` |
+| `t2` | the `rust` paths, `tests/vm/**`, `tests/container/**`, `tests/smoke/**` |
+| `deny` | `Cargo.toml`, `Cargo.lock`, `crates/*/Cargo.toml`, `deny.toml`, `rust-toolchain.toml`, `.cargo/**` |
+| every lane | `.github/workflows/**`, `scripts/ci.py`, `.gitattributes`, and any path no rule names (a new file under `.github/`, such as a local action, included) |
+| no lane | the rest of `docs/`, top-level Markdown, `.claude/`, `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `tests/ci/`, the Release workflow's files (`.github/release.yml` among them), the local-only harnesses (`tests/bench`, `tests/e2e`, `tests/registry`) and tools (`scripts/review-pack.py`, `scripts/prune-worktrees.sh` with `tests/agents/`) |
+
+`scripts/ci.py`'s `RULES` is the authority; `just test-ci` fails on a
+tracked file no rule names, so a new path gets its lane when it is added.
+
+What runs, by event:
+
+| Job (check name) | Draft pull request (fast lane) | Full run |
+|---|---|---|
+| `rustfmt`, `clippy`, `test (x86_64 gnu)` | when `rust` | when `rust` |
+| `cargo-deny` | when `deny` | when `deny` |
+| `docs (rustdoc, mdBook)` | rustdoc when `rust`, mdBook when `book` | the same |
+| `docs-lint` | always | always |
+| `static release build (x86_64 musl)`, `test (aarch64 musl, native)` | no | when `rust` |
+| `T2 unit`, `T2c unit-c`, `T2 smoke, quick, secrets` | no | when `t2` |
+
+- **A full run** is a pull request that is ready for review (marking a
+  draft ready starts one), a draft labelled `ci:full`, a manual run ("Run
+  workflow" in the Actions tab, `workflow_dispatch`, on any branch) or a
+  push to `main`. A push to `main` and a manual run count as changing every
+  path, so they run every job. A manual run tests the branch's head, not
+  its merge with `main`.
+- **Gates.** `CI result` and `T2 result` need every job of their workflow,
+  run even when one failed or the run was cancelled, and fail when the
+  `changes` job did not succeed, when any output it should map (checked
+  by name: the runner drops an empty one) is not exactly `true` or
+  `false`, or when any job failed or was cancelled; a job
+  skipped by its lane counts as passed. They are the only checks the
+  `main` ruleset requires. They carry those names only on a full run of a
+  pull request or of `main`: on a draft's fast lane they are named `CI
+  result (draft, fast lane)` and `T2 result (draft, not run)`, and on a
+  manual run on another branch `... (manual run)`. GitHub counts the
+  check run of a name created last, so a draft or a manual run never
+  stands in for a pull request's full run: after a draft is marked ready
+  the pull request waits for its gates. A run cancelled by a newer one
+  leaves failing gates (`always()`, not `!cancelled()`, which may leave
+  the gate skipped, and a skipped gate counts as passed).
+- **Labels.** Only `ci:full` on a draft changes what runs (in any case:
+  `CI:Full` too); adding or removing any other label (or `ci:full` on a
+  pull request that is already ready) starts a run that tests nothing,
+  whose gates are named `... (label change, nothing run)`. Such a run
+  never cancels another; a newer push still cancels the older run of the
+  same pull request. After a label change the pull request's job rows
+  (`rustfmt`, `clippy`, ...) show "skipped", from that run: read the
+  gates, which keep the last real run's verdict.
+- **Who starts a full run.** The maintainer marks a pull request ready,
+  adds `ci:full` or clicks "Run workflow" (whose gates, `... (manual
+  run)`, report the run but do not count for the pull request). Agents
+  use the maintainer's account, so GitHub cannot tell them apart: an
+  agent asks before marking a pull request ready (`gh pr ready` is an ask
+  rule), and adds `ci:full` only when the maintainer asks or to verify a
+  pull request that changes CI itself
+  ([workflow.md](agents/workflow.md#github-flow)).
+- **A re-run** ("Re-run jobs") repeats the lanes of the run it repeats:
+  the draft state and labels of that event, and the workflow files of that
+  commit.
+- **Caches.** rust-cache entries are saved only from `main`. On a push to
+  `main`, a `caches` job in each workflow deletes the entries of its jobs
+  that a newer entry with the same restore key supersedes
+  (`scripts/ci.py stale-caches`), keeping one entry per restore key (the
+  job's cache name, OS, architecture and toolchain hash; entries of an
+  older toolchain stay until GitHub evicts them); only that job holds
+  `actions: write`.
+- **Timeouts.** Every job has one: 5 minutes for the gates, 10 for the
+  small jobs, 20 for `clippy` and the docs, 30 for the tests, the static
+  build and T2.
+- `just ci` runs everything `ci.yml` runs on a full run (`just test-ci`
+  first, as the `changes` job does); `t2.yml` has no recipe
+  ([below](#t2-on-github-hosted-runners)).
+
 ## T2 on GitHub-hosted runners
 
-On every pull request and push to `main` (and by hand from the Actions
-tab, `workflow_dispatch`), `.github/workflows/t2.yml` runs
+On a full CI run ([above](#ci-lanes): a pull request ready for review, a
+draft labelled `ci:full`, a manual run, every push to `main`) that touches
+the Rust code or the T2 harness, `.github/workflows/t2.yml` runs
 the T2 suites `unit`, `smoke`, `quick` and `secrets` and the T2c lane
 `unit-c` as root directly on GitHub-hosted `ubuntu-24.04` runners
 ([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md)): a
@@ -653,7 +741,9 @@ own runner, about five minutes of wall time together:
   6).
 - The Rust caches of these jobs are saved only from `main`, within the
   repository's 10 GB cache limit shared with `ci.yml`; pull requests build
-  cold until `main` has saved them.
+  cold until `main` has saved them. `unit` and `unit-c` build the same test
+  binaries and share one entry (`t2-tests`); the `caches` job keeps only
+  the newest entry of each ([above](#ci-lanes)).
 - The runner is not the VM (kernel 7.0 Azure, Docker 28, AppArmor's
   `apparmor_restrict_unprivileged_userns=1`, a different image GitHub
   updates weekly). The local VM stays the reference: `e2e`, `ultra`, `push`,
@@ -666,14 +756,16 @@ own runner, about five minutes of wall time together:
   maintainer's repository setting (recommended: require approval for all
   outside collaborators).
 - No `just` recipe runs this workflow: it is CI's alone, a deliberate
-  exception to "`justfile` and `ci.yml` identical".
+  exception to "`justfile` and `ci.yml` run the same commands".
 
 ## aarch64 under qemu-user
 
-`just test-aarch64` (CI job `test-aarch64`, `ADR-0009`) builds with
-cargo-zigbuild. On an aarch64 host, which is where CI runs it (GitHub's
-free `ubuntu-24.04-arm` runner for public repositories), everything runs
-natively and no test is skipped. On an x86_64 host it runs everything under
+`just test-aarch64` (CI job `test-aarch64`, on a full run, `ADR-0009`)
+builds with cargo-zigbuild. On an aarch64 host, which is where CI runs it
+(GitHub's free `ubuntu-24.04-arm` runner for public repositories),
+everything runs natively and no test is skipped; it is also CI's only
+aarch64 build (`just check-aarch64`, a quicker type check, is local only,
+ADR-0095). On an x86_64 host it runs everything under
 `qemu-aarch64`, as below:
 
 1. The static release binary: no loader and no `NEEDED` entries, then

@@ -6,9 +6,9 @@ name: Release
 # provenance and, after the maintainer approves the `release` environment,
 # creates a draft pre-release whose notes are the tag's CHANGELOG.md section.
 #
-# `workflow_dispatch`, and pull requests that change what goes into a
-# release (this workflow, its scripts and tests, the toolchain, the locked
-# dependencies, the packaged files), take the dry-run path: test the
+# `workflow_dispatch`, and pull requests that change how a release is made
+# (this workflow, its scripts and tests, the toolchain, the locked
+# dependencies, the licence configuration), take the dry-run path: test the
 # scripts, build, check, package and checksum, without attestation or
 # release. The attesting and publishing jobs run only for a pushed `v*` tag.
 
@@ -16,6 +16,13 @@ on:
   push:
     tags: ["v*"]
   pull_request:
+    # Not README.md, NOTICE, LICENSE-APACHE or LICENSE-MIT (ADR-0095): the
+    # tarball only copies them, so editing one cannot break the build or the
+    # package, and a README edit would otherwise build a release from
+    # nothing (no cache) on every documentation pull request. A tag packages
+    # them as they are then; `just test-release` checks the packaging.
+    # This workflow is no required check, so `paths` cannot leave one
+    # pending.
     paths:
       - .github/workflows/release.yml
       - .github/release.yml
@@ -29,10 +36,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
-      - LICENSE-APACHE
-      - LICENSE-MIT
-      - NOTICE
-      - README.md
   workflow_dispatch:
 
 permissions:

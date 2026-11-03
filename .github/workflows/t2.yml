@@ -9,29 +9,70 @@ name: T2
 # what `just ci` runs. No secrets, a read-only token, never
 # pull_request_target: a fork's pull request runs its own code as root on a
 # machine of GitHub's, which is what the runner is for. Benchmarks (e2e,
-# ultra) and the push suite stay local. `workflow_dispatch` runs it by hand
-# on any branch from the Actions tab.
+# ultra) and the push suite stay local.
+#
+# Lanes (ADR-0095): the jobs run only on a full run (a pull request that is
+# ready for review, a draft labelled `ci:full`, a manual run with "Run
+# workflow" in the Actions tab on any branch, or a push to `main`) and only
+# when the change touches the Rust lane or the T2 harness (scripts/ci.py).
+# A job skipped by its `if:` reports success, so the gate `T2 result` is the
+# one check the `main` ruleset requires. Never `on: paths` here: a workflow
+# skipped as a whole leaves its required check pending.
 on:
   push:
     branches: [main]
   pull_request:
+    # labeled and unlabeled for `ci:full` only; any other label change runs
+    # nothing (scripts/ci.py, label_only).
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # As in ci.yml: a run for a label change that changes no lane gets a group
+  # of its own and cancels nothing.
+  group: ${{ github.workflow }}-${{ github.ref }}${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && !(github.event.label.name == 'ci:full' && github.event.pull_request.draft) && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      t2: ${{ steps.lanes.outputs.t2 }}
+      full: ${{ steps.lanes.outputs.full }}
+      label_only: ${{ steps.lanes.outputs.label_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The pull request's base and head commits, for `git diff`.
+          fetch-depth: 0
+      # ci.yml's `changes` job runs the script's tests.
+      - name: Pick the lanes
+        id: lanes
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_ACTION: ${{ github.event.action }}
+          CI_LABEL: ${{ github.event.label.name }}
+          CI_DRAFT: ${{ github.event.pull_request.draft }}
+          CI_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          CI_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 -I scripts/ci.py changes
+
   unit:
     # The `#[ignore = "T2: ..."]` and `"T2c: ..."` tests as root on the
     # runner, as `just test-vm unit` runs them in the VM.
     name: T2 unit (root on the runner)
+    needs: changes
+    if: needs.changes.outputs.t2 == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -40,9 +81,12 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install
+      # unit and unit-c build the same thing: `cargo-zigbuild test --no-run`
+      # for x86_64 musl of the crates holding T2 or T2c tests (today the same
+      # six), so they share one cache entry (ADR-0095).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: t2-unit
+          shared-key: t2-tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # zig compiles the C dependencies for musl through cargo-zigbuild
       # (ADR-0020): the same static binaries the VM runs.
@@ -87,6 +131,8 @@ jobs:
     # as root in throwaway rootful Docker containers (default, +SYS_ADMIN,
     # +NET_ADMIN), as `just test-container unit-c` runs them on the VPS.
     name: T2c unit-c (rootful Docker on the runner)
+    needs: changes
+    if: needs.changes.outputs.t2 == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -95,9 +141,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install
+      # Shared with `unit`, which builds the same test binaries.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: t2-unit-c
+          shared-key: t2-tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
@@ -137,6 +184,8 @@ jobs:
     # and in Docker variants (smoke), the quick cases (quick), and kaniko
     # mode on `/` against attacker RUNs (secrets, ADR-0051).
     name: T2 smoke, quick, secrets (root on the runner)
+    needs: changes
+    if: needs.changes.outputs.t2 == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -193,3 +242,73 @@ jobs:
             cat ~/rnk/out/env.txt ~/rnk/out/summary.txt ~/rnk/out/suite-times.txt 2>/dev/null || echo "no results"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
+
+  # On a push to `main`, after the jobs that save Rust caches: delete each
+  # of their cache entries that a newer entry with the same restore key
+  # supersedes, as ci.yml's `caches` job does for its own. `main`'s entries
+  # only; the names are these jobs' rust-cache names (tests/ci checks them).
+  caches:
+    name: prune superseded Rust caches
+    needs: [unit, unit-c, smoke]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Delete the superseded entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh cache list --ref refs/heads/main --limit 1000 --json id,key,ref,createdAt >"$RUNNER_TEMP/caches.json"
+          python3 -I scripts/ci.py stale-caches t2-tests t2-smoke-smoke <"$RUNNER_TEMP/caches.json" >"$RUNNER_TEMP/stale.tsv"
+          n=0
+          while IFS=$'\t' read -r id key; do
+            if gh cache delete "$id"; then
+              echo "deleted $id $key"
+              n=$((n + 1))
+            else
+              echo "::warning::could not delete cache $id ($key)"
+            fi
+          done <"$RUNNER_TEMP/stale.tsv"
+          echo "$n superseded cache entries deleted"
+
+  # The one required check of this workflow (ADR-0095), named and judged as
+  # ci.yml's `CI result` is (see there): `T2 result` only on a full run of a
+  # pull request or `main`; a draft, a label change that runs nothing and a
+  # manual run on a branch report under other names. A failed `changes` job
+  # leaves the name `T2 result` and fails it; `always()`, so a cancelled run
+  # leaves a failing gate, never a skipped one.
+  result:
+    name: ${{ needs.changes.outputs.label_only == 'true' && 'T2 result (label change, nothing run)' || github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'T2 result (manual run)' || needs.changes.outputs.full == 'false' && 'T2 result (draft, not run)' || 'T2 result' }}
+    needs: [changes, unit, unit-c, smoke]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          if [ "$(jq -r '.changes.result' <<<"$NEEDS")" != success ]; then
+            echo "::error::the changes job did not succeed, so the lanes are unknown"
+            exit 1
+          fi
+          # An output that is unset or misspelled would skip its jobs and
+          # still pass, and the runner drops an empty output altogether: each
+          # expected output, by name, must be "true" or "false".
+          if ! jq -e '.changes.outputs as $o | ["t2","full","label_only"] | all($o[.] == "true" or $o[.] == "false")' <<<"$NEEDS" >/dev/null; then
+            echo "::error::the changes job's outputs t2, full and label_only are not all true or false, so the lanes are unknown"
+            exit 1
+          fi
+          bad="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<<"$NEEDS")"
+          if [ -n "$bad" ]; then
+            echo "::error::failed or cancelled: $bad"
+            exit 1
+          fi
