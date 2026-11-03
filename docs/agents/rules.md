@@ -111,9 +111,8 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
 - Commit at every checkpoint: a coherent step that builds, passes
   `just check` and already has its docs updated. Commit messages and the
   pull request title follow Conventional Commits
-  ([CONTRIBUTING.md](../../CONTRIBUTING.md#commits-and-pull-requests): the
-  title becomes the squash commit's title, and its type only places a
-  changelog entry written without a heading). Small commits are fine.
+  ([CONTRIBUTING.md](../../CONTRIBUTING.md#commits-and-pull-requests)); small
+  commits are fine, pull requests are squash-merged.
 - Push only after the local review loop has no blocker left, then open a
   draft pull request (`ADR-0087`, `ADR-0096`; [workflow.md](workflow.md#github-flow));
   a later fix is reviewed locally before it is pushed too. Mark

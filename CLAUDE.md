@@ -118,7 +118,7 @@ Subagents (`.claude/agents/`; when to use each:
   never product code.
 - `reviewer` (opus): fresh-context review before each push.
 - `poc-runner` (sonnet): settles an unverified claim about Linux or a
-  runtime by experiment.
+  runtime by experiment, in the VM for anything privilege-related.
 - `upstream-oracle` (sonnet): what kaniko, BuildKit or buildah do, from
   their source; use it instead of reading upstream source yourself.
 - `scribe` (sonnet): records the maintainer's decisions as ADRs and syncs
