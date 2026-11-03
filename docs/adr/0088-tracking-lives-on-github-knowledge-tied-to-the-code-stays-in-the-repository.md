@@ -82,9 +82,14 @@ Maintainer, 2026-11-03, after options A and B were laid out: "D3 chọn A"
   and the Project, whose Status field has a `Needs decision` value for the
   questions.
 - Good, because the changelog entry travels with the change it describes and
-  no longer conflicts with parallel branches: GitHub's server-side merge does
-  not apply the `merge=union` driver that `.gitattributes` sets for
-  `CHANGELOG.md` [external].
+  no longer conflicts with parallel branches: GitHub's server-side merge is
+  expected not to apply the `merge=union` driver that `.gitattributes` sets
+  for `CHANGELOG.md` [inferred; to be confirmed by the first parallel pull
+  requests].
+- Bad, because `docs/adr/README.md` has the same `merge=union` driver and
+  every ADR pull request appends an index row to it: parallel ADR pull
+  requests may conflict there, and the later one is rebased on `main`
+  before it merges [inferred].
 - Good, because citations of ADRs, design documents and rules keep
   working offline, and every read of them is a local file.
 - Bad, because the tracking is no longer in a clone: an offline reader does
@@ -105,7 +110,9 @@ Maintainer, 2026-11-03, after options A and B were laid out: "D3 chọn A"
   `.gitattributes` sets `merge=union` for `CHANGELOG.md` and
   `docs/adr/README.md`.
 - [external] GitHub's REST API allows an authenticated user 5,000 requests
-  per hour; GitHub's server-side merge does not run custom merge drivers.
+  per hour.
+- [inferred] GitHub's server-side merge ignores the `merge=union` attribute;
+  not verified, see Consequences.
 - [code] [ADR-0001](0001-record-architecture-decisions.md) already
   considered "Record decisions in GitHub issues or discussions" and kept
   ADRs in the repository because issues are hard to find from the code and

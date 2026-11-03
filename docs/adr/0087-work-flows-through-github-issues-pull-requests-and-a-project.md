@@ -99,15 +99,20 @@ In the repository's settings and on GitHub, before this ADR:
   Progress, In review, Done), Phase (3, 4, 5, 6, Backlog), Priority (P0 to
   P2) and Tier (T0, T1, T2, T2c, none).
 
-### Not yet applied, needs the maintainer
+- Two rulesets, applied by the maintainer (repository settings are the
+  maintainer's under D1):
+  - `main`: a pull request is required, squash is its only merge method,
+    review threads must be resolved, the 8 CI checks are required
+    (`rustfmt`, `clippy`, `test (x86_64 gnu)`, `static release build
+    (x86_64 musl)`, `check (aarch64 musl)`, `test (aarch64 musl, native)`,
+    `cargo-deny`, `docs (rustdoc, mdBook)`), no force-push or deletion; the
+    repository admin may bypass it.
+  - `release tags`: only the repository admin may create, update or delete
+    a `v*` tag
+    ([ADR-0089](0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md)).
 
-- A ruleset on `main`: a pull request is required, the 8 CI checks are
-  required (`rustfmt`, `clippy`, `test (x86_64 gnu)`, `static release build
-  (x86_64 musl)`, `check (aarch64 musl)`, `test (aarch64 musl, native)`,
-  `cargo-deny`, `docs (rustdoc, mdBook)`), no force-push or deletion, and
-  the maintainer may bypass it.
-- A ruleset that restricts `v*` tags to the maintainer
-  ([ADR-0089](0089-releases-are-a-release-pr-and-a-tag-built-and-attested-by-a-workflow.md)).
+  New required checks (such as T2 jobs) are added to the `main` ruleset by
+  the maintainer.
 
 ### Consequences
 
@@ -136,7 +141,7 @@ proposal. The facts it relies on:
   session merge the agents' branches locally.
 - [code] CI has eight jobs (`.github/workflows/ci.yml`: `fmt`, `clippy`,
   `test`, `static-build`, `check-aarch64`, `test-aarch64`, `deny`, `docs`),
-  which are the checks the `main` ruleset will require.
+  which are the checks the `main` ruleset requires.
 - [code] Tier T2 runs in a QEMU/KVM VM and T2c on a dedicated test machine
   ([ADR-0063](0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)),
   which is why the agents stay local.

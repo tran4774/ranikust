@@ -66,6 +66,10 @@ for now).
     `gh attestation verify` checks it);
   - creates a draft pre-release. The publishing job runs in a GitHub
     environment `release`, which the maintainer approves.
+- **Publishing.** The maintainer reviews the draft and publishes it; an
+  agent may prepare the release pull request and the notes but asks before
+  any tag or release
+  ([ADR-0087](0087-work-flows-through-github-issues-pull-requests-and-a-project.md)).
 - **Announcement.** A release announcement goes to Discussions.
 - **Versions.** 0.0.1 now; 0.1.0 when Phase 3 lands; a patch release
   whenever `main` has user-visible changes and T2 is green. Nothing is
