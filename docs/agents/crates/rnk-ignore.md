@@ -1,7 +1,9 @@
 # rnk-ignore
 
 > **Status:** done · **Phase:** 1 ·
-> **Depends on:** `regex`, `thiserror` (pure data) · **Used by:** `rnk-builder` (`rnk-context`, `rnk-cache` [open: #7]) · **Path:** `crates/rnk-ignore/`
+> **Depends on:** `regex`, `thiserror` (pure data) ·
+> **Used by:** `rnk-context`, `rnk-builder` (`rnk-cache` [open: #7]) ·
+> **Path:** `crates/rnk-ignore/`
 
 **TL;DR:** A port of moby `patternmatcher` v0.6.1 (as BuildKit v0.34.0 uses
 it, built with Go 1.26): is this context path excluded by `.dockerignore`?
@@ -12,24 +14,26 @@ Not gitignore, and not kaniko's deprecated `Matches`. Go's own behaviour
 
 - Parsing `.dockerignore` contents (BOM, comments, trimming, `Clean`, leading
   `/`, the 64 KiB line limit), as `ignorefile.ReadAll` does.
-- Deciding whether a context path is excluded, with exactly patternmatcher's
-  semantics: pattern syntax, `!` exceptions and parent-directory matches,
-  both `MatchesOrParentMatches` and the walk form `MatchesUsingParentResults`.
+- Deciding whether a context path is excluded with exactly patternmatcher's
+  semantics: pattern syntax, `!` exceptions, parent-directory matches, both
+  `MatchesOrParentMatches` and the walk form `MatchesUsingParentResults`.
 - BuildKit's rule for skipping an excluded directory in a walk (`fsutil`).
 
 ## Must not
+
+Boundaries: `crates/rnk-ignore/src/lib.rs`. In short:
 
 - Read or walk the filesystem: callers walk and ask (`rnk-context`,
   `rnk-builder`).
 - Approximate: any divergence from `patternmatcher` is a bug; no `ignore`,
   `globset` or `regex` syntax underneath (Go regexps are translated).
-- Choose the ignore file (`<Dockerfile>.dockerignore` before `.dockerignore`):
-  `rnk-context` does.
+- Choose the ignore file (`<Dockerfile>.dockerignore` before
+  `.dockerignore`): `rnk-context` does.
 
 ## API
 
 Strings are bytes as in Go; `&str`, `String` and `&[u8]` are accepted
-(`AsRef<[u8]>`), as decided (ADR-0049).
+(`AsRef<[u8]>`, ADR-0049).
 
 ```rust
 pub fn read_patterns(contents: &[u8]) -> Result<Vec<Vec<u8>>, Error>;   // ignorefile.ReadAll (ADR-0015)
@@ -47,49 +51,47 @@ pub enum Error { LineTooLong { line }, IllegalExclusion, BadPattern { pattern },
 ```
 
 Matching returns `Result` because Go validates patterns only partly in
-`New`: a pattern can fail to compile when first evaluated (`a*[`), and one
-never evaluated never fails.
+`New`: a pattern can fail to compile when first evaluated (`a*[`).
 
 ## Invariants
 
-- Same answer, including errors, as `PatternMatcher` v0.6.1 for every
-  (patterns, path) pair, and the same reported paths as BuildKit's
-  filtered walk, except the surrogate case in Pitfalls.
+- Same answer, errors included, as `PatternMatcher` v0.6.1 for every
+  (patterns, path) pair, and the same reported paths as BuildKit's filtered
+  walk, except the surrogate case in Pitfalls.
 - No panic on any pattern or path; no I/O; no state between calls.
 - Paths are relative and `/`-separated; methods do not clean them (Go's do
   not either). `.` (the context root) is never asked about (kaniko
-  `fs_util.go:1236-1239`, Go's package-level helpers).
+  `fs_util.go:1236-1239`).
 
 ## Refs
 
-- **Design:** — (no design doc; ARCHITECTURE [rnk-ignore](../../../ARCHITECTURE.md#rnk-ignore))
-- **Decisions:** [ADR-0015](../../adr/0015-hand-written-dockerfile-parser.md) (port v0.6.1; `MatchesOrParentMatches`, not kaniko's `Matches`)
-- **Evidence:** [exp-04](../../research/experiments/04-dockerfile-parser.md#dockerignore): the `ignore` crate differs in 19/38
-  cases, 5/38 after translation; kaniko's `Matches` in 7/1,596 cells.
-- **kaniko:** `kaniko@44aa7ddc0 pkg/util/fs_util.go:1195-1204` (ignore file
-  lookup), `:1207-1219` (`ReadAll`), `:1223-1254` (`ExcludesFile`, deprecated
-  `Matches` at `:1241` and `:1248`)
+- **Design:** none; see ARCHITECTURE [rnk-ignore](../../../ARCHITECTURE.md#rnk-ignore)
+- **Decisions:** [ADR-0015](../../adr/0015-hand-written-dockerfile-parser.md) (port v0.6.1; `MatchesOrParentMatches`, not kaniko's `Matches`), [ADR-0027](../../adr/0027-context-filtering-follows-buildkit-walk.md) (the walk form), [ADR-0049](../../adr/0049-security-and-performance-over-kaniko-compatibility.md) (Q-010: match bytes)
+- **Evidence:** [exp-04](../../research/experiments/04-dockerfile-parser.md#dockerignore): the `ignore` crate differs in 19/38 cases (5/38 after translation); kaniko's `Matches` in 7/1,596 cells.
+- **kaniko:** `kaniko@44aa7ddc0 pkg/util/fs_util.go:1195-1204` (ignore file lookup), `:1207-1219` (`ReadAll`), `:1223-1254` (`ExcludesFile`; deprecated `Matches` at `:1241` and `:1248`)
 - **External:** patternmatcher v0.6.1 [patternmatcher.go](https://github.com/moby/patternmatcher/blob/v0.6.1/patternmatcher.go), [ignorefile.go](https://github.com/moby/patternmatcher/blob/v0.6.1/ignorefile/ignorefile.go#L24), [patternmatcher_test.go](https://github.com/moby/patternmatcher/blob/v0.6.1/patternmatcher_test.go); fsutil [filter.go](https://github.com/tonistiigi/fsutil/blob/83cac42c1c52/filter.go#L259) (walk); Go 1.26 `path/filepath/match.go`, `regexp/syntax/parse.go`; [Docker docs](https://docs.docker.com/build/concepts/context/#dockerignore-files)
 
 ## Tests
 
-- T0 unit: upstream `patternmatcher_test.go` and `ignorefile_test.go`
-  tables, Go's `Clean`/`Dir`/`Match` tables, the regexp translator.
-- T0 golden (`tests/golden/`, written by `gen/gen.sh`: Go 1.26.9 in podman):
-  exp-04's 38 cases × 42 paths, kaniko's three `.dockerignore` files, 1,200
-  random pattern sets (12,470 cells, `MatchesOrParentMatches` and the walk
-  chain, errors included); 645 `ReadAll` inputs; 641 BuildKit (`fsutil`)
-  walks of a 51-entry tree. `GEN_SCALE=40` ran 434,660 cells once: only the
-  surrogate case below differed.
-- T0 property (`tests/props.rs`): no panic; `p` then `!p` re-includes;
-  `./p`, `/p` equal `p`; walk equals parent check without exceptions;
+All T0.
+
+- Unit: upstream `patternmatcher_test.go` and `ignorefile_test.go` tables,
+  Go's `Clean`/`Dir`/`Match` tables, the regexp translator.
+- Golden (`tests/golden.rs`; files in `tests/golden/`, written by
+  `gen/gen.sh`, Go 1.26.9 in podman, `GEN_SCALE=N` for a larger local run):
+  exp-04's cases × paths, kaniko's `.dockerignore` files, random pattern
+  sets (`MatchesOrParentMatches` and the walk chain, errors included),
+  `ReadAll` inputs, BuildKit (`fsutil`) walks of a tree. A 40× run found only
+  the surrogate case below.
+- Property (`tests/props.rs`): no panic; `p` then `!p` re-includes; `./p` and
+  `/p` equal `p`; the walk equals the parent check without exceptions;
   agreement with a direct glob interpreter for `* ? ** / .` patterns.
 
 ## Metrics
 
-- None: matching is per path, so a span would be per file. Its cost is
-  charged to `rnk_context.ignore` ([rows](../../design/metrics.md#rnk-ignore)).
-- No `tracing` dependency needed.
+None: matching is per path, so a span would be per file. Its cost is charged
+to `rnk_context.ignore` ([rows](../../design/metrics.md#rnk-ignore)); no
+`tracing` dependency.
 
 ## Pitfalls
 
@@ -99,30 +101,23 @@ never evaluated never fails.
   re-includes everything (exp-04).
 - A child can be re-included below an excluded parent (`docs` +
   `!docs/keep.md`): a walker asks `may_reinclude_below` before pruning.
-- BuildKit's walk (`matches_using_parent`) and `matches_or_parent_matches`
-  disagree for `dir/f` + `!dir` on `dir/f` (walk: excluded); the context
-  walk follows the walk (ADR-0027).
+- The walk (`matches_using_parent`) and `matches_or_parent_matches` disagree
+  for `dir/f` + `!dir` on `dir/f` (walk: excluded); the context walk follows
+  the walk (ADR-0027).
 - `[!b]` is a class containing `!`; only `[^b]` negates (exp-04).
 - `|`, `{` and `}` reach Go's regexp unescaped (its escape bitmap overflows):
   `a|b*` is an alternation, `a{2}*` a repetition, `x{*` a literal `{`.
 - `filepath.Match` validates only up to the first failing chunk, so `a*[`
   passes `new` and fails when matched.
-- A leading BOM is skipped in a pattern's regexp but not in exact, prefix
-  or suffix matches, which compare the cleaned bytes (Go slices `**` off
-  by bytes).
+- A leading BOM is skipped in a pattern's regexp but not in exact, prefix or
+  suffix matches, which compare the cleaned bytes (Go slices `**` off by
+  bytes).
 - `\pL`, `\p{Greek}` use Go's Unicode 15.0 tables (`src/unicode_tables.rs`,
   generated), not the `regex` crate's.
-- Known divergence: `\x{D800}`–`\x{DFFF}` never matches; Go matches U+FFFD's
-  bytes when it is in a one-pass regexp's literal prefix (needs Go's
-  one-pass analysis to port).
+- Known divergence: `\x{D800}`-`\x{DFFF}` never matches; Go matches U+FFFD's
+  bytes when it is in a one-pass regexp's literal prefix (needs Go's one-pass
+  analysis to port).
 - `ReadAll` tests for `#` before trimming (an indented `#` is a pattern),
   strips a BOM on the first line only, then cleans and drops one leading `/`.
 - kaniko's `Matches` does not exclude `foo/a.txt` for `**/foo`
   (`fs_util.go:1241`); ranikust follows BuildKit (ADR-0015).
-
-## Phase 1
-
-- Done: `read_patterns`, `Matcher` with both match forms, the walk pruning
-  rule, upstream tests, Go goldens, property tests.
-- Next, in `rnk-context` (task 10): walk the context with
-  `matches_using_parent` and `may_reinclude_below` (ADR-0027).
