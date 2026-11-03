@@ -160,8 +160,10 @@ runs as root on the host:
    run` and a ranikust `RUN`, at every address that could name the host,
    and the registry ports, which must be shut then; each vantage must also
    get out with the same tool. Root also writes raw frames straight to
-   passt (`tests/vm/guest/rawprobe.py`), to the loopback, unspecified and
-   own addresses over IPv4 and IPv6, which must all go unanswered, and the
+   each NIC's backend (`tests/vm/guest/rawprobe.py`), to the loopback,
+   unspecified and own addresses over IPv4 and IPv6, which must all go
+   unanswered while controls through the same socket answer (on the
+   harness NIC, a forward on `10.0.2.2:9` that runs `true`), and the
    egress must have no IPv6. Any answer, a vantage that fails its control
    or does not run, or a failed image pull fails the run (`network:
    FAILED` in `summary.txt`, `network.log` in the results). Every

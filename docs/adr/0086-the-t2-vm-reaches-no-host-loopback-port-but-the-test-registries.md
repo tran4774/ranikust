@@ -90,15 +90,17 @@ are named in one place at the top of `vm.sh` (`REGISTRY_PORTS`,
   answer then. Each vantage must also reach the internet with the same
   tool (busybox `wget`) and print that its probe ran through; one that does
   not, or does not run, fails the run. Root also writes raw frames straight
-  to passt (`tests/vm/guest/rawprobe.py`; `CAP_NET_RAW`, which a
-  `--privileged` container or a `RUN` on the VM's network also holds):
-  TCP and UDP to the loopback, unspecified and own addresses, in IPv4 and
-  IPv6 frames, one at a time with a liveness check after each, after
-  controls through the same socket (a SYN to the registry, a DNS query)
-  and the check that the registry gets no answer over IPv6. The egress NIC
-  must have no global IPv6 address and no IPv6 default route. The push
-  suite then checks both registry ports from root, both containers and a
-  `RUN`.
+  to each NIC's backend (`tests/vm/guest/rawprobe.py`; `CAP_NET_RAW`,
+  which a `--privileged` container or a `RUN` on the VM's network also
+  holds): TCP and UDP to the loopback, unspecified and own addresses, in
+  IPv4 and IPv6 frames, one at a time with a liveness check after each.
+  On the egress NIC, controls through the same socket come first (a SYN to
+  the registry, a DNS query), and the registry must get no answer over
+  IPv6; on the harness NIC the control is a `guestfwd` on `10.0.2.2:9`
+  that runs `true`, which reaches nothing on the host but answers a SYN.
+  The egress NIC must have no global IPv6 address and no IPv6 default
+  route. The push suite then checks both registry ports from root, both
+  containers and a `RUN`.
 - **Prerequisites**: QEMU 10.1 or later with the passt backend and its
   options, passt 2024_10_30 (Debian's 0.0~git20241030) or later, the first
   with `--dns-host`, and `socat`, `flock` and `timeout` for the push suite;
@@ -136,14 +138,18 @@ connections come from the host itself.
   `RANIKUST_QUICK_CASES=minimal just test-vm quick`, Ubuntu 24.04 guest,
   kernel 6.8, QEMU 10.2.1, libslirp 4.9.1): root in the VM, a default and a
   `--privileged` `docker run` and a ranikust `RUN` each read the token from
-  the host's `127.0.0.1` at `10.0.2.2` [measured].
+  the host's `127.0.0.1` at `10.0.2.2`; raw frames to the loopback and
+  unspecified addresses, over IPv4 and IPv6, TCP and UDP, reached it too
+  [measured].
 - With passt and IPv6 on (passt 0.0~git20260120): no ordinary socket in the
   VM reached the token, but one class of raw frame did, with an answer from
   the host's loopback; passt stayed up throughout [measured; details
   withheld until reported upstream].
-- With IPv6 off: every raw frame of the probe goes unanswered, except that
-  a TCP SYN to the guest's own address is refused by the host's own LAN
-  address (see "Not covered"); the controls pass; the VM has no IPv6 egress
+- With IPv6 off: every raw frame of the probe goes unanswered on the egress
+  NIC, except that a TCP SYN to the guest's own address is refused by the
+  host's own LAN address (see "Not covered"); the controls pass; the VM has
+  no IPv6 egress. On the restricted harness NIC, libslirp refuses the TCP
+  SYNs itself (a RST) and drops the rest; its control forward answers
   [measured].
 - passt 0.0~git20260120 on its own listening socket accepted no client
   (`Failed to add fd to epoll: Bad file descriptor`, also without
@@ -159,8 +165,15 @@ connections come from the host itself.
   unless a `guestfwd` names its address and port; a `guestfwd` may not use
   the user network's own address or its DNS address [external: libslirp
   `tcp_input.c`, `slirp_add_exec`].
-- The suites and the other runs with the change: see the branch's history
-  (`fix/vm-network-no-host-loopback`) and the review record.
+- With the change, on noble: `unit smoke quick secrets` (46/46 T2 tests),
+  `e2e` (W0, every builder) and `push` pass, the network check and both
+  raw passes first in each; in `quick push`, the network check and `quick`
+  find the registry ports shut, the gate opens with `push`, both ports
+  answer from root, both containers and the build's `RUN`, and the gate
+  shuts at the summary. Earlier, before the IPv4-only change: a base image
+  provisioned over passt alone (64 s), the plain cloud image
+  (`RANIKUST_VM_GOLDEN=0`) and a jammy guest (kernel 5.15). No passt or
+  socat process outlives a run [measured].
 
 ## More Information
 
