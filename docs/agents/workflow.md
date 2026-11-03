@@ -34,8 +34,10 @@ install are in
    `just ci` before a PR.
 
 Fix at the narrowest level that fails, then widen. Bug fix: test first, see
-it fail. After three failed fixes, stop and report. The discipline is the
-`dev-loop` skill.
+it fail. After three failed fixes, stop and report. Locate with graphify
+before reading, send independent read-only calls in one message, and run
+anything that may take over five minutes in the background. The discipline
+is the `dev-loop` skill.
 
 ## Recipes
 
@@ -175,7 +177,7 @@ request (`ADR-0088`).
    it once the full run's gates pass, or tells the agent to; the branch is
    deleted, the issue closes and the Project's built-in workflow moves the
    item to Done.
-7. **Clean up.** After the merge, once no fork is working, the main
+7. **Clean up.** After the merge, once no implementer is working, the main
    session runs `just prune-worktrees`: every agent worktree carries its
    own `target/` of several GB, and 32 left behind once held about 125 GB.
 
@@ -270,13 +272,14 @@ check it in the VM or a throwaway session.
 | When | Use |
 |---|---|
 | Changing code in `crates/` | `dev-loop` skill |
+| Implementing a task, a fix or a refactor | `implementer` subagent in its own worktree, briefed by reference ([below](#context-budget), ADR-0097), never a fork; it follows the `dev-loop` skill and runs its own `reviewer` rounds |
 | What kaniko or BuildKit does | `kaniko-parity` or `buildkit-parity` skill; for anything beyond a quick look, the `upstream-oracle` subagent with the resolved checkout paths (`${KANIKO_SRC:-../kaniko}`, `../buildkit`), never reading upstream source in the main session or a fork |
 | Changing `rnk-rootfs`, `rnk-sandbox`, `rnk-snapshot`, `rnk-store`, or set-up | plan mode first; `host-safety` subagent on the diff with `just review-pack <branch>` as its brief, then the [fix loop](#host-safety-fix-loop); then `red-team` |
 | A claim about Linux or a runtime is unverified (`[inferred]`, "not checkable from the code") | `poc-runner` subagent: a minimal experiment, in the VM for anything privilege-related |
 | Attack tests for a change, regression tests from upstream issues | `red-team` subagent: hostile inputs and T0–T2 tests, never product code |
 | The maintainer decided; a diff needs its docs | `scribe` subagent: ADRs, the `Closes #N` of answered questions, markers, cards, design, the pull request's `## Changelog` section, then `just docs-lint` |
 | Performance numbers (W1–W3, benchmarks, #29 Q-421, #18 Q-245) | `bench-runner` subagent, only when no other VM runs |
-| Review before the push | `reviewer` subagent: only the scope and the requirement, not your suspicions |
+| Review before the push | `reviewer` subagent: only the scope and the requirement, not your suspicions; the `implementer` runs it on its branch, the main session on its own |
 | Decision; before a PR | `/adr`; `/sync-docs [base]` (user-invoked) |
 | Any diff; `rnk-rootfs`, `rnk-sandbox`, `rnk-layer`, `rnk-registry` | `/code-review`; `/security-review` |
 | Rust review; flag design; property tests | Trail of Bits `rust-review`, `sharp-edges`, `property-based-testing` (user scope, if installed) |
@@ -285,6 +288,42 @@ check it in the VM or a throwaway session.
 
 Which model each subagent runs on and how to brief it:
 [CLAUDE.md](../../CLAUDE.md#claude-code-setup).
+
+### Context budget
+
+The cost of a session is the context each turn carries, not the number of
+agents ([ADR-0097](../adr/0097-agents-work-in-fresh-bounded-contexts-instead-of-forks.md)):
+a fork re-reads the whole parent conversation on every turn, a briefed
+agent starts at about 35k tokens. So:
+
+- **One task, one session.** Start a new session from a brief: the issue,
+  what was decided, what was ruled out. The main session is a router: it
+  briefs, reads hand-backs, decides and records; it does not read source,
+  build or edit beyond a one-line fix.
+- **Brief the `implementer` by reference**, not by pasting: the issue text
+  (it cannot read GitHub in time to matter), the branch to start from, the
+  files and crate cards, the ADRs and design sections, the acceptance
+  criteria, the decisions already made with their dates, the ADR numbers
+  it may use, and what is out of scope. It runs the `dev-loop`, its own
+  `reviewer` rounds and `just check`, commits without pushing and hands
+  back at most 40 lines.
+- **Follow-ups are new runs.** `SendMessage` only reaches a warm cache for
+  five minutes; after that, a new agent briefed with the branch, the
+  commit range and the findings costs less than resuming.
+- **Compact at a task boundary** (`/compact`, with what to keep), while
+  the cache is warm, not when the window is full; the session compacts
+  itself at 300k tokens. Compact before leaving a session idle for an hour
+  or more.
+- **No polling.** Background work and subagents notify; a check every 20
+  seconds or every CI job costs a full context read each. Anything that
+  may run over five minutes runs in the background.
+- **Models follow the task** (the list in `CLAUDE.md`): a subagent that
+  names no model runs on Sonnet. Every project agent has a `maxTurns`
+  cap of about twice its usual length; a capped run returns a partial
+  result the caller can resume or re-brief.
+- **Worktrees** share the main checkout's graph through `GRAPHIFY_OUT`
+  (`CLAUDE.md#graphify`) and are removed with `just prune-worktrees`
+  after the merge.
 
 ## Merging parallel branches
 
@@ -297,27 +336,31 @@ Which model each subagent runs on and how to brief it:
   (`ADR-0088`), and an ADR pull request whose index row conflicts gets
   `main` merged into it (no force-push) before it merges. Files whose
   lines change in place (crate cards, design docs) keep normal merges.
-- Each fork gets its own range of ADR numbers in its brief; questions need
+- Each parallel `implementer` gets its own range of ADR numbers in its
+  brief; questions need
   none, since a new question is named by its issue number (`ADR-0091`).
 - After merging, `just docs-lint` catches what the merge left behind.
 
 ## Host-safety fix loop
 
-The loop for every branch, a fork's (an agent in its own worktree) or the
-main session's own. `host-safety` is the reviewer below; `reviewer` and
-`red-team` use the same loop.
+The loop for every branch, an `implementer`'s (an agent in its own
+worktree) or the main session's own. `host-safety` is the reviewer below;
+`red-team` uses the same loop, and the `implementer` runs the `reviewer`
+loop itself before it hands back.
 
 1. The `host-safety` subagent reports to the main session.
-2. The main session sends the findings back to the same fork (it keeps the
-   task's context; it never starts a new agent for the fix), or fixes them
+2. The main session briefs a new `implementer` run with the branch, the
+   commit range and the findings (an agent that answered under five
+   minutes ago can be continued with `SendMessage` instead), or fixes them
    itself on its own branch.
-3. The fork fixes on its branch, runs `just check` (and the VM suites when
-   set-up or the sandbox changed), commits without pushing and reports.
-4. The main session asks the same reviewer to re-check only the fix
+3. The implementer fixes on its branch, runs `just check` (and the VM
+   suites when set-up or the sandbox changed), commits without pushing and
+   reports.
+4. The main session asks a new `host-safety` run to re-check only the fix
    commits, on the local branch.
-5. No blocker left: the fork pushes and opens the draft pull request, or
-   the main session does it for the fork, with a summary of the rounds
-   ([GitHub flow](#github-flow)); the maintainer merges it.
+5. No blocker left: the main session pushes and opens the draft pull
+   request with a summary of the rounds ([GitHub flow](#github-flow)); the
+   maintainer merges it.
 
 A test result counts only from the harness's exit status, never from an
 agent reading a printed table: a suite that prints a verdict table must
@@ -328,6 +371,6 @@ High findings are fixed; cheap medium and low ones in the same round;
 costly low ones, or ones that belong to a later task, become task issues
 in the phase's milestone and do not block, unless they describe an open
 weakness, which stays with the maintainer (D6). A finding that needs a
-design choice goes to the maintainer as a `question` issue while the fork
-builds the fail-closed option as the interim. After three rounds still
+design choice goes to the maintainer as a `question` issue while the
+implementer builds the fail-closed option as the interim. After three rounds still
 blocked, stop and report to the maintainer.

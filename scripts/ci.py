@@ -109,6 +109,7 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     (".github/PULL_REQUEST_TEMPLATE.md", NONE),
     (".github/dependabot.yml", NONE),
     (".gitignore", NONE),
+    (".graphifyignore", NONE),
     (".editorconfig", NONE),
     ("scripts/docs-lint.py", NONE),
     ("tests/docs/**", NONE),

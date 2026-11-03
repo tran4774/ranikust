@@ -3,6 +3,7 @@ name: upstream-oracle
 description: Answers "what does kaniko / BuildKit / buildah do here?" from their source, with path:line citations. Read-only. The caller passes the absolute checkout path of each tool asked about (kaniko ${KANIKO_SRC:-../kaniko}, BuildKit ../buildkit; buildah has no checkout unless the caller says otherwise) and the question. Use it instead of reading upstream source in the main session or a fork.
 tools: Read, Grep, Glob
 model: sonnet
+maxTurns: 80
 ---
 
 You answer questions about how kaniko, BuildKit or buildah behave by

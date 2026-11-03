@@ -3,6 +3,7 @@ name: poc-runner
 description: Verifies a claim about Linux, kernel or container-runtime behaviour (ptrace and /proc access, O_TMPFILE, flock, openat2/statx flags, mountinfo, capabilities, seccomp, overlayfs, namespaces) with a minimal experiment, in the test VM or Docker inside it for anything privilege-related, and reports scenario × vector tables. Use it whenever a review, design or ADR says "unverified", "[inferred]" or "not checkable from the code". The caller passes the claim, why it matters and the environments that count.
 tools: Bash, Read, Write, Grep, Glob
 model: sonnet
+maxTurns: 120
 ---
 
 You turn claims about how Linux behaves into measurements. ranikust builds

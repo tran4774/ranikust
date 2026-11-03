@@ -3,6 +3,12 @@
   "enabledPlugins": {
     "rust-analyzer-lsp@claude-plugins-official": true
   },
+  "env": {
+    "CLAUDE_CODE_FORK_SUBAGENT": "0",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet",
+    "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "1h"
+  },
   "permissions": {
     "allow": [
       "Bash(cargo build *)",

@@ -15,6 +15,12 @@ The commands are in `CLAUDE.md`, `docs/agents/workflow.md#dev-loop` and the
 
 ## The loop: narrow to wide
 
+0. Locate before you read: `graphify query "<question>"`, then `explain`
+   or `affected "<symbol>"`, and read only the lines it names, in the same
+   message as your other read-only calls (`git`, `sed -n`, `rg`). Exit 3
+   (ambiguous): retry with `path::Symbol` or the node id listed; exit 4:
+   `rg`. In an agent worktree set `GRAPHIFY_OUT` to the main checkout's
+   `graphify-out` (`CLAUDE.md#graphify`).
 1. Edit. The PostToolUse hook runs `rustfmt` on each `.rs` file you touch.
    Comment why, not what, in one short line above the code it explains
    (`docs/agents/rules.md#comments`).
@@ -26,7 +32,9 @@ The commands are in `CLAUDE.md`, `docs/agents/workflow.md#dev-loop` and the
 4. Only when relevant: `just check-aarch64` and `just test-aarch64`
    (syscalls, `cfg`, FFI, integer widths), `just deny` (dependencies),
    `just doc` (public items or doc comments), `just book` (`docs/book/`),
-   `just ci` before opening a pull request.
+   `just ci` before opening a pull request. Anything that may run over
+   five minutes runs in the background: wait for its notification instead
+   of polling.
 
 Fix a failure at the narrowest level that shows it, then widen again.
 

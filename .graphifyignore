@@ -1,0 +1,12 @@
+# Kept out of the knowledge graph (ADR-0097): not answers to a codebase
+# question, and about 40% of the graph's nodes before this file existed.
+# gitignore syntax; .gitignore already excludes target/ and graphify-out/.
+docs/research/
+docs/security/audit/
+.github/
+.claude/skills/security-audit/
+.claude/worktrees/
+tests/vm/
+tests/smoke/
+tests/registry/
+licenses/
