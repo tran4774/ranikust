@@ -19,7 +19,7 @@ from that.
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, rootless Podman | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke`, `just smoke-case` ([below](#smoke-tests-tier-t1)); `just test-rootless` is a TODO | Smoke tests only |
 | T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, rootful Docker, kaniko mode on `/`, host-safety attacks | root | A disposable VM, never the host: the local VM, and on a full CI run ([CI lanes](#ci-lanes)) a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | Suites `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push`, `ultra` |
 | T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), and in CI a GitHub-hosted runner; never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)); CI's `t2.yml` | Suite `unit-c` |
-| T3 | CI, in lanes chosen by what a pull request changes ([below](#ci-lanes)): rustfmt, clippy, T0 on x86_64, cargo-deny, rustdoc, mdBook and docs-lint; a full run adds the static musl build, the native aarch64 T0 and the T2 and T2c jobs. The `Release` workflow dry-runs on a pull request that changes how a release is made ([CONTRIBUTING](../CONTRIBUTING.md#releasing)) | None | GitHub Actions (`.github/workflows/ci.yml`, `t2.yml`, `release.yml`) | `just ci` (everything `ci.yml` runs on a full run); `just test-release` (the release scripts) | In use |
+| T3 | CI, in lanes chosen by what a pull request changes ([below](#ci-lanes)): rustfmt, clippy, T0 on x86_64, cargo-deny, rustdoc, mdBook and docs-lint; a full run adds the static musl build and the native aarch64 T0 (the T2 and T2c jobs are in their rows). The `Release` workflow dry-runs on a pull request that changes how a release is made ([CONTRIBUTING](../CONTRIBUTING.md#releasing)) | None | GitHub Actions (`.github/workflows/ci.yml`, `t2.yml`, `release.yml`) | `just ci` (everything `ci.yml` runs on a full run); `just test-release` (the release scripts) | In use |
 
 ### Rules
 
@@ -80,13 +80,27 @@ The plan comes from the verification plan of
 | Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones are T1 and wait for rootless overlay (Phase 3). Gaps: [below](#not-covered-yet) |
 | Host safety | Layers with `../etc/passwd`, symlinks and hardlinks pointing out; `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a cgroup limit, writes to `/etc/resolv.conf`; a `--state-dir` at `/`, below `/home/<user>` and in a directory others may write. After each case: the host is unchanged, and no mount or process is left | T2, partly: the red-team cases of `quick`, the `secrets` suite and the `rnk-sandbox` and `rnk-rootfs` attack tests |
 
+## Not covered yet
+
+- Environments of the privilege matrix that need another host or setup:
+  cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a reboot), Docker with
+  `--cap-add SYS_ADMIN` alone (no suite runs it: the `smoke` suite and the
+  container lane's `sysadmin` profile always add `apparmor=unconfined`), a
+  regular user on Ubuntu 24.04 or later (needs that distribution), a
+  Kubernetes pod under the restricted Pod Security Standard.
+- Kernels before 5.11 (an older `..` walk; Debian 11 has 5.10) and an aarch64
+  guest.
+- Tier T1 beyond the smoke tests: `just test-rootless`, with the same rule
+  that tests write only below a temporary directory.
+
 ## The VM harness (tier T2)
 
 `just test-vm [suite]...` (`tests/vm/vm.sh`) runs the T2 suites as real root
 in a disposable QEMU/KVM VM, following
 [experiment 13](research/experiments/13-docker-rootful-vm.md) §6. Nothing
-runs as root on the host, and nothing uses `sudo`: QEMU runs as you, with
-`/dev/kvm` through its group or an ACL. The header of `tests/vm/vm.sh` lists
+runs as root on the host, and nothing there uses `sudo` (only the guest's
+user `rnk` has it): QEMU runs as you, with `/dev/kvm` through its group or an
+ACL. The header of `tests/vm/vm.sh` lists
 every `RANIKUST_VM_*` variable. A run goes through these steps:
 
 1. **Build** on the host, as the user, with `cargo zigbuild`: the static
@@ -108,7 +122,8 @@ every `RANIKUST_VM_*` variable. A run goes through these steps:
    qcow2, `base-<release>-<key>.qcow2`, with its SHA-256 beside it, checked
    before every use. `<key>` hashes the release, the cloud image's SHA-256,
    the package list and the provisioning seed, so a change builds a new
-   base image (a few minutes, once) and deletes the release's old one.
+   base image (a few minutes, once) and deletes the release's old one; a base
+   image that no longer matches its SHA-256 is built again.
    `RANIKUST_VM_GOLDEN=0` skips it: the run boots the cloud image and
    cloud-init installs the packages.
 4. **Prepare** a run directory under `target/vm/`: a copy-on-write qcow2
@@ -136,12 +151,17 @@ every `RANIKUST_VM_*` variable. A run goes through these steps:
      registries' gate only around that step; the gate never reopens, and it
      shuts when the guest reports the step's end or after about 900 s, which
      fails the run.
-   - Before any suite, `tests/vm/guest/net.sh` and
-     `tests/vm/guest/rawprobe.py` probe, as root in the VM, every address
-     that could name the host: nothing may answer, the registry ports must
-     be shut, and each vantage must get out with the same tool. Any answer,
-     a failed control or a failed image pull fails the run (`network:
-     FAILED` in `summary.txt`, `network.log` in the results).
+   - Before any suite, `tests/vm/guest/net.sh` probes a token `vm.sh` serves
+     on the host's loopback, over TCP and UDP, from three vantages: root in
+     the VM, a default and a `--privileged` `docker run`, and a ranikust
+     `RUN`. Every address that could name the host must go unanswered, the
+     registry ports must be shut, and each vantage must get out with the
+     same tool. `tests/vm/guest/rawprobe.py` also writes raw frames, as root,
+     straight to each NIC's backend (loopback, unspecified and own addresses,
+     IPv4 and IPv6), which must go unanswered while controls through the same
+     socket answer; the egress must have no IPv6. Any answer, a failed
+     control or a failed image pull fails the run (`network: FAILED` in
+     `summary.txt`, `network.log` in the results).
    - Needs QEMU 10.1 or later with its passt backend (Ubuntu 24.04's 8.2 and
      Debian 13's 10.0 are refused), passt 2024_10_30 or later, and `socat`
      for `push`; `vm.sh` checks every option it uses before boot.
@@ -156,12 +176,13 @@ every `RANIKUST_VM_*` variable. A run goes through these steps:
      free space where the disk lives than its size less 2 GiB. What really
      bounds the disk is the guest (`e2e` stops below its free-space floor,
      below). The effective size goes into `env.txt` and `timings.txt`.
-   - `vm.sh` refuses a cache directory that is a symbolic link or that others
-     can write (the default one is made `0700` when everything in it is
-     yours), a base image that is not a self-contained qcow2, and cache or
-     target paths that are not absolute or hold a comma (QEMU's option
-     separator). All devices are virtio; the disk is `cache=unsafe` (it is
-     thrown away).
+   - The cache directory must be a directory owned by you, not a symbolic
+     link, and not writable by group or others: the default one is made
+     `0700` when everything in it is yours and no link, while one named by
+     `RANIKUST_VM_CACHE` is refused, never chmodded. `vm.sh` also refuses a
+     base image that is not a self-contained qcow2 and cache or target paths
+     that are not absolute or hold a comma (QEMU's option separator). All
+     devices are virtio; the disk is `cache=unsafe` (it is thrown away).
 6. **Copy in** the binaries and `tests/vm/guest/`, **run** the suites
    (`guest/run.sh`) detached in the guest while the host follows their log
    over SSH every 5 s, reconnecting for up to 15 minutes (a VM that stalls
@@ -176,7 +197,8 @@ every `RANIKUST_VM_*` variable. A run goes through these steps:
    a user other than `rnk`, no SSH host key, or one older than its boot. The
    results reach the host as regular files and directories only (anything
    else is deleted on both sides), extracted into a new directory and put in
-   place only then.
+   place only then; teardown clears them the same way before it writes the
+   serial log and `timings.txt`, through new files renamed into place.
 7. **Tear down** on every exit path, Ctrl-C included: QEMU is stopped
    through its monitor (then `SIGKILL`), the SSH connection is closed, and
    the overlay, seed and key are deleted (the base image stays in the
@@ -352,7 +374,10 @@ The parts:
   comparison has to read against: BuildKit (rootless, in rootful Docker)
   gives the directories that a `RUN` or `WORKDIR` creates the setgid bit
   (`2755` where kaniko has `755`), and on W0 its image also differs in
-  `/dev`, `/proc` and `/sys`.
+  `/dev`, `/proc` and `/sys`. On W3, kaniko's image has no `/out/all.txt`
+  (the last `RUN` writes it), its `/out` is `1000:1000 775` where BuildKit's
+  is `0:0`, and the `/out/c.txt` contents differ too (not investigated
+  yet).
 - **Results** in `target/vm/results/<release>/e2e/` (`ultra/` for the ultra
   benchmark): `report.md`, with the time of each step summed over the builds
   (wipe, build, flatten, leaks, blobs, compare) and the suite's wall time;
@@ -370,18 +395,6 @@ A `ranikust` build that stops because a part is not built yet (`not
 implemented`, a flag refused until a later phase) is recorded as `pending`
 and does not fail the suite; any other failure does.
 
-### Not covered yet
-
-- The environments of the privilege matrix that need another host: cgroup v1
-  (`systemd.unified_cgroup_hierarchy=0` and a reboot), Docker's
-  `--cap-add SYS_ADMIN` alone (it needs kaniko mode), a regular user on
-  Ubuntu 24.04 or later (needs that distribution), a Kubernetes pod under the
-  restricted Pod Security Standard.
-- Kernels before 5.11 (an older `..` walk; Debian 11 has 5.10) and an
-  aarch64 guest.
-- Tier T1 beyond the smoke tests: `just test-rootless`, with the same rule
-  that tests write only below a temporary directory.
-
 ## The container lane (tier T2c)
 
 `just test-container [unit-c]` ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md))
@@ -396,7 +409,7 @@ status is the command's) and runs `tests/container/lane.sh` there, which:
    `/etc/ranikust/throwaway-test-host`: a regular file (not a link) owned by
    root in a root-owned directory, neither writable by group or others,
    holding this machine's `uname -n`. It then refuses unless
-   `RANIKUST_CONTAINER_LANE=1` (set by `remote.sh`), unless run as root, and
+   `RANIKUST_CONTAINER_LANE=1` (set by `remote.sh`), when run as root, and
    with rootless Docker or Podman. It locks the marker itself, read-only (one
    lane run per machine, whoever starts it), removes the labelled
    (`org.ranikust.lane=t2c`) containers and images an interrupted run left,
@@ -530,10 +543,10 @@ What runs, by event:
   merge with `main`.
 - **Gates.** `CI result` and `T2 result` are the only checks the `main`
   ruleset requires. Each needs every job of its workflow (a job skipped by
-  its lane counts as passed) and fails when the `changes` job failed, when an
-  output it maps is not exactly `true` or `false` (checked by name: the
-  runner drops an empty one), or when any job failed or was cancelled. It
-  runs even then (`always()`; `!cancelled()` may leave the gate skipped,
+  its lane counts as passed) and fails when the `changes` job did not
+  succeed, when an output it maps is not exactly `true` or `false` (checked
+  by name: the runner drops an empty one), or when any job failed or was
+  cancelled. It runs even then (`always()`; `!cancelled()` may leave the gate skipped,
   which counts as passed). The name carries the state: plain `CI result` and
   `T2 result` only on a full run of a pull request or of `main`; `CI result
   (draft, fast lane)` and `T2 result (draft, not run)` on a draft; `...
@@ -680,9 +693,9 @@ Exceptions, all from emulation (the native CI job runs them all):
 
 Real aarch64 hardware is Phase 6.
 
-## Smoke tests (tier T1)
-
 <a name="smoke-test-until-the-builder-exists-tier-t1"></a>
+
+## Smoke tests (tier T1)
 
 `just smoke` builds the `smoke-build` example of `crates/ranikust`
 statically and runs it inside rootless `podman run --privileged`, where root
@@ -724,8 +737,9 @@ seccomp) is checked by the `smoke` suite of `just test-vm` instead.
 Small Dockerfiles in `tests/smoke/cases/<name>/`, one concern each, built by
 the `ranikust` binary in a few seconds from `alpine:3.20` or `scratch`. They
 are the default for a smoke test or a proof of concept; the nextjs-kaniko
-workloads (`e2e`) are for large benchmarks only. Each case's `case.sh` header
-says what it checks, in full.
+workloads (`e2e`) are for large benchmarks only. A case's directory
+(`case.sh` and its Dockerfiles) has the details; the checks that need the VM
+are in `tests/vm/guest/quick.sh`.
 
 | Case | What it checks |
 |---|---|
@@ -734,11 +748,11 @@ says what it checks, in full.
 | `metadata` | The image config as BuildKit writes it: `ARG` before `FROM`, `ARG`/`ENV` expansion, `WORKDIR`, `USER name:group`, `LABEL`, `EXPOSE`, `STOPSIGNAL`, `HEALTHCHECK`, `SHELL`, `ENTRYPOINT` with `CMD`; with `--target shellform`, a shell-form `ENTRYPOINT` that clears the `CMD` inherited from its base stage |
 | `copy` | `COPY` wildcards, one matching nothing (not an error), `.dockerignore` with an exception, `--chown`, `--chmod` octal and symbolic, a symlinked source (followed), a directory into a new destination, a heredoc; checked inside the image |
 | `multistage` | Two independent stages at `--jobs 2`, `FROM <stage>`, `COPY --from` all of them; in kaniko mode on a container's `/` the log says the stages run one at a time and `--jobs` still bounds the uploads |
-| `kaniko-flags` | The kaniko-mode flags' meaning (Phase 2 criterion 8): `--snapshot-mode=time` misses a rewrite of the same size and mtime that `full` catches; `--ignore-path` keeps a `RUN`'s files below it out of every layer; in the T1 kaniko leg, a build without `--mode` picks kaniko mode in a default container and says why. In overlay mode `--ignore-path` is refused (exit 2) and `--snapshot-mode` changes nothing. With the VM's kaniko quick suite (`RANIKUST_QUICK_MODE=kaniko`), `quick.sh` also runs ADR-0054's refusals, the red team of `--mode=auto`'s routing (`rt_*`) and Phase 2 criterion 5's lock (`slash_lock_refuses_a_second_build`: a second kaniko-mode build on `/` in one container is refused before its state directory exists) |
+| `kaniko-flags` | The kaniko-mode flags' meaning (Phase 2 criterion 8): `--snapshot-mode=time` misses a rewrite of the same size and mtime that `full` catches; `--ignore-path` keeps a `RUN`'s files below it out of every layer; in the T1 kaniko leg, a build without `--mode` picks kaniko mode in a default container and says why. In overlay mode `--ignore-path` is refused (exit 2) and `--snapshot-mode` changes nothing. With the VM's kaniko quick suite (`RANIKUST_QUICK_MODE=kaniko`), `tests/vm/guest/quick.sh` also runs ADR-0054's refusals, the red team of `--mode=auto`'s routing (`rt_*`) and Phase 2 criterion 5's lock (`slash_lock_refuses_a_second_build`: a second kaniko-mode build on `/` in one container is refused before its state directory exists) |
 | `copy-from` | Red team of what kaniko mode keeps (ADR-0051): a hostile stage (links out of its root, to the state directory, `/ranikust`, `/` and `/proc`; a FIFO, a setuid file, a hardlink, a `0700` directory of uid 1000, a device node) read with `COPY --from`, with its metadata as it was in the image; builds whose sources reach the state directory, `/ranikust` or `/proc` fail without an image |
 | `copy-from-root` | `COPY --from=<stage> / /all/`: the whole stage, without the state directory, `/ranikust` or `/proc`; in kaniko mode on the container's `/` the whole root is kept |
 | `copy-from-daemon` | A `setsid` process left by a `RUN` (kaniko#1697) changes the root while kaniko mode with `RUN` `Direct` walks, keeps, empties and copies it back: the build fails closed, or its image holds nothing of the state directory, `/ranikust` or the secret |
-| `run` | `RUN` in shell and exec form, a heredoc and a `#!` heredoc, a cache mount a second build sees, a secret as a file (`0400`, by its sha256) and as `env=`, `--network=none` seeing only `lo`, a `RUN` that changes nothing adding no layer, only history (ADR-0058). With `RANIKUST_CASE_MODE=kaniko` (`RUN` `Direct` on the container's `/`, ADR-0057) `direct.Dockerfile` runs instead, and the red team of `direct-attack.Dockerfile`: a `#!` heredoc cannot rewrite its memfd through `/proc`, descriptors stay limited to the `RUN`'s pipes, `/dev/null` and its script, background writers are gone before the next `RUN`, and the spellings of secret mounts and `--network` that would escape a check are refused |
+| `run` | `RUN` in shell and exec form, a heredoc and a `#!` heredoc, a cache mount a second build sees, a secret as a file (`0400`, by its sha256) and as `env=`, `--network=none` seeing only `lo`, a `RUN` that changes nothing adding no layer, only history (ADR-0058). With `RANIKUST_CASE_MODE=kaniko` (`RUN` `Direct` on the container's `/`, ADR-0057) `direct.Dockerfile` runs instead, and the red team of `direct-attack.Dockerfile`: a `#!` heredoc cannot rewrite its memfd through `/proc`, descriptors stay limited to the `RUN`'s pipes, `/dev/null` and its script, background writers are gone before the next `RUN`, and these spellings are refused, never run without (`tests/smoke/cases/run/case.sh`): a secret file through `dst=` or `Destination=`, an empty `env=`, `type=bind` after `type=secret`, `--network` as `$N` or `NONE`, `--network=none` on a heredoc |
 | `hygiene` | Issue-mining fixes (ADR-0052, ADR-0058): a `RUN` sees the base's `/var/run -> /run` link and the image keeps it (D4); `COPY --chmod=0640` applies to the copied directories too (D3); `RUN true` twice and an existing `WORKDIR` twice add no layer, only `empty_layer` history. Kaniko mode: two builds in one container (`rnk_run_twice`), the second finds the marker and starts from an emptied `/` (D1) |
 | `hygiene-mounts` | Red team (ADR-0052 D1, D4; ADR-0058). Every mode: steps that only delete a file, replace a directory by an empty one, or change a mode or an mtime keep their layer, `RUN true` gets `empty_layer` only. Kaniko mode (`RANIKUST_CASE_MODE=kaniko`): two builds in one container holding volumes at `/run/vol` and `/srv/vol`; the second finds the marker and empties `/`, both volumes keep exactly their files, and no layer of either image holds them, `/run/.containerenv`, `/.dockerenv` or `/ranikust` |
 | `reproducible` | `--reproducible`: one digest across builds a second apart and at `--jobs 1` and `2`, `created` at the epoch, another digest without the flag |
