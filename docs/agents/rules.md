@@ -14,10 +14,12 @@ digests. If a rule blocks the task, stop and ask.
   use a fresh temp `--state-dir` or the VM tier.
 - Never use `sudo`, `pkexec`, `su`, `doas`, `mount`, `umount`, `unshare` or
   `nsenter`. If a task needs root, stop and say so.
-- Privileged tests run only in a disposable VM (tier T2), or, for the ones
-  marked T2c, in throwaway rootful Docker containers on the test machine that
-  carries `/etc/ranikust/throwaway-test-host` (ADR-0063: never `--privileged`,
-  no host volume); never on the host.
+- Privileged tests run only in a disposable VM (tier T2: the local VM, or a
+  GitHub-hosted runner in CI through `.github/workflows/t2.yml`, ADR-0090),
+  or, for the ones marked T2c, in throwaway rootful Docker containers on the
+  test machine that carries `/etc/ranikust/throwaway-test-host` (ADR-0063:
+  never `--privileged`, no host volume); never on the host.
+  `tests/vm/runner.sh` is CI's alone: never run it on a machine of your own.
 - Every path from an image, a build context or a Dockerfile is untrusted:
   reach it only through `rnk_rootfs::RootPath`, never `std::fs` or
   `Path::join` onto a host path.
@@ -145,7 +147,7 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 | Decision made or reversed | a new ADR; never rewrite an accepted one |
 | User-visible change (flag, default, output, mode behaviour) | the pull request's `## Changelog` section, never `CHANGELOG.md` (`ADR-0088`), and the book |
 | Isolation or privilege behaviour | `SECURITY.md`, `docs/security/` |
-| Test tiers, recipes or CI jobs | `justfile` and `ci.yml` identical; `docs/testing.md`, `CONTRIBUTING.md`, the command lists in `CLAUDE.md` and [workflow.md](workflow.md) |
+| Test tiers, recipes or CI jobs | `justfile` and `ci.yml` identical (`.github/workflows/t2.yml` is the deliberate exception: CI's alone, no `just` recipe, ADR-0090); `docs/testing.md`, `CONTRIBUTING.md`, the command lists in `CLAUDE.md` and [workflow.md](workflow.md) |
 | Code ported from kaniko or elsewhere | file header, `NOTICE` entry, source commit ([CONTRIBUTING.md](../../CONTRIBUTING.md#porting-code-from-kaniko)) |
 | Task finished | its issue closes with the pull request (`Closes #N`); [phase-1.md](phase-1.md) and [phase-2.md](phase-2.md) are frozen |
 | Span or span field added, renamed or removed | [`design/metrics.md`](../design/metrics.md#spans-per-crate) and the card's `## Metrics` |

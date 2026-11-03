@@ -31,7 +31,7 @@ the diff), and whether the matching doc is already updated in this change.
 | 3 | makes or reverses a decision, or contradicts an accepted ADR | a new ADR (`/adr`); an accepted ADR's body is never edited |
 | 4 | changes anything a user sees: a flag, a default, output, an error message, mode selection, supported environments | the pull request's `## Changelog` section (never `CHANGELOG.md`, ADR-0088), and the page in `docs/book/src/` |
 | 5 | changes isolation, privileges, capabilities, namespaces, paths written, credential handling or the store's sharing | `SECURITY.md` scope and `docs/security/threat-model.md` |
-| 6 | changes test tiers, recipes or CI jobs | `docs/testing.md`, `justfile` and `.github/workflows/ci.yml` stay identical, `CONTRIBUTING.md`, the commands in `CLAUDE.md` and `docs/agents/workflow.md` |
+| 6 | changes test tiers, recipes or CI jobs | `docs/testing.md`, `justfile` and `.github/workflows/ci.yml` stay identical (`.github/workflows/t2.yml` is the deliberate exception: CI's alone, no `just` recipe, ADR-0090), `CONTRIBUTING.md`, the commands in `CLAUDE.md` and `docs/agents/workflow.md` |
 | 7 | ports code from kaniko or another project | file header, `NOTICE` entry, source commit (see `CONTRIBUTING.md`) |
 
 Also check:

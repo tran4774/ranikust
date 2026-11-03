@@ -1,0 +1,195 @@
+name: T2
+
+# The privileged tiers on GitHub-hosted runners (ADR-0090): each job is a
+# fresh VM GitHub deletes afterwards, with passwordless sudo, so it stands in
+# for the local QEMU VM (`just test-vm`) and the VPS container lane (`just
+# test-container`). tests/vm/runner.sh refuses to run anywhere else.
+#
+# Separate from ci.yml: these jobs run as root and take longer; ci.yml stays
+# what `just ci` runs. No secrets, a read-only token, never
+# pull_request_target: a fork's pull request runs its own code as root on a
+# machine of GitHub's, which is what the runner is for. Benchmarks (e2e,
+# ultra) and the push suite stay local. `workflow_dispatch` runs it by hand
+# on any branch from the Actions tab.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit:
+    # The `#[ignore = "T2: ..."]` and `"T2c: ..."` tests as root on the
+    # runner, as `just test-vm unit` runs them in the VM.
+    name: T2 unit (root on the runner)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: t2-unit
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # zig compiles the C dependencies for musl through cargo-zigbuild
+      # (ADR-0020): the same static binaries the VM runs.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      # What the VM's base image adds to Ubuntu (tests/vm/vm.sh PACKAGES);
+      # Docker is the runner's own.
+      - name: Install the VM's packages
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz
+      - name: T2 unit
+        env:
+          RANIKUST_T2_ON_RUNNER: "1"
+        run: tests/vm/runner.sh unit
+      # On failure or cancellation (a timeout), the suites' logs and results
+      # for a week (public, as the job log is; no secrets reach them).
+      - name: Keep the results
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t2-unit
+          path: |
+            ~/rnk/out
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### T2 unit'
+            echo '```'
+            cat ~/rnk/out/env.txt ~/rnk/out/summary.txt ~/rnk/out/suite-times.txt 2>/dev/null || echo "no results"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  unit-c:
+    # The T2c lane (ADR-0063): the `#[ignore = "T2c: <profile>: ..."]` tests
+    # as root in throwaway rootful Docker containers (default, +SYS_ADMIN,
+    # +NET_ADMIN), as `just test-container unit-c` runs them on the VPS.
+    name: T2c unit-c (rootful Docker on the runner)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: t2-unit-c
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      - name: T2c unit-c
+        env:
+          RANIKUST_T2_ON_RUNNER: "1"
+        run: tests/vm/runner.sh unit-c
+      # On failure or cancellation (a timeout), the suites' logs and results
+      # for a week (public, as the job log is; no secrets reach them).
+      - name: Keep the results
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t2c-unit-c
+          path: |
+            ~/rnk/out
+            target/container/results
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### T2c unit-c'
+            echo '```'
+            cat ~/rnk/out/env.txt ~/rnk/out/summary.txt ~/rnk/out/suite-times.txt 2>/dev/null || echo "no results"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  smoke:
+    # The ranikust binary and the smoke-build example as root on the runner
+    # and in Docker variants (smoke), the quick cases (quick), and kaniko
+    # mode on `/` against attacker RUNs (secrets, ADR-0051).
+    name: T2 smoke, quick, secrets (root on the runner)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: t2-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      - name: Install the VM's packages
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz
+      # The VM's Docker (Ubuntu's docker.io, 29.x) keeps images in
+      # containerd's store, Docker 29's default, whose `docker load` reads
+      # an OCI layout, as the smoke suite needs; the runner's Docker (28.x)
+      # still has the classic store.
+      - name: Docker with containerd's image store, as in the VM
+        run: |
+          f=/etc/docker/daemon.json
+          if sudo test -s "$f"; then cur="$(sudo cat "$f")"; else cur='{}'; fi
+          jq '.features["containerd-snapshotter"] = true' <<<"$cur" | sudo tee "$f"
+          sudo systemctl restart docker
+          sudo docker info --format 'storage driver: {{.Driver}} {{.DriverStatus}}'
+      - name: T2 smoke, quick, secrets
+        env:
+          RANIKUST_T2_ON_RUNNER: "1"
+        run: tests/vm/runner.sh smoke quick secrets
+      # On failure or cancellation (a timeout), the suites' logs and results
+      # for a week (public, as the job log is; no secrets reach them).
+      - name: Keep the results
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t2-smoke-quick-secrets
+          path: |
+            ~/rnk/out
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### T2 smoke, quick, secrets'
+            echo '```'
+            cat ~/rnk/out/env.txt ~/rnk/out/summary.txt ~/rnk/out/suite-times.txt 2>/dev/null || echo "no results"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

@@ -12,8 +12,8 @@ than a regular user never run on a developer's machine.
 |---|---|---|---|---|---|
 | T0 | Unit tests and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, Podman rootless | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine | `just smoke` (below); TODO: `just test-rootless` | Smoke test only |
-| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host | `just test-vm` ([below](#the-vm-harness-tier-t2)) | `unit`, `smoke`, `e2e` and `push` suites |
-| T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)) | `unit-c` |
+| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, Docker rootful variants, kaniko mode on `/`, the host-safety attack suite | root | A disposable VM, never the host: the local VM, and on every pull request a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push` and `ultra` suites |
+| T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), and in CI a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)), never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)); CI's `.github/workflows/t2.yml` | `unit-c` |
 | T3 | CI on every pull request: `fmt`, `clippy`, T0, static musl build, aarch64 check, aarch64 T0 under qemu-user, cargo-deny, rustdoc, mdBook | None | GitHub Actions (`.github/workflows/ci.yml`) | `just ci` | In use |
 
 ### Rules
@@ -24,7 +24,9 @@ than a regular user never run on a developer's machine.
   `#[ignore = "T2c: <profile>: <reason>"]` or `#[ignore = "T2: <reason>"]`.
   Its harness runs it with `cargo test -- --ignored` inside the right
   environment. Never remove the `ignore` to run it by hand, and never run a
-  T2 or T2c test on the host.
+  T2 or T2c test on the host. A GitHub-hosted runner counts as a disposable
+  VM ([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md)):
+  only CI's `tests/vm/runner.sh` runs there.
 - A root test is T2c (profile `default`, `sysadmin` or `netadmin`: the
   smallest it needs) unless one of these keeps it T2, in the VM only
   ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)):
@@ -583,9 +585,13 @@ example, a test or a bug could remount `/proc/sys` read-write and set
 `kernel.core_pattern`). The machine's disposability is what makes that
 acceptable, so the marker check is load-bearing: never create the marker
 anywhere else, and treat a machine that carries it as one to rebuild, not
-to trust.
+to trust. The one exception: on a GitHub-hosted runner, CI's
+`tests/vm/runner.sh` makes a marker naming that runner for its one job,
+behind its own guard ([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md),
+which amends ADR-0063 for it; [below](#t2-on-github-hosted-runners)).
 
-Tests that stay T2 (the VM only), and why:
+Tests that stay T2 (the VM, and CI's GitHub-hosted runners, only), and
+why:
 
 | Test | Crate | Why not in a container |
 |---|---|---|
@@ -594,6 +600,73 @@ Tests that stay T2 (the VM only), and why:
 | `probe_reaches_exec_as_root`, `a_run_joins_a_held_network_namespace` | `rnk-sandbox` | (3) both require `RootEntry::PivotRoot`, which Docker's seccomp profile refuses |
 | `direct_runs_in_a_chroot_with_placed_files_as_root` | `rnk-sandbox` | (3) raises the `RLIMIT_CORE` hard limit, which needs `CAP_SYS_RESOURCE` |
 | `red_team_a_run_with_every_mount_holds_only_its_stdio`, `red_team_a_run_cannot_change_the_hosts_dev_nodes`, `red_team_no_run_outlives_the_thread_that_cloned_it` | `rnk-sandbox` | (3) they require `RootEntry::PivotRoot`, which Docker's seccomp profile refuses |
+
+## T2 on GitHub-hosted runners
+
+On every pull request and push to `main` (and by hand from the Actions
+tab, `workflow_dispatch`), `.github/workflows/t2.yml` runs
+the T2 suites `unit`, `smoke`, `quick` and `secrets` and the T2c lane
+`unit-c` as root directly on GitHub-hosted `ubuntu-24.04` runners
+([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md)): a
+runner is a fresh VM GitHub makes for one job and deletes after it, with
+passwordless `sudo`, so it takes the VM's place there. Three jobs, each its
+own runner, about five minutes of wall time together:
+
+| Check | Suites |
+|---|---|
+| `T2 unit (root on the runner)` | `unit` |
+| `T2 smoke, quick, secrets (root on the runner)` | `smoke`, `quick`, `secrets` |
+| `T2c unit-c (rootful Docker on the runner)` | `unit-c` |
+
+- `tests/vm/runner.sh <suite>...` is the entry point. Before anything
+  else it refuses (exit 2) unless GitHub Actions reports a GitHub-hosted
+  runner (`GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, no
+  `ACT`, so not `act`), the machine looks like one (user `runner`,
+  `HOME=/home/runner`, system vendor `Microsoft Corporation`) and the
+  workflow sets `RANIKUST_T2_ON_RUNNER=1`, so it never runs on a
+  developer's machine; `e2e`, `ultra` and `push` it refuses by name. Exit 1
+  is a failed suite (a refusal inside `lane.sh` counts as `unit-c`
+  failing), 3 a failed set-up (staging, a build) with no results.
+- It stages the same tree as the VM at `~/rnk` with `tests/vm/stage.sh`,
+  which `tests/vm/vm.sh` uses too (its `[stage +Ns]` log lines on the
+  caller's clock), and runs the same guest scripts as the
+  runner's user, each privileged command under `sudo`. No network check:
+  `guest/net.sh` keeps the VM's root off the developer host's loopback
+  (ADR-0086), and the runner has nothing to keep it from.
+- For `unit-c` it makes a marker naming this runner, made for the job
+  (root-owned, the form `lane.sh` checks), the one exception to "never
+  create the marker anywhere else" ([above](#the-container-lane-tier-t2c)),
+  and runs `tests/container/lane.sh` on the runner's rootful Docker:
+  ADR-0063's profiles and control checks as on the VPS.
+- The runner gets what the VM's base image adds (`busybox-static`, `zstd`,
+  `pigz`) and, for the smoke job, Docker with containerd's image store, the
+  default of the VM's Docker 29, whose `docker load` reads the OCI layout
+  `smoke-build` writes.
+- Images the guest scripts name come from `mirror.gcr.io`
+  (`RANIKUST_VM_IMAGE_REGISTRY`), as in the VM; Docker's own pulls of
+  `docker.io` names (the T2c image's `ubuntu@sha256:...` base) go to Docker
+  Hub directly, since the runner's Docker has no registry mirror.
+- `env.txt`, `summary.txt` and `suite-times.txt` (seconds and peak disk use
+  per suite) go to `~/rnk/out` and the job's summary page; on failure,
+  `~/rnk/out` (and `target/container/results` for T2c) is kept as an
+  artifact for 7 days. Each job times out after 30 minutes (runs take 3 to
+  6).
+- The Rust caches of these jobs are saved only from `main`, within the
+  repository's 10 GB cache limit shared with `ci.yml`; pull requests build
+  cold until `main` has saved them.
+- The runner is not the VM (kernel 7.0 Azure, Docker 28, AppArmor's
+  `apparmor_restrict_unprivileged_userns=1`, a different image GitHub
+  updates weekly). The local VM stays the reference: `e2e`, `ultra`, `push`,
+  kernel 5.15 (`RANIKUST_VM_RELEASE=jammy`) and acceptance runs are local
+  only.
+- No secrets, a read-only token, never `pull_request_target`: a fork's
+  pull request runs its code as root on GitHub's machine, which is what the
+  runner is for. Never a self-hosted runner while the repository is
+  public. Whether a fork's pull request runs without approval is the
+  maintainer's repository setting (recommended: require approval for all
+  outside collaborators).
+- No `just` recipe runs this workflow: it is CI's alone, a deliberate
+  exception to "`justfile` and `ci.yml` identical".
 
 ## aarch64 under qemu-user
 
