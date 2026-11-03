@@ -12,7 +12,7 @@ fixed-size buffers. Decided in
 
 | What | Kept until | Where |
 |---|---|---|
-| Base layer blobs, kaniko mode | not kept: streamed from the registry into the root, unless an output needs the bytes | none (on `/` a verified spool, below); with such an output, the store's `blobs/` |
+| Base layer blobs, kaniko mode | not kept: streamed from the registry into the root, unless an output needs the bytes | none (on `/` a verified spool, below); with such an output, the store (`blobs/`; on `/`, anonymous files) |
 | Base layer blobs, overlay mode | the store's prune | the store (`blobs/`) |
 | Extracted base layers, overlay mode | the store's prune | `layers/` |
 | Built layer blobs | every destination has the layer and no output needs it | the build directory; on `/`, anonymous files (RAM under `memfd`) |
@@ -39,9 +39,9 @@ So in kaniko mode:
   streamed from the source registry to the destination through a bounded
   channel. Nothing of it is written locally.
 - When an output needs the bytes (`--tar-path`, `--oci-layout-path`), the
-  image's blobs are pulled into the store's `blobs/` as in overlay mode
-  (`crates/rnk-builder/src/pull.rs`): those outputs are files of the image's
-  size anyway.
+  image's blobs are pulled into the store (`blobs/`; on `/`, anonymous files)
+  as in overlay mode (`crates/rnk-builder/src/pull.rs`): those outputs are
+  files of the image's size anyway.
 
 Overlay mode keeps extracted layers in the store for later builds, and the blob
 beside them: on disk, through fixed buffers, never in memory. It downloads and
@@ -152,7 +152,8 @@ layers uploading or waiting to is bounded by twice `--jobs`.
 - `--no-push` without outputs: built layers are not even encoded (the layer
   demand); base layers are streamed into the root only.
 - `--tar-path` and `--oci-layout-path`: the image's blobs are pulled into the
-  store's `blobs/` and kept until the outputs are written.
+  store (`blobs/`; on `/`, anonymous files) and kept until the outputs are
+  written.
 - Digests do not depend on streaming: the same layers are encoded with the same
   options, and pushed bytes are the encoded file's.
 

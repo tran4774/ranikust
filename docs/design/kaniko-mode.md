@@ -614,7 +614,8 @@ Kaniko mode outside a container
   being made, not every stage's root: a directory goes once nobody reads it.
   Per-stage builds still hold more page cache than overlay mode, since each
   stage has its own extracted base and re-reads its writes to hash and tar
-  them; the memory gate counts it ([scheduler](scheduler.md#limits)).
+  them. The memory gate sees it only once it is resident; counting what a stage
+  will re-read is not designed ([scheduler](scheduler.md#limits)).
 - **Placed files:** `hosts`, `resolv.conf`, stub mount points and `/dev` nodes
   change the mtime of their parent, so `/etc` would enter every layer. The
   full sandbox records the parent's mtime before placing (m0) and after (m1);
