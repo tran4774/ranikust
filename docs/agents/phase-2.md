@@ -100,10 +100,13 @@ with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
 - [x] (met 2026-11-03: ultra `leaks: none` on all 13 kaniko-mode and overlay images; the stub and mount checks `smoke_check_no_stub_leak` and the quick `hygiene`/`hygiene-mounts` cases green in the VM at `3992fde`) No mount point (`/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname`,
       volumes), no file of the state directory and no placed file reaches a
       layer; `/etc` is not in a layer only because of a placed file.
-- [ ] Host safety: `/`, every system directory and their ancestors refused
-      by `(dev, ino)`; a non-empty workdir without the marker refused; a
-      second build on the same workdir refused by the lock; deletion keeps
-      a same-filesystem bind mount (D1–D3 of experiment 09). T0 and T2.
+- [ ] (reworded 2026-11-03 by the maintainer: the workdir is gone since
+      ADR-0050) Host safety: `/`, every system directory and their
+      ancestors refused as the state directory by `(dev, ino)`; a non-empty
+      state directory without `.ranikust-state` refused; a second
+      kaniko-mode build on `/` in one container refused by the flock;
+      deletion keeps a same-filesystem bind mount (D1–D3 of experiment 09).
+      T0 and T2.
 - [x] (met 2026-11-03: ultra W3 per-stage `--reproducible` gives one digest at `--jobs` 1, 2 and default; the quick `reproducible` case, builds a second apart, green at `3992fde`) `--reproducible`: two builds at different times give one digest; in
       per-stage mode the digest does not depend on `--jobs`.
 - [x] (reworded 2026-11-01 by the maintainer, "2. ok"; met: `par-stages` bench in the VM, per-stage kaniko mode −43…−45 % and overlay −38 % against the same stages chained, at a 4-CPU cap and uncapped; peak memory recorded per build in e2e) With the same CPU budget, per-stage directories (sandboxed) build independent stages at least 40 % faster than the same stages chained, on the `par-stages` case at a 4-CPU cap; W3 at 4 CPUs no worse than experiment 12's −21 %; experiment 12's −41…−44 % on W3 is a 32-CPU figure, measured only by the ultra benchmark; peak memory recorded. (`--parallel-stages` is refused, `ADR-0060`; the fake `/proc` and bare `chroot` parts no longer apply.)
