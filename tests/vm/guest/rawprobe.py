@@ -21,6 +21,10 @@ One frame at a time, and after each probe the kernel's own DNS query must
 still be answered, so that a frame that stops passt shows as such rather
 than as "no answer".
 
+On the harness NIC (QEMU's user network with restrict=on, no egress),
+--control names the one forward that answers a SYN: it is the only control
+and the liveness check, and the same probes must go unanswered.
+
 Prints one line per control ("control ok ..." or "CONTROL FAILED ...") and
 per probe ("REACHED ..." or "ok ..."), then "PROBED". Exits 1 when a
 control failed, 2 on a usage or set-up error.
@@ -163,10 +167,15 @@ def main():
     ap.add_argument("--gateway", required=True, help="the IPv4 default gateway on --iface")
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--token", required=True)
-    ap.add_argument("--dns", required=True, help="the guest's DNS server address")
-    ap.add_argument("--registry", required=True, help="a host name answering on port 443")
+    ap.add_argument("--dns", help="the guest's DNS server address")
+    ap.add_argument("--registry", help="a host name answering on port 443")
+    ap.add_argument("--control", metavar="ADDR:PORT",
+                    help="for a NIC with no egress: a TCP port that answers a SYN, the only control"
+                         " and the liveness check (instead of --dns and --registry)")
     ap.add_argument("--debug", action="store_true", help="print every TCP or UDP frame that comes in")
     args = ap.parse_args()
+    if not args.control and not (args.dns and args.registry):
+        ap.error("--dns and --registry, or --control")
 
     own_mac = bytes.fromhex(open(f"/sys/class/net/{args.iface}/address").read().strip().replace(":", ""))
     gw_mac = bytes.fromhex(gateway_mac(args.iface, args.gateway).replace(":", ""))
@@ -191,34 +200,46 @@ def main():
     for dst in ["127.0.0.1", "0.0.0.0", own4]:
         probes.append((f"tcp {dst}:{args.port}", TCP, 4, dst, args.port, new_port(), b""))
         probes.append((f"udp {dst}:{args.port}", UDP, 4, dst, args.port, new_port(), args.token.encode()))
-    reg4 = resolve(args.registry, socket.AF_INET)
-    if reg4 is None:
-        raise SystemExit(f"error: {args.registry} has no IPv4 address")
-    controls.append((f"tcp {reg4}:443 ({args.registry})", TCP, 4, reg4, 443, new_port(), b""))
-    controls.append((f"udp {args.dns}:53 (DNS)", UDP, 4, args.dns, 53, new_port(), dns_query(args.registry)))
+    silent = []
+    if args.control:
+        control_addr, control_port = args.control.rsplit(":", 1)
+        controls.append((f"tcp {args.control} (control forward)", TCP, 4, control_addr, int(control_port), new_port(), b""))
+    else:
+        reg4 = resolve(args.registry, socket.AF_INET)
+        if reg4 is None:
+            raise SystemExit(f"error: {args.registry} has no IPv4 address")
+        controls.append((f"tcp {reg4}:443 ({args.registry})", TCP, 4, reg4, 443, new_port(), b""))
+        controls.append((f"udp {args.dns}:53 (DNS)", UDP, 4, args.dns, 53, new_port(), dns_query(args.registry)))
+        # passt runs IPv4 only (ADR-0086): the registry over IPv6 must not
+        # answer either.
+        reg6 = resolve(args.registry, socket.AF_INET6)
+        if reg6:
+            silent.append((f"tcp [{reg6}]:443 ({args.registry})", TCP, 6, reg6, 443, new_port(), b""))
+        else:
+            print(f"note: {args.registry} has no IPv6 address: IPv6 egress checked by the probes only")
     # IPv6 frames go out whatever the guest's IPv6 set-up, from its own
-    # address (global, else link-local, else a documentation one): passt
-    # runs IPv4 only (ADR-0086), so none may be answered, the registry over
-    # IPv6 included.
+    # address (global, else link-local, else a documentation one); none may
+    # be answered.
     src6 = own6 or link6 or "2001:db8::2"
     for dst in ["::1", "::ffff:127.0.0.1", "::", src6]:
         probes.append((f"tcp [{dst}]:{args.port}", TCP, 6, dst, args.port, new_port(), b""))
         probes.append((f"udp [{dst}]:{args.port}", UDP, 6, dst, args.port, new_port(), args.token.encode()))
-    silent = []
-    reg6 = resolve(args.registry, socket.AF_INET6)
-    if reg6:
-        silent.append((f"tcp [{reg6}]:443 ({args.registry})", TCP, 6, reg6, 443, new_port(), b""))
-    else:
-        print(f"note: {args.registry} has no IPv6 address: IPv6 egress checked by the probes only")
 
-    # Liveness: the kernel's own DNS query, from an ordinary socket, gets an
-    # answer; checked before the first frame and after each probe, so that a
-    # frame that stops passt shows as such, not as "no answer".
-    kernel = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    kernel.bind((own4, 0))
-    kernel.settimeout(3)
+    # Liveness, checked before the first frame and after each probe, so that
+    # a frame that stops the backend shows as such, not as "no answer": the
+    # kernel's own DNS query gets an answer, or with --control, a new SYN to
+    # the control port gets a SYN-ACK.
+    if not args.control:
+        kernel = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        kernel.bind((own4, 0))
+        kernel.settimeout(3)
 
     def alive():
+        if args.control:
+            sport = new_port()
+            send(TCP, 4, control_addr, int(control_port), sport, b"")
+            got = listen(TCP, sport, 3)
+            return got is not None and got[4] & (SYN | ACK) == SYN | ACK
         query = dns_query(args.registry)
         try:
             kernel.sendto(query, (args.dns, 53))
@@ -252,7 +273,7 @@ def main():
 
     print(f"raw frames from {own4} on {args.iface} to the gateway's MAC {gw_mac.hex(':')}")
     if not alive():
-        print("CONTROL FAILED liveness: no answer to the kernel's own DNS query before any raw frame")
+        print("CONTROL FAILED liveness: no answer before any raw frame")
         print("PROBED")
         return 1
     failed = False
@@ -280,7 +301,7 @@ def main():
         else:
             print(f"ok   raw {label}: refused (flags {got[4]:#x} from {got[0]})")
         if not alive():
-            print(f"CONTROL FAILED liveness: passt stopped answering after raw {label}")
+            print(f"CONTROL FAILED liveness: the backend stopped answering after raw {label}")
             failed = True
             break
     print("PROBED")

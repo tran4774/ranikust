@@ -152,6 +152,10 @@ HOST_DNS="$(awk '$1 == "nameserver" && $2 ~ /^[0-9]+(\.[0-9]+){3}$/ { print $2; 
 # The harness network: the guest is 10.0.2.15, the registries 10.0.2.2;
 # QEMU's own address moves to 10.0.2.254, since a guestfwd may not take it.
 HARNESS_NET=10.0.2.0/24 HARNESS_GUEST=10.0.2.15 HARNESS_HOST=10.0.2.254 REGISTRY_ADDR=10.0.2.2
+# The raw probe's control on the harness NIC: a forward that runs `true`,
+# so it reaches nothing on the host, yet answers a SYN.
+HARNESS_CONTROL=$REGISTRY_ADDR:9 TRUE_BIN="$(type -P true)"
+[[ "$TRUE_BIN" =~ ^/[A-Za-z0-9/._-]+$ ]] || die "true's path ($TRUE_BIN) must be absolute, with no space or comma"
 # Fixed MACs: the guest's network-config (in the run's seed) tells the NICs
 # apart by them.
 MAC_EGRESS=52:54:00:6e:6b:01 MAC_HARNESS=52:54:00:6e:6b:02
@@ -670,6 +674,9 @@ probe_up 127.0.0.1 || die "the host-side network probe does not answer on 127.0.
     "$PROBE_PORT" "$PROBE_TOKEN" "$PROBE_V6"
   printf 'export RANIKUST_VM_PROBE_ADDRS=%q\nexport RANIKUST_VM_REGISTRY_PROBE=%q\n' \
     "$REGISTRY_ADDR 10.0.2.3 $HARNESS_HOST $GUEST_DNS" "${REGISTRY_PORTS[*]/#/$REGISTRY_ADDR:}"
+  # The harness NIC, for the raw probe: the guest's address, QEMU's, the
+  # control forward.
+  printf 'export RANIKUST_VM_HARNESS=%q\n' "$HARNESS_GUEST $HARNESS_HOST $HARNESS_CONTROL"
 } >>"$STAGE/vm.env"
 
 # start_qemu <disk> <seed.iso> <serial log> <pidfile> <monitor> <mem> <cache>
@@ -868,6 +875,7 @@ T_BOOT=$SECONDS
 # closes it at once.
 HARNESS="user,id=n1,ipv6=off,restrict=on,net=$HARNESS_NET,host=$HARNESS_HOST"
 HARNESS+=",hostfwd=tcp:127.0.0.1:$PORT-$HARNESS_GUEST:22"
+HARNESS+=",guestfwd=tcp:$HARNESS_CONTROL-cmd:$TRUE_BIN"
 if wants push; then
   FORWARD="$SOCKDIR/registry-forward"
   cat >"$FORWARD" <<EOF

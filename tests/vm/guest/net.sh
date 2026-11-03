@@ -135,22 +135,38 @@ else
   failed=1
 fi
 
-# Raw frames from root in the VM, straight to passt (the egress NIC's
-# gateway), to the loopback addresses themselves; controls through the same
-# socket: a SYN to the registry, a DNS query.
+# raw <name> <rawprobe.py arguments...>: raw frames from root in the VM,
+# straight to that NIC's backend, to the loopback addresses themselves.
+raw() {
+  local name=$1 out rc=0
+  shift
+  out="$(sudo python3 -I guest/rawprobe.py --port "$PORT" --token "$TOKEN" "$@" 2>&1)" || rc=$?
+  echo "$out" | sed 's/^/  /'
+  if [ "$rc" != 0 ] || ! grep -qx PROBED <<<"$out"; then
+    echo "FAIL $name: the probe or a control failed (status $rc)"
+    failed=1
+  elif grep -q '^REACHED' <<<"$out"; then
+    echo "FAIL $name: the host's loopback is reachable: $(grep '^REACHED' <<<"$out" | paste -sd';')"
+    failed=1
+  else
+    echo "ok   $name: the host's loopback is not reachable"
+  fi
+}
+# The egress NIC (passt); controls through the same socket: a SYN to the
+# registry, a DNS query.
 dns="$(awk '$1 == "nameserver" { print $2; exit }' /run/systemd/resolve/resolv.conf 2>/dev/null || true)"
-rc=0
-out="$(sudo python3 -I guest/rawprobe.py --iface "$egress_if" --gateway "$gw" --port "$PORT" --token "$TOKEN" \
-  --dns "$dns" --registry "$REG" 2>&1)" || rc=$?
-echo "$out" | sed 's/^/  /'
-if [ "$rc" != 0 ] || ! grep -qx PROBED <<<"$out"; then
-  echo "FAIL raw frames: the probe or a control failed (status $rc)"
-  failed=1
-elif grep -q '^REACHED' <<<"$out"; then
-  echo "FAIL raw frames: the host's loopback is reachable: $(grep '^REACHED' <<<"$out" | paste -sd';')"
-  failed=1
-else
-  echo "ok   raw frames: the host's loopback is not reachable"
+raw "raw frames, egress" --iface "$egress_if" --gateway "$gw" --dns "$dns" --registry "$REG"
+# The harness NIC (QEMU's user network with restrict=on), whose only
+# control is a forward to nothing on the host.
+if [ -n "${RANIKUST_VM_HARNESS:-}" ]; then
+  read -r h_guest h_host h_control <<<"$RANIKUST_VM_HARNESS"
+  h_if="$(ip -4 -o addr show | awk -v a="$h_guest" '{ split($4, p, "/") } p[1] == a { print $2; exit }')"
+  if [ -n "$h_if" ] && [ "$h_if" != "$egress_if" ]; then
+    raw "raw frames, harness" --iface "$h_if" --gateway "$h_host" --control "$h_control"
+  else
+    echo "FAIL raw frames, harness: no NIC of its own holds $h_guest"
+    failed=1
+  fi
 fi
 
 sudo rm -rf "$W"
