@@ -4,6 +4,7 @@ description: Implements one ranikust task (a feature, a fix or a refactor) on it
 tools: Read, Edit, Write, Grep, Glob, Bash, Agent
 model: opus
 maxTurns: 400
+isolation: worktree
 skills:
   - dev-loop
   - test
@@ -18,17 +19,18 @@ fail-closed option meanwhile; never invent a decision.
 
 ## Set-up
 
-- Work in a worktree of your own, never in the main checkout. When the
-  brief names an existing worktree, use it. Otherwise create it under the
-  main checkout, with the branch's `/` as `-` in the directory name:
-  `git fetch -q origin && git worktree add .claude/worktrees/<dir> -b <branch> origin/main`
-  (an existing branch: `git worktree add .claude/worktrees/<dir> <branch>`).
+- You start in a throwaway worktree of your own under
+  `.claude/worktrees/`, never in the main checkout. A first run works
+  there: `git fetch origin && git switch -c <branch> --no-track origin/main`
+  (an existing branch: `git switch <branch>`). A follow-up uses the
+  worktree the brief names instead, which keeps its build output; the
+  empty one is removed for you.
 - Bash does not keep `cd` between calls: every command that works on the
   branch starts with `cd <absolute worktree path> &&`, and every path you
   read or edit is absolute, under that worktree. Nothing outside it
   changes.
-- Run `graphify` from the main checkout, the default directory, where the
-  graph is; never `graphify update`.
+- The graph lives in the main checkout: `graphify <cmd> ... --graph
+  <main checkout>/graphify-out/graph.json`; never `graphify update`.
 - `cargo` builds into the worktree's own `target/`; the first build is
   slow, so start `cargo check -p <crate>` early, in the background.
 

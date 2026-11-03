@@ -50,8 +50,9 @@ main session compacts at 300k tokens, and the model follows the task.
   itself is the input (a long design discussion to carry into the work).
 - **The `implementer` subagent** (`.claude/agents/implementer.md`, Opus,
   `maxTurns: 400`, the `dev-loop` and `test` skills preloaded) does every
-  implementation, fix and refactor, in a worktree it creates under
-  `.claude/worktrees/` and reuses for follow-ups. Its brief is by
+  implementation, fix and refactor, in a throwaway worktree of its own
+  (`isolation: worktree`, so a forgotten `cd` never lands in the main
+  checkout); a follow-up reuses the worktree its brief names. Its brief is by
   reference: the issue text, the branch to start from, the files, ADRs and
   design sections that matter, the acceptance criteria and the decisions
   already made. It runs the `reviewer` rounds itself (at most three),
@@ -105,9 +106,9 @@ main session compacts at 300k tokens, and the model follows the task.
   pass.
 - Bad, because one-hour cache writes cost more than five-minute ones; the
   saving holds while agents idle between rounds, which was 10.9% of spend.
-  A brief that names an existing worktree keeps its build output; a new
-  worktree rebuilds `target/` from scratch.
   Revisit if `/usage` shows cache writes growing.
+- Bad, because a new worktree rebuilds `target/` from scratch; a
+  follow-up brief that names the existing worktree keeps its build output.
 - Neutral, because the `implementer` can still start `reviewer` runs
   (subagents nest up to three levels), so the fix loop of ADR-0096 is
   unchanged in substance.
@@ -161,6 +162,6 @@ ADR-0096 (the local review loop; the loop's steps now name the
 `CLAUDE.md`, [`docs/agents/workflow.md`](../agents/workflow.md#claude-code),
 the `dev-loop` skill, `.graphifyignore` and `scripts/review-pack.py`.
 Revisit after two weeks of use with the attribution and prompt-cache lines
-of `/usage`: whether cache writes grew,
-whether thin briefs cost round trips, and whether a Sonnet `reviewer`
-first pass with Opus only on the host-safety crates holds accuracy.
+of `/usage`: whether cache writes grew, whether thin briefs cost round
+trips, and whether a Sonnet `reviewer` first pass with Opus only on the
+host-safety crates holds accuracy.
