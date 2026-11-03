@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
-"""Raw-frame probe of the T2 VM's egress NIC (ADR-0086), run as root in the
-VM by guest/net.sh.
+"""Raw-frame probe of one of the T2 VM's NICs (ADR-0086), run as root in
+the VM by guest/net.sh, once for the egress NIC (passt) and once for the
+harness NIC (QEMU's user network with restrict=on).
 
 Root in the VM, a `--privileged` container and a ranikust `RUN` hold
-CAP_NET_RAW, so they can hand passt any frame, not only what the guest's
-routing would send. This probe does that: it writes Ethernet frames on the
-egress NIC, addressed to the gateway's MAC (passt), with TCP SYNs and UDP
-datagrams to the addresses that would land on the host's loopback if passt
-forwarded them unchanged: 127.0.0.1, 0.0.0.0 and the guest's own address,
-and in IPv6 frames ::1, ::ffff:127.0.0.1, :: and the guest's own address.
-The port is the one where tests/vm/vm.sh serves its token on the host's
-loopback, over TCP and UDP. A SYN-ACK, or any UDP datagram back, is a
-reach.
+CAP_NET_RAW, so they can hand a NIC's backend any frame, not only what the
+guest's routing would send. This probe does that: it writes Ethernet
+frames on the NIC, addressed to its gateway's MAC (the backend), with TCP
+SYNs and UDP datagrams to the addresses that would land on the host's
+loopback if the backend forwarded them unchanged: 127.0.0.1, 0.0.0.0 and
+the guest's own address, and in IPv6 frames ::1, ::ffff:127.0.0.1, :: and
+the guest's own address. The port is the one where tests/vm/vm.sh serves
+its token on the host's loopback, over TCP and UDP. A SYN-ACK, or any UDP
+datagram back, is a reach.
 
-Controls through the same socket, NIC and gateway, sent first: a SYN to
-the image registry's port 443 must be answered with a SYN-ACK, and a DNS
-query to the guest's DNS address with a datagram. passt runs IPv4 only, so
-a SYN to the registry's IPv6 address, when it has one, must get no answer.
-One frame at a time, and after each probe the kernel's own DNS query must
-still be answered, so that a frame that stops passt shows as such rather
-than as "no answer".
+On the egress NIC, controls through the same socket, NIC and gateway go
+first: a SYN to the image registry's port 443 must be answered with a
+SYN-ACK, and a DNS query to the guest's DNS address with a datagram. passt
+runs IPv4 only, so a SYN to the registry's IPv6 address, when it has one,
+must get no answer. One frame at a time, and after each probe the
+kernel's own DNS query must still be answered, so that a frame that stops
+the backend shows as such rather than as "no answer".
 
-On the harness NIC (QEMU's user network with restrict=on, no egress),
---control names the one forward that answers a SYN: it is the only control
+On the harness NIC, which has no egress, --control names the one forward
+that answers a SYN (QEMU's null character device): it is the only control
 and the liveness check, and the same probes must go unanswered.
 
 Prints one line per control ("control ok ..." or "CONTROL FAILED ...") and

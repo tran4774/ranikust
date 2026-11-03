@@ -15,8 +15,8 @@
 # layout is checked against its name.
 #
 # The host's registries are reachable only while this suite runs: vm.sh
-# opens their gate once the guest's log shows this suite started
-# (ADR-0086), so the suite first waits for them. Both ports must then
+# runs it last, in a step of its own, and opens their gate for that step
+# alone (ADR-0086). The suite first waits for them; both ports must then
 # answer from root in the VM (curl), from a default and a `--privileged`
 # container and from the build's own `RUN` (alpine's wget).
 set -euo pipefail
