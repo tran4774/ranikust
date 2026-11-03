@@ -29,8 +29,9 @@ pub(crate) fn needs_escape(c: char) -> bool {
         )
 }
 
-/// `text` with every character [`needs_escape`] names written as Rust
-/// writes it in a string literal (`\n`, `\t`, `\u{1b}`), so the text stays
+/// `text` with every control character (C0, DEL, C1), Unicode line or
+/// paragraph separator and bidi control written as Rust writes it in a
+/// string literal (`\n`, `\t`, `\u{1b}`), so the text stays
 /// on one line and shows what it holds. Text with nothing to escape is
 /// returned as it is.
 ///

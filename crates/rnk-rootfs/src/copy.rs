@@ -50,7 +50,7 @@ pub struct CopyOpts {
     /// (ADR-0060). What is left out is warned about once per copy.
     pub skip_special: bool,
     /// A copy out of the build context (ADR-0076): each regular file is
-    /// checked against the directory it was found in ([`context_refusal`]),
+    /// checked against the directory it was found in (`context_refusal`),
     /// since ranikust reads as root and the copy would otherwise carry a
     /// file the directory's owner cannot read into the image. `false` for a
     /// copy between roots (`COPY --from`, stage directories).
