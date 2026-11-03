@@ -13,11 +13,11 @@ put the review findings on the pull request: a branch was pushed, a draft
 pull request opened, and the `reviewer` and `host-safety` rounds ran
 against it, each fix pushed in turn. On 2026-11-04 four documentation pull
 requests (#52, #53, #54 and the CI change #51) went through two or three
-rounds that way. Each fix round was a push, so each started CI and T2 on
+rounds that way. Each fix round was a push, so each started CI on
 the pull request and notified watchers, and an early push of #54 carried
 text that a later round removed. Separately, the worktrees the agents leave
 behind were never removed: 32 of them, each with its own `target/`, held
-126 GB.
+about 125 GB.
 
 ## Considered Options
 
@@ -35,12 +35,15 @@ is pushed.
 - The first push opens the draft pull request with a summary of the review
   rounds; a later round's summary is a comment. The details of an open
   weakness stay out of both (ADR-0087, D6).
-- After a merge, the main session runs `just prune-worktrees`, which
-  removes an agent worktree only when nothing in it can be lost: the
-  branch's commit is the head of a pull request merged into `main`, or the
-  branch has no commit of its own and the worktree has been idle for a day;
-  nothing is changed, untracked or ignored outside `target/`; no VM run is
-  live in it; it is not locked, detached, on `main` or the caller's own.
+- After a merge, once no fork is working, the main session runs
+  `just prune-worktrees`, which removes an agent worktree only when nothing
+  in it can be lost: the branch's commit is the head of a pull request
+  merged into `main`, or the branch has no commit of its own and the
+  worktree has been idle for a day; nothing is changed or untracked, and
+  nothing is ignored outside `target/`, `graphify-out/` and `__pycache__/`;
+  no VM run is live in it; it is not locked, detached, on `main` or the
+  caller's own. The "no fork is working" condition is the real guard: the
+  lock alone is not (Evidence).
 - This amends ADR-0087's Flow, which posted the review findings on the pull
   request; the rest of ADR-0087 stands.
 
@@ -60,7 +63,7 @@ is pushed.
 
 - Pull requests #52, #53 and #54 (2026-11-04): two to three review rounds
   each, every round pushed. [external]
-- 32 agent worktrees removed on 2026-11-04 freed 125 GB. [external]
+- 32 agent worktrees removed on 2026-11-04 freed about 125 GB. [external]
 - Claude Code locks a subagent's worktree when it starts it, but a
   worktree whose agent was resumed had no lock while the agent ran, so
   `just prune-worktrees` cannot rely on the lock alone. [external, observed

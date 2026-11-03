@@ -155,9 +155,9 @@ request (`ADR-0088`).
    needs (`reviewer`; `host-safety` and `red-team` as the table below
    says) on the local branch. The fix loop
    ([below](#host-safety-fix-loop)) runs to the end, with no blocker left,
-   before anything is pushed: every push to a pull request runs CI and T2
-   and notifies watchers, so the first push is a reviewed change, not a
-   draft of one ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)).
+   before anything is pushed: every push to a pull request starts CI and
+   notifies watchers, so the first push is a reviewed change, not a draft
+   of one ([ADR-0096](../adr/0096-agents-review-on-the-local-branch-before-every-push.md)).
 4. **Draft pull request:** `git push -u origin <branch>`, then
    `gh pr create --draft` with the template filled, labels `agent` and the
    area, and the summary of the review rounds (never the details of an
@@ -327,7 +327,8 @@ for `reviewer` and `red-team`:
 
 1. The `host-safety` subagent reports to the main session.
 2. The main session sends the findings back to the same fork (it keeps the
-   task's context); it never starts a new agent for the fix.
+   task's context; it never starts a new agent for the fix), or fixes them
+   itself on its own branch.
 3. The fork fixes on its branch, runs `just check` (and the VM suites when
    set-up or the sandbox changed), commits without pushing and reports.
 4. The main session asks the same reviewer to re-check only the fix

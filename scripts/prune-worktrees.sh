@@ -45,9 +45,10 @@ dirty_reason() {
       *) echo "has changes or files to keep (${entry:3})"; return ;;
     esac
   done <<< "$status"
-  if compgen -G "$wt/target/vm/run.*" > /dev/null; then
-    echo "a VM run may be live (target/vm/run.*)"
-  fi
+  local run
+  for run in "$wt"/target/vm/run.*; do
+    if [ -e "$run" ]; then echo "a VM run may be live (target/vm/run.*)"; return; fi
+  done
 }
 
 # Seconds since the epoch of the worktree's last checkout or commit (not the
@@ -105,7 +106,12 @@ while IFS=$'\t' read -r -d '' locked ref wt; do
     continue
   fi
   # Deletes the branch only if no commit landed on it since the check.
-  git update-ref -d "$ref" "$sha" || echo "note   $name: branch $branch moved, kept"
+  if git update-ref -d "$ref" "$sha"; then
+    # Its upstream settings, as git branch -D would; a branch never pushed has none.
+    git config --remove-section "branch.$branch" 2>/dev/null || true
+  else
+    echo "note   $name: branch $branch moved, kept"
+  fi
 done < <(git worktree list --porcelain -z | awk -v RS='\0' '
   /^worktree / { wt = substr($0, 10); br = "-"; lk = 0 }
   /^branch /   { br = substr($0, 8) }

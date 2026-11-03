@@ -199,7 +199,7 @@ docs-lint:
 review-pack branch *args:
     python3 -I scripts/review-pack.py "$@"
 
-# Local only: remove the agent worktrees under .claude/worktrees/ that hold nothing to lose, with their local branch and build output (ADR-0096): a pull request merged into main with the branch's commit as head, or no commit of its own and idle a day; nothing changed, untracked or ignored outside target/; no live VM run; not locked, detached, on main or the caller's. `--dry-run` only lists (it still fetches origin/main). Requires git and a logged-in gh.
+# Local only: remove the agent worktrees under .claude/worktrees/ that hold nothing to lose, with their local branch and build output (ADR-0096): a pull request merged into main with the branch's commit as head, or no commit of its own and idle a day; nothing changed or untracked, nothing ignored outside target/, graphify-out/ and __pycache__/; no live VM run; not locked, detached, on main or the caller's. `--dry-run` only lists (it still fetches origin/main). Requires git and a logged-in gh.
 prune-worktrees *args:
     bash scripts/prune-worktrees.sh "$@"
 

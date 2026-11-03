@@ -49,6 +49,8 @@ age() { # age <worktree>: make it look idle for two days
 
 # Squash-merged: the pull request's head is the branch's commit.
 add feat/squashed squashed
+git config branch.feat/squashed.remote origin
+git config branch.feat/squashed.merge refs/heads/feat/squashed
 echo "main feat/squashed $(commit_on squashed one)" >>"$FAKE_GH_MERGED"
 # The same, plus a commit after the merge.
 add feat/after after
@@ -145,6 +147,14 @@ check no detached - "detached"
 check no detached-locked - "detached and locked"
 check no on-main main "on main"
 grep -q "removed 4, kept 12" <<<"$out" || { echo "FAIL: summary: $out"; failures=$((failures + 1)); }
+for reason in "detached: detached HEAD" "detached-locked: locked" "on-main: on main" \
+    "vmrun: a VM run may be live" "stacked: branch feat/stacked not merged into main" \
+    "fresh: no commit of its own"; do
+  grep -qF "keep   $reason" <<<"$out" || { echo "FAIL: reason missing: $reason"; failures=$((failures + 1)); }
+done
+if git config --get-regexp '^branch\.feat/squashed\.' >/dev/null; then
+  echo "FAIL: upstream settings of a removed branch left behind"; failures=$((failures + 1))
+fi
 
 if [ "$failures" -ne 0 ]; then
   echo "$out"
