@@ -300,7 +300,19 @@ settles them (Q-024):
   stage is a plain tar in an anonymous file, written by a metadata-only
   walk and the walk's exporter, and a `COPY --from=<image>` stays its
   blobs (a streamed one spooled and verified on first read, before any
-  directory is made, ADR-0055); a reader's view is unpacked into a directory of the state
+  directory is made, ADR-0055). A streamed base layer's verified spool
+  stays while stages or `COPY --from` images the build made on the layer
+  are still to read it, so a base several stages share is downloaded and
+  verified once per build; every extraction from it still checks the diff
+  ID, and reads it through the descriptor held (`pread`), never by a
+  path. While the store's files are in memory (`memfd`), no spool is kept
+  for later uses (ADR-0081). Every layer extraction of kaniko mode reads
+  its plain tar from a thread that decompresses the blob and computes the
+  diff ID up to 5 MiB ahead (4 queued chunks of 1 MiB and the one it
+  fills; 6 MiB held with the one being read); the thread writes nothing,
+  stops at the blob when the extraction stops early, and is joined before
+  the extraction returns; where no thread can be started, the extraction
+  decompresses itself (ADR-0081). A reader's view is unpacked into a directory of the state
   directory named by the store, inside a fence window, and deleted at the
   end of the instruction that read it (`end_layer`, also `prepare`,
   `keep`, `release`, the end of the build); `FROM` a kept tar extracts it into

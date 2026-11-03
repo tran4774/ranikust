@@ -43,6 +43,8 @@ impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
     pub fn open_anonymous(state: &Path) -> Result<Store>; // ADR-0051, kaniko mode on /: nothing on disk; blobs are anonymous files (O_TMPFILE|O_EXCL, memfd with MFD_NOEXEC_SEAL fallback) named /proc/self/fd/<n>, refused unless /proc/self/fd is procfs; without O_TMPFILE a name unlinked at once, refused on NFS, FUSE, SMB or AFS (statfs), when the file is still linked after the unlink and when the unlink fails (Error::NameOutlivesUnlink; a persistent store is not checked); layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
+    pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back);
+                                                        // kaniko mode on / then keeps no spool for later stages (ADR-0081)
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store
     pub fn scratch_file(&self) -> Result<File>;         // a nameless file owned by the caller (an encoded layer, a spooled base layer,
                                                         // a kept stage's tar), gone with it; never kept by the store, persistent or not

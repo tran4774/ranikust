@@ -37,11 +37,11 @@
 //!   tar extracted into the emptied root, with device nodes and FIFOs left
 //!   out as for any extraction into a live root (ADR-0041).
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use rnk_layer::{Compression, EncodeOptions, LayerDigests};
@@ -188,6 +188,21 @@ struct Shared {
     /// Bumped each time the views are deleted: a stage's cached view of an
     /// older epoch is gone.
     view_epoch: AtomicU64,
+    /// On `/`: the verified spool of each streamed layer, by diff ID, kept
+    /// while stages made on the layer are still to extract it (ADR-0081).
+    spools: Mutex<HashMap<Digest, SpoolUse>>,
+}
+
+/// The uses of one streamed layer on `/` ([`Shared::spool`]).
+#[derive(Debug, Default)]
+struct SpoolUse {
+    /// Stage roots and `COPY --from` images made on the layer: one per
+    /// [`Snapshotter::streamed_layer`] call.
+    expected: usize,
+    /// Extractions served so far.
+    used: usize,
+    /// The verified spool, kept while `used < expected`.
+    spool: Option<Arc<Spooled>>,
 }
 
 /// A directory unpacked in the state directory for a `COPY --from` on `/`.
@@ -254,6 +269,7 @@ impl Kaniko {
                 tars: OnceLock::new(),
                 views: Mutex::new(Vec::new()),
                 view_epoch: AtomicU64::new(0),
+                spools: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -415,6 +431,44 @@ impl Shared {
     fn views(&self) -> MutexGuard<'_, Vec<View>> {
         self.views.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    fn spools(&self) -> MutexGuard<'_, HashMap<Digest, SpoolUse>> {
+        self.spools.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `layer` verified in `store` ([`Spooled::of`]). A streamed layer that
+    /// a later stage or image of the build was also made on keeps its
+    /// spool for it: that stage extracts it again without downloading and
+    /// decompressing it a second time to verify it (ADR-0081). The spool
+    /// goes with the last use the build announced; one used more often
+    /// than announced is spooled anew. While the store's files are in
+    /// memory (`memfd`), charged to the container's memory, no new spool is
+    /// kept: each use spools the layer anew, one layer at a time. A blob of
+    /// the store is read as it is.
+    fn spool(&self, store: &Store, layer: &KanikoLayer) -> Result<Arc<Spooled>> {
+        if !matches!(layer.source, LayerSource::Stream(_)) {
+            return Spooled::of(store, layer).map(Arc::new);
+        }
+        let cached = {
+            let mut spools = self.spools();
+            let entry = spools.entry(layer.diff_id.clone()).or_default();
+            entry.used += 1;
+            entry.spool.clone()
+        };
+        let spooled = match cached {
+            Some(spooled) => spooled,
+            None => Arc::new(Spooled::of(store, layer)?),
+        };
+        let mut spools = self.spools();
+        if let Some(entry) = spools.get_mut(&layer.diff_id) {
+            if entry.used >= entry.expected {
+                spools.remove(&layer.diff_id);
+            } else if !store.files_in_memory() {
+                entry.spool = Some(Arc::clone(&spooled));
+            }
+        }
+        Ok(spooled)
+    }
 }
 
 /// Deletes every directory unpacked for a `COPY --from`. One that cannot be
@@ -500,6 +554,15 @@ impl Snapshotter for Kaniko {
     }
 
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
+        if self.shared.is_slash() {
+            // One more stage or image of the build to extract it: its spool
+            // waits for that use ([`Shared::spool`]).
+            self.shared
+                .spools()
+                .entry(diff_id.clone())
+                .or_default()
+                .expected += 1;
+        }
         Some(KanikoLayer {
             diff_id: diff_id.clone(),
             source: LayerSource::Stream(open),
@@ -544,7 +607,11 @@ impl Snapshotter for Kaniko {
                     }
                     Some(Kept::Tar { file }) => {
                         // Our own snapshot of a tree: `.wh.` names are files.
-                        extract_live_literal(&shared.root, reopen(file)?, &shared.ignore)?;
+                        extract_live_literal(
+                            &shared.root,
+                            ReadAt::from_start(file)?,
+                            &shared.ignore,
+                        )?;
                     }
                     Some(Kept::Image { .. }) | None => {
                         return Err(Error::State("a stage built on an unpacked image"));
@@ -686,7 +753,7 @@ enum Kept {
     /// directory is made, and its plain tar kept in `tars` for later reads.
     Image {
         layers: Vec<KanikoLayer>,
-        tars: Option<Vec<Spooled>>,
+        tars: Option<Vec<Arc<Spooled>>>,
     },
 }
 
@@ -741,16 +808,34 @@ fn make_dir(shared: &Shared, name: &str) -> Result<Made> {
     }
 }
 
-/// A new descriptor of an anonymous file, read from its start, through this
-/// process's own `/proc/self/fd` (checked to be procfs when the store
-/// opened).
-fn reopen(file: &File) -> Result<File> {
-    let path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
-    File::open(&path).map_err(|source| Error::Io {
-        op: "reopen",
-        path,
-        source,
-    })
+/// An anonymous file of the store read from its start through the
+/// descriptor held, at offsets of its own (`pread`): no path is looked up,
+/// after `RUN`s either, and readers of one file never move each other's
+/// offset, nor the writer's.
+struct ReadAt {
+    /// A duplicate of the held descriptor (`F_DUPFD_CLOEXEC`).
+    file: File,
+    at: u64,
+}
+
+impl ReadAt {
+    fn from_start(file: &File) -> Result<Self> {
+        let file = file.try_clone().map_err(|source| Error::Io {
+            op: "duplicate the descriptor of",
+            path: PathBuf::from("an anonymous file of the store"),
+            source,
+        })?;
+        Ok(Self { file, at: 0 })
+    }
+}
+
+impl std::io::Read for ReadAt {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::unix::fs::FileExt as _;
+        let n = self.file.read_at(buf, self.at)?;
+        self.at += u64::try_from(n).map_err(std::io::Error::other)?;
+        Ok(n)
+    }
 }
 
 /// Writes `what` of the root as a plain tar into a new anonymous file of
@@ -892,7 +977,9 @@ fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
         let store = shared.tar_store()?.ok_or(Error::State(
             "no store to verify a streamed layer in before it reaches /",
         ))?;
-        return Spooled::of(&store, layer)?.extract(&shared.root, &shared.ignore);
+        return shared
+            .spool(&store, layer)?
+            .extract(&shared.root, &shared.ignore);
     }
     extract_blob(&shared.root, &shared.ignore, layer)
 }
@@ -961,7 +1048,7 @@ impl Spooled {
         match &self.0 {
             SpooledBlob::Blob(layer) => extract_blob(root, ignore, layer),
             SpooledBlob::File { file, diff_id } => {
-                extract_checked(root, ignore, Box::new(reopen(file)?), diff_id)
+                extract_checked(root, ignore, Box::new(ReadAt::from_start(file)?), diff_id)
             }
         }
     }
@@ -1006,14 +1093,16 @@ pub(super) fn extract_blob(
 }
 
 /// Decompresses `blob` into `root` and checks the tar's digest against
-/// `diff_id` at its end.
+/// `diff_id` at its end. The decompression and the digest run on a thread
+/// of their own ([`Decoding`]), overlapping the extraction's writes; the
+/// bytes extracted, in their order, are the same.
 fn extract_checked(
     root: &RootPath,
     ignore: &IgnoreList,
     blob: Box<dyn std::io::Read + Send>,
     diff_id: &Digest,
 ) -> Result<()> {
-    let mut decoder = rnk_layer::Decoder::new(blob)?;
+    let mut decoder = Decoding::new(blob)?;
     extract_live(root, &mut decoder, ignore)?;
     let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
     if actual != *diff_id {
@@ -1023,6 +1112,265 @@ fn extract_checked(
         });
     }
     Ok(())
+}
+
+/// How many chunks of plain tar a layer's decompression queues ahead of its
+/// extraction ([`Decoding`]). With the chunk the thread fills and the one
+/// the extraction reads, memory is bounded at `DECODE_AHEAD + 2` times
+/// [`DECODE_CHUNK`] per layer being extracted.
+const DECODE_AHEAD: usize = 4;
+
+/// The size of one chunk of plain tar handed from the decompression to the
+/// extraction.
+const DECODE_CHUNK: usize = 1 << 20;
+
+/// A layer's blob decompressed, and its diff ID computed, on a thread of
+/// its own, at most [`DECODE_AHEAD`] chunks queued ahead of the reader: the
+/// extraction's writes overlap the decompression (ADR-0081). The thread
+/// only reads `blob` and decompresses it; it writes no file. A read error
+/// of the blob or of the decompression reaches the reader as an
+/// [`std::io::Error`] of the same kind. Dropped before its end, the reader
+/// sets `stop`: the blob gives no more bytes, the thread ends at its next
+/// read, and is joined. Where no thread can be started (a tight `pids`
+/// limit), the reader decompresses itself, as before.
+///
+/// The decoder, and its `rnk_layer.decode` span, are made and dropped on
+/// the caller's thread: a span closed on a thread without the caller's
+/// subscriber would never release its parent span.
+struct Decoding {
+    /// The decoder itself when no thread could be started.
+    inline: Option<LayerDecoder>,
+    chunks: Option<std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>>,
+    chunk: Vec<u8>,
+    at: usize,
+    /// Set when the reader goes: the blob's next read fails
+    /// ([`Stoppable`]), and so does the thread's next read of the decoder.
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Option<(DecodeEnd, LayerDecoder)>>>,
+}
+
+/// What the decompression thread ends with: the tar stream's digest.
+type DecodeEnd = std::result::Result<rnk_layer::Sha256Digest, rnk_layer::Error>;
+
+/// The decoder the thread reads with, handed back when it ends.
+type LayerDecoder = rnk_layer::Decoder<Box<dyn std::io::Read + Send>>;
+
+impl Drop for Decoding {
+    fn drop(&mut self) {
+        // The blob gives no more bytes, so the thread stops inside a read
+        // of the decoder too (one that skips empty gzip members or zstd
+        // skippable frames reads on without giving any); its next send
+        // fails. Its decoder is dropped here, on the caller's thread.
+        self.stop.store(true, Ordering::Relaxed);
+        self.chunks = None;
+        if let Some(thread) = self.thread.take() {
+            drop(thread.join());
+        }
+    }
+}
+
+/// The blob of a [`Decoding`]: fails every read once its reader is gone.
+struct Stoppable {
+    inner: Box<dyn std::io::Read + Send>,
+    stop: Arc<AtomicBool>,
+}
+
+impl std::io::Read for Stoppable {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Err(stopped());
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// The error the decompression ends with when its reader is gone.
+fn stopped() -> std::io::Error {
+    std::io::Error::other("the extraction stopped reading the layer")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: the decompression thread cannot be started, as under a
+    /// tight `pids` limit.
+    static NO_DECODE_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Starts the decompression thread running `f`.
+fn spawn_decode<F, T>(f: F) -> std::io::Result<std::thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    #[cfg(test)]
+    if NO_DECODE_THREAD.with(std::cell::Cell::get) {
+        return Err(Errno::AGAIN.into());
+    }
+    std::thread::Builder::new()
+        .name("rnk-decode".to_owned())
+        .spawn(f)
+}
+
+impl Decoding {
+    /// Sniffs the compression here, then decompresses on the new thread,
+    /// or here when no thread can be started.
+    fn new(blob: Box<dyn std::io::Read + Send>) -> Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let blob: Box<dyn std::io::Read + Send> = Box::new(Stoppable {
+            inner: blob,
+            stop: Arc::clone(&stop),
+        });
+        let decoder = rnk_layer::Decoder::new(blob)?;
+        let (tx, chunks) = std::sync::mpsc::sync_channel(DECODE_AHEAD);
+        // The decoder goes to the thread once it runs, so a thread that
+        // cannot start leaves it here.
+        let (give, take) = std::sync::mpsc::sync_channel::<LayerDecoder>(1);
+        let thread_stop = Arc::clone(&stop);
+        let spawned = spawn_decode(move || {
+            take.recv()
+                .ok()
+                .map(|decoder| decode_into(decoder, &tx, &thread_stop))
+        });
+        let decoder = match spawned {
+            Ok(thread) => match give.send(decoder) {
+                Ok(()) => {
+                    return Ok(Self {
+                        inline: None,
+                        chunks: Some(chunks),
+                        chunk: Vec::new(),
+                        at: 0,
+                        stop,
+                        thread: Some(thread),
+                    });
+                }
+                // The thread is gone already: it panicked before it could
+                // take the decoder.
+                Err(std::sync::mpsc::SendError(decoder)) => {
+                    drop(thread.join());
+                    decoder
+                }
+            },
+            Err(e) => {
+                tracing::debug!("no decompression thread ({e}): the extraction decompresses");
+                decoder
+            }
+        };
+        Ok(Self {
+            inline: Some(decoder),
+            chunks: None,
+            chunk: Vec::new(),
+            at: 0,
+            stop,
+            thread: None,
+        })
+    }
+
+    /// Reads to the end of the tar stream and returns its digest, as
+    /// [`rnk_layer::Decoder::finish`].
+    fn finish(mut self) -> Result<rnk_layer::Sha256Digest> {
+        if let Some(decoder) = self.inline.take() {
+            return Ok(decoder.finish()?);
+        }
+        std::io::copy(&mut self, &mut std::io::sink()).map_err(rnk_layer::Error::from)?;
+        self.chunks = None;
+        let thread = self
+            .thread
+            .take()
+            .ok_or(Error::State("the decompression thread was joined already"))?;
+        let (digest, decoder) = thread
+            .join()
+            .map_err(|_| Error::State("the decompression thread panicked"))?
+            .ok_or(Error::State("the decompression thread got no decoder"))?;
+        drop(decoder);
+        Ok(digest?)
+    }
+}
+
+/// The decompression thread of [`Decoding`]: full chunks to `tx` until the
+/// end of the tar stream, then the stream's digest, and the decoder back.
+/// Stops when the reader is gone.
+fn decode_into(
+    mut decoder: LayerDecoder,
+    tx: &std::sync::mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+    stop: &AtomicBool,
+) -> (DecodeEnd, LayerDecoder) {
+    let end = decode_chunks(&mut decoder, tx, stop);
+    (end, decoder)
+}
+
+/// [`decode_into`]'s loop.
+fn decode_chunks(
+    decoder: &mut LayerDecoder,
+    tx: &std::sync::mpsc::SyncSender<std::io::Result<Vec<u8>>>,
+    stop: &AtomicBool,
+) -> DecodeEnd {
+    use std::io::Read as _;
+    loop {
+        let mut chunk = vec![0_u8; DECODE_CHUNK];
+        let mut filled = 0;
+        while filled < chunk.len() {
+            if stop.load(Ordering::Relaxed) {
+                return Err(rnk_layer::Error::Io(stopped()));
+            }
+            match decoder.read(chunk.get_mut(filled..).unwrap_or_default()) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    let again = std::io::Error::new(e.kind(), e.to_string());
+                    // The reader sees the error itself; the join gets a copy.
+                    let _ = tx.send(Err(e));
+                    return Err(rnk_layer::Error::Io(again));
+                }
+            }
+        }
+        let end = filled < chunk.len();
+        chunk.truncate(filled);
+        if !chunk.is_empty() && tx.send(Ok(chunk)).is_err() {
+            return Err(rnk_layer::Error::Io(stopped()));
+        }
+        if end {
+            // The read of 0 bytes above set the diff ID.
+            return decoder.diff_id().ok_or_else(|| {
+                rnk_layer::Error::Io(std::io::Error::other("the tar stream did not end"))
+            });
+        }
+    }
+}
+
+impl std::io::Read for Decoding {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(decoder) = &mut self.inline {
+            return decoder.read(buf);
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        while self.at >= self.chunk.len() {
+            let Some(chunks) = &self.chunks else {
+                return Ok(0);
+            };
+            match chunks.recv() {
+                Ok(Ok(chunk)) => {
+                    self.chunk = chunk;
+                    self.at = 0;
+                }
+                Ok(Err(e)) => return Err(e),
+                // The thread is done: the stream's end.
+                Err(_) => {
+                    self.chunks = None;
+                    return Ok(0);
+                }
+            }
+        }
+        let rest = self.chunk.get(self.at..).unwrap_or_default();
+        let n = rest.len().min(buf.len());
+        buf.get_mut(..n)
+            .unwrap_or_default()
+            .copy_from_slice(rest.get(..n).unwrap_or_default());
+        self.at += n;
+        Ok(n)
+    }
 }
 
 /// A stage on the shared root.
@@ -1069,7 +1417,7 @@ impl KanikoRoot {
             {
                 let spooled = layers
                     .iter()
-                    .map(|layer| Spooled::of(&store, layer))
+                    .map(|layer| shared.spool(&store, layer))
                     .collect::<Result<Vec<_>>>()?;
                 *tars = Some(spooled);
             }
@@ -1098,7 +1446,9 @@ impl KanikoRoot {
                 // Our own snapshot of a tree: `.wh.` names are files. Device
                 // nodes and FIFOs are made here too: no `RUN` runs while the
                 // directory exists.
-                Some(Kept::Tar { file }) => extract(&root, reopen(file)?, Whiteouts::Literal)?,
+                Some(Kept::Tar { file }) => {
+                    extract(&root, ReadAt::from_start(file)?, Whiteouts::Literal)?;
+                }
                 Some(Kept::Image {
                     tars: Some(tars), ..
                 }) => {

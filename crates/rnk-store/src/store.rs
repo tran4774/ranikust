@@ -550,6 +550,19 @@ impl Store {
         self.anon.is_some()
     }
 
+    /// Whether the anonymous files made now are `memfd`s, charged to the
+    /// container's memory, rather than files on disk: the state directory
+    /// takes no file, or no file may be made by name for the rest of the
+    /// build. It can turn true during a build, never back. A caller that
+    /// would keep a file for long can then keep less.
+    #[must_use]
+    pub fn files_in_memory(&self) -> bool {
+        match &self.anon {
+            Some(anon) => anon.files.in_memory(),
+            None => self.build_files.get().is_some_and(AnonFiles::in_memory),
+        }
+    }
+
     /// A new, empty file open for reading and writing that no other process
     /// can reach by a path, kept open as long as the store, and its name
     /// for this process's own code (`/proc/self/fd/<n>`): for what a build

@@ -972,6 +972,179 @@ fn on_slash_a_streamed_gzip_layer_is_spooled_compressed_and_extracted() {
     root.release().unwrap();
 }
 
+/// A streamed layer of `files` and its counting source, the layer made
+/// `stages` times as stages of a build make it (`streamed_layer` once per
+/// stage pulled on it).
+fn streamed_for(
+    f: &Fixture,
+    name: &str,
+    files: &[(&str, &[u8])],
+    stages: usize,
+) -> (Vec<KanikoLayer>, Arc<Streamed>) {
+    let kept = f.layer(name, files);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layers = (0..stages)
+        .map(|_| {
+            f.kaniko
+                .streamed_layer(kept.diff_id(), Arc::clone(&source) as Arc<dyn LayerOpen>)
+                .unwrap()
+        })
+        .collect();
+    (layers, source)
+}
+
+#[test]
+fn on_slash_a_layer_several_stages_were_made_on_is_downloaded_and_verified_once() {
+    let (f, _store) = Fixture::tars();
+    let (layers, source) = streamed_for(&f, "l1", &[("a", b"shared base")], 3);
+    for layer in &layers {
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(layer)))
+            .unwrap();
+        assert_eq!(fs::read(f.host.join("a")).unwrap(), b"shared base");
+        // The kept spool has no name either.
+        assert_eq!(f.state_names(), ["blob"]);
+        root.release().unwrap();
+    }
+    // One download for the three stages: the later ones read the spool the
+    // first verified (ADR-0081).
+    assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn on_slash_a_spool_goes_with_the_last_use_the_build_announced() {
+    let (f, _store) = Fixture::tars();
+    // Two stages announced, three extractions: the third finds no spool.
+    let (layers, source) = streamed_for(&f, "l1", &[("a", b"base")], 2);
+    for layer in [&layers[0], &layers[1], &layers[0]] {
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(layer)))
+            .unwrap();
+        assert_eq!(fs::read(f.host.join("a")).unwrap(), b"base");
+        root.release().unwrap();
+    }
+    assert_eq!(source.opens.load(Ordering::Relaxed), 2);
+    assert!(
+        f.kaniko.shared.spools().values().all(|u| u.spool.is_none()),
+        "no spool outlives the uses announced"
+    );
+}
+
+/// The spool `f` keeps for a later stage.
+fn kept_spool(f: &Fixture) -> Arc<Spooled> {
+    f.kaniko
+        .shared
+        .spools()
+        .values()
+        .find_map(|u| u.spool.clone())
+        .expect("a spool kept for a later stage")
+}
+
+#[test]
+fn on_slash_a_kept_spool_changed_after_its_check_fails_the_next_stage() {
+    use std::os::unix::fs::FileExt as _;
+    for truncated in [false, true] {
+        let (f, _store) = Fixture::tars();
+        let (layers, source) = streamed_for(&f, "l1", &[("a", b"verified")], 2);
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(&layers[0])))
+            .unwrap();
+        root.release().unwrap();
+        let spool = kept_spool(&f);
+        let SpooledBlob::File { file, .. } = &spool.0 else {
+            panic!("a streamed layer's spool is a file");
+        };
+        if truncated {
+            // Cut before the end-of-archive blocks: the tar reads as ended
+            // at an entry's boundary, and its digest differs.
+            let verified = fs::read(&source.blob).unwrap();
+            file.set_len(u64::try_from(verified.len() - 1024).unwrap())
+                .unwrap();
+        } else {
+            // Another well-formed layer in its place.
+            let other = f.layer("l2", &[("a", b"tampered")]);
+            file.set_len(0).unwrap();
+            file.write_all_at(&fs::read(other.blob().unwrap()).unwrap(), 0)
+                .unwrap();
+        }
+        drop(spool);
+        let e = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(&layers[1])))
+            .unwrap_err();
+        assert!(
+            matches!(e, Error::DiffIdMismatch { .. }),
+            "truncated {truncated}: {e}"
+        );
+        // The kept spool was read, not a new download.
+        assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[test]
+fn on_slash_a_spool_announced_but_never_used_goes_with_the_snapshotter() {
+    let (f, store) = Fixture::tars();
+    let (layers, _source) = streamed_for(&f, "l1", &[("a", b"base")], 3);
+    let root = f
+        .kaniko
+        .prepare(Base::Image(std::slice::from_ref(&layers[0])))
+        .unwrap();
+    root.release().unwrap();
+    let spool = Arc::downgrade(&kept_spool(&f));
+    assert!(
+        spool.upgrade().is_some(),
+        "kept for the two stages announced"
+    );
+    // The build ends before those stages run (a failed stage, `--target`).
+    drop(layers);
+    drop(store);
+    drop(f);
+    assert!(
+        spool.upgrade().is_none(),
+        "the spool went with the snapshotter"
+    );
+}
+
+#[test]
+fn on_slash_with_its_state_in_memory_a_spool_is_not_kept_for_later_stages() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (f, store) = Fixture::tars();
+    let (layers, source) = streamed_for(&f, "l1", &[("a", b"base")], 2);
+    // A state directory that takes no file: the store's files are memfds.
+    let state = f.host.join("state");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = state.join("probe");
+    if fs::File::create(&probe).is_ok() {
+        // Root or `CAP_DAC_OVERRIDE`: the files stay on disk here.
+        fs::remove_file(&probe).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    for (i, layer) in layers.iter().enumerate() {
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(layer)))
+            .unwrap();
+        assert_eq!(fs::read(f.host.join("a")).unwrap(), b"base");
+        root.release().unwrap();
+        assert!(store.files_in_memory());
+        assert!(
+            f.kaniko.shared.spools().values().all(|u| u.spool.is_none()),
+            "stage {i}: no spool kept in memory"
+        );
+    }
+    // Spooled for each stage, one layer in memory at a time.
+    assert_eq!(source.opens.load(Ordering::Relaxed), 2);
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
 // Red team, ADR-0052 D1 and ADR-0058 (threat model T1, T3, T4): hostile
 // `/ranikust` and `.built` planted by an image, a `RUN` or a daemon left
 // by an earlier build; a second build's emptying of `/` against the real
@@ -1421,4 +1594,188 @@ fn only_a_step_that_changes_nothing_encodes_to_the_empty_layer() {
     });
     assert_eq!(undone, empty);
     root.release().unwrap();
+}
+
+/// A gzipped tar of one file of `len` pseudo-random bytes, and the plain
+/// tar.
+fn gzipped_tar(len: usize) -> (Vec<u8>, Vec<u8>) {
+    use std::io::Write as _;
+    let mut data = vec![0_u8; len];
+    let mut x = 0x9e37_79b9_u32;
+    for b in &mut data {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *b = x.to_le_bytes()[0];
+    }
+    let mut b = tar::Builder::new(Vec::new());
+    let mut h = Header::new_gnu();
+    h.set_entry_type(EntryType::Regular);
+    h.set_mode(0o644);
+    h.set_size(u64::try_from(len).unwrap());
+    b.append_data(&mut h, "big", data.as_slice()).unwrap();
+    let plain = b.into_inner().unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&plain).unwrap();
+    (gz.finish().unwrap(), plain)
+}
+
+#[test]
+fn a_layer_decompressed_on_its_own_thread_reads_as_the_decoder_and_has_its_digest() {
+    // Several chunks, the last one partial.
+    let (gz, plain) = gzipped_tar(DECODE_CHUNK * 3 + 12_345);
+    let mut decoding = Decoding::new(Box::new(std::io::Cursor::new(gz.clone()))).unwrap();
+    let mut out = Vec::new();
+    // Small reads, as the tar crate does.
+    let mut buf = [0_u8; 700];
+    loop {
+        let n = decoding.read(&mut buf).unwrap();
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(out, plain);
+    let digest = decoding.finish().unwrap();
+    let expected = rnk_layer::Decoder::new(std::io::Cursor::new(gz))
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert_eq!(digest.as_bytes(), expected.as_bytes());
+    assert_eq!(digest.as_bytes(), Sha256::digest(&plain).as_slice());
+}
+
+#[test]
+fn a_corrupt_layer_fails_its_reader_and_a_reader_that_stops_early_ends_the_thread() {
+    let (mut gz, _) = gzipped_tar(DECODE_CHUNK * 2);
+    let at = gz.len() / 2;
+    gz[at] ^= 0xff;
+    gz[at + 1] ^= 0xff;
+    let mut decoding = Decoding::new(Box::new(std::io::Cursor::new(gz))).unwrap();
+    let e = std::io::copy(&mut decoding, &mut std::io::sink()).unwrap_err();
+    assert_ne!(e.kind(), std::io::ErrorKind::Interrupted, "{e}");
+    // A reader dropped after its first bytes: the thread stops instead of
+    // decompressing the rest for nobody, and nothing waits for it.
+    let (gz, _) = gzipped_tar(DECODE_CHUNK * (DECODE_AHEAD + 4));
+    let mut decoding = Decoding::new(Box::new(std::io::Cursor::new(gz))).unwrap();
+    let mut first = [0_u8; 512];
+    decoding.read_exact(&mut first).unwrap();
+    let thread = decoding.thread.take().unwrap();
+    drop(decoding);
+    assert!(
+        thread.join().unwrap().unwrap().0.is_err(),
+        "the thread saw its reader go"
+    );
+}
+
+/// A blob that holds back everything past `gate_at` until `open` is set,
+/// counting the bytes it gave.
+struct Gated {
+    bytes: Vec<u8>,
+    pos: usize,
+    gate_at: usize,
+    open: Arc<AtomicBool>,
+    /// Set once a read waits at the gate.
+    waiting: Arc<AtomicBool>,
+    given: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl std::io::Read for Gated {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.gate_at {
+            self.waiting.store(true, Ordering::Relaxed);
+            while !self.open.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        let limit = if self.pos < self.gate_at {
+            self.gate_at
+        } else {
+            self.bytes.len()
+        };
+        let n = buf.len().min(limit - self.pos);
+        buf[..n].copy_from_slice(&self.bytes[self.pos..self.pos + n]);
+        self.pos += n;
+        self.given.fetch_add(n, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+#[test]
+fn a_reader_that_stops_early_stops_the_blob_even_among_empty_gzip_members() {
+    use std::io::Write as _;
+    // Two chunks of data, then empty gzip members a decoder skips inside
+    // one read of its own, giving nothing: only the blob sees the stop.
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&vec![7_u8; DECODE_CHUNK * 2]).unwrap();
+    let mut bytes = gz.finish().unwrap();
+    let gate_at = bytes.len();
+    let empty = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast())
+        .finish()
+        .unwrap();
+    for _ in 0..100_000 {
+        bytes.extend_from_slice(&empty);
+    }
+    let total = bytes.len();
+    let open = Arc::new(AtomicBool::new(false));
+    let given = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let waiting = Arc::new(AtomicBool::new(false));
+    let mut decoding = Decoding::new(Box::new(Gated {
+        bytes,
+        pos: 0,
+        gate_at,
+        open: Arc::clone(&open),
+        waiting: Arc::clone(&waiting),
+        given: Arc::clone(&given),
+    }))
+    .unwrap();
+    // The gate opens once the reader has said it stops, while the thread
+    // waits on the blob past the data.
+    let opener = {
+        let stop = Arc::clone(&decoding.stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            open.store(true, Ordering::Relaxed);
+        })
+    };
+    let mut first = [0_u8; 512];
+    decoding.read_exact(&mut first).unwrap();
+    // The reader goes while the thread is inside a read of the decoder,
+    // between two reads of the blob. (A failed wait drops the reader too,
+    // which opens the gate: nothing hangs.)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !waiting.load(Ordering::Relaxed) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the thread never reached the gate"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    drop(decoding);
+    opener.join().unwrap();
+    // At most one more buffer of the decoder's (32 KiB) past the gate, not
+    // the 2 MB of empty members.
+    let given = given.load(Ordering::Relaxed);
+    assert!(
+        given <= gate_at + 64 * 1024,
+        "{given} of {total} bytes read"
+    );
+    assert!(total > gate_at + 1_000_000);
+}
+
+#[test]
+fn without_a_thread_a_layer_is_decompressed_by_its_reader() {
+    let (gz, plain) = gzipped_tar(DECODE_CHUNK + 777);
+    NO_DECODE_THREAD.with(|refused| refused.set(true));
+    let decoding = Decoding::new(Box::new(std::io::Cursor::new(gz)));
+    NO_DECODE_THREAD.with(|refused| refused.set(false));
+    let mut decoding = decoding.unwrap();
+    assert!(decoding.thread.is_none() && decoding.inline.is_some());
+    let mut out = Vec::new();
+    decoding.read_to_end(&mut out).unwrap();
+    assert_eq!(out, plain);
+    let digest = decoding.finish().unwrap();
+    assert_eq!(digest.as_bytes(), Sha256::digest(&plain).as_slice());
 }

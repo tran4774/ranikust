@@ -127,8 +127,16 @@ the number of layers uploading or waiting to is bounded by twice
   the root (the diff ID checked again). Decompressing twice costs CPU but
   keeps the spool, on disk or under the `memfd` fallback, to the
   download's size, and keeps the rule that nothing unverified reaches `/`
-  even when the publisher's diff ID is wrong. The spool goes with its
-  file, so the disk holds one compressed layer at a time. A
+  even when the publisher's diff ID is wrong. The spool goes with the last
+  stage or `COPY --from` image the build announced on its layer
+  (ADR-0081), so the disk holds one compressed layer at a time plus the
+  layers of a base later stages still use, and a shared base is
+  downloaded and verified once per build; a spool announced for a stage
+  that never runs (a failed stage, `--target`) stays until the build
+  ends. Under the `memfd` fallback no spool is kept for a later stage:
+  memory holds one layer's spool at a time, and a shared base is
+  downloaded once per stage. The second decompression runs on a thread of
+  its own, up to 5 MiB ahead of the extraction's writes. A
   `COPY --from=<image>` on `/` is spooled and verified the same way before
   any directory is unpacked for it, and its verified compressed blobs kept
   for the stage's later readers. On a host root, and in
