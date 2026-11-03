@@ -81,10 +81,8 @@ change one, change the other.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
 not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the
-short version of how to write code here. Its
-[Writing](docs/agents/rules.md#writing) section covers comments (why, not
-what, in one short line) and docs (the point first, short, one fact in one
-place).
+short version of how to write code here, comments and docs included
+([Writing](docs/agents/rules.md#writing)).
 
 ## Tests
 
@@ -205,7 +203,7 @@ request's dry run reports what it found.
    merged since the last tag
    ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)),
    listing the ones without an entry. Edit the section for users (what
-   changed for them, not how), delete the draft comment, commit it as
+   changed for them, not how) and wrap it at about 80 columns, delete the draft comment, commit it as
    `chore(release): vX.Y.Z` and open the pull request with the `release`
    label. The recipe never commits, tags or pushes.
 2. **Merge** (the maintainer), once CI and the T2 tests are green; the

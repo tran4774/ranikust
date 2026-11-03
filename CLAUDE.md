@@ -61,7 +61,8 @@ The toolchain is pinned in `rust-toolchain.toml` (1.99.1, edition 2024);
 ## Must-follow rules
 
 Full list in [`docs/agents/rules.md`](docs/agents/rules.md); the ones that can
-damage the machine or the design:
+damage the machine or the design, and the writing rules every change
+follows:
 
 - Never run kaniko mode with rootfs `/` on the host, never use `sudo`,
   `pkexec`, `mount`, `unshare` or `nsenter`; privileged tests run only in a
@@ -98,7 +99,7 @@ damage the machine or the design:
 - Everything committed is English. The maintainer may write in Vietnamese.
 - Comments say why, not what: one short `//` or `#` line above the line
   it explains (a reason, an invariant, an edge case), never a restatement
-  of the code. Docs are short and plain for people and agents alike: the
+  of the code (`SAFETY:` comments and licence headers excepted). Docs are short and plain for people and agents alike: the
   point first, one fact in one place, links instead of repetition
   ([rules.md#writing](docs/agents/rules.md#writing)).
 

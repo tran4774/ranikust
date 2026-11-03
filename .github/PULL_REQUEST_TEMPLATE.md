@@ -30,12 +30,8 @@ Modes affected:
 
 - [ ] `just ci` passes locally.
 - [ ] A bug fix includes a test that fails without the fix.
-- [ ] Docs are in sync, per "Keep in sync" in `docs/agents/rules.md`, or none were
-      needed: `ARCHITECTURE.md`, `docs/design/`, a new ADR for a new or
-      reversed decision, the `## Changelog` section above for user-visible
-      changes, the book, `SECURITY.md` and the threat model.
-- [ ] Code ported from kaniko or another project has a file header and a
-      `NOTICE` entry (see `CONTRIBUTING.md`).
+- [ ] Docs are in sync, per "Keep in sync" in `docs/agents/rules.md`, or none were needed: `ARCHITECTURE.md`, `docs/design/`, a new ADR for a new or reversed decision, the `## Changelog` section above for user-visible changes, the book, `SECURITY.md` and the threat model.
+- [ ] Code ported from kaniko or another project has a file header and a `NOTICE` entry (see `CONTRIBUTING.md`).
 
 ## AI assistance
 

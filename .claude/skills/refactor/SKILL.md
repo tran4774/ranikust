@@ -28,7 +28,8 @@ In order of weight:
    `main.rs` for `ranikust`) and `ARCHITECTURE.md` hold; a refactor never
    moves a responsibility across crates. That is an architecture change:
    ADR first.
-3. **Readable by a stranger.** Names say what, doc comments say why, one
+3. **Readable by a stranger.** Names say what, comments say why, doc
+   comments state the caller's contract (`docs/agents/rules.md#comments`), one
    level of abstraction per function, the surrounding code's idiom.
 4. **No duplicate knowledge.** One place for one rule (a resolve flag set,
    a kaniko default, a whiteout form). Two pieces of code that look alike

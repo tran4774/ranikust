@@ -159,8 +159,9 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 Write so that a person or an agent can act on it after one read.
 
 - English for code, comments, docs and commits. Conventional Commits
-  (`feat(rnk-rootfs): ...`); the pull request title's type files a
-  changelog entry ([CONTRIBUTING.md](../../CONTRIBUTING.md#commits-and-pull-requests)).
+  (`feat(rnk-rootfs): ...`), the pull request title too: it becomes the
+  squash commit's title, and its type only places a changelog entry written
+  without a heading ([CONTRIBUTING.md](../../CONTRIBUTING.md#commits-and-pull-requests)).
 - Write for a reader who never saw your session: no conversation history or
   "as discussed" in code, commits or PRs.
 - Claims about kaniko cite `kaniko@<commit> path:line`.
@@ -172,9 +173,13 @@ Write so that a person or an agent can act on it after one read.
   an edge case, the ADR or T-id behind it. Never restate the code
   (`// open the file` above an `open`); if the code needs that, rename or
   split it instead.
-- One short line (`//`, or `#` in shell, Python, YAML and the `justfile`)
-  directly above the line it explains. A longer block only when the reason
-  needs it, such as a `SAFETY:` comment.
+- One short line (`//`, or `#` where the language uses it) directly above
+  the line it explains. A longer block only when the reason needs it, such
+  as a `SAFETY:` comment.
+- Exceptions that say what by design: the licence header of a derived file
+  stays whole ([CONTRIBUTING.md](../../CONTRIBUTING.md#porting-code-from-kaniko));
+  the comment above a `just` recipe is its `just --list` description; API
+  sketches in crate cards may carry a trailing purpose comment.
 - No history ("was X", "fixed in #12") and no commented-out code: git
   keeps both.
 - Doc comments (`///`, `//!`): a one-line summary, then only what a caller
@@ -187,14 +192,19 @@ Write so that a person or an agent can act on it after one read.
   page is for and what to do with it.
 - Short sentences, one idea per paragraph, lists and tables before long
   prose, no filler. One fact has one home: link to the doc that owns it
-  instead of restating it.
+  instead of restating it. The exceptions are deliberate: the summaries in
+  `CLAUDE.md` and the copies "Keep in sync" lists.
 - Describe what is true now. Why it changed goes in an ADR, how it got here
-  in git; frozen records (`docs/research/`, phase-1/2, accepted ADRs) stay
-  as they are.
+  in git. Frozen records stay as they are: `docs/research/`, phase-1/2,
+  accepted ADRs, the answered archive in `docs/open-questions.md`, the
+  dated reports in `docs/security/audit/` and released `CHANGELOG.md`
+  sections.
 - Hard-wrap Markdown prose in the repository at about 80 columns, not
   tables, headings, links or code. Do not hard-wrap text written on GitHub
-  (issues, pull requests, comments, release notes): GitHub shows each
-  newline there as a line break.
+  (issues, pull requests, comments, release notes, and the `.github/`
+  templates outside HTML comments): GitHub shows each newline there as a
+  line break. A changelog entry copied from a pull request into
+  `CHANGELOG.md` is wrapped there.
 
 ## Agent conduct
 
