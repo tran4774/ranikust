@@ -509,14 +509,18 @@ def last_tag() -> str | None:
 
 
 def changelog_text(body: str | None) -> str | None:
-    """The `## Changelog` section of a pull request body; None when absent
-    or when it says there is nothing for users."""
+    """The `## Changelog` section of a pull request body, as the pull
+    request template asks for it (ADR-0088): bullets under Keep a Changelog
+    `###` headings or alone, or "none". None when the section is absent,
+    holds only the template's comment, or says "none" (bare, quoted, in
+    backticks or emphasis, with or without a full stop)."""
     body = re.sub(r"<!--.*?-->", "", body or "", flags=re.S).replace("\r\n", "\n")
     match = re.search(r"(?ms)^##[ \t]+Changelog[ \t]*\n(.*?)(?=^##[ \t]|\Z)", body)
     if not match:
         return None
     text = match.group(1).strip()
-    if not text or re.fullmatch(r"(?i)(none|n/a|no|-|nothing)\.?", text):
+    bare = text.strip("\"'`*_ ").rstrip(".").strip("\"'`*_ ")
+    if not bare or re.fullmatch(r"(?i)none|n/a|no|-|nothing", bare):
         return None
     return text
 
@@ -565,7 +569,7 @@ def entries_of(text: str) -> list[tuple[str | None, list[str]]]:
             groups.append((heading, blocks))
 
     for line in text.splitlines():
-        sub = re.match(r"^###[ \t]+(.+?)\s*$", line)
+        sub = re.match(r"^#{3,4}[ \t]+(.+?)[ \t:]*$", line)
         if sub:
             flush()
             lines = []

@@ -148,6 +148,7 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 | User-visible change (flag, default, output, mode behaviour) | the pull request's `## Changelog` section, never `CHANGELOG.md` (`ADR-0088`), and the book |
 | Isolation or privilege behaviour | `SECURITY.md`, `docs/security/` |
 | Test tiers, recipes or CI jobs | `justfile` and `ci.yml` identical (`.github/workflows/t2.yml` is the deliberate exception: CI's alone, no `just` recipe, ADR-0090); `docs/testing.md`, `CONTRIBUTING.md`, the command lists in `CLAUDE.md` and [workflow.md](workflow.md) |
+| Licence policy, pinned Rust toolchain or release workflow | `deny.toml`'s `[licenses] allow` and `about.toml`'s `accepted` as one set (`just test-release` compares them); a new Rust release in `rust-toolchain.toml` (or the musl it bundles): the files in `licenses/` and their hashes in `scripts/release.py` ([ADR-0094](../adr/0094-the-release-ships-third-party-licence-notices-generated-by-cargo-about.md)); `.github/workflows/release.yml`: CONTRIBUTING's Releasing steps |
 | Code ported from kaniko or elsewhere | file header, `NOTICE` entry, source commit ([CONTRIBUTING.md](../../CONTRIBUTING.md#porting-code-from-kaniko)) |
 | Task finished | its issue closes with the pull request (`Closes #N`); [phase-1.md](phase-1.md) and [phase-2.md](phase-2.md) are frozen |
 | Span or span field added, renamed or removed | [`design/metrics.md`](../design/metrics.md#spans-per-crate) and the card's `## Metrics` |

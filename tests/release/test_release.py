@@ -142,6 +142,35 @@ class Changelog(unittest.TestCase):
         self.assertIn("### Removed\n\n- gone ([#5](u5))", body)
         self.assertIn("### Fixed\n\n- fixed ([#5](u5))", body)
 
+    def template_body(self, entry):
+        """The pull request template with `entry` written under its
+        `## Changelog` heading, the template's comment kept."""
+        template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text()
+        self.assertIn("\n## Changelog\n", template)
+        return template.replace("\n## Changelog\n", f"\n## Changelog\n\n{entry}\n", 1)
+
+    def test_the_templates_none_convention(self):
+        template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text()
+        self.assertIn('or "none"', template)
+        self.assertIsNone(rel.changelog_text(template))  # left as the template
+        for none in ["none", "None", "None.", '"none"', "`none`", "*none*", "NONE"]:
+            self.assertIsNone(rel.changelog_text(self.template_body(none)), none)
+        self.assertIsNotNone(rel.changelog_text(self.template_body("- none of the flags change")))
+
+    def test_the_templates_headings(self):
+        template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text()
+        for heading in ["Added", "Changed", "Removed", "Fixed", "Security"]:
+            self.assertIn(heading, template)
+            body = self.template_body(f"### {heading}\n\n- something for users")
+            pr = {"number": 9, "title": "chore: x", "url": "u", "labels": [], "body": body}
+            drafted, without = rel.draft_section([pr])
+            self.assertEqual(without, [])
+            self.assertEqual(drafted, f"### {heading}\n\n- something for users ([#9](u))")
+        # A body whose section was left as the template is listed without an entry.
+        pr = {"number": 10, "title": "feat: y", "url": "u", "labels": [],
+              "body": (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text()}
+        self.assertEqual(rel.draft_section([pr]), ("", [pr]))
+
     def test_insert_and_links(self):
         out = rel.insert_section(self.TEXT, "0.0.1", None, "### Added\n\n- x", "o/r")
         self.assertIn("## [Unreleased]\n\n## [0.0.1] - ", out)

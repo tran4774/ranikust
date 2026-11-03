@@ -121,8 +121,11 @@ the 29 questions migrated from
 [`docs/open-questions.md`](docs/open-questions.md) keep their `Q-NNN:`
 title prefix, and that file keeps the answered ones.
 
-Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/);
-[git-cliff](cliff.toml) groups them into release notes.
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+The release notes come from the pull requests' `## Changelog` sections
+(below), not from commits; the type of a pull request's title only places
+an entry written without a heading, as the table shows. (`just changelog`,
+with [git-cliff](cliff.toml), can still draft notes from commits.)
 
 ```
 <type>(<scope>): <summary in the imperative, lower case, no full stop>
@@ -132,18 +135,18 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 <footers: BREAKING CHANGE: ..., Refs: #123>
 ```
 
-| Type | Use for | In release notes |
+| Type | Use for | An entry without a heading goes under |
 |---|---|---|
 | `feat` | New user-visible behaviour | Added |
 | `fix` | Bug fix | Fixed |
 | `perf` | Faster, same behaviour | Changed |
-| `refactor`, `test`, `docs`, `ci`, `build`, `chore`, `style` | Everything else | Not listed |
+| `refactor`, `test`, `docs`, `ci`, `build`, `chore`, `style` | Everything else | Usually no entry (`none`); Changed otherwise |
 
 The scope is the crate name (`rnk-rootfs`, `ranikust`) or an area (`ci`,
 `book`, `adr`). Mark breaking changes with `!` after the type or a
-`BREAKING CHANGE:` footer; use the `security` scope for security fixes.
-Summaries starting with "deprecate" or "remove" are listed under Deprecated
-and Removed.
+`BREAKING CHANGE:` footer; use the `security` scope (or the `security`
+label) for security fixes, whose entries go under Security. Summaries
+starting with "deprecate" or "remove" go under Deprecated and Removed.
 
 Pull requests are squash-merged, so the pull request title becomes the
 commit message and must follow the same format. The
@@ -155,6 +158,11 @@ in sync in the same change, following the "Keep in sync" list in
 its entry in the pull request's `## Changelog` section, not in
 [`CHANGELOG.md`](CHANGELOG.md), which is written from those sections when a
 release is prepared ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)).
+Write the entry as bullets for users under Keep a Changelog headings
+(`### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`,
+`### Security`), or as bullets alone, placed by the title's type; write
+`none` when users see no change. `just release-prepare` reads exactly
+this.
 Planned work is on the
 [Project](https://github.com/users/tran4774/projects/1) and the phase
 milestones; issues labelled `good first issue` are a good start.
