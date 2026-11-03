@@ -424,7 +424,7 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 
 - No architecture-specific code; syscall numbers only through `rustix` or
   `libc`. x86_64 is released; aarch64 is built and unit-tested
-  under qemu-user in CI
+  natively on GitHub's aarch64 runner, on CI's full runs (ADR-0095)
   ([ADR-0009](docs/adr/0009-x86-64-first-aarch64-ready.md)).
 - Errors are never dropped silently; a probe or mount failure reports the
   step and the errno.
