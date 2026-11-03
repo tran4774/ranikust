@@ -32,7 +32,7 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 - **Smoke test or proof of concept as real root: `quick`**, the small
   Dockerfiles of `tests/smoke/cases` (a new concern is a new case there, see
   the `test` skill). Not `e2e`.
-- **`e2e`** only for a change to the e2e harness or to how builders are
+- **`e2e`** for a change to the e2e harness or to how builders are
   compared. **`ultra`** (nextjs-kaniko's W1–W3, tens of minutes per round)
   only when the maintainer asks for performance numbers or an acceptance run
   (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`), never on a fork's

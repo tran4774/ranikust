@@ -1,8 +1,10 @@
 # Workflow
 
 **TL;DR:** Check narrow then wide: `cargo test -p <crate> <filter>`, then
-`just check` before calling anything done, `just ci` before a PR. T1/T2 never
-run on the host. Conventional Commits; the PR title becomes the commit.
+`just check` before calling anything done, `just ci` before a PR. T2 and T2c
+never run on the host: T2 only in the VM or CI, T2c only on the marked
+disposable test machine (ADR-0063) or CI. Conventional Commits; the PR title
+becomes the commit.
 
 ## Setup
 
@@ -12,7 +14,8 @@ install are in
 
 - `rustup` installs the toolchain pinned in `rust-toolchain.toml` on the first
   `cargo` command. Bump it together with `rust-version` in `Cargo.toml`.
-- `just check` needs only that and `just`. `just deny`, `just book` and
+- `just check` needs only that, `just` and a C compiler as `cc` (libzstd,
+  mimalloc and ring build C code). `just deny`, `just book` and
   `just changelog` need `cargo-deny`, `mdbook` and `git-cliff`.
 - The musl recipes (`just build-static`, `just check-aarch64`,
   `just test-aarch64`, so `just ci`) need zig and `cargo-zigbuild`: zig
@@ -73,8 +76,8 @@ change both together. CI runs a job only when the change needs it
 
 T0 needs no privileges; T1 is rootless (user namespaces, Podman); T2 is real
 root in a disposable VM or a GitHub-hosted runner, never the host; T2c is the
-root tests that mean the same in a throwaway rootful Docker container; T3 is
-CI. [`docs/testing.md`](../testing.md#tiers) has the table, the rules and the
+root tests that mean the same in a throwaway rootful Docker container, only
+on the marked disposable test machine (ADR-0063) or CI; T3 is CI. [`docs/testing.md`](../testing.md#tiers) has the table, the rules and the
 commands.
 
 ## Add a crate
@@ -121,8 +124,11 @@ branch and checkpoint rules are in
   [pull request template](../../.github/PULL_REQUEST_TEMPLATE.md): summary
   with `Closes #N`; `## Changelog` (the entry or "none", never an edit of
   `CHANGELOG.md`, `ADR-0088`); test plan (tiers run and not run, modes
-  affected); docs in sync ([rules.md](rules.md#keep-in-sync), `/sync-docs`);
-  AI use disclosed; optionally "Suggested agent rule additions".
+  affected); the Checklist (`just ci` passes, a bug fix has a test that
+  fails without it, docs in sync per [rules.md](rules.md#keep-in-sync) and
+  `/sync-docs`, ported code has a file header and a `NOTICE` entry); the AI
+  statement (AI use disclosed; every line reviewed, understood and tested);
+  optionally "Suggested agent rule additions".
 
 ## GitHub flow
 
@@ -135,8 +141,9 @@ request (`ADR-0088`).
 1. **Issue.** A task (a sub-issue of its phase's `tracking` issue, with
    the phase's milestone), a `question` or a `bug`, named by its issue number
    (no new `Q-NNN`, `ADR-0091`; the 29 migrated questions keep theirs). An
-   agent may open them without asking (table below, `ADR-0093`); it labels
-   them `agent`, `task`, `question` or `bug` and `crate:<name>`, keeps
+   agent opens, without asking, a task for work already in a plan,
+   `question` issues and `bug` issues such as a flaky test (`ADR-0093`); it
+   labels them `agent`, `task`, `question` or `bug` and `crate:<name>`, keeps
    unfixed-weakness details out (D6), and adds them to the Project.
 2. **Branch** from the latest `main` ([rules.md](rules.md#branches-and-commits));
    the Project item goes to In Progress.
