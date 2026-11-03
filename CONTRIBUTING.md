@@ -107,7 +107,8 @@ rules):
 Tests above T0 are marked `#[ignore = "T1: ..."]`, `"T2c: ..."` or
 `"T2: ..."` and run only through their harness. **Never run a T2 or T2c
 test on your own machine, nor ranikust in kaniko mode as root outside a
-throwaway container**: there it empties `/`
+throwaway container**: in a container it empties that container's `/`, and
+on a host it needs a fresh temporary `--state-dir`
 ([rules](docs/agents/rules.md#host-safety)). A bug fix comes with a test
 that fails without the fix.
 

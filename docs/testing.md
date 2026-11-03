@@ -100,8 +100,8 @@ in a disposable QEMU/KVM VM, following
 [experiment 13](research/experiments/13-docker-rootful-vm.md) §6. Nothing
 runs as root on the host, and nothing there uses `sudo` (only the guest's
 user `rnk` has it): QEMU runs as you, with `/dev/kvm` through its group or an
-ACL. The header of `tests/vm/vm.sh` lists
-every `RANIKUST_VM_*` variable. A run goes through these steps:
+ACL. The header of `tests/vm/vm.sh` lists every `RANIKUST_VM_*` variable. A
+run goes through these steps:
 
 1. **Build** on the host, as the user, with `cargo zigbuild`: the static
    musl test binaries of the crates that hold `#[ignore = "T2: ..."]` and
@@ -152,16 +152,16 @@ every `RANIKUST_VM_*` variable. A run goes through these steps:
      shuts when the guest reports the step's end or after about 900 s, which
      fails the run.
    - Before any suite, `tests/vm/guest/net.sh` probes a token `vm.sh` serves
-     on the host's loopback, over TCP and UDP, from three vantages: root in
-     the VM, a default and a `--privileged` `docker run`, and a ranikust
-     `RUN`. Every address that could name the host must go unanswered, the
-     registry ports must be shut, and each vantage must get out with the
-     same tool. `tests/vm/guest/rawprobe.py` also writes raw frames, as root,
-     straight to each NIC's backend (loopback, unspecified and own addresses,
-     IPv4 and IPv6), which must go unanswered while controls through the same
-     socket answer; the egress must have no IPv6. Any answer, a failed
-     control or a failed image pull fails the run (`network: FAILED` in
-     `summary.txt`, `network.log` in the results).
+     on the host's loopback, over TCP and UDP, from four vantages: root in
+     the VM, a default `docker run`, a `--privileged` `docker run` and a
+     ranikust `RUN`. Every address that could name the host must go
+     unanswered, the registry ports must be shut, and each vantage must get
+     out with the same tool. `tests/vm/guest/rawprobe.py` also writes raw
+     frames, as root, straight to each NIC's backend (loopback, unspecified
+     and own addresses, IPv4 and IPv6), which must go unanswered while
+     controls through the same socket answer; the egress must have no IPv6.
+     Any answer, a failed control or a failed image pull fails the run
+     (`network: FAILED` in `summary.txt`, `network.log` in the results).
    - Needs QEMU 10.1 or later with its passt backend (Ubuntu 24.04's 8.2 and
      Debian 13's 10.0 are refused), passt 2024_10_30 or later, and `socat`
      for `push`; `vm.sh` checks every option it uses before boot.
@@ -546,13 +546,13 @@ What runs, by event:
   its lane counts as passed) and fails when the `changes` job did not
   succeed, when an output it maps is not exactly `true` or `false` (checked
   by name: the runner drops an empty one), or when any job failed or was
-  cancelled. It runs even then (`always()`; `!cancelled()` may leave the gate skipped,
-  which counts as passed). The name carries the state: plain `CI result` and
-  `T2 result` only on a full run of a pull request or of `main`; `CI result
-  (draft, fast lane)` and `T2 result (draft, not run)` on a draft; `...
-  (manual run)` on a manual run on another branch; `... (label change,
-  nothing run)` after a label change. GitHub counts the check run of a name
-  created last, so a draft or a manual run never stands in for a pull
+  cancelled. It runs even then (`always()`; `!cancelled()` may leave the
+  gate skipped, which counts as passed). The name carries the state: plain
+  `CI result` and `T2 result` only on a full run of a pull request or of
+  `main`; `CI result (draft, fast lane)` and `T2 result (draft, not run)` on
+  a draft; `... (manual run)` on a manual run on another branch; `... (label
+  change, nothing run)` after a label change. GitHub counts the check run of
+  a name created last, so a draft or a manual run never stands in for a pull
   request's full run: after a draft is marked ready the pull request waits
   for its gates.
 - **Labels.** Only `ci:full` on a draft (in any case: `CI:Full` too) changes
