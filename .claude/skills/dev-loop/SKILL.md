@@ -15,6 +15,8 @@ means verified" are adapted from the `test-driven-development`,
 ## The loop: narrow to wide
 
 1. Edit. The PostToolUse hook runs `rustfmt` on each `.rs` file you touch.
+   Comment why, not what, in one short line above the code it explains
+   (`docs/agents/rules.md#writing`).
 2. Read rust-analyzer diagnostics, or `cargo check -p <crate>`.
 3. `cargo test -p <crate> <filter>`: only the tests for what you changed.
 4. `cargo clippy -p <crate> --all-targets -- -D warnings`.

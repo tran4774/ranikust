@@ -156,13 +156,45 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 
 ## Writing
 
+Write so that a person or an agent can act on it after one read.
+
 - English for code, comments, docs and commits. Conventional Commits
-  (`feat(rnk-rootfs): ...`); git-cliff builds release notes from them.
+  (`feat(rnk-rootfs): ...`); the pull request title's type files a
+  changelog entry ([CONTRIBUTING.md](../../CONTRIBUTING.md#commits-and-pull-requests)).
 - Write for a reader who never saw your session: no conversation history or
   "as discussed" in code, commits or PRs.
 - Claims about kaniko cite `kaniko@<commit> path:line`.
-- Hard-wrap Markdown prose at about 80 columns, not tables, headings, links
-  or code. No email addresses anywhere in the repository.
+- No email addresses anywhere in the repository.
+
+### Comments
+
+- Say why, not what: the reason for a choice or an algorithm, an invariant,
+  an edge case, the ADR or T-id behind it. Never restate the code
+  (`// open the file` above an `open`); if the code needs that, rename or
+  split it instead.
+- One short line (`//`, or `#` in shell, Python, YAML and the `justfile`)
+  directly above the line it explains. A longer block only when the reason
+  needs it, such as a `SAFETY:` comment.
+- No history ("was X", "fixed in #12") and no commented-out code: git
+  keeps both.
+- Doc comments (`///`, `//!`): a one-line summary, then only what a caller
+  must know (errors, panics, invariants). A crate root's `# Boundaries`
+  stays complete.
+
+### Docs
+
+- Lead with the point: a first sentence or a **TL;DR:** that says what the
+  page is for and what to do with it.
+- Short sentences, one idea per paragraph, lists and tables before long
+  prose, no filler. One fact has one home: link to the doc that owns it
+  instead of restating it.
+- Describe what is true now. Why it changed goes in an ADR, how it got here
+  in git; frozen records (`docs/research/`, phase-1/2, accepted ADRs) stay
+  as they are.
+- Hard-wrap Markdown prose in the repository at about 80 columns, not
+  tables, headings, links or code. Do not hard-wrap text written on GitHub
+  (issues, pull requests, comments, release notes): GitHub shows each
+  newline there as a line break.
 
 ## Agent conduct
 

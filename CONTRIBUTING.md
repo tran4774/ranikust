@@ -81,7 +81,10 @@ change one, change the other.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
 not catch and the host-safety rules. Read it even if you do not use an AI agent: it is the
-short version of how to write code here.
+short version of how to write code here. Its
+[Writing](docs/agents/rules.md#writing) section covers comments (why, not
+what, in one short line) and docs (the point first, short, one fact in one
+place).
 
 ## Tests
 
