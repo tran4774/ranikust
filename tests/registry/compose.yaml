@@ -6,8 +6,8 @@
 # htpasswd file (tests/registry/setup.sh).
 #
 # Bound to loopback only: the T2 VM reaches them as 10.0.2.2, which
-# tests/vm/vm.sh forwards to these two ports alone, and only for the push
-# suite (ADR-0086).
+# tests/vm/vm.sh forwards to these two ports alone, and only while the push
+# suite runs (ADR-0086).
 name: ranikust-registries
 
 services:

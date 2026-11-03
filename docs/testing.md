@@ -140,22 +140,31 @@ runs as root on the host:
    ACL, never `sudo`), SSH forwarded to a free port on `127.0.0.1` only,
    one SSH connection shared by every command. The network reaches nothing
    on the host's loopback but what a suite needs
-   ([ADR-0086](adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)):
-   egress (image pulls, apt, e2e fetches) goes through passt (QEMU's
-   `-netdev passt`), which maps no guest address to the host's loopback,
-   and DNS through it to the host's resolver (the guest asks
-   `192.0.2.53`); a second NIC on QEMU's user network with `restrict=on`
-   carries only SSH and, with the `push` suite, the host's test registries
-   as `10.0.2.2:5000` and `10.0.2.2:5443` (`guestfwd` through `socat`).
-   The run's seed holds a `network-config` that tells the NICs apart by
-   MAC. Needs QEMU 10.1 or later with its passt backend, passt 2024_08_21
-   or later (for `--map-host-loopback`), and `socat` for `push`. Before any suite,
-   `tests/vm/guest/net.sh` probes a token `vm.sh` serves on a free port of
-   the host's `127.0.0.1` (and `::1`) from root in the VM, a default and a
-   `--privileged` `docker run` and a ranikust `RUN`, at every address that
-   could name the host; any answer, or a failed image pull or HTTPS
-   request, fails the run (`network: FAILED` in `summary.txt`,
-   `network.log` in the results). Every
+   ([ADR-0086](adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)).
+   Egress (image pulls, apt, e2e fetches) goes through passt (QEMU's
+   `-netdev passt`), IPv4 only, which maps no guest address to the host's
+   loopback; DNS goes through it to the host's resolver (the guest asks
+   `192.0.2.53`; ports 53 and 853, TCP and UDP, on the host's first IPv4
+   nameserver, which answers the host's own names too). A second NIC on
+   QEMU's user network with `restrict=on` carries only SSH and, while the
+   `push` suite runs, the host's test registries as `10.0.2.2:5000` and
+   `10.0.2.2:5443`: `vm.sh` opens their gate when the guest's log shows
+   `== suite push` and shuts it at the next suite for good, and each
+   connection runs `socat` (at most 16 per port, 600 s each). The run's
+   seed holds a `network-config` that tells the NICs apart by MAC. Needs
+   QEMU 10.1 or later with its passt backend, passt 2024_10_30 or later,
+   and `socat` for `push`; `vm.sh` checks every option it uses before
+   boot. Before any suite, `tests/vm/guest/net.sh` probes a token `vm.sh`
+   serves over TCP and UDP on a free port of the host's `127.0.0.1` (and
+   `::1`): from root in the VM, a default and a `--privileged` `docker
+   run` and a ranikust `RUN`, at every address that could name the host,
+   and the registry ports, which must be shut then; each vantage must also
+   get out with the same tool. Root also writes raw frames straight to
+   passt (`tests/vm/guest/rawprobe.py`), to the loopback, unspecified and
+   own addresses over IPv4 and IPv6, which must all go unanswered, and the
+   egress must have no IPv6. Any answer, a vantage that fails its control
+   or does not run, or a failed image pull fails the run (`network:
+   FAILED` in `summary.txt`, `network.log` in the results). Every
    suite gets 12 vCPUs (`RANIKUST_VM_CPUS`; at most the host's CPUs less
    2) and 16 GiB (`RANIKUST_VM_MEM`). The memory is measured once the
    previous run's VM has gone: when the host has less than 16 GiB plus
