@@ -99,8 +99,9 @@ follows:
 - Everything committed is English. The maintainer may write in Vietnamese.
 - Comments say why, not what: one short `//` or `#` line above the line
   it explains (a reason, an invariant, an edge case), never a restatement
-  of the code (`SAFETY:` comments and licence headers excepted). Docs are short and plain for people and agents alike: the
-  point first, one fact in one place, links instead of repetition
+  of the code (`SAFETY:` comments and licence headers excepted). Docs are
+  short and plain for people and agents alike: the point first, one fact
+  in one place, links instead of repetition
   ([rules.md#writing](docs/agents/rules.md#writing)).
 
 ## Claude Code setup

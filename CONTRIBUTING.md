@@ -203,9 +203,9 @@ request's dry run reports what it found.
    merged since the last tag
    ([ADR-0088](docs/adr/0088-tracking-lives-on-github-knowledge-tied-to-the-code-stays-in-the-repository.md)),
    listing the ones without an entry. Edit the section for users (what
-   changed for them, not how) and wrap it at about 80 columns, delete the draft comment, commit it as
-   `chore(release): vX.Y.Z` and open the pull request with the `release`
-   label. The recipe never commits, tags or pushes.
+   changed for them, not how) and wrap it at about 80 columns, delete the
+   draft comment, commit it as `chore(release): vX.Y.Z` and open the pull
+   request with the `release` label. The recipe never commits, tags or pushes.
 2. **Merge** (the maintainer), once CI and the T2 tests are green; the
    `main` ruleset accepts changes only through a pull request with the CI
    checks passed.

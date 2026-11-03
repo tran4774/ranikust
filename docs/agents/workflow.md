@@ -10,7 +10,8 @@ Linux only; nothing needs root. `rustup` reads `rust-toolchain.toml` (Rust
 1.99.1 = `rust-version` in `Cargo.toml`, bump both; rustfmt, clippy,
 rust-analyzer, x86_64 and aarch64 musl targets). Then, at CI's versions:
 `cargo install --locked just cargo-deny@0.20.2 mdbook@0.5.4`, plus
-`git-cliff` for `just changelog` drafts and `file`/`readelf` for `just build-static`.
+`git-cliff` for `just changelog` drafts and `file`/`readelf` for
+`just build-static`.
 The musl recipes (`just build-static`, `just check-aarch64`,
 `just test-aarch64`, so `just ci`)
 need zig 0.16.0 and `cargo install --locked cargo-zigbuild@0.24.0`: zig
@@ -113,8 +114,9 @@ Commit at every checkpoint (builds, `just check` passes, docs updated); see
 columns; footers `BREAKING CHANGE:`, `Refs: #123`. Release notes come from
 the pull requests' `## Changelog` sections; the title's type only places
 an entry written without a heading
-([CONTRIBUTING](../../CONTRIBUTING.md#commits-and-pull-requests)). Scope: a crate or an area (`ci`, `book`, `adr`); `security`
-for security fixes; `!` for breaking changes. Truthful `Co-authored-by`.
+([CONTRIBUTING](../../CONTRIBUTING.md#commits-and-pull-requests)). Scope:
+a crate or an area (`ci`, `book`, `adr`); `security` for security fixes;
+`!` for breaking changes. Truthful `Co-authored-by`.
 
 ## Pull requests
 
