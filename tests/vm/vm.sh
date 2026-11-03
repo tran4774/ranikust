@@ -397,7 +397,7 @@ log "image $IMG_NAME sha256 $want (verified)"
 
 mkdir -p "$TARGET/vm"
 RUN="$(mktemp -d "$TARGET/vm/run.XXXXXX")"
-SOCKDIR=
+SOCKDIR= PASSTDIR=
 RESULTS="$TARGET/vm/results/$RELEASE"
 rm -rf "$RESULTS"
 QEMU_PID=
@@ -443,10 +443,31 @@ except OSError:
 EGRESS_NETDEV="passt,id=n0,quiet=on,tcp-ports=none,udp-ports=none,map-host-loopback=none,map-guest-addr=none"
 EGRESS_NETDEV+=",dns-forward=$GUEST_DNS,dns=$GUEST_DNS,dns-host=$HOST_DNS,search=none"
 
-# harness_passt: the pids of the harness's passt processes still running,
-# told by the DNS address only the harness gives passt. One VM at a time
-# (the lock), so they are this run's.
-harness_passt() { pgrep -u "$(id -u)" -f -- "^([^ ]*/)?passt[^ ]* .*--dns-forward ${GUEST_DNS//./\\.}( |\$)"; }
+# The passt processes QEMU started for this run, as <pid>:<pid file>
+# (start_qemu reads each from the pid file QEMU has it write in PASSTDIR).
+PASSTS=()
+
+# has_arg <pid> <argument>: that process still runs and has <argument> on
+# its command line, so it is not a recycled pid.
+has_arg() { [ -n "$1" ] && { tr '\0' '\n' <"/proc/$1/cmdline"; } 2>/dev/null | grep -qxF -- "$2"; }
+
+# stop <pid> <argument> <half-seconds>: waits that long for the process
+# (has_arg) to end by itself, then sends it SIGTERM, then SIGKILL; fails if
+# it outlives both.
+stop() {
+  local sig
+  for _ in $(seq "$3"); do has_arg "$1" "$2" || return 0; sleep 0.5; done
+  for sig in TERM KILL; do
+    has_arg "$1" "$2" || return 0
+    kill -s "$sig" "$1" 2>/dev/null
+    for _ in $(seq 10); do has_arg "$1" "$2" || return 0; sleep 0.2; done
+  done
+  ! has_arg "$1" "$2"
+}
+
+# forwarders: the pids of this run's registry forwarders (timeout and socat,
+# whose command lines name this run's socat log) still running.
+forwarders() { pgrep -u "$(id -u)" -f -- " -lf ${SOCKDIR//./\\.}/socat\\.log - TCP:127\\.0\\.0\\.1:[0-9]+\$"; }
 
 # put <source> <name>: copies a file into $RESULTS through a new temporary
 # file renamed over <name>, so nothing the guest left there is written
@@ -471,20 +492,28 @@ teardown() {
     for _ in $(seq 20); do qemu_alive || break; sleep 0.5; done
   fi
   ! qemu_alive || kill -9 "$QEMU_PID" 2>/dev/null
-  # passt quits once its QEMU has gone; one still there after a few seconds
-  # is killed.
-  local pids
-  for _ in $(seq 10); do harness_passt >/dev/null || break; sleep 0.5; done
-  if pids="$(harness_passt)"; then
-    # shellcheck disable=SC2086
-    kill $pids 2>/dev/null
-    sleep 0.5
-    ! pids="$(harness_passt)" || { echo "error: passt (pid $(echo $pids)) is still running" >&2; status=1; }
+  # Each passt quits once its QEMU has gone; one still there after a few
+  # seconds is killed.
+  local p pids
+  for p in ${PASSTS[@]+"${PASSTS[@]}"}; do
+    stop "${p%%:*}" "${p#*:}" 10 || { echo "error: passt (pid ${p%%:*}) is still running" >&2; status=1; }
+  done
+  # The registry gate closes; every forwarder ends with its connection, so
+  # with QEMU. One still there after a few seconds is killed.
+  if [ -n "$SOCKDIR" ]; then
+    rm -f "$SOCKDIR/registry-gate"
+    for _ in $(seq 10); do forwarders >/dev/null || break; sleep 0.5; done
+    if pids="$(forwarders)"; then
+      # shellcheck disable=SC2086
+      kill -9 $pids 2>/dev/null
+      sleep 0.5
+      ! pids="$(forwarders)" || { echo "error: registry forwarders (pid $(echo $pids)) are still running" >&2; status=1; }
+    fi
   fi
   # The probe listener, only while it is still this run's (its command line
   # names this run's directory).
-  if [ -n "$PROBE_PID" ] && { tr '\0' '\n' <"/proc/$PROBE_PID/cmdline"; } 2>/dev/null | grep -qxF -- "$RUN/probe"; then
-    kill "$PROBE_PID" 2>/dev/null
+  if [ -n "$PROBE_PID" ]; then
+    stop "$PROBE_PID" "$RUN/probe" 0 || { echo "error: the network probe (pid $PROBE_PID) is still running" >&2; status=1; }
   fi
   # Whatever reached the results, links and special files go before
   # anything is written there.
@@ -497,7 +526,7 @@ teardown() {
     put "$RUN/timings.txt" timings.txt
   # (A directory the guest made 0555, cut short before the copy loop's chmod.)
   [ ! -d "$RUN/out" ] || chmod -R u+rwX -- "$RUN/out"
-  rm -rf "$RUN" ${SOCKDIR:+"$SOCKDIR"}
+  rm -rf "$RUN" ${SOCKDIR:+"$SOCKDIR"} ${PASSTDIR:+"$PASSTDIR"}
   if qemu_alive; then
     echo "error: QEMU (pid $QEMU_PID) is still running" >&2
     status=1
@@ -510,18 +539,29 @@ trap 'exit 130' INT TERM
 # A Unix socket path must fit in 108 bytes, which a run directory in a deep
 # checkout (a git worktree) does not.
 SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
+# Its registry forwarder goes into QEMU's options (split on commas) and
+# into the command line libslirp parses (split on spaces).
+[[ "$SOCKDIR" =~ ^/[A-Za-z0-9/._-]+$ ]] || die "the socket directory ($SOCKDIR) must hold no space or comma"
+# QEMU's TMPDIR, where it has passt write its pid file: under /tmp, which
+# the AppArmor profile Debian and Ubuntu give passt lets it write (as the
+# home directory), unlike $XDG_RUNTIME_DIR.
+PASSTDIR="$(mktemp -d /tmp/rnk-vm-passt.XXXXXX)"
 
-# The probe of guest/net.sh: a random token served on a free port of the
-# host's loopback only, 127.0.0.1 and, where the host has it, ::1. The VM
-# must not reach it (ADR-0086); the guest fails the run before any suite if
-# it does.
+# The probe of guest/net.sh: a random token served over TCP (HTTP) and UDP
+# on a free port of the host's loopback only, 127.0.0.1 and, where the host
+# has it, ::1. The VM must not reach it (ADR-0086); the guest fails the run
+# before any suite if it does. The listener dies with this script
+# (PR_SET_PDEATHSIG), whatever ends it.
 mkdir "$RUN/probe"
 PROBE_TOKEN="rnk-probe-$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')"
 printf '%s\n' "$PROBE_TOKEN" >"$RUN/probe/token"
-PROBE_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 python3 -I -c '
-import http.server, socket, sys, threading
-root, port = sys.argv[1], int(sys.argv[2])
+import ctypes, http.server, os, signal, socket, sys, threading
+root, parent = sys.argv[1], int(sys.argv[2])
+ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+if os.getppid() != parent:
+    sys.exit(0)
+token = open(os.path.join(root, "token"), "rb").read().strip() + b"\n"
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=root, **kwargs)
@@ -529,28 +569,68 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 class Server6(http.server.ThreadingHTTPServer):
     address_family = socket.AF_INET6
+def answer(sock):
+    while True:
+        _, peer = sock.recvfrom(4096)
+        sock.sendto(token, peer)
+def udp(family, host, port):
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    s.bind((host, port))
+    return s
+for _ in range(50):
+    tcp4 = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = tcp4.server_address[1]
+    try:
+        udp4 = udp(socket.AF_INET, "127.0.0.1", port)
+        break
+    except OSError:
+        tcp4.server_close()
+else:
+    sys.exit("no port free for both TCP and UDP")
+streams, datagrams, v6 = [tcp4], [udp4], 0
 try:
-    six = Server6(("::1", port), Handler)
-    threading.Thread(target=six.serve_forever, daemon=True).start()
+    tcp6 = Server6(("::1", port), Handler)
+    try:
+        datagrams.append(udp(socket.AF_INET6, "::1", port))
+        streams.append(tcp6)
+        v6 = 1
+    except OSError:
+        tcp6.server_close()
 except OSError:
     pass
-http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
-' "$RUN/probe" "$PROBE_PORT" >/dev/null 2>&1 9>&- &
+for s in streams[1:]:
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+for d in datagrams:
+    threading.Thread(target=answer, args=(d,), daemon=True).start()
+with open(os.path.join(root, "port.part"), "w") as f:
+    f.write(f"{port} {v6}\n")
+os.rename(os.path.join(root, "port.part"), os.path.join(root, "port"))
+tcp4.serve_forever()
+' "$RUN/probe" "$$" >/dev/null 2>&1 9>&- &
 PROBE_PID=$!
-probe_up() { [ "$(curl -fsS --noproxy '*' -g "http://$1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ]; }
-for _ in $(seq 50); do probe_up 127.0.0.1 && break; sleep 0.1; done
-probe_up 127.0.0.1 || die "the host-side network probe did not start on 127.0.0.1:$PROBE_PORT"
-PROBE_V6=0
-! probe_up '[::1]' || PROBE_V6=1
-HOST_REGISTRIES=0
-! wants push || HOST_REGISTRIES=1
+for _ in $(seq 50); do [ -f "$RUN/probe/port" ] && break; sleep 0.1; done
+read -r PROBE_PORT PROBE_V6 <"$RUN/probe/port" 2>/dev/null || die "the host-side network probe did not start"
+# probe_up <address>: the probe answers over TCP and UDP there.
+probe_up() {
+  [ "$(curl -fsS --noproxy '*' -g "http://$1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ] &&
+    python3 -I -c '
+import socket, sys
+host = sys.argv[1].strip("[]")
+s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2)
+s.sendto(b"?", (host, int(sys.argv[2])))
+sys.exit(s.recv(4096).strip() != sys.argv[3].encode())
+' "$1" "$PROBE_PORT" "$PROBE_TOKEN" 2>/dev/null
+}
+probe_up 127.0.0.1 || die "the host-side network probe does not answer on 127.0.0.1:$PROBE_PORT"
+[ "$PROBE_V6" = 0 ] || probe_up '[::1]' || die "the host-side network probe does not answer on [::1]:$PROBE_PORT"
 # The guest probes these besides the addresses it finds itself (its
 # gateways, its own): every other address that names the host or QEMU.
 {
   printf 'export RANIKUST_VM_PROBE_PORT=%q\nexport RANIKUST_VM_PROBE_TOKEN=%q\nexport RANIKUST_VM_PROBE_V6=%q\n' \
     "$PROBE_PORT" "$PROBE_TOKEN" "$PROBE_V6"
-  printf 'export RANIKUST_VM_PROBE_ADDRS=%q\nexport RANIKUST_VM_HOST_REGISTRIES=%q\n' \
-    "$REGISTRY_ADDR 10.0.2.3 $HARNESS_HOST $GUEST_DNS" "$HOST_REGISTRIES"
+  printf 'export RANIKUST_VM_PROBE_ADDRS=%q\nexport RANIKUST_VM_REGISTRY_PROBE=%q\n' \
+    "$REGISTRY_ADDR 10.0.2.3 $HARNESS_HOST $GUEST_DNS" "${REGISTRY_PORTS[*]/#/$REGISTRY_ADDR:}"
 } >>"$STAGE/vm.env"
 
 # start_qemu <disk> <seed.iso> <serial log> <pidfile> <monitor> <mem> <cache>
@@ -559,13 +639,13 @@ HOST_REGISTRIES=0
 # disk on its own I/O thread, through io_uring where this QEMU and kernel
 # allow it (else the thread pool), an entropy source (no boot waits for
 # entropy), a balloon that hands freed memory back to the host, and the
-# egress NIC (EGRESS_NETDEV).
+# egress NIC (EGRESS_NETDEV), whose passt is added to PASSTS.
 start_qemu() {
-  local disk=$1 seed=$2 serial=$3 pidf=$4 mon=$5 mem=$6 cache=$7 aio
+  local disk=$1 seed=$2 serial=$3 pidf=$4 mon=$5 mem=$6 cache=$7 aio f pid
   shift 7
   for aio in io_uring threads; do
     rm -f "$pidf"
-    if qemu-system-x86_64 \
+    if TMPDIR="$PASSTDIR" qemu-system-x86_64 \
       -name ranikust-vm -enable-kvm -cpu host -smp "$CPUS" -m "$mem" -machine q35,accel=kvm \
       -object iothread,id=io0 \
       -drive file="$disk",if=none,id=disk0,format=qcow2,cache="$cache",aio="$aio",discard=unmap,detect-zeroes=unmap \
@@ -578,9 +658,20 @@ start_qemu() {
       "$@" -pidfile "$pidf" -daemonize 2>"$RUN/qemu.err"; then
       MONITOR=$mon QEMU_PID="$(cat "$pidf")" QEMU_AIO=$aio QEMU_PIDFILE=$pidf
       qemu_alive || { qemu_quit; die "the pid in $pidf is not this run's QEMU"; }
-      return 0
+      # The passt it started: the pid in the pid file it named (QEMU
+      # removes the file when it ends).
+      for _ in $(seq 20); do
+        for f in "$PASSTDIR"/passt-*.pid; do
+          pid="$(cat "$f" 2>/dev/null)" && has_arg "$pid" "$f" &&
+            [[ " ${PASSTS[*]} " != *" $pid:$f "* ]] && PASSTS+=("$pid:$f") && return 0
+        done
+        sleep 0.1
+      done
+      die "QEMU started no passt this script can see (in $PASSTDIR)"
     fi
-    [ "$aio" = threads ] || log "QEMU did not start with aio=io_uring ($(head -c 300 "$RUN/qemu.err")); trying aio=threads"
+    # A passt that failed fails the same way with either aio.
+    if [ "$aio" = threads ] || grep -qi passt "$RUN/qemu.err"; then break; fi
+    log "QEMU did not start with aio=io_uring ($(head -c 300 "$RUN/qemu.err")); trying aio=threads"
   done
   cat "$RUN/qemu.err" >&2
   return 1
