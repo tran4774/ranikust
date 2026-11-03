@@ -147,7 +147,7 @@ checkpoint commit. When nothing needs updating, say so in the commit body.
 | Change | Update |
 |---|---|
 | Crate added, removed or responsibility moved; a dependency added between internal crates; API or status changed | `ARCHITECTURE.md` (code map, boundaries, intended dependency direction) and the crate's `# Boundaries` doc (structure), its card in [crates/](crates/), the [README.md](README.md) table |
-| Design changed: mode detection, overlay snapshots, kaniko mode, scheduling, the `RUN` sandbox, cache keys, the store | the matching `docs/design/*.md` (`modes-and-detection`, `overlay-snapshot`, `kaniko-mode`, `scheduler`, `sandbox`, `cache-and-store`) |
+| Design changed (for example mode detection, overlay snapshots, kaniko mode, scheduling, the `RUN` sandbox, path resolution and deletion, layer streaming, cache keys, the store) | the matching `docs/design/*.md` (`modes-and-detection`, `overlay-snapshot`, `kaniko-mode`, `scheduler`, `sandbox`, `rootfs`, `streaming`, `cache-and-store`, `metrics`) |
 | Decision made or reversed | a new ADR; never rewrite an accepted one |
 | User-visible change (flag, default, output, mode behaviour) | the pull request's `## Changelog` section, never `CHANGELOG.md` (`ADR-0088`), and the book |
 | Isolation or privilege behaviour | `SECURITY.md`, `docs/security/` |

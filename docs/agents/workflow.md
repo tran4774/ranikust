@@ -77,7 +77,8 @@ change both together. CI runs a job only when the change needs it
 T0 needs no privileges; T1 is rootless (user namespaces, Podman); T2 is real
 root in a disposable VM or a GitHub-hosted runner, never the host; T2c is the
 root tests that mean the same in a throwaway rootful Docker container, only
-on the marked disposable test machine (ADR-0063) or CI; T3 is CI. [`docs/testing.md`](../testing.md#tiers) has the table, the rules and the
+on the marked disposable test machine (ADR-0063) or CI; T3 is CI.
+[`docs/testing.md`](../testing.md#tiers) has the table, the rules and the
 commands.
 
 ## Add a crate
@@ -281,7 +282,8 @@ check it in the VM or a throwaway session.
 | Milestones only | vendored `security-audit` (spawns many agents); the run writes outside the repository, then its deliverables move to `docs/security/audit/<scope>/` (see that README), and the next run reads them as prior input |
 | End of a phase, when the maintainer asks | `refactor` skill: behaviour-preserving clean-up, one crate per branch, digests held fixed |
 
-Which model each subagent runs on and how to brief it: [CLAUDE.md](../../CLAUDE.md#claude-code-setup).
+Which model each subagent runs on and how to brief it:
+[CLAUDE.md](../../CLAUDE.md#claude-code-setup).
 
 ## Merging parallel branches
 
