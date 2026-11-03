@@ -972,6 +972,70 @@ fn on_slash_a_streamed_gzip_layer_is_spooled_compressed_and_extracted() {
     root.release().unwrap();
 }
 
+/// A streamed layer of `files` and its counting source, the layer made
+/// `stages` times as stages of a build make it (`streamed_layer` once per
+/// stage pulled on it).
+fn streamed_for(
+    f: &Fixture,
+    name: &str,
+    files: &[(&str, &[u8])],
+    stages: usize,
+) -> (Vec<KanikoLayer>, Arc<Streamed>) {
+    let kept = f.layer(name, files);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layers = (0..stages)
+        .map(|_| {
+            f.kaniko
+                .streamed_layer(kept.diff_id(), Arc::clone(&source) as Arc<dyn LayerOpen>)
+                .unwrap()
+        })
+        .collect();
+    (layers, source)
+}
+
+#[test]
+fn on_slash_a_layer_several_stages_were_made_on_is_downloaded_and_verified_once() {
+    let (f, _store) = Fixture::tars();
+    let (layers, source) = streamed_for(&f, "l1", &[("a", b"shared base")], 3);
+    for layer in &layers {
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(layer)))
+            .unwrap();
+        assert_eq!(fs::read(f.host.join("a")).unwrap(), b"shared base");
+        // The kept spool has no name either.
+        assert_eq!(f.state_names(), ["blob"]);
+        root.release().unwrap();
+    }
+    // One download for the three stages: the later ones read the spool the
+    // first verified (ADR-0081).
+    assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn on_slash_a_spool_goes_with_the_last_use_the_build_announced() {
+    let (f, _store) = Fixture::tars();
+    // Two stages announced, three extractions: the third finds no spool.
+    let (layers, source) = streamed_for(&f, "l1", &[("a", b"base")], 2);
+    for layer in [&layers[0], &layers[1], &layers[0]] {
+        let root = f
+            .kaniko
+            .prepare(Base::Image(std::slice::from_ref(layer)))
+            .unwrap();
+        assert_eq!(fs::read(f.host.join("a")).unwrap(), b"base");
+        root.release().unwrap();
+    }
+    assert_eq!(source.opens.load(Ordering::Relaxed), 2);
+    assert!(
+        f.kaniko.shared.spools().values().all(|u| u.spool.is_none()),
+        "no spool outlives the uses announced"
+    );
+}
+
 // Red team, ADR-0052 D1 and ADR-0058 (threat model T1, T3, T4): hostile
 // `/ranikust` and `.built` planted by an image, a `RUN` or a daemon left
 // by an earlier build; a second build's emptying of `/` against the real

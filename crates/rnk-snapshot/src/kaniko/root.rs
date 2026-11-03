@@ -37,6 +37,7 @@
 //!   tar extracted into the emptied root, with device nodes and FIFOs left
 //!   out as for any extraction into a live root (ADR-0041).
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsRawFd as _;
@@ -188,6 +189,21 @@ struct Shared {
     /// Bumped each time the views are deleted: a stage's cached view of an
     /// older epoch is gone.
     view_epoch: AtomicU64,
+    /// On `/`: the verified spool of each streamed layer, by diff ID, kept
+    /// while stages made on the layer are still to extract it (ADR-0081).
+    spools: Mutex<HashMap<Digest, SpoolUse>>,
+}
+
+/// The uses of one streamed layer on `/` ([`Shared::spool`]).
+#[derive(Debug, Default)]
+struct SpoolUse {
+    /// Stage roots and `COPY --from` images made on the layer: one per
+    /// [`Snapshotter::streamed_layer`] call.
+    expected: usize,
+    /// Extractions served so far.
+    used: usize,
+    /// The verified spool, kept while `used < expected`.
+    spool: Option<Arc<Spooled>>,
 }
 
 /// A directory unpacked in the state directory for a `COPY --from` on `/`.
@@ -254,6 +270,7 @@ impl Kaniko {
                 tars: OnceLock::new(),
                 views: Mutex::new(Vec::new()),
                 view_epoch: AtomicU64::new(0),
+                spools: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -415,6 +432,41 @@ impl Shared {
     fn views(&self) -> MutexGuard<'_, Vec<View>> {
         self.views.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    fn spools(&self) -> MutexGuard<'_, HashMap<Digest, SpoolUse>> {
+        self.spools.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `layer` verified in `store` ([`Spooled::of`]). A streamed layer that
+    /// a later stage or image of the build was also made on keeps its
+    /// spool for it: that stage extracts it again without downloading and
+    /// decompressing it a second time to verify it (ADR-0081). The spool
+    /// goes with the last use the build announced; one used more often
+    /// than announced is spooled anew. A blob of the store is read as it is.
+    fn spool(&self, store: &Store, layer: &KanikoLayer) -> Result<Arc<Spooled>> {
+        if !matches!(layer.source, LayerSource::Stream(_)) {
+            return Spooled::of(store, layer).map(Arc::new);
+        }
+        let cached = {
+            let mut spools = self.spools();
+            let entry = spools.entry(layer.diff_id.clone()).or_default();
+            entry.used += 1;
+            entry.spool.clone()
+        };
+        let spooled = match cached {
+            Some(spooled) => spooled,
+            None => Arc::new(Spooled::of(store, layer)?),
+        };
+        let mut spools = self.spools();
+        if let Some(entry) = spools.get_mut(&layer.diff_id) {
+            if entry.used < entry.expected {
+                entry.spool = Some(Arc::clone(&spooled));
+            } else {
+                spools.remove(&layer.diff_id);
+            }
+        }
+        Ok(spooled)
+    }
 }
 
 /// Deletes every directory unpacked for a `COPY --from`. One that cannot be
@@ -500,6 +552,15 @@ impl Snapshotter for Kaniko {
     }
 
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
+        if self.shared.is_slash() {
+            // One more stage or image of the build to extract it: its spool
+            // waits for that use ([`Shared::spool`]).
+            self.shared
+                .spools()
+                .entry(diff_id.clone())
+                .or_default()
+                .expected += 1;
+        }
         Some(KanikoLayer {
             diff_id: diff_id.clone(),
             source: LayerSource::Stream(open),
@@ -686,7 +747,7 @@ enum Kept {
     /// directory is made, and its plain tar kept in `tars` for later reads.
     Image {
         layers: Vec<KanikoLayer>,
-        tars: Option<Vec<Spooled>>,
+        tars: Option<Vec<Arc<Spooled>>>,
     },
 }
 
@@ -892,7 +953,9 @@ fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
         let store = shared.tar_store()?.ok_or(Error::State(
             "no store to verify a streamed layer in before it reaches /",
         ))?;
-        return Spooled::of(&store, layer)?.extract(&shared.root, &shared.ignore);
+        return shared
+            .spool(&store, layer)?
+            .extract(&shared.root, &shared.ignore);
     }
     extract_blob(&shared.root, &shared.ignore, layer)
 }
@@ -1069,7 +1132,7 @@ impl KanikoRoot {
             {
                 let spooled = layers
                     .iter()
-                    .map(|layer| Spooled::of(&store, layer))
+                    .map(|layer| shared.spool(&store, layer))
                     .collect::<Result<Vec<_>>>()?;
                 *tars = Some(spooled);
             }
