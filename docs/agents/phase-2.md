@@ -100,8 +100,8 @@ with `rnk_metrics::Capture`; a task is not done without it. Tasks 1, 3, 6,
 - [x] (met 2026-11-03: ultra `leaks: none` on all 13 kaniko-mode and overlay images; the stub and mount checks `smoke_check_no_stub_leak` and the quick `hygiene`/`hygiene-mounts` cases green in the VM at `3992fde`) No mount point (`/etc/hosts`, `/etc/resolv.conf`, `/etc/hostname`,
       volumes), no file of the state directory and no placed file reaches a
       layer; `/etc` is not in a layer only because of a placed file.
-- [ ] (reworded 2026-11-03 by the maintainer: the workdir is gone since
-      ADR-0050) Host safety: `/`, every system directory and their
+- [x] (reworded 2026-11-03 by the maintainer: the workdir is gone since
+      ADR-0050; met 2026-11-03: T0 `statedir` and `rnk-store` refusals, T2c `a_second_build_on_slash_is_refused_by_the_lock` and the VM quick check `slash_lock_refuses_a_second_build`, T2c `mounts_inside_the_root_survive`, `prune_refuses_a_mount_below_the_root`, `a_mount_where_clean_up_deletes_is_not_emptied`, T0 `a_second_build_empties_slash_but_never_the_containers_markers_or_mounts`) Host safety: `/`, every system directory and their
       ancestors refused as the state directory by `(dev, ino)`; a non-empty
       state directory without `.ranikust-state` refused; a second
       kaniko-mode build on `/` in one container refused by the flock;
