@@ -113,6 +113,59 @@ done
 
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
+# --- Network: nothing on the host's loopback but what a suite needs (ADR-0086) -
+#
+# The guest runs third-party code as root (images behind mutable tags, RUN
+# steps, npm installs), so it must not reach the developer host's
+# loopback-only services. It has two NICs:
+#   - egress (image pulls, apt, e2e fetches): passt, which QEMU starts on a
+#     socket pair (-netdev passt), mapping no guest address to the host's
+#     loopback (--map-host-loopback none, --map-guest-addr none). Not
+#     passt's own listening socket, on which Ubuntu's passt
+#     0.0~git20260120 accepted no client ("Failed to add fd to epoll: Bad
+#     file descriptor");
+#   - harness: QEMU's user network with restrict=on, which forwards only
+#     its explicit rules: SSH from the host's 127.0.0.1, and with the push
+#     suite the host's test registries.
+# Everything on the host's loopback the guest reaches, and nothing else:
+#   - TCP REGISTRY_PORTS, as 10.0.2.2:<port>, only when the push suite runs
+#     (tests/registry, `just registry-up`: they listen on 127.0.0.1);
+#   - DNS (ports 53 and 853) to the host's resolver, the first IPv4
+#     nameserver of /etc/resolv.conf (127.0.0.53 under systemd-resolved),
+#     which passt forwards from GUEST_DNS.
+REGISTRY_PORTS=(5000 5443)
+# A documentation address (RFC 5737), never a real host: the guest's DNS
+# server, which passt answers from the host's resolver, HOST_DNS.
+GUEST_DNS=192.0.2.53
+HOST_DNS="$(awk '$1 == "nameserver" && $2 ~ /^[0-9]+(\.[0-9]+){3}$/ { print $2; exit }' /etc/resolv.conf 2>/dev/null)"
+[ -n "$HOST_DNS" ] || die "no IPv4 nameserver in /etc/resolv.conf: the VM's DNS goes to the host's resolver (ADR-0086)"
+# The harness network: the guest is 10.0.2.15, the registries 10.0.2.2;
+# QEMU's own address moves to 10.0.2.254, since a guestfwd may not take it.
+HARNESS_NET=10.0.2.0/24 HARNESS_GUEST=10.0.2.15 HARNESS_HOST=10.0.2.254 REGISTRY_ADDR=10.0.2.2
+# Fixed MACs: the guest's network-config (in the run's seed) tells the NICs
+# apart by them.
+MAC_EGRESS=52:54:00:6e:6b:01 MAC_HARNESS=52:54:00:6e:6b:02
+command -v passt >/dev/null || die "missing passt (the VM's egress, ADR-0086)"
+grep -q -- --map-host-loopback <<<"$(passt --help 2>&1 || true)" ||
+  die "passt has no --map-host-loopback: the VM's egress needs passt 2024_08_21 or later (ADR-0086)"
+grep -qx passt <<<"$(qemu-system-x86_64 -netdev help 2>&1 || true)" ||
+  die "this QEMU has no passt network backend: the VM's egress needs QEMU 10.1 or later built with it (ADR-0086)"
+if wants push; then
+  SOCAT="$(command -v socat)" || die "missing socat (the push suite forwards the host's test registries with it)"
+  [[ "$SOCAT" =~ ^/[A-Za-z0-9/._-]+$ ]] || die "socat's path ($SOCAT) must hold no space or comma: it goes into QEMU's options"
+fi
+# passt hands the guest the address and network of the host's default
+# route: the harness network must not overlap it.
+egress_if="$(ip -4 route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+if [ -n "$egress_if" ] && ip -4 -o addr show dev "$egress_if" | awk '{ print $4 }' | python3 -I -c '
+import ipaddress, sys
+harness = ipaddress.ip_network(sys.argv[1])
+overlap = any(ipaddress.ip_interface(a).network.overlaps(harness) for a in sys.stdin.read().split())
+sys.exit(0 if overlap else 1)
+' "$HARNESS_NET"; then
+  die "the host's network on $egress_if overlaps $HARNESS_NET, the VM's harness network (ADR-0086)"
+fi
+
 # The VM's disk: a qcow2 overlay over the cloud image that grows with what
 # the guest writes, up to about $DISK less the 2 GiB or so of the cloud
 # image's own content, which stays in the backing file. What really bounds
@@ -227,9 +280,9 @@ if wants e2e || wants ultra; then
   command -v podman >/dev/null || die "missing podman (e2e saves the reference images from it)"
 fi
 if wants push; then
-  # The host's test registries (tests/registry, `just registry-up`), which
-  # the guest reaches as 10.0.2.2: QEMU's user network maps it to the
-  # host's loopback, where they listen.
+  # The host's test registries (tests/registry, `just registry-up`), on the
+  # host's loopback, which the guest reaches as 10.0.2.2 through the harness
+  # NIC's guestfwd rules (REGISTRY_PORTS above).
   REGDATA="$REPO/tests/registry/_data"
   curl -fsS -o /dev/null http://127.0.0.1:5000/v2/ &&
     curl -fsS -o /dev/null --cacert "$REGDATA/certs/ca.crt" -u "$(cat "$REGDATA/auth/credentials")" https://localhost:5443/v2/ ||
@@ -383,6 +436,18 @@ except OSError:
 ' "$MONITOR" 2>/dev/null
 }
 
+# The QEMU -netdev of the egress NIC (ADR-0086): QEMU starts passt on a
+# socket pair, and passt quits when QEMU goes. No inbound port, no guest
+# address mapped to the host's loopback, DNS from GUEST_DNS forwarded to
+# HOST_DNS.
+EGRESS_NETDEV="passt,id=n0,quiet=on,tcp-ports=none,udp-ports=none,map-host-loopback=none,map-guest-addr=none"
+EGRESS_NETDEV+=",dns-forward=$GUEST_DNS,dns=$GUEST_DNS,dns-host=$HOST_DNS,search=none"
+
+# harness_passt: the pids of the harness's passt processes still running,
+# told by the DNS address only the harness gives passt. One VM at a time
+# (the lock), so they are this run's.
+harness_passt() { pgrep -u "$(id -u)" -f -- "^([^ ]*/)?passt[^ ]* .*--dns-forward ${GUEST_DNS//./\\.}( |\$)"; }
+
 # put <source> <name>: copies a file into $RESULTS through a new temporary
 # file renamed over <name>, so nothing the guest left there is written
 # through.
@@ -406,9 +471,19 @@ teardown() {
     for _ in $(seq 20); do qemu_alive || break; sleep 0.5; done
   fi
   ! qemu_alive || kill -9 "$QEMU_PID" 2>/dev/null
+  # passt quits once its QEMU has gone; one still there after a few seconds
+  # is killed.
+  local pids
+  for _ in $(seq 10); do harness_passt >/dev/null || break; sleep 0.5; done
+  if pids="$(harness_passt)"; then
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null
+    sleep 0.5
+    ! pids="$(harness_passt)" || { echo "error: passt (pid $(echo $pids)) is still running" >&2; status=1; }
+  fi
   # The probe listener, only while it is still this run's (its command line
   # names this run's directory).
-  if [ -n "$PROBE_PID" ] && tr '\0' '\n' <"/proc/$PROBE_PID/cmdline" 2>/dev/null | grep -qxF -- "$RUN/probe"; then
+  if [ -n "$PROBE_PID" ] && { tr '\0' '\n' <"/proc/$PROBE_PID/cmdline"; } 2>/dev/null | grep -qxF -- "$RUN/probe"; then
     kill "$PROBE_PID" 2>/dev/null
   fi
   # Whatever reached the results, links and special files go before
@@ -437,31 +512,54 @@ trap 'exit 130' INT TERM
 SOCKDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/rnk-vm.XXXXXX")"
 
 # The probe of guest/net.sh: a random token served on a free port of the
-# host's loopback only. The VM must not reach it (ADR-0086); the guest
-# fails the run before any suite if it does.
+# host's loopback only, 127.0.0.1 and, where the host has it, ::1. The VM
+# must not reach it (ADR-0086); the guest fails the run before any suite if
+# it does.
 mkdir "$RUN/probe"
 PROBE_TOKEN="rnk-probe-$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')"
 printf '%s\n' "$PROBE_TOKEN" >"$RUN/probe/token"
 PROBE_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
-python3 -I -m http.server --bind 127.0.0.1 --directory "$RUN/probe" "$PROBE_PORT" >/dev/null 2>&1 9>&- &
+python3 -I -c '
+import http.server, socket, sys, threading
+root, port = sys.argv[1], int(sys.argv[2])
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=root, **kwargs)
+    def log_message(self, *args):
+        pass
+class Server6(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+try:
+    six = Server6(("::1", port), Handler)
+    threading.Thread(target=six.serve_forever, daemon=True).start()
+except OSError:
+    pass
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+' "$RUN/probe" "$PROBE_PORT" >/dev/null 2>&1 9>&- &
 PROBE_PID=$!
-for _ in $(seq 50); do
-  [ "$(curl -fsS --noproxy "*" "http://127.0.0.1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ] && break
-  sleep 0.1
-done
-[ "$(curl -fsS --noproxy "*" "http://127.0.0.1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ] ||
-  die "the host-side network probe did not start on 127.0.0.1:$PROBE_PORT"
+probe_up() { [ "$(curl -fsS --noproxy '*' -g "http://$1:$PROBE_PORT/token" 2>/dev/null)" = "$PROBE_TOKEN" ]; }
+for _ in $(seq 50); do probe_up 127.0.0.1 && break; sleep 0.1; done
+probe_up 127.0.0.1 || die "the host-side network probe did not start on 127.0.0.1:$PROBE_PORT"
+PROBE_V6=0
+! probe_up '[::1]' || PROBE_V6=1
 HOST_REGISTRIES=0
 ! wants push || HOST_REGISTRIES=1
-printf 'export RANIKUST_VM_PROBE_PORT=%q\nexport RANIKUST_VM_PROBE_TOKEN=%q\nexport RANIKUST_VM_HOST_REGISTRIES=%q\n' \
-  "$PROBE_PORT" "$PROBE_TOKEN" "$HOST_REGISTRIES" >>"$STAGE/vm.env"
+# The guest probes these besides the addresses it finds itself (its
+# gateways, its own): every other address that names the host or QEMU.
+{
+  printf 'export RANIKUST_VM_PROBE_PORT=%q\nexport RANIKUST_VM_PROBE_TOKEN=%q\nexport RANIKUST_VM_PROBE_V6=%q\n' \
+    "$PROBE_PORT" "$PROBE_TOKEN" "$PROBE_V6"
+  printf 'export RANIKUST_VM_PROBE_ADDRS=%q\nexport RANIKUST_VM_HOST_REGISTRIES=%q\n' \
+    "$REGISTRY_ADDR 10.0.2.3 $HARNESS_HOST $GUEST_DNS" "$HOST_REGISTRIES"
+} >>"$STAGE/vm.env"
 
 # start_qemu <disk> <seed.iso> <serial log> <pidfile> <monitor> <mem> <cache>
 #            [extra QEMU arguments...]
 # Starts the VM detached; QEMU_PID and QEMU_AIO tell which. All virtio: the
 # disk on its own I/O thread, through io_uring where this QEMU and kernel
 # allow it (else the thread pool), an entropy source (no boot waits for
-# entropy), a balloon that hands freed memory back to the host.
+# entropy), a balloon that hands freed memory back to the host, and the
+# egress NIC (EGRESS_NETDEV).
 start_qemu() {
   local disk=$1 seed=$2 serial=$3 pidf=$4 mon=$5 mem=$6 cache=$7 aio
   shift 7
@@ -476,6 +574,7 @@ start_qemu() {
       -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-pci,rng=rng0 \
       -device virtio-balloon-pci,free-page-reporting=on \
       -display none -serial file:"$serial" -monitor unix:"$mon",server,nowait \
+      -netdev "$EGRESS_NETDEV" -device virtio-net-pci,netdev=n0,mac="$MAC_EGRESS" \
       "$@" -pidfile "$pidf" -daemonize 2>"$RUN/qemu.err"; then
       MONITOR=$mon QEMU_PID="$(cat "$pidf")" QEMU_AIO=$aio QEMU_PIDFILE=$pidf
       qemu_alive || { qemu_quit; die "the pid in $pidf is not this run's QEMU"; }
@@ -543,8 +642,9 @@ if [ "$GOLDEN_ON" = 1 ]; then
     printf 'instance-id: ranikust-base-%s\nlocal-hostname: ranikust-base\n' "$gkey" >"$g/seed/meta-data"
     xorriso -as mkisofs -quiet -output "$g/seed.iso" -volid cidata -joliet -rock "$g/seed/user-data" "$g/seed/meta-data"
     qemu-img create -q -f qcow2 -F qcow2 -b "$IMG" "$g/disk.qcow2" "${GOLDEN_GIB}G"
-    start_qemu "$g/disk.qcow2" "$g/seed.iso" "$g/serial.log" "$g/qemu.pid" "$SOCKDIR/base.sock" 4096 writeback \
-      -netdev user,id=n0 -device virtio-net-pci,netdev=n0 || die "QEMU did not start"
+    # Egress only (apt), through passt: no SSH, no host port (ADR-0086).
+    start_qemu "$g/disk.qcow2" "$g/seed.iso" "$g/serial.log" "$g/qemu.pid" "$SOCKDIR/base.sock" 4096 writeback ||
+      die "QEMU did not start"
     # The VM powers itself off once cloud-init is done (power_state).
     local deadline=$((SECONDS + 1200))
     while qemu_alive; do
@@ -594,8 +694,27 @@ if [ "$IMAGE_REGISTRY" = docker.io ]; then MIRRORS='[]'; else MIRRORS="[\"https:
 if [ "$GOLDEN_ON" = 1 ]; then : >"$RUN/packages.yaml"; else packages_yaml >"$RUN/packages.yaml"; fi
 render "$HERE/cloud-init/user-data" "$RUN/packages.yaml" "$RUN/key.pub" "$MIRRORS" >"$RUN/seed/user-data"
 printf 'instance-id: ranikust-vm-%s\nlocal-hostname: ranikust-vm\n' "$(basename "$RUN")" >"$RUN/seed/meta-data"
+# The two NICs (ADR-0086), told apart by MAC: egress takes passt's DHCP (its
+# default route, GUEST_DNS); the harness NIC has a fixed address and no
+# gateway, no DNS, no IPv6.
+cat >"$RUN/seed/network-config" <<EOF
+version: 2
+ethernets:
+  egress:
+    match:
+      macaddress: "$MAC_EGRESS"
+    dhcp4: true
+  harness:
+    match:
+      macaddress: "$MAC_HARNESS"
+    dhcp4: false
+    dhcp6: false
+    accept-ra: false
+    link-local: []
+    addresses: [$HARNESS_GUEST/${HARNESS_NET#*/}]
+EOF
 xorriso -as mkisofs -quiet -output "$RUN/seed.iso" -volid cidata -joliet -rock \
-  "$RUN/seed/user-data" "$RUN/seed/meta-data"
+  "$RUN/seed/user-data" "$RUN/seed/meta-data" "$RUN/seed/network-config"
 # Again: the builds and downloads above took space since the first check.
 check_host_free
 # The base image is only ever a backing file: QEMU opens it read-only, and
@@ -605,10 +724,21 @@ qemu-img create -q -f qcow2 -F qcow2 -b "$BASE_IMG" "$RUN/disk.qcow2" "$DISK"
 PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 log "booting $RELEASE ($VM_SIZE), SSH on 127.0.0.1:$PORT"
 T_BOOT=$SECONDS
+# The network (ADR-0086): egress through passt; the harness NIC forwards
+# only SSH from the host's 127.0.0.1 and, with the push suite, the test
+# registries, each connection to its own socat (restrict=on: nothing else,
+# not even DNS, leaves through it).
+HARNESS="user,id=n1,ipv6=off,restrict=on,net=$HARNESS_NET,host=$HARNESS_HOST"
+HARNESS+=",hostfwd=tcp:127.0.0.1:$PORT-$HARNESS_GUEST:22"
+if wants push; then
+  for p in "${REGISTRY_PORTS[@]}"; do
+    HARNESS+=",guestfwd=tcp:$REGISTRY_ADDR:$p-cmd:$SOCAT -lf /dev/null - TCP:127.0.0.1:$p"
+  done
+fi
 # The disk is thrown away with the run: cache=unsafe skips the guest's
 # flushes to the host's disk.
 start_qemu "$RUN/disk.qcow2" "$RUN/seed.iso" "$RUN/serial.log" "$RUN/qemu.pid" "$SOCKDIR/monitor.sock" "$MEM" unsafe \
-  -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$PORT"-:22 -device virtio-net-pci,netdev=n0 || die "QEMU did not start"
+  -netdev "$HARNESS" -device virtio-net-pci,netdev=n1,mac="$MAC_HARNESS" || die "QEMU did not start"
 
 # One SSH connection shared by every command (no handshake per poll); a
 # dropped one is opened again by the next command.
