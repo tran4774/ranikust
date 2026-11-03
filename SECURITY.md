@@ -94,12 +94,12 @@ These are documented properties, not vulnerabilities:
 
 ## Hardening
 
-To build Dockerfiles you do not trust: run ranikust in a disposable VM or a
-container made for that one build, use `--userns` and `--seccomp=default`,
-add `--network=none` when the build needs no network, and give each trust
-domain its own store. `--userns` and `--seccomp` are designed but not
-implemented yet (Phase 3). `--network=none` exists, and it isolates the `RUN`
-only: ranikust's own registry requests still leave from its network
-namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
-[Q-447](https://github.com/tran4774/ranikust/issues/25)). The [book](docs/book/src/where-to-run.md)
-tracks what each environment provides.
+To build Dockerfiles you do not trust, run ranikust in a disposable VM or in a
+container made for that one build, add `--network=none` when the build needs
+no network, and give each trust domain its own store. `--network=none`
+isolates the `RUN` only: ranikust's own registry requests still leave from its
+network namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
+[#25](https://github.com/tran4774/ranikust/issues/25)). `--userns` and
+`--seccomp=default` are designed to tighten this further, but are not
+implemented yet (Phase 3). The [book](docs/book/src/where-to-run.md) tracks
+what each environment provides.
