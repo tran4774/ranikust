@@ -196,7 +196,7 @@ book:
 changelog *args:
     git cliff --unreleased "$@"
 
-# Local only, not in CI yet: mechanical checks of the decision records (every ADR indexed with its status, no duplicate question, no `[open: Q-NNN]` left for an answered question). Requires python3.
+# Local only, not in CI yet: mechanical checks of the decision records (every ADR indexed with its status, no duplicate question in the answered archive, no old `[open: Q-NNN]` marker, every `[open: #N]` naming an open issue, asked of GitHub through gh; offline that check is skipped with a warning). Requires python3; gh for the issue check.
 docs-lint:
     python3 -I scripts/docs-lint.py
 

@@ -1,19 +1,18 @@
 name: Design question
 description: An undecided design question that blocks or shapes work (replaces docs/open-questions.md, ADR-0088).
-title: "Q-NNN: "
 labels: ["question"]
 body:
   - type: markdown
     attributes:
       value: |
         Use this when the ADRs and design documents do not answer a question
-        and guessing would bake in a decision. Title it `Q-NNN: <question>`
-        with the next free number: the highest `Q-NNN` among the issues
-        labelled `question` and the archive in `docs/open-questions.md`, plus
-        one. Mark the place that needs the answer with `[open: #N]` (this
-        issue's number). The maintainer answers in a comment; the pull request
-        that records the decision (an ADR, a design doc, a crate card) says
-        `Closes #N` and removes the markers.
+        and guessing would bake in a decision. Title it with the question
+        alone: this issue's number `#N` names it, and new questions take no
+        `Q-NNN` number (only the 29 questions migrated from
+        `docs/open-questions.md` keep their `Q-NNN:` prefix). Mark the place
+        that needs the answer with `[open: #N]`. The maintainer answers in a
+        comment; the pull request that records the decision (an ADR, a
+        design doc, a crate card) says `Closes #N` and removes the markers.
 
         Not for security problems: report those privately (see SECURITY.md).
   - type: input

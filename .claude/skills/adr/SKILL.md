@@ -48,9 +48,10 @@ The conventions live in `docs/adr/README.md`; read it and
    the pull request's `## Changelog` section (user-visible changes; never
    `CHANGELOG.md`, ADR-0088), `SECURITY.md` and
    `docs/security/threat-model.md` (isolation or privilege).
-7. **Questions.** If the ADR answers `question` issues (`Q-NNN: …`,
-   ADR-0088), name them in the ADR and list `Closes #N` for each, for the
-   pull request that carries the ADR; each new ADR is its own pull request,
-   and merging it is accepting it.
+7. **Questions.** If the ADR answers `question` issues (ADR-0088), name
+   them in the ADR by issue number (`#N`; the 29 migrated ones also by
+   their `Q-NNN`, new ones have none) and list `Closes #N` for each, for
+   the pull request that carries the ADR; each new ADR is its own pull
+   request, and merging it is accepting it.
 8. Show the user the new file path, the index row, the issues it closes and
    the follow-up list.

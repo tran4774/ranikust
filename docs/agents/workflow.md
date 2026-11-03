@@ -52,7 +52,7 @@ it fail. After three failed fixes, stop and report. More: `dev-loop` skill.
 | `just registry-up`, `just registry-down` | the HTTP and HTTPS test registries on the host's loopback, data in `tests/registry/_data` ([testing](../testing.md#test-registries)) | |
 | `just smoke-case [name]...` | T1: the quick smoke cases of `tests/smoke/cases` (small Dockerfiles, one concern each) built by the `ranikust` binary in rootless podman; the default for a smoke test or proof of concept ([testing](../testing.md#quick-smoke-cases)) | |
 | `just test-vm [suite]...` | T2 in a disposable QEMU/KVM VM, as the user: `unit` (the `T2:` ignored tests as root) and `smoke` (`smoke-build` as real root and in rootful Docker) by default; `quick` when named (the quick smoke cases as real root); `e2e` when named, for large benchmarks only (the `nextjs-kaniko` workloads against kaniko and BuildKit, [testing](../testing.md#end-to-end-workloads-e2e)); `push` when named (needs `just registry-up`, [testing](../testing.md#test-registries)); results in `target/vm/results/<release>/` ([testing](../testing.md#the-vm-harness-tier-t2)) | |
-| `just docs-lint` | `scripts/docs-lint.py`: every ADR indexed with its status, no duplicate question, no `[open: Q-NNN]` left for an answered question | local only for now |
+| `just docs-lint` | `scripts/docs-lint.py`: every ADR indexed with its status, no duplicate question in the answered archive, no old `[open: Q-NNN]` marker, every `[open: #N]` naming an open issue (asks GitHub through `gh`; offline it warns and skips that check) | local only for now |
 | `just review-pack <branch>` | `scripts/review-pack.py`: the brief for the `host-safety` subagent (changed files by crate, diff stat, `graphify affected`, threat-model rows, design sections, crate boundaries) | local only |
 | `just ci` | all of the above that CI runs, in CI's order | all |
 
@@ -137,9 +137,10 @@ design docs and these files stay in the repository and change by pull
 request (`ADR-0088`).
 
 1. **Issue.** A task (a sub-issue of its phase's `tracking` issue, with
-   the phase's milestone) or a `question`. An agent opens issues only for
-   work already in a plan, labels them `agent`, `task` or `question` and
-   `crate:<name>`, and adds them to the Project.
+   the phase's milestone) or a `question`, named by its issue number (no
+   new `Q-NNN`; the 29 migrated questions keep theirs). An agent opens
+   issues only for work already in a plan, labels them `agent`, `task` or
+   `question` and `crate:<name>`, and adds them to the Project.
 2. **Branch** from the latest `main` ([Commits](#commits)); the Project item
    goes to In Progress.
 3. **Draft pull request:** `git push -u origin <branch>`, then
@@ -260,7 +261,8 @@ agent with `SendMessage` rather than starting a new one.
   (`ADR-0088`), and an ADR pull request whose index row conflicts gets
   `main` merged into it (no force-push) before it merges. Files whose lines change in place
   (crate cards, design docs) keep normal merges.
-- Each fork gets its own range of question and ADR numbers in its brief.
+- Each fork gets its own range of ADR numbers in its brief; questions need
+  none, since a new question is named by its issue number.
 - After merging, `just docs-lint` catches what the merge left behind.
 
 ### Host-safety fix loop

@@ -117,13 +117,15 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
 ## Open questions
 
 - Never guess a decision that no ADR or design doc makes. Open a `question`
-  issue with the **Design question** form, titled `Q-NNN: <question>` with
-  the next free number (`ADR-0088`;
-  [`docs/open-questions.md`](../open-questions.md#how-to-use-it)), mark the
-  spot `[open: #N]` with the issue's number (`\[open: #N]` in a `///` or
-  `//!` comment, which rustdoc would otherwise read as a link), tell the
-  maintainer, and continue with work that does not depend on it, or with
-  the smallest reversible choice, recorded as such in the issue.
+  issue with the **Design question** form, titled by the question alone:
+  a new question has no `Q-NNN` number, its issue number `#N` names it
+  (`ADR-0088`; [`docs/open-questions.md`](../open-questions.md#how-to-use-it)).
+  The 29 questions migrated on 2026-11-03 keep their `Q-NNN:` title prefix
+  so older ADRs still resolve. Mark the spot `[open: #N]` (`\[open: #N]`
+  in a `///` or `//!` comment, which rustdoc would otherwise read as a
+  link), tell the maintainer, and continue with work that does not depend
+  on it, or with the smallest reversible choice, recorded as such in the
+  issue.
 - Once answered (in an issue comment): the pull request that updates the
   ADR or design doc owning it says `Closes #N` and removes the
   `[open: #N]` markers; `just docs-lint` flags a marker naming a closed

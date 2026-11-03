@@ -66,8 +66,9 @@ just ci                   # everything CI runs, before you open a pull request
 
 Also run `just check-aarch64` after touching syscalls or `cfg`, `just deny`
 after changing dependencies, and `just doc` / `just book` after changing
-documentation; `just docs-lint` (local only, needs python3) after an ADR or
-an open question changes. Every recipe that mirrors CI runs exactly the command of the
+documentation; `just docs-lint` (local only, needs python3, and `gh` for
+its check of the `[open: #N]` markers) after an ADR, a marker or an open
+question changes. Every recipe that mirrors CI runs exactly the command of the
 CI job; if you change one, change the other.
 
 [`docs/agents/rules.md`](docs/agents/rules.md) lists the traps the lints do
@@ -105,8 +106,10 @@ its documentation already updated. Updating the affected documentation is
 part of every change, not a follow-up. Questions the design does not answer
 become an issue with the **Design question** form, labelled
 [`question`](https://github.com/tran4774/ranikust/issues?q=is%3Aissue+label%3Aquestion),
-instead of being guessed; [`docs/open-questions.md`](docs/open-questions.md)
-keeps the answered ones.
+instead of being guessed. A new question is named by its issue number and
+takes no `Q-NNN` number; the 29 questions migrated from
+[`docs/open-questions.md`](docs/open-questions.md) keep their `Q-NNN:`
+title prefix, and that file keeps the answered ones.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/);
 [git-cliff](cliff.toml) groups them into release notes.

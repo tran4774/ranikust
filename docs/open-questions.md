@@ -12,19 +12,19 @@ documents link to; nothing new is added to it.
 
 - **Raising.** Do not guess an undecided question. Open an issue with the
   **Design question** form (Context, Options, Recommendation, Interim,
-  Blocks, Area), titled `Q-NNN: <question>` with the next free number
-  (the highest `Q-NNN` among the issues and this archive, plus one), labels
-  `question`, the `crate:<name>` labels of its area and `needs-decision`
-  when it waits on the maintainer. Mark the place that needs the answer with
-  `[open: #N]`, the issue number, and continue with work that does not
-  depend on it, or with the smallest reversible choice, recorded under
-  "Interim" in the issue.
+  Blocks, Area), titled by the question alone: a new question takes no
+  `Q-NNN` number, its issue number `#N` names it. Labels: `question`, the
+  `crate:<name>` labels of its area and `needs-decision` when it waits on
+  the maintainer. Mark the place that needs the answer with `[open: #N]`,
+  and continue with work that does not depend on it, or with the smallest
+  reversible choice, recorded under "Interim" in the issue.
 - **Answering.** The maintainer answers in an issue comment. The decision is
   recorded where it belongs (a new ADR, a design doc, a crate card) by a pull
   request that says `Closes #N` and removes the `[open: #N]` markers;
   `just docs-lint` checks that no marker names a closed issue.
 - **Migrated.** The 29 questions open on 2026-11-03 became issues #1–#31
-  (with gaps); their titles keep their `Q-NNN`.
+  (with gaps); their titles keep their `Q-NNN:` prefix, so the ADRs and
+  this archive that name them still resolve.
 
 ## Answered
 
