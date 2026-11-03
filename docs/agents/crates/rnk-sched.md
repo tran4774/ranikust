@@ -1,23 +1,27 @@
 # rnk-sched
 
-> **Status:** in progress · **Phase:** 1 ·
-> **Depends on:** `rnk-dockerfile` ([open: #7], interim), `tokio`, `tokio-util`, `futures-util`; later `rnk-builder`, `rnk-registry`, `rnk-cache` · **Used by:** `ranikust` · **Path:** `crates/rnk-sched/`
+> **Status:** in progress · **Phase:** 1-2 ·
+> **Depends on:** `rnk-dockerfile`, `tokio`, `tokio-util`, `futures-util`
+> ([open: #7], interim) · **Used by:** `ranikust` (it implements
+> `StageRunner` over `rnk-builder`) · **Path:** `crates/rnk-sched/`
 
 **TL;DR:** Runs the stage DAG: each stage is an async task that starts when
 its dependencies finish, `--jobs` bounds concurrent `RUN`s, memory bounds
-concurrent stages, a stage on the shared `/` runs alone (Phase 2), the first
+concurrent stages, a stage on the shared `/` runs alone, the first
 failure cancels the rest. Output never depends on execution order: `--jobs 1`
 and the default give the same digests.
 
 ## Owns
 
 - One async task per stage, started when every stage it depends on is done.
-- Root-independent work for all stages up front: base pulls, cache lookups.
-- Limits: `--jobs` on `RUN`s, memory on stages, exclusivity for a shared `/`
-  (Phase 2).
+- Root-independent work for all stages up front: base pulls (`prepare`), later
+  cache lookups.
+- Limits: `--jobs` on `RUN`s, memory on stages, exclusivity for a shared `/`.
 - Cancellation on the first failure, the exit code, per-stage log tags.
 
 ## Must not
+
+Boundaries: `crates/rnk-sched/src/lib.rs`. In short:
 
 - Know how a stage is built (`rnk-builder`) or run `RUN` (`rnk-sandbox`).
 - Let output depend on execution order, thread count or timing.
@@ -77,20 +81,19 @@ pub use tokio_util::sync::CancellationToken;
   `run`, so a runner moves blocking work (a `RUN`, extraction,
   compression) to its own threads. Nothing is `tokio::spawn`ed, so the
   runner and graph are borrowed, not `'static`.
-- `rnk-builder` must not depend on `rnk-sched` (lower crates never depend
-  on higher ones): the `StageRunner` impl for the builder lives here, or in
-  `ranikust`, once `rnk-builder` exists.
-- `LayerDemand` is `rnk-builder`'s; which crate derives it from the graph
-  and the outputs is [open: #8]. `StageJob` carries `graph` and `stage`,
-  enough for either answer.
+- `rnk-builder` does not depend on `rnk-sched` (lower crates never depend on
+  higher ones): `ranikust` implements `StageRunner` over `build_stage`.
+- `LayerDemand` is `rnk-builder`'s; which crate derives it from the graph and
+  the outputs is [open: #8]. `StageJob` carries `graph` and `stage`, enough
+  for either answer.
 - Memory gate: another stage starts while free memory (cgroup `memory.max`
   less the working set, `memory.current` minus `inactive_file`; else
   `MemAvailable`) is at least an eighth of the limit, and at least
   512 MiB; at most one stage per fresh reading (500 ms after the last
   admission); a stage always starts when none runs; a stage held back asks
   again when one finishes, at the latest every 250 ms. The algorithm and
-  thresholds are [open: #9]; the gate is a trait, so the placeholder is
-  one function and two constants.
+  thresholds are [open: #9] until measured; the gate is a trait, so the
+  placeholder is one function and two constants.
 - `--jobs` relies on the runner: `build` must call `run_slot` before each
   `RUN` (ADR-0013). Later, the `RUN` entry point (`rnk-sandbox` through
   `rnk-builder`) should take a `&RunPermit`, so a `RUN` without a permit
@@ -100,24 +103,26 @@ pub use tokio_util::sync::CancellationToken;
   and pulls itself. `run` is not cancel safe: cancel the token and keep
   awaiting.
 - Log lines carry `[<stage-name> <k>/<n>]`, `k` the position among the
-  stages the build runs; grouping per stage would be an option of its
-  own, apart from `--log-format` (Q-031, ADR-0036), not built yet.
+  stages the build runs; grouping per stage would be an option of its own,
+  apart from `--log-format` (ADR-0036), not built.
+- The first failure is the first by completion time, as in BuildKit; two
+  failures at once may be reported either way.
 
 ## Invariants
 
+Design: [scheduler](../../design/scheduler.md) (graph, limits, failure and
+cancellation).
+
 - Layers, config and manifest depend only on content: `--jobs 1` and the
-  default give identical digests, enforced by a test (ADR-0012).
-- Instructions in a stage run in order; parallelism is only between stages
-  and in I/O (pulls, compression, pushes).
+  default give identical digests, enforced by a test (ADR-0012). Instructions
+  in a stage run in order; parallelism is only between stages and in I/O.
 - `--jobs` counts `RUN`s across all stages; the default honours the cgroup
   CPU quota and the affinity mask and is at least 1.
-- A unit whose root is `Shared` (`/`) never overlaps another shared unit,
-  and shared units run in the order given; pulls (`prepare`) and
-  compression stay parallel (`run_units`).
-- Edges: `FROM <stage>`, `COPY --from`, `RUN --mount=...,from=<stage>`,
-  `ONBUILD` of a base stage. Stages off the path to `--target` (or the last
-  stage) are dropped; overlay mode never squashes stages, sequential
-  kaniko mode runs `rnk_dockerfile::squash_for_shared_root`'s units.
+- A `Shared` unit (`/`) never overlaps another shared unit and shared units
+  run in the order given; pulls (`prepare`) and compression stay parallel.
+  Stages off the path to `--target` (or the last stage) are dropped; overlay
+  mode never squashes stages, sequential kaniko mode runs
+  `rnk_dockerfile::squash_for_shared_root`'s units.
 - The first failure cancels the others (their `RUN` trees die with their PID
   namespaces); the exit code is the first failure's, as in BuildKit.
 - No global state: `BuildPaths` and configuration travel as values. Log
@@ -126,6 +131,7 @@ pub use tokio_util::sync::CancellationToken;
 ## Refs
 
 - **Design:** [`design/scheduler.md#the-graph`](../../design/scheduler.md#the-graph), [`#execution`](../../design/scheduler.md#execution), [`#limits`](../../design/scheduler.md#limits), [`#lazy-export`](../../design/scheduler.md#lazy-export), [`#failure-and-cancellation`](../../design/scheduler.md#failure-and-cancellation), [`#evidence`](../../design/scheduler.md#evidence); [`design/modes-and-detection.md#outcomes`](../../design/modes-and-detection.md#outcomes) (which outcomes run stages in parallel)
+- **Open:** [#8](https://github.com/tran4774/ranikust/issues/8) (which crate computes `LayerDemand`), [#9](https://github.com/tran4774/ranikust/issues/9) (memory-limit algorithm and thresholds), [#14](https://github.com/tran4774/ranikust/issues/14) (cache lookahead, skipping cached stages), [#38](https://github.com/tran4774/ranikust/issues/38) (`chain()` on the job types, dropping `ranikust`'s `unit_chain`). Deferred: `ONBUILD` and `RUN --mount=type=bind,from=` edges (Phase 5); deduplicating identical instructions across stages (later); `--parallel-stages` is refused for good (ADR-0060)
 - **Decisions:** [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md) (`--jobs` default, memory limit), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (sequential kaniko mode), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (cgroups are only read), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (same digests within a mode)
 - **Evidence:** [exp-08](../../research/experiments/08-parallel-stages-lazy-export.md) (W3 6.02 s vs 8.44 s; peak memory), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) (`--jobs` and memory), [exp-05](../../research/experiments/05-rust-ecosystem.md) Q6 (`available_parallelism`), [exp-16](../../research/experiments/16-cgroup-v1-cpuset.md) (W3 under cgroup v1)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/dockerfile/dockerfile.go:297`
@@ -137,15 +143,20 @@ pub use tokio_util::sync::CancellationToken;
 
 ## Tests
 
-- **T0** (fake builder closure): random DAGs and completion orders give the
-  same outputs (property test); permits never exceed `--jobs`; a shared root
-  never overlaps another stage and keeps unit order on a multi-thread
-  runtime, a squashed chain's folded `COPY --from` becomes its dependency,
-  units out of order refused (`tests/units.rs`); a failure cancels siblings and returns the
-  first exit code; pruning to `--target`; up-front work starts for all stages.
+Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
+
+- **T0** (`tests/sched.rs`, fake builder closure): random DAGs and completion
+  orders give the same outputs (property test); permits never exceed
+  `--jobs`; a failure cancels siblings and returns the first exit code;
+  pruning to `--target`; up-front work starts for all stages.
+  `tests/units.rs`: a shared root never overlaps another stage and keeps
+  unit order on a multi-thread runtime, a squashed chain's folded `COPY
+  --from` becomes its dependency, units out of order refused.
+  `tests/spans.rs`: the spans.
 - **T1/T2:** W3 with `--jobs` 1, 2 and default gives one digest; a cancelled
   build leaves no mount, process or stub (T2, VM only). Timing comes from the
   `nextjs-kaniko` harness, not from tests.
+- To do: measure the memory gate on W3 (#9).
 
 ## Metrics
 
@@ -167,28 +178,6 @@ pub use tokio_util::sync::CancellationToken;
 - W3 has three stages, so it cannot tell "cores" from "stages" (ADR-0013).
 - `available_parallelism()` ignores `--cpu-shares` and rounds a fractional
   quota down (exp-05 Q6).
-- A stage skipped by lazy snapshots that later needs a layer must still
-  detect deletions (kaniko-mode design, open questions).
-
-## Phase 1
-
-- Build: graph execution on tokio, up-front base pulls, `RunSlots` with the
-  default `--jobs`, cancellation and exit code, log tags, the digest test;
-  measure W3 with `--jobs` 1, 2 and default.
-- Done (T0, fakes): the DAG, up-front `prepare`, `--jobs`, the memory-gate
-  hook with a placeholder policy, cancellation on the first failure or the
-  caller's token, log tags, outputs in file order (property test over
-  random DAGs, completion orders and `--jobs`), the spans. Left: the
-  `StageRunner` impl for `rnk-builder` (task 11), the W3 digest test with
-  `--jobs` 1, 2 and default (task 13), measuring the gate (Q-030), and
-  Phase 2: `Placement::Shared` units run one at a time in unit order
-  (`run_units`, built).
-  The
-  first failure is the first by completion time, as in BuildKit; two
-  failures at once may be reported either way.
-- Memory-aware limit: decided (ADR-0013); add the hook and measure now, the
-  thresholds stay [open: #9] until measured.
-- `--parallel-stages` is refused for good (ADR-0060). Deferred: cache
-  lookahead and skipping fully cached stages (Phase 4); `ONBUILD` and
-  `RUN --mount=type=bind,from=` edges (Phase 5); deduplicating identical
-  instructions across stages (later).
+- The lazy-snapshot decision is taken once, before the build, so a stage
+  skipped by it never needs its deletions detected later
+  ([design/kaniko-mode.md#lazy-snapshots](../../design/kaniko-mode.md#lazy-snapshots)).
