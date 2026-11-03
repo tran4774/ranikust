@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Release helpers for ranikust (ADR-0089). Run with `python3 -I`.
+"""Release helpers for ranikust (ADR-0089, ADR-0092). Run with `python3 -I`
+(3.11 or later, for tomllib).
 
 Subcommands:
 
   version                       print [workspace.package] version
   check-tag <tag>               fail unless <tag> is "v" + that version
+  previous-tag <tag>            print the release tag before <tag> on its
+                                history, or nothing for the first release
   notes <version>               print the CHANGELOG.md section of <version>
+  check-environment <owner/repo> <name>
+                                fail unless the GitHub environment exists with
+                                a required reviewer and deploys only `v*` tags
   package <binary> <version> <outdir>
                                 write the release tarball and SHA256SUMS
   prepare <version>             set the workspace version, refresh Cargo.lock
@@ -15,7 +21,8 @@ Subcommands:
 
 `prepare` (`just release-prepare`) only edits files in the working tree: it
 never commits, tags or pushes. The release workflow
-(`.github/workflows/release.yml`) runs `check-tag`, `package` and `notes`.
+(`.github/workflows/release.yml`) runs the others. Tests:
+tests/release/test_release.py (`just test-release`).
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,26 +49,38 @@ TARGET = "x86_64-unknown-linux-musl"
 # carries the attributions the Apache-2.0 licence asks to pass on.
 DOCS = ["LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md"]
 SEMVER = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$"
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?"
 )
 # Keep a Changelog sections, in CHANGELOG.md's order.
 SECTIONS = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
+# More merged pull requests than this since one release and `prepare` stops
+# rather than draft from a truncated list.
+PR_LIMIT = 1000
 
+# The verification commands name the release workflow and the tag: without
+# them `gh attestation verify --repo` accepts an attestation made by any
+# workflow of the repository on any ref (ADR-0092). gh before 2.102.0 matched
+# --signer-workflow by prefix and --source-ref without case.
 INSTALL = """\
 ranikust {version}: static musl binary for x86_64 Linux (Linux 5.8 or later)
 
-Check the tarball, ideally before extracting it, in the directory holding it
-and the release's SHA256SUMS:
+You are reading this inside the tarball. If you have not checked the
+tarball yet, do it now, in the directory holding it and the release's
+SHA256SUMS, with GitHub CLI 2.102.0 or later:
 
     sha256sum -c SHA256SUMS --ignore-missing
-    gh attestation verify ranikust-{version}-{target}.tar.gz --repo {repo}
+    gh attestation verify ranikust-{version}-{target}.tar.gz \\
+      --repo {repo} \\
+      --signer-workflow {repo}/.github/workflows/release.yml \\
+      --source-ref refs/tags/v{version} \\
+      --deny-self-hosted-runners
 
-The second command checks that the tarball was built by this repository's
-release workflow on GitHub Actions (build provenance).
+The second command checks that the tarball was built from the tag v{version}
+by this repository's release workflow on a GitHub-hosted runner (build
+provenance). If either check fails, delete the files and do not run them.
 
 Install:
 
-    tar -xzf ranikust-{version}-{target}.tar.gz
     install -m 0755 ranikust-{version}-{target}/ranikust /usr/local/bin/ranikust
     ranikust version
 
@@ -84,20 +104,27 @@ def run(args: list[str], *, check: bool = True) -> str:
     return result.stdout
 
 
-def workspace_version() -> str:
-    with CARGO_TOML.open("rb") as f:
-        data = tomllib.load(f)
+def workspace_package() -> dict:
     try:
-        return data["workspace"]["package"]["version"]
-    except KeyError:
-        die("Cargo.toml has no [workspace.package] version")
-        raise  # unreachable
+        with CARGO_TOML.open("rb") as f:
+            package = tomllib.load(f)["workspace"]["package"]
+    except (OSError, tomllib.TOMLDecodeError, KeyError) as error:
+        die(f"cannot read [workspace.package] from {CARGO_TOML}: {error!r}")
+    return package
+
+
+def workspace_version() -> str:
+    version = workspace_package().get("version")
+    if not isinstance(version, str):
+        die("Cargo.toml's [workspace.package] has no version")
+    return version
 
 
 def repository() -> str:
     """`owner/name` from [workspace.package] repository."""
-    with CARGO_TOML.open("rb") as f:
-        url = tomllib.load(f)["workspace"]["package"]["repository"]
+    url = workspace_package().get("repository")
+    if not isinstance(url, str):
+        die("Cargo.toml's [workspace.package] has no repository")
     match = re.fullmatch(r"https://github\.com/([^/]+/[^/]+?)/?", url)
     if not match:
         die(f"[workspace.package] repository is not a GitHub URL: {url}")
@@ -105,8 +132,50 @@ def repository() -> str:
 
 
 def check_version(version: str) -> None:
-    if not SEMVER.match(version):
+    if not SEMVER.fullmatch(version):
         die(f"{version!r} is not a version such as 0.1.0 or 0.1.0-rc.1 (no 'v')")
+
+
+def version_key(version: str) -> tuple:
+    """A sort key in Semantic Versioning precedence: a pre-release sorts
+    before its release, numeric identifiers numerically and before
+    alphanumeric ones, a longer list of identifiers after its prefix."""
+    match = SEMVER.fullmatch(version)
+    if not match:
+        die(f"{version!r} is not a version")
+    major, minor, patch, pre = match.groups()
+    if pre is None:
+        pre_key: tuple = (1,)
+    else:
+        pre_key = (0, tuple(
+            (0, int(part), "") if part.isascii() and part.isdigit() else (1, 0, part)
+            for part in pre.split(".")
+        ))
+    return (int(major), int(minor), int(patch), pre_key)
+
+
+def is_newer(new: str, old: str) -> bool:
+    return version_key(new) > version_key(old)
+
+
+# ---------------------------------------------------------------- tags
+
+
+def previous_tag(tag: str) -> str | None:
+    """The latest `v*` tag on the history of <tag>, <tag> itself excluded."""
+    result = subprocess.run(
+        ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*",
+         "--exclude", tag, f"{tag}^{{commit}}"],
+        cwd=ROOT, check=False, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None  # the first release
+    return result.stdout.strip() or None
+
+
+def remote_tag_exists(tag: str) -> bool:
+    out = run(["git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}"])
+    return bool(out.strip())
 
 
 # ---------------------------------------------------------------- notes
@@ -115,11 +184,11 @@ def check_version(version: str) -> None:
 def changelog_section(text: str, version: str) -> str | None:
     """The body of `## [version]` in CHANGELOG.md, without its heading."""
     heading = re.compile(
-        r"^## \[" + re.escape(version) + r"\](?: - \d{4}-\d{2}-\d{2})?\s*$"
+        r"## \[" + re.escape(version) + r"\](?: - [0-9]{4}-[0-9]{2}-[0-9]{2})?[ \t]*"
     )
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        if heading.match(line):
+        if heading.fullmatch(line):
             body = []
             for rest in lines[i + 1 :]:
                 if rest.startswith("## [") or re.match(r"^\[[^\]]+\]: ", rest):
@@ -144,6 +213,71 @@ def cmd_notes(version: str) -> None:
     print(body)
 
 
+# ---------------------------------------------------------------- environment
+
+
+def environment_problems(env: dict, policies: dict) -> list[str]:
+    """What keeps a GitHub environment from guarding a release: it must name
+    a required reviewer and let only `v*` tags deploy (ADR-0092)."""
+    problems = []
+    reviewers = [
+        reviewer
+        for rule in env.get("protection_rules") or []
+        if rule.get("type") == "required_reviewers"
+        for reviewer in rule.get("reviewers") or []
+    ]
+    if not reviewers:
+        problems.append("it has no required reviewer, so nobody approves a release")
+    policy = env.get("deployment_branch_policy") or {}
+    if not policy.get("custom_branch_policies") or policy.get("protected_branches"):
+        problems.append(
+            "its deployments are not limited to selected tags "
+            "(set 'Selected branches and tags')"
+        )
+    items = (policies or {}).get("branch_policies") or []
+    if not items:
+        problems.append("it has no deployment tag rule 'v*'")
+    for item in items:
+        if item.get("type") != "tag" or item.get("name") != "v*":
+            problems.append(
+                f"its deployment rule {item.get('type')} {item.get('name')!r} "
+                "is not the tag rule 'v*'"
+            )
+    return problems
+
+
+def gh_api(path: str, missing: str) -> dict:
+    result = subprocess.run(
+        ["gh", "api", path], cwd=ROOT, check=False, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout).strip()
+        if "HTTP 404" in error:
+            die(missing)
+        die(f"gh api {path} failed: {error}")
+    return json.loads(result.stdout)
+
+
+def cmd_check_environment(repo: str, name: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        die(f"{repo!r} is not owner/name")
+    base = f"repos/{repo}/environments/{urllib.parse.quote(name, safe='')}"
+    setup = "(CONTRIBUTING.md, Releasing: the maintainer sets it up before the first tag)"
+    env = gh_api(
+        base,
+        f"the environment {name!r} does not exist; a job naming it would create "
+        f"it without protection {setup}",
+    )
+    policies = gh_api(
+        f"{base}/deployment-branch-policies",
+        f"the environment {name!r} has no deployment tag rules {setup}",
+    )
+    problems = environment_problems(env, policies)
+    if problems:
+        die(f"the environment {name!r} does not guard a release: " + "; ".join(problems) + f" {setup}")
+    print(f"environment {name!r}: required reviewer, deploys only v* tags")
+
+
 # ---------------------------------------------------------------- package
 
 
@@ -151,9 +285,9 @@ def source_date_epoch() -> int:
     """SOURCE_DATE_EPOCH, else the commit time of HEAD: the tarball's bytes
     then depend only on its inputs."""
     value = os.environ.get("SOURCE_DATE_EPOCH")
-    if value:
-        if not value.isdigit():
-            die(f"SOURCE_DATE_EPOCH is not a whole number: {value!r}")
+    if value is not None:
+        if not re.fullmatch(r"[0-9]+", value):
+            die(f"SOURCE_DATE_EPOCH is not a whole number of seconds: {value!r}")
         return int(value)
     return int(run(["git", "log", "-1", "--format=%ct"]).strip())
 
@@ -243,7 +377,7 @@ def last_tag() -> str | None:
     return result.stdout.strip() or None
 
 
-def changelog_text(body: str) -> str | None:
+def changelog_text(body: str | None) -> str | None:
     """The `## Changelog` section of a pull request body; None when absent
     or when it says there is nothing for users."""
     body = re.sub(r"<!--.*?-->", "", body or "", flags=re.S).replace("\r\n", "\n")
@@ -318,7 +452,7 @@ def merged_pull_requests(repo: str, since: str | None) -> list[dict]:
     result = subprocess.run(
         [
             "gh", "pr", "list", "--repo", repo, "--state", "merged",
-            "--base", "main", "--limit", "1000",
+            "--base", "main", "--limit", str(PR_LIMIT),
             "--json", "number,title,body,labels,mergeCommit,url",
         ],
         cwd=ROOT,
@@ -327,17 +461,16 @@ def merged_pull_requests(repo: str, since: str | None) -> list[dict]:
         text=True,
     )
     if result.returncode != 0:
-        print(
-            f"warning: could not list merged pull requests with gh "
-            f"({result.stderr.strip()}); the draft has no entries",
-            file=sys.stderr,
+        # A draft without the pull requests would look like a release with
+        # nothing to say: stop instead.
+        die(
+            "gh pr list failed, so the merged pull requests are unknown: "
+            f"{(result.stderr or result.stdout).strip()}"
         )
-        return []
-    prs = [
-        pr
-        for pr in json.loads(result.stdout)
-        if (pr.get("mergeCommit") or {}).get("oid") in commits
-    ]
+    listed = json.loads(result.stdout)
+    if len(listed) >= PR_LIMIT:
+        die(f"gh listed {PR_LIMIT} merged pull requests, the limit: raise PR_LIMIT")
+    prs = [pr for pr in listed if (pr.get("mergeCommit") or {}).get("oid") in commits]
     return sorted(prs, key=lambda pr: pr["number"])
 
 
@@ -345,7 +478,7 @@ def draft_section(prs: list[dict]) -> tuple[str, list[dict]]:
     by_section: dict[str, list[str]] = {name: [] for name in SECTIONS}
     without: list[dict] = []
     for pr in prs:
-        text = changelog_text(pr.get("body") or "")
+        text = changelog_text(pr.get("body"))
         if text is None:
             without.append(pr)
             continue
@@ -406,23 +539,31 @@ def insert_section(text: str, version: str, previous: str | None, body: str, rep
 def cmd_prepare(version: str) -> None:
     check_version(version)
     current = workspace_version()
-    if version == current:
-        die(f"the workspace version is already {version}")
+    if not is_newer(version, current):
+        die(f"{version} is not newer than the workspace version {current}")
     dirty = run(["git", "status", "--porcelain", "--", "Cargo.toml", "Cargo.lock", "CHANGELOG.md"])
     if dirty.strip():
         die("Cargo.toml, Cargo.lock or CHANGELOG.md has uncommitted changes:\n" + dirty)
-    if run(["git", "tag", "--list", f"v{version}"]).strip():
-        die(f"the tag v{version} exists already")
+    tag = f"v{version}"
+    if run(["git", "tag", "--list", tag]).strip():
+        die(f"the tag {tag} exists already")
+    if remote_tag_exists(tag):
+        die(f"the tag {tag} exists already on origin")
 
+    # Everything is computed before the first write, so a failure leaves
+    # the tree as it was.
     repo = repository()
     previous = last_tag()
     prs = merged_pull_requests(repo, previous)
     body, without = draft_section(prs)
+    old_toml = CARGO_TOML.read_text(encoding="utf-8")
+    new_toml = set_workspace_version(old_toml, version)
+    old_changelog = CHANGELOG.read_text(encoding="utf-8")
+    new_changelog = insert_section(old_changelog, version, previous, body, repo)
+    lock = ROOT / "Cargo.lock"
+    old_lock = lock.read_bytes() if lock.exists() else None
 
-    CARGO_TOML.write_text(
-        set_workspace_version(CARGO_TOML.read_text(encoding="utf-8"), version),
-        encoding="utf-8",
-    )
+    CARGO_TOML.write_text(new_toml, encoding="utf-8")
     # Only the workspace's own entries change, so no network is needed.
     result = subprocess.run(
         ["cargo", "update", "--workspace", "--offline"],
@@ -432,14 +573,14 @@ def cmd_prepare(version: str) -> None:
         text=True,
     )
     if result.returncode != 0:
+        CARGO_TOML.write_text(old_toml, encoding="utf-8")
+        if old_lock is not None:
+            lock.write_bytes(old_lock)
         die(
-            "cargo update --workspace --offline failed; Cargo.toml is already "
-            f"edited (git checkout -- Cargo.toml to undo):\n{result.stderr.strip()}"
+            "cargo update --workspace --offline failed; Cargo.toml and "
+            f"Cargo.lock are back as they were:\n{result.stderr.strip()}"
         )
-    CHANGELOG.write_text(
-        insert_section(CHANGELOG.read_text(encoding="utf-8"), version, previous, body, repo),
-        encoding="utf-8",
-    )
+    CHANGELOG.write_text(new_changelog, encoding="utf-8")
 
     print(f"version: {current} -> {version}; Cargo.toml, Cargo.lock and CHANGELOG.md edited")
     print(f"pull requests merged since {previous or 'the first commit'}: {len(prs)}")
@@ -450,9 +591,9 @@ def cmd_prepare(version: str) -> None:
             print(f"    #{pr['number']} {pr['title']}")
     print(
         f"next: edit the '## [{version}]' section of CHANGELOG.md, commit it as "
-        f"'chore(release): v{version}' on a branch release/v{version} and open "
+        f"'chore(release): {tag}' on a branch release/{tag} and open "
         "the release pull request; after it is merged, the maintainer pushes "
-        f"the tag v{version} (CONTRIBUTING.md, Releasing)"
+        f"the tag {tag} (CONTRIBUTING.md, Releasing)"
     )
 
 
@@ -471,8 +612,12 @@ def main(argv: list[str]) -> None:
         if args[0] != expected:
             die(f"the tag {args[0]} does not match the workspace version ({expected})")
         print(f"tag {args[0]} matches the workspace version")
+    elif command == "previous-tag" and len(args) == 1:
+        print(previous_tag(args[0]) or "")
     elif command == "notes" and len(args) == 1:
         cmd_notes(args[0])
+    elif command == "check-environment" and len(args) == 2:
+        cmd_check_environment(*args)
     elif command == "package" and len(args) == 3:
         cmd_package(*args)
     elif command == "prepare" and len(args) == 1:
