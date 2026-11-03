@@ -74,12 +74,11 @@ network namespace. The first such `RUN` probes once
   `setns` as its first step, before any mount, so `sysfs` shows it.
 - The child stays in the build's user namespace, but as root it holds every
   capability in the helper's. So after every mount and before the capability
-  drop it installs a seccomp filter that refuses `setns`, new user namespaces,
-  `io_uring`, `AF_KEY`, the netfilter, IPVS, IPsec-policy and multicast-routing
-  socket options, `TCP_REPAIR`, foreign-architecture syscalls, all netlink but
-  route, sock_diag, audit and uevent, and `clone3`. The exact list and the
-  residual risk (every other interface `CAP_NET_ADMIN` opens, rtnetlink first)
-  are in the ADR.
+  drop it installs a seccomp filter (`seccomp.rs`) that refuses what that
+  would open: `setns`, new user namespaces, `io_uring`, the netfilter, IPVS and
+  IPsec interfaces, all netlink but route, sock_diag, audit and uevent, and
+  `clone3`. The exact list and the residual risk (every other interface
+  `CAP_NET_ADMIN` opens, rtnetlink first) are in the ADR.
 
 The steps, in order:
 
@@ -99,13 +98,12 @@ The steps, in order:
      0-2, so that ranikust's own streams are gone too.
    - `/dev/null` is never opened by name in the child: a `RUN --mount` over
      `/dev` (or, in `Direct` on `/`, an earlier `RUN`) could make it a link to
-     ranikust's stdout. The full sandbox opens the `null` node of its own
-     `/dev` tmpfs by descriptor right after populating it (step 3.4), before
-     any `RUN --mount`, and never takes the parent's: a descriptor of the
-     host's node would let a root `RUN` change its mode or owner, which the
-     read-only bind prevents (`EROFS`). `Direct` gets the host's `/dev/null`
-     from the parent, reached without symlinks and checked to be the null
-     device.
+     ranikust's stdout. The full sandbox opens the `null` node of its own `/dev`
+     tmpfs by descriptor right after populating it (step 3.4), before any
+     `RUN --mount`, and never takes the parent's, which a root `RUN` could
+     `fchmod` or `fchown`; the read-only bind prevents it (`EROFS`). `Direct`
+     gets the host's `/dev/null` from the parent, reached without symlinks and
+     checked to be the null device.
 2. **User namespace** (*planned, Phase 3; no `RUN` runs this step today*):
    map the full id range available and allow `setgroups`; otherwise `USER
    _apt` (used by apt-get) fails with `setgroups: EPERM`.
