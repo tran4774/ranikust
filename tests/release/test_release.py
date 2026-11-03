@@ -197,6 +197,46 @@ class Changelog(unittest.TestCase):
                     rel.cmd_notes("0.0.1")
                 self.assertEqual(out.getvalue(), "- shipped\n")
 
+    def test_notes_are_unwrapped_for_github(self):
+        # GitHub renders every newline of a release body as a line break, so
+        # the notes join CHANGELOG.md's 80-column wrapping back into one line
+        # per paragraph or list item.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHANGELOG.md"
+            path.write_text(
+                "## [0.0.1] - 2026-01-01\n\nA summary that is\nwrapped here.\n\n"
+                "### Added\n\n- An item\n  wrapped once.\n  - nested,\n    wrapped `code`\n"
+                "    [and a link](u).\n- Next item.\n\n[0.0.1]: u\n"
+            )
+            with mock.patch.object(rel, "CHANGELOG", path), redirect_stderr(io.StringIO()), \
+                    mock.patch("sys.stdout", io.StringIO()) as out:
+                rel.cmd_notes("0.0.1")
+        self.assertEqual(
+            out.getvalue(),
+            "A summary that is wrapped here.\n\n### Added\n\n- An item wrapped once.\n"
+            "  - nested, wrapped `code` [and a link](u).\n- Next item.\n",
+        )
+
+
+class Unwrap(unittest.TestCase):
+    def test_blocks_stay_apart(self):
+        text = "# Title\nnext\n\n| a | b |\n| - | - |\n\n> quote\n> more\n\n1. one\n   cont\n2. two"
+        self.assertEqual(
+            rel.unwrap_markdown(text),
+            "# Title\nnext\n\n| a | b |\n| - | - |\n\n> quote\n> more\n\n1. one cont\n2. two",
+        )
+
+    def test_code_fences_are_kept(self):
+        text = "Run:\n\n```sh\nfoo \\\n  --bar\n```\n\nthen\nthis."
+        self.assertEqual(rel.unwrap_markdown(text), "Run:\n\n```sh\nfoo \\\n  --bar\n```\n\nthen this.")
+
+    def test_the_changelog_keeps_its_words(self):
+        text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        version = rel.workspace_version()
+        section = rel.changelog_section(text, version)
+        self.assertIsNotNone(section)
+        self.assertEqual(rel.unwrap_markdown(section).split(), section.split())
+
 
 class Environment(unittest.TestCase):
     GOOD_ENV = {
