@@ -221,14 +221,21 @@ impl Journal {
                         }
                     }
                     FileType::Directory => cur = next,
-                    // An existing non-directory target: the mount decides.
-                    _ if last => cur = next,
-                    _ => {
-                        return Err(io_err(
-                            "place a mount target",
-                            &next,
-                            io::Error::from_raw_os_error(libc::ENOTDIR),
-                        ));
+                    FileType::Regular
+                    | FileType::CharDevice
+                    | FileType::BlockDevice
+                    | FileType::Fifo
+                    | FileType::Socket
+                    | FileType::Unknown => {
+                        if !last {
+                            return Err(io_err(
+                                "place a mount target",
+                                &next,
+                                io::Error::from_raw_os_error(libc::ENOTDIR),
+                            ));
+                        }
+                        // An existing non-directory target: the mount decides.
+                        cur = next;
                     }
                 },
                 Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
@@ -681,6 +688,7 @@ fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
     let parent_st = match root.statx(parent) {
         Ok(st) => Some(st),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => return Ok(false),
+        // Errnos are open-ended: after any other, the parent's times are unknown.
         Err(_) => None,
     };
     if parent_st.is_some_and(|st| st.mnt_id != root.mnt_id()) {
@@ -710,7 +718,7 @@ fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
             Ok(st) if st.file_type() == FileType::Regular && st.size == 0 => {
                 ok_unless(root.remove_file(&stub.path), &[libc::ENOENT])?
             }
-            // Gone, or no longer the empty file placed: leave it.
+            // Gone, unreadable, or no longer the empty file placed: leave it.
             _ => false,
         },
         // The original goes back over whatever is there now: `rename`
@@ -730,6 +738,7 @@ fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
             Ok(st) if st.file_type() != FileType::Directory => {
                 ok_unless(root.remove_file(&stub.path), &[libc::ENOENT])?
             }
+            // A directory, gone or unreadable: leave it.
             _ => false,
         },
     };
@@ -891,6 +900,7 @@ fn parse(text: &[u8]) -> (Option<PathBuf>, Vec<StubRecord>) {
                 let kind = match *kind {
                     "d" => MountKind::Directory,
                     "f" => MountKind::File,
+                    // Not a code `place` writes: a torn or planted line.
                     _ => continue,
                 };
                 let (Some(path), Some(parent_atime), Some(parent_mtime)) =
@@ -947,6 +957,7 @@ fn parse(text: &[u8]) -> (Option<PathBuf>, Vec<StubRecord>) {
                     last.placed_mtime = Some(mtime);
                 }
             }
+            // Untrusted text: a torn last write or a planted line.
             _ => {}
         }
     }
