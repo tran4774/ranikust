@@ -1,6 +1,6 @@
 {
   "defaultAction": "SCMP_ACT_ALLOW",
   "syscalls": [
-    {"names": ["uname"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1}
+    {"names": ["setpriority"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1}
   ]
 }

@@ -45,7 +45,9 @@ mod syscalls;
 
 use std::sync::Arc;
 
-use asm::{Asm, JEQ_K, JGE_K, JSET_K, Label};
+#[cfg(target_arch = "x86_64")]
+use asm::JGE_K;
+use asm::{Asm, JEQ_K, JSET_K, Label};
 pub use profile::SeccompProfile;
 
 /// A filter and the `seccomp(2)` flags it is installed with.

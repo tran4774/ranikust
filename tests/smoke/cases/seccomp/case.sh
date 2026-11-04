@@ -14,14 +14,14 @@ case_run() {
   build default >/dev/null
   n="$(run default cat /filters)"
   [ -n "$n" ] && [ "$n" -ge 1 ] || fail "filters under the default profile: $n"
-  expect "$(run default cat /uname)" ok "uname under the default profile"
+  expect "$(run default cat /nice)" ok "setpriority under the default profile"
   build flag --seccomp=default >/dev/null
   expect "$(run flag cat /filters)" "$n" "--seccomp=default is the default"
   build unconfined --seccomp=unconfined >/dev/null
   expect "$(run unconfined cat /filters)" "$((n - 1))" "--seccomp=unconfined drops the profile"
   build file "--seccomp=$(rnk_ctx "$SMOKE_CASES_DIR/$CASE")/profile.json" >/dev/null
   expect "$(run file cat /filters)" "$n" "a profile file in the default's place"
-  expect "$(run file cat /uname)" refused "the profile file refuses uname"
+  expect "$(run file cat /nice)" refused "the profile file refuses setpriority"
 }
 
 case_run_on_slash() {
@@ -38,5 +38,5 @@ case_run_on_slash() {
   build direct >/dev/null
   own="$($ENGINE run --rm "$BASE" sed -n 's/^Seccomp_filters:[[:space:]]*//p' /proc/self/status)"
   expect "$(run direct cat /filters)" "$own" "a RUN on / under the container's own profile"
-  expect "$(run direct cat /uname)" ok "uname under the container's own profile"
+  expect "$(run direct cat /nice)" ok "setpriority under the container's own profile"
 }
