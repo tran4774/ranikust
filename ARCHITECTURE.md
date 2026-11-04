@@ -239,8 +239,10 @@ declares none yet.
    [ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)); install the logs and
    the opt-in metrics; validate the flags into a `BuildConfig`; try to enter a
    private mount namespace (failing means root may not mount); check the state
-   directory; clean up the store (`rnk-store`); start the `RUN` spawner thread
-   (`rnk-sandbox`).
+   directory; clean up the store (`rnk-store`); where the full sandbox runs,
+   bind ranikust's binary read-only over itself in that namespace
+   ([ADR-0082](docs/adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md));
+   start the `RUN` spawner thread (`rnk-sandbox`).
 2. **Probe** (`ranikust`, running the probes of `rnk-sandbox` and
    `rnk-snapshot` in order): choose overlay, kaniko, or refuse;
    `--mode=overlay|kaniko` skips the choice but not the checks
