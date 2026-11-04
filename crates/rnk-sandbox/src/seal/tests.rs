@@ -154,6 +154,9 @@ fn a_failed_recovery_stops_the_search() {
 #[test]
 fn the_copy_gets_the_environment_with_one_marker() {
     let marker = "tmpfile; memfd: memfd_create: Permission denied (os error 13)";
+    // The sample is what the seal builds when `vm.memfd_noexec=2` refuses the memfd.
+    let failed = [(SealedCopy::Memfd, context("memfd_create")(Errno::ACCESS))];
+    assert_eq!(super::marker(SealedCopy::Tmpfile, &failed), marker);
     let vars = [
         ("PATH", "/bin"),
         (MARKER, "memfd"),
