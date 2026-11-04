@@ -1130,21 +1130,48 @@ mod tests {
         assert_untouched(&victim);
     }
 
-    /// Makes a FIFO at `p`, in this process.
-    fn mkfifo(p: &Path) {
-        use rustix::fs::{CWD, FileType, Mode, mknodat};
-        mknodat(CWD, p, FileType::Fifo, Mode::from_raw_mode(0o600), 0).unwrap();
+    /// How long a [`bounded`] check may take: an `open` of a planted FIFO
+    /// blocks forever.
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Runs `check` on its own thread: its result if it returns within
+    /// [`BOUND`], `None` if it blocked; a panic in it is passed on.
+    fn bounded<T: Send + 'static>(check: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (done, wait) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            // Fails only after a timeout, when nobody waits for the result.
+            let _ = done.send(check());
+        });
+        match wait.recv_timeout(BOUND) {
+            Ok(out) => Some(out),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match thread.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => unreachable!("the thread sends before it ends"),
+            },
+        }
     }
 
-    /// [`replay`] on a thread: its result if it returns within 10 s, `None`
-    /// if it blocked.
+    fn mknod(p: &Path, ft: rustix::fs::FileType, dev: u64) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            p,
+            ft,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            dev,
+        )
+        .unwrap();
+    }
+
+    /// Makes a FIFO at `p`, in this process.
+    fn mkfifo(p: &Path) {
+        mknod(p, rustix::fs::FileType::Fifo, 0);
+    }
+
+    /// [`replay`] within [`BOUND`]; `None` if it blocked.
     fn replay_within(f: &Fixture) -> Option<Replayed> {
         let (runs, base) = (f.runs.clone(), f.base().to_owned());
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(replay(&runs, &base, None).unwrap());
-        });
-        rx.recv_timeout(std::time::Duration::from_secs(10)).ok()
+        bounded(move || replay(&runs, &base, None).unwrap())
     }
 
     fn is_fifo(p: &Path) -> bool {
@@ -1428,40 +1455,11 @@ mod tests {
         assert_eq!(j.stub_count(), 0);
     }
 
-    fn mknod(p: &Path, ft: rustix::fs::FileType, dev: u64) {
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            p,
-            ft,
-            rustix::fs::Mode::from_raw_mode(0o600),
-            dev,
-        )
-        .unwrap();
-    }
-
-    /// Runs `check` on its own thread, failing after 30 s: an `open` of a
-    /// planted FIFO blocks forever.
-    fn bounded<T: Send + 'static>(check: impl FnOnce() -> T + Send + 'static) -> T {
-        let (done, wait) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            let _ = done.send(check());
-        });
-        match wait.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(out) => out,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                panic!("blocked: a planted node was opened")
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match thread.join() {
-                Err(panic) => std::panic::resume_unwind(panic),
-                Ok(()) => unreachable!("the thread sends before it ends"),
-            },
-        }
-    }
-
-    /// A non-directory `ft`, planted at `/etc/node` by `plant`, met by
-    /// `ensure` directly and through symlinks: `ENOTDIR` where a directory
-    /// is needed, the target itself as the last component, never opened,
-    /// replaced or undone.
+    /// `ensure` meets a non-directory `ft`, planted at `/etc/node` by
+    /// `plant`, directly and through symlinks: `ENOTDIR` where a directory
+    /// is needed, the target itself as the last component. No stub is
+    /// placed, the node keeps its inode (a file its content), and no
+    /// blocking `open` of a FIFO keeps it from returning within [`BOUND`].
     fn ensure_around(ft: FileType, plant: impl Fn(&Path)) {
         use std::os::unix::fs::MetadataExt as _;
         let f = fixture();
@@ -1497,7 +1495,8 @@ mod tests {
                 }
             }
             j
-        });
+        })
+        .unwrap_or_else(|| panic!("{ft:?}: ensure blocked"));
         assert_eq!(j.stub_count(), 0, "{ft:?}");
         let (_, stubs) = parse(&fs::read(f.runs.join("1.journal")).unwrap());
         assert!(stubs.is_empty(), "{ft:?}: {stubs:?}");
@@ -1505,6 +1504,9 @@ mod tests {
         let root = RootPath::open(&f.root_dir).unwrap();
         assert_eq!(root.statx("/etc/node").unwrap().file_type(), ft);
         assert_eq!(fs::symlink_metadata(&node).unwrap().ino(), ino, "{ft:?}");
+        if ft == FileType::Regular {
+            assert_eq!(fs::read(&node).unwrap(), b"image");
+        }
         let mut names: Vec<_> = fs::read_dir(f.root_dir.join("etc"))
             .unwrap()
             .map(|e| e.unwrap().file_name())
@@ -1514,43 +1516,53 @@ mod tests {
         assert_eq!(fs::read_dir(&f.root_dir).unwrap().count(), 2, "{ft:?}");
     }
 
-    /// Red team, T10/T1: a node where `ensure` needs a directory, or as its target.
+    /// Red team (T10, T1): a file, FIFO, socket or whiteout where `ensure`
+    /// needs a directory, or as its target.
     #[test]
     fn red_team_a_node_in_a_mount_target_is_enotdir_or_the_target_itself() {
-        use rustix::fs::FileType as Raw;
         ensure_around(FileType::Regular, |p| fs::write(p, b"image").unwrap());
-        ensure_around(FileType::Fifo, |p| mknod(p, Raw::Fifo, 0));
+        ensure_around(FileType::Fifo, mkfifo);
         ensure_around(FileType::Socket, |p| {
             drop(std::os::unix::net::UnixListener::bind(p).unwrap());
         });
-        // 0/0, an overlay whiteout: the one device node a normal user may make.
+        // 0/0, an overlay whiteout: unprivileged since Linux 5.8, except on
+        // overlayfs.
         ensure_around(FileType::CharDevice, |p| {
-            mknod(p, Raw::CharacterDevice, rustix::fs::makedev(0, 0));
+            mknod(
+                p,
+                rustix::fs::FileType::CharacterDevice,
+                rustix::fs::makedev(0, 0),
+            );
         });
     }
 
-    /// Red team, T10/T1: a device node where `ensure` needs a directory, or as its target.
+    /// Red team (T2c; T10, T1): a block device where `ensure` needs a
+    /// directory, or as its target.
     #[test]
-    #[ignore = "T2c: default: mknod of a block and a real character device needs CAP_MKNOD"]
-    fn red_team_a_device_node_in_a_mount_target_is_enotdir_or_the_target_itself() {
-        use rustix::fs::FileType as Raw;
+    #[ignore = "T2c: default: mknod of a block device needs CAP_MKNOD"]
+    fn red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself() {
         ensure_around(FileType::BlockDevice, |p| {
-            mknod(p, Raw::BlockDevice, rustix::fs::makedev(7, 0));
-        });
-        ensure_around(FileType::CharDevice, |p| {
-            mknod(p, Raw::CharacterDevice, rustix::fs::makedev(1, 3));
+            mknod(
+                p,
+                rustix::fs::FileType::BlockDevice,
+                rustix::fs::makedev(7, 0),
+            );
         });
     }
 
-    /// Enough `../` to climb from any test root to the host's `/`.
-    fn climb() -> PathBuf {
-        PathBuf::from("../".repeat(32))
+    /// The `../` that climb from an entry of `dir` to the host's `/`.
+    fn climb(dir: &Path) -> PathBuf {
+        let depth = dir
+            .components()
+            .filter(|c| matches!(c, Component::Normal(_)))
+            .count();
+        PathBuf::from("../".repeat(depth))
     }
 
-    /// Red team, T10/T3: a `RUN` swaps its stubs for symlinks out of the root and for nodes.
+    /// Red team (T10, T1): a `RUN` swaps its stubs for symlinks out of the
+    /// root and for nodes.
     #[test]
     fn red_team_stubs_swapped_for_links_out_or_nodes_are_left_with_the_host() {
-        use rustix::fs::FileType as Raw;
         let f = fixture();
         let host = tempfile::tempdir().unwrap();
         let h = host.path().canonicalize().unwrap();
@@ -1562,6 +1574,7 @@ mod tests {
         let root = RootPath::open(&f.root_dir).unwrap();
         let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
         for (target, kind) in [
+            ("/kept", MountKind::Directory),
             ("/data", MountKind::Directory),
             ("/empty", MountKind::File),
             ("/var/cache/apt", MountKind::Directory),
@@ -1572,29 +1585,32 @@ mod tests {
             j.ensure(Path::new(target), kind).unwrap();
         }
         j.commit().unwrap();
-        assert_eq!(j.stub_count(), 8);
+        assert_eq!(j.stub_count(), 9);
 
         let r = &f.root_dir;
         let rel = h.strip_prefix("/").unwrap();
         fs::remove_dir(r.join("data")).unwrap();
-        std::os::unix::fs::symlink(climb().join(rel).join("d"), r.join("data")).unwrap();
+        std::os::unix::fs::symlink(climb(r).join(rel).join("d"), r.join("data")).unwrap();
         fs::remove_file(r.join("empty")).unwrap();
         std::os::unix::fs::symlink(h.join("f"), r.join("empty")).unwrap();
         fs::remove_dir(r.join("var/cache/apt")).unwrap();
         fs::remove_dir(r.join("var/cache")).unwrap();
         std::os::unix::fs::symlink(&h, r.join("var/cache")).unwrap();
         fs::remove_file(r.join("fifo")).unwrap();
-        mknod(&r.join("fifo"), Raw::Fifo, 0);
+        mkfifo(&r.join("fifo"));
         fs::remove_dir(r.join("sock")).unwrap();
         drop(std::os::unix::net::UnixListener::bind(r.join("sock")).unwrap());
         fs::remove_file(r.join("wh")).unwrap();
         mknod(
             &r.join("wh"),
-            Raw::CharacterDevice,
+            rustix::fs::FileType::CharacterDevice,
             rustix::fs::makedev(0, 0),
         );
 
-        assert_eq!(bounded(move || j.finish().unwrap()), 0);
+        let removed = bounded(move || j.finish().unwrap()).expect("finish blocked");
+        // Only the stub the `RUN` left alone goes.
+        assert_eq!(removed, 1);
+        assert!(!r.join("kept").exists());
         assert!(h.join("d").is_dir());
         assert!(h.join("apt").is_dir());
         assert!(h.join("f").is_file());
@@ -1612,7 +1628,8 @@ mod tests {
         }
     }
 
-    /// Red team, T10/T1: planted stub records climb with `..`, name host paths or pass a symlink out.
+    /// Red team (T10, T1): planted stub records climb with `..`, name host
+    /// paths, pass a symlink out, name `/` or end in `..`.
     #[test]
     fn red_team_planted_stub_records_stay_in_the_root() {
         let f = fixture();
@@ -1623,38 +1640,60 @@ mod tests {
         let host_root = RootPath::open(&h).unwrap();
         let old = set_old_times(&host_root, "/");
         let rel = h.strip_prefix("/").unwrap();
-        std::os::unix::fs::symlink(climb().join(rel), f.root_dir.join("out")).unwrap();
+        // Where each record resolves inside the root: these go.
+        let mirror = f.root_dir.join(rel);
+        fs::create_dir_all(mirror.join("d")).unwrap();
+        fs::write(mirror.join("f"), b"").unwrap();
+        let up = climb(&f.root_dir);
+        std::os::unix::fs::symlink(up.join(rel), f.root_dir.join("out")).unwrap();
         std::os::unix::fs::symlink(&h, f.root_dir.join("abs")).unwrap();
-        let up = Path::new("/").join(climb()).join(rel);
-        let mut text = format!("root\t{}\n", hex(f.root_dir.as_os_str().as_bytes()));
-        for dir in [h.clone(), up, PathBuf::from("/out"), PathBuf::from("/abs")] {
-            for (code, name) in [("d", "d"), ("f", "f")] {
-                let p = dir.join(name);
-                text.push_str(&format!(
-                    "stub\t{code}\t{}\t1.0\t2.0\nplaced\t{}\t3.0\n",
-                    hex(p.as_os_str().as_bytes()),
-                    hex(p.as_os_str().as_bytes()),
-                ));
-            }
+        let root_line = format!("root\t{}\n", hex(f.root_dir.as_os_str().as_bytes()));
+        let stub = |code: &str, p: &Path| {
+            let p = hex(p.as_os_str().as_bytes());
+            format!("stub\t{code}\t{p}\t1.0\t2.0\nplaced\t{p}\t3.0\n")
+        };
+        let mut text = root_line.clone();
+        for dir in [
+            h.clone(),
+            Path::new("/").join(&up).join(rel),
+            PathBuf::from("/out"),
+            PathBuf::from("/abs"),
+        ] {
+            text.push_str(&stub("d", &dir.join("d")));
+            text.push_str(&stub("f", &dir.join("f")));
         }
-        // A torn last record.
+        // Not a code `place` writes, then a torn last record.
+        text.push_str(&stub("x", &h.join("d")));
         text.push_str(&format!(
             "stub\td\t{}\t1.",
             hex(h.join("d").as_os_str().as_bytes())
         ));
-        fs::write(f.runs.join("x.journal"), text.as_bytes()).unwrap();
         assert_eq!(parse(text.as_bytes()).1.len(), 8);
+        fs::write(f.runs.join("x.journal"), text.as_bytes()).unwrap();
+        // A record naming no entry, newest: its journal stays, with a
+        // warning, and nothing of it is undone.
+        fs::create_dir(f.root_dir.join("keep")).unwrap();
+        for (name, bad) in [("y", "/"), ("z", "/keep/..")] {
+            let text =
+                root_line.clone() + &stub("d", Path::new("/keep")) + &stub("d", Path::new(bad));
+            fs::write(f.runs.join(format!("{name}.journal")), text).unwrap();
+        }
         assert_eq!(
             replay(&f.runs, f.base(), None).unwrap(),
             Replayed {
                 journals: 1,
-                stubs: 0
+                stubs: 2
             }
         );
+        assert!(!mirror.join("d").exists());
+        assert!(!mirror.join("f").exists());
         assert!(h.join("d").is_dir());
         assert!(h.join("f").is_file());
         assert_eq!(host_root.statx("/").unwrap().mtime, old);
         assert!(!f.runs.join("x.journal").exists());
+        assert!(f.root_dir.join("keep").is_dir());
+        assert!(f.runs.join("y.journal").exists());
+        assert!(f.runs.join("z.journal").exists());
     }
 
     #[test]

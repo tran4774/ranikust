@@ -225,7 +225,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   description), swaps and planted records, the journal's red-team tests (a
   file, FIFO, socket or whiteout where a directory is needed or as the
   target; stubs a `RUN` swaps for symlinks out of the root or for nodes;
-  planted stub records aimed outside), `Direct` children that fail before
+  planted stub records aimed outside, naming `/` or ending in `..`),
+  `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed
   heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
   reading its own stream back), the init's status records,
@@ -271,9 +272,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   hopping caught by the sweep, non-blocking flood) and `src/spawner.rs`
   (`a_cancel_kills_a_running_run`, `a_direct_run_leaves_no_process_behind`,
   `a_direct_heredoc_runs_from_an_anonymous_file`, loopback for
-  `--network=none`); in `src/journal.rs`, a block and a character device
-  where a directory is needed or as the target
-  (`red_team_a_device_node_in_a_mount_target_is_enotdir_or_the_target_itself`).
+  `--network=none`); in `src/journal.rs`, a block device where a directory
+  is needed or as the target
+  (`red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself`).
 
 ## Metrics
 
