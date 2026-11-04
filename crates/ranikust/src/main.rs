@@ -817,8 +817,8 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
              (/proc/self/mountinfo cannot be parsed, does not place it or does not type a FUSE \
              root; a writable directory of its file system had its name removed, or a writable \
-             mount of it cannot be reached at its mount point; or the binary's own name was \
-             removed); kaniko mode on / refuses to build without knowing"
+             mount of that file system cannot be reached at its mount point; or the binary's own \
+             name was removed); kaniko mode on / refuses to build without knowing"
         ))
         .with_guidance(
             "run the binary from a file that stays in place, beside no writable directory mount \
@@ -841,8 +841,9 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         ))
         .with_guidance(
             "mount /proc in the container so that /proc/self/exe and /proc/self/mountinfo can be \
-             read, and let its seccomp profile allow fstatfs: ranikust reads the binary's mount \
-             with statx (STATX_MNT_ID) and fstatvfs (ADR-0101)",
+             read, and let its seccomp profile allow fstatfs, openat2 and statx: ranikust reads \
+             the binary's mount with statx (STATX_MNT_ID) and fstatvfs, and looks up each \
+             writable mount point of its file system with openat2 and statx (ADR-0101)",
         )),
         None => Err(Failure::error(format!(
             "{how}: the mount of ranikust's binary was not measured; kaniko mode on / refuses \
