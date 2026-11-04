@@ -140,9 +140,14 @@ The decision:
   with its own guidance; a
   fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
-  container's own root, or on a read-only mount no writable mount
-  reaches, builds; overlay mode and kaniko mode per stage do not check,
-  since no `RUN` reaches the binary there. Why, as hardening: a `RUN`
+  container's own root builds when that root is overlayfs (Docker,
+  containerd: a write there copies the file up and leaves the image's
+  layers as they are); on any other root (a directory root, as podman
+  `--rootfs`, systemd-nspawn or LXC give) it is weighed like one on
+  another read-only mount, the root mount itself not counting as a
+  writable mount that reaches it. One on a read-only mount no writable
+  mount reaches builds; overlay mode and kaniko mode per stage do not
+  check, since no `RUN` reaches the binary there. Why, as hardening: a `RUN`
   there is root on the container's `/`, and once the build no longer
   executes the installed file, `ETXTBSY` no longer guards it, so the
   binary must not be reachable through a writable mount. The check reads
@@ -153,8 +158,11 @@ The decision:
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
-  the last four
-  [in a third](https://github.com/tran4774/ranikust/issues/32#issuecomment-6633392547)):
+  the next four
+  [in a third](https://github.com/tran4774/ranikust/issues/32#issuecomment-6633392547),
+  the last three
+  [in a fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6634131493),
+  after the second host-safety pass):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -191,7 +199,20 @@ The decision:
   - to refuse as unplaced a binary file with no link left (nlink 0):
     "Đồng ý, từ chối (khuyến nghị)";
   - to name `/proc/self/mountinfo` too in the guidance for a failed
-    measurement: "Nêu rõ mountinfo (khuyến nghị)".
+    measurement: "Nêu rõ mountinfo (khuyến nghị)";
+  - to check a binary in the container's root too, for its links and the
+    writable mounts that reach it, when `/` is not overlayfs, overlay
+    roots (Docker, containerd) not affected: "Kiểm tra cả khi root không
+    phải overlay (khuyến nghị)";
+  - after describing the risk of a writable binary in general terms (with
+    the first set), to keep naming the configurations that are refused,
+    without a mechanism, in the book, `SECURITY.md`, the threat model and
+    the refusal messages: "Giữ, vì người dùng cần biết (khuyến nghị)";
+  - to accept the measurement the marker carries as it is: whoever starts
+    ranikust sets the variable and is trusted, a `RUN` cannot set it (its
+    environment is the Dockerfile's only), and the copy's run believes it
+    only once `/proc/self/exe` passes its check: "Chấp nhận, chỉ operator
+    làm được (khuyến nghị)".
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -220,9 +241,10 @@ The decision:
 - Neutral, because the installed file is no longer guarded by `ETXTBSY`
   during a build. The build does not read it; where no `RUN` reaches it
   (overlay mode, kaniko mode per stage) nothing changes, and in kaniko mode
-  on `/` a file in the container's own root concerns only the container. A
-  file bound from outside the container would lose its last guard there:
-  that case is refused.
+  on `/` a file in an overlay root concerns only the container. A file
+  bound from outside the container would lose its last guard there: that
+  case is refused, and so is one in a root that is not overlayfs when it
+  has other links or another writable mount reaches it.
 - Bad, because kaniko mode on `/` refuses a binary bound read-write, which
   built before: the operator adds `:ro` (Docker binds read-write by
   default). It also refuses a binary bound `:ro` from a tree that is bound
@@ -328,7 +350,12 @@ The decision:
   directory bind inside a read-write one; a sibling and a name that only
   starts the same; another file system with the same path; read-only by
   the mount's or the file system's options; `\040` escapes; a path outside
-  its mount and a root that is not a path, unplaced), `rnk-rootfs`'s
+  its mount and a root that is not a path, unplaced),
+  `a_binary_in_a_root_that_is_not_overlayfs_is_weighed` (an overlay root
+  with other links builds and reads no mount table; another root with
+  other links, none, or reached by a writable mount is refused, one
+  nothing reaches builds), `a_directory_root_is_not_its_own_writable_mount`,
+  `rnk-rootfs`'s
   `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
   `a_spilled_option_is_kept_out_of_read_only` and
   `a_line_with_missing_or_shifted_options_is_refused`, and the binary's
