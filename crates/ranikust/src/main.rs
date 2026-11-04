@@ -1001,6 +1001,10 @@ fn state_in_root(
     }
     let in_fs = |mnt_id: u64, path: &Path| {
         let m = mounts.iter().find(|m| m.mount_id == mnt_id)?;
+        // A removed root's former name places nothing.
+        if m.root_deleted {
+            return None;
+        }
         let rel = path.strip_prefix(&m.mount_point).ok()?;
         Some((m.device.clone(), m.fs_root.join(rel)))
     };
@@ -1490,6 +1494,15 @@ mod tests {
         );
         let held = state_in_root(&more, (1, Path::new("/srv/w")), (6, Path::new("/state2")));
         assert_eq!(held, Some(true));
+        // `/state3` binds a directory whose name was removed since.
+        more.extend(
+            rnk_snapshot::kaniko::parse_mountinfo(
+                b"7 1 8:1 /srv/w/y//deleted /state3 rw - ext4 /dev/sda1 rw\n",
+            )
+            .unwrap(),
+        );
+        let gone = state_in_root(&more, (1, Path::new("/srv/w")), (7, Path::new("/state3")));
+        assert_eq!(gone, None, "a removed root is not placed");
     }
 
     /// Red team (criterion 8, T4): an `--ignore-path` the flags accept never
