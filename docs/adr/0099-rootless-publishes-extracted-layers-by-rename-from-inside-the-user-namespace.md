@@ -150,7 +150,7 @@ Answers #5 (Q-152), which blocked Phase 3
 [ADR-0050](0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the rootless
 state directory `~/.local/share/ranikust`),
 [ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)
-(a one-id map and its refusal),
+(an owner the map does not cover is refused),
 [ADR-0105](0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md)
 (emptying the state directory),
 [ADR-0106](0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)
@@ -159,7 +159,10 @@ state directory `~/.local/share/ranikust`),
 Follow-ups, with [#77](https://github.com/tran4774/ranikust/issues/77):
 `rnk-store`, `rnk-snapshot` and `rnk-rootfs` open and extract inside the
 namespace, with a T1 test of a `0555` layer root and of a `SIGKILL` during
-extraction. When it is built, change
+extraction. A rootless layer's key includes the build's id map
+([ADR-0104](0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md);
+how [#1](https://github.com/tran4774/ranikust/issues/1) names a layer is still
+open), which this task carries. When it is built, change
 [overlay-snapshot](../design/overlay-snapshot.md),
 [cache-and-store](../design/cache-and-store.md), the three crate cards, add the
 `## Changelog` entry if the change is user-visible, and check the threat model.

@@ -411,7 +411,10 @@ Neither exists yet (ADR-0003).
   ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)),
   with a range for root read from a dedicated `ranikust` entry of `/etc/subuid`
   and `/etc/subgid` (the build is refused before anything is written where it is
-  missing) and extracted layers keyed by their id map; a `RUN`'s command runs where the init's uid is unmapped, in rootless mode too
+  missing) and extracted layers keyed by their id map; an image with an owner
+  outside that range is refused
+  ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md));
+  a `RUN`'s command runs where the init's uid is unmapped, in rootless mode too
   ([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
   (b)). How (a namespace nested per `RUN`, or a map without the init's uid) is
   settled with [#83](https://github.com/tran4774/ranikust/issues/83).

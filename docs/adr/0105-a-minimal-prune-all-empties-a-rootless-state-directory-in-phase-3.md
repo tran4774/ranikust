@@ -22,7 +22,7 @@ rootless user remove a state directory holding files of subordinate ids
 (raised while planning Phase 3,
 [#41](https://github.com/tran4774/ranikust/issues/41))? And what does the
 subcommand do when root runs it, where the state directory is the shared
-`/var/lib/ranikust` (or `--state-dir`) and no user namespace is involved (#93)?
+`/var/lib/ranikust` (or `--state-dir`) (#93)?
 
 ## Considered Options
 
@@ -34,7 +34,7 @@ subcommand do when root runs it, where the state directory is the shared
 (b) needs podman installed. (c) hands out a shell in the namespace, a wider tool
 than the need.
 
-When root runs it (#93):
+When root runs it (#93, where these three are (a), (b) and (c)):
 
 - (d) Refuse, naming Phase 5's `prune`; root can remove its own state directory
   with ordinary tools.
@@ -56,7 +56,10 @@ Phase 3 ships a minimal `ranikust prune --all` that empties the state directory
 inside the build's user namespace, and Phase 5 extends it into the full `prune`:
 option (a) (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as
 recommended). When root runs it, it refuses, naming Phase 5's `prune`: option
-(d) (the maintainer, 2026-11-04, on #93: "Từ chối khi là root (khuyến nghị)").
+(d), (a) in #93 (the maintainer, 2026-11-04: "Từ chối khi là root (khuyến
+nghị)"). Root is read plainly, as euid 0 in any user namespace: a container's
+root, such as uid 0 in rootless Podman's namespace, is refused too and removes
+its state directory with ordinary tools.
 
 - **Planned, Phase 3**, [#76](https://github.com/tran4774/ranikust/issues/76)
   (it serves task 8's acceptance criterion that the state directory is
@@ -65,9 +68,10 @@ recommended). When root runs it, it refuses, naming Phase 5's `prune`: option
   namespace, and Phase 5's `prune` grows from it
   ([ADR-0021](0021-rnk-store-crate.md): `ranikust prune` only calls
   `rnk-store`).
-- **Scope.** It is for a rootless state directory. When root runs it, it
-  refuses and names Phase 5's `prune`; root can remove its own state directory
-  with ordinary tools, and the shared `/var/lib/ranikust` is Phase 5's design.
+- **Scope.** It is for a rootless state directory. When root runs it (euid 0,
+  in the initial user namespace or any other), it refuses and names Phase 5's
+  `prune`; root can remove its own state directory with ordinary tools, and the
+  shared `/var/lib/ranikust` is Phase 5's design.
 - **Safety.** `prune --all` opens the store as a build does (the
   state-directory checks and the `.ranikust-state` marker), so it refuses a
   directory ranikust did not make. It never removes what a running build uses,
@@ -89,8 +93,8 @@ recommended). When root runs it, it refuses, naming Phase 5's `prune`: option
 - Bad, because the `prune` subcommand appears in Phase 3 with one flag, ahead
   of the Phase 5 design (size and age tiers, in-use tracking), which then
   extends it.
-- Bad, because root has no ranikust command to empty a state directory until
-  Phase 5, and removes it with ordinary tools.
+- Bad, because root, a container's root included, has no ranikust command to
+  empty a state directory until Phase 5, and removes it with ordinary tools.
 - Neutral, because a general `unshare` command stays unbuilt: nothing here hands
   out a shell in the namespace.
 
@@ -112,9 +116,11 @@ Raised while planning Phase 3
 ([#41](https://github.com/tran4774/ranikust/issues/41)). Related:
 [ADR-0021](0021-rnk-store-crate.md) (the store and `prune`),
 [ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md).
+Answers #93 (what it does when root runs it).
 
 Follow-ups: `ranikust` and `rnk-store`, with a T1 test that empties a state
-directory holding files of subordinate ids. When it is built, change
+directory holding files of subordinate ids and a T0 test that root is refused,
+naming Phase 5's `prune`. When it is built, change
 [cache-and-store](../design/cache-and-store.md#prune), the `ranikust` and
 `rnk-store` cards, `ARCHITECTURE.md` and the book, and add the `## Changelog`
 entry.

@@ -104,9 +104,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      (each range must fit inside one range of the parent map: `0 0 1` +
      `1 1 65536` works where `0 0 65536` is `EPERM`). An unprivileged host
      user needs `newuidmap`/`newgidmap` and `/etc/subuid`; without them only
-     one uid maps and `chown` to any other fails with `EINVAL`, as does an owner
-     outside the ranges; planned, ranikust then refuses such an image
-     ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
+     one uid maps and `chown` to any other fails with `EINVAL`, as does a
+     `chown` to an owner outside the ranges; planned, ranikust then refuses such
+     an image ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
    - Mount the overlay (`userxattr` is implied), then a new `proc`; if that
      fails, an rbind of the existing `/proc` (`RUN` then sees the container's
      processes, like BuildKit's `--oci-worker-no-process-sandbox`).

@@ -45,8 +45,9 @@ ranikust, `0700`, below directories only root may write
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
 
-Planned, Phase 3 (`--userns`, nothing built): an extracted layer's key includes
-the digest of the build's id map, so one state directory holds one copy per map
+Planned, Phase 3 (rootless mode and `--userns`, nothing built): an extracted
+layer's key includes the digest of the build's id map, so one state directory
+holds one copy per map
 ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md);
 how [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must
 include the map).
