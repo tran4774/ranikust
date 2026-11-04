@@ -455,7 +455,8 @@ fn seen_at(root: &RootPath, path: &Path) -> Result<Option<(u64, MountRoot)>, Err
 /// `None` when the path leads nowhere or to another mount, one mounted
 /// over it.
 fn root_at(root: &RootPath, m: &MountInfo) -> Result<Option<MountRoot>, Errno> {
-    Ok(seen_at(root, &m.mount_point)?.and_then(|(mount, found)| (mount == m.mount_id).then_some(found)))
+    Ok(seen_at(root, &m.mount_point)?
+        .and_then(|(mount, found)| (mount == m.mount_id).then_some(found)))
 }
 
 /// [`reached_writable`] with the binary's name and each mount's root
