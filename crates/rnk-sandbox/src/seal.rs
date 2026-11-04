@@ -427,19 +427,35 @@ fn mount_check_in_child() -> io::Result<()> {
             Ok(None) => return Err(io::Error::other("the mount check went missing")),
         }
     };
-    match status.exit_status() {
-        Some(0) => Ok(()),
-        Some(1) => Err(io::Error::other("root may not mount here")),
-        _ => Err(io::Error::other(format!(
-            "the mount check ended with {status:?}"
+    match (status.exit_status(), status.terminating_signal()) {
+        (Some(0), _) => Ok(()),
+        (Some(1), _) => Err(io::Error::other("root may not mount here")),
+        (Some(code), _) => Err(io::Error::other(format!("the mount check exited {code}"))),
+        (None, Some(signal)) => Err(io::Error::other(format!(
+            "the mount check was killed by signal {signal}"
         ))),
+        (None, None) => Err(io::Error::other(
+            "the mount check ended with no exit status",
+        )),
     }
 }
 
 /// Whether this process runs from an overlay copy: `Direct` on `/` must
 /// not, as a `RUN` there reaches the installed file it runs.
 pub(crate) fn runs_from_overlay() -> bool {
-    File::open("/proc/self/exe").is_ok_and(|exe| check(SealedCopy::Overlay, exe.as_fd()).is_ok())
+    // The marker, not the file: only `execute` runs a copy, and the mount
+    // table the file's check reads changes once the build unshares.
+    names_overlay(std::env::var_os(MARKER).as_deref())
+}
+
+/// Whether a marker names the overlay; one that names no way counts.
+fn names_overlay(marker: Option<&OsStr>) -> bool {
+    marker.is_some_and(|value| {
+        value
+            .to_str()
+            .and_then(parse_marker)
+            .is_none_or(|(way, _)| way == SealedCopy::Overlay)
+    })
 }
 
 /// Whether the overlay's file is the running binary: overlay keeps a

@@ -161,15 +161,15 @@ fn the_copy_gets_the_environment_with_one_marker() {
 /// test harness's), no child is forked at all.
 #[test]
 fn the_overlay_is_made_only_where_root_may_mount() {
-    // Root may mount: as for the binary's tests, nothing to show as root.
-    if rustix::process::geteuid().is_root() {
-        return;
-    }
     let threads = may_mount().expect_err("threads are running");
     assert!(
         threads.to_string().starts_with("not single-threaded"),
         "{threads}"
     );
+    // Root may hold CAP_SYS_ADMIN; the refusal shown is a user's.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
     let before = std::fs::read_link("/proc/self/ns/mnt").expect("mount namespace");
     let refused = mount_check_in_child().expect_err("a user may not mount");
     assert_eq!(refused.to_string(), "root may not mount here");
@@ -236,9 +236,27 @@ fn the_binary_as_installed_passes_for_no_copy() {
     }
     // The overlay check's control: the test binary's mount is attached.
     assert!(attached(exe.as_fd()).expect("fdinfo"));
-    assert!(!runs_from_overlay());
     assert_eq!(SealedCopy::from_name("memfd"), Some(SealedCopy::Memfd));
     assert_eq!(SealedCopy::from_name("bind"), None);
+}
+
+/// ADR-0101: `Direct` on `/` is refused for a run its marker says is the
+/// overlay copy's, or that has a marker naming no way; no marker, or a
+/// memfd or `O_TMPFILE` copy's, starts.
+#[test]
+fn a_marker_naming_the_overlay_refuses_direct() {
+    for refused in ["overlay", "overlay; x", "bind", "", "memfdx"] {
+        assert!(names_overlay(Some(OsStr::new(refused))), "{refused:?}");
+    }
+    assert!(names_overlay(Some(OsStr::from_bytes(b"\xff"))));
+    for started in [
+        "memfd",
+        "tmpfile",
+        "memfd; overlay: root may not mount here",
+    ] {
+        assert!(!names_overlay(Some(OsStr::new(started))), "{started:?}");
+    }
+    assert!(!names_overlay(None));
 }
 
 /// T2 (the VM only), ADR-0101: root on a host may mount, so the overlay is
