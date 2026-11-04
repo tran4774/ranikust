@@ -35,6 +35,25 @@
 //! numbers above would not apply. Any other interface `CAP_NET_ADMIN` opens
 //! over that namespace stays open, rtnetlink first: `ip` and the C
 //! libraries' `getifaddrs` need it (ADR-0033 records the residual risk).
+//!
+//! The `RUN`'s seccomp profile ([`SeccompProfile`], ADR-0109) is compiled
+//! by [`profile`] and installed under this filter, which stacks on it.
+
+mod asm;
+mod profile;
+mod syscalls;
+
+use std::sync::Arc;
+
+use asm::{Asm, JEQ_K, JGE_K, JSET_K, Label};
+pub use profile::SeccompProfile;
+
+/// A filter and the `seccomp(2)` flags it is installed with.
+#[derive(Clone)]
+pub(crate) struct Program {
+    pub(crate) insns: Arc<[libc::sock_filter]>,
+    pub(crate) flags: libc::c_ulong,
+}
 
 /// `seccomp_data` offsets: the syscall number, the audit architecture and
 /// the low 32 bits of an argument (little-endian).
@@ -43,13 +62,6 @@ const ARCH: u32 = 4;
 const fn arg(i: u32) -> u32 {
     16 + 8 * i
 }
-
-const LD_W_ABS: u16 = 0x20;
-const JEQ_K: u16 = 0x15;
-const JGT_K: u16 = 0x25;
-const JGE_K: u16 = 0x35;
-const JSET_K: u16 = 0x45;
-const RET_K: u16 = 0x06;
 
 const RET_ALLOW: u32 = 0x7fff_0000;
 const RET_ERRNO: u32 = 0x0005_0000;
@@ -99,89 +111,6 @@ const SOL_IPV6_REFUSED: [(u32, u32); 4] = [
 
 /// `TCP_REPAIR` (`linux/tcp.h`).
 const TCP_REPAIR: u32 = 19;
-
-/// A jump target, bound to an instruction index by [`Asm::bind`].
-#[derive(Clone, Copy)]
-struct Label(usize);
-
-enum Op {
-    Ld(u32),
-    Jump(u16, u32, Label, Label),
-    Ret(u32),
-}
-
-/// A classic BPF program built with labels, so that no jump offset is
-/// counted by hand.
-#[derive(Default)]
-struct Asm {
-    ops: Vec<Op>,
-    labels: Vec<Option<usize>>,
-}
-
-impl Asm {
-    fn label(&mut self) -> Label {
-        self.labels.push(None);
-        Label(self.labels.len() - 1)
-    }
-
-    fn bind(&mut self, l: Label) {
-        self.labels[l.0] = Some(self.ops.len());
-    }
-
-    fn ld(&mut self, offset: u32) {
-        self.ops.push(Op::Ld(offset));
-    }
-
-    fn jump(&mut self, code: u16, k: u32, t: Label, f: Label) {
-        self.ops.push(Op::Jump(code, k, t, f));
-    }
-
-    fn ret(&mut self, action: u32) {
-        self.ops.push(Op::Ret(action));
-    }
-
-    /// `A` in `lo..=hi` goes to `t`, else on (the next instruction).
-    fn in_range(&mut self, (lo, hi): (u32, u32), t: Label) {
-        let check_hi = self.label();
-        let next = self.label();
-        self.jump(JGE_K, lo, check_hi, next);
-        self.bind(check_hi);
-        self.jump(JGT_K, hi, next, t);
-        self.bind(next);
-    }
-
-    /// The program; `None` if a jump would not fit in 8 bits or a label is
-    /// unbound.
-    fn finish(self) -> Option<Vec<libc::sock_filter>> {
-        let at = |l: Label| self.labels.get(l.0).copied().flatten();
-        self.ops
-            .iter()
-            .enumerate()
-            .map(|(i, op)| {
-                Some(match *op {
-                    Op::Ld(k) => libc::sock_filter {
-                        code: LD_W_ABS,
-                        jt: 0,
-                        jf: 0,
-                        k,
-                    },
-                    Op::Ret(k) => libc::sock_filter {
-                        code: RET_K,
-                        jt: 0,
-                        jf: 0,
-                        k,
-                    },
-                    Op::Jump(code, k, t, f) => libc::sock_filter {
-                        code,
-                        jt: u8::try_from(at(t)?.checked_sub(i + 1)?).ok()?,
-                        jf: u8::try_from(at(f)?.checked_sub(i + 1)?).ok()?,
-                        k,
-                    },
-                })
-            })
-            .collect()
-    }
-}
 
 fn errno(e: i32) -> u32 {
     RET_ERRNO | (u32::try_from(e).unwrap_or(0) & 0xffff)
@@ -289,7 +218,9 @@ pub(crate) fn userns_network() -> Option<Vec<libc::sock_filter>> {
     a.ret(RET_ALLOW);
     a.bind(enosys);
     a.ret(errno(libc::ENOSYS));
-    a.finish()
+    // Only a bug can fail here, and the tests would catch it; the caller
+    // refuses the user-namespace path on `None`.
+    a.finish().ok()
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -299,6 +230,7 @@ pub(crate) fn userns_network() -> Option<Vec<libc::sock_filter>> {
 
 #[cfg(test)]
 mod tests {
+    use super::asm::RET_K;
     use super::*;
 
     fn last_errno() -> i32 {

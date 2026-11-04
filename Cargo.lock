@@ -1392,6 +1392,8 @@ dependencies = [
  "rnk-metrics",
  "rnk-rootfs",
  "rustix",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tracing",

@@ -86,7 +86,8 @@ pub enum Step {
     NetNamespace,
     /// Joining that network namespace.
     JoinNetwork,
-    /// Installing the seccomp filter of a `RUN` in such a namespace.
+    /// Installing a seccomp filter: the `RUN`'s profile, or the filter of
+    /// a `RUN` in such a namespace.
     Seccomp,
     /// `chroot` into a root other than `/` (`Isolation::Direct`).
     Chroot,
@@ -198,7 +199,7 @@ impl Step {
             Step::Secret => "write and bind a secret file",
             Step::NetNamespace => "create the network namespace",
             Step::JoinNetwork => "join the network namespace",
-            Step::Seccomp => "install the seccomp filter",
+            Step::Seccomp => "install a seccomp filter",
             Step::Chroot => "chroot into the root",
             Step::FileLimit => "set RLIMIT_NOFILE",
             Step::CoreLimit => "set RLIMIT_CORE",
@@ -313,6 +314,10 @@ pub enum Error {
         /// How many were alive after the last round.
         left: usize,
     },
+    /// A seccomp profile is malformed or asks for what ranikust does not
+    /// support (ADR-0109); nothing ran.
+    #[error("seccomp profile: {0}")]
+    SeccompProfile(String),
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,
