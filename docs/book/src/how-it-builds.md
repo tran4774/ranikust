@@ -135,8 +135,8 @@ take it away from `RUN`, it refuses to build. On a container's own root
 filesystem, which takes no unnamed file on most kernels, each of those files
 is made by a random name and removed at once, while no `RUN` runs, so it stays
 on disk, not in the container's memory ([ADR-0056]). ranikust runs from a
-sealed copy of its own binary in memory, about 12 MiB, so no `RUN` can change
-the code it runs ([ADR-0101]); if the kernel refuses that copy
+sealed copy of its own binary in memory, as large as the binary, so no `RUN`
+can change the code it runs ([ADR-0101]); if the kernel refuses that copy
 (`vm.memfd_noexec=2`), it makes an unnamed one in `TMPDIR` where that file
 system allows it, else builds on with a warning. After a build in the
 container was killed (ranikust not its first process), later builds there keep

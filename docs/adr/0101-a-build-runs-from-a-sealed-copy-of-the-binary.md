@@ -65,15 +65,17 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   unmount or remount it.
 - **Only where root may mount.** The overlay's file is the installed file:
   the copy runs that file's own pages, and the kernel does not refuse a
-  write to the installed file while it runs [measured]. So it is tried
-  only where the
-  build's own check finds root may mount (the steps of
+  write to the installed file while it runs [measured]. So it is tried only
+  where the build's own check finds root may mount (the steps of
   `enter_build_namespace`, run in a child that then exits), which never
   builds on `/`: kaniko mode on `/` runs only where root may not mount
   ([ADR-0054](0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)),
-  and there a `RUN` reaches the installed file. Kaniko mode on `/` always
-  takes the memfd, even where `fsmount` works but `mount(2)` does not
-  (Docker `--cap-add SYS_ADMIN` under AppArmor's `docker-default`).
+  and there a `RUN` reaches the installed file. Kaniko mode on `/` never
+  takes the overlay (the memfd, else the `O_TMPFILE` copy, else none,
+  warned), even where `fsmount` works but `mount(2)` does not (Docker
+  `--cap-add SYS_ADMIN` under AppArmor's `docker-default`); should the two
+  checks ever disagree, `Direct` on `/` refuses to start from an overlay
+  copy.
 - **Writes outside the state directory.** The overlay's empty layer, a
   directory `.ranikust-seal-<pid>-<n>`, and the `O_TMPFILE` copy go to
   `TMPDIR`: the state directory is not checked yet. The directory lives
@@ -130,7 +132,10 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   `/`, could already replace it by name. With the overlay a write to it
   reaches the running copy [measured]; the overlay is used only where no
   `RUN` reaches the installed file, and whoever else may write that file
-  could already replace it before the build.
+  could already replace it before the build. An in-place rewrite of the
+  installed file during such a build (a `cp` over it, an upgrade that does
+  not rename) now succeeds and breaks the running build: replace the
+  binary by renaming a new file over it.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy (`nosuid`; a memfd has none). ranikust
   uses neither.

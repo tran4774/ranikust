@@ -27,7 +27,7 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
 0. **A sealed copy of the binary**
    ([ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
    `seal.rs`): right after the flags and the kernel check, a build runs
-   again from a copy of its binary no one can write, as runc does since 1.2
+   again from a copy of its binary no `RUN` can write, as runc does since 1.2
    (`libcontainer/exeseal`), so every process it forks, the `RUN` child
    until `execve` and the init, has that copy as `/proc/self/exe`. The ways,
    in order:
@@ -40,7 +40,9 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
      it. Its file runs the installed file's own pages, so "may mount" is
      the build's own check (step 1, run in a child that then exits): kaniko
      mode on `/`, where a `RUN` reaches the installed file, runs only where
-     it fails, and takes the memfd even where `fsmount` alone works;
+     it fails, and never takes the overlay, even where `fsmount` alone
+     works (`Sandbox::start_direct` refuses an overlay copy, should the
+     checks disagree);
    - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
      copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
      refuses it. It costs the binary's size in memory;

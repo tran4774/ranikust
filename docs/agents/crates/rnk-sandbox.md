@@ -189,7 +189,9 @@ What a change here must keep, with where it lives:
   the `O_TMPFILE` copy is `O_EXCL` and run read-only, and only `ETXTBSY`
   guards it. The copy gets back the core-file limit ranikust started with.
   When no way works the build goes on, warned.
-- **`Direct`:** no namespace, mount or capability change on `/`; the command
+- **`Direct`:** `start_direct` refuses to start from an overlay copy of
+  the binary (ADR-0101; the copy's gate keeps it unreachable). No
+  namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.
 - **Relay** (`relay.rs`): no `RUN` holds ranikust's stdout or stderr; each
@@ -243,8 +245,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   when the core-file limit cannot go back, one marker in the copy's
   environment, no overlay where a child's namespace steps fail, a memfd
   sealed against writes, an `O_TMPFILE` copy with no name, open
-  read-only), the
-  stub journal (placement through symlinks, removal,
+  read-only), the stub journal (placement through symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed

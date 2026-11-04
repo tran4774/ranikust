@@ -27,7 +27,7 @@ Evidence labels follow [`docs/research/TEMPLATE.md`](../research/TEMPLATE.md):
 
 | ID | Asset | Harm if lost |
 |---|---|---|
-| A1 | Host files outside the state directory, store, requested outputs and, in kaniko mode in a container, `/` | Data loss or host compromise |
+| A1 | Host files outside the state directory, store, requested outputs and, in kaniko mode in a container, `/` (ranikust writes there only the sealed copy of its binary, in `TMPDIR`, [ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)) | Data loss or host compromise |
 | A2 | The host's privileges: root, capabilities, the host's namespaces | Host compromise |
 | A3 | Registry credentials (docker `config.json`, credential helpers, tokens) | Registry takeover, supply-chain attack |
 | A4 | Build secrets (`RUN --mount=type=secret`, `--secret`) | Secret disclosure |
@@ -111,12 +111,12 @@ These follow from decisions and are documented to users rather than fixed:
   `#!` line names `/proc/self/exe` (or a symlink a parallel stage swaps in
   a shared cache between the child's check and `execve`) runs ranikust's
   own binary inside the sandbox, as runc's CVE-2019-5736. That binary is a
-  sealed copy no one can write
+  sealed copy no `RUN` can write
   ([ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)):
   a read-only overlay mounted nowhere where root may mount, else a sealed
   memfd, in every mode; kaniko mode on `/`, where a `RUN` reaches the
-  installed file whose pages the overlay's copy runs, always takes the
-  memfd. Its command line also refuses the script path
+  installed file whose pages the overlay's copy runs, never takes the
+  overlay. Its command line also refuses the script path
   and exits, and ranikust is non-dumpable, so no other `RUN` process opens
   that copy's `/proc/<pid>/exe`. Where neither copy can be made (no mount,
   `vm.memfd_noexec=2`), the copy is an `O_TMPFILE` file with no name, or,
