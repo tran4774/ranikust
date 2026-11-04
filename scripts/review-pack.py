@@ -7,7 +7,8 @@ or find the threat-model rows itself; this collects them for a branch against
 
 - the changed files, grouped by crate, and `git diff --stat`;
 - `graphify affected` for each changed Rust file, when graphify and a graph
-  are available (the graph is the main checkout's: it may lag the branch);
+  are available: only the dependants in other files (the graph is the main
+  checkout's: it may lag the branch);
 - the threat-model rows (T-ids) and design sections for the touched crates;
 - each touched crate's `# Boundaries` section.
 
@@ -160,10 +161,21 @@ def main():
                 text=True,
             )
             lines = [l for l in out.stdout.splitlines() if l.startswith("- ")]
+            # Hits inside the changed file itself are the diff, not its blast radius.
+            others = [l for l in lines if f" {f}:" not in l]
             print(f"### {f}\n")
-            print("\n".join(lines[:25]) if lines else "(no node in the graph: a new file?)")
-            if len(lines) > 25:
-                print(f"... {len(lines) - 25} more")
+            if out.returncode != 0:
+                print(f"(graphify failed: {out.stderr.strip() or out.stdout.strip()})")
+            elif "No unique node match" in out.stdout or "No node matching" in out.stdout:
+                print("(no node in the graph: a new file, or the graph lags the branch)")
+            elif not lines:
+                print("(graphify lists no dependants; crate roots and re-exports are not tracked)")
+            elif not others:
+                print(f"(only hits inside {f}: nothing else in the graph depends on it)")
+            else:
+                print("\n".join(others[:25]))
+                if len(others) > 25:
+                    print(f"... {len(others) - 25} more")
             print()
 
     ids = sorted({t for c in crates for t in CRATES[c][0]}, key=lambda t: int(t[1:]))

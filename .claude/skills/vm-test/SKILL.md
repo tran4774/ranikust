@@ -35,8 +35,8 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
 - **`e2e`** for a change to the e2e harness or to how builders are
   compared. **`ultra`** (nextjs-kaniko's W1–W3, tens of minutes per round)
   only when the maintainer asks for performance numbers or an acceptance run
-  (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`), never on a fork's
-  own initiative (docs/testing.md#which-test-for-what).
+  (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`), never on an
+  agent's own initiative (docs/testing.md#which-test-for-what).
 - `secrets`, `push`, `e2e` and `ultra` run only when named. A change to
   kaniko mode on `/`, the store's anonymous mode or `Isolation::Direct`
   reruns `secrets`. `push` needs the host's test registries

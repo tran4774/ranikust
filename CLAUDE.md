@@ -126,34 +126,64 @@ Subagents (`.claude/agents/`; when to use each:
 - `scribe` (sonnet): records the maintainer's decisions as ADRs and syncs
   docs with a diff.
 - `bench-runner` (sonnet): W1–W3 and benchmarks, when no other VM runs.
+- `implementer` (opus, own worktree): every implementation, fix or
+  refactor, in a fresh context instead of a fork (`ADR-0097`); it runs
+  the `reviewer` rounds itself.
+- `Explore` (haiku): "where is" questions; overrides the built-in.
 
-Delegating to subagents (keeps their start-up cheap):
+Delegating to subagents (fresh, bounded contexts, `ADR-0097`; the
+procedure and the brief template: [workflow.md](docs/agents/workflow.md#context-budget)):
 
-- `host-safety` and `upstream-oracle` cannot run Bash, so they cannot query
-  graphify. For `host-safety`, `just review-pack <branch>` prints the brief
-  (changed files, `graphify affected`, threat-model rows, design sections,
-  crate boundaries); add the requirement. For `upstream-oracle`, pass the
-  checkout paths (`${KANIKO_SRC:-../kaniko}`, `../buildkit`) and
+- Implementation goes to `implementer`, never a fork: forks are off
+  (`CLAUDE_CODE_FORK_SUBAGENT=0` in `.claude/settings.json`); the
+  maintainer starts one session with them on
+  (`CLAUDE_CODE_FORK_SUBAGENT=1 claude`) when the conversation itself is
+  the input. Brief by reference: the issue text, the branch (and its
+  worktree, for a follow-up), the files, ADRs and design sections, the
+  acceptance criteria, the decisions made.
+- `host-safety` and `upstream-oracle` cannot run Bash, so they cannot
+  query graphify or read GitHub: `just review-pack <branch>` prints the
+  brief for `host-safety` (add the requirement); `upstream-oracle` gets
+  the checkout paths (`${KANIKO_SRC:-../kaniko}`, `../buildkit`) and
   `graphify query "<question>" --graph <checkout>/graphify-out/graph.json`
-  output when that graph exists (build it with `graphify update <checkout>`).
-- `reviewer` gets only the scope and the requirement; it runs graphify
-  itself.
-- Subagents that cannot run Bash cannot read GitHub: pass them
-  the issue text they need. `just docs-lint` checks the decision records
-  after a merge.
-- Pick the model by the task: `haiku` for locating code, `sonnet` for
-  reading, summarising, recording and measuring, `opus` only for review,
-  host-safety and red-team judgement.
-- Continue a finished agent with `SendMessage` rather than starting a new
-  one for a follow-up question.
+  output when that graph exists; both get the issue text they need.
+- `reviewer` gets only the scope and the requirement; it runs graphify.
+- Models: `haiku` locates (`Explore`), `sonnet` reads, records and
+  measures (the default for a subagent that names none,
+  `CLAUDE_CODE_SUBAGENT_MODEL`), `opus` implements, reviews, host-safety
+  and red-team.
+- An `implementer` or `Explore` hand-back is at most 40 lines; reviewers
+  report their findings in full. Follow up an agent that answered within
+  the hour with `SendMessage` (its cache lives one hour); later, start a
+  new agent briefed with the branch, its worktree, the commit range and
+  the findings.
+- No polling: background work notifies; anything that may run over five
+  minutes runs in the background. Independent read-only calls go in one
+  message.
+- Sessions and subagents compact at 300k tokens
+  (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`);
+  `/compact` at a task boundary while the cache is warm; a new task starts
+  a new session from a brief.
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+The knowledge graph `graphify-out/graph.json` (gitignored; git hooks rebuild
+it in the main checkout) answers a codebase question in fewer tokens than
+grep: `graphify query "<question>"` first, `explain "<symbol>"` for one
+concept, `path "<A>" "<B>"` for a relationship, `affected "<symbol>"` for
+the blast radius of a change. Then read only the lines it names, in the
+same message, with no grep or cat to hedge. Exit 3 (ambiguous): retry with
+`path::Symbol` or the node id listed; exit 4, or `No unique node match`
+from `affected`: `rg`. Put this rule in every subagent brief that explores
+code and can run Bash; pass the output to one that cannot. An agent
+worktree has no graph: run `graphify` from the main checkout, or pass
+`--graph <main checkout>/graphify-out/graph.json`; never `graphify update`
+there. `GRAPH_REPORT.md` (140 KB) only for a broad architecture review.
 
-Rules:
-- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code and can run Bash (for read-only subagents, pass the query results instead). Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
+# Compact instructions
+
+Keep: the task and its issue number; the branch and the commits made; the
+maintainer's decisions, verbatim; the open findings of the last review
+round; what was verified (command and summary line) and what was not; the
+running agents and what each was asked. Drop tool output, file contents
+and finished hand-backs.

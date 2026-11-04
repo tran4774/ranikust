@@ -1,0 +1,12 @@
+# Kept out of the knowledge graph (ADR-0097): frozen records, reports, CI
+# and test harnesses answer no codebase question and only dilute queries.
+# gitignore syntax; .gitignore already excludes target/ and graphify-out/.
+docs/research/
+docs/security/audit/
+.github/
+.claude/skills/security-audit/
+.claude/worktrees/
+tests/vm/
+tests/smoke/
+tests/registry/
+licenses/

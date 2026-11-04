@@ -48,8 +48,8 @@ In order of weight:
   `rnk-builder`, `ranikust`, then `rnk-store`, `rnk-snapshot`, `rnk-sandbox`,
   `rnk-rootfs`.
 - One crate per branch: `refactor/<crate>-phase-<n>` from the latest `main`.
-  Several crates may run as parallel forks in separate worktrees; never two
-  on one crate.
+  Several crates may run as parallel `implementer` runs in separate
+  worktrees; never two on one crate.
 
 ## Per crate
 

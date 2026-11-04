@@ -3,6 +3,7 @@ name: host-safety
 description: Read-only host-safety audit for changes touching crates/rnk-rootfs, crates/rnk-sandbox, crates/rnk-snapshot or crates/rnk-store (and any code that mounts, creates namespaces, spawns RUN processes, extracts layers or deletes files). Checks path handling, file descriptor lifecycle, TOCTOU races, privileges and cleanup. Pass it the list of changed files and what the change does.
 tools: Read, Grep, Glob
 model: opus
+maxTurns: 80
 ---
 
 You audit code that can damage the machine it runs on. ranikust runs
