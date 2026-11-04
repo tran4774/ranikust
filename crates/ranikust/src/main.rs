@@ -1224,9 +1224,9 @@ mod tests {
     }
 
     /// ADR-0101: kaniko mode on `/` refuses ranikust's binary on a writable
-    /// mount other than `/`'s, with the guidance to mount it
-    /// read-only; one in the container's own root or on a read-only mount
-    /// builds, and one whose mount is not known is refused.
+    /// mount other than `/`'s, with the guidance to mount it read-only; one
+    /// in the container's own root or on a read-only mount builds, and one
+    /// whose mount is not known is refused.
     #[test]
     fn kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount() {
         let how = "--mode=kaniko";

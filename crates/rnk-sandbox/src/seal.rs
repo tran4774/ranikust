@@ -125,7 +125,7 @@ impl BinaryMount {
             "rw" => Some(Self::Writable),
             "noid" => Some(Self::NoMountId),
             _ => {
-                // A malformed marker is not believed: `copy_run` warns.
+                // A malformed marker is not believed: the run ends unsealed, with why.
                 let raw: i32 = token.strip_prefix("unknown:")?.parse().ok()?;
                 // Only a number the kernel gives: rustix panics on others.
                 (1..4096)

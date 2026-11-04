@@ -125,9 +125,11 @@ The decision:
   refuses one whose mount it cannot tell: a mount id of 0, which qemu-user's
   `statx` gives for every file and Linux 6.8 and 7.0 give a memfd
   [measured], or a failed call, each with its own guidance; a fallback
-  through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the container's own root,
-  or on a read-only mount, builds; overlay mode and kaniko mode per stage do
-  not check, since no `RUN` reaches the binary there. Why, as hardening: a
+  through `/proc/self/fdinfo` is
+  [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
+  container's own root, or on a read-only mount, builds; overlay mode and
+  kaniko mode per stage do not check, since no `RUN` reaches the binary
+  there. Why, as hardening: a
   `RUN` there is root on the container's `/`, and once the build no longer
   executes the installed file, `ETXTBSY` no longer guards it, so a `RUN`
   could alter a binary bound from outside the container. The maintainer
@@ -199,9 +201,9 @@ The decision:
   pull request that closes #32, from the commit "feat(sandbox): bind
   ranikust's binary read-only over itself (ADR-0082)" to its revert,
   "revert: drop the read-only bind over the binary's path (ADR-0101)",
-  before merge; T2, the VM, Linux 6.8), after a read-only bind
-  over the binary's path in the build's mount namespace, `/proc/self/exe`
-  of the running process still named the original mount, not the bind's.
+  before merge; T2, the VM, Linux 6.8), after a read-only bind over the
+  binary's path in the build's mount namespace, `/proc/self/exe` of the
+  running process still named the original mount, not the bind's.
 - runc [external], v1.0.0-rc7 (commits `0a8e4117e7f7`, the CVE-2019-5736
   fix, and `16612d74de5f`, the bind): `libcontainer/nsenter/cloned_binary.c`
   executes `runc init` from a read-only bind of `/proc/self/exe` where it

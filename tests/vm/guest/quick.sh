@@ -69,8 +69,8 @@ adr0054_refusals() {
 }
 
 # ADR-0101: kaniko mode on a container's `/` refuses its binary on a
-# writable mount from outside the container (a file or a directory bound
-# without `:ro`), with the guidance to mount it read-only, before its state
+# writable mount other than `/`'s (here a file or a directory bound from the
+# host without `:ro`), with the guidance to mount it read-only, before its state
 # directory is made; bound `:ro`, or copied into the container's own root,
 # it builds. The binds are of a copy: a refusal that failed could not touch
 # the binary the suite runs.
