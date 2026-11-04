@@ -776,17 +776,16 @@ fn refuse_unsafe_slash(
 }
 
 /// Kaniko mode on `/` refuses ranikust's binary on a writable mount other
-/// than `/`'s, one from outside the container (ADR-0101): a `RUN`, root on
-/// `/`, reaches it, and the build no longer runs it. A binary in the
+/// than `/`'s, a bind mount or a volume (ADR-0101): a `RUN`, root on `/`,
+/// could alter it, and the build no longer runs it. A binary in the
 /// container's own root, or on a read-only mount, builds; one whose mount
 /// is not known is refused.
 fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), Failure> {
     match binary {
         Some(BinaryMount::Root | BinaryMount::ReadOnly) => Ok(()),
         Some(BinaryMount::Writable) => Err(Failure::error(format!(
-            "{how}: kaniko mode on / with ranikust's binary on a writable mount from outside the \
-             container (a bind mount or a volume) would let RUN change that file outside the \
-             container"
+            "{how}: kaniko mode on / with ranikust's binary on a writable mount other than /'s (a \
+             bind mount or a volume) would let RUN alter that file"
         ))
         .with_guidance(
             "mount the binary read-only: Docker -v <binary>:/ranikust/bin/ranikust:ro, Kubernetes \
@@ -1225,7 +1224,7 @@ mod tests {
     }
 
     /// ADR-0101: kaniko mode on `/` refuses ranikust's binary on a writable
-    /// mount from outside the container, with the guidance to mount it
+    /// mount other than `/`'s, with the guidance to mount it
     /// read-only; one in the container's own root or on a read-only mount
     /// builds, and one whose mount is not known is refused.
     #[test]
@@ -1239,9 +1238,7 @@ mod tests {
             writable
                 .message
                 .starts_with("--mode=kaniko: kaniko mode on / ")
-                && writable
-                    .message
-                    .contains("writable mount from outside the container"),
+                && writable.message.contains("writable mount other than /'s"),
             "{}",
             writable.message
         );

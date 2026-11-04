@@ -85,7 +85,7 @@ binary_mounts_on_slash() {
     rc=0
     out="$(sudo docker run --rm -v "${how#*:}" -v "$ctx:/ranikust/ctx:ro" "$BASE" \
       sh -c "/ranikust/bin/ranikust$run" 2>&1)" || rc=$?
-    if [ "$rc" != 1 ] || ! grep -q 'writable mount from outside the container' <<<"$out" ||
+    if [ "$rc" != 1 ] || ! grep -q "writable mount other than /'s" <<<"$out" ||
       ! grep -q 'ranikust/bin/ranikust:ro' <<<"$out" || grep -q STATE-MADE <<<"$out"; then
       echo "error: binary mounts: a ${how%%:*} bound read-write: exit $rc, want 1, the :ro guidance, no state" >&2
       echo "$out" >&2

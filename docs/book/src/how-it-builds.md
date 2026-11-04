@@ -179,8 +179,8 @@ without `readOnly: true`), which a `RUN` could alter: mount it read-only
 when it cannot tell which mount its binary is on, as under an emulator such as
 qemu-user or when started from a memfd: run ranikust natively, from a regular
 file. Devices you give the container with `--device` stay reachable by a
-`RUN`: ranikust cannot
-tell them from the container's own, so pass only what the build needs.
+`RUN`: ranikust cannot tell them from the container's own, so pass only what
+the build needs.
 
 **A volume as state directory.** A volume at `/var/lib/ranikust` works, one
 per container.

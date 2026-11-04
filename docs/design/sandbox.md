@@ -52,9 +52,9 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    an interpreter (binfmt_misc, with or without `O`; a `#!` line) is
    refused before the exec (`ENOENT`), and the next way is tried. The
    copy's run makes no copy, checks `/proc/self/exe` (the memfd's seals,
-   or no link), takes its name from
-   `argv[0]` again and logs at debug the way, the binary's mount and why
-   each way before it failed. When no way works, or the check fails, the
+   or no link), takes its name from `argv[0]` again and logs at debug the
+   way, the binary's mount and why each way before it failed. When no way
+   works, or the check fails, the
    build goes on with a warning, the binary's mount then measured on the
    file it runs from. `ranikust` refuses kaniko mode on `/` with the binary
    on a writable mount other than `/`'s, or on one it cannot tell

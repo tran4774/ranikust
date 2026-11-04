@@ -73,9 +73,9 @@ impl fmt::Display for SealedCopy {
 }
 
 /// Which mount the binary ranikust started from is on, against the mount
-/// of `/` (ADR-0101). In a container, a file on another mount that is
-/// writable came from outside it (a bind mount or a volume), and no longer
-/// runs while the build runs from its copy.
+/// of `/` (ADR-0101). In a container, a file on another writable mount (a
+/// bind mount or a volume) is one a `RUN` on `/` could alter, and it no
+/// longer runs while the build runs from its copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryMount {
     /// On the mount of `/`: in a container, its own root.
@@ -125,6 +125,7 @@ impl BinaryMount {
             "rw" => Some(Self::Writable),
             "noid" => Some(Self::NoMountId),
             _ => {
+                // A malformed marker is not believed: `copy_run` warns.
                 let raw: i32 = token.strip_prefix("unknown:")?.parse().ok()?;
                 // Only a number the kernel gives: rustix panics on others.
                 (1..4096)
@@ -242,6 +243,8 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
     found.unwrap_or_else(BinaryMount::Unknown)
 }
 
+// Opening `/proc/self/exe` fails with an errno; `EIO` only stands in for
+// an error that has none, which `open` never gives.
 fn errno_of(e: &io::Error) -> Errno {
     Errno::from_io_error(e).unwrap_or(Errno::IO)
 }
@@ -494,16 +497,17 @@ fn execute(copy: &OwnedFd, marker: &str) -> io::Result<Infallible> {
     // (binfmt_misc, which runs an emulator, or a `#!` line) before the
     // point of no return, and the next way is tried.
     // SAFETY: the empty path, every string and both null-terminated arrays
-    // outlive the call; `execveat` returns only on failure, changing
-    // nothing.
+    // outlive the call; the integers are passed as `long`, the width
+    // `syscall` reads its variadic arguments at; `execveat` returns only on
+    // failure, changing nothing.
     unsafe {
         libc::syscall(
             libc::SYS_execveat,
-            copy.as_raw_fd(),
+            libc::c_long::from(copy.as_raw_fd()),
             c"".as_ptr(),
             argv.as_ptr(),
             envp.as_ptr(),
-            libc::AT_EMPTY_PATH,
+            libc::c_long::from(libc::AT_EMPTY_PATH),
         )
     };
     Err(io::Error::last_os_error())

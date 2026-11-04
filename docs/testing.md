@@ -697,9 +697,10 @@ Exceptions, all from emulation (the native CI job runs them all):
   skipped: the filter is written for aarch64 syscall numbers, and qemu-user
   cannot install it in the x86_64 host kernel.
 - The tests that spawn an aarch64 binary themselves (ranikust's `cli` and
-  `metrics`, rnk-store's `processes`): without a binfmt_misc entry for
-  aarch64 the kernel cannot execute it, so the recipe skips them with a
-  warning.
+  `metrics`, rnk-store's `processes`, rnk-sandbox's
+  `seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`):
+  without a binfmt_misc entry for aarch64 the kernel cannot execute it, so
+  the recipe skips them with a warning.
 
 Real aarch64 hardware is Phase 6.
 

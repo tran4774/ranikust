@@ -50,8 +50,8 @@ binary.
 Chosen option: (y). At start-up a build runs again from a sealed memfd copy
 of ranikust's binary, else an `O_TMPFILE` copy; when neither works it
 builds on from the installed binary with today's barriers and a warning.
-Kaniko mode on `/` refuses a binary on a writable mount from outside the
-container, sealed or not (below).
+Kaniko mode on `/` refuses a binary on a writable mount other than `/`'s,
+or on one it cannot tell, sealed or not (below).
 The maintainer chose (x) first, 2026-11-04 ("tất cả theo khuyến nghị", all
 as recommended). Building it showed the overlay's limits; asked whether to
 keep the overlay first, the maintainer answered on 2026-11-04: "Luôn dùng
@@ -106,7 +106,8 @@ The decision:
   ([ADR-0051](0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)).
   Seeing the variable, the copy makes no copy (no loop), checks
   `/proc/self/exe` (the memfd's seals, or no link), takes its name from
-  `argv[0]` again, and logs the way and the ways passed over at debug.
+  `argv[0]` again, and logs the way, the ways passed over and the binary's
+  mount at debug.
 - **Fallback.** When both ways fail, or the copy's check fails, the build
   goes on with a warning and the three barriers ADR-0082 lists. No refusal,
   but the one below. Only when a copy did not run and the core-file limit
@@ -124,13 +125,14 @@ The decision:
   refuses one whose mount it cannot tell: a mount id of 0, which qemu-user's
   `statx` gives for every file and Linux 6.8 and 7.0 give a memfd
   [measured], or a failed call, each with its own guidance; a fallback
-  through `/proc/self/fdinfo` is #95. A binary in the container's own root,
+  through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the container's own root,
   or on a read-only mount, builds; overlay mode and kaniko mode per stage do
   not check, since no `RUN` reaches the binary there. Why, as hardening: a
   `RUN` there is root on the container's `/`, and once the build no longer
   executes the installed file, `ETXTBSY` no longer guards it, so a `RUN`
   could alter a binary bound from outside the container. The maintainer
-  decided, on 2026-11-04 (the last three recorded on #32):
+  decided, on 2026-11-04 (the last three
+  [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -142,7 +144,8 @@ The decision:
     the same file system, like one from outside (ranikust cannot tell
     where a mount comes from):
     "Accept, refuse it too (khuyến nghị)";
-  - not to read the mount id from `/proc/self/fdinfo` yet, filed as #95:
+  - not to read the mount id from `/proc/self/fdinfo` yet, filed as
+    [#95](https://github.com/tran4774/ranikust/issues/95):
     "Not yet, task issue linked to #68 (khuyến nghị)".
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
@@ -192,9 +195,11 @@ The decision:
 
 ## Evidence
 
-- The bind does not work [measured]: with ADR-0082's bind built (commits
-  `0cfbb80` to `fc22d06` of the pull request that closes #32, reverted by
-  `1081130` before merge; T2, the VM, Linux 6.8), after a read-only bind
+- The bind does not work [measured]: with ADR-0082's bind built (in the
+  pull request that closes #32, from the commit "feat(sandbox): bind
+  ranikust's binary read-only over itself (ADR-0082)" to its revert,
+  "revert: drop the read-only bind over the binary's path (ADR-0101)",
+  before merge; T2, the VM, Linux 6.8), after a read-only bind
   over the binary's path in the build's mount namespace, `/proc/self/exe`
   of the running process still named the original mount, not the bind's.
 - runc [external], v1.0.0-rc7 (commits `0a8e4117e7f7`, the CVE-2019-5736
@@ -247,15 +252,15 @@ The decision:
   binary bound read-write or `:ro` and for `/` alike, where
   `/proc/self/fdinfo` gives each its own id; read as equal ids, both binds
   measured `Root`. A zero id is now `NoMountId`, which kaniko mode on `/`
-  refuses; a fallback through `/proc/self/fdinfo` is #95.
+  refuses; a fallback through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95).
 - A memfd's and an `O_TMPFILE` file's mount [measured] (the VM, Linux 6.8,
-  as root and in a default Docker container; this machine, Linux 7.0):
-  `statx` and `/proc/self/fdinfo` both give a memfd the mount id 0 (its
-  file system `0x1021994`, the kernel's internal tmpfs), and an `O_TMPFILE`
-  file the id of the directory's mount. ranikust started by a launcher from
-  a memfd, in kaniko mode on a container's `/`, is refused as `NoMountId`
-  with the guidance to run it from a regular file; so the fdinfo fallback
-  would not place a memfd.
+  as root and in a default Docker container; the memfd also on the
+  developer's machine, Linux 7.0): `statx` and `/proc/self/fdinfo` both
+  give a memfd the mount id 0 (its file system `0x1021994`, the kernel's
+  internal tmpfs), and an `O_TMPFILE` file the id of the directory's
+  mount. ranikust started by a launcher from a memfd, in kaniko mode on a
+  container's `/`, is refused as `NoMountId` (exit 1); so the fdinfo
+  fallback would not place a memfd.
 - `O_TMPFILE` [measured]: in a default Docker container on Ubuntu's Linux
   6.8, `O_TMPFILE` in the container's overlayfs `/tmp` failed with
   `EOPNOTSUPP`; on OrbStack's Linux 7.2 it worked.
