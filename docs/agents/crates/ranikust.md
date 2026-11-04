@@ -111,8 +111,8 @@ Each step before the next; design in
    (ADR-0101) runs the process again from a sealed copy of the binary,
    which starts over at step 0; the copy's run logs the way at debug after
    step 3, or a warning when no way worked (the build goes on).
-   `RANIKUST_DEBUG_FAULT=seal-memfd|seal-tmpfile|seal-none` skips the ways
-   before the one named.
+   `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd, `seal-none` both
+   ways.
 3. `--metrics-file` refused in the build context or through a symlink
    (`check_metrics_file`, ADR-0076); `rnk_metrics::init` (no thread);
    `--metrics-file` over `RANIKUST_METRICS_FILE` (ADR-0037).
@@ -262,9 +262,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--help`, `version`, refusals and validation; the kernel refusal, the
   seccomp message and the emulator message (Rosetta) through
   `RANIKUST_DEBUG_FAULT=kernel-missing|kernel-blocked|kernel-hidden`;
-  `a_build_runs_from_a_sealed_copy_made_once` (a memfd as a user, once,
-  the overlay logged as passed over; `seal-tmpfile`, `seal-none` and a
-  marker set from outside, which warns);
+  `a_build_runs_from_a_sealed_copy_made_once` (a memfd, once, no way
+  passed over; `seal-tmpfile`, `seal-none` and a marker set from
+  outside, which warns);
   `--metrics-file` over the variable; the report on every exit path, panic
   included (`RANIKUST_DEBUG_FAULT=panic|error`); a refused flag exits 2 before
   any work (no state directory, the value never echoed, no `RANIKUST_*`
@@ -288,8 +288,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   overlay mode's set-up leaves nothing, a ramfs state directory refused, root
   without `CAP_SYS_ADMIN` refused before the state directory exists);
   `slash_lock_refuses_a_second_build`, whose first build on `/` must run
-  from a sealed memfd (ADR-0101), as must a build on `/` with
-  `--cap-add SYS_ADMIN` (`rt_sysadmin_slash_runs_from_a_memfd`);
+  from a sealed memfd (ADR-0101);
   `adr0054_refusals` (kaniko mode on `/` refused with `--privileged` and
   with `systempaths=unconfined`, before anything is pulled);
   `rt_auto_privileged_container` (`--mode=auto` in a `--privileged`

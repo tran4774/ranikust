@@ -32,8 +32,9 @@ root it makes, in one state directory (`--state-dir`, default
 `/var/lib/ranikust`); there is no work-directory flag
 ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 It never writes outside the state directory, the requested outputs and, in
-kaniko mode in a container, `/`, but for what making the sealed copy of
-its binary puts in `TMPDIR` ([host safety](#host-safety)).
+kaniko mode in a container, `/`, but for the `O_TMPFILE` fallback of the
+sealed copy of its binary, a file with no name in `TMPDIR`
+([host safety](#host-safety)).
 
 ## Code map
 
@@ -143,8 +144,7 @@ the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
 **Must not** snapshot or diff a root, mount or probe overlays
-(`rnk-snapshot`; `rnk-sandbox`'s one overlay, never attached, seals
-ranikust's own binary), or look up users on the host.
+(`rnk-snapshot`), or look up users on the host.
 
 ### `rnk-snapshot`
 
@@ -310,9 +310,9 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 
 - Nothing is written outside the state directory or store, the requested
   outputs and, in kaniko mode in a container, `/`. One exception, made
-  before the state directory is checked: the sealed copy of the binary
-  puts an empty directory, removed within the set-up (left, empty, by a
-  `SIGKILL` there), or a file with no name in `TMPDIR`
+  before the state directory is checked: where the kernel refuses the
+  sealed memfd copy of the binary, its `O_TMPFILE` fallback, a file with
+  no name in `TMPDIR`, gone with the build
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
 - Every path that comes from an image, a context or a Dockerfile is reached
   through `rnk_rootfs::RootPath`, never through `std::fs` on a joined host

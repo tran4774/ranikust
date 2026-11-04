@@ -15,10 +15,9 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 ## Owns
 
 - The sealed copy of ranikust's binary a build runs from (`seal.rs`,
-  ADR-0101): a read-only overlay of the binary's directory mounted nowhere,
-  where `enter_build_namespace`'s steps succeed in a child, else a sealed
-  memfd, else an `O_TMPFILE` copy, run with `execve`; the copy's run,
-  marked by `RANIKUST_SEALED_COPY`, checks it and never makes another.
+  ADR-0101): a sealed memfd, else an `O_TMPFILE` copy, run with `execve`;
+  the copy's run, marked by `RANIKUST_SEALED_COPY`, checks it and never
+  makes another.
 - Process set-up, called by `ranikust` while single-threaded: private mount
   namespace, spawner thread, stub-journal replay; and the probe of its own
   steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
@@ -39,9 +38,8 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 
 - Look up users on the host or parse `/etc/passwd` itself (`rnk-rootfs`);
-  snapshot, diff or mount stage roots or probe overlays (`rnk-snapshot`;
-  the seal's overlay of ranikust's own binary, never attached, is the one
-  exception); pick the mode (`ranikust`).
+  snapshot, diff or mount stage roots or probe overlays (`rnk-snapshot`);
+  pick the mode (`ranikust`).
 - Use a bare `chroot` where mounting is possible; `unshare` once threads
   exist; clone a `RUN` anywhere but on the spawner thread.
 - Allocate, lock, format or panic between `clone` and `execve`.
@@ -53,7 +51,7 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 
 ```rust
 pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execve from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed(why)); Err only when RLIMIT_CORE cannot go back to 0
-pub enum SealedCopy { Overlay, Memfd, Tmpfile }  // ALL: the order tried
+pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
 pub enum Sealing { Sealed { way: SealedCopy, passed_over: String }, Unsealed(String) } // passed_over: why the ways before failed
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
@@ -63,7 +61,7 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060)
-    pub fn start_direct() -> Result<Self>;                   // kaniko mode on / (ADR-0051): Direct on / only; no directory or journal; the process becomes a child subreaper; Error::OverlayCopyOnSlash where the seal marker names the overlay (ADR-0101)
+    pub fn start_direct() -> Result<Self>;                   // kaniko mode on / (ADR-0051): Direct on / only; no directory or journal; the process becomes a child subreaper
     #[cfg(test)] pub(crate) fn start_with_root(..) -> Result<Self>; // the Direct chroot off /, test-only (ADR-0060)
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);  // every later RUN starts with it (ranikust's limit before its raise)
@@ -179,22 +177,14 @@ What a change here must keep, with where it lives:
   swapped after the check run ranikust's binary in the sandbox, which refuses
   its arguments; that binary is the sealed copy (ADR-0101).
 - **Sealed copy** (ADR-0101): every process ranikust forks, the init
-  included, runs the copy, so no `RUN` reaches a binary it could write. The
-  overlay copy runs the installed file's pages: it is made only where the
-  build's own namespace steps succeed (in a child), never for kaniko mode
-  on `/`; it must have the running binary's inode number, size and time,
-  its mount must be attached nowhere, and its empty layer, in `TMPDIR`, is
-  removed once mounted; the memfd is sealed
-  `SEAL|SHRINK|GROW|WRITE`, made with `MFD_EXEC` where the kernel knows it;
-  the `O_TMPFILE` copy is `O_EXCL` and run read-only, and only `ETXTBSY`
-  guards it. The copy gets back the core-file limit ranikust started with.
-  When no way works the build goes on, warned.
-- **`Direct`:** `start_direct` refuses (`Error::OverlayCopyOnSlash`) a
-  run whose `RANIKUST_SEALED_COPY` names the overlay, or no way (ADR-0101;
-  the copy's gate keeps it unreachable). No namespace, mount or
-  capability change on `/`; the command gets its own session, whose
-  process group is killed with `SIGKILL` once it exits (waited with
-  `WNOWAIT`). Details in the design doc's variants table.
+  included, runs the copy, so no `RUN` reaches a binary it could write.
+  The memfd is sealed `SEAL|SHRINK|GROW|WRITE`, made with `MFD_EXEC` where
+  the kernel knows it; the `O_TMPFILE` copy is `O_EXCL` and run read-only,
+  and only `ETXTBSY` guards it. The copy gets back the core-file limit
+  ranikust started with. When no way works the build goes on, warned.
+- **`Direct`:** no namespace, mount or capability change on `/`; the command
+  gets its own session, whose process group is killed with `SIGKILL` once it
+  exits (waited with `WNOWAIT`). Details in the design doc's variants table.
 - **Relay** (`relay.rs`): no `RUN` holds ranikust's stdout or stderr; each
   becomes a pipe, `fchown`ed to the `RUN`'s ids when not root, copied by one
   thread per `RUN`. Its read ends are non-blocking and it blocks only in
@@ -234,7 +224,7 @@ What a change here must keep, with where it lives:
 - **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries `Caps`), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets from memory), [#31](https://github.com/tran4774/ranikust/issues/31) (placed secret file whose target exists); tasks [#33](https://github.com/tran4774/ranikust/issues/33), [#34](https://github.com/tran4774/ranikust/issues/34), [#35](https://github.com/tran4774/ranikust/issues/35), [#39](https://github.com/tran4774/ranikust/issues/39), [#40](https://github.com/tran4774/ranikust/issues/40), [#82](https://github.com/tran4774/ranikust/issues/82) (`--seccomp`), [#83](https://github.com/tran4774/ranikust/issues/83) (`--userns`), [#88](https://github.com/tran4774/ranikust/issues/88) (bind targets against changes during set-up), [#89](https://github.com/tran4774/ranikust/issues/89) (host-safety attack suite across modes)
 - **Evidence:** [exp-02](../../research/experiments/02-run-sandbox.md) (sequence, escape, PDEATHSIG, bounding set, stubs, 1-2.5 ms), [exp-06a](../../research/experiments/06a-root-rerun.md) (real root), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (Docker probe matrix), [exp-12a](../../research/experiments/12a-fake-proc.md), [exp-14](../../research/experiments/14-real-builds-without-proc.md), [exp-15](../../research/experiments/15-java-next-concurrency.md), [exp-16](../../research/experiments/16-cgroup-v1-cpuset.md) (fake `/proc`, Java)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/commands/run.go:288` `runCommandInExec` (no namespaces; `:335` searches the process's `PATH`); `:356` and `:407` process-group kill (replaced by the PID namespace, kept for `Direct`); `:375` users from the process's `/etc/passwd`; `:83-135` cache mounts via `swapDir` (a bind here)
-- **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot`, `libcontainer` capabilities and `libcontainer/exeseal` (the sealed copy) <https://github.com/opencontainers/runc>
+- **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot`, `libcontainer` capabilities and `CloneBinary` (the sealed copy; `libcontainer/dmz` in v1.2.0, `libcontainer/exeseal` since v1.3.0) <https://github.com/opencontainers/runc>
 
 ## Tests
 
@@ -244,10 +234,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, the sealed copy (the order of the ways and the stop
   when the core-file limit cannot go back, one marker in the copy's
-  environment, no overlay where a child's namespace steps fail, a memfd
-  sealed against writes, an `O_TMPFILE` copy with no name, open
-  read-only, `Direct` refused for a marker naming the overlay), the stub
-  journal (placement through symlinks, removal,
+  environment, a memfd sealed against writes, an `O_TMPFILE` copy with
+  no name, open read-only), the stub journal (placement through
+  symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed
@@ -266,8 +255,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   descriptors, no stub in the layer). Not yet: the fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
-  (`src/probe.rs`); `an_overlay_copy_is_the_binary_read_only_and_mounted_nowhere`
-  (`src/seal/tests.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
+  (`src/probe.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
   (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
@@ -290,12 +278,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   is refused inside a plain chroot too; in the host variant it is sent
   SIGKILL and SIGINT during `RUN sleep 300` (and SIGKILL during a `RUN` that
   cleared its own death signal), which leave no `RUN` process, and builds in
-  overlay mode, kaniko mode per stage and with the overlay skipped while
+  overlay mode, kaniko mode per stage and with the memfd skipped while
   `tests/vm/guest/sealed-exe.py` checks that ranikust and its init run one
   sealed copy root cannot write (ADR-0101). The quick suite's kaniko mode
-  checks a build on a container's `/` runs from a sealed memfd, in a
-  default container and with `--cap-add SYS_ADMIN` (AppArmor denies
-  `mount`).
+  checks a build on a container's `/` runs from a sealed memfd.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid
