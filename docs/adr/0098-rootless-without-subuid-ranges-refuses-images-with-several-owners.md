@@ -22,12 +22,12 @@ Layers and `COPY --chown` set owners, so an image with several owners cannot
 be extracted or built as it is. With `newuidmap` ranges the usual map is
 `0 <uid> 1` and `1 <subuid> 65536` (`useradd` allocates 65536 ids by default),
 so an owner above 65536 fails the same way **[inferred]**. In a namespace
-ranikust did not create, with a map of 65536 ids, an owner outside it fails
-today in the middle of the build with a raw `chown <path>: Invalid argument`
-(the `chown` error of `apply_with` in `crates/rnk-rootfs/src/meta.rs`)
-**[code]**. What does a rootless user without subuid ranges get (#12, Q-040)?
-What does a build with ranges do with an owner outside them (#92), and where
-ranikust was started in the namespace? And how does the refusal find the owners,
+ranikust did not create, with the usual map above, an owner outside it fails
+today in the middle of the build with a raw error starting
+`chown <path>: Invalid argument` (the `chown` error of `apply_with` in
+`crates/rnk-rootfs/src/meta.rs`) **[code]**. What does a rootless user without subuid ranges get (#12, Q-040)?
+What does a build with ranges do with an owner outside them (#92), and what
+does a build do in a namespace ranikust was started in? And how does the refusal find the owners,
 and when (raised while planning Phase 3)?
 
 ## Considered Options
@@ -79,9 +79,9 @@ mode on `/` in a rootless Podman container (a second follow-up to #92):
 - (g) Apply the same scan and refusal, reading the map from `/proc/self/uid_map`
   and `gid_map`: the owner is named before the build, with the fix (widen the
   container's range).
-
-The alternative is today's behaviour, a failure in the middle of the build with
-a raw `chown` error that names no fix.
+- (h) Keep today's behaviour: a failure in the middle of the build with a raw
+  `chown` error that names no fix.
+- (i) Open a question and decide it later.
 
 ## Decision Outcome
 
@@ -99,9 +99,9 @@ refuses an owner outside that range the same way (the maintainer, 2026-11-04,
 asked as a follow-up to #92: "Từ chối như ADR-0098 (khuyến nghị)"). Where
 ranikust runs in a user namespace it did not create, such as kaniko mode on `/`
 in a rootless Podman container, the same scan and refusal apply, with the map
-read from `/proc/self/uid_map` and `gid_map`: option (g) (the maintainer,
-2026-11-04, asked as a second follow-up to #92: "Áp dụng cùng bản quét (khuyến
-nghị)").
+read from `/proc/self/uid_map` and `gid_map`: option (g), (1) as offered in
+the #92 comment (the maintainer, 2026-11-04, asked as a second follow-up to
+#92: "Áp dụng cùng bản quét (khuyến nghị)").
 
 - **Planned, Phase 3**
   ([#80](https://github.com/tran4774/ranikust/issues/80)). Nothing is built by
@@ -111,8 +111,9 @@ nghị)").
   already runs in a namespace it did not create (rootless Podman, kaniko mode on
   `/`), the refusal replaces today's failure mid-build once it is built.
 - **Scope.** Every user namespace a build's files are written in: one ranikust
-  creates for the build (rootless mode, `--userns`) or one it was started in
-  (for example rootless Podman). Not
+  creates for the build (rootless mode, `--userns`) or a non-initial one it was
+  started in (for example rootless Podman). Where the map covers every id, as
+  in the initial namespace, no owner can fall outside it. Not
   [ADR-0033](0033-network-none-loopback-through-a-user-namespace.md)'s
   user namespace for `RUN --network=none`, which owns only a network namespace:
   no file is written through it. With one mapped uid (a rootless user without
@@ -166,7 +167,7 @@ nghị)").
   (`/etc/shadow` shows group `65534` in a one-id map), so few **[inferred]**.
 - Bad, because podman's `ignore_chown_errors` users, such as HPC sites
   that cannot get ranges, have no flag to turn to.
-- Bad, because in every build in a user namespace each base blob is
+- Bad, because in every build in a non-initial user namespace each base blob is
   decompressed once more to read its headers: overlay mode downloads a blob,
   then extracts it
   ([ADR-0055](0055-stream-layers-keep-nothing-proportional-to-the-image.md)).

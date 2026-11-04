@@ -97,8 +97,9 @@ comes from a dedicated `ranikust` entry, refused where it is missing, option
   id map**, in the same state directory: the map's digest is part of the
   layer's key, so a layer extracted with real ids is never used under a map. It
   is one store, one lock protocol and one prune, with one extracted copy per
-  distinct map; it also covers a rootless user whose ranges change. How [#1](https://github.com/tran4774/ranikust/issues/1)
-  (Q-015, still open) names an extracted layer must include the map.
+  distinct map; it also covers a rootless user whose ranges change. How
+  [#1](https://github.com/tran4774/ranikust/issues/1) (Q-015, still open) names
+  an extracted layer must include the map.
 - **The init's uid stays unmapped in rootless mode too**, not only under
   `--userns`, since the code is the same. ADR-0083 (b) follows from running the
   init under a uid outside the command's map **[inferred]**.
