@@ -15,8 +15,7 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 ## Owns
 
 - Process set-up, called by `ranikust` while single-threaded: private mount
-  namespace, the read-only bind of ranikust's binary over itself in it
-  (ADR-0082), spawner thread, stub-journal replay; and the probe of its own
+  namespace, spawner thread, stub-journal replay; and the probe of its own
   steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
   the `Full` per-`RUN` sequence in an empty root (`probe.rs`) and reports
   only `root_entry`; the full probe and its guidance (uid map, `sysfs`, bind
@@ -54,7 +53,7 @@ pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
-    pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // after enter_build_namespace, binds the binary read-only over itself first (ADR-0082, Error::OwnBinary); replays journals; Full on any root, Direct on / only (ADR-0060)
+    pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060)
     pub fn start_direct() -> Result<Self>;                   // kaniko mode on / (ADR-0051): Direct on / only; no directory or journal; the process becomes a child subreaper
     #[cfg(test)] pub(crate) fn start_with_root(..) -> Result<Self>; // the Direct chroot off /, test-only (ADR-0060)
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
@@ -73,7 +72,7 @@ pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
-pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), OwnBinary { path, .. }, .. }
+pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), .. }
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve: no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
@@ -169,14 +168,8 @@ What a change here must keep, with where it lives:
   entering the root and switching user; a candidate through a magic link is
   refused (`ELOOP`). Not covered: a `#!/proc/self/exe` line or a symlink
   swapped after the check run ranikust's binary in the sandbox, which refuses
-  its arguments (threat model section 6).
-- **Own binary** (ADR-0082, `setup::bind_own_binary`): in a process that
-  entered the build namespace, `Sandbox::start` binds the running binary
-  read-only over itself there and checks it by path; a failure of the bind
-  refuses the full sandbox (`Error::OwnBinary`). `Sandbox::start_direct`, and a process
-  that never entered the namespace (tests), bind nothing. `/proc/<pid>/exe`
-  is unchanged. Procedure:
-  [design](../../design/sandbox.md#process-set-up-once-per-build).
+  its arguments; ADR-0082 (bind the binary read-only over itself, #32) is
+  not built.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.
@@ -230,10 +223,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   failure records, the stub journal (placement through symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
-  executing, mount sources and remount flags, the own-binary bind refused
-  before any mount (`src/setup.rs`), `Direct` refusals, the sealed heredoc
-  memfd, the relay (a surviving write end, a full stream, a `RUN` reading
-  its own stream back), the init's status records,
+  executing, mount sources and remount flags, `Direct` refusals, the sealed
+  heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
+  reading its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox
@@ -254,9 +246,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `the_run_is_pid_2_under_an_init_that_reports_its_status`;
   `red_team_no_run_outlives_the_thread_that_cloned_it`;
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
-  delays, threat model section 6; `a_running_binary_cannot_be_opened_for_writing`;
-  `the_binary_is_bound_read_only_over_itself`, with `open_tree` and by path:
-  `EROFS` through the path, `/proc/self/exe` unchanged),
+  delays, threat model section 6; `a_running_binary_cannot_be_opened_for_writing`),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.
 - **T2, VM smoke suite** (`tests/vm/guest/smoke.sh`, `just test-vm smoke`):
@@ -271,9 +261,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `ranikust` binary then builds `tests/smoke/e2e` in each environment and
   is refused inside a plain chroot too; in the host variant it is sent
   SIGKILL and SIGINT during `RUN sleep 300` (and SIGKILL during a `RUN` that
-  cleared its own death signal), which leave no `RUN` process; during the
-  latter, ranikust's binary is a read-only mount in ranikust's
-  `mountinfo` and in no other namespace's (ADR-0082).
+  cleared its own death signal), which leave no `RUN` process.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid

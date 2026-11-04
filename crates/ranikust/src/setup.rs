@@ -159,11 +159,6 @@ const SANDBOX_NO_PRIVILEGE: &str = "the RUN sandbox lacks a privilege here altho
 const SANDBOX_BLOCKED: &str = "the RUN sandbox cannot mount here: start the container with \
      --privileged for overlay mode, or without CAP_SYS_ADMIN for kaniko mode on its /";
 
-/// Guidance where the full sandbox cannot bind ranikust's binary read-only
-/// over itself (ADR-0082).
-const OWN_BINARY: &str = "run ranikust from a file that stays at its path for the whole build \
-     (not deleted, replaced or run from memory), or from a read-only mount";
-
 /// A build environment, set up: what the build hands to the libraries.
 pub(crate) struct Setup {
     /// The picked outcome.
@@ -234,7 +229,11 @@ pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Re
     };
     tracing::info!("ranikust: {outcome}");
     let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
-    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(start_refusal)?;
+    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| Refusal {
+        kind: Kind::Other,
+        reason: e.to_string(),
+        guidance: "",
+    })?;
     if userns_network {
         sandbox.allow_userns_network();
     }
@@ -391,7 +390,11 @@ pub(crate) fn set_up_kaniko(
         // leaves (ADR-0051).
         None => Sandbox::start_direct(),
     };
-    let mut sandbox = started.map_err(start_refusal)?;
+    let mut sandbox = started.map_err(|e| Refusal {
+        kind: Kind::Other,
+        reason: e.to_string(),
+        guidance: "",
+    })?;
     sandbox.set_nofile_limit(nofile);
     match &root {
         Some((_, path)) => tracing::info!(
@@ -530,19 +533,6 @@ fn prepare_state_dir(state_dir: &Path) -> Result<(), Refusal> {
         reason: refused.0,
         guidance: "",
     })
-}
-
-/// The refusal for a sandbox that did not start.
-fn start_refusal(e: SandboxError) -> Refusal {
-    let guidance = match &e {
-        SandboxError::OwnBinary { .. } => OWN_BINARY,
-        _ => "",
-    };
-    Refusal {
-        kind: Kind::Other,
-        reason: e.to_string(),
-        guidance,
-    }
 }
 
 /// The refusal for a failed [`rnk_sandbox::enter_build_namespace`].

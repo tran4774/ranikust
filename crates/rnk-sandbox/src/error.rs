@@ -323,19 +323,6 @@ pub enum Error {
     /// A filesystem operation inside the root failed.
     #[error(transparent)]
     Rootfs(#[from] rnk_rootfs::Error),
-    /// [`crate::Sandbox::start`] could not bind the running binary
-    /// read-only over itself in the build's mount namespace (ADR-0082): it
-    /// is no longer the file at its path (deleted, replaced, run from
-    /// memory), or a step of the bind failed.
-    #[error("cannot bind ranikust's binary {path:?} read-only over itself (ADR-0082): {source}")]
-    OwnBinary {
-        /// The binary's path as `/proc/self/exe` gave it, or
-        /// `/proc/self/exe` where reading the link failed.
-        path: PathBuf,
-        /// What failed.
-        #[source]
-        source: io::Error,
-    },
     /// A host-side I/O operation failed.
     #[error("{op} {path:?}: {source}")]
     Io {

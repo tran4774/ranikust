@@ -285,15 +285,6 @@ EOF
       { echo "error: the death-signal RUN never started" >&2; cat "$dlog" >&2; exit 1; }
     [ "$(sudo awk '/^NSpid:/ {print $NF}' "/proc/$(pgrep -x rnkdeath)/status")" = 2 ] ||
       { echo "error: the RUN's command is not PID 2 of its namespace" >&2; exit 1; }
-    # ADR-0082: while a RUN runs, ranikust's binary is a read-only mount of
-    # its own in ranikust's mount namespace, and in no other.
-    bin="$(readlink -f "$RNK")"
-    on_ro_bind='$5 == p && $6 ~ /^ro(,|$)/ { found = 1 } END { exit !found }'
-    sudo awk -v p="$bin" "$on_ro_bind" "/proc/$(pgrep -o -x ranikust)/mountinfo" ||
-      { echo "error: $bin is not bound read-only over itself in ranikust's namespace" >&2; exit 1; }
-    ! awk -v p="$bin" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo ||
-      { echo "error: the bind over $bin reached the VM's own mount namespace" >&2; exit 1; }
-    echo "host: ranikust's binary is bound read-only over itself in its own namespace only"
     sudo pkill -KILL -x ranikust
     wait $! || true
     for _ in $(seq 10); do pgrep -x rnkdeath >/dev/null || break; sleep 1; done

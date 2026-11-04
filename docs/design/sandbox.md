@@ -29,26 +29,11 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    (`--make-rslave`). From then on every build mount disappears with the
    process. In a multi-threaded process `unshare(CLONE_NEWNS)` silently moves
    only the calling thread, and `unshare(CLONE_NEWUSER)` fails with `EINVAL`.
-2. Where the full sandbox runs (`Sandbox::start`, after step 1), **bind
-   ranikust's own binary read-only over itself** in that namespace, before
-   any `RUN` is cloned from it
-   ([ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)):
-   the file `/proc/self/exe` names, looked up without symlinks by the path
-   it gave before step 1's `unshare` (once no process is left in the first
-   namespace, a file a container runtime bound in may read as `/`), checked
-   to be the same file (device and inode), bound by descriptor (`open_tree`,
-   or `mount(2)` where it is refused) and remounted read-only, then checked
-   again by path. Where that path is on a read-only mount already, nothing
-   is made. A failure of the bind refuses the build (`Error::OwnBinary`,
-   with guidance). The bind changes what the path names in ranikust's namespace,
-   which no `RUN` reaches (each enters its own root), not what
-   `/proc/<pid>/exe` names ([per-`RUN` step 8](#per-run-sequence)).
-   `Sandbox::start_direct` binds nothing, whether or not step 1 ran.
-3. Start one **spawner thread** that lives for the whole build. Every `RUN`
+2. Start one **spawner thread** that lives for the whole build. Every `RUN`
    child is cloned from it, never from tokio's `spawn_blocking`:
    `PR_SET_PDEATHSIG` fires when the parent *thread* exits, and blocking-pool
    threads are reaped when idle. Any thread may wait for the child.
-4. Replay the stub journals of previous crashed runs and remove their stubs.
+3. Replay the stub journals of previous crashed runs and remove their stubs.
    The replay trusts no symlink in the sandbox's directory and touches only
    roots below the state directory, so a planted journal or run directory
    cannot point it at host files. It opens a journal for I/O only once its
@@ -277,10 +262,11 @@ The steps, in order:
      host); `execve`. The check covers the candidate's path only: the kernel
      opens a `#!` script's interpreter itself, so a `#!/proc/self/exe` line, or
      a symlink swapped in after the check, still runs ranikust's binary in the
-     sandbox, which then refuses its arguments (threat-model section 6). The
-     read-only bind of set-up step 2 does not change this: `/proc/self/exe`
-     of the child names the file on the mount ranikust was executed from, not
-     the bind.
+     sandbox, which then refuses its arguments (threat-model section 6).
+     [ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)
+     has the full sandbox bind the binary read-only over itself (not built yet,
+     [#32](https://github.com/tran4774/ranikust/issues/32)); `Direct` on `/`
+     keeps these barriers.
 
 Between `clone` and `execve` the child of a multi-threaded process only makes
 system calls on arguments built before the clone: no allocation, no lock. A

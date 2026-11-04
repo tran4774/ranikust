@@ -1,4 +1,4 @@
-# Red team (T7, threat model section 6): a script whose interpreter is
+# Red team (T7, open question Q-422): a script whose interpreter is
 # /proc/self/exe, run as the RUN's command itself. The kernel opens the
 # interpreter while the RUN child is still a copy of ranikust, so ranikust's
 # binary runs, with the script as its first argument; its command line must
