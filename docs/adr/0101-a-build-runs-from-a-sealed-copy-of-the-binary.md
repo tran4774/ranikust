@@ -117,16 +117,16 @@ The decision:
 - **A binary on a writable mount, in kaniko mode on `/`.** Before any copy,
   ranikust measures which mount the binary it started from is on (`statx`
   `STATX_MNT_ID` against `/`'s, `statvfs` `ST_RDONLY`) and, on another
-  read-only mount or on a root that is not overlayfs, whether another
+  read-only mount or on a root that is not an overlay, whether another
   writable mount reaches the file: whether it has more than one hard link,
   and whether another writable mount of its file system in
-  `/proc/self/mountinfo` (the `major:minor` of the line of the
-  binary's own mount, not `statx`'s `st_dev`, which differs on btrfs
-  subvolumes) has a root that contains the binary's path in that
-  file system (its own mount's root joined with its path below that
-  mount; paths compared by component, never opened). It passes the answer
-  to the copy in the variable; a run that ends without a checked copy
-  measures the file it runs from instead. Kaniko mode on `/` refuses,
+  `/proc/self/mountinfo` (the `major:minor` of the line of the binary's
+  own mount, not `statx`'s `st_dev`, which differs on btrfs subvolumes)
+  has a root that contains the binary's path in that file system (its own
+  mount's root joined with its path below that mount; paths compared by
+  component, never opened). It passes the answer to the copy in the
+  variable; a run that ends without a checked copy measures the file it
+  runs from instead. Kaniko mode on `/` refuses,
   before anything is written, a binary on a writable mount other than `/`'s
   (a file or a directory bound without `:ro` from outside the container or
   from inside it, a volume), with the guidance to mount it read-only
@@ -134,18 +134,21 @@ The decision:
   binary a writable mount reaches (bound `:ro` from a tree also bound
   read-write), with the guidance to put it outside the mounted tree, to
   mount that tree read-only, or to mount a single-link copy read-only from
-  outside it; and a file with other hard links, with the guidance to
-  mount a copy with one link. It also refuses one whose mount it cannot
-  tell: a mount id of 0, which qemu-user's `statx` gives for every file
-  and Linux 6.8 and 7.0 give a memfd [measured]; a mount table
-  that cannot be parsed or does not place the file, or a file with no link
-  left; or a failed call (the mount table unreadable among them), each
-  with its own guidance; a
-  fallback through `/proc/self/fdinfo` is
+  outside it; and a file with other hard links, with the guidance to give
+  the binary a single link (a single-link copy mounted read-only, or an
+  image built without hard-link aliases of it). It also refuses one whose
+  mount it cannot tell: a mount id of 0, which qemu-user's `statx` gives
+  for every file and Linux 6.8 and 7.0 give a memfd [measured]; a mount
+  table that cannot be parsed or does not place the file, or a file with
+  no link left; or a failed call (the mount table unreadable among them),
+  each with its own guidance; a fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
-  container's own root builds when that root is overlayfs, as Docker's
-  and containerd's default storage gives (a write there copies the file
-  up and leaves the image's layers as they are); on any other root (a
+  container's own root builds when that root is an overlay, where a write
+  copies the file up and leaves the image's layers as they are: overlayfs
+  (`statfs` magic), as Docker's and containerd's default storage gives, or
+  fuse-overlayfs (FUSE whose own line in `/proc/self/mountinfo` has the
+  type `fuse.fuse-overlayfs`), as rootless podman's can. On any other root
+  (Docker's btrfs, zfs or vfs drivers, containerd's native snapshotter, a
   directory root, as podman `--rootfs`, systemd-nspawn or LXC give) it is
   weighed like one on another read-only mount, the root mount itself not
   counting as a writable mount that reaches it. One on a read-only mount
@@ -153,21 +156,21 @@ The decision:
   do not check, since no `RUN` reaches the binary there. Why, as
   hardening: a `RUN` there is root on the container's `/`, and once the
   build no longer executes the installed file, `ETXTBSY` no longer guards
-  it, so the binary must not be reachable through a writable mount. The
-  check reads the container's own mount table, so a writable view of the
-  binary that this table does not show is not detected: an accepted
-  residual risk, with the guidance to mount the binary from a path that no
-  writable mount shares. The maintainer decided, on 2026-11-04 (the
-  second to fourth
+  it, so the binary must not be reachable through a writable mount other
+  than the container's root. The check reads the container's own mount
+  table, so a writable view of the binary that this table does not show is
+  not detected: an accepted residual risk, with the guidance to mount the
+  binary from a path that no writable mount shares. The maintainer
+  decided, on 2026-11-04 (the second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
   the next four
   [in a third](https://github.com/tran4774/ranikust/issues/32#issuecomment-6633392547),
-  the last three
+  the next three
   [in a fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6634131493),
-  after the second host-safety pass, one of them beside an answer of the
-  comment recorded on #32):
+  after the second host-safety pass, the last
+  [in a fifth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6635199388)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -207,18 +210,26 @@ The decision:
     measurement: "Nêu rõ mountinfo (khuyến nghị)";
   - to check a binary in the container's root too, for its links and the
     other writable mounts that reach it, when `/` is not overlayfs:
-    "Overlay roots (Docker, containerd) are not affected", "Kiểm tra cả
-    khi root không phải overlay (khuyến nghị)";
-  - in the comment recorded on #32, "ADR-0101 and the threat model
-    describe the risk of a writable binary in general terms"; in the
-    fourth, to keep naming the configurations that are refused, without a
-    mechanism, in the book, `SECURITY.md`, the threat model and the
-    refusal messages: "Giữ, vì người dùng cần biết (khuyến nghị)";
+    "Kiểm tra cả khi root không phải overlay (khuyến nghị)", adding
+    "Overlay roots (Docker, containerd) are not affected";
+  - in
+    [the comment with the second to fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
+    "ADR-0101 and the threat model describe the risk of a writable binary
+    in general terms"; in the fourth, to keep naming the configurations
+    that are refused, without a mechanism, in the book, `SECURITY.md`, the
+    threat model and the refusal messages: "Giữ, vì người dùng cần biết
+    (khuyến nghị)";
   - to accept the measurement the marker carries as it is: whoever starts
     ranikust sets the variable and is trusted, a `RUN` cannot set it (its
     environment is the Dockerfile's only), and the copy's run believes it
     only once `/proc/self/exe` passes its check: "Chấp nhận, chỉ operator
-    làm được (khuyến nghị)".
+    làm được (khuyến nghị)";
+  - to count a container root on fuse-overlayfs (rootless podman) as an
+    overlay, because a write copies up, while the other roots that are not
+    overlays (Docker's btrfs, zfs or vfs drivers, containerd's native
+    snapshotter, podman `--rootfs`, nspawn, LXC) keep the link and
+    writable-mount checks, and the guidance asks for a binary with a
+    single link: "fuse-overlayfs tính là overlay (khuyến nghị)".
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -249,8 +260,9 @@ The decision:
   (overlay mode, kaniko mode per stage) nothing changes, and in kaniko mode
   on `/` a file in an overlay root concerns only the container. A file
   bound from outside the container would lose its last guard there: that
-  case is refused, and so is one in a root that is not overlayfs when it
-  has other links or another writable mount reaches it.
+  case is refused, and so is one in a root that is not an overlay
+  (overlayfs, fuse-overlayfs) when it has other links or another writable
+  mount reaches it.
 - Bad, because kaniko mode on `/` refuses a binary bound read-write, which
   built before: the operator adds `:ro` (Docker binds read-write by
   default). It also refuses a binary bound `:ro` from a tree that is bound
@@ -361,12 +373,15 @@ The decision:
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one
   nothing reaches builds), `a_directory_root_is_not_its_own_writable_mount`,
+  `a_fuse_overlayfs_root_copies_up_as_overlayfs_does` (a sample
+  fuse-overlayfs line; another FUSE type, an unlisted mount and a
+  directory root do not copy up),
   `a_file_in_the_root_is_weighed_by_the_roots_file_system` (`/` measured
-  through its descriptor: on an ext4 root `Linked`, a directory's link
-  count counting its subdirectories; on a one-link root the mount table
-  decides),
-  `rnk-rootfs`'s
-  `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
+  through its descriptor; measured on ext4 roots only, the developer's and
+  CI's, where it is `Linked`, a directory's link count counting its
+  subdirectories; that an overlay root gives `Root` and a one-link root
+  follows the mount table is the test's logic, not a measurement),
+  `rnk-rootfs`'s `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
   `a_spilled_option_is_kept_out_of_read_only` and
   `a_line_with_missing_or_shifted_options_is_refused`, and the binary's
   `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`; the VM's
