@@ -44,13 +44,12 @@ rootless mode also leaves the init's uid unmapped: option (a) (the maintainer,
   beyond rootless mode's.
 - **Extracted layers are kept apart** from the layers root's builds without the
   flag share, so a layer extracted with real ids is never used under a map. How
-  (keyed by the map, or in their own state directory) is for task 12 to settle,
-  with a `question` issue if the maintainer must choose.
+  (keyed by the map, or in their own state directory) is [open: #90].
 - **The init's uid stays unmapped in rootless mode too**, not only under
   `--userns`, since the code is the same. ADR-0083 (b) follows from running the
   init under a uid outside the command's map **[inferred]**.
 - **Not settled here:** what `--userns` does where `/etc/subuid` holds no range
-  for root.
+  for root, [open: #91].
 
 ### Consequences
 
@@ -84,9 +83,11 @@ Answers question N2 of the Phase 3 plan on
 the plan draft. Refines
 [ADR-0083](0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
 (b), which named only `--userns` and stays `accepted` with its body unchanged,
-and [ADR-0003](0003-dockerfile-trust-and-default-isolation.md). If extracted
-layers are keyed by their id map, [#1](https://github.com/tran4774/ranikust/issues/1)
-(Q-015, which digest names an extracted layer) is affected.
+and [ADR-0003](0003-dockerfile-trust-and-default-isolation.md). Two points are
+left to question issues: #90 (how extracted layers are kept apart) and #91 (no
+range for root in `/etc/subuid`). If layers are keyed by their id map,
+[#1](https://github.com/tran4774/ranikust/issues/1) (Q-015, which digest names an
+extracted layer) is affected.
 
 Follow-ups, with task 12 of #41 (after tasks 5 and 7): `rnk-sandbox`, `ranikust`
 and `rnk-store`, with T2 tests (a `RUN`'s uid 0 is an unprivileged host uid,

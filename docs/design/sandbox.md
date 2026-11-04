@@ -420,7 +420,14 @@ Planned for Phase 3 (ADR-0003); neither flag exists yet.
 
 ## Open questions
 
-- [Q-032](https://github.com/tran4774/ranikust/issues/10) What remains to verify in the RUN sandbox?
+None. What Q-032 asked to verify is tracked as tasks: `--seccomp`
+([#82](https://github.com/tran4774/ranikust/issues/82), [ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md))
+and `--userns` ([#83](https://github.com/tran4774/ranikust/issues/83),
+[ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md))
+in Phase 3; the bind targets against changes during set-up ([#88](https://github.com/tran4774/ranikust/issues/88)) and the
+host-safety attack suite across modes ([#89](https://github.com/tran4774/ranikust/issues/89)) in Phase 6. `--network=none` was
+verified end to end at [Phase 1's acceptance](../agents/phase-1.md#acceptance-criteria);
+its rootless form is in [#78](https://github.com/tran4774/ranikust/issues/78) and [#79](https://github.com/tran4774/ranikust/issues/79).
 
 ## References
 

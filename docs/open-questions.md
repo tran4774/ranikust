@@ -73,7 +73,8 @@ Moved to [#9](https://github.com/tran4774/ranikust/issues/9) (ADR-0088).
 
 ### Q-032: What remains to verify in the RUN sandbox?
 
-Moved to [#10](https://github.com/tran4774/ranikust/issues/10) (ADR-0088).
+Moved to [#10](https://github.com/tran4774/ranikust/issues/10) (ADR-0088), answered by splitting it into the task issues
+[#82](https://github.com/tran4774/ranikust/issues/82), [#83](https://github.com/tran4774/ranikust/issues/83), [#88](https://github.com/tran4774/ranikust/issues/88) and [#89](https://github.com/tran4774/ranikust/issues/89).
 
 ### Q-039: Which environments must the probe be tested in?
 
