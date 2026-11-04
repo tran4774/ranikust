@@ -119,7 +119,8 @@ The decision:
   read-only mount, whether a writable mount reaches the file: whether it
   has more than one hard link, and whether a writable mount of its file
   system in `/proc/self/mountinfo` (the `major:minor` of the line of the
-  binary's own mount) has a root that contains the binary's path in that
+  binary's own mount, not `statx`'s `st_dev`, which differs on btrfs
+  subvolumes) has a root that contains the binary's path in that
   file system (its own mount's root joined with its path below that
   mount; paths compared by component, never opened). It passes the answer
   to the copy in the variable; a run that ends without a checked copy
@@ -134,8 +135,9 @@ The decision:
   guidance to mount a copy with one link. It also refuses one whose mount
   it cannot tell: a mount id of 0, which qemu-user's `statx` gives for
   every file and Linux 6.8 and 7.0 give a memfd [measured]; a mount table
-  that cannot be parsed or does not place the file; or a failed call (the
-  mount table unreadable among them), each with its own guidance; a
+  that cannot be parsed or does not place the file, or a file with no link
+  left; or a failed call (the mount table unreadable among them), each
+  with its own guidance; a
   fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root, or on a read-only mount no writable mount
@@ -143,11 +145,16 @@ The decision:
   since no `RUN` reaches the binary there. Why, as hardening: a `RUN`
   there is root on the container's `/`, and once the build no longer
   executes the installed file, `ETXTBSY` no longer guards it, so the
-  binary must not be reachable through a writable mount. The maintainer
-  decided, on 2026-11-04 (the second to fourth
+  binary must not be reachable through a writable mount. The check reads
+  the container's own mount table, so a writable view of the binary that
+  this table does not show is not detected: an accepted residual risk,
+  with the guidance to mount the binary from a path that no writable mount
+  shares. The maintainer decided, on 2026-11-04 (the second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
-  the last two
-  [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316)):
+  the fifth and sixth
+  [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
+  the last four
+  [in a third](https://github.com/tran4774/ranikust/issues/32#issuecomment-6633392547)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -173,7 +180,18 @@ The decision:
     told its own guidance, not the `:ro` one (a mount id of 0: run
     natively from a regular file; a failed measurement: mount `/proc` and
     allow `fstatfs`), which confirmed the code: "Accept, per-cause
-    guidance (khuyến nghị)".
+    guidance (khuyến nghị)";
+  - to accept as a residual risk a writable view of the binary that the
+    container's own mount table does not show, recorded in general terms
+    with the guidance to mount the binary from a path that no writable
+    mount shares: "Chấp nhận, ghi chung chung (khuyến nghị)";
+  - to take the binary's device from its own `/proc/self/mountinfo` line,
+    not from `statx`'s `st_dev`, which differs on btrfs subvolumes:
+    "Đồng ý, dùng mountinfo (khuyến nghị)";
+  - to refuse as unplaced a binary file with no link left (nlink 0):
+    "Đồng ý, từ chối (khuyến nghị)";
+  - to name `/proc/self/mountinfo` too in the guidance for a failed
+    measurement: "Nêu rõ mountinfo (khuyến nghị)".
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -211,6 +229,10 @@ The decision:
   read-write too, and a file with other hard links: cargo's
   `target/release/ranikust` is a hard link of its copy in `deps/`
   [measured], so the operator mounts a copy (`cp`, `install`).
+- Bad, because the check sees only the container's own mount table: a
+  writable view of the binary that this table does not show is not
+  detected, a residual risk the maintainer accepted. The operator mounts
+  the binary from a path that no writable mount shares.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
 - Neutral, because under an emulator (qemu-user, Rosetta) the process that
