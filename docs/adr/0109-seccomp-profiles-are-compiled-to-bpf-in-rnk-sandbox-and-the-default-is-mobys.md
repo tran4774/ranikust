@@ -72,6 +72,25 @@ recommended).
 - **`serde` and `serde_json`** come into `rnk-sandbox` to read the profile;
   both are already workspace dependencies.
 
+Answered by the maintainer on 2026-11-05 too, on
+[#82](https://github.com/tran4774/ranikust/issues/82#issuecomment-6639346214),
+for what the implementation raised:
+
+- **A call of another architecture** (i386 and x32 on x86_64, arm on
+  aarch64) gets `EPERM`: a 32-bit program in a `RUN` needs
+  `--seccomp=unconfined` ("Giữ EPERM, ghi tài liệu (khuyến nghị)", keep
+  `EPERM` and document it, as recommended).
+- **A call `libc` gives no number** gets `ENOSYS` under a default action
+  that refuses, and is allowed once `libc` numbers it ("Giữ ENOSYS (khuyến
+  nghị)", keep `ENOSYS`, as recommended).
+- **Two conditions on one argument and a rule with no names** are both
+  refused (exit 2), with a message that names the rule (`syscalls[N]`)
+  ("Từ chối cả hai (khuyến nghị)", refuse both, as recommended).
+- **The `RUN`'s init joins its new session keyring before the profile**,
+  which refuses `keyctl`, as runc does; ADR-0080 had the command, PID 2,
+  join it ("Ghi vào ADR-0109 (khuyến nghị)", record it in ADR-0109, as
+  recommended).
+
 ### Consequences
 
 - Good, because the install stays under ranikust's control: setuid programs
@@ -104,9 +123,11 @@ recommended).
 ## More Information
 
 Refines [ADR-0103](0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)
-(how its profile is built) and
+(how its profile is built),
 [ADR-0033](0033-network-none-loopback-through-a-user-namespace.md) (its
-assembler and install point are shared). Built by
+assembler and install point are shared) and
+[ADR-0080](0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)
+(the init, not PID 2, joins the session keyring). Built by
 [#82](https://github.com/tran4774/ranikust/issues/82), task 11 of
 [#41](https://github.com/tran4774/ranikust/issues/41); the design is in
 [sandbox](../design/sandbox.md).

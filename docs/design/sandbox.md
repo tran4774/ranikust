@@ -104,12 +104,14 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
 - Refused with exit 2, before anything is written: `SCMP_ACT_NOTIFY`,
   `SCMP_ACT_TRACE`, a `listenerPath`, a flag other than `TSYNC`, `LOG` and
   `SPEC_ALLOW`, two conditions on one argument in a rule, a rule without
-  names, a filter longer than the kernel's 4096 instructions, and anything
-  malformed; a file that is not a regular file or is over 1 MiB.
+  names (the message names the rule, `syscalls[N]`; ADR-0109), a filter
+  longer than the kernel's 4096 instructions, and anything malformed; a file
+  that is not a regular file or is over 1 MiB.
 - The child installs it after every mount and before the capability drop,
   without `no_new_privs`: the child still holds `CAP_SYS_ADMIN`, and a setuid
   binary of the `RUN` keeps working. It joins the `RUN`'s new session keyring
-  first, since the profile refuses `keyctl` (runc's order; step 6).
+  first, since the profile refuses `keyctl` (runc's order; step 6; ADR-0109
+  refines ADR-0080 there).
 - A `Direct` `RUN` gets none: in kaniko mode on `/` the container's own
   profile applies, and `--seccomp` is refused (exit 2).
 
@@ -411,11 +413,11 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
   ranikust's own code, which differs from runc's libseccomp:
   - Only the native architecture: Docker also compiles a profile's calls for
     i386 and x32 on x86_64 (arm on aarch64), which get `EPERM` here, so a
-    32-bit binary does not run under it.
+    32-bit program in a `RUN` needs `--seccomp=unconfined` (ADR-0109).
   - Only the calls `libc` names: one it does not (`cachestat`, `futex_wait`,
     `statmount`, `uretprobe`, and `fchmodat2` on aarch64) gets `ENOSYS`
-    where Docker allows it. The C libraries fall back from most; the known
-    exceptions follow.
+    where Docker allows it, until `libc` numbers it (ADR-0109). The C
+    libraries fall back from most; the known exceptions follow.
   - `uretprobe` is made by the kernel's return-probe trampoline, not a C
     library (x86_64, Linux 6.11 and later): a uretprobe a host tool sets on
     a `RUN`'s process can crash it where the kernel's seccomp does not let
