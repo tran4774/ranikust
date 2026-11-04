@@ -66,7 +66,7 @@ maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 - **[external]** BuildKit `cd8ee2441a4c` with the containerd v2.4.2 it vendors,
   read by `upstream-oracle`: the archive apply skips block and character device
   entries in a user namespace (`pkg/archive/tar_unix.go:100-108`).
-- **[docs]** [sandbox](../design/sandbox.md#per-run-sequence): the `RUN` root is
+- [sandbox](../design/sandbox.md#per-run-sequence): the `RUN` root is
   remounted `nodev`, so no node in it opens.
 
 ## More Information

@@ -22,13 +22,13 @@ also leave the init's uid unmapped, which ADR-0083 names only for `--userns`?
 ## Considered Options
 
 - (a) The whole build runs in a user namespace, as in rootless mode, with a
-  subordinate range for root (podman's `--userns=auto` reads one from
-  `/etc/subuid` **[unverified]**) and extracted layers kept apart from root's
+  subordinate range for root (podman's `--userns=auto` allocates one from the
+  `containers` entry of `/etc/subuid` **[external]**) and extracted layers kept apart from root's
   (keyed by the map, or in their own state directory).
 - (b) Only the command runs in a user namespace, given the image's ids through
   an idmapped mount of the stage root (`mount_setattr(MOUNT_ATTR_IDMAP)`), the
   store unchanged, with a kernel floor for overlayfs on idmapped layers
-  **[unverified]**.
+  **[inferred]**.
 - (c) A shifted copy of the lowers per build.
 
 ## Decision Outcome
@@ -57,7 +57,8 @@ rootless mode also leaves the init's uid unmapped: option (a) (the maintainer,
 - Good, because there is one user-namespace path to build, test and audit for
   rootless mode and `--userns`.
 - Good, because no kernel floor is added beyond rootless mode's, unlike (b),
-  whose overlayfs on idmapped layers is **[unverified]**.
+  which needs overlayfs on idmapped layers and a kernel floor for it
+  **[inferred]**.
 - Good, because the init's uid is unmapped in both modes, so ADR-0083's
   measurement (8 and 32 spinners delaying the init's death) can be repeated
   under both.
@@ -68,8 +69,11 @@ rootless mode also leaves the init's uid unmapped: option (a) (the maintainer,
 ## Evidence
 
 - Nothing is measured here: `--userns` does not exist.
-- **[unverified]** podman's `--userns=auto` takes a range from `/etc/subuid` for
-  the container; not checked against podman's documentation or source.
+- **[external]** podman's `--userns=auto`: rootful, it needs the user
+  `containers` in `/etc/subuid` and `/etc/subgid` with an unused range, from
+  which it allocates unique ranges; rootless, it uses the user's own range from
+  those files ([podman-run](https://docs.podman.io/en/latest/markdown/podman-run.1.html),
+  the `--userns` option, `auto` mode).
 - **[inferred]** ADR-0083 (b) follows from running the init under a uid outside
   the command's map; ADR-0083's own evidence is a measurement of the delay
   without it (0.9 to 1.8 ms, 7.6 s with 8 spinners, 30.6 s with 32).

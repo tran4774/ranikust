@@ -50,10 +50,11 @@ recommended).
   rootless store it runs inside the user namespace, which is the plain reading
   of "empties the state directory inside the namespace".
 - **Safety.** `prune --all` opens the store as a build does: the
-  state-directory checks, the `.ranikust-state` marker and the store's
-  exclusive lock. It refuses a directory ranikust did not make and one a
-  running build holds, and it deletes through `rnk-rootfs` by descriptor, as the
-  start-up clean-up does.
+  state-directory checks, the `.ranikust-state` marker and the store's locks.
+  So it refuses a directory ranikust did not make and a state directory a
+  running build holds, the exact lock being the implementation's choice
+  ([#76](https://github.com/tran4774/ranikust/issues/76)). It deletes through
+  `rnk-rootfs` by descriptor, as the start-up clean-up does.
 - **Phase 5's defaults are still** those of [ADR-0032](0032-observable-behaviour-follows-buildkit.md)
   (BuildKit's tiers, size caps, age by last use); this ADR adds only the flag
   that removes everything.
@@ -77,7 +78,7 @@ recommended).
   `0555` tree of subordinate ids from outside the namespace fails (unlink
   `EACCES`, `chmod` `EPERM`)
   ([ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)).
-- **[docs]** [cache-and-store](../design/cache-and-store.md#prune): `prune` is
+- [cache-and-store](../design/cache-and-store.md#prune): `prune` is
   not built (Phase 5); start-up removes the directories of builds no longer
   running, and refuses a non-empty directory without the marker
   ([rnk-store](../agents/crates/rnk-store.md)).

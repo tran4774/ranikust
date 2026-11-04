@@ -123,7 +123,7 @@ directory, inside the user namespace for a rootless one
 ([ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md));
 the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age. Both forms open the store as a build does
-(state-directory checks, the `.ranikust-state` marker, the store's lock), so
+(state-directory checks, the `.ranikust-state` marker, the store's locks), so
 they refuse a directory ranikust did not make and take the same locks as a
 build, and never remove an entry a running build uses [inferred: the in-use
 tracking is not designed yet]. The defaults are BuildKit's tiers, aging by last

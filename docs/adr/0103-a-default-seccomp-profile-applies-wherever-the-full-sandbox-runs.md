@@ -77,7 +77,7 @@ maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
   entitlement is granted; to confirm with `upstream-oracle` (ADR-0032).
 - **[external]** `seccomp(2)`: loading a filter without `CAP_SYS_ADMIN` needs
   `no_new_privs`, which stops setuid programs from gaining privileges.
-- **[docs]** [sandbox](../design/sandbox.md#differences-from-docker) and
+- [sandbox](../design/sandbox.md#differences-from-docker) and
   [threat model](../security/threat-model.md) section 6: a default `RUN` has no
   seccomp filter until `--seccomp`.
 

@@ -83,7 +83,7 @@ recommended).
 - **[inferred]** Most sysctls need capabilities in the initial user namespace, so
   a user-namespaced container may not be able to write `/proc/sys`; the
   measurement that would show it is the one this ADR waits for.
-- **[docs]** [modes-and-detection](../design/modes-and-detection.md#refusal-and-guidance):
+- [modes-and-detection](../design/modes-and-detection.md#refusal-and-guidance):
   kaniko mode on `/` is refused where `refuse_unsafe_slash` stops it (root may
   mount, a writable `/proc/sys`), and rootless Podman's root, lacking
   `CAP_SYS_ADMIN`, takes kaniko mode on `/` today.

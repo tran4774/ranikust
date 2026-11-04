@@ -49,7 +49,7 @@ nghị", all as recommended).
   root; the differences are the namespace set-up and an rbind of `/proc` where a
   fresh `proc` is refused. No rootless build has been timed: the mode does not
   exist.
-- **[docs]** [phase-2](../agents/phase-2.md): Phase 2's time criterion and its
+- [phase-2](../agents/phase-2.md): Phase 2's time criterion and its
   figures (frozen record).
 
 ## More Information

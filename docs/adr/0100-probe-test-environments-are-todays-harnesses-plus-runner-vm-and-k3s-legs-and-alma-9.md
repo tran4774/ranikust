@@ -106,7 +106,8 @@ ADR-0063 stands.
 - Bad, because the VM harness must learn to boot a non-Ubuntu image for row 9e.
 - Bad, because rows 8, 8b, 9a, 9b and 10 stay inferred until Phase 6, and Debian
   11's kernel 5.10 stays untested.
-- Neutral, because Debian 11's LTS ended in August 2026 **[unverified]**, and
+- Neutral, because Debian 11's LTS ended on 31 August 2026 **[external]**
+  ([Debian LTS](https://wiki.debian.org/LTS)), and
   Docker rootless lands in rows already covered (kaniko on `/`, overlay as root
   in a namespace).
 
