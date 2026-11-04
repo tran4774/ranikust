@@ -10,7 +10,7 @@
 #   spawn    leaves `sleep 3001 &`, a `setsid sleep 3002 &` and a
 #            double-forked `sleep 3003` behind
 #   swap     replaces the --secret file with a symlink to /proc/self/comm
-#   V1..V12  the vectors (see secrets.sh)
+#   V1..V13  the vectors (see secrets.sh)
 set -u
 MARK=MARKER-STATE-4242
 # REGISTRY_TOKEN's value, and DOCKER_AUTH_CONFIG's auth: base64 of
@@ -213,6 +213,46 @@ V12)
     *) out V12 LEAK "got $(printf %s "$S" | head -c 40 | tr -c '[:print:]' '?')" ;;
   esac
   ;;
-*) echo "usage: $0 seed|unseed|spawn|swap|V1..V12" >&2 ;;
+V13)
+  # ADR-0101: the sealed copy's exe, ptrace and process_vm_writev, at Yama 0.
+  pids=$(rnk_pids)
+  [ -n "$pids" ] || { out V13 INVALID "no ranikust process seen"; exit 0; }
+  case "$(uname -m)" in
+    x86_64) nr="101 311" ;;
+    aarch64) nr="117 271" ;;
+    *) out V13 INVALID "no syscall numbers for $(uname -m)"; exit 0 ;;
+  esac
+  hit=
+  seen=0
+  for p in $pids; do
+    for t in "/proc/$p" "/proc/$p/task/"*; do
+      [ -d "$t" ] || continue
+      seen=$((seen + 1))
+      e="$t/exe"
+      readlink -- "$e" >/dev/null 2>&1 && hit="$hit readlink:$e"
+      head -c1 -- "$e" >/dev/null 2>&1 && hit="$hit read:$e"
+      (exec 3<>"$e") 2>/dev/null && hit="$hit rw:$e"
+      "$e" version >/dev/null 2>&1 && hit="$hit run:$e"
+    done
+    # EFAULT from an unmapped address means the access check passed.
+    # shellcheck disable=SC2086
+    r=$(perl -e '
+      my ($ptrace, $pvw, $pid) = map { 0 + $_ } @ARGV;
+      print "ptrace-seize " if syscall($ptrace, 0x4206, $pid, 0, 0) == 0;
+      my $buf = "x";
+      my $local = pack("QQ", unpack("Q", pack("p", $buf)), 1);
+      my $remote = pack("QQ", 0x1000, 1);
+      my $r = syscall($pvw, $pid, $local, 1, $remote, 1, 0);
+      print "process_vm_writev:", $r >= 0 ? "wrote" : 0 + $!, " " if $r >= 0 || !$!{EPERM};
+    ' $nr "$p" 2>&1)
+    [ -z "$r" ] || hit="$hit $p:$r"
+  done
+  if [ -n "$hit" ]; then
+    out V13 LEAK "$hit"
+  else
+    out V13 blocked "$seen threads, yama $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none)"
+  fi
+  ;;
+*) echo "usage: $0 seed|unseed|spawn|swap|V1..V13" >&2 ;;
 esac
 exit 0
