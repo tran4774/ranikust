@@ -50,6 +50,8 @@ binary.
 Chosen option: (y). At start-up a build runs again from a sealed memfd copy
 of ranikust's binary, else an `O_TMPFILE` copy; when neither works it
 builds on from the installed binary with today's barriers and a warning.
+Kaniko mode on `/` refuses a binary on a writable mount from outside the
+container, sealed or not (below).
 The maintainer chose (x) first, 2026-11-04 ("tất cả theo khuyến nghị", all
 as recommended). Building it showed the overlay's limits; asked whether to
 keep the overlay first, the maintainer answered on 2026-11-04: "Luôn dùng
@@ -85,21 +87,63 @@ The decision:
   never get a name, run from a read-only descriptor. It has no seal: only
   `ETXTBSY` keeps the running copy from being written, as for the installed
   binary today, but such a write would not reach the installed binary.
+  Never on FUSE, whose daemon could serve other pages when the copy runs
+  than those written. Some file systems refuse `O_TMPFILE` (overlayfs on
+  Ubuntu's Linux 6.8, below): the build then goes on warned.
 - **Writes outside the state directory.** Only the `O_TMPFILE` copy, a file
   with no name in `TMPDIR`, made before the state directory is checked and
   gone with the build. The memfd writes no file.
-- **The run of the copy.** `execve("/proc/self/fd/<n>")` with
-  `RANIKUST_SEALED_COPY=<way>` added (then `; ` and why each way before it
-  failed) and the core-file limit ranikust started with given back, which
-  the copy records again
+- **The run of the copy.** `execveat(<n>, "", AT_EMPTY_PATH)` on the copy's
+  close-on-exec descriptor, not `execve("/proc/self/fd/<n>")`: the kernel
+  refuses to hand a file the exec closes to an interpreter (binfmt_misc,
+  as qemu-user registers, with or without its `O` flag, or a `#!` line),
+  before the exec's point of no return (`ENOENT`), and the next way is
+  tried, where `execve` let the process die silently without `O`
+  [measured]. `RANIKUST_SEALED_COPY=<way> <mount>` is added (then `; ` and
+  why each way before it failed), `<mount>` being where the installed binary
+  lies (below), and the core-file limit ranikust started with is given
+  back, which the copy records again
   ([ADR-0051](0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)).
   Seeing the variable, the copy makes no copy (no loop), checks
   `/proc/self/exe` (the memfd's seals, or no link), takes its name from
   `argv[0]` again, and logs the way and the ways passed over at debug.
 - **Fallback.** When both ways fail, or the copy's check fails, the build
-  goes on with a warning and the three barriers ADR-0082 lists. No refusal.
-  Only when a copy did not run and the core-file limit cannot be set back
-  to 0 does the build stop, as when ADR-0051's limit cannot be set.
+  goes on with a warning and the three barriers ADR-0082 lists. No refusal,
+  but the one below. Only when a copy did not run and the core-file limit
+  cannot be set back to 0 does the build stop, as when ADR-0051's limit
+  cannot be set.
+- **A binary on a writable mount, in kaniko mode on `/`.** Before any copy,
+  ranikust measures which mount the binary it started from is on (`statx`
+  `STATX_MNT_ID` against `/`'s, `statvfs` `ST_RDONLY`) and passes the
+  answer to the copy in the variable; a run that ends without a checked
+  copy measures the file it runs from instead. Kaniko mode on `/` refuses,
+  before anything is written, a binary on a writable mount other than `/`'s
+  (a file or a directory bound without `:ro` from outside the container or
+  from inside it, a volume), with the guidance to mount it read-only
+  (Docker `:ro`, Kubernetes `readOnly: true` on the `volumeMount`). It also
+  refuses one whose mount it cannot tell: a mount id of 0, which qemu-user's
+  `statx` gives for every file and Linux 6.8 and 7.0 give a memfd
+  [measured], or a failed call, each with its own guidance; a fallback
+  through `/proc/self/fdinfo` is #95. A binary in the container's own root,
+  or on a read-only mount, builds; overlay mode and kaniko mode per stage do
+  not check, since no `RUN` reaches the binary there. Why, as hardening: a
+  `RUN` there is root on the container's `/`, and once the build no longer
+  executes the installed file, `ETXTBSY` no longer guards it, so a `RUN`
+  could alter a binary bound from outside the container. The maintainer
+  decided, on 2026-11-04 (the last three recorded on #32):
+  - after the host-safety review of the pull request that closes #32, to
+    refuse a binary bound read-write from outside the container:
+    "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
+    mount it `:ro`, as recommended);
+  - to refuse a binary whose mount cannot be told, failing closed as
+    ADR-0054 refuses a `/proc/sys` whose state cannot be told:
+    "Refuse (khuyến nghị)";
+  - to refuse a binary bound from inside the container, another mount of
+    the same file system, like one from outside (ranikust cannot tell
+    where a mount comes from):
+    "Accept, refuse it too (khuyến nghị)";
+  - not to read the mount id from `/proc/self/fdinfo` yet, filed as #95:
+    "Not yet, task issue linked to #68 (khuyến nghị)".
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -117,7 +161,7 @@ The decision:
 - Bad, because the copy takes the binary's size in memory for the build's
   life, about 11.4 MiB (x86_64 static musl), counted in the build's memory
   cgroup.
-- Bad, because start-up runs one more `execve` and copies the binary:
+- Bad, because start-up runs one more `execveat` and copies the binary:
   about 2.6 ms [measured]. runc tries its overlay first for this cost, which
   matters more to a container start than to a build.
 - Bad, because the `O_TMPFILE` copy and the warned fallback still rely on
@@ -126,10 +170,25 @@ The decision:
   state directory, store and outputs: a file with no name in `TMPDIR` (the
   host-safety invariant of `ARCHITECTURE.md` names it).
 - Neutral, because the installed file is no longer guarded by `ETXTBSY`
-  during a build. The build does not read it, and in `Direct` on `/` a
-  `RUN`, root on the container's `/`, could already replace it by name.
+  during a build. The build does not read it; where no `RUN` reaches it
+  (overlay mode, kaniko mode per stage) nothing changes, and in kaniko mode
+  on `/` a file in the container's own root concerns only the container. A
+  file bound from outside the container would lose its last guard there:
+  that case is refused.
+- Bad, because kaniko mode on `/` refuses a binary bound read-write, which
+  built before: the operator adds `:ro` (Docker binds read-write by
+  default).
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
+- Neutral, because under an emulator (qemu-user, Rosetta) the process that
+  runs is the emulator: `/proc/<pid>/exe` of ranikust, its `RUN` child and
+  its init is the interpreter, which no copy covers. Under qemu-user 10.2.1
+  the copy is refused before the exec and the run warns, then stops at the
+  set-up's single-thread check, qemu-user running a thread of its own
+  [measured, `--mode=auto`]; with `--mode=kaniko` on `/` it is refused
+  before that check, since `statx` does not tell the binary's mount.
+  qemu-user 8.2.2 and Rosetta stop earlier, at the kernel check
+  [measured].
 
 ## Evidence
 
@@ -161,7 +220,10 @@ The decision:
   inherited: no loop),
   `a_memfd_copy_is_the_binary_sealed_against_writes` (writes and resizes
   `EPERM` through any descriptor),
-  `a_tmpfile_copy_is_the_binary_with_no_name_open_read_only`; the binary's
+  `a_tmpfile_copy_is_the_binary_with_no_name_open_read_only`,
+  `a_copy_an_interpreter_must_reopen_is_refused_before_the_exec` (a `#!`
+  script in a memfd: `ENOENT`, the process goes on; with `execve` of
+  `/proc/self/fd/<n>` the shell ran and could not open it); the binary's
   `a_build_runs_from_a_sealed_copy_made_once` (a memfd, once; the hook's
   ways; a marker set from outside only warns); the VM smoke and quick
   suites' `tests/vm/guest/sealed-exe.py`: in overlay mode and in kaniko
@@ -169,6 +231,45 @@ The decision:
   memfd skipped one `O_TMPFILE` copy, that root cannot open for writing; a
   kaniko-mode build on a container's `/` runs from a sealed memfd
   ([testing](../testing.md)).
+- An emulator [measured] (at the commit before `execveat`; the VM, Linux
+  6.8): qemu-user 10.2.1 registered in binfmt_misc without `O` (flags `F`
+  or `PF`) ran the memfd copy, could not open `/proc/self/fd/<n>` once the
+  exec closed it, and the build exited 1 with an empty stderr; registered
+  with `O`, the copy started, failed its check and warned. With
+  `execveat` (flags `F` and `OF`) both ways were refused before the exec,
+  the memfd with `ENOENT` and the `O_TMPFILE` copy in the container's
+  overlayfs `/tmp` with `EOPNOTSUPP`, and the run warned; it then stopped
+  at the set-up's single-thread check, since qemu-user runs a thread of
+  its own. Rosetta (OrbStack) and qemu-user 8.2.2 stop at the kernel check
+  first.
+- The binary's mount under qemu-user [measured] (10.2.1, the VM): its
+  `statx` sets `STATX_MNT_ID` in the mask and leaves the id at 0, for the
+  binary bound read-write or `:ro` and for `/` alike, where
+  `/proc/self/fdinfo` gives each its own id; read as equal ids, both binds
+  measured `Root`. A zero id is now `NoMountId`, which kaniko mode on `/`
+  refuses; a fallback through `/proc/self/fdinfo` is #95.
+- A memfd's and an `O_TMPFILE` file's mount [measured] (the VM, Linux 6.8,
+  as root and in a default Docker container; this machine, Linux 7.0):
+  `statx` and `/proc/self/fdinfo` both give a memfd the mount id 0 (its
+  file system `0x1021994`, the kernel's internal tmpfs), and an `O_TMPFILE`
+  file the id of the directory's mount. ranikust started by a launcher from
+  a memfd, in kaniko mode on a container's `/`, is refused as `NoMountId`
+  with the guidance to run it from a regular file; so the fdinfo fallback
+  would not place a memfd.
+- `O_TMPFILE` [measured]: in a default Docker container on Ubuntu's Linux
+  6.8, `O_TMPFILE` in the container's overlayfs `/tmp` failed with
+  `EOPNOTSUPP`; on OrbStack's Linux 7.2 it worked.
+- The binary's mount [measured]: T0
+  `the_binarys_mount_is_told_against_the_root` (a zero id: `NoMountId`),
+  `the_binarys_mount_is_measured_on_the_file` (`/` is `/`'s mount, `/proc`
+  another, writable, a memfd never `/`'s),
+  `the_marker_carries_the_binarys_mount`,
+  `an_unchecked_marker_is_not_believed_about_the_binary`, and the binary's
+  `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`; the VM's
+  kaniko quick suite, `binary_mounts_on_slash`: in a default Docker
+  container a file or a directory bound read-write is refused with the
+  `:ro` guidance before the state directory exists, and the binary bound
+  `:ro` or copied into the container's root builds.
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its
