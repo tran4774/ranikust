@@ -51,7 +51,7 @@ fn the_ways_are_tried_in_order_until_one_runs() {
         },
         |way, _copy, failed| {
             ran.push((way, failed.iter().map(|(w, _)| *w).collect::<Vec<_>>()));
-            Ok(marker(way, failed))
+            Ok(marker(way, BinaryMount::Writable, failed))
         },
         || Ok::<(), Errno>(()),
     );
@@ -60,8 +60,9 @@ fn the_ways_are_tried_in_order_until_one_runs() {
     };
     assert_eq!(made, SealedCopy::ALL);
     assert_eq!(ran, [(SealedCopy::Tmpfile, vec![SealedCopy::Memfd])]);
-    let (way, passed_over) = parse_marker(&marker).expect("a marker");
+    let (way, binary, passed_over) = parse_marker(&marker).expect("a marker");
     assert_eq!(way, SealedCopy::Tmpfile);
+    assert_eq!(binary, BinaryMount::Writable);
     assert!(passed_over.starts_with("memfd: "), "{passed_over}");
 
     // A memfd the kernel refuses to run: the same.
@@ -153,10 +154,13 @@ fn a_failed_recovery_stops_the_search() {
 /// whatever marker was inherited, so it never makes a copy of its own.
 #[test]
 fn the_copy_gets_the_environment_with_one_marker() {
-    let marker = "tmpfile; memfd: memfd_create: Permission denied (os error 13)";
+    let marker = "tmpfile ro; memfd: memfd_create: Permission denied (os error 13)";
     // The sample is what the seal builds when `vm.memfd_noexec=2` refuses the memfd.
     let failed = [(SealedCopy::Memfd, context("memfd_create")(Errno::ACCESS))];
-    assert_eq!(super::marker(SealedCopy::Tmpfile, &failed), marker);
+    assert_eq!(
+        super::marker(SealedCopy::Tmpfile, BinaryMount::ReadOnly, &failed),
+        marker
+    );
     let vars = [
         ("PATH", "/bin"),
         (MARKER, "memfd"),
@@ -171,18 +175,127 @@ fn the_copy_gets_the_environment_with_one_marker() {
         [
             "PATH=/bin",
             "HOME=/root",
-            "RANIKUST_SEALED_COPY=tmpfile; memfd: memfd_create: Permission denied (os error 13)",
+            "RANIKUST_SEALED_COPY=tmpfile ro; memfd: memfd_create: Permission denied (os error 13)",
         ]
     );
     assert_eq!(
         parse_marker(marker),
         Some((
             SealedCopy::Tmpfile,
+            BinaryMount::ReadOnly,
             "memfd: memfd_create: Permission denied (os error 13)"
         ))
     );
-    assert_eq!(parse_marker("memfd"), Some((SealedCopy::Memfd, "")));
-    assert_eq!(parse_marker("overlay; x"), None);
+    assert_eq!(
+        parse_marker("memfd root"),
+        Some((SealedCopy::Memfd, BinaryMount::Root, ""))
+    );
+    // A way, and the binary's mount, must both be named.
+    for refused in [
+        "memfd",
+        "memfd; x",
+        "overlay root; x",
+        "memfd rx",
+        "memfd unknown:x",
+        // No error number: a marker set from outside only warns.
+        "memfd unknown:0",
+        "memfd unknown:-1",
+        "memfd unknown:4096",
+    ] {
+        assert_eq!(parse_marker(refused), None, "{refused}");
+    }
+    for raw in [1, 4095] {
+        assert_eq!(
+            parse_marker(&format!("memfd unknown:{raw}")),
+            Some((
+                SealedCopy::Memfd,
+                BinaryMount::Unknown(Errno::from_raw_os_error(raw)),
+                ""
+            )),
+            "{raw}"
+        );
+    }
+}
+
+/// ADR-0101: the marker carries every answer about the binary's mount to
+/// the copy, an error's number included.
+#[test]
+fn the_marker_carries_the_binarys_mount() {
+    for binary in [
+        BinaryMount::Root,
+        BinaryMount::ReadOnly,
+        BinaryMount::Writable,
+        BinaryMount::NoMountId,
+        BinaryMount::Unknown(Errno::NOSYS),
+    ] {
+        for failed in [vec![], vec![(SealedCopy::Memfd, io::Error::other("x; y"))]] {
+            let value = marker(SealedCopy::Tmpfile, binary, &failed);
+            let parsed = parse_marker(&value);
+            assert_eq!(
+                parsed.map(|(way, b, _)| (way, b)),
+                Some((SealedCopy::Tmpfile, binary)),
+                "{value}"
+            );
+        }
+    }
+}
+
+/// ADR-0101: the binary's mount against `/`'s: the same mount is `/`'s
+/// whatever its flags, another one read-only or writable.
+#[test]
+fn the_binarys_mount_is_told_against_the_root() {
+    assert_eq!(BinaryMount::of(7, 7, false), BinaryMount::Root);
+    assert_eq!(BinaryMount::of(7, 7, true), BinaryMount::Root);
+    assert_eq!(BinaryMount::of(8, 7, true), BinaryMount::ReadOnly);
+    assert_eq!(BinaryMount::of(8, 7, false), BinaryMount::Writable);
+    // A zero proves nothing: the mount cannot be told, and kaniko mode on
+    // `/` refuses.
+    assert_eq!(BinaryMount::of(0, 0, true), BinaryMount::NoMountId);
+    assert_eq!(BinaryMount::of(0, 7, true), BinaryMount::NoMountId);
+    assert_eq!(BinaryMount::of(8, 0, false), BinaryMount::NoMountId);
+}
+
+/// ADR-0101: the mount is measured on the file. Skipped under qemu-user,
+/// whose statx leaves the mount id at 0 (`just test-aarch64`).
+#[test]
+fn the_binarys_mount_is_measured_on_the_file() {
+    let open_dir = |path: &str| {
+        rustix::fs::open(
+            path,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect(path)
+    };
+    assert_eq!(mount_of(open_dir("/").as_fd()), BinaryMount::Root);
+    assert_eq!(mount_of(open_dir("/proc").as_fd()), BinaryMount::Writable);
+    // The kernel's internal mount, whose id Linux 7.0 gives as 0: never `/`.
+    let memfd = rustix::fs::memfd_create("rnk-test", rustix::fs::MemfdFlags::CLOEXEC)
+        .expect("memfd_create");
+    assert_ne!(mount_of(memfd.as_fd()), BinaryMount::Root);
+}
+
+/// ADR-0101: a marker whose copy does not check is not believed: the
+/// binary's mount is measured on the file this process runs from.
+#[test]
+fn an_unchecked_marker_is_not_believed_about_the_binary() {
+    let actual = mount_of(exe().as_fd());
+    let lie = if actual == BinaryMount::Writable {
+        BinaryMount::ReadOnly
+    } else {
+        BinaryMount::Writable
+    };
+    let value = OsString::from(format!("memfd {}", lie.token()));
+    let Sealing::Unsealed { why, binary } = copy_run(&value) else {
+        panic!("the test binary passes for a memfd copy");
+    };
+    assert!(why.contains("is no such copy"), "{why}");
+    assert_eq!(binary, actual);
+    let Sealing::Unsealed { why, binary } = copy_run(OsStr::new("memfd")) else {
+        panic!("a marker with no mount passes");
+    };
+    assert!(why.contains("names no way"), "{why}");
+    assert_eq!(binary, actual);
 }
 
 /// ADR-0101: the memfd copy holds the binary's bytes and its seals refuse
@@ -230,6 +343,65 @@ fn a_tmpfile_copy_is_the_binary_with_no_name_open_read_only() {
     );
     assert_eq!(link.err(), Some(Errno::NOENT));
     assert_eq!(std::fs::read_dir(dir.path()).expect("ls").count(), 0);
+}
+
+/// ADR-0101: the ways share one descriptor of the binary, and a way tried
+/// after another that read it still copies all of it.
+#[test]
+fn a_way_after_another_copies_the_whole_binary() {
+    let exe = exe();
+    let memfd = memfd_copy(&exe).expect("memfd copy");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tmpfile = tmpfile_copy(&exe, dir.path()).expect("tmpfile copy after it");
+    assert_eq!(bytes_of(memfd.as_fd()), binary_bytes());
+    assert_eq!(bytes_of(tmpfile.as_fd()), binary_bytes());
+}
+
+/// Set in the child run of
+/// `a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`.
+const EXEC_CHILD: &str = "RNK_TEST_SEAL_EXEC_CHILD";
+
+/// ADR-0101: a copy that an interpreter must open again after the exec (a
+/// `#!` script here; binfmt_misc without its `O` flag, as an emulator, the
+/// same) is refused by the kernel before the exec, with `ENOENT`, since
+/// the copy's descriptor is close-on-exec: the process goes on, and the
+/// next way is tried. Run in a child copy of this test binary, which a
+/// regression would replace with the interpreter.
+#[test]
+fn a_copy_an_interpreter_must_reopen_is_refused_before_the_exec() {
+    if std::env::var_os(EXEC_CHILD).is_some() {
+        let script = memfd_with(b"#!/bin/sh\necho the script ran\n");
+        let e = execute(&script, "memfd root").expect_err("refused");
+        println!("refused before the exec: {}", e.raw_os_error().unwrap_or(0));
+        return;
+    }
+    let name = "seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec";
+    let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(EXEC_CHILD, "1")
+        .output()
+        .expect("run the child");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let want = format!("refused before the exec: {}", libc::ENOENT);
+    assert!(
+        out.status.success() && stdout.contains(&want),
+        "child: {:?}\nstdout: {stdout}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn memfd_with(bytes: &[u8]) -> OwnedFd {
+    use rustix::fs::MemfdFlags;
+    // Executable at `vm.memfd_noexec=1`, as `memfd_copy`'s.
+    let fd = match rustix::fs::memfd_create("rnk-test", MemfdFlags::CLOEXEC | MemfdFlags::EXEC) {
+        Err(Errno::INVAL) => rustix::fs::memfd_create("rnk-test", MemfdFlags::CLOEXEC),
+        made => made,
+    }
+    .expect("memfd_create");
+    let mut file = File::from(fd);
+    io::Write::write_all(&mut file, bytes).expect("write the memfd");
+    file.into()
 }
 
 /// ADR-0101: the installed binary passes for no copy, so a marker set

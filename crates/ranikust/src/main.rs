@@ -52,7 +52,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use rnk_metrics::{Config, Outcome, Telemetry};
-use rnk_sandbox::{SealedCopy, Sealing};
+use rnk_sandbox::{BinaryMount, SealedCopy, Sealing};
 
 use crate::cli::{BuildArgs, Command, ParseError};
 use crate::config::BuildConfig;
@@ -208,26 +208,38 @@ fn main() -> ExitCode {
     for warning in &warnings {
         tracing::warn!("{warning}");
     }
-    match sealing {
-        Some(Sealing::Sealed { way, passed_over }) if passed_over.is_empty() => {
-            tracing::debug!(%way, "running from a sealed copy of the binary (ADR-0101)");
+    match &sealing {
+        Some(Sealing::Sealed {
+            way,
+            passed_over,
+            binary,
+        }) if passed_over.is_empty() => {
+            tracing::debug!(%way, ?binary, "running from a sealed copy of the binary (ADR-0101)");
         }
-        Some(Sealing::Sealed { way, passed_over }) => tracing::debug!(
+        Some(Sealing::Sealed {
+            way,
+            passed_over,
+            binary,
+        }) => tracing::debug!(
             %way,
             %passed_over,
+            ?binary,
             "running from a sealed copy of the binary (ADR-0101)"
         ),
-        Some(Sealing::Unsealed(why)) => tracing::warn!(
+        Some(Sealing::Unsealed { why, binary }) => tracing::warn!(
+            ?binary,
             "running from the binary as installed, not from a sealed copy (ADR-0101): {why}"
         ),
         None => {}
     }
+    let binary = sealing.as_ref().map(Sealing::binary);
     let result = tracing::debug_span!("ranikust.run").in_scope(|| {
         run(
             &command,
             &telemetry,
             fault.as_deref(),
             metrics_file.as_deref(),
+            binary,
         )
     });
     let (code, outcome) = match &result {
@@ -399,11 +411,14 @@ fn write_metrics_file(
         .map_err(std::io::Error::other)
 }
 
+/// `binary` is where the binary ranikust started from lies, measured for
+/// `build` only.
 fn run(
     command: &Command,
     telemetry: &Telemetry,
     fault: Option<&str>,
     metrics_file: Option<&Path>,
+    binary: Option<BinaryMount>,
 ) -> Result<(), Failure> {
     match fault {
         Some("panic") => deliberate_panic(),
@@ -419,9 +434,8 @@ fn run(
             let _ = writeln!(std::io::stdout(), "ranikust {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Command::Build(args) => {
-            tracing::debug_span!("ranikust.build").in_scope(|| build(args, telemetry, metrics_file))
-        }
+        Command::Build(args) => tracing::debug_span!("ranikust.build")
+            .in_scope(|| build(args, telemetry, metrics_file, binary)),
     }
 }
 
@@ -429,6 +443,7 @@ fn build(
     args: &BuildArgs,
     telemetry: &Telemetry,
     metrics_file: Option<&Path>,
+    binary: Option<BinaryMount>,
 ) -> Result<(), Failure> {
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
     telemetry.set_meta("mode", config::name(config.mode));
@@ -456,7 +471,14 @@ fn build(
                 }
             };
             let runtime = container::detect(&container::Real);
-            kaniko(&config, "--mode=kaniko", can_mount, runtime, metrics_file)
+            kaniko(
+                &config,
+                "--mode=kaniko",
+                can_mount,
+                runtime,
+                metrics_file,
+                binary,
+            )
         }
         config::Mode::Overlay => {
             overlay_flags(args)?;
@@ -513,7 +535,7 @@ fn build(
                                 "kaniko mode with a directory per stage, because overlay mode \
                                  cannot run here: {why}"
                             );
-                            kaniko(&config, "--mode=auto", true, runtime, metrics_file)
+                            kaniko(&config, "--mode=auto", true, runtime, metrics_file, binary)
                         }
                     }
                 }
@@ -521,7 +543,7 @@ fn build(
                     let why = refusal.reason;
                     tracing::info!("kaniko mode, because root may not mount here: {why}");
                     let runtime = container::detect(&container::Real);
-                    kaniko(&config, "--mode=auto", false, runtime, metrics_file)
+                    kaniko(&config, "--mode=auto", false, runtime, metrics_file, binary)
                 }
                 Err(refusal) => Err(Failure::refused(refusal)),
             }
@@ -591,13 +613,15 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 /// `RLIMIT_NOFILE` is raised (the original kept for `RUN`), the state
 /// directory and store set up, and the ignore list built. `can_mount` is
 /// whether the build's mount namespace could be entered; `runtime` is
-/// what [`container::detect`] found, read once by the caller.
+/// what [`container::detect`] found, read once by the caller; `binary`
+/// where the binary ranikust started from lies.
 fn kaniko(
     config: &BuildConfig,
     how: &str,
     can_mount: bool,
     runtime: Option<container::Runtime>,
     metrics_file: Option<&Path>,
+    binary: Option<BinaryMount>,
 ) -> Result<(), Failure> {
     let nofile = rnk_sandbox::NofileLimit::current();
     if rustix::process::geteuid().as_raw() != 0 {
@@ -621,7 +645,7 @@ fn kaniko(
         }
     };
     if on_slash {
-        refuse_unsafe_slash(config, how, can_mount)?;
+        refuse_unsafe_slash(config, how, can_mount, binary)?;
     }
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
@@ -697,7 +721,12 @@ fn kaniko(
 /// written, in this order, then the warnings for what ranikust cannot
 /// close itself. A `RUN` there runs directly, as root unless `USER` says
 /// otherwise, so the container itself must keep it from the host.
-fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Result<(), Failure> {
+fn refuse_unsafe_slash(
+    config: &BuildConfig,
+    how: &str,
+    can_mount: bool,
+    binary: Option<BinaryMount>,
+) -> Result<(), Failure> {
     if can_mount {
         // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
         // also gives a `Direct` `RUN` on `/` the host's devices and a
@@ -735,6 +764,7 @@ fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Resu
             )));
         }
     }
+    refuse_writable_binary(how, binary)?;
     // What ranikust cannot close itself (ADR-0051, B4 and B5; ADR-0078).
     // The processes holding credentials are looked for after the set-up,
     // with the capabilities a `RUN` keeps (`kaniko`).
@@ -743,6 +773,48 @@ fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Resu
         tracing::warn!("{warning}");
     }
     Ok(())
+}
+
+/// Kaniko mode on `/` refuses ranikust's binary on a writable mount other
+/// than `/`'s, one from outside the container (ADR-0101): a `RUN`, root on
+/// `/`, reaches it, and the build no longer runs it. A binary in the
+/// container's own root, or on a read-only mount, builds; one whose mount
+/// is not known is refused.
+fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), Failure> {
+    match binary {
+        Some(BinaryMount::Root | BinaryMount::ReadOnly) => Ok(()),
+        Some(BinaryMount::Writable) => Err(Failure::error(format!(
+            "{how}: kaniko mode on / with ranikust's binary on a writable mount from outside the \
+             container (a bind mount or a volume) would let RUN change that file outside the \
+             container"
+        ))
+        .with_guidance(
+            "mount the binary read-only: Docker -v <binary>:/ranikust/bin/ranikust:ro, Kubernetes \
+             readOnly: true on its volumeMount (ADR-0101)",
+        )),
+        Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
+            "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
+             emulator such as qemu-user, or a binary run from a memfd); kaniko mode on / refuses \
+             to build without knowing"
+        ))
+        .with_guidance(
+            "run ranikust natively, built for the machine's own architecture, from a regular \
+             file, not a memfd (ADR-0101)",
+        )),
+        Some(BinaryMount::Unknown(e)) => Err(Failure::error(format!(
+            "{how}: cannot tell which mount ranikust's binary is on ({e}); kaniko mode on / \
+             refuses to build without knowing"
+        ))
+        .with_guidance(
+            "ranikust opens /proc/self/exe and reads its mount with statx (STATX_MNT_ID) and \
+             fstatvfs: mount /proc in the container and let its seccomp profile allow fstatfs \
+             (ADR-0101)",
+        )),
+        None => Err(Failure::error(format!(
+            "{how}: the mount of ranikust's binary was not measured; kaniko mode on / refuses \
+             to build without knowing"
+        ))),
+    }
 }
 
 /// Kaniko mode's snapshotter on `/` in a container, opened once by the
@@ -1134,7 +1206,7 @@ mod tests {
     #[test]
     fn the_refusals_on_slash_come_in_their_order() {
         let config = config_of(&["--no-push", "--network=none"]);
-        let may_mount = refuse_unsafe_slash(&config, "--mode=kaniko", true).unwrap_err();
+        let may_mount = refuse_unsafe_slash(&config, "--mode=kaniko", true, None).unwrap_err();
         assert!(
             may_mount
                 .message
@@ -1142,13 +1214,74 @@ mod tests {
             "{}",
             may_mount.message
         );
-        let no_mount = refuse_unsafe_slash(&config, "--mode=kaniko", false).unwrap_err();
+        let no_mount = refuse_unsafe_slash(&config, "--mode=kaniko", false, None).unwrap_err();
         assert!(
             no_mount
                 .message
                 .contains("--network=none: kaniko mode on / runs RUN directly"),
             "{}",
             no_mount.message
+        );
+    }
+
+    /// ADR-0101: kaniko mode on `/` refuses ranikust's binary on a writable
+    /// mount from outside the container, with the guidance to mount it
+    /// read-only; one in the container's own root or on a read-only mount
+    /// builds, and one whose mount is not known is refused.
+    #[test]
+    fn kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount() {
+        let how = "--mode=kaniko";
+        refuse_writable_binary(how, Some(BinaryMount::Root)).unwrap();
+        refuse_writable_binary(how, Some(BinaryMount::ReadOnly)).unwrap();
+        let writable = refuse_writable_binary(how, Some(BinaryMount::Writable)).unwrap_err();
+        assert_eq!(writable.code, 1);
+        assert!(
+            writable
+                .message
+                .starts_with("--mode=kaniko: kaniko mode on / ")
+                && writable
+                    .message
+                    .contains("writable mount from outside the container"),
+            "{}",
+            writable.message
+        );
+        assert!(
+            writable.guidance.contains(":ro") && writable.guidance.contains("readOnly: true"),
+            "{}",
+            writable.guidance
+        );
+        let errno = rustix::io::Errno::NOSYS;
+        for unknown in [
+            Some(BinaryMount::NoMountId),
+            Some(BinaryMount::Unknown(errno)),
+            None,
+        ] {
+            let refused = refuse_writable_binary(how, unknown).unwrap_err();
+            assert_eq!(refused.code, 1);
+            assert!(
+                refused.message.contains("without knowing"),
+                "{}",
+                refused.message
+            );
+        }
+        let unknown = refuse_writable_binary(how, Some(BinaryMount::Unknown(errno))).unwrap_err();
+        assert!(
+            unknown.message.contains(&errno.to_string())
+                && unknown.guidance.contains("/proc/self/exe")
+                && unknown.guidance.contains("fstatfs"),
+            "{}: {}",
+            unknown.message,
+            unknown.guidance
+        );
+        let no_id = refuse_writable_binary(how, Some(BinaryMount::NoMountId)).unwrap_err();
+        assert!(
+            no_id.message.contains("no mount id")
+                && no_id.message.contains("memfd")
+                && no_id.guidance.contains("natively")
+                && no_id.guidance.contains("not a memfd"),
+            "{}: {}",
+            no_id.message,
+            no_id.guidance
         );
     }
 

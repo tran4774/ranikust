@@ -570,6 +570,8 @@ fn a_build_runs_from_a_sealed_copy_made_once() {
         assert_eq!(lines.len(), 1, "{fault:?}: {err}");
         assert!(lines[0].contains(&format!("way={way}")), "{fault:?}: {err}");
         assert!(!lines[0].contains("passed_over"), "{fault:?}: {err}");
+        // The binary's mount, measured before the copy, reached it.
+        assert!(lines[0].contains(" binary="), "{fault:?}: {err}");
         assert!(!err.contains(unsealed), "{fault:?}: {err}");
     }
     // The O_TMPFILE copy left nothing behind.
@@ -578,10 +580,17 @@ fn a_build_runs_from_a_sealed_copy_made_once() {
     assert!(sealed(&err).is_empty(), "{err}");
     assert!(err.contains(unsealed), "{err}");
     assert!(err.contains("no way was tried"), "{err}");
-    let err = run(&[("RANIKUST_SEALED_COPY", "memfd")]);
-    assert!(sealed(&err).is_empty(), "{err}");
-    assert!(err.contains(unsealed), "{err}");
-    assert!(err.contains("is no such copy"), "{err}");
+    for marker in ["memfd root", "memfd"] {
+        let err = run(&[("RANIKUST_SEALED_COPY", marker)]);
+        assert!(sealed(&err).is_empty(), "{marker}: {err}");
+        assert!(err.contains(unsealed), "{marker}: {err}");
+        let why = if marker == "memfd" {
+            "names no way"
+        } else {
+            "is no such copy"
+        };
+        assert!(err.contains(why), "{marker}: {err}");
+    }
 }
 
 /// ADR-0049: kaniko's variables are not read, so a mirror variable changes

@@ -57,8 +57,10 @@ check-aarch64:
 # natively and nothing is skipped. Elsewhere they run under qemu-user through
 # cargo's target runner, QEMU 9.1 or later (older qemu-user has no openat2,
 # which RootPath needs), and these are skipped, with the reason:
-# - `open_gives_cloexec_path_fd_and_mount_id`: qemu-user's statx leaves
-#   `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id it asserts is not seen;
+# - `open_gives_cloexec_path_fd_and_mount_id`,
+#   `the_binarys_mount_is_measured_on_the_file`: qemu-user's statx leaves
+#   `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id they assert is
+#   not seen;
 # - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
 #   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`:
 #   qemu-user runs a thread of its own, so the set-up stops at its
@@ -146,6 +148,7 @@ test-aarch64 *args:
     static_check
     "$qemu" "$BIN" version
     skip=(--skip root::tests::open_gives_cloexec_path_fd_and_mount_id
+      --skip seal::tests::the_binarys_mount_is_measured_on_the_file
       --skip without_root_the_set_up_refuses_before_touching_the_state_dir
       --skip kaniko_variables_are_not_read
       --skip logging_flags_change_what_is_written

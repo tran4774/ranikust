@@ -7,22 +7,29 @@
 //! does about writes to a running file. The copies are the first two of
 //! runc's (`CloneBinary`, `libcontainer/dmz` in runc 1.2.0), without the
 //! overlay runc tries before them or the named temporary file after.
+//!
+//! It also tells which mount the binary ranikust started from is on
+//! ([`BinaryMount`]), measured before the copy runs, since the copy cannot
+//! see that file any more.
 
 use std::convert::Infallible;
 use std::ffi::{CString, OsStr, OsString};
 use std::fmt;
 use std::fs::File;
-use std::io;
+use std::io::{self, Seek};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{Mode, OFlags, SealFlags};
+use rustix::fs::{AtFlags, Mode, OFlags, SealFlags, StatVfsMountFlags, StatxFlags};
 use rustix::io::Errno;
 
-/// Set for the copy's run: it names the way, and the copy never makes
-/// another (no loop).
+/// Set for the copy's run: it names the way and the mount of the binary
+/// ranikust started from, and the copy never makes another (no loop).
 const MARKER: &str = "RANIKUST_SEALED_COPY";
+
+/// `FUSE_SUPER_MAGIC`.
+const FUSE: i64 = 0x6573_5546;
 
 /// The seals of a memfd copy: no write, no change of size, no seal taken
 /// off.
@@ -65,6 +72,69 @@ impl fmt::Display for SealedCopy {
     }
 }
 
+/// Which mount the binary ranikust started from is on, against the mount
+/// of `/` (ADR-0101). In a container, a file on another mount that is
+/// writable came from outside it (a bind mount or a volume), and no longer
+/// runs while the build runs from its copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryMount {
+    /// On the mount of `/`: in a container, its own root.
+    Root,
+    /// On another mount, read-only.
+    ReadOnly,
+    /// On another mount, writable.
+    Writable,
+    /// Cannot be told: `statx` gave a mount id of 0, as qemu-user's does
+    /// for every file and the kernel for a memfd (Linux 6.8 and 7.0).
+    NoMountId,
+    /// Cannot be told: the error of the call that failed.
+    Unknown(Errno),
+}
+
+impl BinaryMount {
+    /// The binary's mount `mnt` against the mount `root` of `/`.
+    fn of(mnt: u64, root: u64, read_only: bool) -> Self {
+        // A zero id proves nothing: qemu-user's statx reports the field
+        // filled and leaves it 0.
+        if mnt == 0 || root == 0 {
+            Self::NoMountId
+        } else if mnt == root {
+            Self::Root
+        } else if read_only {
+            Self::ReadOnly
+        } else {
+            Self::Writable
+        }
+    }
+
+    /// Its word in the marker.
+    fn token(self) -> String {
+        match self {
+            Self::Root => "root".to_owned(),
+            Self::ReadOnly => "ro".to_owned(),
+            Self::Writable => "rw".to_owned(),
+            Self::NoMountId => "noid".to_owned(),
+            Self::Unknown(e) => format!("unknown:{}", e.raw_os_error()),
+        }
+    }
+
+    fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "root" => Some(Self::Root),
+            "ro" => Some(Self::ReadOnly),
+            "rw" => Some(Self::Writable),
+            "noid" => Some(Self::NoMountId),
+            _ => {
+                let raw: i32 = token.strip_prefix("unknown:")?.parse().ok()?;
+                // Only a number the kernel gives: rustix panics on others.
+                (1..4096)
+                    .contains(&raw)
+                    .then(|| Self::Unknown(Errno::from_raw_os_error(raw)))
+            }
+        }
+    }
+}
+
 /// What [`run_from_sealed_copy`] found, when it returns.
 #[derive(Debug)]
 pub enum Sealing {
@@ -75,10 +145,28 @@ pub enum Sealing {
         /// Why each way tried before it failed, `; ` between them; empty
         /// when it was the first tried.
         passed_over: String,
+        /// The mount of the binary ranikust started from, as the run
+        /// before the copy found it.
+        binary: BinaryMount,
     },
     /// This process runs from the binary as installed, or from something
-    /// that is not the copy its marker names: why.
-    Unsealed(String),
+    /// that is not the copy its marker names.
+    Unsealed {
+        /// Why.
+        why: String,
+        /// The mount of the binary this process runs from.
+        binary: BinaryMount,
+    },
+}
+
+impl Sealing {
+    /// The mount of the binary ranikust started from.
+    #[must_use]
+    pub fn binary(&self) -> BinaryMount {
+        match self {
+            Self::Sealed { binary, .. } | Self::Unsealed { binary, .. } => *binary,
+        }
+    }
 }
 
 /// Runs this process again from a sealed copy of its binary, trying `ways`
@@ -90,7 +178,10 @@ pub enum Sealing {
 /// variable set) it makes no copy, checks `/proc/self/exe` is the copy the
 /// variable names, and names the process after its `argv[0]` again. The
 /// core-file limit [`forbid_core_dumps`](crate::forbid_core_dumps) recorded
-/// is given back for the copy, which records it again.
+/// is given back for the copy, which records it again. Before any copy,
+/// [`BinaryMount`] is measured on the binary as installed and passed to
+/// the copy in the variable; a run that ends unsealed measures the file it
+/// runs from.
 ///
 /// # Errors
 ///
@@ -100,18 +191,59 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing> 
     if let Some(value) = std::env::var_os(MARKER) {
         return Ok(copy_run(&value));
     }
-    let run = |way, copy: OwnedFd, failed: &[(SealedCopy, io::Error)]| {
-        execute(&copy, &marker(way, failed))
+    let exe = match File::open("/proc/self/exe") {
+        Ok(exe) => exe,
+        Err(e) => {
+            return Ok(Sealing::Unsealed {
+                why: format!("open /proc/self/exe: {e}"),
+                binary: BinaryMount::Unknown(errno_of(&e)),
+            });
+        }
     };
-    let failed = match try_in_order(ways, make_copy, run, core_limit_to_zero) {
+    let binary = mount_of(exe.as_fd());
+    let run = |way, copy: OwnedFd, failed: &[(SealedCopy, io::Error)]| {
+        execute(&copy, &marker(way, binary, failed))
+    };
+    let make = |way| make_copy(way, &exe);
+    let failed = match try_in_order(ways, make, run, core_limit_to_zero) {
         Search::Ran(never) => match never {},
         Search::NoneRan(failed) => failed,
         Search::Stopped(e) => return Err(e),
     };
-    if failed.is_empty() {
-        return Ok(Sealing::Unsealed("no way was tried".to_owned()));
-    }
-    Ok(Sealing::Unsealed(passed_over(&failed)))
+    let why = if failed.is_empty() {
+        "no way was tried".to_owned()
+    } else {
+        passed_over(&failed)
+    };
+    Ok(Sealing::Unsealed { why, binary })
+}
+
+/// Which mount the file `exe` is on, against the mount of `/`.
+fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
+    let mount_id = |fd: BorrowedFd<'_>, path: &std::ffi::CStr, flags: AtFlags| {
+        let st = rustix::fs::statx(fd, path, flags, StatxFlags::MNT_ID)?;
+        // Linux 5.8, which ranikust needs (ADR-0028), always fills it.
+        if StatxFlags::from_bits_retain(st.stx_mask).contains(StatxFlags::MNT_ID) {
+            Ok(st.stx_mnt_id)
+        } else {
+            Err(Errno::NOSYS)
+        }
+    };
+    let found = (|| {
+        let mnt = mount_id(exe, c"", AtFlags::EMPTY_PATH)?;
+        let root = mount_id(rustix::fs::CWD, c"/", AtFlags::empty())?;
+        let flags = rustix::fs::fstatvfs(exe)?.f_flag;
+        Ok(BinaryMount::of(
+            mnt,
+            root,
+            flags.contains(StatVfsMountFlags::RDONLY),
+        ))
+    })();
+    found.unwrap_or_else(BinaryMount::Unknown)
+}
+
+fn errno_of(e: &io::Error) -> Errno {
+    Errno::from_io_error(e).unwrap_or(Errno::IO)
 }
 
 /// Each failure with its way, `; ` between them.
@@ -123,38 +255,61 @@ fn passed_over(failed: &[(SealedCopy, io::Error)]) -> String {
     why.join("; ")
 }
 
-/// The marker's value for a copy made `way`: its name, then why the ways
-/// before it failed, for the copy to log.
-fn marker(way: SealedCopy, failed: &[(SealedCopy, io::Error)]) -> String {
+/// The marker's value for a copy made `way`: its name and the binary's
+/// mount, then why the ways before it failed, for the copy to log.
+fn marker(way: SealedCopy, binary: BinaryMount, failed: &[(SealedCopy, io::Error)]) -> String {
+    let head = format!("{way} {}", binary.token());
     if failed.is_empty() {
-        way.name().to_owned()
+        head
     } else {
-        format!("{way}; {}", passed_over(failed))
+        format!("{head}; {}", passed_over(failed))
     }
 }
 
-/// The way a marker names and why the ways before it failed.
-fn parse_marker(value: &str) -> Option<(SealedCopy, &str)> {
-    let (name, passed_over) = value.split_once(';').unwrap_or((value, ""));
-    Some((SealedCopy::from_name(name)?, passed_over.trim_start()))
+/// The way and the binary's mount a marker names, and why the ways before
+/// it failed.
+fn parse_marker(value: &str) -> Option<(SealedCopy, BinaryMount, &str)> {
+    let (head, passed_over) = value.split_once(';').unwrap_or((value, ""));
+    let (name, binary) = head.split_once(' ')?;
+    Some((
+        SealedCopy::from_name(name)?,
+        BinaryMount::from_token(binary)?,
+        passed_over.trim_start(),
+    ))
 }
 
 /// The copy's run: checks the copy, never makes another.
 fn copy_run(value: &OsStr) -> Sealing {
-    // The kernel named the process after `/proc/self/fd/<n>`; `ps`, `pgrep`
-    // and `pkill -x` look for ranikust's own name.
+    // The kernel named the process after the descriptor, not `argv[0]`;
+    // `ps`, `pgrep` and `pkill -x` look for ranikust's own name.
     name_after_argv0();
-    let Some((way, passed_over)) = value.to_str().and_then(parse_marker) else {
-        return Sealing::Unsealed(format!(
+    let exe = match File::open("/proc/self/exe") {
+        Ok(exe) => exe,
+        Err(e) => {
+            return Sealing::Unsealed {
+                why: format!("{MARKER} is set, but /proc/self/exe does not open: {e}"),
+                binary: BinaryMount::Unknown(errno_of(&e)),
+            };
+        }
+    };
+    // No checked copy: the marker is not believed, and the binary measured
+    // is the one this process runs from.
+    let unsealed = |why| Sealing::Unsealed {
+        why,
+        binary: mount_of(exe.as_fd()),
+    };
+    let Some((way, binary, passed_over)) = value.to_str().and_then(parse_marker) else {
+        return unsealed(format!(
             "{MARKER}={value:?} names no way to seal the binary"
         ));
     };
-    match File::open("/proc/self/exe").and_then(|exe| check(way, exe.as_fd())) {
+    match check(way, exe.as_fd()) {
         Ok(()) => Sealing::Sealed {
             way,
             passed_over: passed_over.to_owned(),
+            binary,
         },
-        Err(e) => Sealing::Unsealed(format!(
+        Err(e) => unsealed(format!(
             "{MARKER}={way}, but /proc/self/exe is no such copy: {e}"
         )),
     }
@@ -224,11 +379,10 @@ fn try_in_order<T, E>(
     Search::NoneRan(failed)
 }
 
-fn make_copy(way: SealedCopy) -> io::Result<OwnedFd> {
-    let exe = File::open("/proc/self/exe").map_err(context("open /proc/self/exe"))?;
+fn make_copy(way: SealedCopy, exe: &File) -> io::Result<OwnedFd> {
     match way {
-        SealedCopy::Memfd => memfd_copy(&exe),
-        SealedCopy::Tmpfile => tmpfile_copy(&exe, &temp_dir()),
+        SealedCopy::Memfd => memfd_copy(exe),
+        SealedCopy::Tmpfile => tmpfile_copy(exe, &temp_dir()),
     }
 }
 
@@ -262,9 +416,31 @@ fn memfd_copy(exe: &File) -> io::Result<OwnedFd> {
 
 /// A copy in an `O_TMPFILE` file in `dir`, which can never get a name
 /// (`O_EXCL`), open read-only: `execve` refuses a file open for writing.
+/// Never on FUSE.
 fn tmpfile_copy(exe: &File, dir: &Path) -> io::Result<OwnedFd> {
-    let fd = rustix::fs::open(
+    let at = rustix::fs::open(
         dir,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(context(format!("open {}", dir.display())))?;
+    let st = rustix::fs::fstatfs(&at).map_err(context(format!("statfs {}", dir.display())))?;
+    #[allow(
+        clippy::useless_conversion,
+        reason = "f_type's integer type differs between targets"
+    )]
+    let f_type = i64::from(st.f_type);
+    // A FUSE daemon could hand the kernel other pages to run than the ones
+    // written.
+    if f_type == FUSE {
+        return Err(io::Error::other(format!(
+            "{} is on FUSE, whose daemon serves the copy's pages",
+            dir.display()
+        )));
+    }
+    let fd = rustix::fs::openat(
+        &at,
+        c".",
         OFlags::TMPFILE | OFlags::RDWR | OFlags::EXCL | OFlags::CLOEXEC,
         Mode::RWXU,
     )
@@ -284,6 +460,8 @@ fn tmpfile_copy(exe: &File, dir: &Path) -> io::Result<OwnedFd> {
 fn copy_whole(exe: &File, to: &mut File) -> io::Result<()> {
     let size = exe.metadata()?.len();
     let mut from = exe;
+    // A way tried before read it already.
+    from.rewind().map_err(context("rewind the binary"))?;
     let copied = io::copy(&mut from, to).map_err(context("copy the binary"))?;
     if copied == size {
         Ok(())
@@ -297,7 +475,6 @@ fn copy_whole(exe: &File, to: &mut File) -> io::Result<()> {
 /// Runs `copy` with this process's arguments and environment, the marker
 /// set to `marker`. Returns only when the kernel refused it.
 fn execute(copy: &OwnedFd, marker: &str) -> io::Result<Infallible> {
-    let path = CString::new(format!("/proc/self/fd/{}", copy.as_raw_fd()))?;
     let args = std::env::args_os()
         .map(|arg| CString::new(arg.into_vec()))
         .collect::<Result<Vec<_>, _>>()?;
@@ -312,9 +489,23 @@ fn execute(copy: &OwnedFd, marker: &str) -> io::Result<Infallible> {
     }
     // Not `Command::exec`: on a refusal it would leave `SIGPIPE` at its
     // default and the signal mask cleared in this process, which goes on.
-    // SAFETY: `path`, every string and both null-terminated arrays outlive
-    // the call; `execve` returns only on failure, changing nothing.
-    unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+    // The descriptor itself, close-on-exec, not `/proc/self/fd/<n>`: the
+    // kernel refuses to hand a file the exec closes to an interpreter
+    // (binfmt_misc, which runs an emulator, or a `#!` line) before the
+    // point of no return, and the next way is tried.
+    // SAFETY: the empty path, every string and both null-terminated arrays
+    // outlive the call; `execveat` returns only on failure, changing
+    // nothing.
+    unsafe {
+        libc::syscall(
+            libc::SYS_execveat,
+            copy.as_raw_fd(),
+            c"".as_ptr(),
+            argv.as_ptr(),
+            envp.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
     Err(io::Error::last_os_error())
 }
 

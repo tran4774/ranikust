@@ -17,7 +17,9 @@
 //! is possible.
 //!
 //! Makes the sealed copy of ranikust's binary a build runs from, so that
-//! no process ranikust forks has a binary a `RUN` could write (ADR-0101).
+//! no process ranikust forks has a binary a `RUN` could write, and reports
+//! which mount the binary as installed is on, for `ranikust`'s refusal in
+//! kaniko mode on `/` (ADR-0101).
 //!
 //! # Use
 //!
@@ -61,7 +63,7 @@ mod sweep;
 pub use child::RootEntry;
 pub use error::{Error, Result, Step};
 pub use probe::{Caps, probe};
-pub use seal::{SealedCopy, Sealing, run_from_sealed_copy};
+pub use seal::{BinaryMount, SealedCopy, Sealing, run_from_sealed_copy};
 pub use setup::{enter_build_namespace, trim_to_run_capabilities};
 pub use spawner::Sandbox;
 pub use spec::{
