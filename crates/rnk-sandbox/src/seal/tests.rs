@@ -551,13 +551,17 @@ fn a_file_in_the_root_is_weighed_by_the_roots_file_system() {
         (Some(true), _) => BinaryMount::Root,
         (None, _) | (Some(false), 0) => BinaryMount::Unplaced,
         (Some(false), 1) => {
-            match mounts.as_deref().and_then(|m| {
-                let binary = FileId::of(&st)?;
-                reached_from_slash(m, st.stx_mnt_id, Path::new("/"), binary)
-            }) {
-                None => BinaryMount::Unplaced,
-                Some(true) => BinaryMount::Exposed,
-                Some(false) => BinaryMount::Root,
+            let reach = match (mounts.as_deref(), FileId::of(&st)) {
+                (Some(m), Some(binary)) => {
+                    reached_from_slash(m, st.stx_mnt_id, Path::new("/"), binary)
+                }
+                (None, _) | (_, None) => Ok(None),
+            };
+            match reach {
+                Ok(None) => BinaryMount::Unplaced,
+                Ok(Some(true)) => BinaryMount::Exposed,
+                Ok(Some(false)) => BinaryMount::Root,
+                Err(errno) => BinaryMount::Unknown(errno),
             }
         }
         (Some(false), _) => BinaryMount::Linked,
@@ -932,7 +936,7 @@ fn a_mount_root_is_reached_at_its_mount_point() {
         .find(|m| m.mount_id == proc_id)
         .expect("/proc's line");
     let root = RootPath::open("/").expect("/");
-    assert_eq!(root_at(&root, proc), Some(MountRoot::Directory));
+    assert_eq!(root_at(&root, proc), Ok(Some(MountRoot::Directory)));
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("f");
     std::fs::write(&file, b"x").expect("write");
@@ -942,14 +946,14 @@ fn a_mount_root_is_reached_at_its_mount_point() {
     at_file.mount_id = st.stx_mnt_id;
     assert_eq!(
         root_at(&root, &at_file),
-        Some(MountRoot::File(FileId::of(&st).expect("an inode")))
+        Ok(Some(MountRoot::File(FileId::of(&st).expect("an inode"))))
     );
     let mut another = proc.clone();
     another.mount_id = u64::MAX;
-    assert_eq!(root_at(&root, &another), None);
+    assert_eq!(root_at(&root, &another), Ok(None));
     let mut missing = proc.clone();
     missing.mount_point = dir.path().join("missing");
-    assert_eq!(root_at(&root, &missing), None);
+    assert_eq!(root_at(&root, &missing), Ok(None));
     let open = File::open(&file).expect("open");
     let name = || {
         let link = format!("/proc/self/fd/{}", open.as_raw_fd());
@@ -963,7 +967,43 @@ fn a_mount_root_is_reached_at_its_mount_point() {
         st.stx_mnt_id,
         MountRoot::File(FileId::of(&st).expect("an inode")),
     );
-    assert_eq!(seen_at(&root, &name()), Some(own));
+    assert_eq!(seen_at(&root, &name()), Ok(Some(own)));
     std::fs::remove_file(&file).expect("remove");
-    assert_eq!(seen_at(&root, &name()), None, "{}", name().display());
+    assert_eq!(seen_at(&root, &name()), Ok(None), "{}", name().display());
+}
+
+/// Review of ADR-0101's T21 fix: the binary's own name, removed while it
+/// runs (`readlink` then gives `<path> (deleted)`) with a link left
+/// elsewhere, places nothing, whatever the stale name is below: on the
+/// host running it, without the check of the name, the stale path was
+/// placed in its mount's tree.
+#[test]
+fn a_removed_name_of_the_binary_places_nothing() {
+    let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
+    let mounts: Vec<MountInfo> = text
+        .split(|b| *b == b'\n')
+        // A line of an odd shape elsewhere on this host does not matter here.
+        .filter_map(|line| rnk_rootfs::parse_mountinfo(line).ok()?.pop())
+        .collect();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (file, link) = (dir.path().join("f"), dir.path().join("g"));
+    std::fs::write(&file, b"x").expect("write");
+    std::fs::hard_link(&file, &link).expect("link");
+    let open = File::open(&file).expect("open");
+    std::fs::remove_file(&file).expect("remove");
+    let st = statx_of(open.as_fd(), c"", AtFlags::EMPTY_PATH).expect("statx");
+    assert_eq!(st.stx_nlink, 1, "the link left");
+    let fd = format!("/proc/self/fd/{}", open.as_raw_fd());
+    let name = PathBuf::from(OsString::from_vec(
+        rustix::fs::readlinkat(rustix::fs::CWD, fd.as_str(), Vec::new())
+            .expect("readlink")
+            .into_bytes(),
+    ));
+    let binary = FileId::of(&st).expect("an inode");
+    assert_eq!(
+        reached_from_slash(&mounts, st.stx_mnt_id, &name, binary),
+        Ok(None),
+        "{}",
+        name.display()
+    );
 }
