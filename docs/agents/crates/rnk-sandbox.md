@@ -256,7 +256,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   a binary in a root that is not an overlay weighed (by sample values and
   on `/`), a fuse-overlayfs root counted as an overlay, a FUSE root the
   table does not type unplaced, the root mount not counted, FUSE told
-  apart by `statfs` magic), the stub journal (placement through symlinks,
+  apart by `statfs` magic, escaped names in the mount table,
+  `red_team_escaped_names_in_the_mount_table_are_compared_unescaped`), the
+  stub journal (placement through symlinks,
   removal, parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed

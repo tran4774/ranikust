@@ -669,3 +669,88 @@ fn the_binary_as_installed_passes_for_no_copy() {
     assert_eq!(SealedCopy::from_name("memfd"), Some(SealedCopy::Memfd));
     assert_eq!(SealedCopy::from_name("overlay"), None);
 }
+
+/// Red team (ADR-0101, T21): escaped names in the mount table hide no reach.
+#[test]
+fn red_team_escaped_names_in_the_mount_table_are_compared_unescaped() {
+    let table = |own: &str, other: &str| {
+        let text = format!(
+            "1 0 0:50 / / rw - overlay overlay rw\n\
+             10 1 8:1 {own} - ext4 /dev/sda1 rw\n\
+             11 1 8:1 {other} rw - ext4 /dev/sda1 rw\n"
+        );
+        rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample mountinfo")
+    };
+    let path = |bytes: &[u8]| PathBuf::from(OsStr::from_bytes(bytes));
+    // (binary's line, path below it, writable line, reached)
+    let cases: [(&str, &[u8], &str, bool); 10] = [
+        (
+            r"/h/t\011ab/rnk /r/rnk ro",
+            b"/r/rnk",
+            r"/h/t\011ab /src",
+            true,
+        ),
+        (
+            r"/h/n\012l/rnk /r/rnk ro",
+            b"/r/rnk",
+            r"/h/n\012l /src",
+            true,
+        ),
+        (r"/h/n\012l/rnk /r/rnk ro", b"/r/rnk", r"/h/n /src", false),
+        (
+            r"/h/b\134s/rnk /r/rnk ro",
+            b"/r/rnk",
+            r"/h/b\134s /src",
+            true,
+        ),
+        (r"/h/b\134s/rnk /r/rnk ro", b"/r/rnk", r"/h/b /src", false),
+        // A name holding `\040` itself, not a space, and the other way round.
+        (
+            r"/h/a\134040b/rnk /r/rnk ro",
+            b"/r/rnk",
+            r"/h/a\040b /src",
+            false,
+        ),
+        (
+            r"/h/a\040b/rnk /r/rnk ro",
+            b"/r/rnk",
+            r"/h/a\134040b /src",
+            false,
+        ),
+        (
+            r"/h/a\134040b/rnk /r/rnk ro",
+            b"/r/rnk",
+            r"/h/a\134040b /x\012y",
+            true,
+        ),
+        // A directory bound at a point with a newline and a tab.
+        (
+            r"/h/t /r/b\012i\011n ro",
+            b"/r/b\ni\tn/rnk",
+            r"/h/t/rnk /x",
+            true,
+        ),
+        (
+            r"/h/t /r/b\012i\011n ro",
+            b"/r/b\ni\tn/rnk",
+            r"/h/t/rnk2 /x",
+            false,
+        ),
+    ];
+    for (own, below, other, reached) in cases {
+        assert_eq!(
+            reached_writable(&table(own, other), 10, &path(below)),
+            Some(reached),
+            "{own} | {other}"
+        );
+    }
+    // A path that only spells the mount point's escape is outside it.
+    assert_eq!(
+        reached_writable(
+            &table(r"/h/t /r/b\012in ro", r"/h/t /x"),
+            10,
+            &path(br"/r/b\012in/rnk")
+        ),
+        None
+    );
+}
