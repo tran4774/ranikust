@@ -16,7 +16,7 @@ and `chown` to any other uid fails with `EINVAL`
 Layers and `COPY --chown` set owners, so an image with several owners cannot
 be extracted or built as it is. What does a rootless user without subuid
 ranges get (#12, Q-040)? And, once that is settled, how does the refusal find
-the owners, and when (question N3 of the Phase 3 plan)?
+the owners, and when (raised while planning Phase 3)?
 
 ## Considered Options
 
@@ -30,8 +30,8 @@ What a user without ranges gets (#12):
 becomes the build user's, a change of permissions nobody reviewed; podman's
 flag is not a reason to copy it (the recommendation on #12, 2026-10-31).
 
-How the refusal finds the owners (N3), given (a); the Phase 3 plan labels these
-(a) to (c), primed here to keep them apart from the two above:
+How the refusal finds the owners, given (a); primed here to keep them apart
+from the two above:
 
 - (a') Refuse at the first `chown` or `setuid` that fails with `EINVAL`
   (extraction, `COPY --chown`, a `RUN`, `USER`), naming the file or id.
@@ -50,20 +50,21 @@ image with several owners and offers no `ignore_chown_errors`-style flag: option
 (a) (the maintainer, 2026-11-04: "Q-040 a"). It finds the owners as (c') says,
 counting uids and gids, and the message names the owners found and the ways out
 (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended,
-which takes the recommendation on N3).
+which takes the recommendation on how the refusal finds the owners).
 
 - **Planned, Phase 3.** Nothing is built by this ADR. Today rootless is refused
   whole (`NEEDS_ROOT`, [modes-and-detection](../design/modes-and-detection.md#refusal-and-guidance)),
   so no behaviour changes until rootless overlay mode exists.
 - **Scope.** Only where the user namespace maps one uid, which is a rootless
   user without `newuidmap` or without subuid ranges. Where a multi-range map is
-  written, the situation does not arise.
+  written, owners inside its ranges map; an owner outside them is
+  [open: #92].
 - **No flag.** No option makes a failed `chown` pass, now or as a later
   convenience; a user who needs several owners gets ranges or another privilege
   level.
 - **Before the build.** ranikust scans the tar headers of the base layers and
   refuses before anything is extracted when any owner, uid or gid, is not the
-  one mapped id (0 inside the namespace, the invoking user outside).
+  one mapped id (0 inside the namespace, the invoking user's uid and gid outside).
 - **During the build.** ranikust refuses at the first `chown` or `setuid` that
   fails with `EINVAL` for what the build creates: `COPY --chown`, a `RUN`,
   `USER`. This covers what no scan can see.
@@ -93,6 +94,9 @@ which takes the recommendation on N3).
   (`/etc/shadow` shows group `65534` in a one-id map), so few **[inferred]**.
 - Bad, because podman's `ignore_chown_errors` users, such as HPC sites
   that cannot get ranges, have no flag to turn to.
+- Bad, because with a one-id map every base blob is decompressed once more to
+  read its headers: overlay mode downloads a blob, then extracts it
+  ([ADR-0055](0055-stream-layers-keep-nothing-proportional-to-the-image.md)).
 - Neutral, because the ranges, or root or a container, remain the way out; both
   are ADR-0004's modes.
 
@@ -123,11 +127,13 @@ which takes the recommendation on N3).
 ## More Information
 
 Answers #12 (Q-040), which blocked Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)), and question N3 of the
-Phase 3 plan (the four points this ADR first left open). Related:
+([#41](https://github.com/tran4774/ranikust/issues/41)), and how the refusal
+finds the owners, raised while planning Phase 3. Related:
 [ADR-0004](0004-support-every-privilege-level.md) (refuse with guidance);
 [ADR-0049](0049-security-and-performance-over-kaniko-compatibility.md) listed
-Q-040 as not decided, and stays `accepted` with its body unchanged.
+Q-040 as not decided, and stays `accepted` with its body unchanged. What a build
+with subordinate ranges does with an owner outside them is not decided here:
+[#92](https://github.com/tran4774/ranikust/issues/92).
 [ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)
 settles where the store's operations run in the same namespace.
 

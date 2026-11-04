@@ -31,7 +31,9 @@ namespace. How are read-only layer roots published without root (#5, Q-152)?
 the namespace on a layer of subordinate ids, with `EPERM`, `EACCES` and `EPERM`
 (R5 below), so it cannot work without the namespace; inside the namespace the
 rename of a `0555` directory already works when its uid and gid are mapped (R2 to
-R4), so the `u+w` step has nothing left to do.
+R4), so the `u+w` step has nothing left to do. Where only the gid is unmapped (R6,
+R7) (a) would work, but ranikust never creates such a directory, and an unmapped
+owner from a tar fails at `chown` first.
 
 (b) was not taken: a marker beside a `0555` directory is never blocked (R5's
 note), so publication would work, but clean-up still cannot: a populated `0555`
@@ -148,7 +150,7 @@ state directory `~/.local/share/ranikust`),
 (a one-id map and its refusal),
 [ADR-0105](0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md)
 (emptying the state directory),
-[ADR-0106](0106-rootless-extraction-skips-device-nodes-and-counts-them.md)
+[ADR-0106](0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)
 (device nodes in rootless extraction).
 
 Follow-ups, with task 6 of #41: `rnk-store`, `rnk-snapshot` and `rnk-rootfs`

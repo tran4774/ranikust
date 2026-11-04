@@ -19,7 +19,7 @@ namespace, once task 5 of
 ([cache-and-store](../design/cache-and-store.md#prune)). A user who drops
 ranikust then has no tool left to empty `~/.local/share/ranikust`. How does a
 rootless user remove a state directory holding files of subordinate ids
-(question N4 of the Phase 3 plan,
+(raised while planning Phase 3,
 [#41](https://github.com/tran4774/ranikust/issues/41))?
 
 ## Considered Options
@@ -46,6 +46,14 @@ recommended).
   namespace, and Phase 5's `prune` grows from it
   ([ADR-0021](0021-rnk-store-crate.md): `ranikust prune` only calls
   `rnk-store`).
+- **Scope.** It works on any state directory, not only a rootless one; for a
+  rootless store it runs inside the user namespace, which is the plain reading
+  of "empties the state directory inside the namespace".
+- **Safety.** `prune --all` opens the store as a build does: the
+  state-directory checks, the `.ranikust-state` marker and the store's
+  exclusive lock. It refuses a directory ranikust did not make and one a
+  running build holds, and it deletes through `rnk-rootfs` by descriptor, as the
+  start-up clean-up does.
 - **Phase 5's defaults are still** those of [ADR-0032](0032-observable-behaviour-follows-buildkit.md)
   (BuildKit's tiers, size caps, age by last use); this ADR adds only the flag
   that removes everything.
@@ -55,6 +63,8 @@ recommended).
 - Good, because it reuses `rnk-store`'s clean-up, so no second way to delete
   exists to audit.
 - Good, because a user needs no other tool (podman) to leave no state behind.
+- Good, because it cannot empty a directory ranikust did not make, nor one a
+  running build holds, since it opens the store as a build does.
 - Bad, because the `prune` subcommand appears in Phase 3 with one flag, ahead
   of the Phase 5 design (size and age tiers, in-use tracking), which then
   extends it.
@@ -67,16 +77,16 @@ recommended).
   `0555` tree of subordinate ids from outside the namespace fails (unlink
   `EACCES`, `chmod` `EPERM`)
   ([ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)).
-- **[code]** [cache-and-store](../design/cache-and-store.md#prune): `prune` is
+- **[docs]** [cache-and-store](../design/cache-and-store.md#prune): `prune` is
   not built (Phase 5); start-up removes the directories of builds no longer
-  running.
+  running, and refuses a non-empty directory without the marker
+  ([rnk-store](../agents/crates/rnk-store.md)).
 - **[external]** buildah and podman have `unshare`, which is option (c).
 
 ## More Information
 
-Answers question N4 of the Phase 3 plan on
-[#41](https://github.com/tran4774/ranikust/issues/41), put to the maintainer in
-the plan draft. Related:
+Raised while planning Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)). Related:
 [ADR-0021](0021-rnk-store-crate.md) (the store and `prune`),
 [ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md).
 

@@ -72,7 +72,7 @@ ADR-0063 stands.
 | 6c | Ubuntu 22.04 (also Debian 12, Fedora), regular user, `uidmap` and ranges | overlay, rootless, fresh `proc` | Ubuntu 22.04: namespace, map and rename measured, the overlay mount inferred; others inferred | new: T2, a VM leg on Ubuntu 22.04 |
 | 6d | Ubuntu 22.04, regular user without `uidmap` (Ubuntu's default) or without ranges | one id maps: images with one owner build, several owners refused ([ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)) | map measured, the refusal not built | new: T2, a VM leg on Ubuntu 22.04 |
 | 7a | Kubernetes, default pod, AppArmor node | kaniko on `/` | inferred (containerd's profile denies `mount`) | new: T2, a `k8s` suite with k3s on the runner or in the VM |
-| 7b | `hostUsers: false`, `procMount: Unmasked`, AppArmor unconfined | overlay, rootless, fresh `proc` | inferred | new: T2, the `k8s` suite; needs Kubernetes 1.33 or later, containerd 2.0, runc 1.2, kernel 6.3 **[external]** |
+| 7b | `hostUsers: false`, `procMount: Unmasked`, AppArmor unconfined | overlay, rootless, fresh `proc` | inferred | new: T2, the `k8s` suite; needs Kubernetes 1.33 or later, containerd 2.0, runc 1.2, kernel 6.3 (**[external]**, see Evidence) |
 | 7c | `hostUsers: false`, `procMount: Unmasked`, default AppArmor | refused (ADR-0054, writable `/proc/sys`; [ADR-0107](0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) | inferred | new: T2, the `k8s` suite |
 | 7d | Pod Security Standard `restricted` | refused | inferred | new: T2, the `k8s` suite |
 | 9d | RHEL 8 (kernel 4.18) | refused at start-up (ADR-0028) | built | today: T0, by fault injection |
@@ -97,15 +97,16 @@ ADR-0063 stands.
 - Good, because row 9e is the one RHEL-family target the docs name that
   ADR-0028 lets start (RHEL 8 is refused, row 9d), and SELinux is the one
   confinement the other rows never meet.
-- Good, because rootless overlay, the AppArmor refusal and the ADR-0098 refusal
-  run in T1 or T2 on both kernels the VM boots.
+- Good, because rootless overlay runs in the VM on both kernels it boots (rows
+  6b on 6.8 and 6c on 5.15), the AppArmor refusal on 6.8 (row 6) and the
+  ADR-0098 refusal on 5.15 (row 6d).
 - Bad, because it costs one runner job per environment, which is time on each CI
   run that touches the probe (by the lanes of `scripts/ci.py`), and a k3s
   install in the VM or on the runner.
 - Bad, because the VM harness must learn to boot a non-Ubuntu image for row 9e.
 - Bad, because rows 8, 8b, 9a, 9b and 10 stay inferred until Phase 6, and Debian
   11's kernel 5.10 stays untested.
-- Neutral, because Debian 11's LTS ended in August 2026 **[external]**, and
+- Neutral, because Debian 11's LTS ended in August 2026 **[unverified]**, and
   Docker rootless lands in rows already covered (kaniko on `/`, overlay as root
   in a namespace).
 
@@ -128,6 +129,11 @@ ADR-0063 stands.
     restores them (the profile was checked for mounting and `chown` only);
     Ubuntu 22.04 has no such restriction.
   - M4: Ubuntu does not install `uidmap` by default, so only one id maps.
+- Row 7b's versions: pod user namespaces (`hostUsers: false`) are on by default
+  from Kubernetes 1.33 and need containerd 2.0 or CRI-O 1.25, runc 1.2 or crun
+  1.9, kernel 6.3, and `procMount: Unmasked` is usable only with them
+  (**[external]**, high; [experiment 03](../research/experiments/03-privilege-matrix.md),
+  [Kubernetes user namespaces](https://kubernetes.io/docs/concepts/workloads/pods/user-namespaces/)).
 - `RANIKUST_VM_RELEASE` takes `noble` or `jammy` only, and the VM's packages are
   `docker.io zstd pigz busybox-static`, so no Podman **[code]**
   (`tests/vm/vm.sh`). The runner has Podman **[external]**.

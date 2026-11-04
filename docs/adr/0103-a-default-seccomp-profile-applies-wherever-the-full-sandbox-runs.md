@@ -21,7 +21,7 @@ the insecure entitlement is granted **[external, not yet confirmed with
 `CAP_SYS_ADMIN`, so it can load a filter only after `no_new_privs`, which stops
 setuid programs (`sudo`, `su`) in the `RUN` **[external]** (`seccomp(2)`). Is a
 seccomp profile applied when `--seccomp` is not given, and what does the flag do
-in kaniko mode on `/` (question N1 of the Phase 3 plan,
+in kaniko mode on `/` (raised while planning Phase 3,
 [#41](https://github.com/tran4774/ranikust/issues/41))?
 
 ## Considered Options
@@ -44,7 +44,8 @@ runs, `--seccomp=unconfined` turns it off, and in kaniko mode on `/` the flag is
 refused (exit 2) while the container's own profile applies: option (a) (the
 maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 
-- **Planned, Phase 3**, the `--seccomp` task of #41 (task 11). Nothing is built
+- **Planned, Phase 3**, the `--seccomp` task
+  ([#82](https://github.com/tran4774/ranikust/issues/82), task 11 of #41). Nothing is built
   by this ADR: a default `RUN` has no seccomp filter today.
 - **Where the default applies:** every mode that gives `RUN` the full sandbox.
   `--seccomp=<file>` loads a profile file, as ADR-0003 says.
@@ -76,19 +77,18 @@ maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
   entitlement is granted; to confirm with `upstream-oracle` (ADR-0032).
 - **[external]** `seccomp(2)`: loading a filter without `CAP_SYS_ADMIN` needs
   `no_new_privs`, which stops setuid programs from gaining privileges.
-- **[code]** [sandbox](../design/sandbox.md#differences-from-docker) and
+- **[docs]** [sandbox](../design/sandbox.md#differences-from-docker) and
   [threat model](../security/threat-model.md) section 6: a default `RUN` has no
   seccomp filter until `--seccomp`.
 
 ## More Information
 
-Answers question N1 of the Phase 3 plan on
-[#41](https://github.com/tran4774/ranikust/issues/41), put to the maintainer in
-the plan draft. Refines
+Raised while planning Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)). Refines
 [ADR-0003](0003-dockerfile-trust-and-default-isolation.md), which stays
 `accepted` with its body unchanged.
 
-Follow-ups, with task 11 of #41: `rnk-sandbox` and `ranikust`, with T2 tests
+Follow-ups, with [#82](https://github.com/tran4774/ranikust/issues/82): `rnk-sandbox` and `ranikust`, with T2 tests
 (a `RUN` refused what the profile denies and allowed it under `unconfined`; a
 profile file taking effect; a malformed one refused before the build), ADR-0033's
 filter still applying on top, and the native aarch64 T0. When it is built,

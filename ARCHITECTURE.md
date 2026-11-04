@@ -47,8 +47,9 @@ The binary: the CLI and the orchestration of a build across the library crates
 (ADR-0067). Parses the `build` (the default) and `version` subcommands, kaniko's
 common flags (those it does not accept are refused by name) and
 `--mode=auto|overlay|kaniko`
-([ADR-0023](docs/adr/0023-mode-flag.md)); `prune` comes in Phase 5, `push` (an
-OCI layout, ADR-0052) has no phase yet, and there is no `login` (ADR-0049).
+([ADR-0023](docs/adr/0023-mode-flag.md)); `prune` comes in Phase 5 (a minimal
+`prune --all` in Phase 3, ADR-0105), `push` (an OCI layout, ADR-0052) has no
+phase yet, and there is no `login` (ADR-0049).
 Runs the set-up and the probes while
 single-threaded, picks the mode and the root, runs `rnk-sched` with its own
 `StageRunner` (which drives `rnk-builder`, one thread per stage) and writes the
@@ -122,7 +123,8 @@ The persistent, content-addressed store in the state directory
 ([ADR-0021](docs/adr/0021-rnk-store-crate.md)): blobs, extracted layers,
 `RUN --mount=type=cache` directories, entries being written. Per-digest locks,
 publication by atomic rename, start-up clean-up, and `BuildPaths`, the paths
-handed down to every crate; `prune` comes in Phase 5. **Must not** decide what
+handed down to every crate; `prune` comes in Phase 5, a minimal `prune --all` in
+Phase 3 (ADR-0105). **Must not** decide what
 an entry contains (the caller fills a temporary entry, `rnk-store` publishes
 it), transfer blobs, decode layers, mount, or delete except through
 `rnk-rootfs`.

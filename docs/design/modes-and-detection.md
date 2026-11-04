@@ -51,7 +51,7 @@ table per CI system in §6) and
 | Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
 | Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host), and rootless podman without a volume at the state directory keeps it ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) |
-| Unprivileged user on Debian, Fedora, RHEL 9+, Ubuntu ≤ 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`); today refused |
+| Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`); today refused |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
 | Pod Security Standards `restricted`, OpenShift `restricted-v2` | refuse |
@@ -104,12 +104,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      (each range must fit inside one range of the parent map: `0 0 1` +
      `1 1 65536` works where `0 0 65536` is `EPERM`). An unprivileged host
      user needs `newuidmap`/`newgidmap` and `/etc/subuid`; without them only
-     one uid maps and `chown` to any other fails with `EINVAL`. Planned, with
-     Phase 3 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)):
-     then ranikust refuses an image with several owners, scanning the base
-     layers' tar headers before the build and stopping at the first `chown` or
-     `setuid` that fails with `EINVAL` for what the build creates, and no flag
-     ignores the failed `chown`.
+     one uid maps and `chown` to any other fails with `EINVAL`; planned, ranikust
+     then refuses an image with several owners
+     ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
    - Mount the overlay (`userxattr` is implied), then a new `proc`; if that
      fails, an rbind of the existing `/proc` (`RUN` then sees the container's
      processes, like BuildKit's `--oci-worker-no-process-sandbox`).
@@ -232,12 +229,11 @@ usable, and offer, in order:
    the binary.
 3. Run ranikust inside a container.
 
-Also planned: where a user namespace maps one uid, an image with several owners
-is refused (probe step 2,
-[ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
-The probe's map write tells a one-id map, uids and gids count, and the message
-names the owners found and the ways out: install `uidmap` and add ranges to
-`/etc/subuid` and `/etc/subgid`, run as root, or use a container.
+Also planned: the refusal of an image with several owners where a user
+namespace maps one uid (probe step 2) names the owners found and the ways out:
+install `uidmap` and add ranges to `/etc/subuid` and `/etc/subgid`, run as
+root, or use a container
+([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
 
 ## Failure handling
 

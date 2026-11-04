@@ -15,11 +15,11 @@ store ([ADR-0041](0041-live-root-extraction-skips-device-nodes.md) left
 (character device 0/0) works **[measured]**
 ([experiment 01](../research/experiments/01-overlay-semantics.md),
 [experiment 02](../research/experiments/02-run-sandbox.md)). Rootless overlay
-mode, planned for Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)),
-extracts base layers in such a namespace
+mode and `--userns` ([ADR-0104](0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)),
+planned for Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)),
+extract base layers in such a namespace
 ([ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
-What does extraction do with device nodes there (question N5 of the Phase 3
-plan)?
+What does extraction do with device nodes there (raised while planning Phase 3)?
 
 ## Considered Options
 
@@ -35,8 +35,11 @@ them as `nodes_skipped`, as ADR-0041's live extraction does: option (a) (the
 maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 
 - **Planned, Phase 3**, task 6 of #41 (extract and publish layers inside the
-  namespace). Nothing is built by this ADR; overlay as root keeps creating the
+  namespace); `--userns` ([#83](https://github.com/tran4774/ranikust/issues/83))
+  uses the same extraction. Nothing is built by this ADR; overlay as root keeps creating the
   nodes.
+- **Any user namespace:** rootless mode and `--userns` alike, since both extract
+  in one.
 - **Whiteouts are not affected:** `mknod` of the 0/0 node of a whiteout works in
   a namespace **[measured]**, so whiteouts are still created.
 - **Reason:** the output reuses the base blobs unchanged, so the image keeps the
@@ -63,14 +66,13 @@ maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 - **[external]** BuildKit `cd8ee2441a4c` with the containerd v2.4.2 it vendors,
   read by `upstream-oracle`: the archive apply skips block and character device
   entries in a user namespace (`pkg/archive/tar_unix.go:100-108`).
-- **[code]** [sandbox](../design/sandbox.md#per-run-sequence): the `RUN` root is
+- **[docs]** [sandbox](../design/sandbox.md#per-run-sequence): the `RUN` root is
   remounted `nodev`, so no node in it opens.
 
 ## More Information
 
-Answers question N5 of the Phase 3 plan on
-[#41](https://github.com/tran4774/ranikust/issues/41), put to the maintainer in
-the plan draft. Related:
+Raised while planning Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)). Related:
 [ADR-0041](0041-live-root-extraction-skips-device-nodes.md) (the same rule for
 live roots), [ADR-0032](0032-observable-behaviour-follows-buildkit.md).
 

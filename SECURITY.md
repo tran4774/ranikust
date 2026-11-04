@@ -102,7 +102,8 @@ container made for that one build, add `--network=none` when the build needs
 no network, and give each trust domain its own store. `--network=none`
 isolates the `RUN` only: ranikust's own registry requests still leave from its
 network namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
-[#25](https://github.com/tran4774/ranikust/issues/25)). `--userns` and
-`--seccomp=default` are designed to tighten this further, but are not
-implemented yet (Phase 3). The [book](docs/book/src/where-to-run.md) tracks
-what each environment provides.
+[#25](https://github.com/tran4774/ranikust/issues/25)). A default seccomp
+profile for every `RUN` (no flag needed; `--seccomp=unconfined` turns it off)
+and `--userns` are designed to tighten this further, but are not implemented yet
+(Phase 3). The [book](docs/book/src/where-to-run.md) tracks what each
+environment provides.

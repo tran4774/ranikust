@@ -12,7 +12,7 @@ Phase 2's acceptance set a bound against kaniko: no build slower than kaniko's
 ([phase-2](../agents/phase-2.md), the time criterion). Nothing sets one for
 rootless overlay mode, planned for Phase 3
 ([#41](https://github.com/tran4774/ranikust/issues/41)). Does rootless overlay
-have a performance target (question N7 of the Phase 3 plan)?
+have a performance target (raised while planning Phase 3)?
 
 ## Considered Options
 
@@ -49,14 +49,13 @@ nghị", all as recommended).
   root; the differences are the namespace set-up and an rbind of `/proc` where a
   fresh `proc` is refused. No rootless build has been timed: the mode does not
   exist.
-- **[code]** [phase-2](../agents/phase-2.md): Phase 2's time criterion and its
+- **[docs]** [phase-2](../agents/phase-2.md): Phase 2's time criterion and its
   figures (frozen record).
 
 ## More Information
 
-Answers question N7 of the Phase 3 plan on
-[#41](https://github.com/tran4774/ranikust/issues/41), put to the maintainer in
-the plan draft. Related:
+Raised while planning Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)). Related:
 [#29](https://github.com/tran4774/ranikust/issues/29) (Q-421, the conditions
 Phase 6 measures; rootless timings may join it).
 

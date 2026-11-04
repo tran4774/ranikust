@@ -107,6 +107,8 @@ Planned, Phase 3 (rootless mode, nothing built): the same steps, with every
 operation on extracted layers run inside the build's user namespace, since the
 user cannot rename, `chmod` or unlink entries of subordinate ids from outside it
 ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
+Every directory the store creates has a mapped uid and gid, since an unmapped
+gid alone stops the rename of a `0555` directory.
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular
@@ -116,14 +118,16 @@ under `volatile` is never trusted after a crash.
 
 ## Prune
 
-Not built. Phase 3 plans a minimal `ranikust prune --all` that empties a
-rootless state directory inside the user namespace
+Not built. Phase 3 plans a minimal `ranikust prune --all` that empties a state
+directory, inside the user namespace for a rootless one
 ([ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md));
 the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
-entries by total size and by age, takes the same locks as a build and never
-removes an entry a running build uses [inferred: the in-use tracking is not
-designed yet]. The defaults are BuildKit's tiers, aging by last use
-([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): cache
+entries by total size and by age. Both forms open the store as a build does
+(state-directory checks, the `.ranikust-state` marker, the store's lock), so
+they refuse a directory ranikust did not make and take the same locks as a
+build, and never remove an entry a running build uses [inferred: the in-use
+tracking is not designed yet]. The defaults are BuildKit's tiers, aging by last
+use ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): cache
 mounts and contexts after 48 h unused beyond 512 MB, anything after 60 days
 unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 

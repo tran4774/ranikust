@@ -53,10 +53,14 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 cloned with `CLONE_NEWUSER`: a `RUN` stays in the user namespace ranikust runs
 in, with the uid and gid of its `USER` as the image gives them. The only user
 namespace ranikust creates is the helper's for `--allow network.none-userns`
-(below). A user namespace for `RUN` (`--userns`, and rootless mode, which would
-add `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`) is planned for Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)); the parts that belong
-to it are marked *planned*.
+(below). Planned for Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)): in rootless mode and
+under `--userns` the whole build runs in one user namespace, not a per-`RUN`
+clone flag ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md),
+[ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)),
+and the command's map leaves the init's uid out
+([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
+(b), ADR-0104). The parts that belong to it are marked *planned*.
 
 **`--network=none`** needs `lo` up, which needs `CAP_NET_ADMIN` over the new
 network namespace. The first such `RUN` probes once
@@ -105,9 +109,12 @@ The steps, in order:
      `fchmod` or `fchown`; the read-only bind prevents it (`EROFS`). `Direct`
      gets the host's `/dev/null` from the parent, reached without symlinks and
      checked to be the null device.
-2. **User namespace** (*planned, Phase 3; no `RUN` runs this step today*):
-   map the full id range available and allow `setgroups`; otherwise `USER
-   _apt` (used by apt-get) fails with `setgroups: EPERM`.
+2. **User namespace** (*planned, Phase 3; no `RUN` runs this step today*): the
+   build's one user namespace, whose map leaves the init's uid out (above), maps
+   the full id range available and allows `setgroups`; otherwise `USER _apt`
+   (used by apt-get) fails with `setgroups: EPERM`. How a `RUN`'s own map comes
+   out of the build's is re-specified with
+   [#83](https://github.com/tran4774/ranikust/issues/83).
 3. **Mounts**, in this order:
    1. Bind the root onto itself, recursively (`pivot_root` requires it), and
       remount the bind `nodev`: Docker blocks device nodes with its device
@@ -236,7 +243,8 @@ The steps, in order:
    keys or push input into the operator's shell (`TIOCSTI`); stdin is
    `/dev/null` unless the caller says otherwise, as under Docker. Then a new
    anonymous session keyring, so ranikust's keys stay out of reach (root's user
-   keyring stays reachable until `--seccomp`).
+   keyring stays reachable until a seccomp profile applies, planned for Phase 3,
+   [ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)).
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
    [inferred]. A numeric uid with no passwd entry gets gid 0, as in Docker. A
@@ -366,9 +374,11 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 
 ## Differences from Docker
 
-- A default `RUN` has no seccomp filter until `--seccomp` (Phase 3,
-  [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)); the one
-  filter that exists is the `--network=none` one of ADR-0033. A default `RUN`
+- A default `RUN` has no seccomp filter today; a default profile is planned for
+  Phase 3, with no flag needed
+  ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
+  [ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)).
+  The one filter that exists is the `--network=none` one of ADR-0033. A default `RUN`
   here can open `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the
   host lets a process without `CAP_SYS_ADMIN` do so, and (as root) use root's
   user and persistent keyrings. The only evidence for what a Docker-style
@@ -390,12 +400,12 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 - A `RUN` gets no cgroup limits, so a fork bomb is bounded only by the
   environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)).
 
-## Optional hardening
+## Hardening planned for Phase 3
 
-Planned for Phase 3 (ADR-0003); neither flag exists yet.
+Neither exists yet (ADR-0003).
 
-- `--seccomp=default|unconfined|<file>`: a seccomp filter for `RUN`; profiles
-  are generated per architecture. Decided
+- A default seccomp profile, and `--seccomp=default|unconfined|<file>` to change
+  it; profiles are generated per architecture. Decided
   ([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)):
   the default profile applies without the flag wherever the full sandbox runs,
   `unconfined` turns it off, and in kaniko mode on `/` the flag is refused (the
@@ -421,13 +431,17 @@ Planned for Phase 3 (ADR-0003); neither flag exists yet.
 ## Open questions
 
 None. What Q-032 asked to verify is tracked as tasks: `--seccomp`
-([#82](https://github.com/tran4774/ranikust/issues/82), [ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md))
+([#82](https://github.com/tran4774/ranikust/issues/82),
+[ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md))
 and `--userns` ([#83](https://github.com/tran4774/ranikust/issues/83),
 [ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md))
-in Phase 3; the bind targets against changes during set-up ([#88](https://github.com/tran4774/ranikust/issues/88)) and the
-host-safety attack suite across modes ([#89](https://github.com/tran4774/ranikust/issues/89)) in Phase 6. `--network=none` was
-verified end to end at [Phase 1's acceptance](../agents/phase-1.md#acceptance-criteria);
-its rootless form is in [#78](https://github.com/tran4774/ranikust/issues/78) and [#79](https://github.com/tran4774/ranikust/issues/79).
+in Phase 3; the bind targets against changes during set-up
+([#88](https://github.com/tran4774/ranikust/issues/88)) and the host-safety
+attack suite across modes ([#89](https://github.com/tran4774/ranikust/issues/89))
+in Phase 6. `--network=none` was verified end to end at
+[Phase 1's acceptance](../agents/phase-1.md#acceptance-criteria); its rootless
+form is in [#78](https://github.com/tran4774/ranikust/issues/78) and
+[#79](https://github.com/tran4774/ranikust/issues/79).
 
 ## References
 

@@ -221,11 +221,11 @@ that a hardlink into one of them is copied from it
 
 Planned, Phase 3 (rootless mode, nothing built): extraction, publication and
 clean-up of extracted layers run inside the build's user namespace as its mapped
-root, and publication stays a rename, with a mapped uid and gid on every
-directory the store creates
-([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md));
+root, and publication stays a rename
+([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md),
+[cache-and-store](cache-and-store.md#atomic-publication));
 device nodes of a base layer are skipped and counted as `nodes_skipped`
-([ADR-0106](../adr/0106-rootless-extraction-skips-device-nodes-and-counts-them.md)).
+([ADR-0106](../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)).
 
 ## Lazy export
 

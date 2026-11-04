@@ -11,11 +11,11 @@ decision-makers: Tran Nguyen (maintainer)
 [ADR-0003](0003-dockerfile-trust-and-default-isolation.md) says `--userns` runs
 "the build" in a user namespace, [ADR-0083](0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
 (b) says "the command" runs in one that leaves the init's uid unmapped, and
-[sandbox](../design/sandbox.md#per-run-sequence) has rootless mode add
-`CLONE_NEWUSER` to the `RUN`'s clone. A `RUN`'s root owns the image's root files
+[sandbox](../design/sandbox.md#per-run-sequence) had rootless mode add
+`CLONE_NEWUSER` to the `RUN`'s clone (rewritten with this ADR). A `RUN`'s root owns the image's root files
 only if they are owned by mapped ids, while root's builds share `layers/` in
 `/var/lib/ranikust`, extracted with real ids. How does `--userns` map ids as
-real root, and does it share the store (question N2 of the Phase 3 plan,
+real root, and does it share the store (raised while planning Phase 3,
 [#41](https://github.com/tran4774/ranikust/issues/41))? And does rootless mode
 also leave the init's uid unmapped, which ADR-0083 names only for `--userns`?
 
@@ -23,7 +23,7 @@ also leave the init's uid unmapped, which ADR-0083 names only for `--userns`?
 
 - (a) The whole build runs in a user namespace, as in rootless mode, with a
   subordinate range for root (podman's `--userns=auto` reads one from
-  `/etc/subuid` **[external]**) and extracted layers kept apart from root's
+  `/etc/subuid` **[unverified]**) and extracted layers kept apart from root's
   (keyed by the map, or in their own state directory).
 - (b) Only the command runs in a user namespace, given the image's ids through
   an idmapped mount of the stage root (`mount_setattr(MOUNT_ATTR_IDMAP)`), the
@@ -38,8 +38,9 @@ a subordinate range for root and extracted layers kept apart from root's, and
 rootless mode also leaves the init's uid unmapped: option (a) (the maintainer,
 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 
-- **Planned, Phase 3**, the `--userns` task of #41 (task 12) and the init's uid
-  (task 13, #34). Nothing is built by this ADR.
+- **Planned, Phase 3**, the `--userns` task
+  ([#83](https://github.com/tran4774/ranikust/issues/83), task 12 of #41) and the
+  init's uid (task 13, #34). Nothing is built by this ADR.
 - **One user-namespace path** for rootless mode and `--userns`: no kernel floor
   beyond rootless mode's.
 - **Extracted layers are kept apart** from the layers root's builds without the
@@ -67,8 +68,8 @@ rootless mode also leaves the init's uid unmapped: option (a) (the maintainer,
 ## Evidence
 
 - Nothing is measured here: `--userns` does not exist.
-- **[external]** podman's `--userns=auto` takes a range from `/etc/subuid` for
-  the container.
+- **[unverified]** podman's `--userns=auto` takes a range from `/etc/subuid` for
+  the container; not checked against podman's documentation or source.
 - **[inferred]** ADR-0083 (b) follows from running the init under a uid outside
   the command's map; ADR-0083's own evidence is a measurement of the delay
   without it (0.9 to 1.8 ms, 7.6 s with 8 spinners, 30.6 s with 32).
@@ -78,9 +79,8 @@ rootless mode also leaves the init's uid unmapped: option (a) (the maintainer,
 
 ## More Information
 
-Answers question N2 of the Phase 3 plan on
-[#41](https://github.com/tran4774/ranikust/issues/41), put to the maintainer in
-the plan draft. Refines
+Raised while planning Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)). Refines
 [ADR-0083](0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
 (b), which named only `--userns` and stays `accepted` with its body unchanged,
 and [ADR-0003](0003-dockerfile-trust-and-default-isolation.md). Two points are
@@ -89,7 +89,7 @@ range for root in `/etc/subuid`). If layers are keyed by their id map,
 [#1](https://github.com/tran4774/ranikust/issues/1) (Q-015, which digest names an
 extracted layer) is affected.
 
-Follow-ups, with task 12 of #41 (after tasks 5 and 7): `rnk-sandbox`, `ranikust`
+Follow-ups, with [#83](https://github.com/tran4774/ranikust/issues/83) (after tasks 5 and 7 of #41): `rnk-sandbox`, `ranikust`
 and `rnk-store`, with T2 tests (a `RUN`'s uid 0 is an unprivileged host uid,
 its `uid_map` read from outside; the flattened content equals the build without
 `--userns`; a state directory whose parents the mapped uid cannot traverse is
