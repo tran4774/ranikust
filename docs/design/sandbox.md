@@ -87,7 +87,8 @@ network namespace. The first such `RUN` probes once
 [ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)):
 every full-sandbox `RUN` runs under Docker's default profile (moby/profiles
 seccomp v0.2.4's `default.json`, embedded verbatim), with or without
-`--seccomp=default`; `--seccomp=unconfined` turns it off, and
+`--seccomp=default`; `--seccomp=unconfined` turns it off (what that opens:
+[threat model](../security/threat-model.md#6-accepted-risks)), and
 `--seccomp=<file>` puts a profile in Docker's JSON format in its place.
 
 - `seccomp/profile.rs` compiles it to one classic BPF filter before the
@@ -413,21 +414,20 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
     32-bit binary does not run under it.
   - Only the calls `libc` names: one it does not (`cachestat`, `futex_wait`,
     `statmount`, `uretprobe`, and `fchmodat2` on aarch64) gets `ENOSYS`
-    where Docker allows it. The C libraries fall back from most, with two
-    exceptions: `uretprobe`, which the kernel's return-probe trampoline
-    makes (x86_64, Linux 6.11 and later), so a uretprobe a host tool sets on
+    where Docker allows it. The C libraries fall back from most; the known
+    exceptions follow.
+  - `uretprobe` is made by the kernel's return-probe trampoline, not a C
+    library (x86_64, Linux 6.11 and later): a uretprobe a host tool sets on
     a `RUN`'s process can crash it where the kernel's seccomp does not let
-    that call through; and on an aarch64 glibc build (not the release),
-    `renameat` and `sync_file_range`.
+    that call through.
+  - A ranikust built for `aarch64-unknown-linux-gnu` (not a release target)
+    has no number for `renameat` and `sync_file_range` either. The C
+    libraries implement `rename(3)` with `renameat` there, so `rename`
+    fails in every `RUN` of such a build.
   - A profile that asks for what ranikust does not support is refused, never
     weakened: two conditions on one argument (runc ORs them), a rule
     without names (Docker skips it), and a field Docker's format does not
     have (Docker ignores it).
-- Under `--seccomp=unconfined` a `RUN` can open `AF_VSOCK` and `AF_ALG`
-  sockets, make a user namespace where the host lets a process without
-  `CAP_SYS_ADMIN` do so, and (as root) use root's user and persistent
-  keyrings. See the accepted risks of the
-  [threat model](../security/threat-model.md#6-accepted-risks).
 - A `RUN` gets stdout and stderr as pipes of its own, owned by its user and
   copied by a thread to ranikust's streams, never ranikust's own descriptors:
   runc instead gives the container's own streams to the container's user.

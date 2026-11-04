@@ -172,13 +172,14 @@ What a change here must keep, with where it lives:
   only (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
   ADR-0009); a call the profile allows that `libc` does not name gets
   `ENOSYS`, and the T0 test `calls_the_default_allows_but_libc_does_not_name_are_pinned`
-  lists them per target. The child joins the `RUN`'s new session keyring
-  (the command, PID 2, inherits it; `Direct` joins before `setsid`), then
-  installs the profile, then ADR-0033's filter when it joined a held network
-  namespace, after every mount and before the capability drop, without
-  `no_new_privs`; `Direct` gets no filter. The default profile refuses
-  `keyctl`, `add_key` and `request_key`; root's user and persistent keyrings
-  stay reachable under `--seccomp=unconfined` and in `Direct`.
+  lists them per target. After every mount and before the capability drop,
+  the full sandbox's child joins the `RUN`'s new session keyring (the
+  command, PID 2, inherits it), then installs the profile, then ADR-0033's
+  filter when it joined a held network namespace, without `no_new_privs`.
+  `Direct` gets no filter and joins its keyring after its capability drop,
+  before `setsid`. The default profile refuses `keyctl`, `add_key` and
+  `request_key`; root's user and persistent keyrings stay reachable under
+  `--seccomp=unconfined`, a profile file that allows them, and in `Direct`.
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
   inheritable empty. Then `setsid`, `setgroups`, `setresgid`, `setresuid`;
