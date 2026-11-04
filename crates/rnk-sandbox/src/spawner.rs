@@ -75,8 +75,11 @@ impl Sandbox {
     /// cannot be created or is a symlink, a journal cannot be listed, or the
     /// thread cannot start.
     pub fn start(caps: Caps, dir: &Path) -> Result<Self> {
-        if let Some(binary) = crate::setup::build_namespace() {
-            crate::setup::bind_own_binary(binary, mount_api_supported())?;
+        match crate::setup::build_namespace() {
+            Some(binary) => crate::setup::bind_own_binary(binary, mount_api_supported())?,
+            None => tracing::debug!(
+                "not in the build's mount namespace: the binary is not bound over itself"
+            ),
         }
         Self::start_inner(Some(caps), dir, None)
     }
@@ -3456,11 +3459,11 @@ mod tests {
     }
 
     /// T2 (the VM only), pins a barrier of the `#!/proc/self/exe` residual
-    /// (ADR-0082; the only one besides non-dumpability that `Direct` on `/`
-    /// keeps): a running binary cannot be opened for writing through
-    /// `/proc/<pid>/exe` (`ETXTBSY`), so a `RUN` that reaches ranikust's
-    /// binary cannot change it while ranikust runs. Nothing is written: the
-    /// open alone is refused.
+    /// in both sandboxes (threat model section 6; ADR-0082's bind leaves
+    /// `/proc/<pid>/exe` unchanged): a running binary cannot be opened for
+    /// writing through `/proc/<pid>/exe` (`ETXTBSY`), so a `RUN` that
+    /// reaches ranikust's binary cannot change it while ranikust runs.
+    /// Nothing is written: the open alone is refused.
     #[test]
     #[ignore = "T2: opens the running test binary for writing as root; run in the test VM only"]
     fn a_running_binary_cannot_be_opened_for_writing() {
@@ -3474,14 +3477,14 @@ mod tests {
     }
 
     /// T2 (the VM only), ADR-0082: the binary bound read-only over itself
-    /// in the build's mount namespace, with `open_tree` and as where it is
-    /// refused. Its path then names the same file on a read-only mount of
-    /// its own: an open for writing fails with `EROFS`, which does not rest
-    /// on `ETXTBSY` (`O_TRUNC` asks the mount for write access before the
-    /// kernel looks at the running binary; tried only once the mount reads
-    /// as read-only, so nothing is ever truncated). A second call makes no
-    /// second bind. Control: `/proc/self/exe` still names the file on the
-    /// mount the process was executed from, which no bind made later
+    /// in the build's mount namespace, with `open_tree`, and with `mount(2)`
+    /// where `open_tree` is refused. Its path then names the same file on a
+    /// read-only mount of its own: an open for writing fails with `EROFS`,
+    /// which does not rest on `ETXTBSY` (`O_TRUNC` asks the mount for write
+    /// access before the kernel looks at the running binary; tried only once
+    /// the mount reads as read-only, so nothing is ever truncated). A second
+    /// call makes no second bind. `/proc/self/exe` still names the file on
+    /// the mount the process was executed from, which no bind made later
     /// changes.
     #[test]
     #[ignore = "T2: binds the test binary over itself as real root in a private mount namespace; run in the test VM only"]
@@ -3518,7 +3521,7 @@ mod tests {
                     "{mode}: {path:?} is on a read-only mount: the test would prove nothing"
                 );
 
-                crate::setup::bind_own_binary(Some(&link), mount_api).unwrap();
+                crate::setup::bind_own_binary(Ok(&link), mount_api).unwrap();
                 let bound = at();
                 let st = statx(&bound);
                 assert_eq!(file(&st), file(&started), "{mode}: {path:?}");
@@ -3535,7 +3538,7 @@ mod tests {
                 let w = rustix::fs::open(&path, OFlags::WRONLY | OFlags::TRUNC, Mode::empty());
                 assert_eq!(w.err(), Some(Errno::ROFS), "{mode}: {path:?}");
 
-                crate::setup::bind_own_binary(Some(&link), mount_api).unwrap();
+                crate::setup::bind_own_binary(Ok(&link), mount_api).unwrap();
                 assert_eq!(
                     statx(&at()).stx_mnt_id,
                     st.stx_mnt_id,

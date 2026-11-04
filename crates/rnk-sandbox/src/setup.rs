@@ -13,23 +13,26 @@ use rustix::mount::{MountFlags, MountPropagationFlags, MoveMountFlags, OpenTreeF
 use rustix::thread::{CapabilitySet, CapabilitySets, UnshareFlags};
 
 use crate::caps;
-use crate::error::{Error, Result, io_err, sys_err};
+use crate::error::{Error, Result, sys_err};
 use crate::plan;
 
 /// Set once [`enter_build_namespace`] has moved the process into the
 /// build's private mount namespace, the only one where
 /// [`crate::Sandbox::start`] binds the binary over itself (ADR-0082): never
-/// in a namespace the process shares with the host. It holds the binary's
-/// path as the kernel gave it before the `unshare` (`None` if it gave
-/// none): after it, a binary on a mount of the first namespace (a file a
-/// container runtime bound in) may read as `/`, a mount the new namespace
-/// does not hold. Process-wide, as the namespace is.
-static BUILD_NAMESPACE: OnceLock<Option<CString>> = OnceLock::new();
+/// in a namespace the process shares with the host. It holds what
+/// `readlink /proc/self/exe` gave before the `unshare`: once no process is
+/// left in the first namespace, a binary on a file a container runtime
+/// bound in may read as `/`. A static rather than a value passed down: it
+/// records a fact of the process, which no caller of `Sandbox::start` can
+/// get wrong.
+static BUILD_NAMESPACE: OnceLock<rustix::io::Result<CString>> = OnceLock::new();
 
 /// Once [`enter_build_namespace`] succeeded in this process, the binary's
 /// path as the kernel gave it before.
-pub(crate) fn build_namespace() -> Option<Option<&'static CStr>> {
-    BUILD_NAMESPACE.get().map(Option::as_deref)
+pub(crate) fn build_namespace() -> Option<rustix::io::Result<&'static CStr>> {
+    BUILD_NAMESPACE
+        .get()
+        .map(|link| link.as_deref().map_err(|e| *e))
 }
 
 /// Moves the process into a private mount namespace whose `/` is a slave of
@@ -56,9 +59,9 @@ pub fn enter_build_namespace() -> Result<()> {
     if crate::probe::slash_is_mount_root()? == Some(false) {
         return Err(Error::InPlainChroot);
     }
-    // Without a path the bind fails later, refusing the full sandbox; a
-    // failure here would read as "root may not mount".
-    let binary = rustix::fs::readlink(SELF_EXE, Vec::new()).ok();
+    // Its failure refuses the full sandbox later: here it would read as
+    // "root may not mount".
+    let binary = rustix::fs::readlink(SELF_EXE, Vec::new());
     // SAFETY: `NEWNS` does not unshare the descriptor table, the only flag
     // `unshare_unsafe` is unsafe for; the process is single-threaded.
     match unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWNS) } {
@@ -81,35 +84,26 @@ pub fn enter_build_namespace() -> Result<()> {
 /// The link the kernel keeps to the running binary.
 const SELF_EXE: &CStr = c"/proc/self/exe";
 
-/// What the errors of [`bind_own_binary`] say it was doing.
-const BIND_OP: &str = "bind ranikust's binary read-only over itself";
-
 /// Binds the running binary read-only over itself in the calling thread's
-/// mount namespace, the build's (ADR-0082): its path there then names the
-/// binary on a read-only mount of its own, so an open for writing through
-/// that path fails with `EROFS` whatever the kernel does about a running
-/// binary (`ETXTBSY`). Every `RUN` is cloned from that namespace.
+/// mount namespace, the build's (ADR-0082), so that its path there names a
+/// read-only mount of its own (design/sandbox.md, process set-up). `link`
+/// is what `readlink /proc/self/exe` gave before the process left its first
+/// mount namespace; it must still name the running file (device and
+/// inode). Where it names a read-only mount already (an earlier call, a
+/// binary installed read-only) nothing is made. `mount_api` picks
+/// `open_tree` over `mount(2)`. What `/proc/<pid>/exe` names does not
+/// change: the file on the mount the process was executed from.
 ///
-/// The binary is the file `/proc/self/exe` names, looked up without
-/// symlinks by `link`, the path the kernel gave for it before the process
-/// left its first mount namespace: it must be that file (device and inode).
-/// Where the path already names a read-only mount (an earlier call, a binary
-/// installed read-only) nothing is made. With `mount_api` the bind is made
-/// detached (`open_tree`), attached through the file's descriptor
-/// (`move_mount`) and remounted through its own; else `mount(2)` binds
-/// through the file's descriptor and the bind is found again by path, where
-/// it must show the same file on another mount. Either way the path is
-/// checked at the end: the same file, on another mount than before,
-/// read-only.
+/// # Errors
 ///
-/// The bind changes what the path names, not what `/proc/<pid>/exe` names
-/// for a process started before it: the file on the mount the process was
-/// executed from.
-pub(crate) fn bind_own_binary(link: Option<&CStr>, mount_api: bool) -> Result<()> {
+/// [`Error::OwnBinary`] when the path does not name the running file or a
+/// step of the bind fails; [`Error::Sys`] when `/proc/self/exe` cannot be
+/// opened.
+pub(crate) fn bind_own_binary(link: rustix::io::Result<&CStr>, mount_api: bool) -> Result<()> {
     let exe = rustix::fs::open(SELF_EXE, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
         .map_err(|e| sys_err("open /proc/self/exe", e))?;
     let running = statx(&exe).map_err(|e| sys_err("statx /proc/self/exe", e))?;
-    let link = link.unwrap_or_default();
+    let link = link.map_err(|e| step_err(Path::new("/proc/self/exe"), "readlink", e))?;
     let path = PathBuf::from(OsStr::from_bytes(link.to_bytes()));
     if !path.is_absolute() {
         return Err(not_bound(&path, "the kernel gave no path for it"));
@@ -222,17 +216,19 @@ fn fd_path(fd: impl AsFd) -> CString {
 }
 
 fn not_bound(path: &Path, why: &str) -> Error {
-    io_err(BIND_OP, path, io::Error::other(why.to_owned()))
+    Error::OwnBinary {
+        path: path.to_owned(),
+        source: io::Error::other(why.to_owned()),
+    }
 }
 
 /// A step of [`bind_own_binary`] on the binary at `path` failed with `e`.
 fn step_err(path: &Path, step: &str, e: Errno) -> Error {
     let e = io::Error::from(e);
-    io_err(
-        BIND_OP,
-        path,
-        io::Error::new(e.kind(), format!("{step}: {e}")),
-    )
+    Error::OwnBinary {
+        path: path.to_owned(),
+        source: io::Error::new(e.kind(), format!("{step}: {e}")),
+    }
 }
 
 /// Kaniko mode on `/` (ADR-0078): gives ranikust's own process the
@@ -399,6 +395,30 @@ mod tests {
         // So `Sandbox::start` binds nothing over the binary in a namespace
         // the process may share with the host (ADR-0082).
         assert!(build_namespace().is_none());
+    }
+
+    /// ADR-0082: a path that is not the running binary, or none, refuses
+    /// the bind before any mount is tried, so this runs anywhere.
+    #[test]
+    fn the_bind_refuses_a_path_that_is_not_the_running_binary() {
+        let cases = [
+            // The errno of a failed `readlink` is kept.
+            (Err(Errno::NAMETOOLONG), "/proc/self/exe", "readlink: "),
+            (Ok(c"x"), "x", "the kernel gave no path"),
+            // Another file: a binary replaced, or out of the namespace's reach.
+            (Ok(c"/"), "/", "not the file ranikust runs from"),
+            // Looked up without symlinks.
+            (Ok(c"/proc/self/exe"), "/proc/self/exe", "open: "),
+        ];
+        for (link, at, why) in cases {
+            match bind_own_binary(link, false) {
+                Err(Error::OwnBinary { path, source }) => {
+                    assert_eq!(path, Path::new(at), "{link:?}");
+                    assert!(source.to_string().starts_with(why), "{link:?}: {source}");
+                }
+                r => panic!("{link:?}: {r:?}"),
+            }
+        }
     }
 
     /// Capabilities are per thread: a trim on one thread of several would

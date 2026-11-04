@@ -1,8 +1,8 @@
-# Pins a barrier against `#!/proc/self/exe` (ADR-0082; `Direct` on `/`
-# keeps it as one of its barriers): the script's interpreter is ranikust's
-# own binary, whose command line refuses the script path as a subcommand and
-# exits with a usage error, so the build fails without starting a build
-# inside the RUN.
+# Pins a barrier against `#!/proc/self/exe` in both sandboxes (threat model
+# section 6; ADR-0082's bind leaves `/proc/<pid>/exe` unchanged): the
+# script's interpreter is ranikust's own binary, whose command line refuses
+# the script path as a subcommand and exits with a usage error, so the build
+# fails without starting a build inside the RUN.
 case_run() {
   local o rc=0 log
   o="$(out img)"

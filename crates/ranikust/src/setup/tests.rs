@@ -252,6 +252,18 @@ fn a_failed_overlay_probe_refuses_even_with_a_sandbox() {
 }
 
 #[test]
+fn an_unbound_binary_is_refused_with_guidance() {
+    let e = SandboxError::OwnBinary {
+        path: "/ranikust".into(),
+        source: io::Error::other("not the file ranikust runs from"),
+    };
+    let r = start_refusal(e);
+    assert_eq!(r.guidance, OWN_BINARY);
+    assert!(r.reason.contains("\"/ranikust\""), "{}", r.reason);
+    assert_eq!(start_refusal(SandboxError::SpawnerGone).guidance, "");
+}
+
+#[test]
 fn the_plain_chroot_refusal_says_why() {
     let refusal = namespace_refusal(SandboxError::InPlainChroot, 0);
     let text = refusal.to_string();
