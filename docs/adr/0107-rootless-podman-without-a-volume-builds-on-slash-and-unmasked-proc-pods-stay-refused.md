@@ -79,9 +79,12 @@ recommended).
 
 - Nothing is measured for (ii) here: row 7c of
   [ADR-0100](0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)
-  is **[inferred]**. Row 5b, case (i), is built: the T1 kaniko leg
-  ([testing](../testing.md), `RANIKUST_CASE_MODE=kaniko`) builds in a default
-  rootless Podman container where root may not mount.
+  is **[inferred]**. Case (i)'s route is built but no test takes it
+  **[code]**: the T1 kaniko leg ([testing](../testing.md),
+  `RANIKUST_CASE_MODE=kaniko`) runs a default rootless Podman container with a
+  volume at the state directory and `--mode=kaniko`
+  (`tests/smoke/run-cases.sh`), so it skips the probe; the test of (i) is the
+  follow-up below.
 - **[inferred]** Most sysctls need capabilities in the initial user namespace, so
   a user-namespaced container may not be able to write `/proc/sys`; the
   measurement that would show it is the one this ADR waits for.

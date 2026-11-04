@@ -26,11 +26,11 @@ in (#11, Q-039)?
 
 ## Considered Options
 
-- (a) Today's harnesses only: rows 1, 2, 2b, 3b, 5b and 9d of the matrix below.
-  No new harness work; the rootless outcome and the refusal hint ship untested
-  outside T0 and the developer's machine, and the book's rows stay inferred.
-  Weakest for security: the user-namespace path, the one Phase 3 adds, runs in
-  no tier.
+- (a) Today's harnesses only: rows 1, 2, 2b, 3b, 5b (in part) and 9d of the
+  matrix below. No new harness work; the rootless outcome and the refusal hint
+  ship untested outside T0 and the developer's machine, and the book's rows
+  stay inferred. Weakest for security: the user-namespace path, the one Phase
+  3 adds, runs in no tier.
 - (b) Plus the Phase 3 harness: runner jobs for rows 5, 6 and 6b; VM legs for
   rows 2c, 3a, 4, 6c and 6d; a `k8s` suite with k3s for rows 7a to 7d. Every
   outcome Phase 3 adds runs in T1 or T2 on both kernels the VM boots; costs one
@@ -68,7 +68,7 @@ ADR-0063 stands.
 | 3b | Docker `--cap-add SYS_ADMIN` and `apparmor=unconfined` | overlay, root (`MS_MOVE`) | measured | today: T2, VM and runner; T2c `sysadmin` |
 | 4 | Docker, seccomp and AppArmor unconfined, no added capability | overlay, rootless | inferred | new: T2, a Docker variant in the VM or on the runner |
 | 5 | Rootless Podman, default options, state directory on a volume | overlay, rootless, `/proc` rbind | steps measured (experiment 03) | new: T1 (`just test-rootless`), and a runner job in CI |
-| 5b | Rootless Podman, default options, no volume | kaniko on `/` ([ADR-0107](0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) | built | today: T1 kaniko leg |
+| 5b | Rootless Podman, default options, no volume | kaniko on `/` ([ADR-0107](0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) | built | today, in part: the T1 kaniko leg runs this container with a volume at the state directory and `--mode=kaniko`, so no test takes the probe's route; one without either comes with [#79](https://github.com/tran4774/ranikust/issues/79) |
 | 6 | Ubuntu 24.04, regular user, no AppArmor profile | refused, with the AppArmor hint | measured | new: T2, a runner job (the `runner` user is this environment) and a VM leg |
 | 6b | Ubuntu 24.04, regular user, `uidmap` and ranges, the sample profile for `/usr/local/bin/ranikust` | overlay, rootless, fresh `proc` | mounting and `chown` measured, the build inferred | new: T2, a runner job and a VM leg |
 | 6c | Ubuntu 22.04 (also Debian 12, Fedora), regular user, `uidmap` and ranges | overlay, rootless, fresh `proc` | Ubuntu 22.04: namespace, map and rename measured, the overlay mount inferred; others inferred | new: T2, a VM leg on Ubuntu 22.04 |
