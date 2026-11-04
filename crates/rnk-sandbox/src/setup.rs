@@ -27,8 +27,8 @@ use crate::plan;
 /// get wrong.
 static BUILD_NAMESPACE: OnceLock<rustix::io::Result<CString>> = OnceLock::new();
 
-/// Once [`enter_build_namespace`] succeeded in this process, the binary's
-/// path as the kernel gave it before.
+/// Once [`enter_build_namespace`] succeeded in this process, what
+/// `readlink /proc/self/exe` gave before: the binary's path, or the errno.
 pub(crate) fn build_namespace() -> Option<rustix::io::Result<&'static CStr>> {
     BUILD_NAMESPACE
         .get()
@@ -96,14 +96,14 @@ const SELF_EXE: &CStr = c"/proc/self/exe";
 ///
 /// # Errors
 ///
-/// [`Error::OwnBinary`] when the path does not name the running file or a
-/// step of the bind fails; [`Error::Sys`] when `/proc/self/exe` cannot be
-/// opened.
+/// [`Error::OwnBinary`] when `link` is an errno, the path does not name the
+/// running file, or a step of the bind fails; [`Error::Sys`] when
+/// `/proc/self/exe` cannot be opened or `statx` gives no mount id.
 pub(crate) fn bind_own_binary(link: rustix::io::Result<&CStr>, mount_api: bool) -> Result<()> {
+    let link = link.map_err(|e| step_err(Path::new("/proc/self/exe"), "readlink", e))?;
     let exe = rustix::fs::open(SELF_EXE, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
         .map_err(|e| sys_err("open /proc/self/exe", e))?;
     let running = statx(&exe).map_err(|e| sys_err("statx /proc/self/exe", e))?;
-    let link = link.map_err(|e| step_err(Path::new("/proc/self/exe"), "readlink", e))?;
     let path = PathBuf::from(OsStr::from_bytes(link.to_bytes()));
     if !path.is_absolute() {
         return Err(not_bound(&path, "the kernel gave no path for it"));

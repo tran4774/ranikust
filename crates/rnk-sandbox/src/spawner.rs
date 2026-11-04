@@ -3477,15 +3477,15 @@ mod tests {
     }
 
     /// T2 (the VM only), ADR-0082: the binary bound read-only over itself
-    /// in the build's mount namespace, with `open_tree`, and with `mount(2)`
-    /// where `open_tree` is refused. Its path then names the same file on a
-    /// read-only mount of its own: an open for writing fails with `EROFS`,
-    /// which does not rest on `ETXTBSY` (`O_TRUNC` asks the mount for write
-    /// access before the kernel looks at the running binary; tried only once
-    /// the mount reads as read-only, so nothing is ever truncated). A second
-    /// call makes no second bind. `/proc/self/exe` still names the file on
-    /// the mount the process was executed from, which no bind made later
-    /// changes.
+    /// in the build's mount namespace, with `open_tree` and with `mount(2)`
+    /// (the path taken where `open_tree` is refused). Its path then names the
+    /// same file on a read-only mount of its own: an open for writing fails
+    /// with `EROFS`, which does not rest on `ETXTBSY` (`O_TRUNC` asks the
+    /// mount for write access before the kernel looks at the running binary;
+    /// tried only once the mount reads as read-only, so nothing is ever
+    /// truncated). A second call makes no second bind. `/proc/self/exe`
+    /// still names the file on the mount the process was executed from,
+    /// which no bind made later changes.
     #[test]
     #[ignore = "T2: binds the test binary over itself as real root in a private mount namespace; run in the test VM only"]
     fn the_binary_is_bound_read_only_over_itself() {

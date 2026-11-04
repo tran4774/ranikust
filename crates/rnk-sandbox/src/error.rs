@@ -329,7 +329,8 @@ pub enum Error {
     /// memory), or a step of the bind failed.
     #[error("cannot bind ranikust's binary {path:?} read-only over itself (ADR-0082): {source}")]
     OwnBinary {
-        /// The binary's path, as `/proc/self/exe` gave it.
+        /// The binary's path as `/proc/self/exe` gave it, or
+        /// `/proc/self/exe` where it gave none.
         path: PathBuf,
         /// What failed.
         #[source]

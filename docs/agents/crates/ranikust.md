@@ -244,7 +244,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   refusals and warnings, whole-root `--ignore-path` refused), `setup` (the
   outcome from the probes' results, which refusals route `--mode=auto` to
   kaniko mode, a probe failure other than a refused mount never routes, no
-  guidance sends a user back to the mode they used), `statedir` (each
+  guidance sends a user back to the mode they used, a binary that cannot be
+  bound over itself is refused with guidance), `statedir` (each
   ADR-0050 refusal: `/`, system directories, symlinks, writable parents,
   nothing created through a planted link; `0700`), `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order).

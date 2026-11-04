@@ -230,7 +230,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   failure records, the stub journal (placement through symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
-  executing, mount sources and remount flags, `Direct` refusals, the sealed
+  executing, mount sources and remount flags, the own-binary bind refused
+  before any mount (`src/setup.rs`), `Direct` refusals, the sealed
   heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
   reading its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
