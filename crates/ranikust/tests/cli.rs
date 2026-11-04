@@ -593,6 +593,68 @@ fn a_build_runs_from_a_sealed_copy_made_once() {
     }
 }
 
+/// Red team (ADR-0101, T21): a hostile `TMPDIR` loses only the `O_TMPFILE` copy.
+#[test]
+fn red_team_a_hostile_tmpdir_only_loses_the_tmpfile_copy() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let file = tmp.path().join("file");
+    fs::write(&file, b"x").expect("a file");
+    let fifo = tmp.path().join("fifo");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .expect("a FIFO");
+    let dir = tmp.path().join("dir");
+    fs::create_dir(&dir).expect("a directory");
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&dir, &link).expect("a symlink");
+    let missing = tmp.path().join("missing");
+    let args = [
+        "--no-push",
+        "--mode=overlay",
+        "--log-format=text",
+        "-v",
+        "debug",
+    ];
+    let run = |tmpdir: &Path| {
+        let tmpdir = tmpdir.to_str().expect("UTF-8");
+        let env = [("RANIKUST_DEBUG_FAULT", "seal-tmpfile"), ("TMPDIR", tmpdir)];
+        let out = ranikust(tmp.path(), &args, &env);
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{tmpdir}: {err}");
+        assert!(err.contains(STOPS_AS_A_USER), "{tmpdir}: {err}");
+        err
+    };
+    for lost in [&file, &fifo, &missing] {
+        let err = run(lost);
+        assert!(
+            err.contains("running from the binary as installed") && err.contains("tmpfile: "),
+            "{}: {err}",
+            lost.display()
+        );
+    }
+    let err = run(&link);
+    assert!(
+        err.contains("running from a sealed copy") && err.contains("way=tmpfile"),
+        "{err}"
+    );
+    assert_eq!(fs::read_dir(&dir).expect("ls").count(), 0);
+    let mut names: Vec<_> = fs::read_dir(tmp.path())
+        .expect("ls")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["dir", "fifo", "file", "link"]);
+    assert_eq!(fs::read(&file).expect("read"), b"x");
+}
+
 /// ADR-0049: kaniko's variables are not read, so a mirror variable changes
 /// nothing: the run stops where it would without it.
 #[test]

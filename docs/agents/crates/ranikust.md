@@ -273,6 +273,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_build_runs_from_a_sealed_copy_made_once` (a memfd, once, no way
   passed over, the binary's mount logged; `seal-tmpfile`, `seal-none` and
   markers set from outside, which warn);
+  `red_team_a_hostile_tmpdir_only_loses_the_tmpfile_copy` (a file, a FIFO
+  or a missing directory as `TMPDIR` costs only the `O_TMPFILE` copy);
   `--metrics-file` over the variable; the report on every exit path, panic
   included (`RANIKUST_DEBUG_FAULT=panic|error`); a refused flag exits 2 before
   any work (no state directory, the value never echoed, no `RANIKUST_*`
