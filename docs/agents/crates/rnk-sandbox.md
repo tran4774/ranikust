@@ -15,9 +15,11 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 ## Owns
 
 - The sealed copy of ranikust's binary a build runs from (`seal.rs`,
-  ADR-0101): a sealed memfd, else an `O_TMPFILE` copy, run with `execve`;
-  the copy's run, marked by `RANIKUST_SEALED_COPY`, checks it and never
-  makes another.
+  ADR-0101): a sealed memfd, else an `O_TMPFILE` copy (never on FUSE),
+  run with `execveat` on its close-on-exec descriptor; the copy's run,
+  marked by `RANIKUST_SEALED_COPY`, checks it and never makes another.
+  Measures which mount the binary as installed is on (`BinaryMount`), for
+  `ranikust`'s refusal in kaniko mode on `/`.
 - Process set-up, called by `ranikust` while single-threaded: private mount
   namespace, spawner thread, stub-journal replay; and the probe of its own
   steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
@@ -50,9 +52,10 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 ## API
 
 ```rust
-pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execve from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed(why)); Err only when RLIMIT_CORE cannot go back to 0
+pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execveat from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed); Err only when RLIMIT_CORE cannot go back to 0
 pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
-pub enum Sealing { Sealed { way: SealedCopy, passed_over: String }, Unsealed(String) } // passed_over: why the ways before failed
+pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
+pub enum BinaryMount { Root, ReadOnly, Writable, NoMountId, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
@@ -180,8 +183,13 @@ What a change here must keep, with where it lives:
   included, runs the copy, so no `RUN` reaches a binary it could write.
   The memfd is sealed `SEAL|SHRINK|GROW|WRITE`, made with `MFD_EXEC` where
   the kernel knows it; the `O_TMPFILE` copy is `O_EXCL` and run read-only,
-  and only `ETXTBSY` guards it. The copy gets back the core-file limit
-  ranikust started with. When no way works the build goes on, warned.
+  never on FUSE, and only `ETXTBSY` guards it. The copy runs with
+  `execveat(fd, "", AT_EMPTY_PATH)`, the descriptor close-on-exec, never
+  `/proc/self/fd/<n>`: an interpreter (binfmt_misc, a `#!` line) is then
+  refused before the exec, and the next way tried. The copy gets back the
+  core-file limit ranikust started with. When no way works the build goes
+  on, warned. The marker carries the installed binary's mount only to a
+  copy that checks; otherwise the file run is measured.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.
@@ -235,8 +243,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   failure records, the sealed copy (the order of the ways and the stop
   when the core-file limit cannot go back, one marker in the copy's
   environment, a memfd sealed against writes, an `O_TMPFILE` copy with
-  no name, open read-only), the stub journal (placement through
-  symlinks, removal,
+  no name, open read-only, a `#!` copy refused before the exec in a child
+  run of the test binary, a way after another copying the whole binary,
+  the binary's mount against `/` (a zero id: `NoMountId`), measured on
+  files and carried in the marker, a marker that does not check not
+  believed), the stub journal (placement through symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed

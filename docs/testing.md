@@ -51,7 +51,7 @@ from that.
 - A bug fix comes with a test that fails without it.
 - The sealed copy's T0 tests (`rnk-sandbox`'s `seal` module and the binary's
   `a_build_runs_from_a_sealed_copy_made_once`) expect a memfd copy:
-  `vm.memfd_noexec` below 2 and a `TMPDIR` that allows `O_TMPFILE`
+  `vm.memfd_noexec` below 2 and a `TMPDIR` that allows `O_TMPFILE`, not on FUSE
   ([ADR-0101](adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
 
 ## Which test for what
@@ -680,9 +680,13 @@ tests with `ENOSYS`. `QEMU_AARCH64` names the emulator, else
 shows how to get one). The recipe prints the binfmt entry's interpreter.
 Exceptions, all from emulation (the native CI job runs them all):
 
-- `root::tests::open_gives_cloexec_path_fd_and_mount_id` is skipped:
+- `root::tests::open_gives_cloexec_path_fd_and_mount_id` and
+  `seal::tests::the_binarys_mount_is_measured_on_the_file` are skipped:
   qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so other
-  mount-id comparisons pass only because both sides are 0. The mount-ID
+  mount-id comparisons pass only because both sides are 0 (ranikust's
+  measurement of its binary's mount reads a 0 as `NoMountId`, which kaniko
+  mode on `/` refuses; a fallback through `/proc/self/fdinfo` is
+  [#95](https://github.com/tran4774/ranikust/issues/95)). The mount-ID
   checks that guard deletion (T4 of the threat model) are therefore not
   exercised under emulation; the native CI job covers them.
 - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
@@ -754,7 +758,7 @@ are in `tests/vm/guest/quick.sh`.
 | `metadata` | The image config as BuildKit writes it: `ARG` before `FROM`, `ARG`/`ENV` expansion, `WORKDIR`, `USER name:group`, `LABEL`, `EXPOSE`, `STOPSIGNAL`, `HEALTHCHECK`, `SHELL`, `ENTRYPOINT` with `CMD`; with `--target shellform`, a shell-form `ENTRYPOINT` that clears the `CMD` inherited from its base stage |
 | `copy` | `COPY` wildcards, one matching nothing (not an error), `.dockerignore` with an exception, `--chown`, `--chmod` octal and symbolic, a symlinked source (followed), a directory into a new destination, a heredoc; checked inside the image |
 | `multistage` | Two independent stages at `--jobs 2`, `FROM <stage>`, `COPY --from` all of them; in kaniko mode on a container's `/` the log says the stages run one at a time and `--jobs` still bounds the uploads |
-| `kaniko-flags` | The kaniko-mode flags' meaning (Phase 2 criterion 8): `--snapshot-mode=time` misses a rewrite of the same size and mtime that `full` catches; `--ignore-path` keeps a `RUN`'s files below it out of every layer; in the T1 kaniko leg, a build without `--mode` picks kaniko mode in a default container and says why. In overlay mode `--ignore-path` is refused (exit 2) and `--snapshot-mode` changes nothing. With the VM's kaniko quick suite (`RANIKUST_QUICK_MODE=kaniko`), `tests/vm/guest/quick.sh` also runs ADR-0054's refusals, the red team of `--mode=auto`'s routing (`rt_*`) and Phase 2 criterion 5's lock (`slash_lock_refuses_a_second_build`: a second kaniko-mode build on `/` in one container is refused before its state directory exists; the first runs from a sealed memfd copy of the binary, ADR-0101) |
+| `kaniko-flags` | The kaniko-mode flags' meaning (Phase 2 criterion 8): `--snapshot-mode=time` misses a rewrite of the same size and mtime that `full` catches; `--ignore-path` keeps a `RUN`'s files below it out of every layer; in the T1 kaniko leg, a build without `--mode` picks kaniko mode in a default container and says why. In overlay mode `--ignore-path` is refused (exit 2) and `--snapshot-mode` changes nothing. With the VM's kaniko quick suite (`RANIKUST_QUICK_MODE=kaniko`), `tests/vm/guest/quick.sh` also runs ADR-0054's refusals, ADR-0101's (`binary_mounts_on_slash`: the binary bound read-write, file or directory, is refused with the `:ro` guidance; bound `:ro` or copied into the container's root, it builds), the red team of `--mode=auto`'s routing (`rt_*`) and Phase 2 criterion 5's lock (`slash_lock_refuses_a_second_build`: a second kaniko-mode build on `/` in one container is refused before its state directory exists; the first runs from a sealed memfd copy of the binary, ADR-0101) |
 | `copy-from` | Red team of what kaniko mode keeps (ADR-0051): a hostile stage (links out of its root, to the state directory, `/ranikust`, `/` and `/proc`; a FIFO, a setuid file, a hardlink, a `0700` directory of uid 1000, a device node) read with `COPY --from`, with its metadata as it was in the image; builds whose sources reach the state directory, `/ranikust` or `/proc` fail without an image |
 | `copy-from-root` | `COPY --from=<stage> / /all/`: the whole stage, without the state directory, `/ranikust` or `/proc`; in kaniko mode on the container's `/` the whole root is kept |
 | `copy-from-daemon` | A `setsid` process left by a `RUN` (kaniko#1697) changes the root while kaniko mode with `RUN` `Direct` walks, keeps, empties and copies it back: the build fails closed, or its image holds nothing of the state directory, `/ranikust` or the secret |

@@ -39,8 +39,10 @@ On an Apple Silicon Mac, OrbStack runs `linux/amd64` containers through
 Rosetta, which lacks `openat2`, so the x86_64 release stops at start-up
 there although the kernel is new enough; the message names the emulator
 rather than the kernel (measured). Docker Desktop with its Rosetta setting on
-should behave the same (inferred); with QEMU instead, it depends on the QEMU
-version.
+should behave the same (inferred). Under QEMU's user mode it stops at start-up
+too: at the same kernel check with qemu-user 8.2.2, at its check that it runs
+alone in its process with qemu-user 10.2.1, whose own thread fails it
+(measured on Linux, not on Docker Desktop).
 
 An untested workaround, not a supported set-up: there is no aarch64 release
 and CI does not cover this use ([ADR-0009]). Build ranikust for

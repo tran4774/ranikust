@@ -137,14 +137,18 @@ Each step before the next; design in
    required; the root is picked by `container::detect`. On `/`,
    `refuse_unsafe_slash` runs in `main.rs`, before anything is written: `/`
    is refused where root may mount (ADR-0054), with `--network=none`
-   (ADR-0057) and with a writable `/proc/sys`
-   (`exposure::proc_sys_read_only`, ADR-0054); then the warnings for
-   secret-looking build arguments and file secrets. `RLIMIT_NOFILE` is
-   raised (`statedir::raise_nofile_limit`); on `/`, with `--jobs` a warning
-   that stages run one at a time and `--jobs` only bounds the uploads, and
-   `rnk_sandbox::block_stop_signals`. Then `set_up_kaniko`: off `/`, a host
-   where root may not mount is refused (`host_without_mounts`). On `/`,
-   `trim_to_run_capabilities` first, while single-threaded, and it stays
+   (ADR-0057), with a writable `/proc/sys`
+   (`exposure::proc_sys_read_only`, ADR-0054) and with ranikust's binary on
+   a writable mount other than `/`'s or one whose mount cannot be told
+   (`refuse_writable_binary` on `Sealing::binary()`, ADR-0101: qemu-user, a
+   memfd or a failed `statx`, each with its own guidance); then the
+   warnings for secret-looking build arguments and file secrets.
+   `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
+   `--jobs` a warning that stages run one at a time and `--jobs` only
+   bounds the uploads, and `rnk_sandbox::block_stop_signals`. Then
+   `set_up_kaniko`: off `/`, a host where root may not mount is refused
+   (`host_without_mounts`). On `/`, `trim_to_run_capabilities` first,
+   while single-threaded, and it stays
    before `Store::open_anonymous`, which deletes names a `RUN` can reach
    (ADR-0078); then the `flock` on `/` itself (one build per container), the
    state directory checks, `Store::open_anonymous` (a state directory holding
@@ -252,7 +256,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ADR-0050 refusal: `/`, system directories, symlinks, writable parents,
   nothing created through a planted link; `0700`), `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order).
-  `src/main.rs` tests: `--snapshot-mode` and `--snapshot-workers` reach the
+  `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`
+  (ADR-0101); `--snapshot-mode` and `--snapshot-workers` reach the
   walk, `--ignore-path` reaches the ignore lists of `/` and of a stage root
   and never uncovers protected paths. `build.rs`: `kaniko_units` (what each
   unit keeps; every stage another unit reads is a unit of its own; hostile
@@ -263,8 +268,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   seccomp message and the emulator message (Rosetta) through
   `RANIKUST_DEBUG_FAULT=kernel-missing|kernel-blocked|kernel-hidden`;
   `a_build_runs_from_a_sealed_copy_made_once` (a memfd, once, no way
-  passed over; `seal-tmpfile`, `seal-none` and a marker set from
-  outside, which warns);
+  passed over, the binary's mount logged; `seal-tmpfile`, `seal-none` and
+  markers set from outside, which warn);
   `--metrics-file` over the variable; the report on every exit path, panic
   included (`RANIKUST_DEBUG_FAULT=panic|error`); a refused flag exits 2 before
   any work (no state directory, the value never echoed, no `RANIKUST_*`
@@ -291,6 +296,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   from a sealed memfd (ADR-0101);
   `adr0054_refusals` (kaniko mode on `/` refused with `--privileged` and
   with `systempaths=unconfined`, before anything is pulled);
+  `binary_mounts_on_slash` (ADR-0101: the binary bound read-write, file or
+  directory, refused with the `:ro` guidance before the state directory
+  exists; bound `:ro` or copied into the container's root, it builds; the
+  only test of `refuse_unsafe_slash` calling `refuse_writable_binary`);
   `rt_auto_privileged_container` (`--mode=auto` in a `--privileged`
   container is refused, with or without `/.dockerenv`). A
   `--state-dir` at `/`, below `/home/<user>` or in a directory others may

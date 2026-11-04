@@ -35,17 +35,30 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
      copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
      refuses it. It costs the binary's size in memory;
-   - an `O_TMPFILE` file in `TMPDIR` (else `/tmp`), `O_EXCL` so it never
-     gets a name, run from a read-only descriptor. No seal: only `ETXTBSY`
-     guards it while it runs.
+   - an `O_TMPFILE` file in `TMPDIR` (else `/tmp`), never on FUSE,
+     `O_EXCL` so it never gets a name, run from a read-only descriptor. No
+     seal: only `ETXTBSY` guards it while it runs. Some file systems refuse
+     `O_TMPFILE` (a container's overlayfs `/tmp` on Ubuntu's Linux 6.8).
 
-   The copy runs as `/proc/self/fd/<n>` with the same arguments,
-   environment and descriptors, plus `RANIKUST_SEALED_COPY=<way>`, and the
-   core-file limit ranikust started with (`forbid_core_dumps` records it
-   again). The copy's run makes no copy, checks `/proc/self/exe` (the
-   memfd's seals, or no link), takes its name from `argv[0]` again and
-   logs at debug the way and why each way before it failed. When no way
-   works, or the check fails, the build goes on with a warning.
+   First, the mount of the binary as installed is measured against `/`'s
+   (`statx` `STATX_MNT_ID`, `statvfs` `ST_RDONLY`: `BinaryMount`; a mount
+   id of 0, which qemu-user's `statx` gives for every file and the kernel
+   for a memfd, is `NoMountId`; a fallback through `/proc/self/fdinfo` is
+   [#95](https://github.com/tran4774/ranikust/issues/95)). The copy runs with
+   `execveat(<n>, "", AT_EMPTY_PATH)` on its close-on-exec descriptor,
+   with the same arguments, environment and descriptors, plus
+   `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file limit ranikust
+   started with (`forbid_core_dumps` records it again). A copy that needs
+   an interpreter (binfmt_misc, with or without `O`; a `#!` line) is
+   refused before the exec (`ENOENT`), and the next way is tried. The
+   copy's run makes no copy, checks `/proc/self/exe` (the memfd's seals,
+   or no link), takes its name from
+   `argv[0]` again and logs at debug the way, the binary's mount and why
+   each way before it failed. When no way works, or the check fails, the
+   build goes on with a warning, the binary's mount then measured on the
+   file it runs from. `ranikust` refuses kaniko mode on `/` with the binary
+   on a writable mount other than `/`'s, or on one it cannot tell
+   ([kaniko mode](kaniko-mode.md#invariants)).
 1. While the process is still **single-threaded** (before tokio or rayon
    start), `unshare(CLONE_NEWNS)` and make `/` a slave mount
    (`--make-rslave`). From then on every build mount disappears with the

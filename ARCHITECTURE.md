@@ -136,7 +136,8 @@ it), transfer blobs, decode layers, mount, or delete except through
 Isolated execution of `RUN`: namespaces, `proc`/`dev`/`sys`, `pivot_root` (or
 `MS_MOVE`), capability drop, stub mount points, `USER` resolved inside the root,
 exec. Also the probes of its own capabilities, each tried for real, and the
-sealed copy of ranikust's binary a build runs from
+sealed copy of ranikust's binary a build runs from, with the mount of the binary
+as installed, for `ranikust`'s refusal in kaniko mode on `/`
 ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)). In
 sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
