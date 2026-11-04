@@ -351,49 +351,83 @@ fn a_writable_mount_containing_the_binary_reaches_it() {
     assert_eq!(reached_writable(&mounts(file, &[]), 99, bin), None);
 }
 
-/// ADR-0101: a binary on a root that is not overlayfs (a directory root)
+/// ADR-0101: a binary on a root that is not an overlay (a directory root)
 /// is weighed like one on another read-only mount: its links, then the
 /// writable mounts that reach it; on an overlay root it builds as it is.
 #[test]
 fn a_binary_in_a_root_that_is_not_overlayfs_is_weighed() {
-    const EXT4: rustix::fs::FsWord = 0xEF53;
     let never = || -> Result<Option<bool>, Errno> { panic!("the mount table is not read") };
-    let fs = |f_type| move || -> Result<rustix::fs::FsWord, Errno> { Ok(f_type) };
+    let copies = |up: bool| move || -> Result<bool, Errno> { Ok(up) };
     let reach = |reached: Option<bool>| move || -> Result<Option<bool>, Errno> { Ok(reached) };
     let root = BinaryMount::Root;
     // An overlay root: an image's links build, and nothing more is read.
-    assert_eq!(verdict(root, fs(OVERLAYFS), 2, never), Ok(root));
-    assert_eq!(verdict(root, fs(OVERLAYFS), 1, never), Ok(root));
+    assert_eq!(verdict(root, copies(true), 2, never), Ok(root));
+    assert_eq!(verdict(root, copies(true), 1, never), Ok(root));
     // A directory root: other links, a writable mount reaching it, or a
     // mount table that does not place it are refused; nothing reaching it
     // builds.
-    assert_eq!(verdict(root, fs(EXT4), 2, never), Ok(BinaryMount::Linked));
-    assert_eq!(verdict(root, fs(EXT4), 0, never), Ok(BinaryMount::Unplaced));
     assert_eq!(
-        verdict(root, fs(EXT4), 1, reach(Some(true))),
+        verdict(root, copies(false), 2, never),
+        Ok(BinaryMount::Linked)
+    );
+    assert_eq!(
+        verdict(root, copies(false), 0, never),
+        Ok(BinaryMount::Unplaced)
+    );
+    assert_eq!(
+        verdict(root, copies(false), 1, reach(Some(true))),
         Ok(BinaryMount::Exposed)
     );
-    assert_eq!(verdict(root, fs(EXT4), 1, reach(Some(false))), Ok(root));
     assert_eq!(
-        verdict(root, fs(EXT4), 1, reach(None)),
+        verdict(root, copies(false), 1, reach(Some(false))),
+        Ok(root)
+    );
+    assert_eq!(
+        verdict(root, copies(false), 1, reach(None)),
         Ok(BinaryMount::Unplaced)
     );
     // A file system that cannot be told is a failed measurement.
-    let failed = || -> Result<rustix::fs::FsWord, Errno> { Err(Errno::NOSYS) };
+    let failed = || -> Result<bool, Errno> { Err(Errno::NOSYS) };
     assert_eq!(verdict(root, failed, 1, never), Err(Errno::NOSYS));
     // Another read-only mount is weighed whatever its file system; others
     // are as `of` told them.
     let ro = BinaryMount::ReadOnly;
-    let no_fs = || -> Result<rustix::fs::FsWord, Errno> { panic!("no file system type is needed") };
+    let no_fs = || -> Result<bool, Errno> { panic!("no file system type is needed") };
     assert_eq!(verdict(ro, no_fs, 2, never), Ok(BinaryMount::Linked));
     assert_eq!(
-        verdict(ro, || Ok(OVERLAYFS), 1, reach(Some(true))),
+        verdict(ro, copies(true), 1, reach(Some(true))),
         Ok(BinaryMount::Exposed)
     );
     assert_eq!(verdict(ro, no_fs, 1, reach(Some(false))), Ok(ro));
     for told in [BinaryMount::Writable, BinaryMount::NoMountId] {
         assert_eq!(verdict(told, no_fs, 2, never), Ok(told));
     }
+}
+
+/// ADR-0101: a fuse-overlayfs root (rootless podman's) copies up as
+/// overlayfs does, told by its type in the mount table; another FUSE root,
+/// one the table does not name, or a directory root does not, and only
+/// FUSE reads the table.
+#[test]
+fn a_fuse_overlayfs_root_copies_up_as_overlayfs_does() {
+    const EXT4: rustix::fs::FsWord = 0xEF53;
+    let never = || -> Result<Option<String>, Errno> { panic!("the mount table is not read") };
+    let named = |t: Option<&str>| {
+        let t = t.map(String::from);
+        move || -> Result<Option<String>, Errno> { Ok(t) }
+    };
+    let podman = "1 0 0:45 / / rw,nodev,relatime - fuse.fuse-overlayfs fuse-overlayfs \
+                  rw,user_id=0,group_id=0,default_permissions,allow_other\n";
+    let mounts = rnk_rootfs::parse_mountinfo(podman.as_bytes()).expect("sample");
+    assert_eq!(type_of(&mounts, 1), Some(FUSE_OVERLAYFS));
+    assert_eq!(type_of(&mounts, 2), None);
+    assert_eq!(copies_up(FUSE, named(type_of(&mounts, 1))), Ok(true));
+    assert_eq!(copies_up(OVERLAYFS, never), Ok(true));
+    assert_eq!(copies_up(FUSE, named(Some("fuse.sshfs"))), Ok(false));
+    assert_eq!(copies_up(FUSE, named(None)), Ok(false));
+    assert_eq!(copies_up(EXT4, never), Ok(false));
+    let failed = || -> Result<Option<String>, Errno> { Err(Errno::NOSYS) };
+    assert_eq!(copies_up(FUSE, failed), Err(Errno::NOSYS));
 }
 
 /// ADR-0101: on a directory root, the root mount itself does not reach the
@@ -445,7 +479,7 @@ fn the_binarys_mount_is_measured_on_the_file() {
 }
 
 /// ADR-0101: a file in the root is weighed by the root's own file system,
-/// measured through its descriptor: as it is on overlayfs, by its links
+/// measured through its descriptor: as it is on an overlay, by its links
 /// and the mount table elsewhere. Skipped under qemu-user, whose statx
 /// leaves the mount id at 0 (`just test-aarch64`).
 #[test]
@@ -457,16 +491,21 @@ fn a_file_in_the_root_is_weighed_by_the_roots_file_system() {
     )
     .expect("/");
     let st = statx_of(rustix::fs::CWD, c"/", AtFlags::empty()).expect("statx /");
-    let expected = if rustix::fs::statfs("/").expect("statfs /").f_type == OVERLAYFS {
+    let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
+    // An unparsed table is unplaced, as in mount_of.
+    let mounts = rnk_rootfs::parse_mountinfo(&text).ok();
+    let f_type = rustix::fs::statfs("/").expect("statfs /").f_type;
+    let fuse_overlayfs = f_type == FUSE
+        && mounts.as_deref().and_then(|m| type_of(m, st.stx_mnt_id)) == Some(FUSE_OVERLAYFS);
+    let expected = if f_type == OVERLAYFS || fuse_overlayfs {
         BinaryMount::Root
     } else {
         match st.stx_nlink {
             0 => BinaryMount::Unplaced,
             1 => {
-                let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
-                match rnk_rootfs::parse_mountinfo(&text)
-                    .ok()
-                    .and_then(|mounts| reached_writable(&mounts, st.stx_mnt_id, Path::new("/")))
+                match mounts
+                    .as_deref()
+                    .and_then(|m| reached_writable(m, st.stx_mnt_id, Path::new("/")))
                 {
                     None => BinaryMount::Unplaced,
                     Some(true) => BinaryMount::Exposed,

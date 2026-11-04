@@ -56,7 +56,7 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execveat from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed); Err only when RLIMIT_CORE cannot go back to 0
 pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
 pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
-pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not overlayfs (verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo), Unplaced: not placed; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
+pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo), Unplaced: not placed; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
@@ -252,8 +252,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the binary's mount against `/` (a zero id: `NoMountId`), measured on
   files and carried in the marker, a marker that does not check not
   believed, a writable mount reaching the binary by sample mountinfo,
-  a binary in a root that is not overlayfs weighed (by sample values and
-  on `/`) and the root mount not counted, FUSE told apart by `statfs`
+  a binary in a root that is not an overlay weighed (by sample values and
+  on `/`), a fuse-overlayfs root counted as an overlay, the root mount
+  not counted, FUSE told apart by `statfs`
   magic), the stub journal (placement through symlinks, removal, parent times,
   replay of dead journals only, a lock kept by a shared description), swaps
   and planted records, `Direct` children that fail before executing, mount

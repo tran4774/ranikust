@@ -35,6 +35,10 @@ const FUSE: rustix::fs::FsWord = 0x6573_5546;
 /// `OVERLAYFS_SUPER_MAGIC`.
 const OVERLAYFS: rustix::fs::FsWord = 0x794c_7630;
 
+/// The mount table's type of a fuse-overlayfs mount (rootless podman's
+/// container roots).
+const FUSE_OVERLAYFS: &str = "fuse.fuse-overlayfs";
+
 /// The seals of a memfd copy: no write, no change of size, no seal taken
 /// off.
 const SEALS: SealFlags = SealFlags::SEAL
@@ -83,19 +87,19 @@ impl fmt::Display for SealedCopy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryMount {
     /// On the mount of `/`: in a container, its own root. On a root that
-    /// is not overlayfs, also with one link and no other writable mount
-    /// reaching it.
+    /// is not an overlay (overlayfs or fuse-overlayfs), also with one link
+    /// and no other writable mount reaching it.
     Root,
     /// On another mount, read-only, and no writable mount reaches it.
     ReadOnly,
     /// On another mount, writable.
     Writable,
-    /// On another read-only mount, or on a root that is not overlayfs, but
-    /// another writable mount of its file system has a root that contains
-    /// the file (`/proc/self/mountinfo`).
+    /// On another read-only mount, or on a root that is not an overlay,
+    /// but another writable mount of its file system has a root that
+    /// contains the file (`/proc/self/mountinfo`).
     Exposed,
-    /// On another read-only mount, or on a root that is not overlayfs, but
-    /// the file has other hard links, which no mount table places.
+    /// On another read-only mount, or on a root that is not an overlay,
+    /// but the file has other hard links, which no mount table places.
     Linked,
     /// Cannot be told: `statx` gave a mount id of 0, as qemu-user's does
     /// for every file and the kernel for a memfd (Linux 6.8 and 7.0).
@@ -272,12 +276,20 @@ fn placed(fd: BorrowedFd<'_>) -> Result<(BinaryMount, rustix::fs::Statx), Errno>
 }
 
 /// Which mount the file `exe` is on, against the mount of `/`, and, on
-/// another read-only mount or a root that is not overlayfs, whether a
-/// writable mount reaches the file ([`verdict`]).
+/// another read-only mount or a root that is not an overlay, whether
+/// another writable mount reaches the file ([`verdict`]).
 fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
     let found = (|| {
         let (mount, st) = placed(exe)?;
-        let fs_type = || rustix::fs::fstatfs(exe).map(|fs| fs.f_type);
+        let copies = || {
+            copies_up(rustix::fs::fstatfs(exe)?.f_type, || {
+                let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
+                // A table that does not parse names no fuse-overlayfs: the root is weighed.
+                Ok(rnk_rootfs::parse_mountinfo(&text)
+                    .ok()
+                    .and_then(|mounts| type_of(&mounts, st.stx_mnt_id).map(str::to_owned)))
+            })
+        };
         let reach = || -> Result<Option<bool>, Errno> {
             // The path `/proc/self/exe` gives, named through the descriptor
             // measured above.
@@ -292,22 +304,46 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
             };
             Ok(reached_writable(&mounts, st.stx_mnt_id, &path))
         };
-        verdict(mount, fs_type, st.stx_nlink, reach)
+        verdict(mount, copies, st.stx_nlink, reach)
     })();
     found.unwrap_or_else(BinaryMount::Unknown)
 }
 
+/// Whether a write to a file in the root, on a file system of type
+/// `f_type` (`statfs`), copies the file up and leaves the image's own files
+/// as they are: on overlayfs, and on FUSE when the root's type in the mount
+/// table (`own_type`, read only then) is fuse-overlayfs.
+fn copies_up(
+    f_type: rustix::fs::FsWord,
+    own_type: impl FnOnce() -> Result<Option<String>, Errno>,
+) -> Result<bool, Errno> {
+    Ok(match f_type {
+        OVERLAYFS => true,
+        // FUSE serves many file systems: only the mount table names this one.
+        FUSE => own_type()?.as_deref() == Some(FUSE_OVERLAYFS),
+        _ => false,
+    })
+}
+
+/// The type `mounts` gives the mount `own`, if it lists it.
+fn type_of(mounts: &[MountInfo], own: u64) -> Option<&str> {
+    mounts
+        .iter()
+        .find(|m| m.mount_id == own)
+        .map(|m| m.fs_type.as_str())
+}
+
 /// The binary's mount once its links and the mounts that reach it are
-/// weighed: on another read-only mount, and on a root whose file system
-/// (`fs_type`, `statfs`) is not overlayfs, a file with no link or one the
+/// weighed: on another read-only mount, and on a root where a write does
+/// not copy up (`copies`, [`copies_up`]), a file with no link or one the
 /// mount table does not place (`reach` gives `None`) is
 /// [`BinaryMount::Unplaced`], one with other links [`BinaryMount::Linked`],
-/// one a writable mount reaches [`BinaryMount::Exposed`]. `fs_type` and
-/// `reach` are called only when needed; their error is returned, for
+/// one another writable mount reaches [`BinaryMount::Exposed`]. `copies`
+/// and `reach` are called only when needed; their error is returned, for
 /// [`BinaryMount::Unknown`].
 fn verdict(
     mount: BinaryMount,
-    fs_type: impl FnOnce() -> Result<rustix::fs::FsWord, Errno>,
+    copies: impl FnOnce() -> Result<bool, Errno>,
     nlink: u32,
     reach: impl FnOnce() -> Result<Option<bool>, Errno>,
 ) -> Result<BinaryMount, Errno> {
@@ -315,7 +351,7 @@ fn verdict(
         BinaryMount::ReadOnly => true,
         // On an overlay root a write copies the file up and leaves the
         // layers' own files, an image's links among them, as they are.
-        BinaryMount::Root => fs_type()? != OVERLAYFS,
+        BinaryMount::Root => !copies()?,
         BinaryMount::Writable
         | BinaryMount::Exposed
         | BinaryMount::Linked
@@ -358,7 +394,7 @@ fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool>
             // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
             && m.device == mine.device
             && !m.read_only
-            // Other files' single-file binds pass: sound with Docker's capabilities (ADR-0078).
+            // Binds of other single files pass: RUN keeps only Docker's defaults (ADR-0078).
             && in_fs.starts_with(&m.fs_root)
     }))
 }

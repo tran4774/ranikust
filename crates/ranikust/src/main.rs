@@ -778,10 +778,10 @@ fn refuse_unsafe_slash(
 /// Kaniko mode on `/` refuses ranikust's binary on a writable mount other
 /// than `/`'s, a bind mount or a volume, or reachable through one (ADR-0101):
 /// a `RUN`, root on `/`, could alter it, and the build no longer runs it. A
-/// binary in the container's own root (on a root that is not overlayfs,
-/// with one link and no other writable mount reaching it), or on a
-/// read-only mount no writable mount reaches, builds; one whose mount is
-/// not known is refused.
+/// binary in the container's own root (on a root that is not an overlay,
+/// overlayfs or fuse-overlayfs, with one link and no other writable mount
+/// reaching it), or on a read-only mount no writable mount reaches,
+/// builds; one whose mount is not known is refused.
 fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), Failure> {
     match binary {
         Some(BinaryMount::Root | BinaryMount::ReadOnly) => Ok(()),
@@ -807,9 +807,10 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              which a writable mount may reach, would let RUN alter that file"
         ))
         .with_guidance(
-            "mount a single-link copy of the binary read-only, or keep one link to a binary in \
-             the container's root (cp makes one; cargo's release binaries, such as \
-             target/release/ranikust, are hard links of their copies in deps/) (ADR-0101)",
+            "give the binary a single link: mount a single-link copy of it read-only, or build \
+             the image without hard-link aliases of it (cp makes a copy with one link; cargo's \
+             release binaries, such as target/release/ranikust, are hard links of their copies \
+             in deps/) (ADR-0101)",
         )),
         Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
@@ -818,8 +819,8 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         ))
         .with_guidance(
             "run the binary from a file that stays in place, or build it into an image run on an \
-             overlayfs root (Docker's and containerd's default storage), where this is not needed \
-             (ADR-0101)",
+             overlay root (overlayfs, as Docker's and containerd's default storage gives, or \
+             fuse-overlayfs), where this is not needed (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
@@ -1295,6 +1296,7 @@ mod tests {
             linked.code == 1
                 && linked.message.contains("other hard links")
                 && linked.guidance.contains("single-link copy")
+                && linked.guidance.contains("hard-link aliases")
                 && linked.guidance.contains("read-only"),
             "{}: {}",
             linked.message,
@@ -1329,7 +1331,7 @@ mod tests {
         assert!(
             unplaced.message.contains("/proc/self/mountinfo")
                 && unplaced.guidance.contains("stays in place")
-                && unplaced.guidance.contains("overlayfs root"),
+                && unplaced.guidance.contains("overlay root"),
             "{}: {}",
             unplaced.message,
             unplaced.guidance

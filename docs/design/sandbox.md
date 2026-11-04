@@ -47,10 +47,12 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    id of 0, which qemu-user's `statx` gives for every file and the kernel
    for a memfd, is `NoMountId`; a fallback through `/proc/self/fdinfo` is
    [#95](https://github.com/tran4774/ranikust/issues/95)). On another
-   read-only mount, and on a root that is not overlayfs (`fstatfs` magic;
-   `verdict`), a file with other hard links is `Linked`, and one whose
-   path in its file system lies under the root of another writable mount
-   of the same `major:minor` in `/proc/self/mountinfo` is `Exposed`
+   read-only mount, and on a root that is not an overlay (`copies_up`:
+   overlayfs by `fstatfs` magic, or FUSE whose own mountinfo line has the
+   type `fuse.fuse-overlayfs`; `verdict`), a file with other hard links is
+   `Linked`, and one whose path in its file system lies under the root of
+   another writable mount of the same `major:minor` in
+   `/proc/self/mountinfo` is `Exposed`
    (`reached_writable`, by path components, nothing opened); a table that
    cannot be parsed or does not place the file, or a file with no link
    left, is `Unplaced`, and a table that cannot be read `Unknown`. The copy
