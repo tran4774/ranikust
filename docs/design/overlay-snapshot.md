@@ -219,6 +219,14 @@ entry that `rnk-store` renames into place; it gets the layers below, so
 that a hardlink into one of them is copied from it
 ([rootfs](rootfs.md#extraction)).
 
+Planned, Phase 3 (rootless mode, nothing built): extraction, publication and
+clean-up of extracted layers run inside the build's user namespace as its mapped
+root, and publication stays a rename, with a mapped uid and gid on every
+directory the store creates
+([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md));
+device nodes of a base layer are skipped and counted as `nodes_skipped`
+([ADR-0106](../adr/0106-rootless-extraction-skips-device-nodes-and-counts-them.md)).
+
 ## Lazy export
 
 The diff is already on disk. It is turned into tar, compressed and digested
@@ -256,7 +264,6 @@ read-only: no copy and no deletion between stages, unlike kaniko.
 
 - [Q-245](https://github.com/tran4774/ranikust/issues/18) Should one overlay mount serve consecutive instructions?
 - [Q-421](https://github.com/tran4774/ranikust/issues/29) Which performance conditions does Phase 6 measure?
-- [Q-152](https://github.com/tran4774/ranikust/issues/5) How are read-only layer roots published without root?
 
 ## References
 

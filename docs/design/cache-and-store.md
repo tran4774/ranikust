@@ -103,6 +103,11 @@ process dies (a T0 test kills with `SIGKILL`).
    not synced, as containerd's defaults under BuildKit
    ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)).
 
+Planned, Phase 3 (rootless mode, nothing built): the same steps, with every
+operation on extracted layers run inside the build's user namespace, since the
+user cannot rename, `chmod` or unlink entries of subordinate ids from outside it
+([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
+
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular
 `.ranikust-state` file is refused, so this clean-up never runs in a directory
@@ -111,7 +116,10 @@ under `volatile` is never trusted after a crash.
 
 ## Prune
 
-Not built (Phase 5). `ranikust prune` will call `rnk-store`, which removes
+Not built. Phase 3 plans a minimal `ranikust prune --all` that empties a
+rootless state directory inside the user namespace
+([ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md));
+the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, takes the same locks as a build and never
 removes an entry a running build uses [inferred: the in-use tracking is not
 designed yet]. The defaults are BuildKit's tiers, aging by last use

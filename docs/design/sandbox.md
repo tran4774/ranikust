@@ -395,10 +395,18 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 Planned for Phase 3 (ADR-0003); neither flag exists yet.
 
 - `--seccomp=default|unconfined|<file>`: a seccomp filter for `RUN`; profiles
-  are generated per architecture.
+  are generated per architecture. Decided
+  ([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)):
+  the default profile applies without the flag wherever the full sandbox runs,
+  `unconfined` turns it off, and in kaniko mode on `/` the flag is refused (the
+  container's own profile applies).
 - `--userns`: the build runs in a user namespace, so uid 0 inside maps to an
   unprivileged uid on the host. Every parent directory of the state directory
-  must be traversable by the mapped uid.
+  must be traversable by the mapped uid. Decided
+  ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)):
+  the whole build runs in the namespace, as rootless mode does, with a
+  subordinate range for root and extracted layers kept apart from root's; the
+  init's uid stays unmapped in rootless mode too.
 
 ## Failure handling
 

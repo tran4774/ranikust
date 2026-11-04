@@ -8,8 +8,10 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0014](../adr/0014-kaniko-mode-sequential-by-default.md),
 [ADR-0023](../adr/0023-mode-flag.md),
 [ADR-0050](../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md),
-[ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)
-(planned, Phase 3).
+[ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
+[ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md),
+[ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)
+(the last three planned, Phase 3).
 
 ## Outcomes
 
@@ -48,14 +50,21 @@ table per CI system in §6) and
 | Host as root or via `sudo` (GitHub Actions with `sudo`, GitLab.com SaaS) | overlay, root |
 | Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
-| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host) |
-| Unprivileged user on Debian, Fedora, RHEL 8+, Ubuntu ≤ 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`); today refused |
+| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host), and rootless podman without a volume at the state directory keeps it ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) |
+| Unprivileged user on Debian, Fedora, RHEL 9+, Ubuntu ≤ 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`); today refused |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
 | Pod Security Standards `restricted`, OpenShift `restricted-v2` | refuse |
 
 Most locked-down CI pods land in kaniko mode. Overlay is available only
-where BuildKit or buildah would also run.
+where BuildKit or buildah would also run. RHEL 8 (kernel 4.18) is in no row:
+ranikust refuses to start on a kernel before 5.8
+([ADR-0028](../adr/0028-minimum-kernel-linux-5-8.md)).
+
+Which of these environments the probe is tested in, and in which tier, is
+decided in
+[ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)
+(planned, Phase 3, nothing built).
 
 ## Probe order (`--mode=auto`)
 
@@ -97,8 +106,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      user needs `newuidmap`/`newgidmap` and `/etc/subuid`; without them only
      one uid maps and `chown` to any other fails with `EINVAL`. Planned, with
      Phase 3 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)):
-     then ranikust refuses an image with several owners, and no flag ignores
-     the failed `chown`.
+     then ranikust refuses an image with several owners, scanning the base
+     layers' tar headers before the build and stopping at the first `chown` or
+     `setuid` that fails with `EINVAL` for what the build creates, and no flag
+     ignores the failed `chown`.
    - Mount the overlay (`userxattr` is implied), then a new `proc`; if that
      fails, an rbind of the existing `/proc` (`RUN` then sees the container's
      processes, like BuildKit's `--oci-worker-no-process-sandbox`).
@@ -223,8 +234,10 @@ usable, and offer, in order:
 
 Also planned: where a user namespace maps one uid, an image with several owners
 is refused (probe step 2,
-[ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md));
-what that refusal says is not settled.
+[ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
+The probe's map write tells a one-id map, uids and gids count, and the message
+names the owners found and the ways out: install `uidmap` and add ranges to
+`/etc/subuid` and `/etc/subgid`, run as root, or use a container.
 
 ## Failure handling
 
@@ -238,7 +251,6 @@ what that refusal says is not settled.
 
 ## Open questions
 
-- [Q-039](https://github.com/tran4774/ranikust/issues/11) Which environments must the probe be tested in?
 - [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
 - [Q-017](https://github.com/tran4774/ranikust/issues/3) Which type carries the probe outcome to the libraries?
 
