@@ -156,9 +156,10 @@ state directory `~/.local/share/ranikust`),
 [ADR-0106](0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)
 (device nodes in rootless extraction).
 
-Follow-ups, with [#77](https://github.com/tran4774/ranikust/issues/77): `rnk-store`, `rnk-snapshot` and `rnk-rootfs`
-open and extract inside the namespace, with a T1 test of a `0555` layer root
-and of a `SIGKILL` during extraction. When it is built, change
+Follow-ups, with [#77](https://github.com/tran4774/ranikust/issues/77):
+`rnk-store`, `rnk-snapshot` and `rnk-rootfs` open and extract inside the
+namespace, with a T1 test of a `0555` layer root and of a `SIGKILL` during
+extraction. When it is built, change
 [overlay-snapshot](../design/overlay-snapshot.md),
 [cache-and-store](../design/cache-and-store.md), the three crate cards, add the
 `## Changelog` entry if the change is user-visible, and check the threat model.

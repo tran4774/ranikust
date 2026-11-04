@@ -15,13 +15,13 @@ applies when the flag is not given: the
 [threat model](../security/threat-model.md) said only "until `--seccomp`", and
 today the one filter a `RUN` gets is
 [ADR-0033](0033-network-none-loopback-through-a-user-namespace.md)'s, under
-`--network=none`. BuildKit applies its default profile to every `RUN` unless
-the insecure entitlement is granted **[external]** (see Evidence). In kaniko
-mode on `/` the `RUN` child lacks `CAP_SYS_ADMIN`, so it can load a filter only after `no_new_privs`, which stops
-setuid programs (`sudo`, `su`) in the `RUN` **[external]** (`seccomp(2)`). Is a
-seccomp profile applied when `--seccomp` is not given, and what does the flag do
-in kaniko mode on `/` (raised while planning Phase 3,
-[#41](https://github.com/tran4774/ranikust/issues/41))?
+`--network=none`. BuildKit applies its default profile to every `RUN` unless the
+insecure entitlement is granted **[external]** (see Evidence). In kaniko mode on
+`/` the `RUN` child lacks `CAP_SYS_ADMIN`, so it can load a filter only after
+`no_new_privs`, which stops setuid programs (`sudo`, `su`) in the `RUN`
+**[external]** (`seccomp(2)`). Is a seccomp profile applied when `--seccomp` is
+not given, and what does the flag do in kaniko mode on `/` (raised while
+planning Phase 3, [#41](https://github.com/tran4774/ranikust/issues/41))?
 
 ## Considered Options
 

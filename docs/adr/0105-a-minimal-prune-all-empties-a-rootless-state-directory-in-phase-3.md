@@ -46,8 +46,8 @@ recommended).
   namespace, and Phase 5's `prune` grows from it
   ([ADR-0021](0021-rnk-store-crate.md): `ranikust prune` only calls
   `rnk-store`).
-- **Scope.** It is for a rootless state directory, as the title says. Whether
-  root's shared `/var/lib/ranikust` gets it is left to Phase 5's `prune`.
+- **Scope.** It is for a rootless state directory. What it does when root
+  runs it is [open: #93]; Phase 5's `prune` covers root's store either way.
 - **Safety.** `prune --all` opens the store as a build does (the
   state-directory checks and the `.ranikust-state` marker), so it refuses a
   directory ranikust did not make. It never removes what a running build uses,
@@ -77,7 +77,7 @@ recommended).
   `EACCES`, `chmod` `EPERM`)
   ([ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)).
 - [cache-and-store](../design/cache-and-store.md#prune): `prune` is
-  not built (Phase 5); start-up removes the directories of builds no longer
+  not built; start-up removes the directories of builds no longer
   running, and refuses a non-empty directory without the marker
   ([rnk-store](../agents/crates/rnk-store.md)).
 - **[external]** buildah and podman have `unshare`, which is option (c).
@@ -92,5 +92,5 @@ Raised while planning Phase 3
 Follow-ups: `ranikust` and `rnk-store`, with a T1 test that empties a state
 directory holding files of subordinate ids. When it is built, change
 [cache-and-store](../design/cache-and-store.md#prune), the `ranikust` and
-`rnk-store` cards, `ARCHITECTURE.md` and the book (`prune` is listed as not
-existing until Phase 5), and add the `## Changelog` entry.
+`rnk-store` cards, `ARCHITECTURE.md` and the book, and add the `## Changelog`
+entry.
