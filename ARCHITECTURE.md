@@ -146,7 +146,8 @@ the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
 **Must not** snapshot or diff a root, mount or probe overlays
-(`rnk-snapshot`), or look up users on the host.
+(`rnk-snapshot`; the seal only reads whether `/` is one, ADR-0101), or look
+up users on the host.
 
 ### `rnk-snapshot`
 

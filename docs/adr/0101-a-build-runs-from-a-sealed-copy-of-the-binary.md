@@ -126,28 +126,30 @@ The decision:
   mount's root joined with its path below that mount; paths compared by
   component, never opened). It passes the answer to the copy in the
   variable; a run that ends without a checked copy measures the file it
-  runs from instead. Kaniko mode on `/` refuses,
-  before anything is written, a binary on a writable mount other than `/`'s
-  (a file or a directory bound without `:ro` from outside the container or
-  from inside it, a volume), with the guidance to mount it read-only
+  runs from instead. Kaniko mode on `/` refuses, before anything is
+  written, a binary on a writable mount other than `/`'s (a file or a
+  directory bound without `:ro` from outside the container or from inside
+  it, a volume), with the guidance to mount it read-only
   (Docker `:ro`, Kubernetes `readOnly: true` on the `volumeMount`); a
   binary a writable mount reaches (bound `:ro` from a tree also bound
   read-write), with the guidance to put it outside the mounted tree, to
   mount that tree read-only, or to mount a single-link copy read-only from
   outside it; and a file with other hard links, with the guidance to give
-  the binary a single link (a single-link copy mounted read-only, or an
-  image built without hard-link aliases of it). It also refuses one whose
-  mount it cannot tell: a mount id of 0, which qemu-user's `statx` gives
-  for every file and Linux 6.8 and 7.0 give a memfd [measured]; a mount
-  table that cannot be parsed or does not place the file, or a file with
-  no link left; or a failed call (the mount table unreadable among them),
+  the binary a single link (a single-link copy mounted read-only, or, in
+  the container's root, no hard-link alias of it). It also refuses one
+  whose mount it cannot tell: a mount id of 0, which qemu-user's `statx`
+  gives for every file and Linux 6.8 and 7.0 give a memfd [measured]; a
+  mount table that cannot be parsed, does not place the file or does not
+  type a FUSE root, or a file with no link left; or a failed call (the
+  mount table unreadable among them),
   each with its own guidance; a fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
   (`statfs` magic), as Docker's and containerd's default storage gives, or
   fuse-overlayfs (FUSE whose own line in `/proc/self/mountinfo` has the
-  type `fuse.fuse-overlayfs`), as rootless podman's can. On any other root
+  type `fuse.fuse-overlayfs`, a type its mounter declares: the operator's
+  runtime, trusted), as rootless podman's can. On any other root
   (Docker's btrfs, zfs or vfs drivers, containerd's native snapshotter, a
   directory root, as podman `--rootfs`, systemd-nspawn or LXC give) it is
   weighed like one on another read-only mount, the root mount itself not
@@ -167,9 +169,9 @@ The decision:
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
   the next four
   [in a third](https://github.com/tran4774/ranikust/issues/32#issuecomment-6633392547),
-  the next three
+  after the second host-safety pass the next three
   [in a fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6634131493),
-  after the second host-safety pass, the last
+  and the last
   [in a fifth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6635199388)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
@@ -212,13 +214,12 @@ The decision:
     other writable mounts that reach it, when `/` is not overlayfs:
     "Kiểm tra cả khi root không phải overlay (khuyến nghị)", adding
     "Overlay roots (Docker, containerd) are not affected";
-  - in
-    [the comment with the second to fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
+  - in [the comment with the second to fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
     "ADR-0101 and the threat model describe the risk of a writable binary
-    in general terms"; in the fourth, to keep naming the configurations
-    that are refused, without a mechanism, in the book, `SECURITY.md`, the
-    threat model and the refusal messages: "Giữ, vì người dùng cần biết
-    (khuyến nghị)";
+    in general terms"; in the fourth comment, to keep naming the
+    configurations that are refused, without a mechanism, in the book,
+    `SECURITY.md`, the threat model and the refusal messages: "Giữ, vì
+    người dùng cần biết (khuyến nghị)";
   - to accept the measurement the marker carries as it is: whoever starts
     ranikust sets the variable and is trusted, a `RUN` cannot set it (its
     environment is the Dockerfile's only), and the copy's run believes it
@@ -369,18 +370,19 @@ The decision:
   starts the same; another file system with the same path; read-only by
   the mount's or the file system's options; `\040` escapes; a path outside
   its mount and a root that is not a path, unplaced),
-  `a_binary_in_a_root_that_is_not_overlayfs_is_weighed` (an overlay root
+  `a_binary_in_a_root_that_is_not_an_overlay_is_weighed` (an overlay root
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one
-  nothing reaches builds), `a_directory_root_is_not_its_own_writable_mount`,
-  `a_fuse_overlayfs_root_copies_up_as_overlayfs_does` (a sample
-  fuse-overlayfs line; another FUSE type, an unlisted mount and a
-  directory root do not copy up),
-  `a_file_in_the_root_is_weighed_by_the_roots_file_system` (`/` measured
-  through its descriptor; measured on ext4 roots only, the developer's and
-  CI's, where it is `Linked`, a directory's link count counting its
-  subdirectories; that an overlay root gives `Root` and a one-link root
-  follows the mount table is the test's logic, not a measurement),
+  nothing reaches builds; a root the table does not type is unplaced),
+  `a_directory_root_is_not_its_own_writable_mount`,
+  `a_fuse_overlayfs_root_copies_up_as_overlayfs_does` (sample tables: a
+  fuse-overlayfs root copies up, an sshfs one and a directory root do not,
+  a table without the root's line or one that does not parse types none),
+  `a_file_in_the_root_is_weighed_by_the_roots_file_system` (`mount_of` on
+  `/` through its descriptor, as the host running it has `/`; run for this
+  change on an ext4 `/` under Linux 7.0, where it is `Linked`, a
+  directory's link count counting its subdirectories; the other branches
+  are the test's logic, not a measurement),
   `rnk-rootfs`'s `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
   `a_spilled_option_is_kept_out_of_read_only` and
   `a_line_with_missing_or_shifted_options_is_refused`, and the binary's

@@ -73,10 +73,9 @@ cargo's release binaries, such as `target/release/ranikust`, are links of
 their copies in `deps/`). A binary built into the container's image needs
 no such mount; on a root that is not an overlay (overlayfs, as Docker's and
 containerd's default storage gives, or fuse-overlayfs, as rootless podman's
-can), such as Docker's btrfs, zfs or vfs drivers or the directory roots of
-podman `--rootfs`, systemd-nspawn or LXC, it too must have one link (build
-the image without hard-link aliases of it) and no other writable mount may
-reach it. Put the build context there too, read-only:
+can; [which roots](how-it-builds.md#on-a-containers-)), it too must have one
+link (build the image without hard-link aliases of it) and no other writable
+mount may reach it. Put the build context there too, read-only:
 
 ```sh
 docker run --rm \

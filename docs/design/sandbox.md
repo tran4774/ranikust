@@ -52,10 +52,11 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    type `fuse.fuse-overlayfs`; `verdict`), a file with other hard links is
    `Linked`, and one whose path in its file system lies under the root of
    another writable mount of the same `major:minor` in
-   `/proc/self/mountinfo` is `Exposed`
-   (`reached_writable`, by path components, nothing opened); a table that
-   cannot be parsed or does not place the file, or a file with no link
-   left, is `Unplaced`, and a table that cannot be read `Unknown`. The copy
+   `/proc/self/mountinfo` is `Exposed` (`reached_writable`, by path
+   components, nothing opened); a table that cannot be parsed, does not
+   place the file or does not type a FUSE root (`root_type`), or a file
+   with no link left, is `Unplaced`, and a table that cannot be read
+   `Unknown`. The copy
    runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its close-on-exec
    descriptor, with the same arguments, environment and descriptors, plus
    `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file limit ranikust

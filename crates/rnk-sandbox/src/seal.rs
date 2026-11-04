@@ -106,7 +106,8 @@ pub enum BinaryMount {
     NoMountId,
     /// Cannot be told: `/proc/self/mountinfo` does not place the file (a
     /// line it cannot parse, no line for its mount, a mount root that is
-    /// not a path, a path outside that mount), or the file has no name left.
+    /// not a path, a path outside that mount) or does not type a FUSE root,
+    /// or the file has no name left.
     Unplaced,
     /// Cannot be told: the error of the call that failed.
     Unknown(Errno),
@@ -284,10 +285,7 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
         let copies = || {
             copies_up(rustix::fs::fstatfs(exe)?.f_type, || {
                 let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
-                // A table that does not parse names no fuse-overlayfs: the root is weighed.
-                Ok(rnk_rootfs::parse_mountinfo(&text)
-                    .ok()
-                    .and_then(|mounts| type_of(&mounts, st.stx_mnt_id).map(str::to_owned)))
+                Ok(root_type(&text, st.stx_mnt_id))
             })
         };
         let reach = || -> Result<Option<bool>, Errno> {
@@ -312,25 +310,29 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
 /// Whether a write to a file in the root, on a file system of type
 /// `f_type` (`statfs`), copies the file up and leaves the image's own files
 /// as they are: on overlayfs, and on FUSE when the root's type in the mount
-/// table (`own_type`, read only then) is fuse-overlayfs.
+/// table (`own_type`, called only for FUSE) is fuse-overlayfs. `None` for
+/// FUSE when the table gives the root no type.
 fn copies_up(
     f_type: rustix::fs::FsWord,
     own_type: impl FnOnce() -> Result<Option<String>, Errno>,
-) -> Result<bool, Errno> {
+) -> Result<Option<bool>, Errno> {
     Ok(match f_type {
-        OVERLAYFS => true,
+        OVERLAYFS => Some(true),
         // FUSE serves many file systems: only the mount table names this one.
-        FUSE => own_type()?.as_deref() == Some(FUSE_OVERLAYFS),
-        _ => false,
+        FUSE => own_type()?.map(|t| t == FUSE_OVERLAYFS),
+        _ => Some(false),
     })
 }
 
-/// The type `mounts` gives the mount `own`, if it lists it.
-fn type_of(mounts: &[MountInfo], own: u64) -> Option<&str> {
+/// The type the mount table `text` gives the mount `own`, if it parses and
+/// lists it.
+fn root_type(text: &[u8], own: u64) -> Option<String> {
+    // A table that does not parse types nothing: the root is unplaced.
+    let mounts = rnk_rootfs::parse_mountinfo(text).ok()?;
     mounts
-        .iter()
+        .into_iter()
         .find(|m| m.mount_id == own)
-        .map(|m| m.fs_type.as_str())
+        .map(|m| m.fs_type)
 }
 
 /// The binary's mount once its links and the mounts that reach it are
@@ -338,12 +340,13 @@ fn type_of(mounts: &[MountInfo], own: u64) -> Option<&str> {
 /// not copy up (`copies`, [`copies_up`]), a file with no link or one the
 /// mount table does not place (`reach` gives `None`) is
 /// [`BinaryMount::Unplaced`], one with other links [`BinaryMount::Linked`],
-/// one another writable mount reaches [`BinaryMount::Exposed`]. `copies`
-/// and `reach` are called only when needed; their error is returned, for
-/// [`BinaryMount::Unknown`].
+/// one another writable mount reaches [`BinaryMount::Exposed`]; so is a
+/// root the table does not type (`copies` gives `None`) `Unplaced`.
+/// `copies` and `reach` are called only when needed; their error is
+/// returned, for [`BinaryMount::Unknown`].
 fn verdict(
     mount: BinaryMount,
-    copies: impl FnOnce() -> Result<bool, Errno>,
+    copies: impl FnOnce() -> Result<Option<bool>, Errno>,
     nlink: u32,
     reach: impl FnOnce() -> Result<Option<bool>, Errno>,
 ) -> Result<BinaryMount, Errno> {
@@ -351,7 +354,10 @@ fn verdict(
         BinaryMount::ReadOnly => true,
         // On an overlay root a write copies the file up and leaves the
         // layers' own files, an image's links among them, as they are.
-        BinaryMount::Root => !copies()?,
+        BinaryMount::Root => match copies()? {
+            Some(up) => !up,
+            None => return Ok(BinaryMount::Unplaced),
+        },
         BinaryMount::Writable
         | BinaryMount::Exposed
         | BinaryMount::Linked
@@ -394,7 +400,7 @@ fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool>
             // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
             && m.device == mine.device
             && !m.read_only
-            // Binds of other single files pass: RUN keeps only Docker's defaults (ADR-0078).
+            // Other single-file binds pass: RUN keeps Docker's default capabilities (ADR-0078).
             && in_fs.starts_with(&m.fs_root)
     }))
 }

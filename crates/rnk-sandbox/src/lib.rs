@@ -42,7 +42,7 @@
 //! - Users and groups are looked up in the rootfs through `rnk-rootfs`, never
 //!   on the host.
 //! - Does not snapshot or diff the rootfs, or mount or probe overlays
-//!   (`rnk-snapshot`).
+//!   (`rnk-snapshot`); the seal only reads whether `/` is one (ADR-0101).
 
 mod caps;
 mod child;

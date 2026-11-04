@@ -778,10 +778,10 @@ fn refuse_unsafe_slash(
 /// Kaniko mode on `/` refuses ranikust's binary on a writable mount other
 /// than `/`'s, a bind mount or a volume, or reachable through one (ADR-0101):
 /// a `RUN`, root on `/`, could alter it, and the build no longer runs it. A
-/// binary in the container's own root (on a root that is not an overlay,
-/// overlayfs or fuse-overlayfs, with one link and no other writable mount
-/// reaching it), or on a read-only mount no writable mount reaches,
-/// builds; one whose mount is not known is refused.
+/// binary in the container's own root builds on an overlay root (overlayfs
+/// or fuse-overlayfs), elsewhere with one link and no other writable mount
+/// reaching it; so does one on a read-only mount no writable mount
+/// reaches; one whose mount is not known is refused.
 fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), Failure> {
     match binary {
         Some(BinaryMount::Root | BinaryMount::ReadOnly) => Ok(()),
@@ -807,10 +807,10 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              which a writable mount may reach, would let RUN alter that file"
         ))
         .with_guidance(
-            "give the binary a single link: mount a single-link copy of it read-only, or build \
-             the image without hard-link aliases of it (cp makes a copy with one link; cargo's \
-             release binaries, such as target/release/ranikust, are hard links of their copies \
-             in deps/) (ADR-0101)",
+            "give the binary a single link: mount a single-link copy of it read-only, or, in the \
+             container's root, leave it no hard-link alias (cp makes a copy with one link; \
+             cargo's release binaries, such as target/release/ranikust, are hard links of their \
+             copies in deps/) (ADR-0101)",
         )),
         Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
@@ -1296,7 +1296,7 @@ mod tests {
             linked.code == 1
                 && linked.message.contains("other hard links")
                 && linked.guidance.contains("single-link copy")
-                && linked.guidance.contains("hard-link aliases")
+                && linked.guidance.contains("hard-link alias")
                 && linked.guidance.contains("read-only"),
             "{}: {}",
             linked.message,

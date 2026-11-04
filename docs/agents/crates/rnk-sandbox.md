@@ -41,7 +41,8 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 
 - Look up users on the host or parse `/etc/passwd` itself (`rnk-rootfs`);
-  snapshot, diff or mount stage roots or probe overlays (`rnk-snapshot`);
+  snapshot, diff or mount stage roots or probe overlays (`rnk-snapshot`;
+  the seal only reads whether `/` is one, ADR-0101);
   pick the mode (`ranikust`).
 - Use a bare `chroot` where mounting is possible; `unshare` once threads
   exist; clone a `RUN` anywhere but on the spawner thread.
