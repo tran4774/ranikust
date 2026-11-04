@@ -107,7 +107,8 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   malformed; a file that is not a regular file or is over 1 MiB.
 - The child installs it after every mount and before the capability drop,
   without `no_new_privs`: the child still holds `CAP_SYS_ADMIN`, and a setuid
-  binary of the `RUN` keeps working.
+  binary of the `RUN` keeps working. It joins the `RUN`'s new session keyring
+  first, since the profile refuses `keyctl` (runc's order; step 6).
 - A `Direct` `RUN` gets none: in kaniko mode on `/` the container's own
   profile applies, and `--seccomp` is refused (exit 2).
 
@@ -234,7 +235,9 @@ The steps, in order:
       (see [Variants](#variants-by-environment)).
 4. `sethostname` to the fixed `ranikust`, whatever the environment (so a `RUN`
    that records its host name gives the same bytes on every host); a seccomp
-   refusal is ignored.
+   refusal is ignored. Then the full sandbox's child joins the `RUN`'s new
+   session keyring (step 6) and installs the seccomp profile and ADR-0033's
+   filter ([above](#per-run-sequence)).
 5. **Drop capabilities**, for **every** `USER`: reduce the **bounding** set to
    Docker's 14 default capabilities, clear the ambient set, keep the defaults
    in the effective and permitted sets and leave the inheritable set empty, as
@@ -267,10 +270,13 @@ The steps, in order:
    - `Direct` has no init: its child runs steps 6 to 8 itself.
 6. `setsid`: no controlling terminal, so a `RUN` cannot read the operator's
    keys or push input into the operator's shell (`TIOCSTI`); stdin is
-   `/dev/null` unless the caller says otherwise, as under Docker. Then a new
-   anonymous session keyring, so ranikust's keys stay out of reach (root's user
-   keyring stays reachable under `--seccomp=unconfined` and in `Direct`; the
-   default profile refuses `keyctl`, `add_key` and `request_key`).
+   `/dev/null` unless the caller says otherwise, as under Docker. The command
+   runs in a new anonymous session keyring, so ranikust's keys stay out of
+   reach: in the full sandbox the child joins it before the profile (step 4),
+   which refuses `keyctl`, and the command inherits it; in `Direct` the child
+   joins it before `setsid`. Root's user keyring stays reachable under
+   `--seccomp=unconfined` and in `Direct`; the default profile refuses
+   `keyctl`, `add_key` and `request_key`.
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
    [inferred]. A numeric uid with no passwd entry gets gid 0, as in Docker. A
@@ -400,11 +406,18 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 
 ## Differences from Docker
 
-- The default profile is Docker's ([above](#per-run-sequence)), compiled for
-  the native architecture only: Docker also compiles a profile's calls for
-  i386 and x32 on x86_64 (arm on aarch64), which get `EPERM` here, so a 32-bit
-  binary does not run under it. A profile that asks for what ranikust does
-  not support is refused, never weakened. Under `--seccomp=unconfined` a `RUN` can
+- The default profile is Docker's ([above](#per-run-sequence)), compiled by
+  ranikust's own code, which differs from runc's libseccomp:
+  - Only the native architecture: Docker also compiles a profile's calls for
+    i386 and x32 on x86_64 (arm on aarch64), which get `EPERM` here, so a
+    32-bit binary does not run under it.
+  - Only the calls `libc` names: one it does not (`cachestat`, `futex_wait`,
+    `statmount`, `uretprobe`, and `fchmodat2` on aarch64) gets `ENOSYS`
+    where Docker allows it; the C libraries fall back.
+  - A profile that asks for what ranikust does not support is refused, never
+    weakened: two conditions on one argument (runc ORs them), a rule
+    without names (Docker skips it), and a field Docker's format does not
+    have (Docker ignores it). Under `--seccomp=unconfined` a `RUN` can
   open `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the host
   lets a process without `CAP_SYS_ADMIN` do so, and (as root) use root's user
   and persistent keyrings. See the accepted risks of the

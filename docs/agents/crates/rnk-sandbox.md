@@ -169,10 +169,13 @@ What a change here must keep, with where it lives:
   an unknown flag, field or name under a refusing action, two conditions on
   one argument, a rule without names, over 4096 instructions) is
   `Error::SeccompProfile`, never weakened. Syscall numbers come from `libc`
-  only (`seccomp/syscalls.rs`, generated, ADR-0009). The child installs the
-  profile, then ADR-0033's filter when it joined a held network namespace,
-  after every mount and before the capability drop, without `no_new_privs`;
-  `Direct` gets neither.
+  only (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
+  ADR-0009); a call the profile allows that `libc` does not name gets
+  `ENOSYS`, and the T0 test `calls_the_default_allows_but_libc_does_not_name_are_pinned`
+  lists them per target. The child joins the `RUN`'s new session keyring,
+  then installs the profile, then ADR-0033's filter when it joined a held
+  network namespace, after every mount and before the capability drop,
+  without `no_new_privs`; `Direct` gets neither.
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
   inheritable empty. Then `setsid`, a new session keyring (the default profile
