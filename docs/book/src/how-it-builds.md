@@ -52,6 +52,10 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
 - **In a container** the state directory must be a volume (`-v
   ranikust-state:/var/lib/ranikust`): overlay cannot use the container's own
   overlay root as an upper directory, and ranikust says so.
+- **Its own binary.** Before the first `RUN` (in this mode, and in kaniko
+  mode with a directory per stage), ranikust mounts its binary read-only
+  over itself in its own mount namespace. It refuses to build if the file it
+  runs from was deleted or replaced since it started ([ADR-0082]).
 - kaniko's `--snapshot-mode` is accepted and ignored with a warning: there is
   no filesystem walk to tune.
 
@@ -263,5 +267,6 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0065]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0065-single-snapshot-refused-for-good.md
 [ADR-0066]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
+[ADR-0082]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md

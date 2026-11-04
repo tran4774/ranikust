@@ -211,6 +211,10 @@ Built today (`crates/ranikust/src/setup.rs`), until rootless mode exists:
   (`sudo` or a `--privileged` container for a process that is not root).
   A host-side failure such as an unwritable state directory is reported as it
   is.
+- A full sandbox that cannot bind ranikust's binary read-only over itself
+  ([ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md))
+  is refused with the way out (`OWN_BINARY`): run it from a file that stays
+  at its path, or from a read-only mount.
 
 Inside a plain `chroot`, `/` is not a mount root: the build namespace cannot
 make it a slave mount, and `MS_MOVE` would let `..` climb out of a stage root

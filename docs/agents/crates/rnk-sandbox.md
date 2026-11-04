@@ -54,7 +54,7 @@ pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
-    pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // after enter_build_namespace, binds the binary read-only over itself first (ADR-0082); replays journals; Full on any root, Direct on / only (ADR-0060)
+    pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // after enter_build_namespace, binds the binary read-only over itself first (ADR-0082, Error::OwnBinary); replays journals; Full on any root, Direct on / only (ADR-0060)
     pub fn start_direct() -> Result<Self>;                   // kaniko mode on / (ADR-0051): Direct on / only; no directory or journal; the process becomes a child subreaper
     #[cfg(test)] pub(crate) fn start_with_root(..) -> Result<Self>; // the Direct chroot off /, test-only (ADR-0060)
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
@@ -73,7 +73,7 @@ pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
-pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), .. }
+pub enum Error { Setup { step: Step, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), OwnBinary { path, .. }, .. }
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve: no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
@@ -170,14 +170,13 @@ What a change here must keep, with where it lives:
   refused (`ELOOP`). Not covered: a `#!/proc/self/exe` line or a symlink
   swapped after the check run ranikust's binary in the sandbox, which refuses
   its arguments (threat model section 6).
-- **Own binary** (ADR-0082, `setup::bind_own_binary`): once the build
-  namespace is entered, `Sandbox::start` binds the running binary read-only
-  over itself there, by descriptor, and checks by path (read from
-  `/proc/self/exe` before the `unshare`) that it names the same file on a
-  read-only mount; a failure refuses the full sandbox. A
-  process that never entered the namespace (tests, `Direct` on `/`) binds
-  nothing. `/proc/<pid>/exe` of ranikust and its clones still names the file
-  on the mount ranikust was executed from.
+- **Own binary** (ADR-0082, `setup::bind_own_binary`): in a process that
+  entered the build namespace, `Sandbox::start` binds the running binary
+  read-only over itself there and checks it by path; a failure refuses the
+  full sandbox (`Error::OwnBinary`). `Sandbox::start_direct`, and a process
+  that never entered the namespace (tests), bind nothing. `/proc/<pid>/exe`
+  is unchanged. Procedure:
+  [design](../../design/sandbox.md#process-set-up-once-per-build).
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.

@@ -33,15 +33,17 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    ranikust's own binary read-only over itself** in that namespace, before
    any `RUN` is cloned from it
    ([ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)):
-   the file `/proc/self/exe` names, looked up again without symlinks by the
-   path it gave before step 1's `unshare` (after it, a file a container
-   runtime bound in reads as `/`) and checked to be the same file, bound by
-   descriptor and remounted read-only, then checked again by path. An open
-   for writing through that path then fails with `EROFS` whatever the kernel
-   does about a running binary; a failure refuses the build. It changes what
-   the path names, not what `/proc/<pid>/exe` names
-   ([per-`RUN` step 8](#per-run-sequence)). `Direct` on `/` never enters the
-   namespace and binds nothing.
+   the file `/proc/self/exe` names, looked up without symlinks by the path
+   it gave before step 1's `unshare` (once no process is left in the first
+   namespace, a file a container runtime bound in may read as `/`), checked
+   to be the same file (device and inode), bound by descriptor (`open_tree`,
+   or `mount(2)` where it is refused) and remounted read-only, then checked
+   again by path. Where that path is on a read-only mount already, nothing
+   is made. A failure refuses the build (`Error::OwnBinary`, with
+   guidance). The bind changes what the path names in ranikust's namespace,
+   which no `RUN` reaches (each enters its own root), not what
+   `/proc/<pid>/exe` names ([per-`RUN` step 8](#per-run-sequence)).
+   `Sandbox::start_direct` binds nothing, whether or not step 1 ran.
 3. Start one **spawner thread** that lives for the whole build. Every `RUN`
    child is cloned from it, never from tokio's `spawn_blocking`:
    `PR_SET_PDEATHSIG` fires when the parent *thread* exits, and blocking-pool

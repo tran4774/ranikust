@@ -126,7 +126,8 @@ Each step before the next; design in
    (marker, start-up clean-up) → `rnk_sandbox::probe` in
    `<state-dir>/sandbox` → `rnk_snapshot::probe` in
    `builds/<id>/overlay-probe` → outcome → `Sandbox::start` (the binary
-   bound read-only over itself, ADR-0082; journal replay, spawner thread).
+   bound read-only over itself, ADR-0082, or refused with `OWN_BINARY`;
+   journal replay, spawner thread).
 6. **Kaniko mode** (`kaniko` in `main.rs`, then `setup::set_up_kaniko`,
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
