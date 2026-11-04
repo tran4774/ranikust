@@ -49,8 +49,9 @@ pub struct MountInfoError {
 ///
 /// # Errors
 ///
-/// [`MountInfoError`] for a line that does not have this shape: a caller
-/// that missed a mount could guess wrong, so nothing is guessed.
+/// [`MountInfoError`] for a line that does not have this shape, or whose
+/// file system's options do not start with `ro` or `rw`: a caller that
+/// missed a mount could guess wrong, so nothing is guessed.
 pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>, MountInfoError> {
     text.split(|b| *b == b'\n')
         .enumerate()
@@ -76,16 +77,15 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
     fields.by_ref().find(|f| *f == b"-")?;
     let fs_type = String::from_utf8_lossy(&unescape(fields.next()?)?).into_owned();
     let _source = fields.next()?;
-    // Fields after this one are an option value's spill past a space.
     let super_options = fields.next()?;
-    // The kernel writes `ro` or `rw` first in both: anything else means a
-    // field shifted by a space, and the line is not guessed at.
-    let ok = |opts: &[u8]| matches!(first_option(opts), b"ro" | b"rw");
+    // Linux writes `ro` or `rw` first: anything else is a source shifted by
+    // a space (one that lands on `ro` or `rw` goes unseen).
+    let fs_rw = matches!(first_option(super_options), Some(b"ro" | b"rw"));
     // `fs_root` is not always a path (`mnt:[4026533352]` for nsfs).
-    if !mount_point.starts_with(b"/") || !ok(options) || !ok(super_options) {
+    if !mount_point.starts_with(b"/") || !fs_rw {
         return None;
     }
-    let ro = |opts: &[u8]| first_option(opts) == b"ro";
+    let ro = |opts: &[u8]| first_option(opts) == Some(b"ro".as_slice());
     Some(MountInfo {
         mount_id,
         parent_id,
@@ -97,8 +97,8 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
     })
 }
 
-fn first_option(opts: &[u8]) -> &[u8] {
-    opts.split(|b| *b == b',').next().unwrap_or_default()
+fn first_option(opts: &[u8]) -> Option<&[u8]> {
+    opts.split(|b| *b == b',').next()
 }
 
 fn number(field: &[u8]) -> Option<u64> {
@@ -150,17 +150,20 @@ mod tests {
     }
 
     #[test]
-    fn a_line_without_its_filesystems_options_is_refused() {
+    fn a_line_with_missing_or_shifted_options_is_refused() {
         for bad in [
             "1 0 8:1 / / rw - ext4 /dev/sda1",
             "1 0 8:1 / / rw - ext4",
             // A source with a space: the options read are not options.
             "1 0 8:1 / / rw - ext4 /dev/my disk rw",
-            "1 0 8:1 / / relatime - ext4 /dev/sda1 rw",
         ] {
             let e = parse_mountinfo(bad.as_bytes()).unwrap_err();
             assert_eq!(e.line, 1, "{bad:?}");
         }
+        // A mount's own options that do not start with `ro` or `rw` are
+        // only read for `ro`.
+        let odd = parse_mountinfo(b"1 0 8:1 / / ,noatime - ext4 /dev/sda1 rw\n").unwrap();
+        assert!(!odd[0].read_only);
     }
 
     /// An option value printed with a space spills into more fields; only

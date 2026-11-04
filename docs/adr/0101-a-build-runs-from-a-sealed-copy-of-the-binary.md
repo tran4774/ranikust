@@ -263,11 +263,10 @@ The decision:
   `statfs` magic); the binary's `a_build_runs_from_a_sealed_copy_made_once`
   (a memfd, once; the hook's ways; a marker set from outside only warns);
   the VM smoke and quick suites' `tests/vm/guest/sealed-exe.py`: in
-  overlay mode and in kaniko
-  mode per stage ranikust and its init run one sealed memfd, and with the
-  memfd skipped one `O_TMPFILE` copy, that root cannot open for writing; a
-  kaniko-mode build on a container's `/` runs from a sealed memfd
-  ([testing](../testing.md)).
+  overlay mode and in kaniko mode per stage ranikust and its init run one
+  sealed memfd, and with the memfd skipped one `O_TMPFILE` copy, that root
+  cannot open for writing; a kaniko-mode build on a container's `/` runs
+  from a sealed memfd ([testing](../testing.md)).
 - An emulator [measured] (at the commit before `execveat`; the VM, Linux
   6.8): qemu-user 10.2.1 registered in binfmt_misc without `O` (flags `F`
   or `PF`) ran the memfd copy, could not open `/proc/self/fd/<n>` once the
@@ -310,7 +309,7 @@ The decision:
   its mount and a root that is not a path, unplaced), `rnk-rootfs`'s
   `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
   `a_spilled_option_is_kept_out_of_read_only` and
-  `a_line_without_its_filesystems_options_is_refused`, and the binary's
+  `a_line_with_missing_or_shifted_options_is_refused`, and the binary's
   `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`; the VM's
   kaniko quick suite, `binary_mounts_on_slash`: in a default Docker
   container a file or a directory bound read-write is refused with the

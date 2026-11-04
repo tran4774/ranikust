@@ -804,13 +804,14 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              which a writable mount may reach, would let RUN alter that file"
         ))
         .with_guidance(
-            "mount a single-link copy of the binary read-only (cp makes one; cargo's \
-             target/release/ranikust is a hard link of its copy in deps/) (ADR-0101)",
+            "mount a single-link copy of the binary read-only (cp makes one; cargo's release \
+             binaries, such as target/release/ranikust, are hard links of their copies in deps/) \
+             (ADR-0101)",
         )),
         Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
-             (/proc/self/mountinfo does not place it, or the file was removed after the start); \
-             kaniko mode on / refuses to build without knowing"
+             (/proc/self/mountinfo cannot be parsed or does not place it, or the file was removed \
+             after the start); kaniko mode on / refuses to build without knowing"
         ))
         .with_guidance(
             "run the binary from a file that stays in place, or build it into the image, where \
