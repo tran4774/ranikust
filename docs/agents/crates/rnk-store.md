@@ -1,6 +1,6 @@
 # rnk-store
 
-> **Status:** in progress · **Phase:** 1-2 (`prune`: 5) ·
+> **Status:** in progress · **Phase:** 1-2 (`prune`: 5; a minimal `prune --all`: 3) ·
 > **Depends on:** `rnk-rootfs` (deletion, every path), `rnk-oci` (`Digest`);
 > `sha2` (cache ids) ·
 > **Used by:** `rnk-snapshot`, `rnk-builder`, `ranikust` (`prune`),
@@ -23,8 +23,8 @@ extract the same digest at once.
 - Per-digest `flock` locks; publication of a filled temporary entry by atomic
   `rename`.
 - Start-up clean-up of `tmp/` leftovers and of `builds/<id>` whose build is
-  gone; `prune` by total size and age (not built). `ranikust prune` only
-  calls it.
+  gone; `prune` by total size and age (Phase 5) and a minimal `prune --all`
+  (Phase 3, ADR-0105), neither built. `ranikust prune` only calls it.
 - `BuildPaths`, the paths handed down to every crate.
 
 ## Must not
@@ -67,7 +67,7 @@ impl Store {
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
-    // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
+    // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032); Phase 3 adds a minimal `prune --all` (ADR-0105)
 }
 pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked: wait for EX; private: new dir
 pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new cache's; set-id bits dropped
@@ -131,8 +131,9 @@ Design: [locks](../../design/cache-and-store.md#locks),
   makes the marker this build's, closes the files, empties the state directory
   through descriptors, removes the marker only if nothing is left and the
   build was clean, and unlocks last (`Error::NotEmptied` fails the build).
-- `prune` takes the same locks as a build and never removes an entry a
-  running build uses [inferred: in-use tracking is not designed].
+- `prune`, in both forms (a minimal `--all` in Phase 3, the full one in Phase 5),
+  opens the store as a build does, takes the same locks and never removes an
+  entry a running build uses [inferred: in-use tracking is not designed].
 - In kaniko mode on `/` the state directory is on the ignore list: nothing
   walks, snapshots or deletes it as part of a root. Every descriptor is
   `O_CLOEXEC`; none reaches `RUN` (T7).
@@ -140,8 +141,8 @@ Design: [locks](../../design/cache-and-store.md#locks),
 ## Refs
 
 - **Design:** [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout), [`#locks`](../../design/cache-and-store.md#locks), [`#atomic-publication`](../../design/cache-and-store.md#atomic-publication), [`#prune`](../../design/cache-and-store.md#prune), [`#ownership`](../../design/cache-and-store.md#ownership), [`#failure-handling`](../../design/cache-and-store.md#failure-handling); [`design/overlay-snapshot.md#state-directory-layout`](../../design/overlay-snapshot.md#state-directory-layout); [threat model T7, T13, T14](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store)
-- **Open:** [#1](https://github.com/tran4774/ranikust/issues/1) (which digest names an extracted layer, where locks live; interim: layers named by the digest the caller gives, `rnk-snapshot` uses the chain ID), [#2](https://github.com/tran4774/ranikust/issues/2) (proving the lock protocol under crashes and races), [#5](https://github.com/tran4774/ranikust/issues/5) (read-only layer roots without root), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds)
+- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (planned, Phase 3: in rootless mode every operation on extracted layers runs inside the build's user namespace), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (planned, Phase 3: a minimal `prune --all`, refused when root runs it), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: in rootless mode and under `--userns` extracted layers are keyed by their id map in the same state directory)
+- **Open:** [#1](https://github.com/tran4774/ranikust/issues/1) (which digest names an extracted layer, where locks live; it must include the id map of a rootless or `--userns` build, ADR-0104; interim: layers named by the digest the caller gives, `rnk-snapshot` uses the chain ID), [#2](https://github.com/tran4774/ranikust/issues/2) (proving the lock protocol under crashes and races), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds)
 - **Evidence:** [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) §5 (parallel extraction 0.37 s against 0.88 s), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) finding 4 (a state directory in the walked root leaks), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) finding 9 (a hardlink farm corrupts the store)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/config/init.go:41` (`KanikoDir`), `:49-81` (its per-purpose directories); `pkg/util/fs_util.go:72-89` (the ignore list starts with `KanikoDir`). kaniko keeps no store between builds and takes no locks.
 - **External:** <https://man7.org/linux/man-pages/man2/flock.2.html>, <https://man7.org/linux/man-pages/man2/rename.2.html>
@@ -163,7 +164,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).
-- To do: `prune` by size and age (Phase 5); two builds as real root sharing
+- To do: `prune` by size and age (Phase 5) and a minimal `prune --all` (Phase 3,
+  ADR-0105); two builds as real root sharing
   one store, with a layer extracted through `rnk-rootfs::extract` (device
   nodes, foreign owners).
 

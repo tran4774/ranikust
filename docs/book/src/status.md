@@ -21,7 +21,7 @@ The work is planned in phases, without dates. The
 
 | Missing | Phase |
 |---|---|
-| Builds as a regular user (rootless overlay mode), `--seccomp`, `--userns` | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
+| Builds as a regular user (rootless overlay mode), `--seccomp`, `--userns`, a minimal `prune --all` for rootless state directories | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
 | The layer cache (`--cache`) | 4 |
 | `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack=true`; `COPY` and `ADD` with `--link` or `--exclude`; `COPY --parents`; `RUN --mount=type=bind`, `tmpfs`, `ssh` and `type=cache,from=` (on a container's `/`, whether and how bind, tmpfs and `from=` mounts work is open: [#24](https://github.com/tran4774/ranikust/issues/24)); `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; credential helpers; the `prune` subcommand | 5 |
 | kaniko's 200 integration Dockerfiles in every mode, fuzzing, the host-safety test suite, packaging | 6 |

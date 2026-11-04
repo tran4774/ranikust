@@ -53,10 +53,10 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 cloned with `CLONE_NEWUSER`: a `RUN` stays in the user namespace ranikust runs
 in, with the uid and gid of its `USER` as the image gives them. The only user
 namespace ranikust creates is the helper's for `--allow network.none-userns`
-(below). A user namespace for `RUN` (`--userns`, and rootless mode, which would
-add `CLONE_NEWUSER` when ranikust lacks `CAP_SYS_ADMIN`) is planned for Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)); the parts that belong
-to it are marked *planned*.
+(below). User namespaces for rootless mode and `--userns` are planned for Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)), see
+[Hardening planned for Phase 3](#hardening-planned-for-phase-3); the parts that
+belong to them are marked *planned*.
 
 **`--network=none`** needs `lo` up, which needs `CAP_NET_ADMIN` over the new
 network namespace. The first such `RUN` probes once
@@ -105,9 +105,11 @@ The steps, in order:
      `fchmod` or `fchown`; the read-only bind prevents it (`EROFS`). `Direct`
      gets the host's `/dev/null` from the parent, reached without symlinks and
      checked to be the null device.
-2. **User namespace** (*planned, Phase 3; no `RUN` runs this step today*):
-   map the full id range available and allow `setgroups`; otherwise `USER
-   _apt` (used by apt-get) fails with `setgroups: EPERM`.
+2. **User namespace** (*planned, Phase 3; no `RUN` runs this step today*): the
+   command's user namespace leaves the init's uid out
+   ([below](#hardening-planned-for-phase-3)) and maps the full id range
+   available, allowing `setgroups`; otherwise `USER _apt` (used by apt-get)
+   fails with `setgroups: EPERM`.
 3. **Mounts**, in this order:
    1. Bind the root onto itself, recursively (`pivot_root` requires it), and
       remount the bind `nodev`: Docker blocks device nodes with its device
@@ -236,7 +238,8 @@ The steps, in order:
    keys or push input into the operator's shell (`TIOCSTI`); stdin is
    `/dev/null` unless the caller says otherwise, as under Docker. Then a new
    anonymous session keyring, so ranikust's keys stay out of reach (root's user
-   keyring stays reachable until `--seccomp`).
+   keyring stays reachable until a seccomp profile applies, planned for Phase 3,
+   [below](#hardening-planned-for-phase-3)).
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
    [inferred]. A numeric uid with no passwd entry gets gid 0, as in Docker. A
@@ -366,17 +369,17 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 
 ## Differences from Docker
 
-- A default `RUN` has no seccomp filter until `--seccomp` (Phase 3,
-  [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)); the one
-  filter that exists is the `--network=none` one of ADR-0033. A default `RUN`
-  here can open `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the
-  host lets a process without `CAP_SYS_ADMIN` do so, and (as root) use root's
-  user and persistent keyrings. The only evidence for what a Docker-style
-  profile refuses is the moby/profiles default profile as BuildKit `cd8ee24`
-  vendors it (`vendor/github.com/moby/profiles/seccomp/default_linux.go`)
-  **[external]**: it leaves out `AF_VSOCK` and `AF_ALG`, in a recent change,
-  and allows a new user namespace only with `CAP_SYS_ADMIN`. See the accepted
-  risks of the [threat model](../security/threat-model.md#6-accepted-risks).
+- A default `RUN` has no seccomp filter today; a default profile is planned for
+  Phase 3 ([below](#hardening-planned-for-phase-3)). The one filter that exists
+  is the `--network=none` one of ADR-0033. A default `RUN` here can open
+  `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the host lets a
+  process without `CAP_SYS_ADMIN` do so, and (as root) use root's user and
+  persistent keyrings. The only evidence for what a Docker-style profile
+  refuses is the moby/profiles default profile as BuildKit `cd8ee24` vendors it
+  (`vendor/github.com/moby/profiles/seccomp/default_linux.go`) **[external]**:
+  it leaves out `AF_VSOCK` and `AF_ALG`, in a recent change, and allows a new
+  user namespace only with `CAP_SYS_ADMIN`. See the accepted risks of the
+  [threat model](../security/threat-model.md#6-accepted-risks).
 - A `RUN` gets stdout and stderr as pipes of its own, owned by its user and
   copied by a thread to ranikust's streams, never ranikust's own descriptors:
   runc instead gives the container's own streams to the container's user.
@@ -390,15 +393,31 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 - A `RUN` gets no cgroup limits, so a fork bomb is bounded only by the
   environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)).
 
-## Optional hardening
+## Hardening planned for Phase 3
 
-Planned for Phase 3 (ADR-0003); neither flag exists yet.
+Neither exists yet (ADR-0003).
 
-- `--seccomp=default|unconfined|<file>`: a seccomp filter for `RUN`; profiles
-  are generated per architecture.
+- A default seccomp profile, and `--seccomp=default|unconfined|<file>` to change
+  it; profiles are generated per architecture. Decided
+  ([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)):
+  the default profile applies without the flag wherever the full sandbox runs,
+  `unconfined` turns it off, and in kaniko mode on `/` the flag is refused (the
+  container's own profile applies).
 - `--userns`: the build runs in a user namespace, so uid 0 inside maps to an
   unprivileged uid on the host. Every parent directory of the state directory
-  must be traversable by the mapped uid.
+  must be traversable by the mapped uid. Decided
+  ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)):
+  the whole build runs in the namespace, as rootless mode does
+  ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)),
+  with a range for root read from a dedicated `ranikust` entry of `/etc/subuid`
+  and `/etc/subgid` (the build is refused before anything is written where it is
+  missing) and extracted layers keyed by their id map; an image with an owner
+  outside that range is refused
+  ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md));
+  a `RUN`'s command runs where the init's uid is unmapped, in rootless mode too
+  ([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
+  (b)). How (a namespace nested per `RUN`, or a map without the init's uid) is
+  settled with [#83](https://github.com/tran4774/ranikust/issues/83).
 
 ## Failure handling
 
@@ -412,7 +431,18 @@ Planned for Phase 3 (ADR-0003); neither flag exists yet.
 
 ## Open questions
 
-- [Q-032](https://github.com/tran4774/ranikust/issues/10) What remains to verify in the RUN sandbox?
+None. What Q-032 asked to verify is tracked as tasks: `--seccomp`
+([#82](https://github.com/tran4774/ranikust/issues/82),
+[ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md))
+and `--userns` ([#83](https://github.com/tran4774/ranikust/issues/83),
+[ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md))
+in Phase 3; the bind targets against changes during set-up
+([#88](https://github.com/tran4774/ranikust/issues/88)) and the host-safety
+attack suite across modes ([#89](https://github.com/tran4774/ranikust/issues/89))
+in Phase 6. `--network=none` was verified end to end at
+[Phase 1's acceptance](../agents/phase-1.md#acceptance-criteria); its rootless
+form is in [#78](https://github.com/tran4774/ranikust/issues/78) and
+[#79](https://github.com/tran4774/ranikust/issues/79).
 
 ## References
 

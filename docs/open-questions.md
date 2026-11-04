@@ -53,7 +53,7 @@ Moved to [#4](https://github.com/tran4774/ranikust/issues/4) (ADR-0088).
 
 ### Q-152: How are read-only layer roots published without root?
 
-Moved to [#5](https://github.com/tran4774/ranikust/issues/5) (ADR-0088).
+Moved to [#5](https://github.com/tran4774/ranikust/issues/5) (ADR-0088), answered by [ADR-0099](adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md).
 
 ### Q-027: Is the ContextSource trait sync or async?
 
@@ -73,15 +73,15 @@ Moved to [#9](https://github.com/tran4774/ranikust/issues/9) (ADR-0088).
 
 ### Q-032: What remains to verify in the RUN sandbox?
 
-Moved to [#10](https://github.com/tran4774/ranikust/issues/10) (ADR-0088).
+Moved to [#10](https://github.com/tran4774/ranikust/issues/10) (ADR-0088), answered by splitting it into the task issues [#82](https://github.com/tran4774/ranikust/issues/82), [#83](https://github.com/tran4774/ranikust/issues/83), [#88](https://github.com/tran4774/ranikust/issues/88) and [#89](https://github.com/tran4774/ranikust/issues/89).
 
 ### Q-039: Which environments must the probe be tested in?
 
-Moved to [#11](https://github.com/tran4774/ranikust/issues/11) (ADR-0088).
+Moved to [#11](https://github.com/tran4774/ranikust/issues/11) (ADR-0088), answered by [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md).
 
 ### Q-040: What happens to a rootless user without subuid ranges?
 
-Moved to [#12](https://github.com/tran4774/ranikust/issues/12) (ADR-0088).
+Moved to [#12](https://github.com/tran4774/ranikust/issues/12) (ADR-0088), answered by [ADR-0098](adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md).
 
 ### Q-041: What exactly goes into a cache key and its tag?
 
