@@ -100,7 +100,10 @@ Raised while planning Phase 3
 [ADR-0054](0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md),
 which stays `accepted` with its body unchanged; related:
 [ADR-0050](0050-ranikust-picks-the-build-root-no-workdir-flag.md) (kaniko mode
-on `/` only in a container).
+on `/` only in a container),
+[ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)
+(in these namespaces an image owner outside the container's id map is refused
+before the build).
 
 Follow-ups, with task 8 of #41
 ([#79](https://github.com/tran4774/ranikust/issues/79)): the routing and the

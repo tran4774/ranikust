@@ -93,11 +93,11 @@ comes from a dedicated `ranikust` entry, refused where it is missing, option
   the init's uid (task 13, #34). Nothing is built by this ADR.
 - **One user-namespace path** for rootless mode and `--userns`: no kernel floor
   beyond rootless mode's.
-- **Extracted layers are keyed by their id map**, in the same state directory:
-  the map's digest is part of the layer's key, so a layer extracted with real
-  ids is never used under a map. It is one store, one lock protocol and one
-  prune, with one extracted copy per distinct map; it also covers a rootless
-  user whose ranges change. How [#1](https://github.com/tran4774/ranikust/issues/1)
+- **Extracted layers, in rootless mode and under `--userns`, are keyed by their
+  id map**, in the same state directory: the map's digest is part of the
+  layer's key, so a layer extracted with real ids is never used under a map. It
+  is one store, one lock protocol and one prune, with one extracted copy per
+  distinct map; it also covers a rootless user whose ranges change. How [#1](https://github.com/tran4774/ranikust/issues/1)
   (Q-015, still open) names an extracted layer must include the map.
 - **The init's uid stays unmapped in rootless mode too**, not only under
   `--userns`, since the code is the same. ADR-0083 (b) follows from running the
@@ -110,9 +110,9 @@ comes from a dedicated `ranikust` entry, refused where it is missing, option
   in both files; the message leaves `<start>` to the admin.
 - **An owner outside the `ranikust` range is refused**, as
   [ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)
-  says for every user namespace ranikust creates: the scan of the base layers
-  and the refusal at the first failing `chown` take the range as input (the
-  maintainer, 2026-11-04: "Từ chối như ADR-0098 (khuyến nghị)").
+  says for every user namespace a build's files are written in: the scan of the
+  base layers and the refusal at the first failing `chown` take the range as
+  input (the maintainer, 2026-11-04: "Từ chối như ADR-0098 (khuyến nghị)").
 
 ### Consequences
 

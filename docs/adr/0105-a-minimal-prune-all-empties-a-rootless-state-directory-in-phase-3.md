@@ -22,7 +22,7 @@ rootless user remove a state directory holding files of subordinate ids
 (raised while planning Phase 3,
 [#41](https://github.com/tran4774/ranikust/issues/41))? And what does the
 subcommand do when root runs it, where the state directory is the shared
-`/var/lib/ranikust` (or `--state-dir`) (#93)?
+`/var/lib/ranikust` or `--state-dir` (#93)?
 
 ## Considered Options
 
