@@ -3272,9 +3272,10 @@ mod tests {
     /// default profile, one filter more than ranikust, which refuses
     /// `personality(ADDR_NO_RANDOMIZE)` (`setarch -R`);
     /// `--seccomp=unconfined` adds none; a profile file's own rule takes
-    /// effect in its place. The child joins its new session keyring before
-    /// the profile: a profile that refuses the join with an errno the child
-    /// does not take for "unsupported" still lets the `RUN` start.
+    /// effect in its place. Each `RUN` runs in a session keyring of its own
+    /// (T11), joined before the profile: a profile that refuses the join
+    /// with an errno the child does not take for "unsupported" still lets
+    /// the `RUN` start.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_run_gets_its_seccomp_profile() {
@@ -3300,9 +3301,31 @@ mod tests {
                      "args": [{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}]}]}"#,
             )
             .unwrap();
-            let probe = "cat /proc/self/status; \
+            // SAFETY: a plain syscall that reads no memory.
+            let ours = unsafe {
+                libc::syscall(
+                    libc::SYS_keyctl,
+                    libc::c_long::from(libc::KEYCTL_GET_KEYRING_ID),
+                    libc::c_long::from(libc::KEY_SPEC_SESSION_KEYRING),
+                    libc::c_long::from(0),
+                )
+            };
+            assert!(
+                ours > 0,
+                "the test's session keyring: {}",
+                std::io::Error::last_os_error()
+            );
+            // `keyring=-1` where the profile refuses `keyctl`.
+            let probe = format!(
+                "cat /proc/self/status; \
                  if setarch -R true; then echo personality=ok; else echo personality=refused; fi; \
-                 if uname >/dev/null; then echo uname=ok; else echo uname=refused; fi";
+                 if uname >/dev/null; then echo uname=ok; else echo uname=refused; fi; \
+                 python3 -c 'import ctypes as c; print(\"keyring=%d\" % c.CDLL(None).syscall(\
+                 c.c_long({}), c.c_long({}), c.c_long({}), c.c_long(0)))'",
+                libc::SYS_keyctl,
+                libc::KEYCTL_GET_KEYRING_ID,
+                libc::KEY_SPEC_SESSION_KEYRING,
+            );
             let mut got = Vec::new();
             for (name, profile) in [
                 ("default", Some(SeccompProfile::docker_default().unwrap())),
@@ -3312,8 +3335,10 @@ mod tests {
             ] {
                 runner.seccomp = profile;
                 let out = top.join(format!("out-{name}"));
-                let mut spec =
-                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+                let mut spec = RunSpec::new(
+                    &root,
+                    vec!["/bin/sh".into(), "-c".into(), probe.clone().into()],
+                );
                 output_to(&out, &mut spec);
                 let st = runner.run(spec, None, |job| clone_child(job, parent));
                 let text = fs::read_to_string(&out).unwrap_or_default();
@@ -3321,16 +3346,33 @@ mod tests {
                 got.push((name, st.map(|s| s.success()).ok(), text));
             }
             drop(mounts);
-            for ((name, ok, text), (filters, personality, uname)) in got.iter().zip([
-                (own + 1, "personality=refused", "uname=ok"),
-                (own, "personality=ok", "uname=ok"),
-                (own + 1, "personality=ok", "uname=refused"),
-                (own + 1, "personality=ok", "uname=ok"),
+            let mut keyrings = vec![ours];
+            for ((name, ok, text), (filters, personality, uname, keyctl)) in got.iter().zip([
+                (own + 1, "personality=refused", "uname=ok", false),
+                (own, "personality=ok", "uname=ok", true),
+                (own + 1, "personality=ok", "uname=refused", true),
+                (own + 1, "personality=ok", "uname=ok", true),
             ]) {
                 assert_eq!(*ok, Some(true), "{name}: the RUN ran: {text}");
                 assert_eq!(seccomp_filters(text), Some(filters), "{name}: {text}");
                 assert!(text.contains(personality), "{name}: {personality}: {text}");
                 assert!(text.contains(uname), "{name}: {uname}: {text}");
+                let keyring: Option<i64> = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("keyring="))
+                    .and_then(|n| n.trim().parse().ok());
+                if keyctl {
+                    let k = keyring
+                        .filter(|&k| k > 0)
+                        .unwrap_or_else(|| panic!("{name}: no keyring id: {text}"));
+                    assert!(
+                        !keyrings.contains(&k),
+                        "{name}: keyring {k} not new: {text}"
+                    );
+                    keyrings.push(k);
+                } else {
+                    assert_eq!(keyring, Some(-1), "{name}: keyctl refused: {text}");
+                }
             }
         });
     }
