@@ -75,8 +75,8 @@ impl Sandbox {
     /// cannot be created or is a symlink, a journal cannot be listed, or the
     /// thread cannot start.
     pub fn start(caps: Caps, dir: &Path) -> Result<Self> {
-        if crate::setup::in_build_namespace() {
-            crate::setup::bind_own_binary(mount_api_supported())?;
+        if let Some(binary) = crate::setup::build_namespace() {
+            crate::setup::bind_own_binary(binary, mount_api_supported())?;
         }
         Self::start_inner(Some(caps), dir, None)
     }
@@ -3498,10 +3498,13 @@ mod tests {
         };
         let exe = || rustix::fs::open("/proc/self/exe", OFlags::PATH, Mode::empty()).unwrap();
         for mount_api in [true, false] {
+            // Read before the namespace is left, as `enter_build_namespace`
+            // does.
+            let link = rustix::fs::readlink("/proc/self/exe", Vec::new()).unwrap();
             in_private_mount_namespace(move || {
                 let mode = if mount_api { "mount API" } else { "by path" };
                 let started = statx(&exe());
-                let path = fs::read_link("/proc/self/exe").unwrap();
+                let path = PathBuf::from(OsStr::from_bytes(link.as_bytes()));
                 let at = || {
                     rustix::fs::open(&path, OFlags::PATH | OFlags::NOFOLLOW, Mode::empty()).unwrap()
                 };
@@ -3515,7 +3518,7 @@ mod tests {
                     "{mode}: {path:?} is on a read-only mount: the test would prove nothing"
                 );
 
-                crate::setup::bind_own_binary(mount_api).unwrap();
+                crate::setup::bind_own_binary(Some(&link), mount_api).unwrap();
                 let bound = at();
                 let st = statx(&bound);
                 assert_eq!(file(&st), file(&started), "{mode}: {path:?}");
@@ -3532,7 +3535,7 @@ mod tests {
                 let w = rustix::fs::open(&path, OFlags::WRONLY | OFlags::TRUNC, Mode::empty());
                 assert_eq!(w.err(), Some(Errno::ROFS), "{mode}: {path:?}");
 
-                crate::setup::bind_own_binary(mount_api).unwrap();
+                crate::setup::bind_own_binary(Some(&link), mount_api).unwrap();
                 assert_eq!(
                     statx(&at()).stx_mnt_id,
                     st.stx_mnt_id,

@@ -172,8 +172,9 @@ What a change here must keep, with where it lives:
   its arguments (threat model section 6).
 - **Own binary** (ADR-0082, `setup::bind_own_binary`): once the build
   namespace is entered, `Sandbox::start` binds the running binary read-only
-  over itself there, by descriptor, and checks by path that it names the
-  same file on a read-only mount; a failure refuses the full sandbox. A
+  over itself there, by descriptor, and checks by path (read from
+  `/proc/self/exe` before the `unshare`) that it names the same file on a
+  read-only mount; a failure refuses the full sandbox. A
   process that never entered the namespace (tests, `Direct` on `/`) binds
   nothing. `/proc/<pid>/exe` of ranikust and its clones still names the file
   on the mount ranikust was executed from.

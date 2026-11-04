@@ -33,12 +33,13 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    ranikust's own binary read-only over itself** in that namespace, before
    any `RUN` is cloned from it
    ([ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)):
-   the file `/proc/self/exe` names, looked up again by its path without
-   symlinks and checked to be the same file, bound by descriptor and
-   remounted read-only, then checked again by path. An open for writing
-   through that path then fails with `EROFS` whatever the kernel does about a
-   running binary; a failure refuses the build. It changes what the path
-   names, not what `/proc/<pid>/exe` names
+   the file `/proc/self/exe` names, looked up again without symlinks by the
+   path it gave before step 1's `unshare` (after it, a file a container
+   runtime bound in reads as `/`) and checked to be the same file, bound by
+   descriptor and remounted read-only, then checked again by path. An open
+   for writing through that path then fails with `EROFS` whatever the kernel
+   does about a running binary; a failure refuses the build. It changes what
+   the path names, not what `/proc/<pid>/exe` names
    ([per-`RUN` step 8](#per-run-sequence)). `Direct` on `/` never enters the
    namespace and binds nothing.
 3. Start one **spawner thread** that lives for the whole build. Every `RUN`
