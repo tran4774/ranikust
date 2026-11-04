@@ -289,7 +289,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   plain `chroot`. Cases: `tests/smoke/cases/`; `kaniko-flags` tests the
   meaning of `--snapshot-mode` and `--ignore-path` (in overlay mode
   `--ignore-path` is refused and `--snapshot-mode` changes nothing) and, in
-  the kaniko leg (a default container), `--mode=auto` picking kaniko mode.
+  the kaniko leg (a default container), `--mode=auto` picking kaniko mode;
+  `binary-mounts` is the red team of `refuse_writable_binary` (ADR-0101),
+  a directory root included.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);

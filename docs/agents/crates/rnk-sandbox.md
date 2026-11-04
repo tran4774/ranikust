@@ -274,7 +274,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (PID 2 under `ranikust-init`, host name, capability sets `a80425fb` with
   empty inheritable and ambient, `nodev` root and `/dev`, read-only
   `/proc/sys` and `/dev/null`, masked kernel files, no terminal, only stdio
-  descriptors, no stub in the layer). Not yet: the fallbacks.
+  descriptors, no stub in the layer); `sealed-exe`: a `RUN` reaches no
+  thread of ranikust's or its init's (ADR-0101). Not yet: the fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
