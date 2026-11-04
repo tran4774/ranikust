@@ -65,10 +65,8 @@ These are documented properties, not vulnerabilities:
 - **`RUN` runs as root.** A Dockerfile you build can do whatever root can do
   inside its sandbox. Whether to build an untrusted Dockerfile is your
   decision ([ADR-0003](docs/adr/0003-dockerfile-trust-and-default-isolation.md));
-  `--network=none` tightens the default for the `RUN` (see below), and
-  Docker's default seccomp profile applies to every `RUN` in the full
-  sandbox ([ADR-0109](docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md));
-  `--userns` is planned (Phase 3) and not built.
+  `--network=none` and the default seccomp profile tighten the default for
+  the `RUN` (see below); `--userns` is planned (Phase 3) and not built.
 - **kaniko mode inside an unprivileged container has no isolation.** Where
   ranikust cannot mount or create namespaces (Docker's default profile, most
   Kubernetes pods), `RUN` commands run in the same container as ranikust,
@@ -107,6 +105,7 @@ network namespace ([threat model, section 6](docs/security/threat-model.md#6-acc
 [#25](https://github.com/tran4774/ranikust/issues/25)). Every `RUN` in the
 full sandbox runs under Docker's default seccomp profile, with no flag needed
 (`--seccomp=unconfined` turns it off; in kaniko mode on `/` the container's
-own profile applies). `--userns` is designed to tighten this further, but is
+own profile applies;
+[ADR-0109](docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)). `--userns` is designed to tighten this further, but is
 not implemented yet (Phase 3). The
 [book](docs/book/src/where-to-run.md) tracks what each environment provides.

@@ -172,17 +172,18 @@ What a change here must keep, with where it lives:
   only (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
   ADR-0009); a call the profile allows that `libc` does not name gets
   `ENOSYS`, and the T0 test `calls_the_default_allows_but_libc_does_not_name_are_pinned`
-  lists them per target. The child joins the `RUN`'s new session keyring,
-  then installs the profile, then ADR-0033's filter when it joined a held
-  network namespace, after every mount and before the capability drop,
-  without `no_new_privs`; `Direct` gets neither.
+  lists them per target. The child joins the `RUN`'s new session keyring
+  (the command, PID 2, inherits it; `Direct` joins before `setsid`), then
+  installs the profile, then ADR-0033's filter when it joined a held network
+  namespace, after every mount and before the capability drop, without
+  `no_new_privs`; `Direct` gets no filter. The default profile refuses
+  `keyctl`, `add_key` and `request_key`; root's user and persistent keyrings
+  stay reachable under `--seccomp=unconfined` and in `Direct`.
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
-  inheritable empty. Then `setsid`, a new session keyring (the default profile
-  refuses `keyctl`, `add_key` and `request_key`; root's user and persistent
-  keyrings stay reachable under `--seccomp=unconfined` and in `Direct`), `setgroups`, `setresgid`, `setresuid`; `WORKDIR` is resolved in
-  the root without magic links, entered with `fchdir`, and `getcwd` must show it
-  below the root (runc, CVE-2024-21626).
+  inheritable empty. Then `setsid`, `setgroups`, `setresgid`, `setresuid`;
+  `WORKDIR` is resolved in the root without magic links, entered with
+  `fchdir`, and `getcwd` must show it below the root (runc, CVE-2024-21626).
 - **Only stdio crosses `execve`** (T7): every other descriptor becomes
   close-on-exec (`close_range`, or the `/proc/self/fd` list before 5.11);
   umask 022, `SIGPIPE` default, empty signal mask. `PATH` is searched after
@@ -277,7 +278,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_no_run_outlives_the_thread_that_cloned_it`;
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
   delays, threat model section 6; `a_running_binary_cannot_be_opened_for_writing`;
-  `a_run_gets_its_seccomp_profile`: the default, unconfined and a file),
+  `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, and a
+  profile that refuses the keyring join; each `RUN` in a keyring of its own),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.
 - **T2, VM smoke suite** (`tests/vm/guest/smoke.sh`, `just test-vm smoke`):

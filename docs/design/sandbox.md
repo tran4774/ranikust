@@ -413,14 +413,20 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
     32-bit binary does not run under it.
   - Only the calls `libc` names: one it does not (`cachestat`, `futex_wait`,
     `statmount`, `uretprobe`, and `fchmodat2` on aarch64) gets `ENOSYS`
-    where Docker allows it; the C libraries fall back.
+    where Docker allows it. The C libraries fall back from most, with two
+    exceptions: `uretprobe`, which the kernel's return-probe trampoline
+    makes (x86_64, Linux 6.11 and later), so a uretprobe a host tool sets on
+    a `RUN`'s process can crash it where the kernel's seccomp does not let
+    that call through; and on an aarch64 glibc build (not the release),
+    `renameat` and `sync_file_range`.
   - A profile that asks for what ranikust does not support is refused, never
     weakened: two conditions on one argument (runc ORs them), a rule
     without names (Docker skips it), and a field Docker's format does not
-    have (Docker ignores it). Under `--seccomp=unconfined` a `RUN` can
-  open `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the host
-  lets a process without `CAP_SYS_ADMIN` do so, and (as root) use root's user
-  and persistent keyrings. See the accepted risks of the
+    have (Docker ignores it).
+- Under `--seccomp=unconfined` a `RUN` can open `AF_VSOCK` and `AF_ALG`
+  sockets, make a user namespace where the host lets a process without
+  `CAP_SYS_ADMIN` do so, and (as root) use root's user and persistent
+  keyrings. See the accepted risks of the
   [threat model](../security/threat-model.md#6-accepted-risks).
 - A `RUN` gets stdout and stderr as pipes of its own, owned by its user and
   copied by a thread to ranikust's streams, never ranikust's own descriptors:

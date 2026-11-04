@@ -557,8 +557,10 @@ fn a_profile_too_long_for_the_kernel_is_refused() {
 /// most are other architectures' calls, the rest (`cachestat`,
 /// `futex_wait`, `statmount`, `uretprobe`...) get `ENOSYS` where Docker
 /// allows them (sandbox.md, Differences from Docker). Pinned per target,
-/// so that a `libc` bump or a re-vendored profile shows here; aarch64 gnu
-/// is musl's list with the five names `syscalls.rs` gives musl alone.
+/// so that a `libc` bump or a re-vendored profile shows here: CI runs the
+/// x86_64 gnu and aarch64 musl lists. The two others follow `syscalls.rs`:
+/// x86_64 musl is gnu's without `io_pgetevents`, aarch64 gnu is musl's
+/// with the five names musl alone gives there.
 #[test]
 fn calls_the_default_allows_but_libc_does_not_name_are_pinned() {
     let p: Json = serde_json::from_slice(DOCKER_DEFAULT).unwrap();

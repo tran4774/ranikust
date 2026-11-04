@@ -895,8 +895,8 @@ pub(crate) fn stat_pid_and_ppid(stat: &[u8]) -> Option<(i32, i32)> {
 }
 
 /// A new session, `WORKDIR`, the `USER` ids, the death signal again, stdio,
-/// process state, then `execve`. The caller has joined a new session
-/// keyring ([`join_session_keyring`]).
+/// process state, then `execve`, in the new session keyring the caller or
+/// the init joined ([`join_session_keyring`]).
 ///
 /// `rearm` is the `Direct` child's parent check: the switch cleared the
 /// death signal, so it is armed again and the parent checked alive. The
