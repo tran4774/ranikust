@@ -40,8 +40,7 @@
 //! - Users and groups are looked up in the rootfs through `rnk-rootfs`, never
 //!   on the host.
 //! - Does not snapshot or diff the rootfs, or mount or probe overlays
-//!   (`rnk-snapshot`). One exception: the overlay that seals ranikust's own
-//!   binary, read-only and never attached anywhere (ADR-0101).
+//!   (`rnk-snapshot`).
 
 mod caps;
 mod child;

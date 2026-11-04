@@ -65,10 +65,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Hidden test hook. `panic` panics and aborts and `error` fails with exit
 /// code 1, after metrics are set up; `kernel-missing`, `kernel-blocked` and
-/// `kernel-hidden` make the kernel check fail; `seal-memfd`, `seal-tmpfile`
-/// and `seal-none` skip the ways of sealing the binary before the one named,
-/// or all of them (ADR-0101). It lets the tests run the real binary through
-/// these paths, including a release build, where `panic = "abort"`.
+/// `kernel-hidden` make the kernel check fail; `seal-tmpfile` skips the
+/// memfd way of sealing the binary and `seal-none` both ways (ADR-0101). It
+/// lets the tests run the real binary through these paths, including a
+/// release build, where `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
 /// Exit code of a usage error, as clap uses.
@@ -248,7 +248,6 @@ fn main() -> ExitCode {
 /// skip the ways before the one they name.
 fn seal_ways(fault: Option<&str>) -> &'static [SealedCopy] {
     match fault {
-        Some("seal-memfd") => &[SealedCopy::Memfd, SealedCopy::Tmpfile],
         Some("seal-tmpfile") => &[SealedCopy::Tmpfile],
         Some("seal-none") => &[],
         _ => &SealedCopy::ALL,

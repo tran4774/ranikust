@@ -306,18 +306,6 @@ pub enum Error {
     /// script can run. Refused rather than run without it (ADR-0057).
     #[error("RUN directly on / (kaniko mode, where nothing can be mounted): {0}")]
     Direct(String),
-    /// [`crate::Sandbox::start_direct`] found `RANIKUST_SEALED_COPY` names
-    /// the overlay copy of the binary, whose file a `RUN` on `/` reaches,
-    /// or names no way (ADR-0101). The copy is made only where root may
-    /// mount, which never builds on `/`: refused should the two checks ever
-    /// disagree.
-    #[error(
-        "RANIKUST_SEALED_COPY says ranikust runs from an overlay of its installed binary, \
-         or names no way, and a RUN directly on / would reach that file; the overlay is \
-         made only where root may mount, never for a build on /: unset the variable if \
-         it was set by hand, else report a bug (ADR-0101)"
-    )]
-    OverlayCopyOnSlash,
     /// The `RUN` left processes that kept appearing after every kill: a
     /// fork loop faster than the sweep (ADR-0051).
     #[error("RUN left processes that could not all be killed ({left} still alive)")]
@@ -383,7 +371,6 @@ impl Error {
                 | Self::NoLoopbackUserns { .. }
                 | Self::RunReachesState { .. }
                 | Self::Direct(_)
-                | Self::OverlayCopyOnSlash
         )
     }
 }

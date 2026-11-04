@@ -4,8 +4,9 @@
 //! something else: a `RUN` child until `execve`, a full-sandbox `RUN`'s init
 //! for good. Run from a copy no `RUN` can write, none of them hands a `RUN`
 //! a binary it could change through `/proc/<pid>/exe`, whatever the kernel
-//! does about writes to a running file. As runc since 1.2
-//! (`libcontainer/exeseal`).
+//! does about writes to a running file. The copies are runc's
+//! (`CloneBinary`, `libcontainer/dmz` in runc 1.2.0), without the overlay
+//! runc tries first.
 
 use std::convert::Infallible;
 use std::ffi::{CString, OsStr, OsString};
@@ -16,16 +17,12 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, SealFlags, StatVfsMountFlags};
+use rustix::fs::{Mode, OFlags, SealFlags};
 use rustix::io::Errno;
-use rustix::mount::{FsMountFlags, FsOpenFlags, MountAttrFlags};
 
 /// Set for the copy's run: it names the way, and the copy never makes
 /// another (no loop).
 const MARKER: &str = "RANIKUST_SEALED_COPY";
-
-/// `OVERLAYFS_SUPER_MAGIC`.
-const OVERLAYFS_MAGIC: u32 = 0x794c_7630;
 
 /// The seals of a memfd copy: no write, no change of size, no seal taken
 /// off.
@@ -37,10 +34,6 @@ const SEALS: SealFlags = SealFlags::SEAL
 /// A way to make the copy, in the order [`SealedCopy::ALL`] tries them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SealedCopy {
-    /// The installed file seen through a read-only overlay mounted nowhere:
-    /// no copy at all, where root may mount as the build will find it. It
-    /// runs the installed file's own pages.
-    Overlay,
     /// A copy in a sealed memfd: no write, no change of size. It takes the
     /// binary's size in memory.
     Memfd,
@@ -52,11 +45,10 @@ pub enum SealedCopy {
 
 impl SealedCopy {
     /// Every way, in the order they are tried.
-    pub const ALL: [Self; 3] = [Self::Overlay, Self::Memfd, Self::Tmpfile];
+    pub const ALL: [Self; 2] = [Self::Memfd, Self::Tmpfile];
 
     fn name(self) -> &'static str {
         match self {
-            Self::Overlay => "overlay",
             Self::Memfd => "memfd",
             Self::Tmpfile => "tmpfile",
         }
@@ -182,15 +174,6 @@ fn name_after_argv0() {
 /// Whether `file` is a copy made `way`.
 fn check(way: SealedCopy, file: BorrowedFd<'_>) -> io::Result<()> {
     let holds = match way {
-        // A read-only overlay alone would pass a container's `--read-only`
-        // root: the copy's mount is in no mount table.
-        SealedCopy::Overlay => {
-            let fs = rustix::fs::fstatfs(file)?;
-            let vfs = rustix::fs::fstatvfs(file)?;
-            u32::try_from(fs.f_type).ok() == Some(OVERLAYFS_MAGIC)
-                && vfs.f_flag.contains(StatVfsMountFlags::RDONLY)
-                && !attached(file)?
-        }
         SealedCopy::Memfd => rustix::fs::fcntl_get_seals(file)?.contains(SEALS),
         SealedCopy::Tmpfile => rustix::fs::fstat(file)?.st_nlink == 0,
     };
@@ -199,20 +182,6 @@ fn check(way: SealedCopy, file: BorrowedFd<'_>) -> io::Result<()> {
     } else {
         Err(io::Error::other(format!("not a sealed {way} copy")))
     }
-}
-
-/// Whether `file`'s mount is in this process's mount table.
-fn attached(file: BorrowedFd<'_>) -> io::Result<bool> {
-    let fdinfo = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))
-        .map_err(context("read the copy's fdinfo"))?;
-    let id = fdinfo
-        .lines()
-        .find_map(|l| l.strip_prefix("mnt_id:"))
-        .map(str::trim)
-        .ok_or_else(|| io::Error::other("no mnt_id in the copy's fdinfo"))?;
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
-        .map_err(context("read /proc/self/mountinfo"))?;
-    Ok(mountinfo.lines().any(|l| l.split(' ').next() == Some(id)))
 }
 
 /// How [`try_in_order`] ended.
@@ -258,223 +227,18 @@ fn try_in_order<T, E>(
 fn make_copy(way: SealedCopy) -> io::Result<OwnedFd> {
     let exe = File::open("/proc/self/exe").map_err(context("open /proc/self/exe"))?;
     match way {
-        SealedCopy::Overlay => {
-            // First: it fails at once where ranikust may not mount.
-            let fs = rustix::mount::fsopen("overlay", FsOpenFlags::FSOPEN_CLOEXEC)
-                .map_err(context("fsopen(overlay)"))?;
-            // The copy runs the installed file's pages: only where the build
-            // will find root may mount, so never in kaniko mode on `/`, where
-            // a `RUN` reaches the installed file.
-            may_mount()?;
-            overlay_copy(&fs, &exe, &temp_dir())
-        }
         SealedCopy::Memfd => memfd_copy(&exe),
         SealedCopy::Tmpfile => tmpfile_copy(&exe, &temp_dir()),
     }
 }
 
-/// Where the overlay's empty layer and the `O_TMPFILE` copy go.
+/// Where the `O_TMPFILE` copy goes.
 fn temp_dir() -> PathBuf {
     let dir = std::env::temp_dir();
     if dir.is_absolute() {
         dir
     } else {
         PathBuf::from("/tmp")
-    }
-}
-
-/// The binary through an overlay of its directory, made in the overlay
-/// context `fs`, that is never attached anywhere, read-only: no upper
-/// layer, so the kernel has no way to write it, and nothing to unmount or
-/// remount. Its second layer, which an overlay without an upper layer
-/// needs, is an empty directory made in `scratch` and removed once the
-/// overlay holds it.
-fn overlay_copy(fs: &OwnedFd, exe: &File, scratch: &Path) -> io::Result<OwnedFd> {
-    let path = std::fs::read_link("/proc/self/exe").map_err(context("readlink /proc/self/exe"))?;
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err(io::Error::other(format!(
-            "/proc/self/exe names no file in a directory: {}",
-            path.display()
-        )));
-    };
-    let dir = rustix::fs::open(
-        dir,
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(context(format!("open {}", dir.display())))?;
-    let empty = EmptyDir::make(scratch)?;
-    // Descriptors, not paths: no `:` or `,` to escape, and no name swapped
-    // in between.
-    let lower = format!(
-        "/proc/self/fd/{}:/proc/self/fd/{}",
-        dir.as_raw_fd(),
-        empty.fd.as_raw_fd()
-    );
-    rustix::mount::fsconfig_set_string(fs, "lowerdir", lower.as_str())
-        .map_err(context("fsconfig(lowerdir)"))?;
-    // Layers on different filesystems make the kernel log about `xino`.
-    rustix::mount::fsconfig_set_string(fs, "xino", "off").map_err(context("fsconfig(xino)"))?;
-    rustix::mount::fsconfig_create(fs).map_err(context("fsconfig(create)"))?;
-    drop(empty);
-    let mnt = rustix::mount::fsmount(
-        fs,
-        FsMountFlags::FSMOUNT_CLOEXEC,
-        MountAttrFlags::MOUNT_ATTR_RDONLY
-            | MountAttrFlags::MOUNT_ATTR_NODEV
-            | MountAttrFlags::MOUNT_ATTR_NOSUID,
-    )
-    .map_err(context("fsmount"))?;
-    let copy = rustix::fs::openat(
-        &mnt,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(context("open the binary in the overlay"))?;
-    same_file(exe, copy.as_fd())?;
-    check(SealedCopy::Overlay, copy.as_fd())?;
-    Ok(copy)
-}
-
-/// An empty directory, removed on drop.
-struct EmptyDir {
-    parent: OwnedFd,
-    name: String,
-    fd: OwnedFd,
-}
-
-impl EmptyDir {
-    fn make(parent: &Path) -> io::Result<Self> {
-        let parent = rustix::fs::open(
-            parent,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(context(format!("open {}", parent.display())))?;
-        for n in 0..16 {
-            let name = format!(".ranikust-seal-{}-{n}", std::process::id());
-            match rustix::fs::mkdirat(&parent, name.as_str(), Mode::RWXU) {
-                Ok(()) => {}
-                Err(Errno::EXIST) => continue,
-                Err(e) => return Err(context("mkdir the overlay's empty layer")(e)),
-            }
-            let fd = rustix::fs::openat(
-                &parent,
-                name.as_str(),
-                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            );
-            match fd {
-                Ok(fd) => return Ok(Self { parent, name, fd }),
-                Err(e) => {
-                    // Just made, so empty; a failure leaves an empty one.
-                    let _ = rustix::fs::unlinkat(&parent, name.as_str(), AtFlags::REMOVEDIR);
-                    return Err(context("open the overlay's empty layer")(e));
-                }
-            }
-        }
-        Err(io::Error::other(
-            "mkdir the overlay's empty layer: every name is taken",
-        ))
-    }
-}
-
-impl Drop for EmptyDir {
-    fn drop(&mut self) {
-        // Only an empty directory goes; a failure leaves an empty one.
-        let _ = rustix::fs::unlinkat(&self.parent, self.name.as_str(), AtFlags::REMOVEDIR);
-    }
-}
-
-/// Whether root may mount here as the build will find it
-/// ([`enter_build_namespace`](crate::enter_build_namespace)), asked in a
-/// child so that this process changes nothing.
-fn may_mount() -> io::Result<()> {
-    // Only then may the child run code that allocates.
-    let threads = crate::setup::thread_count().map_err(io::Error::other)?;
-    if threads != 1 {
-        return Err(io::Error::other(format!(
-            "not single-threaded ({threads} threads)"
-        )));
-    }
-    mount_check_in_child()
-}
-
-/// Whether [`enter_mount_namespace`](crate::setup::enter_mount_namespace)
-/// succeeds in a child, which then `_exit`s.
-fn mount_check_in_child() -> io::Result<()> {
-    // SAFETY: `may_mount` checked the process is single-threaded, so the
-    // child may allocate (the tests, with threads, use the system
-    // allocator, which is fork-safe); it ends in `_exit`, never returning
-    // from here. No death signal: a few system calls, then `_exit`.
-    let pid = match unsafe { libc::fork() } {
-        -1 => return Err(context("fork the mount check")(io::Error::last_os_error())),
-        0 => {
-            let may = std::panic::catch_unwind(|| crate::setup::enter_mount_namespace().is_ok());
-            // SAFETY: ends the child at once, running nothing of this
-            // process's on its way out.
-            unsafe { libc::_exit(if matches!(may, Ok(true)) { 0 } else { 1 }) }
-        }
-        pid => rustix::process::Pid::from_raw(pid)
-            .ok_or_else(|| io::Error::other("fork gave no process ID"))?,
-    };
-    let status = loop {
-        match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
-            Err(Errno::INTR) => {}
-            Err(e) => return Err(context("wait for the mount check")(e)),
-            Ok(Some((_, status))) => break status,
-            Ok(None) => return Err(io::Error::other("the mount check went missing")),
-        }
-    };
-    match (status.exit_status(), status.terminating_signal()) {
-        (Some(0), _) => Ok(()),
-        (Some(1), _) => Err(io::Error::other("root may not mount here")),
-        (Some(code), _) => Err(io::Error::other(format!("the mount check exited {code}"))),
-        (None, Some(signal)) => Err(io::Error::other(format!(
-            "the mount check was killed by signal {signal}"
-        ))),
-        (None, None) => Err(io::Error::other(
-            "the mount check ended with no exit status",
-        )),
-    }
-}
-
-/// Whether this process runs from an overlay copy: `Direct` on `/` must
-/// not, as a `RUN` there reaches the installed file it runs.
-pub(crate) fn runs_from_overlay() -> bool {
-    // The marker, not the file: only `execute` runs a copy, and the mount
-    // table the file's check reads changes once the build unshares.
-    names_overlay(std::env::var_os(MARKER).as_deref())
-}
-
-/// Whether a marker names the overlay; one that names no way counts.
-fn names_overlay(marker: Option<&OsStr>) -> bool {
-    marker.is_some_and(|value| {
-        value
-            .to_str()
-            .and_then(parse_marker)
-            .is_none_or(|(way, _)| way == SealedCopy::Overlay)
-    })
-}
-
-/// Whether the overlay's file is the running binary: overlay keeps a
-/// lower file's inode number without `xino`, and nothing can rewrite a
-/// running binary in place.
-fn same_file(exe: &File, copy: BorrowedFd<'_>) -> io::Result<()> {
-    let a = rustix::fs::fstat(exe)?;
-    let b = rustix::fs::fstat(copy)?;
-    let same = FileType::from_raw_mode(b.st_mode) == FileType::RegularFile
-        && a.st_ino == b.st_ino
-        && a.st_size == b.st_size
-        && a.st_mtime == b.st_mtime
-        && a.st_mtime_nsec == b.st_mtime_nsec;
-    if same {
-        Ok(())
-    } else {
-        Err(io::Error::other(
-            "the overlay's file is not the running binary",
-        ))
     }
 }
 

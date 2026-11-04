@@ -131,13 +131,9 @@ impl Sandbox {
     ///
     /// [`Error::RunReachesState`] where the container grants capabilities
     /// beyond Docker's defaults and ranikust lacks `CAP_SETPCAP` to keep
-    /// them from a `RUN`; [`Error::OverlayCopyOnSlash`] where its marker
-    /// says ranikust runs from an overlay copy of its binary (ADR-0101);
-    /// `prctl(PR_SET_CHILD_SUBREAPER)` failed, or the thread cannot start.
+    /// them from a `RUN`; `prctl(PR_SET_CHILD_SUBREAPER)` failed, or the
+    /// thread cannot start.
     pub fn start_direct() -> Result<Self> {
-        if crate::seal::runs_from_overlay() {
-            return Err(Error::OverlayCopyOnSlash);
-        }
         // Checked again for each `RUN`; here so that a container granting
         // capabilities ranikust cannot take from a `RUN` is refused before
         // the build pulls anything.

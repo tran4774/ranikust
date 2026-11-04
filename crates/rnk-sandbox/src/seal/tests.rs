@@ -1,6 +1,8 @@
 use std::io::Read;
 use std::os::unix::fs::FileExt;
 
+use rustix::fs::AtFlags;
+
 use super::*;
 
 fn exe() -> File {
@@ -35,6 +37,7 @@ fn dev_null() -> io::Result<OwnedFd> {
 /// the copy that runs is told the failures before it.
 #[test]
 fn the_ways_are_tried_in_order_until_one_runs() {
+    // No memfd (`vm.memfd_noexec=2`): the `O_TMPFILE` copy runs, told why.
     let mut made = Vec::new();
     let mut ran = Vec::new();
     let found = try_in_order(
@@ -42,16 +45,13 @@ fn the_ways_are_tried_in_order_until_one_runs() {
         |way| {
             made.push(way);
             match way {
-                SealedCopy::Overlay => Err(Errno::PERM.into()),
-                _ => dev_null(),
+                SealedCopy::Memfd => Err(Errno::PERM.into()),
+                SealedCopy::Tmpfile => dev_null(),
             }
         },
         |way, _copy, failed| {
             ran.push((way, failed.iter().map(|(w, _)| *w).collect::<Vec<_>>()));
-            match way {
-                SealedCopy::Memfd => Err(Errno::ACCESS.into()),
-                _ => Ok(marker(way, failed)),
-            }
+            Ok(marker(way, failed))
         },
         || Ok::<(), Errno>(()),
     );
@@ -59,20 +59,44 @@ fn the_ways_are_tried_in_order_until_one_runs() {
         panic!("tmpfile runs: {found:?}");
     };
     assert_eq!(made, SealedCopy::ALL);
-    assert_eq!(
-        ran,
-        [
-            (SealedCopy::Memfd, vec![SealedCopy::Overlay]),
-            (
-                SealedCopy::Tmpfile,
-                vec![SealedCopy::Overlay, SealedCopy::Memfd]
-            ),
-        ]
-    );
+    assert_eq!(ran, [(SealedCopy::Tmpfile, vec![SealedCopy::Memfd])]);
     let (way, passed_over) = parse_marker(&marker).expect("a marker");
     assert_eq!(way, SealedCopy::Tmpfile);
-    assert!(passed_over.starts_with("overlay: "), "{passed_over}");
-    assert!(passed_over.contains("; memfd: "), "{passed_over}");
+    assert!(passed_over.starts_with("memfd: "), "{passed_over}");
+
+    // A memfd the kernel refuses to run: the same.
+    let mut ran = Vec::new();
+    let found = try_in_order(
+        &SealedCopy::ALL,
+        |_| dev_null(),
+        |way, _copy, failed| {
+            ran.push((way, failed.len()));
+            match way {
+                SealedCopy::Memfd => Err(Errno::ACCESS.into()),
+                SealedCopy::Tmpfile => Ok(way),
+            }
+        },
+        || Ok::<(), Errno>(()),
+    );
+    assert!(
+        matches!(found, Search::Ran(SealedCopy::Tmpfile)),
+        "{found:?}"
+    );
+    assert_eq!(ran, [(SealedCopy::Memfd, 0), (SealedCopy::Tmpfile, 1)]);
+
+    // The memfd runs: the `O_TMPFILE` copy is never made.
+    let mut made = Vec::new();
+    let found = try_in_order(
+        &SealedCopy::ALL,
+        |way| {
+            made.push(way);
+            dev_null()
+        },
+        |way, _copy, _failed| Ok(way),
+        || Ok::<(), Errno>(()),
+    );
+    assert!(matches!(found, Search::Ran(SealedCopy::Memfd)), "{found:?}");
+    assert_eq!(made, [SealedCopy::Memfd]);
 
     // None runs: every failure, in order; none asked, none tried.
     let Search::NoneRan(failed) = try_in_order(
@@ -122,13 +146,14 @@ fn a_failed_recovery_stops_the_search() {
         matches!(stopped, Search::Stopped(Errno::PERM)),
         "{stopped:?}"
     );
-    assert_eq!(made, [SealedCopy::Overlay]);
+    assert_eq!(made, [SealedCopy::Memfd]);
 }
 
 /// ADR-0101: the copy gets this process's environment with one marker,
 /// whatever marker was inherited, so it never makes a copy of its own.
 #[test]
 fn the_copy_gets_the_environment_with_one_marker() {
+    let marker = "tmpfile; memfd: memfd_create: Invalid argument";
     let vars = [
         ("PATH", "/bin"),
         (MARKER, "memfd"),
@@ -136,47 +161,22 @@ fn the_copy_gets_the_environment_with_one_marker() {
         (MARKER, "overlay"),
     ]
     .map(|(k, v)| (OsString::from(k), OsString::from(v)));
-    let env = copy_environment(vars, "tmpfile; overlay: root may not mount here")
-        .expect("an environment");
+    let env = copy_environment(vars, marker).expect("an environment");
     let env: Vec<_> = env.iter().map(|s| s.to_str().expect("UTF-8")).collect();
     assert_eq!(
         env,
         [
             "PATH=/bin",
             "HOME=/root",
-            "RANIKUST_SEALED_COPY=tmpfile; overlay: root may not mount here",
+            "RANIKUST_SEALED_COPY=tmpfile; memfd: memfd_create: Invalid argument",
         ]
     );
     assert_eq!(
-        parse_marker("tmpfile; overlay: root may not mount here"),
-        Some((SealedCopy::Tmpfile, "overlay: root may not mount here"))
+        parse_marker(marker),
+        Some((SealedCopy::Tmpfile, "memfd: memfd_create: Invalid argument"))
     );
     assert_eq!(parse_marker("memfd"), Some((SealedCopy::Memfd, "")));
-    assert_eq!(parse_marker("bind; x"), None);
-}
-
-/// ADR-0101: the overlay is made only where the build will find root may
-/// mount, asked in a child: as a user, never (T0 runs unprivileged), and
-/// this process stays in its mount namespace. With threads running (the
-/// test harness's), no child is forked at all.
-#[test]
-fn the_overlay_is_made_only_where_root_may_mount() {
-    let threads = may_mount().expect_err("threads are running");
-    assert!(
-        threads.to_string().starts_with("not single-threaded"),
-        "{threads}"
-    );
-    // Root may hold CAP_SYS_ADMIN; the refusal shown is a user's.
-    if rustix::process::geteuid().is_root() {
-        return;
-    }
-    let before = std::fs::read_link("/proc/self/ns/mnt").expect("mount namespace");
-    let refused = mount_check_in_child().expect_err("a user may not mount");
-    assert_eq!(refused.to_string(), "root may not mount here");
-    assert_eq!(
-        std::fs::read_link("/proc/self/ns/mnt").expect("mount namespace"),
-        before
-    );
+    assert_eq!(parse_marker("overlay; x"), None);
 }
 
 /// ADR-0101: the memfd copy holds the binary's bytes and its seals refuse
@@ -231,65 +231,9 @@ fn a_tmpfile_copy_is_the_binary_with_no_name_open_read_only() {
 #[test]
 fn the_binary_as_installed_passes_for_no_copy() {
     let exe = exe();
-    for way in [SealedCopy::Overlay, SealedCopy::Memfd, SealedCopy::Tmpfile] {
+    for way in SealedCopy::ALL {
         assert!(check(way, exe.as_fd()).is_err(), "{way}");
     }
-    // The overlay check's control: the test binary's mount is attached.
-    assert!(attached(exe.as_fd()).expect("fdinfo"));
     assert_eq!(SealedCopy::from_name("memfd"), Some(SealedCopy::Memfd));
-    assert_eq!(SealedCopy::from_name("bind"), None);
-}
-
-/// ADR-0101: `Direct` on `/` is refused for a run its marker says is the
-/// overlay copy's, or that has a marker naming no way; no marker, or a
-/// memfd or `O_TMPFILE` copy's, starts.
-#[test]
-fn a_marker_naming_the_overlay_refuses_direct() {
-    for refused in ["overlay", "overlay; x", "bind", "", "memfdx"] {
-        assert!(names_overlay(Some(OsStr::new(refused))), "{refused:?}");
-    }
-    assert!(names_overlay(Some(OsStr::from_bytes(b"\xff"))));
-    for started in [
-        "memfd",
-        "tmpfile",
-        "memfd; overlay: root may not mount here",
-    ] {
-        assert!(!names_overlay(Some(OsStr::new(started))), "{started:?}");
-    }
-    assert!(!names_overlay(None));
-}
-
-/// T2 (the VM only), ADR-0101: root on a host may mount, so the overlay is
-/// made; the overlay copy is the running binary itself, read-only even for
-/// root, on a mount that is in no mount table; the overlay's empty layer
-/// is gone once it is made.
-#[test]
-#[ignore = "T2: mounts a detached overlay as real root; run in the test VM only"]
-fn an_overlay_copy_is_the_binary_read_only_and_mounted_nowhere() {
-    mount_check_in_child().expect("root may mount");
-    let scratch = tempfile::tempdir().expect("tempdir");
-    let fs = rustix::mount::fsopen("overlay", FsOpenFlags::FSOPEN_CLOEXEC).expect("fsopen");
-    let copy = overlay_copy(&fs, &exe(), scratch.path()).expect("overlay copy");
-    check(SealedCopy::Overlay, copy.as_fd()).expect("read-only overlay");
-    assert_eq!(bytes_of(copy.as_fd()), binary_bytes());
-    let path = format!("/proc/self/fd/{}", copy.as_raw_fd());
-    for flags in [OFlags::WRONLY, OFlags::RDWR] {
-        let r = rustix::fs::open(path.as_str(), flags | OFlags::CLOEXEC, Mode::empty());
-        assert_eq!(r.err(), Some(Errno::ROFS), "{flags:?}");
-    }
-    let fdinfo =
-        std::fs::read_to_string(format!("/proc/self/fdinfo/{}", copy.as_raw_fd())).expect("fdinfo");
-    let mnt_id = fdinfo
-        .lines()
-        .find_map(|l| l.strip_prefix("mnt_id:"))
-        .map(str::trim)
-        .expect("mnt_id");
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").expect("mountinfo");
-    assert!(
-        !mountinfo
-            .lines()
-            .any(|l| l.split(' ').next() == Some(mnt_id)),
-        "mount {mnt_id} is attached"
-    );
-    assert_eq!(std::fs::read_dir(scratch.path()).expect("ls").count(), 0);
+    assert_eq!(SealedCopy::from_name("overlay"), None);
 }

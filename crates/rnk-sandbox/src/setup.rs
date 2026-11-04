@@ -25,13 +25,6 @@ pub fn enter_build_namespace() -> Result<()> {
     if threads != 1 {
         return Err(Error::NotSingleThreaded { threads });
     }
-    enter_mount_namespace()
-}
-
-/// [`enter_build_namespace`] past its thread check, for the caller that
-/// checked: also the sealed copy's check, in a child, of whether root may
-/// mount (ADR-0101).
-pub(crate) fn enter_mount_namespace() -> Result<()> {
     // In a plain `chroot`, making `/` a slave mount fails with `EINVAL`
     // after the `unshare`: say why before changing anything. Only a definite
     // "no"; where the kernel does not tell, the `mount_change` below decides.
@@ -39,8 +32,7 @@ pub(crate) fn enter_mount_namespace() -> Result<()> {
         return Err(Error::InPlainChroot);
     }
     // SAFETY: `NEWNS` does not unshare the descriptor table, the only flag
-    // `unshare_unsafe` is unsafe for; the caller checked the process is
-    // single-threaded, or runs this in a forked child.
+    // `unshare_unsafe` is unsafe for; the process is single-threaded.
     match unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWNS) } {
         Ok(()) => {}
         Err(Errno::PERM) => return Err(Error::Privilege("a private mount namespace")),
@@ -159,7 +151,7 @@ fn trimmed_too_little(held: u64, inheritable: u64, bounding: u64) -> bool {
 }
 
 /// Threads of this process, from `/proc/self/status`.
-pub(crate) fn thread_count() -> Result<u64> {
+fn thread_count() -> Result<u64> {
     let status = std::fs::read_to_string("/proc/self/status")
         .map_err(|e| crate::error::io_err("read", "/proc/self/status", e))?;
     parse_threads(&status).ok_or_else(|| {

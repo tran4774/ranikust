@@ -4,24 +4,22 @@ through /proc/<pid>/exe.
 
 Usage: sealed-exe.py WAY INSTALLED PID...
 
-WAY is overlay or memfd; INSTALLED the binary's path on the host; each PID a
-ranikust process or a RUN's init. Every PID must run the same copy, not
-the installed file. The copy must be the way named: a read-only overlay
-in no mount table, or a memfd with every write and size change sealed.
-Even root may not write it through /proc/<pid>/exe: the open is refused,
-or (a memfd, on a kernel that let the open through) the seals refuse
-rewriting a byte with itself. Nothing is changed in any case.
+WAY is memfd or tmpfile; INSTALLED the binary's path on the host; each PID
+a ranikust process or a RUN's init. Every PID must run the same copy, not
+the installed file. The copy must be the way named: a memfd with every
+write and size change sealed, or an O_TMPFILE file with no link. Even root
+may not write it through /proc/<pid>/exe: the open is refused (ETXTBSY),
+or, for a memfd on a kernel that let the open through, the seals refuse
+rewriting a byte with itself. The O_TMPFILE copy has no seal: its open
+must be refused. Nothing is changed in any case.
 """
 
-import ctypes
 import errno
 import fcntl
 import os
 import sys
 
-OVERLAYFS_MAGIC = 0x794C7630
 SEALS = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
-LIBC = ctypes.CDLL(None, use_errno=True)
 
 
 def fail(message):
@@ -29,43 +27,15 @@ def fail(message):
     sys.exit(1)
 
 
-def fs_type(fd):
-    # struct statfs starts with f_type, a long on x86_64 and aarch64.
-    buf = ctypes.create_string_buffer(256)
-    if LIBC.fstatfs(fd, buf) != 0:
-        e = ctypes.get_errno()
-        raise OSError(e, os.strerror(e))
-    return int.from_bytes(buf.raw[:8], sys.byteorder, signed=True) & 0xFFFFFFFF
-
-
-def mount_ids(pid):
-    ids = set()
-    for who in ("self", "1", pid):
-        with open(f"/proc/{who}/mountinfo") as f:
-            ids.update(line.split(" ", 1)[0] for line in f)
-    return ids
-
-
-def mnt_id(fd):
-    with open(f"/proc/self/fdinfo/{fd}") as f:
-        for line in f:
-            if line.startswith("mnt_id:"):
-                return line.split(":", 1)[1].strip()
-    fail("no mnt_id in fdinfo")
-
-
 def check_way(way, pid, fd):
-    if way == "overlay":
-        if fs_type(fd) != OVERLAYFS_MAGIC:
-            fail(f"pid {pid}: /proc/{pid}/exe is not on an overlay")
-        if not os.fstatvfs(fd).f_flag & os.ST_RDONLY:
-            fail(f"pid {pid}: the overlay is not read-only")
-        if mnt_id(fd) in mount_ids(pid):
-            fail(f"pid {pid}: the overlay is attached somewhere")
-    elif way == "memfd":
+    if way == "memfd":
         seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
         if seals & SEALS != SEALS:
             fail(f"pid {pid}: the memfd's seals are {seals:#x}, want {SEALS:#x}")
+    elif way == "tmpfile":
+        links = os.fstat(fd).st_nlink
+        if links != 0:
+            fail(f"pid {pid}: the O_TMPFILE copy has {links} links, want none")
     else:
         fail(f"unknown way {way}")
 
@@ -73,7 +43,6 @@ def check_way(way, pid, fd):
 def write_refused(way, pid):
     """How each open for writing ended: refused, or its write refused."""
     exe = f"/proc/{pid}/exe"
-    want = errno.EROFS if way == "overlay" else errno.ETXTBSY
     with open(exe, "rb") as f:
         first = f.read(1)
     outcomes = []
@@ -81,8 +50,8 @@ def write_refused(way, pid):
         try:
             fd = os.open(exe, flags | os.O_CLOEXEC)
         except OSError as e:
-            if e.errno != want:
-                fail(f"pid {pid}: opening {exe} {name}: {e.strerror}, want {os.strerror(want)}")
+            if e.errno != errno.ETXTBSY:
+                fail(f"pid {pid}: opening {exe} {name}: {e.strerror}, want ETXTBSY")
             outcomes.append(f"{name}: {e.strerror}")
             continue
         try:

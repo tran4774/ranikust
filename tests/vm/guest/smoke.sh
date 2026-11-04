@@ -294,11 +294,12 @@ EOF
       { echo "error: the RUN's init outlived ranikust" >&2; exit 1; }
     echo "host: a RUN that cleared its death signal dies with ranikust (SIGKILL)"
     # ADR-0101: a build runs from a sealed copy of its binary, which every
-    # process it forks shares: a detached read-only overlay where root may
-    # mount (overlay mode, and kaniko mode with a directory per stage), a
-    # sealed memfd when the overlay is skipped. While the RUN waits, root
-    # on the host may write neither ranikust's nor its init's
-    # /proc/<pid>/exe (guest/sealed-exe.py). The RUN cannot even open its
+    # process it forks shares: a sealed memfd (overlay mode, and kaniko
+    # mode with a directory per stage), the O_TMPFILE copy when the memfd
+    # is skipped. While the RUN waits, root on the host may write neither
+    # ranikust's nor its init's /proc/<pid>/exe (guest/sealed-exe.py): the
+    # memfd's open or its seal refuses, the O_TMPFILE copy's open (ETXTBSY,
+    # its only guard). The RUN cannot even open its
     # init's: the init is not dumpable (ADR-0051), the barrier before the
     # seal; the RUN reports the errno. The RUN still gets the core-file
     # limit ranikust started with.
@@ -325,13 +326,13 @@ signal.alarm(120)
 signal.pause()
 PY
 DOCKERFILE
-    for variant in overlay:overlay kaniko:overlay seal-memfd:memfd; do
+    for variant in overlay:memfd kaniko:memfd seal-tmpfile:tmpfile; do
       how="${variant%%:*}" way="${variant#*:}"
       args=(--context "$s/ctx" --no-push --state-dir "$s/w-$how" --log-format=text -v debug)
       fault=()
       case "$how" in
         kaniko) args+=(--mode=kaniko) ;;
-        seal-memfd) fault=(RANIKUST_DEBUG_FAULT=seal-memfd) ;;
+        seal-tmpfile) fault=(RANIKUST_DEBUG_FAULT=seal-tmpfile) ;;
       esac
       slog="$(mktemp)"
       sudo env "${fault[@]}" prlimit --core=1048576:unlimited "$RNK" "${args[@]}" >"$slog" 2>&1 &
@@ -347,8 +348,9 @@ DOCKERFILE
         { sudo pkill -KILL -x ranikust; exit 1; }
       sudo pkill -USR1 -x rnksealed
       wait "$build" || { echo "error: sealed ($how): the build failed" >&2; cat "$slog" >&2; exit 1; }
-      # The text format sorts the fields: a passed-over way comes first.
-      grep -qE "msg=\"running from a sealed copy of the binary \(ADR-0101\)\".* way=$way\$" "$slog" ||
+      # The first way tried, so none passed over.
+      grep -qE "msg=\"running from a sealed copy of the binary \(ADR-0101\)\".* way=$way\$" "$slog" &&
+        ! grep -q "passed_over=" "$slog" ||
         { echo "error: sealed ($how): no $way copy in the log" >&2; cat "$slog" >&2; exit 1; }
       [ "$(grep -c "^RUN: its init" "$slog")" = 2 ] ||
         { echo "error: sealed ($how): the RUN did not report both opens" >&2; cat "$slog" >&2; exit 1; }
