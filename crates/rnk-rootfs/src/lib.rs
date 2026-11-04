@@ -5,7 +5,8 @@
 //! Built on it: layer extraction from an already decompressed tar stream,
 //! writing whiteouts in the form the caller asks for; copy, ownership and
 //! xattrs; `USER` and `--chown` name lookup in the root's `/etc/passwd` and
-//! `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the ignore list; safe
+//! `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the ignore list; the
+//! parser of `/proc/self/mountinfo` ([`parse_mountinfo`]); safe
 //! deletion of a root's contents; and the operator's host paths that the
 //! build context's owner must not steer (ADR-0076): output directories
 //! reached without a symlink and outside the context ([`OutputDir`]), and the
@@ -40,6 +41,7 @@ mod host;
 mod ignore;
 mod meta;
 mod mode;
+mod mountinfo;
 mod path;
 mod root;
 mod support;
@@ -58,6 +60,7 @@ pub use host::{Fence, HostFile, OutputDir, Reached, reach};
 pub use ignore::IgnoreList;
 pub use meta::{FileTime, FileType, Meta, Stat, is_overlay_own};
 pub use mode::{Chmod, ModeSet};
+pub use mountinfo::{MountInfo, MountInfoError, parse_mountinfo};
 pub use root::{OpenHow, Pinned, RootPath};
 pub use support::{Cause, Unsupported, probe_support};
 pub use user::{Owner, User, lookup_owner, lookup_user};
