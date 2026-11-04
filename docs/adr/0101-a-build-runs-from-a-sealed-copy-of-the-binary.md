@@ -21,11 +21,12 @@ keep today's barriers in `Direct` on `/`. Building it
 changes nothing: `/proc/self/exe` names the file the process was executed
 from, on the mount it was executed from; a later bind over the path or a new
 mount namespace does not change it, and a fork inherits it. Only an `execve`
-of another file does. runc does not bind today: its fix of CVE-2019-5736
-(v1.0.0-rc7) executes `runc init` from a read-only bind of the binary where
-it can make one, else from a sealed copy; it dropped the bind in 1.1.15 and
-1.2.0, and since 1.2.0 the parent makes the copy. How does ranikust give
-every process it forks a binary no `RUN` can write?
+of another file does. runc does not bind today. From v1.0.0-rc7, the
+release with its fix of CVE-2019-5736, it executed `runc init` from a
+read-only bind of the binary where it could make one, else from a sealed
+copy; it dropped the bind in 1.1.15 and 1.2.0, and since 1.2.0 the parent
+makes the copy. How does ranikust give every process it forks a binary no
+`RUN` can write?
 
 ## Considered Options
 
@@ -137,10 +138,10 @@ The decision:
   `1081130` before merge; T2, the VM, Linux 6.8), after a read-only bind
   over the binary's path in the build's mount namespace, `/proc/self/exe`
   of the running process still named the original mount, not the bind's.
-- runc [external], v1.0.0-rc7 (commits `0a8e4117e7f7`, CVE-2019-5736, and
-  `16612d74de5f`): `libcontainer/nsenter/cloned_binary.c` executes
-  `runc init` from a read-only bind of `/proc/self/exe` where it can mount
-  one, else from a sealed copy. The bind guards because runc executes it,
+- runc [external], v1.0.0-rc7 (commits `0a8e4117e7f7`, the CVE-2019-5736
+  fix, and `16612d74de5f`, the bind): `libcontainer/nsenter/cloned_binary.c`
+  executes `runc init` from a read-only bind of `/proc/self/exe` where it
+  can mount one, else from a sealed copy. The bind guards because runc executes it,
   which ADR-0082's bind did not. runc dropped the bind in 1.1.15
   (`614ce12f0e97`) and on main before 1.2.0 (`b999376fb237`).
 - runc [external], v1.2.0 (commit `0b9fa21be2bc`), `libcontainer/dmz`:
