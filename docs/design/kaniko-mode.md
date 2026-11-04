@@ -103,7 +103,8 @@ the scheduler runs one stage at a time) or a private directory per stage
     The installed binary is refused on a writable mount other than `/`'s
     (bound without `:ro`, from outside the container or inside it, a
     volume), when a writable mount reaches it (its tree bound read-write
-    too, by `/proc/self/mountinfo`; a file with another hard link), and on
+    too, by `/proc/self/mountinfo`; a file with another hard link; in a
+    root that is not overlayfs, a binary in the root too), and on
     a mount ranikust cannot tell (qemu-user, a memfd, a mount table that
     does not place it), before anything is written: a `RUN` reaches it by
     name, and the build no longer runs it (ADR-0101).

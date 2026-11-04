@@ -351,6 +351,65 @@ fn a_writable_mount_containing_the_binary_reaches_it() {
     assert_eq!(reached_writable(&mounts(file, &[]), 99, bin), None);
 }
 
+/// ADR-0101: a binary on a root that is not overlayfs (a directory root)
+/// is weighed like one on another read-only mount: its links, then the
+/// writable mounts that reach it; on an overlay root it builds as it is.
+#[test]
+fn a_binary_in_a_root_that_is_not_overlayfs_is_weighed() {
+    const EXT4: i64 = 0xEF53;
+    let never = || -> Result<Option<bool>, Errno> { panic!("the mount table is not read") };
+    let fs = |f_type: i64| move || -> Result<i64, Errno> { Ok(f_type) };
+    let reach = |reached: Option<bool>| move || -> Result<Option<bool>, Errno> { Ok(reached) };
+    let root = BinaryMount::Root;
+    // An overlay root: an image's links build, and nothing more is read.
+    assert_eq!(verdict(root, fs(OVERLAYFS), 2, never), Ok(root));
+    assert_eq!(verdict(root, fs(OVERLAYFS), 1, never), Ok(root));
+    // A directory root: other links, a writable mount reaching it, or a
+    // mount table that does not place it are refused; nothing reaching it
+    // builds.
+    assert_eq!(verdict(root, fs(EXT4), 2, never), Ok(BinaryMount::Linked));
+    assert_eq!(verdict(root, fs(EXT4), 0, never), Ok(BinaryMount::Unplaced));
+    assert_eq!(
+        verdict(root, fs(EXT4), 1, reach(Some(true))),
+        Ok(BinaryMount::Exposed)
+    );
+    assert_eq!(verdict(root, fs(EXT4), 1, reach(Some(false))), Ok(root));
+    assert_eq!(
+        verdict(root, fs(EXT4), 1, reach(None)),
+        Ok(BinaryMount::Unplaced)
+    );
+    // A file system that cannot be told is a failed measurement.
+    let failed = || -> Result<i64, Errno> { Err(Errno::NOSYS) };
+    assert_eq!(verdict(root, failed, 1, never), Err(Errno::NOSYS));
+    // Another read-only mount is weighed whatever its file system; others
+    // are as `of` told them.
+    let ro = BinaryMount::ReadOnly;
+    let no_fs = || -> Result<i64, Errno> { panic!("no file system type is needed") };
+    assert_eq!(verdict(ro, no_fs, 2, never), Ok(BinaryMount::Linked));
+    assert_eq!(
+        verdict(ro, || Ok(OVERLAYFS), 1, reach(Some(true))),
+        Ok(BinaryMount::Exposed)
+    );
+    assert_eq!(verdict(ro, no_fs, 1, reach(Some(false))), Ok(ro));
+    for told in [BinaryMount::Writable, BinaryMount::NoMountId] {
+        assert_eq!(verdict(told, no_fs, 2, never), Ok(told));
+    }
+}
+
+/// ADR-0101: on a directory root, the root mount itself does not reach the
+/// binary; another writable mount of its file system that contains it does.
+#[test]
+fn a_directory_root_is_not_its_own_writable_mount() {
+    let bin = Path::new("/usr/bin/ranikust");
+    let root = "1 0 8:1 /var/lib/c/rootfs / rw,relatime - ext4 /dev/sda1 rw\n";
+    let parse = |text: &str| rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample");
+    assert_eq!(reached_writable(&parse(root), 1, bin), Some(false));
+    let shared = format!("{root}2 1 8:1 /var/lib/c /mnt rw,relatime - ext4 /dev/sda1 rw\n");
+    assert_eq!(reached_writable(&parse(&shared), 1, bin), Some(true));
+    let elsewhere = format!("{root}2 1 8:1 /var/lib/d /mnt rw,relatime - ext4 /dev/sda1 rw\n");
+    assert_eq!(reached_writable(&parse(&elsewhere), 1, bin), Some(false));
+}
+
 /// ADR-0101: the `O_TMPFILE` copy is never made on FUSE, whose daemon
 /// serves the pages the kernel runs; other file systems take it.
 #[test]
@@ -374,12 +433,15 @@ fn the_binarys_mount_is_measured_on_the_file() {
         )
         .expect(path)
     };
-    assert_eq!(mount_of(open_dir("/").as_fd()), BinaryMount::Root);
-    assert_eq!(mount_of(open_dir("/proc").as_fd()), BinaryMount::Writable);
+    let mount = |fd: OwnedFd| placed(fd.as_fd()).map(|(mount, _)| mount);
+    assert_eq!(mount(open_dir("/")), Ok(BinaryMount::Root));
+    assert_eq!(mount(open_dir("/proc")), Ok(BinaryMount::Writable));
     // The kernel's internal mount, whose id Linux 7.0 gives as 0: never `/`.
     let memfd = rustix::fs::memfd_create("rnk-test", rustix::fs::MemfdFlags::CLOEXEC)
         .expect("memfd_create");
-    assert_ne!(mount_of(memfd.as_fd()), BinaryMount::Root);
+    assert_ne!(mount(memfd), Ok(BinaryMount::Root));
+    // `/proc` is not weighed further: writable is refused as it is.
+    assert_eq!(mount_of(open_dir("/proc").as_fd()), BinaryMount::Writable);
 }
 
 /// ADR-0101: a marker whose copy does not check is not believed: the

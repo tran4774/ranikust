@@ -70,9 +70,10 @@ writable mount other than the container's root, since a `RUN` is root on that
 directory that is also mounted read-write (put it outside that tree, or mount
 the tree read-only too), and a file with other hard links (mount a copy:
 cargo's release binaries, such as `target/release/ranikust`, are links of
-their copies in `deps/`). A binary
-built into the container's image needs no such mount. Put the build context
-there too, read-only:
+their copies in `deps/`). A binary built into the container's image needs
+no such mount; on a root that is not overlayfs (podman `--rootfs`,
+systemd-nspawn, LXC), it too must have one link and no writable mount may
+reach it. Put the build context there too, read-only:
 
 ```sh
 docker run --rm \

@@ -32,6 +32,9 @@ const MARKER: &str = "RANIKUST_SEALED_COPY";
 /// `FUSE_SUPER_MAGIC`.
 const FUSE: i64 = 0x6573_5546;
 
+/// `OVERLAYFS_SUPER_MAGIC`.
+const OVERLAYFS: i64 = 0x794C_7630;
+
 /// The seals of a memfd copy: no write, no change of size, no seal taken
 /// off.
 const SEALS: SealFlags = SealFlags::SEAL
@@ -79,17 +82,20 @@ impl fmt::Display for SealedCopy {
 /// could alter, and it no longer runs while the build runs from its copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryMount {
-    /// On the mount of `/`: in a container, its own root.
+    /// On the mount of `/`: in a container, its own root. On a root that
+    /// is not overlayfs, also with one link and no other writable mount
+    /// reaching it.
     Root,
     /// On another mount, read-only, and no writable mount reaches it.
     ReadOnly,
     /// On another mount, writable.
     Writable,
-    /// On another mount, read-only, but a writable mount of its file
-    /// system has a root that contains the file (`/proc/self/mountinfo`).
+    /// On another read-only mount, or on a root that is not overlayfs, but
+    /// another writable mount of its file system has a root that contains
+    /// the file (`/proc/self/mountinfo`).
     Exposed,
-    /// On another mount, read-only, but the file has other hard links,
-    /// which no mount table places.
+    /// On another read-only mount, or on a root that is not overlayfs, but
+    /// the file has other hard links, which no mount table places.
     Linked,
     /// Cannot be told: `statx` gave a mount id of 0, as qemu-user's does
     /// for every file and the kernel for a memfd (Linux 6.8 and 7.0).
@@ -236,60 +242,109 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing> 
     Ok(Sealing::Unsealed { why, binary })
 }
 
-/// Which mount the file `exe` is on, against the mount of `/`; on another
-/// read-only mount, whether a writable mount reaches the file.
+/// `statx` of `path` at `fd`, with the mount id and the link count.
+fn statx_of(
+    fd: BorrowedFd<'_>,
+    path: &std::ffi::CStr,
+    flags: AtFlags,
+) -> Result<rustix::fs::Statx, Errno> {
+    let st = rustix::fs::statx(fd, path, flags, StatxFlags::MNT_ID | StatxFlags::NLINK)?;
+    // Linux 5.8, which ranikust needs (ADR-0028), always fills it.
+    if StatxFlags::from_bits_retain(st.stx_mask).contains(StatxFlags::MNT_ID) {
+        Ok(st)
+    } else {
+        Err(Errno::NOSYS)
+    }
+}
+
+/// Which mount the file `fd` is on, against the mount of `/`, and its
+/// `statx`.
+fn placed(fd: BorrowedFd<'_>) -> Result<(BinaryMount, rustix::fs::Statx), Errno> {
+    let st = statx_of(fd, c"", AtFlags::EMPTY_PATH)?;
+    let root = statx_of(rustix::fs::CWD, c"/", AtFlags::empty())?.stx_mnt_id;
+    let flags = rustix::fs::fstatvfs(fd)?.f_flag;
+    let mount = BinaryMount::of(
+        st.stx_mnt_id,
+        root,
+        flags.contains(StatVfsMountFlags::RDONLY),
+    );
+    Ok((mount, st))
+}
+
+/// Which mount the file `exe` is on, against the mount of `/`, and, on
+/// another read-only mount or a root that is not overlayfs, whether a
+/// writable mount reaches the file ([`verdict`]).
 fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
-    let statx = |fd: BorrowedFd<'_>, path: &std::ffi::CStr, flags: AtFlags| {
-        let st = rustix::fs::statx(fd, path, flags, StatxFlags::MNT_ID | StatxFlags::NLINK)?;
-        // Linux 5.8, which ranikust needs (ADR-0028), always fills it.
-        if StatxFlags::from_bits_retain(st.stx_mask).contains(StatxFlags::MNT_ID) {
-            Ok(st)
-        } else {
-            Err(Errno::NOSYS)
-        }
-    };
     let found = (|| {
-        let st = statx(exe, c"", AtFlags::EMPTY_PATH)?;
-        let root = statx(rustix::fs::CWD, c"/", AtFlags::empty())?.stx_mnt_id;
-        let flags = rustix::fs::fstatvfs(exe)?.f_flag;
-        let mount = BinaryMount::of(
-            st.stx_mnt_id,
-            root,
-            flags.contains(StatVfsMountFlags::RDONLY),
-        );
-        if mount != BinaryMount::ReadOnly {
-            return Ok(mount);
-        }
-        match st.stx_nlink {
-            // No name: readlink cannot place it.
-            0 => return Ok(BinaryMount::Unplaced),
-            1 => {}
-            _ => return Ok(BinaryMount::Linked),
-        }
-        // The path `/proc/self/exe` gives, named through the descriptor
-        // measured above.
-        let link = format!("/proc/self/fd/{}", exe.as_raw_fd());
-        let path = PathBuf::from(OsString::from_vec(
-            rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?.into_bytes(),
-        ));
-        let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
-        // The marker has room for a token only; the refusal lists the possible causes.
-        let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
-            return Ok(BinaryMount::Unplaced);
+        let (mount, st) = placed(exe)?;
+        let fs_type = || -> Result<i64, Errno> {
+            #[allow(
+                clippy::useless_conversion,
+                reason = "f_type's integer type differs between targets"
+            )]
+            let f_type = i64::from(rustix::fs::fstatfs(exe)?.f_type);
+            Ok(f_type)
         };
-        Ok(match reached_writable(&mounts, st.stx_mnt_id, &path) {
-            None => BinaryMount::Unplaced,
-            Some(true) => BinaryMount::Exposed,
-            Some(false) => BinaryMount::ReadOnly,
-        })
+        let reach = || -> Result<Option<bool>, Errno> {
+            // The path `/proc/self/exe` gives, named through the descriptor
+            // measured above.
+            let link = format!("/proc/self/fd/{}", exe.as_raw_fd());
+            let path = PathBuf::from(OsString::from_vec(
+                rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?.into_bytes(),
+            ));
+            let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
+            // The marker has room for a token only; the refusal lists the possible causes.
+            let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
+                return Ok(None);
+            };
+            Ok(reached_writable(&mounts, st.stx_mnt_id, &path))
+        };
+        verdict(mount, fs_type, st.stx_nlink, reach)
     })();
     found.unwrap_or_else(BinaryMount::Unknown)
 }
 
-/// Whether a writable mount of the file system of the mount `own` has a
-/// root that contains the file at `path`, as this process's root names it:
-/// the file's path in its file system is `own`'s root joined with the path
-/// below `own`'s mount point. `None` when `mounts` does not place it.
+/// The binary's mount once its links and the mounts that reach it are
+/// weighed: on another read-only mount, and on a root whose file system
+/// (`fs_type`, `statfs`) is not overlayfs, a file with other links is
+/// [`BinaryMount::Linked`], one a writable mount reaches (`reach`, `None`
+/// when the mount table does not place it) [`BinaryMount::Exposed`].
+/// `fs_type` and `reach` are called only when needed.
+fn verdict(
+    mount: BinaryMount,
+    fs_type: impl FnOnce() -> Result<i64, Errno>,
+    nlink: u32,
+    reach: impl FnOnce() -> Result<Option<bool>, Errno>,
+) -> Result<BinaryMount, Errno> {
+    let weighed = match mount {
+        BinaryMount::ReadOnly => true,
+        // On an overlay root a write copies the file up and leaves the
+        // layers' own files, an image's links among them, as they are.
+        BinaryMount::Root => fs_type()? != OVERLAYFS,
+        _ => false,
+    };
+    if !weighed {
+        return Ok(mount);
+    }
+    match nlink {
+        // No name: readlink cannot place it.
+        0 => return Ok(BinaryMount::Unplaced),
+        1 => {}
+        _ => return Ok(BinaryMount::Linked),
+    }
+    Ok(match reach()? {
+        None => BinaryMount::Unplaced,
+        Some(true) => BinaryMount::Exposed,
+        Some(false) => mount,
+    })
+}
+
+/// Whether another writable mount of the file system of the mount `own`
+/// has a root that contains the file at `path`, as this process's root
+/// names it: the file's path in its file system is `own`'s root joined with
+/// the path below `own`'s mount point. `own` itself does not count (a
+/// writable root is the container's). `None` when `mounts` does not place
+/// it.
 fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool> {
     let mine = mounts.iter().find(|m| m.mount_id == own)?;
     if !mine.fs_root.is_absolute() {
@@ -299,11 +354,15 @@ fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool>
     // Paths compared, never opened.
     let in_fs = mine.fs_root.join(below);
     // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
-    Some(
-        mounts
-            .iter()
-            .any(|m| m.device == mine.device && !m.read_only && in_fs.starts_with(&m.fs_root)),
-    )
+    // A writable mount whose root does not contain the file (Docker's and
+    // kubelet's single-file binds) is passed over: sound while a `RUN` holds
+    // only Docker's default capabilities (ADR-0078).
+    Some(mounts.iter().any(|m| {
+        m.mount_id != own
+            && m.device == mine.device
+            && !m.read_only
+            && in_fs.starts_with(&m.fs_root)
+    }))
 }
 
 // Opening `/proc/self/exe` fails with an errno; `EIO` only stands in for

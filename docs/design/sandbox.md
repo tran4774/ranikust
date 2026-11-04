@@ -35,19 +35,22 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
      copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
      refuses it. It costs the binary's size in memory;
-   - an `O_TMPFILE` file in `TMPDIR` (else `/tmp`), never on FUSE,
-     `O_EXCL` so it never gets a name, run from a read-only descriptor. No
-     seal: only `ETXTBSY` guards it while it runs. Some file systems refuse
-     `O_TMPFILE` (a container's overlayfs `/tmp` on Ubuntu's Linux 6.8).
+   - an `O_TMPFILE` file in `TMPDIR` (else `/tmp`), never made directly
+     on FUSE (the check reads `TMPDIR`'s own file system type, so an
+     overlay over FUSE passes it), `O_EXCL` so it never gets a name, run
+     from a read-only descriptor. No seal: only `ETXTBSY` guards it while
+     it runs. Some file systems refuse `O_TMPFILE` (a container's
+     overlayfs `/tmp` on Ubuntu's Linux 6.8).
 
    First, the mount of the binary as installed is measured against `/`'s
    (`statx` `STATX_MNT_ID`, `statvfs` `ST_RDONLY`: `BinaryMount`; a mount
    id of 0, which qemu-user's `statx` gives for every file and the kernel
    for a memfd, is `NoMountId`; a fallback through `/proc/self/fdinfo` is
    [#95](https://github.com/tran4774/ranikust/issues/95)). On another
-   read-only mount, a file with other hard links is `Linked`, and one whose
-   path in its file system lies under the root of a writable mount of the
-   same `major:minor` in `/proc/self/mountinfo` is `Exposed`
+   read-only mount, and on a root that is not overlayfs (`fstatfs` magic;
+   `verdict`), a file with other hard links is `Linked`, and one whose
+   path in its file system lies under the root of another writable mount
+   of the same `major:minor` in `/proc/self/mountinfo` is `Exposed`
    (`reached_writable`, by path components, nothing opened); a table that
    cannot be parsed or does not place the file, or a file with no link
    left, is `Unplaced`, and a table that cannot be read `Unknown`. The copy

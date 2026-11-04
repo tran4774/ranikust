@@ -140,7 +140,8 @@ Each step before the next; design in
    (ADR-0057), with a writable `/proc/sys`
    (`exposure::proc_sys_read_only`, ADR-0054) and with ranikust's binary on
    a writable mount other than `/`'s, reached by one (its tree bound
-   read-write too, another hard link), or one whose mount cannot be told
+   read-write too, another hard link; in a root that is not overlayfs, a
+   binary in the root too), or one whose mount cannot be told
    (`refuse_writable_binary` on `Sealing::binary()`, ADR-0101: qemu-user, a
    memfd, a mount table that does not place it or a failed call, each with
    its own guidance); then the

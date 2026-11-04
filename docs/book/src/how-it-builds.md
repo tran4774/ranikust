@@ -177,15 +177,18 @@ writable mount other than the container's root reaches it, since a `RUN` could
 then alter it: a bind without `:ro` or a volume without `readOnly: true`, a
 directory holding it mounted read-write too, or another hard link of the file.
 Mount a copy with one link read-only, outside any tree mounted read-write
-([ADR-0101], [Installation](install.md#use-it-in-a-container)). It refuses too
-when it cannot tell which mount its binary is on, as under an emulator such as
-qemu-user or when started from a memfd: run ranikust natively, from a regular
-file. When `/proc/self/mountinfo` does not place the binary, run it from a file
-that stays in place, or build it into the image. When the measurement fails,
-mount `/proc` so that `/proc/self/exe` and `/proc/self/mountinfo` can be read,
-and let the seccomp profile allow `fstatfs`. Devices you give
-the container with `--device` stay reachable by a `RUN`: ranikust cannot tell
-them from the container's own, so pass only what the build needs.
+([ADR-0101], [Installation](install.md#use-it-in-a-container)). On a container
+root that is not overlayfs (podman `--rootfs`, systemd-nspawn, LXC), a binary
+in that root gets the same checks. It refuses too when it cannot tell which
+mount its binary is on, as under an emulator such as qemu-user or when started
+from a memfd: run ranikust natively, from a regular file. When
+`/proc/self/mountinfo` does not place the binary, run it from a file that stays
+in place, or build it into an image run on an overlayfs root (Docker,
+containerd). When the measurement fails, mount `/proc` so that
+`/proc/self/exe` and `/proc/self/mountinfo` can be read, and let the seccomp
+profile allow `fstatfs`. Devices you give the container with `--device` stay
+reachable by a `RUN`: ranikust cannot tell them from the container's own, so
+pass only what the build needs.
 
 **A volume as state directory.** A volume at `/var/lib/ranikust` works, one
 per container.
