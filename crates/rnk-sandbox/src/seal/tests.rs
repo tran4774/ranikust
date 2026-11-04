@@ -225,7 +225,10 @@ fn the_marker_carries_the_binarys_mount() {
         BinaryMount::Root,
         BinaryMount::ReadOnly,
         BinaryMount::Writable,
+        BinaryMount::Exposed,
+        BinaryMount::Linked,
         BinaryMount::NoMountId,
+        BinaryMount::Unplaced,
         BinaryMount::Unknown(Errno::NOSYS),
     ] {
         for failed in [vec![], vec![(SealedCopy::Memfd, io::Error::other("x; y"))]] {
@@ -253,6 +256,110 @@ fn the_binarys_mount_is_told_against_the_root() {
     assert_eq!(BinaryMount::of(0, 0, true), BinaryMount::NoMountId);
     assert_eq!(BinaryMount::of(0, 7, true), BinaryMount::NoMountId);
     assert_eq!(BinaryMount::of(8, 0, false), BinaryMount::NoMountId);
+}
+
+/// The binary's mount (id 10) and the mounts of a container, as
+/// `/proc/self/mountinfo` gives them; `extra` adds lines.
+fn mounts(own: &str, extra: &[&str]) -> Vec<MountInfo> {
+    let mut text = String::from(
+        "1 0 0:50 / / rw,relatime - overlay overlay rw,lowerdir=/l\n\
+         2 1 8:1 /var/lib/docker/containers/c/hosts /etc/hosts rw,relatime - ext4 /dev/sda1 rw\n",
+    );
+    text.push_str(&format!("10 1 {own} - ext4 /dev/sda1 rw\n"));
+    for line in extra {
+        text.push_str(&format!("{line} - ext4 /dev/sda1 rw\n"));
+    }
+    rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample mountinfo")
+}
+
+/// ADR-0101: a writable mount of the binary's file system whose root
+/// contains the file reaches it, whichever path the container gives each.
+#[test]
+fn a_writable_mount_containing_the_binary_reaches_it() {
+    let bin = Path::new("/ranikust/bin/ranikust");
+    let file = "8:1 /home/u/tree/ranikust /ranikust/bin/ranikust ro,relatime";
+    let dir = "8:1 /home/u/tree /ranikust/bin ro,relatime";
+    let cases: [(&str, &[&str], Option<bool>); 12] = [
+        // The file bound :ro, alone, or its tree bound read-write too.
+        (file, &[], Some(false)),
+        (
+            file,
+            &["11 1 8:1 /home/u/tree /src rw,relatime"],
+            Some(true),
+        ),
+        (file, &["11 1 8:1 / /host rw,relatime"], Some(true)),
+        (file, &["11 1 8:1 /home/u/tree/ranikust /x rw"], Some(true)),
+        // The tree bound :ro, the binary below it.
+        (dir, &["11 1 8:1 /home/u /home rw"], Some(true)),
+        // A sibling, or a name that only starts the same, does not contain it.
+        (
+            file,
+            &[
+                "11 1 8:1 /home/u/tree2 /src rw",
+                "12 1 8:1 /home/u/tree/sub /s rw",
+            ],
+            Some(false),
+        ),
+        // Another file system with the same path.
+        (
+            file,
+            &[
+                "11 1 8:1 /home/u/tree /src ro,relatime",
+                "12 1 8:2 /home/u/tree /s rw",
+            ],
+            Some(false),
+        ),
+        // Read-only by the mount's options.
+        (
+            file,
+            &["11 1 8:1 /home/u/tree /src ro,relatime"],
+            Some(false),
+        ),
+        // Escaped spaces in a root and a mount point.
+        (
+            "8:1 /home/u/my\\040tree/ranikust /ranikust/bin/ranikust ro",
+            &["11 1 8:1 /home/u/my\\040tree /my\\040src rw"],
+            Some(true),
+        ),
+        (
+            "8:1 /home/u/my\\040tree /ranikust/my\\040bin ro",
+            &["11 1 8:1 /home/u/my\\040tree2 /src rw"],
+            Some(false),
+        ),
+        // Not placed: a path outside its mount, a root that is not a path.
+        ("8:1 /home/u/tree /elsewhere ro", &[], None),
+        ("8:1 mnt:[4026531840] /ranikust/bin/ranikust ro", &[], None),
+    ];
+    for (own, extra, want) in cases {
+        let path = if own.contains("my\\040bin") {
+            Path::new("/ranikust/my bin/ranikust")
+        } else {
+            bin
+        };
+        assert_eq!(
+            reached_writable(&mounts(own, extra), 10, path),
+            want,
+            "{own} {extra:?}"
+        );
+    }
+    // A read-only file system, though its mount says rw.
+    let text = "10 1 8:1 /home/u/tree/ranikust /ranikust/bin/ranikust ro - ext4 /dev/sda1 rw\n\
+                11 1 8:1 /home/u/tree /src rw - ext4 /dev/sda1 ro\n";
+    let ro_fs = rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample");
+    assert_eq!(reached_writable(&ro_fs, 10, bin), Some(false));
+    // No line for the binary's mount.
+    assert_eq!(reached_writable(&mounts(file, &[]), 99, bin), None);
+}
+
+/// ADR-0101: the `O_TMPFILE` copy is never made on FUSE, whose daemon
+/// serves the pages the kernel runs; other file systems take it.
+#[test]
+fn the_tmpfile_copy_is_refused_on_fuse_only() {
+    // statfs(2): FUSE_SUPER_MAGIC; TMPFS_MAGIC, EXT4_SUPER_MAGIC, OVERLAYFS_SUPER_MAGIC.
+    assert!(serves_its_own_pages(0x6573_5546));
+    for other in [0x0102_1994, 0xEF53, 0x794C_7630] {
+        assert!(!serves_its_own_pages(other), "{other:#x}");
+    }
 }
 
 /// ADR-0101: the mount is measured on the file. Skipped under qemu-user,

@@ -18,6 +18,11 @@ source tests/smoke/cases.bash
 BASE="${RANIKUST_SMOKE_REGISTRY:-docker.io}/library/alpine:3.20"
 ENGINE=podman
 CASES_OUT="$TARGET/smoke/cases"
+# A copy with one link: cargo links target/*/release/ranikust to its deps/
+# copy, and kaniko mode on `/` refuses a binary with other links (ADR-0101).
+mkdir -p "$CASES_OUT/.bin"
+install -m 0755 "$RNK" "$CASES_OUT/.bin/ranikust"
+RNK="$CASES_OUT/.bin/ranikust"
 # One state directory for every case: its store keeps the pulled base
 # layers, and the `run` case's cache mount outlives a build. Kept for the
 # next run.

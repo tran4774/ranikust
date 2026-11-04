@@ -70,9 +70,11 @@ adr0054_refusals() {
 
 # ADR-0101: kaniko mode on a container's `/` refuses its binary on a
 # writable mount other than `/`'s (here a file or a directory bound from the
-# host without `:ro`), with the guidance to mount it read-only, before its state
-# directory is made; bound `:ro`, or copied into the container's own root,
-# it builds. The binds are of a copy: a refusal that failed could not touch
+# host without `:ro`), with the guidance to mount it read-only, and one a
+# writable mount reaches (its directory bound read-write elsewhere, or a
+# file with another hard link), before its state directory is made; bound
+# `:ro` (its directory too), or copied into the container's own root, it
+# builds. The binds are of copies: a refusal that failed could not touch
 # the binary the suite runs.
 binary_mounts_on_slash() {
   local ctx="$W/binmount" dir="$W/binmount-bin" out rc bad=0 how
@@ -108,7 +110,35 @@ binary_mounts_on_slash() {
       bad=1
     fi
   done
-  [ "$bad" = 0 ] && echo "adr-0101: kaniko mode on / refuses its binary bound read-write (file or directory; exit 1, nothing made), builds it bound :ro or in the image"
+  local link="$W/binmount-link" want
+  local -a binds
+  sudo mkdir -p "$link" && sudo cp "$RNK" "$link/a" && sudo ln -f "$link/a" "$link/b" || return 1
+  for how in tree linked; do
+    rc=0
+    if [ "$how" = tree ]; then
+      binds=(-v "$dir:/src" -v "$dir/ranikust:/ranikust/bin/ranikust:ro")
+      want='a writable mount also reaches'
+    else
+      binds=(-v "$link/a:/ranikust/bin/ranikust:ro")
+      want='other hard links'
+    fi
+    out="$(sudo docker run --rm "${binds[@]}" -v "$ctx:/ranikust/ctx:ro" "$BASE" \
+      sh -c "/ranikust/bin/ranikust$run" 2>&1)" || rc=$?
+    if [ "$rc" != 1 ] || ! grep -q "$want" <<<"$out" || grep -q STATE-MADE <<<"$out"; then
+      echo "error: binary mounts: a binary $how: exit $rc, want 1, \"$want\", no state" >&2
+      echo "$out" >&2
+      bad=1
+    fi
+  done
+  rc=0
+  out="$(sudo docker run --rm -v "$dir:/src:ro" -v "$dir/ranikust:/ranikust/bin/ranikust:ro" \
+    -v "$ctx:/ranikust/ctx:ro" "$BASE" sh -c "/ranikust/bin/ranikust$run" 2>&1)" || rc=$?
+  if [ "$rc" != 0 ] || ! grep -q '^sha256:' <<<"$out"; then
+    echo "error: binary mounts: a binary whose directory is bound :ro too: exit $rc, want 0 and a digest" >&2
+    echo "$out" >&2
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "adr-0101: kaniko mode on / refuses its binary bound read-write (file or directory), in a directory bound read-write elsewhere, or with another hard link (exit 1, nothing made); builds it bound :ro (its directory too) or in the image"
   return "$bad"
 }
 

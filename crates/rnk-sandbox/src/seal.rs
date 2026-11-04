@@ -21,6 +21,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
+use rnk_rootfs::MountInfo;
 use rustix::fs::{AtFlags, Mode, OFlags, SealFlags, StatVfsMountFlags, StatxFlags};
 use rustix::io::Errno;
 
@@ -74,19 +75,29 @@ impl fmt::Display for SealedCopy {
 
 /// Which mount the binary ranikust started from is on, against the mount
 /// of `/` (ADR-0101). In a container, a file on another writable mount (a
-/// bind mount or a volume) is one a `RUN` on `/` could alter, and it no
-/// longer runs while the build runs from its copy.
+/// bind mount or a volume), or reached through one, is one a `RUN` on `/`
+/// could alter, and it no longer runs while the build runs from its copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryMount {
     /// On the mount of `/`: in a container, its own root.
     Root,
-    /// On another mount, read-only.
+    /// On another mount, read-only, and no writable mount reaches it.
     ReadOnly,
     /// On another mount, writable.
     Writable,
+    /// On another mount, read-only, but a writable mount of its file
+    /// system has a root that contains the file (`/proc/self/mountinfo`).
+    Exposed,
+    /// On another mount, read-only, but the file has other hard links,
+    /// which no mount table places.
+    Linked,
     /// Cannot be told: `statx` gave a mount id of 0, as qemu-user's does
     /// for every file and the kernel for a memfd (Linux 6.8 and 7.0).
     NoMountId,
+    /// Cannot be told: `/proc/self/mountinfo` does not place the file (a
+    /// line it cannot parse, no line for its mount, a path outside that
+    /// mount, or a file with no name).
+    Unplaced,
     /// Cannot be told: the error of the call that failed.
     Unknown(Errno),
 }
@@ -113,7 +124,10 @@ impl BinaryMount {
             Self::Root => "root".to_owned(),
             Self::ReadOnly => "ro".to_owned(),
             Self::Writable => "rw".to_owned(),
+            Self::Exposed => "exposed".to_owned(),
+            Self::Linked => "linked".to_owned(),
             Self::NoMountId => "noid".to_owned(),
+            Self::Unplaced => "unplaced".to_owned(),
             Self::Unknown(e) => format!("unknown:{}", e.raw_os_error()),
         }
     }
@@ -123,7 +137,10 @@ impl BinaryMount {
             "root" => Some(Self::Root),
             "ro" => Some(Self::ReadOnly),
             "rw" => Some(Self::Writable),
+            "exposed" => Some(Self::Exposed),
+            "linked" => Some(Self::Linked),
             "noid" => Some(Self::NoMountId),
+            "unplaced" => Some(Self::Unplaced),
             _ => {
                 // A malformed marker is not believed: the run ends unsealed, with why.
                 let raw: i32 = token.strip_prefix("unknown:")?.parse().ok()?;
@@ -219,28 +236,72 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing> 
     Ok(Sealing::Unsealed { why, binary })
 }
 
-/// Which mount the file `exe` is on, against the mount of `/`.
+/// Which mount the file `exe` is on, against the mount of `/`; on another
+/// read-only mount, whether a writable mount reaches the file.
 fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
-    let mount_id = |fd: BorrowedFd<'_>, path: &std::ffi::CStr, flags: AtFlags| {
-        let st = rustix::fs::statx(fd, path, flags, StatxFlags::MNT_ID)?;
+    let statx = |fd: BorrowedFd<'_>, path: &std::ffi::CStr, flags: AtFlags| {
+        let st = rustix::fs::statx(fd, path, flags, StatxFlags::MNT_ID | StatxFlags::NLINK)?;
         // Linux 5.8, which ranikust needs (ADR-0028), always fills it.
         if StatxFlags::from_bits_retain(st.stx_mask).contains(StatxFlags::MNT_ID) {
-            Ok(st.stx_mnt_id)
+            Ok(st)
         } else {
             Err(Errno::NOSYS)
         }
     };
     let found = (|| {
-        let mnt = mount_id(exe, c"", AtFlags::EMPTY_PATH)?;
-        let root = mount_id(rustix::fs::CWD, c"/", AtFlags::empty())?;
+        let st = statx(exe, c"", AtFlags::EMPTY_PATH)?;
+        let root = statx(rustix::fs::CWD, c"/", AtFlags::empty())?.stx_mnt_id;
         let flags = rustix::fs::fstatvfs(exe)?.f_flag;
-        Ok(BinaryMount::of(
-            mnt,
+        let mount = BinaryMount::of(
+            st.stx_mnt_id,
             root,
             flags.contains(StatVfsMountFlags::RDONLY),
-        ))
+        );
+        if mount != BinaryMount::ReadOnly {
+            return Ok(mount);
+        }
+        match st.stx_nlink {
+            // No name: readlink cannot place it.
+            0 => return Ok(BinaryMount::Unplaced),
+            1 => {}
+            _ => return Ok(BinaryMount::Linked),
+        }
+        // The path `/proc/self/exe` gives, named through the descriptor
+        // measured above.
+        let link = format!("/proc/self/fd/{}", exe.as_raw_fd());
+        let path = PathBuf::from(OsString::from_vec(
+            rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?.into_bytes(),
+        ));
+        let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
+        let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
+            return Ok(BinaryMount::Unplaced);
+        };
+        Ok(match reached_writable(&mounts, st.stx_mnt_id, &path) {
+            None => BinaryMount::Unplaced,
+            Some(true) => BinaryMount::Exposed,
+            Some(false) => BinaryMount::ReadOnly,
+        })
     })();
     found.unwrap_or_else(BinaryMount::Unknown)
+}
+
+/// Whether a writable mount of the file system of the mount `own` has a
+/// root that contains the file at `path`, as this process's root names it:
+/// the file's path in its file system is `own`'s root joined with the path
+/// below `own`'s mount point. `None` when `mounts` does not place it.
+fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool> {
+    let mine = mounts.iter().find(|m| m.mount_id == own)?;
+    if !mine.fs_root.is_absolute() {
+        return None;
+    }
+    let below = path.strip_prefix(&mine.mount_point).ok()?;
+    // Paths compared, never opened.
+    let in_fs = mine.fs_root.join(below);
+    Some(
+        mounts
+            .iter()
+            .any(|m| m.device == mine.device && !m.read_only && in_fs.starts_with(&m.fs_root)),
+    )
 }
 
 // Opening `/proc/self/exe` fails with an errno; `EIO` only stands in for
@@ -417,6 +478,12 @@ fn memfd_copy(exe: &File) -> io::Result<OwnedFd> {
     Ok(copy.into())
 }
 
+/// Whether a file system of type `f_type` (`statfs`) is FUSE: its daemon
+/// could hand the kernel other pages to run than the ones written.
+fn serves_its_own_pages(f_type: i64) -> bool {
+    f_type == FUSE
+}
+
 /// A copy in an `O_TMPFILE` file in `dir`, which can never get a name
 /// (`O_EXCL`), open read-only: `execve` refuses a file open for writing.
 /// Never on FUSE.
@@ -433,9 +500,7 @@ fn tmpfile_copy(exe: &File, dir: &Path) -> io::Result<OwnedFd> {
         reason = "f_type's integer type differs between targets"
     )]
     let f_type = i64::from(st.f_type);
-    // A FUSE daemon could hand the kernel other pages to run than the ones
-    // written.
-    if f_type == FUSE {
+    if serves_its_own_pages(f_type) {
         return Err(io::Error::other(format!(
             "{} is on FUSE, whose daemon serves the copy's pages",
             dir.display()

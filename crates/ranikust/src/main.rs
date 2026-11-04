@@ -776,10 +776,10 @@ fn refuse_unsafe_slash(
 }
 
 /// Kaniko mode on `/` refuses ranikust's binary on a writable mount other
-/// than `/`'s, a bind mount or a volume (ADR-0101): a `RUN`, root on `/`,
-/// could alter it, and the build no longer runs it. A binary in the
-/// container's own root, or on a read-only mount, builds; one whose mount
-/// is not known is refused.
+/// than `/`'s, a bind mount or a volume, or reachable through one (ADR-0101):
+/// a `RUN`, root on `/`, could alter it, and the build no longer runs it. A
+/// binary in the container's own root, or on a read-only mount no writable
+/// mount reaches, builds; one whose mount is not known is refused.
 fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), Failure> {
     match binary {
         Some(BinaryMount::Root | BinaryMount::ReadOnly) => Ok(()),
@@ -790,6 +790,31 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         .with_guidance(
             "mount the binary read-only: Docker -v <binary>:/ranikust/bin/ranikust:ro, Kubernetes \
              readOnly: true on its volumeMount (ADR-0101)",
+        )),
+        Some(BinaryMount::Exposed) => Err(Failure::error(format!(
+            "{how}: kaniko mode on / with ranikust's binary in a tree that a writable mount also \
+             reaches would let RUN alter that file"
+        ))
+        .with_guidance(
+            "put the binary outside the mounted tree, or mount that tree read-only: Docker :ro, \
+             Kubernetes readOnly: true on its volumeMount (ADR-0101)",
+        )),
+        Some(BinaryMount::Linked) => Err(Failure::error(format!(
+            "{how}: kaniko mode on / with ranikust's binary on a file with other hard links, \
+             which a writable mount may reach, would let RUN alter that file"
+        ))
+        .with_guidance(
+            "mount a copy of the binary with a single link (cp makes one; cargo's \
+             target/*/release/ranikust is linked to deps/) (ADR-0101)",
+        )),
+        Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
+            "{how}: cannot tell whether a writable mount reaches ranikust's binary \
+             (/proc/self/mountinfo does not place it); kaniko mode on / refuses to build without \
+             knowing"
+        ))
+        .with_guidance(
+            "mount /proc in the container, or build the binary into the image, where this is not \
+             needed (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
@@ -1224,9 +1249,10 @@ mod tests {
     }
 
     /// ADR-0101: kaniko mode on `/` refuses ranikust's binary on a writable
-    /// mount other than `/`'s, with the guidance to mount it read-only; one
-    /// in the container's own root or on a read-only mount builds, and one
-    /// whose mount is not known is refused.
+    /// mount other than `/`'s, with the guidance to mount it read-only, and
+    /// one a writable mount reaches (its tree, another hard link), with
+    /// guidance of its own; one in the container's own root or on a
+    /// read-only mount builds, and one whose mount is not known is refused.
     #[test]
     fn kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount() {
         let how = "--mode=kaniko";
@@ -1247,9 +1273,30 @@ mod tests {
             "{}",
             writable.guidance
         );
+        let exposed = refuse_writable_binary(how, Some(BinaryMount::Exposed)).unwrap_err();
+        assert!(
+            exposed.code == 1
+                && exposed.message.contains("a writable mount also reaches")
+                && exposed.guidance.contains("outside the mounted tree")
+                && exposed.guidance.contains(":ro")
+                && exposed.guidance.contains("readOnly: true"),
+            "{}: {}",
+            exposed.message,
+            exposed.guidance
+        );
+        let linked = refuse_writable_binary(how, Some(BinaryMount::Linked)).unwrap_err();
+        assert!(
+            linked.code == 1
+                && linked.message.contains("other hard links")
+                && linked.guidance.contains("single link"),
+            "{}: {}",
+            linked.message,
+            linked.guidance
+        );
         let errno = rustix::io::Errno::NOSYS;
         for unknown in [
             Some(BinaryMount::NoMountId),
+            Some(BinaryMount::Unplaced),
             Some(BinaryMount::Unknown(errno)),
             None,
         ] {
@@ -1269,6 +1316,14 @@ mod tests {
             "{}: {}",
             unknown.message,
             unknown.guidance
+        );
+        let unplaced = refuse_writable_binary(how, Some(BinaryMount::Unplaced)).unwrap_err();
+        assert!(
+            unplaced.message.contains("/proc/self/mountinfo")
+                && unplaced.guidance.contains("/proc"),
+            "{}: {}",
+            unplaced.message,
+            unplaced.guidance
         );
         let no_id = refuse_writable_binary(how, Some(BinaryMount::NoMountId)).unwrap_err();
         assert!(
