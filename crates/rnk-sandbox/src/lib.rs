@@ -18,8 +18,8 @@
 //!
 //! Makes the sealed copy of ranikust's binary a build runs from, so that
 //! no process ranikust forks has a binary a `RUN` could write, and reports
-//! which mount the binary as installed is on, for `ranikust`'s refusal in
-//! kaniko mode on `/` (ADR-0101).
+//! which mount the binary as installed is on and whether a writable mount
+//! reaches it, for `ranikust`'s refusal in kaniko mode on `/` (ADR-0101).
 //!
 //! # Use
 //!

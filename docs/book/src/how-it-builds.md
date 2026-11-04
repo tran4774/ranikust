@@ -172,13 +172,15 @@ not a read-only mount (Docker's `systempaths=unconfined`, Kubernetes'
 `procMount: Unmasked`): a `RUN` there would see the host's devices and could
 write `kernel/core_pattern`, which runs a program as the host's root. Use
 overlay mode there (`--mode=overlay`, or `--mode=auto`, with a volume at
-`/var/lib/ranikust`) ([ADR-0054]). It also refuses its own binary on a
-writable mount other than the container's root (a bind without `:ro`, a volume
-without `readOnly: true`), which a `RUN` could alter: mount it read-only
+`/var/lib/ranikust`) ([ADR-0054]). It also refuses its own binary when a
+writable mount other than the container's root reaches it, since a `RUN` could
+then alter it: a bind without `:ro` or a volume without `readOnly: true`, a
+directory holding it mounted read-write too, or another hard link of the file.
+Mount a copy with one link read-only, outside any tree mounted read-write
 ([ADR-0101], [Installation](install.md#use-it-in-a-container)). It refuses too
 when it cannot tell which mount its binary is on, as under an emulator such as
 qemu-user or when started from a memfd: run ranikust natively, from a regular
-file. Devices you give the container with `--device` stay reachable by a
+file; or when `/proc/self/mountinfo` does not place it: mount `/proc`. Devices you give the container with `--device` stay reachable by a
 `RUN`: ranikust cannot tell them from the container's own, so pass only what
 the build needs.
 

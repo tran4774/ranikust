@@ -102,8 +102,10 @@ the scheduler runs one stage at a time) or a private directory per stage
     [ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
     The installed binary is refused on a writable mount other than `/`'s
     (bound without `:ro`, from outside the container or inside it, a
-    volume), and on a mount ranikust cannot tell (qemu-user, a memfd),
-    before anything is written: a `RUN` reaches it by name, and the build
+    volume), when a writable mount reaches it (its tree bound read-write
+    too, by `/proc/self/mountinfo`; a file with another hard link), and on
+    a mount ranikust cannot tell (qemu-user, a memfd, a mount table that
+    does not place it), before anything is written: a `RUN` reaches it by name, and the build
     no longer runs it (ADR-0101).
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).

@@ -44,7 +44,13 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    (`statx` `STATX_MNT_ID`, `statvfs` `ST_RDONLY`: `BinaryMount`; a mount
    id of 0, which qemu-user's `statx` gives for every file and the kernel
    for a memfd, is `NoMountId`; a fallback through `/proc/self/fdinfo` is
-   [#95](https://github.com/tran4774/ranikust/issues/95)). The copy runs with
+   [#95](https://github.com/tran4774/ranikust/issues/95)). On another
+   read-only mount, a file with other hard links is `Linked`, and one whose
+   path in its file system lies under the root of a writable mount of the
+   same `major:minor` in `/proc/self/mountinfo` is `Exposed`
+   (`reached_writable`, by path components, nothing opened); a table that
+   cannot be parsed or does not place the file is `Unplaced`, and one that
+   cannot be read `Unknown`. The copy runs with
    `execveat(<n>, "", AT_EMPTY_PATH)` on its close-on-exec descriptor,
    with the same arguments, environment and descriptors, plus
    `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file limit ranikust
@@ -57,7 +63,7 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    works, or the check fails, the build goes on with a warning, the
    binary's mount then measured on the file it runs from. `ranikust`
    refuses kaniko mode on `/` with the binary on a writable mount other
-   than `/`'s, or on one it cannot tell
+   than `/`'s, reached by one, or on one it cannot tell
    ([kaniko mode](kaniko-mode.md#invariants)).
 1. While the process is still **single-threaded** (before tokio or rayon
    start), `unshare(CLONE_NEWNS)` and make `/` a slave mount

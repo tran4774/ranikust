@@ -63,11 +63,15 @@ sudo ranikust --context=. --destination=registry.example.com/team/app:1.0
 Bind-mount the binary at `/ranikust/bin/ranikust`, read-only. In kaniko mode,
 which a default Docker container or Kubernetes pod gets, ranikust builds on the
 container's own `/` and keeps everything under `/ranikust` out of the image, as
-kaniko does with `/kaniko`. There it refuses to start from a binary on a
-writable mount other than the container's root (Docker binds read-write unless
-told `:ro`; in Kubernetes set `readOnly: true` on its `volumeMount`): a `RUN`
-is root on that `/`. A binary built into the container's image needs no such
-mount. Put the build context there too, read-only:
+kaniko does with `/kaniko`. There the binary must not be reachable through a
+writable mount other than the container's root, since a `RUN` is root on that
+`/`. ranikust refuses one bound read-write (Docker binds read-write unless told
+`:ro`; in Kubernetes set `readOnly: true` on its `volumeMount`), one inside a
+directory that is also mounted read-write (put it outside that tree, or mount
+the tree read-only too), and a file with other hard links (mount a copy:
+cargo's `target/release/ranikust` is a link of its copy in `deps/`). A binary
+built into the container's image needs no such mount. Put the build context
+there too, read-only:
 
 ```sh
 docker run --rm \

@@ -114,7 +114,8 @@ xattrs, `USER` and `--chown` lookup in the root's own `/etc/passwd`, the
 ignore list's matching, and deletion by descriptor that never crosses a mount
 point (`rnk-snapshot` decides what to delete in a build root, `rnk-store` in
 the store). Also the operator's host paths that the build context's owner must
-not steer, such as an output's directory (ADR-0076). **Must not** reach a root
+not steer, such as an output's directory (ADR-0076), and the parser of
+`/proc/self/mountinfo`. **Must not** reach a root
 path by joining strings onto a host path, follow symlinks or cross mount points
 when deleting, decompress layers, or mount, create namespaces or run
 processes.
@@ -227,7 +228,8 @@ depend on higher ones. Besides the chain:
 - `rnk-snapshot` uses `rnk-layer` (decoder for extraction, writer for export)
   and `rnk-store`; `rnk-cache` uses `rnk-store`; `rnk-registry` does not: it
   writes pulls into a sink its caller gets from `rnk-store`.
-- `rnk-sandbox` uses `rnk-rootfs` for `USER`.
+- `rnk-sandbox` uses `rnk-rootfs` for `USER` and for the parser of
+  `/proc/self/mountinfo` it shares with `rnk-snapshot` (ADR-0101).
 - `rnk-context` uses `rnk-ignore` for its walk (ADR-0027), and `rnk-sched` uses
   `rnk-dockerfile` for the stage graph: both interim, `[open: #7]`.
 - `rnk-rootfs` never depends on `rnk-layer`. `rnk-dockerfile`, `rnk-ignore` and

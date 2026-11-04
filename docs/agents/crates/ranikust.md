@@ -139,9 +139,11 @@ Each step before the next; design in
    is refused where root may mount (ADR-0054), with `--network=none`
    (ADR-0057), with a writable `/proc/sys`
    (`exposure::proc_sys_read_only`, ADR-0054) and with ranikust's binary on
-   a writable mount other than `/`'s or one whose mount cannot be told
+   a writable mount other than `/`'s, reached by one (its tree bound
+   read-write too, another hard link), or one whose mount cannot be told
    (`refuse_writable_binary` on `Sealing::binary()`, ADR-0101: qemu-user, a
-   memfd or a failed `statx`, each with its own guidance); then the
+   memfd, a mount table that does not place it or a failed call, each with
+   its own guidance); then the
    warnings for secret-looking build arguments and file secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
@@ -298,7 +300,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   with `systempaths=unconfined`, before anything is pulled);
   `binary_mounts_on_slash` (ADR-0101: the binary bound read-write, file or
   directory, refused with the `:ro` guidance before the state directory
-  exists; bound `:ro` or copied into the container's root, it builds; the
+  exists, and so are the binary bound `:ro` from a tree bound read-write too
+  and a file with another hard link; bound `:ro`, its tree `:ro` too, or
+  copied into the container's root, it builds; the
   only test of `refuse_unsafe_slash` calling `refuse_writable_binary`);
   `rt_auto_privileged_container` (`--mode=auto` in a `--privileged`
   container is refused, with or without `/.dockerenv`). A

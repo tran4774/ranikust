@@ -24,6 +24,9 @@ never delete across a mount: compare `mnt_id`, not `st_dev`.
   (ADR-0076): `OutputDir`, `Fence`, `reach`.
 - The kernel check `probe_support` (Linux 5.8, ADR-0028): `openat2` and the
   `statx` mount id, no string-based fallback (`Error::Unsupported`).
+- The parser of `/proc/self/mountinfo` (`parse_mountinfo`), shared by
+  `rnk-snapshot`'s ignore list and `rnk-sandbox`'s measurement of the
+  binary's mount (ADR-0101); text only, it opens nothing.
 
 ## Must not
 
@@ -78,6 +81,7 @@ pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Resul
 pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // --chown (rnk-builder): gid = uid without a group
+pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>, MountInfoError>; // proc(5) lines, \NNN unescaped; MountInfo { mount_id, parent_id, device, fs_root, mount_point, fs_type, read_only (ro in the mount's or the file system's options) }; a line of another shape is an error, never skipped
 pub fn probe_support() -> Result<(), Unsupported>;             // start-up check (ADR-0028); Cause::{Missing, Blocked, Hidden}, kernel release
 ```
 
@@ -141,6 +145,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ADR-0059): sparse, empty and dense files copy exactly, a source holding
   more than its size is refused, and one cut short between `SEEK_DATA` calls
   is refused rather than zero-filled (a red-team finding, fixed).
+  `src/mountinfo.rs`: read-only by a mount's or its file system's options,
+  `\040` escapes, a line missing its file system's options or with an extra
+  field refused (ADR-0101).
 - **T0, red team:** `/var/run` (ADR-0052 D4, `src/extract/tests.rs`): through
   a container's `/var/run -> ../run`, ignored `/run/secrets` and
   `/run/.containerenv` skipped at their physical path, an opaque marker below

@@ -90,9 +90,10 @@ These are documented properties, not vulnerabilities:
   user, root outside a container where it may not mount, root in a
   container whose `/proc/sys` is writable
   ([ADR-0054](docs/adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)),
-  and kaniko mode on a container's `/` with ranikust's binary on a writable
-  mount other than `/`'s (mount it read-only: Docker `:ro`, Kubernetes
-  `readOnly: true`), or on a mount it cannot determine
+  and kaniko mode on a container's `/` with ranikust's binary reachable
+  through a writable mount other than `/`'s (mount the binary, and any tree
+  that holds it, read-only: Docker `:ro`, Kubernetes `readOnly: true`; a
+  file with one link), or on a mount it cannot determine
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md));
   the rootless mode and its AppArmor advice for Ubuntu 24.04 or later are
   Phase 3 ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
