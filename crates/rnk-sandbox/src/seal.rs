@@ -298,6 +298,7 @@ fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool>
     let below = path.strip_prefix(&mine.mount_point).ok()?;
     // Paths compared, never opened.
     let in_fs = mine.fs_root.join(below);
+    // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
     Some(
         mounts
             .iter()

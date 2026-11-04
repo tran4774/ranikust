@@ -831,9 +831,9 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              refuses to build without knowing"
         ))
         .with_guidance(
-            "ranikust opens /proc/self/exe and reads its mount with statx (STATX_MNT_ID) and \
-             fstatvfs: mount /proc in the container and let its seccomp profile allow fstatfs \
-             (ADR-0101)",
+            "mount /proc in the container so that /proc/self/exe and /proc/self/mountinfo can be \
+             read, and let its seccomp profile allow fstatfs: ranikust reads the binary's mount \
+             with statx (STATX_MNT_ID) and fstatvfs (ADR-0101)",
         )),
         None => Err(Failure::error(format!(
             "{how}: the mount of ranikust's binary was not measured; kaniko mode on / refuses \
@@ -1314,6 +1314,7 @@ mod tests {
         assert!(
             unknown.message.contains(&errno.to_string())
                 && unknown.guidance.contains("/proc/self/exe")
+                && unknown.guidance.contains("/proc/self/mountinfo")
                 && unknown.guidance.contains("fstatfs"),
             "{}: {}",
             unknown.message,

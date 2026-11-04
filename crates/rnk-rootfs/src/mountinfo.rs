@@ -171,9 +171,9 @@ mod tests {
     #[test]
     fn a_spilled_option_is_kept_out_of_read_only() {
         let text = b"\
-1 0 0:40 / /n rw - nfs srv:/x rw,fsc=a b,ro
-2 0 0:41 / /m rw - nfs srv:/y ro,fsc=a b
-3 0 0:42 / /o rw - nfs srv:/z rw,fsc=a,ro b
+1 0 0:40 / /n rw - ext4 /dev/sdb rw,opt=a b,ro
+2 0 0:41 / /m rw - ext4 /dev/sdc ro,opt=a b
+3 0 0:42 / /o rw - ext4 /dev/sdd rw,opt=a,ro b
 ";
         let mounts = parse_mountinfo(text).unwrap();
         let ro: Vec<bool> = mounts.iter().map(|m| m.read_only).collect();
