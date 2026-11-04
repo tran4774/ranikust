@@ -23,8 +23,9 @@
 //!
 //! While the process is single-threaded: [`run_from_sealed_copy`] first,
 //! which runs the process again from the copy, then
-//! [`enter_build_namespace`], then [`probe`]. Then [`Sandbox::start`], which replays the stub journals of
-//! dead builds and starts the spawner thread, and [`Sandbox::run`] per `RUN`.
+//! [`enter_build_namespace`], then [`probe`]. Then [`Sandbox::start`], which
+//! replays the stub journals of dead builds and starts the spawner thread,
+//! and [`Sandbox::run`] per `RUN`.
 //! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only
 //! says root may not mount), then [`trim_to_run_capabilities`], still
 //! single-threaded, then [`Sandbox::start_direct`] (ADR-0078).

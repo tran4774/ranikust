@@ -209,9 +209,15 @@ fn main() -> ExitCode {
         tracing::warn!("{warning}");
     }
     match sealing {
-        Some(Sealing::Sealed(way)) => {
+        Some(Sealing::Sealed { way, passed_over }) if passed_over.is_empty() => {
             tracing::debug!(%way, "running from a sealed copy of the binary (ADR-0101)");
         }
+        // Why a cheaper way was passed over, such as a refused mount.
+        Some(Sealing::Sealed { way, passed_over }) => tracing::debug!(
+            %way,
+            %passed_over,
+            "running from a sealed copy of the binary (ADR-0101)"
+        ),
         Some(Sealing::Unsealed(why)) => tracing::warn!(
             "running from the binary as installed, not from a sealed copy (ADR-0101): {why}"
         ),

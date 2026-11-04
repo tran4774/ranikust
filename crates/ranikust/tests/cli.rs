@@ -524,9 +524,10 @@ fn logging_flags_change_what_is_written() {
 
 /// ADR-0101: a build runs again from a sealed copy of the binary, once,
 /// with the same arguments. As a user nothing can be mounted, so the copy
-/// is a sealed memfd; the test hook makes each later way the first, or
-/// leaves none, and the build then goes on with a warning. A marker set
-/// from outside makes no copy and passes for none: the run warns.
+/// is a sealed memfd, and the copy logs why the overlay was passed over;
+/// the test hook makes each later way the first, or leaves none, and the
+/// build then goes on with a warning. A marker set from outside makes no
+/// copy and passes for none: the run warns.
 #[test]
 fn a_build_runs_from_a_sealed_copy_made_once() {
     if skip_as_root() {
@@ -559,10 +560,14 @@ fn a_build_runs_from_a_sealed_copy_made_once() {
             .collect()
     };
     let unsealed = "running from the binary as installed";
-    for (fault, way) in [
-        (None, "memfd"),
-        (Some("seal-memfd"), "memfd"),
-        (Some("seal-tmpfile"), "tmpfile"),
+    for (fault, way, passed_over) in [
+        (
+            None,
+            "memfd",
+            Some(r#"passed_over="overlay: fsopen(overlay): "#),
+        ),
+        (Some("seal-memfd"), "memfd", None),
+        (Some("seal-tmpfile"), "tmpfile", None),
     ] {
         let env: Vec<_> = fault
             .map(|f| ("RANIKUST_DEBUG_FAULT", f))
@@ -572,6 +577,10 @@ fn a_build_runs_from_a_sealed_copy_made_once() {
         let lines = sealed(&err);
         assert_eq!(lines.len(), 1, "{fault:?}: {err}");
         assert!(lines[0].contains(&format!("way={way}")), "{fault:?}: {err}");
+        match passed_over {
+            Some(why) => assert!(lines[0].contains(why), "{fault:?}: {err}"),
+            None => assert!(!lines[0].contains("passed_over"), "{fault:?}: {err}"),
+        }
         assert!(!err.contains(unsealed), "{fault:?}: {err}");
     }
     // The O_TMPFILE copy left nothing behind.
