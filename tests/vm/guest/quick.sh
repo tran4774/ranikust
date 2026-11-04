@@ -361,7 +361,7 @@ slash_lock_refuses_a_second_build() {
 }
 
 slash_lock_in() {
-  local c="$1" ctx="$W/slash-lock" rc=0 out i first=
+  local c="$1" ctx="$W/slash-lock" rc=0 out i first= pid
   sudo mkdir -p "$ctx" &&
     printf 'FROM scratch\nRUN sleep 15\n' | sudo tee "$ctx/Dockerfile" >/dev/null || return 1
   sudo docker run -d --name "$c" -v "$RNK:/ranikust/bin/ranikust:ro" -v "$ctx:/ranikust/ctx:ro" \
@@ -379,6 +379,12 @@ slash_lock_in() {
     fi
     sleep 0.5
   done
+  # ADR-0101: on / root may not mount, so the build runs from a sealed
+  # memfd copy of its binary, which even root on the VM may not write.
+  pid="$(pgrep -x ranikust)" && sudo python3 -I guest/sealed-exe.py memfd "$RNK" "$pid" || {
+    echo "error: slash lock: the build on / does not run from a sealed memfd copy" >&2
+    return 1
+  }
   out="$(sudo docker exec "$c" /ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx \
     --no-push --state-dir /var/lib/rnk-second 2>&1)" || rc=$?
   if [ "$rc" != 1 ] || ! grep -qF 'another ranikust build is using / in this container' <<<"$out"; then

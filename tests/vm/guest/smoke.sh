@@ -293,6 +293,61 @@ EOF
     ! pgrep -x ranikust-init >/dev/null ||
       { echo "error: the RUN's init outlived ranikust" >&2; exit 1; }
     echo "host: a RUN that cleared its death signal dies with ranikust (SIGKILL)"
+    # ADR-0101: a build runs from a sealed copy of its binary, which every
+    # process it forks shares: a detached read-only overlay where root may
+    # mount (overlay mode, and kaniko mode with a directory per stage), a
+    # sealed memfd when the overlay is skipped. While the RUN waits, root
+    # on the host may write neither ranikust's nor its init's
+    # /proc/<pid>/exe, and the RUN may not open its init's for writing.
+    # The RUN still gets the core-file limit ranikust started with.
+    s="$W/host/sealed"
+    sudo mkdir -m 700 -p "$s/ctx"
+    sudo tee "$s/ctx/Dockerfile" >/dev/null <<DOCKERFILE
+FROM $IMAGE
+RUN <<PY
+#!/usr/local/bin/python3
+import ctypes, os, resource, signal, sys
+ctypes.CDLL(None).prctl(15, b"rnksealed", 0, 0, 0)
+core = resource.getrlimit(resource.RLIMIT_CORE)[0]
+if core != 1048576:
+    sys.exit(f"RUN: RLIMIT_CORE is {core}, want 1048576")
+for flags in (os.O_WRONLY, os.O_RDWR):
+    try:
+        os.close(os.open("/proc/1/exe", flags))
+    except OSError as e:
+        print(f"RUN: its init's /proc/1/exe for writing: {e.strerror}")
+    else:
+        sys.exit("RUN: opened its init's /proc/1/exe for writing")
+signal.signal(signal.SIGUSR1, lambda *a: sys.exit(0))
+signal.alarm(120)
+signal.pause()
+PY
+DOCKERFILE
+    for variant in overlay:overlay kaniko:overlay seal-memfd:memfd; do
+      how="${variant%%:*}" way="${variant#*:}"
+      args=(--context "$s/ctx" --no-push --state-dir "$s/w-$how" --log-format=text -v debug)
+      fault=()
+      case "$how" in
+        kaniko) args+=(--mode=kaniko) ;;
+        seal-memfd) fault=(RANIKUST_DEBUG_FAULT=seal-memfd) ;;
+      esac
+      slog="$(mktemp)"
+      sudo env "${fault[@]}" prlimit --core=1048576:unlimited "$RNK" "${args[@]}" >"$slog" 2>&1 &
+      for _ in $(seq 120); do pgrep -x rnksealed >/dev/null && break; sleep 1; done
+      pgrep -x rnksealed >/dev/null ||
+        { echo "error: sealed ($how): the RUN never started" >&2; cat "$slog" >&2; exit 1; }
+      mapfile -t pids < <(pgrep -x ranikust; pgrep -x ranikust-init)
+      [ "${#pids[@]}" = 2 ] ||
+        { echo "error: sealed ($how): want one ranikust and one init, found ${pids[*]}" >&2; exit 1; }
+      sudo python3 -I guest/sealed-exe.py "$way" "$RNK" "${pids[@]}" ||
+        { sudo pkill -KILL -x ranikust; exit 1; }
+      sudo pkill -USR1 -x rnksealed
+      wait $! || { echo "error: sealed ($how): the build failed" >&2; cat "$slog" >&2; exit 1; }
+      grep -q "msg=\"running from a sealed copy of the binary (ADR-0101)\" way=$way" "$slog" ||
+        { echo "error: sealed ($how): no $way copy in the log" >&2; cat "$slog" >&2; exit 1; }
+      grep "^RUN: its init" "$slog" | sed "s/^/host: $how: /"
+      echo "host: $how builds from a sealed $way copy no one may write"
+    done
   fi
   echo "$name: ok"
 done
