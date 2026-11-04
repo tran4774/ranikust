@@ -113,8 +113,10 @@ These follow from decisions and are documented to users rather than fixed:
   own binary inside the sandbox, as runc's CVE-2019-5736. That binary is a
   sealed copy no one can write
   ([ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)):
-  a read-only overlay mounted nowhere, or a sealed memfd where ranikust may
-  not mount, in every mode. Its command line also refuses the script path
+  a read-only overlay mounted nowhere where root may mount, else a sealed
+  memfd, in every mode; kaniko mode on `/`, where a `RUN` reaches the
+  installed file whose pages the overlay's copy runs, always takes the
+  memfd. Its command line also refuses the script path
   and exits, and ranikust is non-dumpable, so no other `RUN` process opens
   that copy's `/proc/<pid>/exe`. Where neither copy can be made (no mount,
   `vm.memfd_noexec=2`), the copy is an `O_TMPFILE` file with no name, or,

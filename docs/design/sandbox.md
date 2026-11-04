@@ -31,12 +31,16 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    (`libcontainer/exeseal`), so every process it forks, the `RUN` child
    until `execve` and the init, has that copy as `/proc/self/exe`. The ways,
    in order:
-   - where ranikust may mount, an overlay made with `fsopen`, `fsconfig`
+   - where root may mount, an overlay made with `fsopen`, `fsconfig`
      and `fsmount` and never attached: its lower layers are the binary's
-     directory and an empty directory (removed once mounted), with no upper
-     layer, `xino=off`, mounted read-only, `nodev`, `nosuid`. The file
-     opened from it must have the running binary's inode number, size and
-     time. No copy is made; nothing can unmount or remount it;
+     directory and an empty directory (made in `TMPDIR`, removed once
+     mounted), with no upper layer, `xino=off`, mounted read-only, `nodev`,
+     `nosuid`. The file opened from it must have the running binary's inode
+     number, size and time. No copy is made; nothing can unmount or remount
+     it. Its file runs the installed file's own pages, so "may mount" is
+     the build's own check (step 1, run in a child that then exits): kaniko
+     mode on `/`, where a `RUN` reaches the installed file, runs only where
+     it fails, and takes the memfd even where `fsmount` alone works;
    - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
      copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
      refuses it. It costs the binary's size in memory;
@@ -47,10 +51,11 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    The copy runs as `/proc/self/fd/<n>` with the same arguments,
    environment and descriptors, plus `RANIKUST_SEALED_COPY=<way>`, and the
    core-file limit ranikust started with (`forbid_core_dumps` records it
-   again). The copy's run makes no copy, checks `/proc/self/exe` (an
-   overlay mounted read-only, the memfd's seals, no link), takes its name
-   from `argv[0]` again and logs the way at debug. When no way works, or
-   the check fails, the build goes on with a warning.
+   again). The copy's run makes no copy, checks `/proc/self/exe` (a
+   read-only overlay attached nowhere, the memfd's seals, no link), takes
+   its name from `argv[0]` again and logs at debug the way and why each
+   way before it failed. When no way works, or the check fails, the build
+   goes on with a warning.
 1. While the process is still **single-threaded** (before tokio or rayon
    start), `unshare(CLONE_NEWNS)` and make `/` a slave mount
    (`--make-rslave`). From then on every build mount disappears with the

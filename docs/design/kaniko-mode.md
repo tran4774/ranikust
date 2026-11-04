@@ -96,6 +96,11 @@ the scheduler runs one stage at a time) or a private directory per stage
       directory of a volume mounted at a parent.
   - **Not dumpable.** `/proc/<ranikust>/{fd,environ,mem,maps,root}` need
     `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers).
+  - **A sealed binary.** ranikust runs from a sealed memfd copy of its
+    binary, about 11.4 MiB counted in the container's memory, never from
+    the overlay a host build may use
+    ([sandbox step 0](sandbox.md#process-set-up-once-per-build),
+    [ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
     The `RUN` child drops every capability outside Docker's defaults from its

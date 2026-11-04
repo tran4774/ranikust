@@ -262,8 +262,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--help`, `version`, refusals and validation; the kernel refusal, the
   seccomp message and the emulator message (Rosetta) through
   `RANIKUST_DEBUG_FAULT=kernel-missing|kernel-blocked|kernel-hidden`;
-  `a_build_runs_from_a_sealed_copy_made_once` (a memfd as a user, once;
-  `seal-tmpfile`, `seal-none` and a marker set from outside, which warns);
+  `a_build_runs_from_a_sealed_copy_made_once` (a memfd as a user, once,
+  the overlay logged as passed over; `seal-tmpfile`, `seal-none` and a
+  marker set from outside, which warns);
   `--metrics-file` over the variable; the report on every exit path, panic
   included (`RANIKUST_DEBUG_FAULT=panic|error`); a refused flag exits 2 before
   any work (no state directory, the value never echoed, no `RANIKUST_*`
@@ -287,7 +288,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   overlay mode's set-up leaves nothing, a ramfs state directory refused, root
   without `CAP_SYS_ADMIN` refused before the state directory exists);
   `slash_lock_refuses_a_second_build`, whose first build on `/` must run
-  from a sealed memfd (ADR-0101); `adr0054_refusals` (kaniko mode on
+  from a sealed memfd (ADR-0101), as must a build on `/` with
+  `--cap-add SYS_ADMIN` (`rt_sysadmin_slash_runs_from_a_memfd`);
+  `adr0054_refusals` (kaniko mode on
   `/` refused with `--privileged` and with `systempaths=unconfined`, before
   anything is pulled); `rt_auto_privileged_container` (`--mode=auto` in a
   `--privileged` container is refused, with or without `/.dockerenv`). A

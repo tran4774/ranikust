@@ -44,7 +44,7 @@ installed binary.
 
 At start-up a build runs again from a sealed copy of ranikust's binary,
 tried in order: a read-only overlay of the binary's directory that is
-mounted nowhere, where ranikust may mount; else a sealed memfd; else an
+mounted nowhere, where root may mount; else a sealed memfd; else an
 `O_TMPFILE` copy; and when none works it builds on from the installed
 binary with today's barriers and a warning (the maintainer, 2026-11-04:
 "tất cả theo khuyến nghị", option (x)).
@@ -63,6 +63,22 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   inode number, size and modification time. With no upper layer the kernel
   has no way to write through it, and with no attachment nothing can
   unmount or remount it.
+- **Only where root may mount.** The overlay's file is the installed file:
+  the copy runs that file's own pages, and the kernel does not refuse a
+  write to the installed file while it runs [measured]. So it is tried
+  only where the
+  build's own check finds root may mount (the steps of
+  `enter_build_namespace`, run in a child that then exits), which never
+  builds on `/`: kaniko mode on `/` runs only where root may not mount
+  ([ADR-0054](0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)),
+  and there a `RUN` reaches the installed file. Kaniko mode on `/` always
+  takes the memfd, even where `fsmount` works but `mount(2)` does not
+  (Docker `--cap-add SYS_ADMIN` under AppArmor's `docker-default`).
+- **Writes outside the state directory.** The overlay's empty layer, a
+  directory `.ranikust-seal-<pid>-<n>`, and the `O_TMPFILE` copy go to
+  `TMPDIR`: the state directory is not checked yet. The directory lives
+  for a few system calls; a `SIGKILL` in between leaves it, empty. The
+  `O_TMPFILE` copy has no name and goes with the build.
 - **The memfd.** `memfd_create` with `MFD_EXEC` (without it before Linux
   6.3), the binary copied in, sealed `F_SEAL_SEAL|SHRINK|GROW|WRITE`.
   `vm.memfd_noexec=2` refuses it, and the next way is tried.
@@ -71,14 +87,18 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   `ETXTBSY` keeps the running copy from being written, as for the installed
   binary today, but such a write would not reach the installed binary.
 - **The run of the copy.** `execve("/proc/self/fd/<n>")` with
-  `RANIKUST_SEALED_COPY=<way>` added and the core-file limit ranikust
-  started with given back, which the copy records again
+  `RANIKUST_SEALED_COPY=<way>` added (then `; ` and why each way before it
+  failed) and the core-file limit ranikust started with given back, which
+  the copy records again
   ([ADR-0051](0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)).
   Seeing the variable, the copy makes no copy (no loop), checks
-  `/proc/self/exe` (on an overlay mounted read-only, the memfd's seals, no
-  link), takes its name from `argv[0]` again, and logs the way at debug.
+  `/proc/self/exe` (on a read-only overlay attached nowhere, the memfd's
+  seals, no link), takes its name from `argv[0]` again, and logs the way
+  and the ways passed over at debug.
 - **Fallback.** When every way fails, or the copy's check fails, the build
   goes on with a warning and the three barriers ADR-0082 lists. No refusal.
+  Only when a copy did not run and the core-file limit cannot be set back
+  to 0 does the build stop, as when ADR-0051's limit cannot be set.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-memfd|seal-tmpfile|seal-none`
   skips the ways before the one named, or all of them.
 - **Boundary.** The copy is made in `rnk-sandbox`. Its overlay seals
@@ -90,8 +110,8 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
 ### Consequences
 
 - Good, because no process ranikust forks hands a `RUN` a binary it could
-  write through `/proc/<pid>/exe`, in the full sandbox and in `Direct` on
-  `/`, without relying on `ETXTBSY` (the overlay and the memfd) [measured].
+  write through `/proc/<pid>/exe`, in the full sandbox (the overlay) and in
+  `Direct` on `/` (the memfd), without relying on `ETXTBSY` [measured].
 - Good, because the overlay copies nothing, and the memfd needs no mount,
   which is why `Direct` on `/` gets it too.
 - Bad, because where ranikust may not mount the copy takes the binary's size
@@ -101,31 +121,40 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   copies the binary: about 2.6 ms [measured].
 - Bad, because the `O_TMPFILE` copy and the warned fallback still rely on
   `ETXTBSY`.
-- Neutral, because the installed file is no longer the running binary, so
-  `ETXTBSY` no longer guards it during a build. The running build no longer
-  reads it, and in `Direct` on `/` a `RUN`, root on the container's `/`,
-  could already replace it by name.
+- Bad, because the set-up writes outside the state directory, store and
+  outputs: the overlay's empty layer and the `O_TMPFILE` copy, in `TMPDIR`
+  (the host-safety invariant of `ARCHITECTURE.md` names them).
+- Neutral, because the installed file is no longer guarded by `ETXTBSY`
+  during a build. With the memfd or the `O_TMPFILE` copy the running build
+  does not read it, and in `Direct` on `/` a `RUN`, root on the container's
+  `/`, could already replace it by name. With the overlay a write to it
+  reaches the running copy [measured]; the overlay is used only where no
+  `RUN` reaches the installed file, and whoever else may write that file
+  could already replace it before the build.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy (`nosuid`; a memfd has none). ranikust
   uses neither.
 
 ## Evidence
 
-- The bind does not work [measured]: on branch
-  `feat/sandbox-ro-self-exe-bind` (T2, the VM, Linux 6.8), after a read-only
-  bind over the binary's path in the build's mount namespace,
-  `/proc/self/exe` of the running process still named the original mount,
-  not the bind's.
-- runc [external] (main, `libcontainer/exeseal`, since 1.2):
+- The bind does not work [measured]: with ADR-0082's bind built (commits
+  `0cfbb80` to `fc22d06` of the pull request that closes #32, reverted by
+  `1081130` before merge; T2, the VM, Linux 6.8), after a read-only bind
+  over the binary's path in the build's mount namespace, `/proc/self/exe`
+  of the running process still named the original mount, not the bind's.
+- runc [external] (`libcontainer/exeseal`, since 1.2.0):
   `sealedOverlayfs` (`overlayfs_linux.go`) builds an overlay with
   `fsopen`/`fsconfig`/`fsmount`, never attached, lower layers the binary's
   directory and a dummy, and opens the binary from it: "There is no way to
   'unwrap' this (unlike MS_BIND+MS_RDONLY) … This only works for privileged
   users"; its fallbacks (`cloned_binary_linux.go`) are a sealed memfd with
   `MFD_EXEC` (`vm.memfd_noexec=2` handled), then `O_TMPFILE`, then an
-  unlinked temporary file; `container_linux.go:521-525,600` runs
+  unlinked temporary file; `libcontainer/container_linux.go` runs
   `runc init` as `/proc/self/fd/<n>` of that file.
 - The copies [measured]: T0 `the_ways_are_tried_in_order_until_one_runs`,
+  `a_failed_recovery_stops_the_search`,
+  `the_copy_gets_the_environment_with_one_marker` (one marker, whatever was
+  inherited: no loop), `the_overlay_is_made_only_where_root_may_mount`,
   `a_memfd_copy_is_the_binary_sealed_against_writes` (writes and resizes
   `EPERM` through any descriptor), `a_tmpfile_copy_is_the_binary_with_no_name_open_read_only`;
   the binary's `a_build_runs_from_a_sealed_copy_made_once` (a memfd as a
@@ -136,10 +165,23 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   kaniko mode per stage and with the overlay skipped, ranikust and its init
   run one copy (a detached read-only overlay, or a sealed memfd) that root
   cannot open for writing; a kaniko-mode build on a container's `/` runs
-  from a sealed memfd ([testing](../testing.md)).
-- Cost [measured]: on this branch's x86_64 static binary (11,901,064 bytes),
-  as a user on Linux 7.0 (the developer's machine, while a T2 VM ran),
-  start-up to the set-up refusal took 3.46 ms
+  from a sealed memfd, in a default container and with
+  `--cap-add SYS_ADMIN` ([testing](../testing.md)).
+- The overlay's limits [measured] (T2, the VM, Linux 6.8, Docker 29.1.3
+  with runc 1.3.4, AppArmor enabled):
+  - as root on the VM, while a binary runs from such an overlay, its
+    installed path opens for writing (no `ETXTBSY`, which the same binary
+    run from its path gives), and a write there changes the bytes the
+    running process maps; the overlay's own file refuses writes (`EROFS`),
+    through `/proc/<pid>/exe` too;
+  - in Docker with `--cap-add SYS_ADMIN` (the default seccomp profile and
+    `docker-default`), `fsopen`, `fsconfig` and `fsmount` work while
+    `mount(2)` on `/` after `unshare(CLONE_NEWNS)` fails with `EACCES`;
+    with `apparmor=unconfined` it works; without `SYS_ADMIN`, `fsopen`
+    fails with `EPERM`.
+- Cost [measured]: on the x86_64 static binary of this ADR's pull request
+  (11,901,064 bytes), as a user on Linux 7.0 (the developer's machine,
+  while a T2 VM ran), start-up to the set-up refusal took 3.46 ms
   (median of 40, p25 3.19, p75 4.18) with the memfd copy and 0.86 ms
   (p25 0.80, p75 0.92) with none (`seal-none`).
 
