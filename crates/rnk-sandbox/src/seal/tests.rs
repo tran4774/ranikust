@@ -153,7 +153,7 @@ fn a_failed_recovery_stops_the_search() {
 /// whatever marker was inherited, so it never makes a copy of its own.
 #[test]
 fn the_copy_gets_the_environment_with_one_marker() {
-    let marker = "tmpfile; memfd: memfd_create: Invalid argument";
+    let marker = "tmpfile; memfd: memfd_create: Permission denied";
     let vars = [
         ("PATH", "/bin"),
         (MARKER, "memfd"),
@@ -168,12 +168,15 @@ fn the_copy_gets_the_environment_with_one_marker() {
         [
             "PATH=/bin",
             "HOME=/root",
-            "RANIKUST_SEALED_COPY=tmpfile; memfd: memfd_create: Invalid argument",
+            "RANIKUST_SEALED_COPY=tmpfile; memfd: memfd_create: Permission denied",
         ]
     );
     assert_eq!(
         parse_marker(marker),
-        Some((SealedCopy::Tmpfile, "memfd: memfd_create: Invalid argument"))
+        Some((
+            SealedCopy::Tmpfile,
+            "memfd: memfd_create: Permission denied"
+        ))
     );
     assert_eq!(parse_marker("memfd"), Some((SealedCopy::Memfd, "")));
     assert_eq!(parse_marker("overlay; x"), None);

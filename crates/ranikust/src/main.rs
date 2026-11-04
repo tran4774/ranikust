@@ -244,8 +244,8 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-/// The ways to seal the binary, in order; the test hook's `seal-*` values
-/// skip the ways before the one they name.
+/// The ways to seal the binary, in order; the test hook's `seal-tmpfile`
+/// skips the memfd, `seal-none` both.
 fn seal_ways(fault: Option<&str>) -> &'static [SealedCopy] {
     match fault {
         Some("seal-tmpfile") => &[SealedCopy::Tmpfile],

@@ -4,9 +4,9 @@
 //! something else: a `RUN` child until `execve`, a full-sandbox `RUN`'s init
 //! for good. Run from a copy no `RUN` can write, none of them hands a `RUN`
 //! a binary it could change through `/proc/<pid>/exe`, whatever the kernel
-//! does about writes to a running file. The copies are runc's
-//! (`CloneBinary`, `libcontainer/dmz` in runc 1.2.0), without the overlay
-//! runc tries first.
+//! does about writes to a running file. The copies are the first two of
+//! runc's (`CloneBinary`, `libcontainer/dmz` in runc 1.2.0), without the
+//! overlay runc tries before them or the named temporary file after.
 
 use std::convert::Infallible;
 use std::ffi::{CString, OsStr, OsString};

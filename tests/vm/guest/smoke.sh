@@ -299,10 +299,9 @@ EOF
     # is skipped. While the RUN waits, root on the host may write neither
     # ranikust's nor its init's /proc/<pid>/exe (guest/sealed-exe.py): the
     # memfd's open or its seal refuses, the O_TMPFILE copy's open (ETXTBSY,
-    # its only guard). The RUN cannot even open its
-    # init's: the init is not dumpable (ADR-0051), the barrier before the
-    # seal; the RUN reports the errno. The RUN still gets the core-file
-    # limit ranikust started with.
+    # its only guard). The RUN cannot even open its init's: the init is not
+    # dumpable (ADR-0051), the barrier before the seal; the RUN reports the
+    # errno. The RUN still gets the core-file limit ranikust started with.
     s="$W/host/sealed"
     sudo mkdir -m 700 -p "$s/ctx"
     sudo tee "$s/ctx/Dockerfile" >/dev/null <<DOCKERFILE
