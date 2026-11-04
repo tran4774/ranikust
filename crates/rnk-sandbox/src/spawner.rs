@@ -64,11 +64,20 @@ impl Sandbox {
     /// the full sandbox can run (ADR-0014, ADR-0060). Kaniko mode that
     /// cannot mount uses [`Sandbox::start_direct`].
     ///
+    /// First, in a process that entered the build's mount namespace
+    /// ([`crate::enter_build_namespace`]), the running binary is bound
+    /// read-only over itself there, before any `RUN` is cloned from it
+    /// (ADR-0082); never in a namespace the process may share with the host.
+    ///
     /// # Errors
     ///
-    /// The directory cannot be created or is a symlink, a journal cannot be
-    /// listed, or the thread cannot start.
+    /// The binary cannot be bound read-only over itself, the directory
+    /// cannot be created or is a symlink, a journal cannot be listed, or the
+    /// thread cannot start.
     pub fn start(caps: Caps, dir: &Path) -> Result<Self> {
+        if crate::setup::in_build_namespace() {
+            crate::setup::bind_own_binary(mount_api_supported())?;
+        }
         Self::start_inner(Some(caps), dir, None)
     }
 
@@ -3446,11 +3455,12 @@ mod tests {
         });
     }
 
-    /// T2 (the VM only), pins a barrier of the open `#!/proc/self/exe`
-    /// question (Q-422): a running binary cannot be opened for writing
-    /// through `/proc/<pid>/exe` (`ETXTBSY`), so a `RUN` that reaches
-    /// ranikust's binary cannot change it while ranikust runs. Nothing is
-    /// written: the open alone is refused.
+    /// T2 (the VM only), pins a barrier of the `#!/proc/self/exe` residual
+    /// (ADR-0082; the only one besides non-dumpability that `Direct` on `/`
+    /// keeps): a running binary cannot be opened for writing through
+    /// `/proc/<pid>/exe` (`ETXTBSY`), so a `RUN` that reaches ranikust's
+    /// binary cannot change it while ranikust runs. Nothing is written: the
+    /// open alone is refused.
     #[test]
     #[ignore = "T2: opens the running test binary for writing as root; run in the test VM only"]
     fn a_running_binary_cannot_be_opened_for_writing() {
@@ -3461,6 +3471,82 @@ mod tests {
             Mode::empty(),
         );
         assert_eq!(r.err(), Some(Errno::TXTBSY), "{exe}");
+    }
+
+    /// T2 (the VM only), ADR-0082: the binary bound read-only over itself
+    /// in the build's mount namespace, with `open_tree` and as where it is
+    /// refused. Its path then names the same file on a read-only mount of
+    /// its own: an open for writing fails with `EROFS`, which does not rest
+    /// on `ETXTBSY` (`O_TRUNC` asks the mount for write access before the
+    /// kernel looks at the running binary; tried only once the mount reads
+    /// as read-only, so nothing is ever truncated). A second call makes no
+    /// second bind. Control: `/proc/self/exe` still names the file on the
+    /// mount the process was executed from, which no bind made later
+    /// changes.
+    #[test]
+    #[ignore = "T2: binds the test binary over itself as real root in a private mount namespace; run in the test VM only"]
+    fn the_binary_is_bound_read_only_over_itself() {
+        use rustix::fs::{AtFlags, StatVfsMountFlags, StatxAttributes, StatxFlags};
+        let statx = |fd: &OwnedFd| {
+            rustix::fs::statx(
+                fd,
+                c"",
+                AtFlags::EMPTY_PATH,
+                StatxFlags::BASIC_STATS | StatxFlags::MNT_ID,
+            )
+            .unwrap()
+        };
+        let exe = || rustix::fs::open("/proc/self/exe", OFlags::PATH, Mode::empty()).unwrap();
+        for mount_api in [true, false] {
+            in_private_mount_namespace(move || {
+                let mode = if mount_api { "mount API" } else { "by path" };
+                let started = statx(&exe());
+                let path = fs::read_link("/proc/self/exe").unwrap();
+                let at = || {
+                    rustix::fs::open(&path, OFlags::PATH | OFlags::NOFOLLOW, Mode::empty()).unwrap()
+                };
+                let file =
+                    |st: &rustix::fs::Statx| (st.stx_dev_major, st.stx_dev_minor, st.stx_ino);
+                let before = statx(&at());
+                assert_eq!(file(&before), file(&started), "{mode}: {path:?}");
+                let flags = |fd: &OwnedFd| rustix::fs::fstatvfs(fd).unwrap().f_flag;
+                assert!(
+                    !flags(&at()).contains(StatVfsMountFlags::RDONLY),
+                    "{mode}: {path:?} is on a read-only mount: the test would prove nothing"
+                );
+
+                crate::setup::bind_own_binary(mount_api).unwrap();
+                let bound = at();
+                let st = statx(&bound);
+                assert_eq!(file(&st), file(&started), "{mode}: {path:?}");
+                assert_ne!(st.stx_mnt_id, before.stx_mnt_id, "{mode}: no new mount");
+                assert!(
+                    st.stx_attributes_mask.contains(StatxAttributes::MOUNT_ROOT)
+                        && st.stx_attributes.contains(StatxAttributes::MOUNT_ROOT),
+                    "{mode}: {path:?} is not a mount of its own"
+                );
+                assert!(
+                    flags(&bound).contains(StatVfsMountFlags::RDONLY),
+                    "{mode}: {path:?} is not read-only"
+                );
+                let w = rustix::fs::open(&path, OFlags::WRONLY | OFlags::TRUNC, Mode::empty());
+                assert_eq!(w.err(), Some(Errno::ROFS), "{mode}: {path:?}");
+
+                crate::setup::bind_own_binary(mount_api).unwrap();
+                assert_eq!(
+                    statx(&at()).stx_mnt_id,
+                    st.stx_mnt_id,
+                    "{mode}: a second call bound it again"
+                );
+                let now = statx(&exe());
+                assert_eq!(now.stx_mnt_id, started.stx_mnt_id, "{mode}");
+                assert_ne!(now.stx_mnt_id, st.stx_mnt_id, "{mode}");
+                println!(
+                    "{mode}: {path:?} on read-only mount {}; /proc/self/exe on mount {}",
+                    st.stx_mnt_id, now.stx_mnt_id
+                );
+            });
+        }
     }
 
     /// Red team (T2, the VM only; T18): a `RUN --mount` target reached

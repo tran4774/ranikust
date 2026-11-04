@@ -1,11 +1,32 @@
 //! Process set-up, once per build, while the process is single-threaded.
 
+use std::ffi::{CStr, CString, OsStr};
+use std::io;
+use std::os::fd::{AsFd, AsRawFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, ResolveFlags, StatVfsMountFlags, StatxFlags};
 use rustix::io::Errno;
-use rustix::mount::MountPropagationFlags;
+use rustix::mount::{MountFlags, MountPropagationFlags, MoveMountFlags, OpenTreeFlags};
 use rustix::thread::{CapabilitySet, CapabilitySets, UnshareFlags};
 
 use crate::caps;
-use crate::error::{Error, Result, sys_err};
+use crate::error::{Error, Result, io_err, sys_err};
+use crate::plan;
+
+/// Set once [`enter_build_namespace`] has moved the process into the
+/// build's private mount namespace, the only one where
+/// [`crate::Sandbox::start`] binds the binary over itself (ADR-0082): never
+/// in a namespace the process shares with the host. Process-wide, as the
+/// namespace is.
+static IN_BUILD_NAMESPACE: AtomicBool = AtomicBool::new(false);
+
+/// Whether [`enter_build_namespace`] succeeded in this process.
+pub(crate) fn in_build_namespace() -> bool {
+    IN_BUILD_NAMESPACE.load(Ordering::Acquire)
+}
 
 /// Moves the process into a private mount namespace whose `/` is a slave of
 /// the original: mounts propagate in, none made by the build propagate out,
@@ -43,7 +64,165 @@ pub fn enter_build_namespace() -> Result<()> {
         c"/",
         MountPropagationFlags::DOWNSTREAM | MountPropagationFlags::REC,
     )
-    .map_err(|e| sys_err("make / a recursive slave mount", e))
+    .map_err(|e| sys_err("make / a recursive slave mount", e))?;
+    IN_BUILD_NAMESPACE.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// The link the kernel keeps to the running binary.
+const SELF_EXE: &CStr = c"/proc/self/exe";
+
+/// What the errors of [`bind_own_binary`] say it was doing.
+const BIND_OP: &str = "bind ranikust's binary read-only over itself";
+
+/// Binds the running binary read-only over itself in the calling thread's
+/// mount namespace, the build's (ADR-0082): its path there then names the
+/// binary on a read-only mount of its own, so an open for writing through
+/// that path fails with `EROFS` whatever the kernel does about a running
+/// binary (`ETXTBSY`). Every `RUN` is cloned from that namespace.
+///
+/// The binary is the file `/proc/self/exe` names, looked up again by the
+/// path the kernel gives for it, without symlinks: it must be that file
+/// (device and inode). Where the path already names a read-only mount (an
+/// earlier call, a binary installed read-only) nothing is made. With
+/// `mount_api` the bind is made detached (`open_tree`), attached through
+/// the file's descriptor (`move_mount`) and remounted through its own; else
+/// `mount(2)` binds through the file's descriptor and the bind is found
+/// again by path, where it must show the same file on another mount. Either
+/// way the path is checked at the end: the same file, on another mount than
+/// before, read-only.
+///
+/// The bind changes what the path names, not what `/proc/<pid>/exe` names
+/// for a process started before it: the file on the mount the process was
+/// executed from.
+pub(crate) fn bind_own_binary(mount_api: bool) -> Result<()> {
+    let exe = rustix::fs::open(SELF_EXE, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
+        .map_err(|e| sys_err("open /proc/self/exe", e))?;
+    let running = statx(&exe).map_err(|e| sys_err("statx /proc/self/exe", e))?;
+    let link = rustix::fs::readlink(SELF_EXE, Vec::new())
+        .map_err(|e| sys_err("readlink /proc/self/exe", e))?;
+    let path = PathBuf::from(OsStr::from_bytes(link.as_bytes()));
+    if !path.is_absolute() {
+        return Err(not_bound(&path, "the kernel gives no path for it"));
+    }
+    let (file, st) = binary_at(&link, &path, &running)?;
+    let flags = rustix::fs::fstatvfs(&file)
+        .map_err(|e| step_err(&path, "statvfs", e))?
+        .f_flag;
+    if flags.contains(StatVfsMountFlags::RDONLY) {
+        tracing::debug!(binary = %path.display(), "the binary's mount is read-only already");
+        return Ok(());
+    }
+    // The source mount's locked flags stay, or the remount fails in a user
+    // namespace.
+    let remount = plan::remount_flags(flags, MountFlags::RDONLY);
+    if mount_api {
+        let tree = rustix::mount::open_tree(
+            &file,
+            c"",
+            OpenTreeFlags::OPEN_TREE_CLONE
+                | OpenTreeFlags::OPEN_TREE_CLOEXEC
+                | OpenTreeFlags::AT_EMPTY_PATH,
+        )
+        .map_err(|e| step_err(&path, "open_tree", e))?;
+        rustix::mount::move_mount(
+            &tree,
+            c"",
+            &file,
+            c"",
+            MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH | MoveMountFlags::MOVE_MOUNT_T_EMPTY_PATH,
+        )
+        .map_err(|e| step_err(&path, "move_mount", e))?;
+        rustix::mount::mount_remount(fd_path(&tree).as_c_str(), remount, c"")
+            .map_err(|e| step_err(&path, "remount read-only", e))?;
+    } else {
+        let at = fd_path(&file);
+        rustix::mount::mount_bind(at.as_c_str(), at.as_c_str())
+            .map_err(|e| step_err(&path, "bind", e))?;
+        let (bind, again) = binary_at(&link, &path, &running)?;
+        if again.stx_mnt_id == st.stx_mnt_id {
+            return Err(not_bound(&path, "the bind is not where its path leads"));
+        }
+        rustix::mount::mount_remount(fd_path(&bind).as_c_str(), remount, c"")
+            .map_err(|e| step_err(&path, "remount read-only", e))?;
+    }
+    let (after, now) = binary_at(&link, &path, &running)?;
+    let read_only = rustix::fs::fstatvfs(&after)
+        .map_err(|e| step_err(&path, "statvfs", e))?
+        .f_flag
+        .contains(StatVfsMountFlags::RDONLY);
+    if now.stx_mnt_id == st.stx_mnt_id || !read_only {
+        return Err(not_bound(&path, "its path does not name a read-only bind"));
+    }
+    tracing::debug!(binary = %path.display(), "bound the binary read-only over itself");
+    Ok(())
+}
+
+/// The binary at `path` (`link`, as bytes), looked up without symlinks: it
+/// must be the regular file `running` is.
+fn binary_at(
+    link: &CStr,
+    path: &Path,
+    running: &rustix::fs::Statx,
+) -> Result<(OwnedFd, rustix::fs::Statx)> {
+    let fd = rustix::fs::openat2(
+        rustix::fs::CWD,
+        link,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(|e| step_err(path, "open", e))?;
+    let st = statx(&fd).map_err(|e| step_err(path, "statx", e))?;
+    let same = (st.stx_dev_major, st.stx_dev_minor, st.stx_ino)
+        == (
+            running.stx_dev_major,
+            running.stx_dev_minor,
+            running.stx_ino,
+        );
+    if !same || FileType::from_raw_mode(st.stx_mode.into()) != FileType::RegularFile {
+        return Err(not_bound(
+            path,
+            "not the file ranikust runs from (replaced or removed since it started)",
+        ));
+    }
+    Ok((fd, st))
+}
+
+/// `statx` of `fd` with its mount id, which must be there.
+fn statx(fd: impl AsFd) -> rustix::io::Result<rustix::fs::Statx> {
+    let st = rustix::fs::statx(
+        fd,
+        c"",
+        AtFlags::EMPTY_PATH,
+        StatxFlags::BASIC_STATS | StatxFlags::MNT_ID,
+    )?;
+    if StatxFlags::from_bits_retain(st.stx_mask).contains(StatxFlags::MNT_ID) {
+        Ok(st)
+    } else {
+        Err(Errno::NOSYS)
+    }
+}
+
+/// `/proc/self/fd/<n>` for `fd`.
+fn fd_path(fd: impl AsFd) -> CString {
+    let p = format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd());
+    // Digits and slashes hold no NUL.
+    CString::new(p).unwrap_or_default()
+}
+
+fn not_bound(path: &Path, why: &str) -> Error {
+    io_err(BIND_OP, path, io::Error::other(why.to_owned()))
+}
+
+/// A step of [`bind_own_binary`] on the binary at `path` failed with `e`.
+fn step_err(path: &Path, step: &str, e: Errno) -> Error {
+    let e = io::Error::from(e);
+    io_err(
+        BIND_OP,
+        path,
+        io::Error::new(e.kind(), format!("{step}: {e}")),
+    )
 }
 
 /// Kaniko mode on `/` (ADR-0078): gives ranikust's own process the
@@ -207,6 +386,9 @@ mod tests {
             matches!(r, Err(Error::NotSingleThreaded { threads }) if threads > 1),
             "{r:?}"
         );
+        // So `Sandbox::start` binds nothing over the binary in a namespace
+        // the process may share with the host (ADR-0082).
+        assert!(!in_build_namespace());
     }
 
     /// Capabilities are per thread: a trim on one thread of several would
