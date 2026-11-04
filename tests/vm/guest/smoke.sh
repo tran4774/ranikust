@@ -315,7 +315,7 @@ for flags in (os.O_WRONLY, os.O_RDWR):
     try:
         os.close(os.open("/proc/1/exe", flags))
     except OSError as e:
-        print(f"RUN: its init's /proc/1/exe for writing: {e.strerror}")
+        print(f"RUN: its init's /proc/1/exe for writing: {e.strerror}", flush=True)
     else:
         sys.exit("RUN: opened its init's /proc/1/exe for writing")
 signal.signal(signal.SIGUSR1, lambda *a: sys.exit(0))
@@ -333,6 +333,8 @@ DOCKERFILE
       esac
       slog="$(mktemp)"
       sudo env "${fault[@]}" prlimit --core=1048576:unlimited "$RNK" "${args[@]}" >"$slog" 2>&1 &
+      # Kept now: the process substitution below changes $!.
+      build=$!
       for _ in $(seq 120); do pgrep -x rnksealed >/dev/null && break; sleep 1; done
       pgrep -x rnksealed >/dev/null ||
         { echo "error: sealed ($how): the RUN never started" >&2; cat "$slog" >&2; exit 1; }
@@ -342,9 +344,11 @@ DOCKERFILE
       sudo python3 -I guest/sealed-exe.py "$way" "$RNK" "${pids[@]}" ||
         { sudo pkill -KILL -x ranikust; exit 1; }
       sudo pkill -USR1 -x rnksealed
-      wait $! || { echo "error: sealed ($how): the build failed" >&2; cat "$slog" >&2; exit 1; }
+      wait "$build" || { echo "error: sealed ($how): the build failed" >&2; cat "$slog" >&2; exit 1; }
       grep -q "msg=\"running from a sealed copy of the binary (ADR-0101)\" way=$way" "$slog" ||
         { echo "error: sealed ($how): no $way copy in the log" >&2; cat "$slog" >&2; exit 1; }
+      [ "$(grep -c "^RUN: its init" "$slog")" = 2 ] ||
+        { echo "error: sealed ($how): the RUN did not report both opens" >&2; cat "$slog" >&2; exit 1; }
       grep "^RUN: its init" "$slog" | sed "s/^/host: $how: /"
       echo "host: $how builds from a sealed $way copy no one may write"
     done
