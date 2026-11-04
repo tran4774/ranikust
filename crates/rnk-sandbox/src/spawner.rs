@@ -36,7 +36,7 @@ use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
 use crate::relay::Relay;
-use crate::seccomp;
+use crate::seccomp::{self, Program, SeccompProfile};
 use crate::spec::{
     DEFAULT_HOSTNAME, Isolation, MountKind, Network, RootId, RunSpec, SecretFile, Stdio, root_id,
 };
@@ -62,12 +62,15 @@ impl Sandbox {
     /// found. Such a sandbox runs [`Isolation::Full`] on any root, and
     /// [`Isolation::Direct`] on `/` only: a bare `chroot` is never used where
     /// the full sandbox can run (ADR-0014, ADR-0060). Kaniko mode that
-    /// cannot mount uses [`Sandbox::start_direct`].
+    /// cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
+    /// under [`SeccompProfile::docker_default`] until
+    /// [`Sandbox::set_seccomp`] says otherwise (ADR-0103).
     ///
     /// # Errors
     ///
     /// The directory cannot be created or is a symlink, a journal cannot be
-    /// listed, or the thread cannot start.
+    /// listed, the default seccomp profile cannot be compiled here
+    /// ([`Error::SeccompProfile`]), or the thread cannot start.
     pub fn start(caps: Caps, dir: &Path) -> Result<Self> {
         Self::start_inner(Some(caps), dir, None)
     }
@@ -145,7 +148,8 @@ impl Sandbox {
     }
 
     fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
-        let runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
+        let mut runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
+        runner.seccomp = Some(SeccompProfile::docker_default()?);
         let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
         if replayed.journals > 0 {
             tracing::info!(
@@ -202,6 +206,15 @@ impl Sandbox {
     /// before the first `RUN`.
     pub fn allow_userns_network(&mut self) {
         self.runner.userns_network = true;
+    }
+
+    /// The seccomp profile of every later [`Isolation::Full`] `RUN`:
+    /// `None` is `--seccomp=unconfined`, which leaves ADR-0033's filter of
+    /// a `--network=none` `RUN` in a user namespace in place. A
+    /// [`Isolation::Direct`] `RUN` never gets one (ADR-0103). Call before
+    /// the first `RUN`.
+    pub fn set_seccomp(&mut self, profile: Option<SeccompProfile>) {
+        self.runner.seccomp = profile;
     }
 
     /// Every later `RUN`, of any isolation, starts with `limit` as its
@@ -659,6 +672,9 @@ pub(crate) struct Runner {
     /// Whether a full-sandbox child may use `open_tree` and `move_mount`;
     /// `None` probes ([`mount_api_supported`]).
     mount_api: Option<bool>,
+    /// The profile of a [`Isolation::Full`] `RUN`; `None` for the probe's
+    /// runner, [`Sandbox::start_direct`]'s and `--seccomp=unconfined`.
+    seccomp: Option<SeccompProfile>,
 }
 
 /// Refuses a `root_dir` that is not the path the kernel gives its
@@ -715,6 +731,7 @@ impl Runner {
             shared_root: None,
             direct_only: false,
             mount_api: None,
+            seccomp: None,
         })
     }
 
@@ -733,6 +750,7 @@ impl Runner {
             shared_root: None,
             direct_only: true,
             mount_api: None,
+            seccomp: None,
         }
     }
 
@@ -1074,18 +1092,23 @@ impl Runner {
                 }
             }
         }
-        // A `RUN` in a user namespace's network namespace never runs
-        // without its filter.
-        let seccomp = if hold_network {
-            Some(
-                seccomp::userns_network().ok_or_else(|| Error::NoLoopbackUserns {
-                    direct: io::Error::from_raw_os_error(libc::EPERM),
-                    userns: io::Error::from_raw_os_error(libc::ENOSYS),
-                })?,
-            )
-        } else {
-            None
+        let mut filters: Vec<Program> = match spec.isolation {
+            Isolation::Full => self.seccomp.iter().map(|p| p.program.clone()).collect(),
+            Isolation::Direct => Vec::new(),
         };
+        // A `RUN` in a user namespace's network namespace never runs
+        // without its filter, installed last so that it stacks on the
+        // profile.
+        if hold_network {
+            let insns = seccomp::userns_network().ok_or_else(|| Error::NoLoopbackUserns {
+                direct: io::Error::from_raw_os_error(libc::EPERM),
+                userns: io::Error::from_raw_os_error(libc::ENOSYS),
+            })?;
+            filters.push(Program {
+                insns: insns.into(),
+                flags: 0,
+            });
+        }
         let mount_api =
             spec.isolation == Isolation::Full && self.mount_api.unwrap_or_else(mount_api_supported);
         let args = ChildArgs {
@@ -1113,8 +1136,9 @@ impl Runner {
             hostname: hostname(spec).as_bytes().to_vec(),
             loopback,
             netns: None,
-            // Only with a `NetNs`; `probe_network` checked it exists.
-            seccomp,
+            // ADR-0033's part only with a `NetNs`; `probe_network` checked
+            // it exists.
+            seccomp: filters,
             drops: self.drops,
             keep: caps::docker_default_mask(),
             uid: Uid::from_raw(user.uid),

@@ -63,9 +63,10 @@ check-aarch64:
 #   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`:
 #   qemu-user runs a thread of its own, so the set-up stops at its
 #   single-thread check before the privilege refusal the tests expect;
-# - `the_filter_refuses_what_it_should_and_nothing_else`: a seccomp filter
-#   written for aarch64 syscall numbers cannot be installed in the x86_64
-#   host kernel through qemu-user;
+# - `the_filter_refuses_what_it_should_and_nothing_else` and the tests of
+#   `seccomp::profile::tests::kernel`: a seccomp filter written for aarch64
+#   syscall numbers cannot be installed in the x86_64 host kernel through
+#   qemu-user;
 # - without a binfmt_misc entry for aarch64, the tests that spawn an aarch64
 #   binary themselves: ranikust's `cli` and `metrics`, and rnk-store's
 #   `processes`.
@@ -149,7 +150,8 @@ test-aarch64 *args:
       --skip without_root_the_set_up_refuses_before_touching_the_state_dir
       --skip kaniko_variables_are_not_read
       --skip logging_flags_change_what_is_written
-      --skip seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else)
+      --skip seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else
+      --skip seccomp::profile::tests::kernel::)
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
       cargo-zigbuild test --workspace --locked --target $target "$@" -- "${skip[@]}"
     else

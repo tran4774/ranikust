@@ -32,6 +32,7 @@ use crate::error::Step;
 use crate::plan::{
     DEV_NODES, DEV_NULL, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, MASKED_PATHS, READONLY_PATHS, SHM,
 };
+use crate::seccomp::Program;
 
 /// How the child enters the root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,9 +157,10 @@ pub(crate) struct ChildArgs {
     /// by a user namespace and with `lo` already up, which the child joins
     /// instead (`--network=none` without `CAP_NET_ADMIN`, ADR-0033).
     pub(crate) netns: Option<RawFd>,
-    /// The seccomp filter installed before the capability drop: with
-    /// `netns`, [`crate::seccomp::userns_network`].
-    pub(crate) seccomp: Option<Vec<libc::sock_filter>>,
+    /// The seccomp filters installed before the capability drop, in order:
+    /// the `RUN`'s profile ([`crate::SeccompProfile`]) unless unconfined,
+    /// then, with `netns`, [`crate::seccomp::userns_network`] on top.
+    pub(crate) seccomp: Vec<Program>,
     /// Capabilities to drop from the bounding set, and how many.
     pub(crate) drops: ([u32; 64], usize),
     /// The capabilities kept (Docker's defaults), as a mask.
@@ -508,10 +510,10 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     if args.loopback {
         loopback_up(err);
     }
-    // After the namespace is joined and every mount made, which the filter
+    // After the namespace is joined and every mount made, which the filters
     // would refuse.
-    if let Some(f) = &args.seccomp {
-        install_filter(err, f);
+    for p in &args.seccomp {
+        install_filter(err, p);
     }
 
     drop_capabilities(err, args);
@@ -1978,14 +1980,13 @@ fn close_listed(keep: &[RawFd]) -> bool {
     }
 }
 
-/// Installs the seccomp filter of a `RUN` that joined a held network
-/// namespace ([`crate::seccomp`]). Without `no_new_privs`: the child still
-/// has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must keep
-/// working.
-fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
+/// Installs one seccomp filter of the `RUN` ([`crate::seccomp`]). Without
+/// `no_new_privs`: the child still has `CAP_SYS_ADMIN` here, and a setuid
+/// binary of the `RUN` must keep working.
+fn install_filter(err: RawFd, p: &Program) {
     let prog = libc::sock_fprog {
-        len: u16::try_from(filter.len()).unwrap_or(u16::MAX),
-        filter: filter.as_ptr().cast_mut(),
+        len: u16::try_from(p.insns.len()).unwrap_or(u16::MAX),
+        filter: p.insns.as_ptr().cast_mut(),
     };
     // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the program, which
     // lives across the call.
@@ -1993,12 +1994,16 @@ fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
         libc::syscall(
             libc::SYS_seccomp,
             libc::SECCOMP_SET_MODE_FILTER,
-            0u32,
+            p.flags,
             &raw const prog,
         )
     };
-    if r != 0 {
-        fail(err, Step::Seccomp, last_errno());
+    // With `TSYNC`, a positive result names a thread it could not
+    // synchronise; the child has none.
+    match r {
+        0 => {}
+        r if r < 0 => fail(err, Step::Seccomp, last_errno()),
+        _ => fail(err, Step::Seccomp, Errno::SRCH),
     }
 }
 
@@ -2499,7 +2504,7 @@ mod tests {
             hostname: Vec::new(),
             loopback: false,
             netns: None,
-            seccomp: None,
+            seccomp: Vec::new(),
             drops: ([0; 64], 0),
             keep: 0,
             uid: Uid::ROOT,

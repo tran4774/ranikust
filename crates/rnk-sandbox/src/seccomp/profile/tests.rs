@@ -57,66 +57,6 @@ fn refusal(json: &str) -> String {
     }
 }
 
-/// Runs `check` in a forked child under `prog`, installed with
-/// `no_new_privs` as an unprivileged test needs, and gives its wait status.
-/// `check` gives 0, or the number of the check that failed.
-fn under(prog: &Program, check: impl Fn() -> i32) -> i32 {
-    let fprog = libc::sock_fprog {
-        len: u16::try_from(prog.insns.len()).unwrap(),
-        filter: prog.insns.as_ptr().cast_mut(),
-    };
-    // SAFETY: the child only makes syscalls and exits with `_exit`.
-    let pid = unsafe { libc::fork() };
-    assert!(pid >= 0);
-    if pid == 0 {
-        // SAFETY: plain syscalls in the forked child; `fprog` lives on.
-        unsafe {
-            // A SIGSYS of a check dumps no core.
-            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
-                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
-                || libc::syscall(
-                    libc::SYS_seccomp,
-                    libc::SECCOMP_SET_MODE_FILTER,
-                    prog.flags,
-                    &raw const fprog,
-                ) != 0
-            {
-                libc::_exit(200);
-            }
-            libc::_exit(check());
-        }
-    }
-    let mut status = 0;
-    // SAFETY: reaping the child forked above.
-    assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
-    status
-}
-
-fn exited_ok(status: i32) {
-    assert!(libc::WIFEXITED(status), "{status:#x}");
-    assert_eq!(
-        libc::WEXITSTATUS(status),
-        0,
-        "the number of the failing check"
-    );
-}
-
-fn last_errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-/// `getppid` with these arguments, which it ignores and the filter reads.
-fn getppid(args: [u64; 6]) -> libc::c_long {
-    let [a, b, c, d, e, f] = args.map(u64::cast_signed);
-    // SAFETY: `getppid` reads no argument.
-    unsafe { libc::syscall(libc::SYS_getppid, a, b, c, d, e, f) }
-}
-
-/// `-1` with `errno` `e`.
-fn refused(r: libc::c_long, e: i32) -> bool {
-    r == -1 && last_errno() == e
-}
-
 struct Compare {
     op: &'static str,
     value: u64,
@@ -196,7 +136,7 @@ fn at(index: u32, v: u64) -> [u64; 6] {
     args
 }
 
-/// The 64-bit comparisons, by the interpreter and by the kernel.
+/// The 64-bit comparisons, around both words.
 #[test]
 fn arguments_compare_as_64_bit_values() {
     for c in &COMPARES {
@@ -219,23 +159,6 @@ fn arguments_compare_as_64_bit_values() {
                     c.op
                 );
             }
-            let status = under(&p, || {
-                let mut n = 0;
-                for &v in c.hits {
-                    n += 1;
-                    if !refused(getppid(at(index, v)), 77) {
-                        return n;
-                    }
-                }
-                for &v in c.misses {
-                    n += 1;
-                    if getppid(at(index, v)) <= 0 {
-                        return n;
-                    }
-                }
-                0
-            });
-            exited_ok(status);
         }
     }
 }
@@ -275,39 +198,19 @@ fn each_rule_has_its_action() {
     ] {
         assert_eq!(verdict(&p, g, a0(arg)), want, "{arg}");
     }
-    exited_ok(under(&p, || {
-        let checks = [
-            getppid(a0(0)) > 0,
-            refused(getppid(a0(1)), 11),
-            refused(getppid(a0(2)), 12),
-            refused(getppid(a0(7)), 13),
-            getppid(a0(3)) > 0,
-            getppid(a0(8)) == 0,
-        ];
-        checks
-            .iter()
-            .position(|ok| !ok)
-            .map_or(0, |i| i32::try_from(i + 1).unwrap_or(99))
-    }));
-    for arg in [4, 5, 6, 9] {
-        let status = under(&p, || {
-            getppid(a0(arg));
-            1
-        });
-        assert!(
-            libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSYS,
-            "{arg}: {status:#x}"
-        );
-    }
 }
 
-/// Distinct errnos for nearly every call and a long rule chain: the
-/// search tree and the chain jump further than 8 bits allow.
-#[test]
-fn long_jumps_reach_their_targets() {
-    let spared = [libc::SYS_exit, libc::SYS_exit_group, libc::SYS_getppid].map(nr);
+/// The calls the forked checks need, left out of [`long_profile`].
+fn spared() -> [u32; 3] {
+    [libc::SYS_exit, libc::SYS_exit_group, libc::SYS_getppid].map(nr)
+}
+
+/// Distinct errnos for nearly every call, `nr + 1`, and a chain of 60
+/// rules on `getppid`, `1000 + arg0`: the search tree and the chain jump
+/// further than 8 bits allow.
+fn long_profile() -> Program {
     let mut rules: Vec<String> = syscalls::all()
-        .filter(|(_, n)| !spared.contains(n))
+        .filter(|(_, n)| !spared().contains(n))
         .map(|(name, n)| {
             format!(
                 r#"{{"names":["{name}"],"action":"SCMP_ACT_ERRNO","errnoRet":{}}}"#,
@@ -322,23 +225,22 @@ fn long_jumps_reach_their_targets() {
             1000 + i
         ));
     }
-    let json = format!(
+    compiled(&format!(
         r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{}]}}"#,
         rules.join(",")
-    );
-    let p = compiled(&json);
+    ))
+}
+
+#[test]
+fn long_jumps_reach_their_targets() {
+    let p = long_profile();
     assert!(p.insns.len() > 600, "{}", p.insns.len());
     let far = p
         .insns
         .iter()
         .any(|i| i.code == super::super::asm::JA && i.k > 255);
     assert!(far, "a jump through ja");
-    let top = syscalls::all()
-        .map(|(_, n)| n)
-        .filter(|n| !spared.contains(n))
-        .max()
-        .unwrap();
-    for (_, n) in syscalls::all().filter(|(_, n)| !spared.contains(n)) {
+    for (_, n) in syscalls::all().filter(|(_, n)| !spared().contains(n)) {
         let want = errno(i32::try_from(n + 1).unwrap());
         assert_eq!(verdict_on(&p, AUDIT_ARCH, n, [0; 6]), want, "{n}");
     }
@@ -346,37 +248,7 @@ fn long_jumps_reach_their_targets() {
         let want = errno(i32::try_from(1000 + i).unwrap());
         assert_eq!(verdict(&p, libc::SYS_getppid, a0(u64::from(i))), want);
     }
-    let sample = [
-        libc::SYS_read,
-        libc::SYS_getpid,
-        libc::SYS_getuid,
-        libc::SYS_gettid,
-        libc::SYS_sched_yield,
-        libc::c_long::from(top),
-    ];
-    exited_ok(under(&p, || {
-        let mut n = 0;
-        for call in sample {
-            n += 1;
-            let want = i32::try_from(call + 1).unwrap_or(0);
-            // SAFETY: refused by the filter before the kernel runs it.
-            let r = unsafe { libc::syscall(call, 0, 0, 0, 0, 0, 0) };
-            if !refused(r, want) {
-                return n;
-            }
-        }
-        for (i, want) in [(0, 1000), (59, 1059)] {
-            n += 1;
-            if !refused(getppid(a0(i)), want) {
-                return n;
-            }
-        }
-        n += 1;
-        if getppid(a0(60)) <= 0 {
-            return n;
-        }
-        0
-    }));
+    assert_eq!(verdict(&p, libc::SYS_getppid, a0(60)), ALLOW);
 }
 
 /// Docker's default profile, checked call by call, as compiled for the
@@ -502,42 +374,6 @@ fn docker_default_allows_and_refuses_what_moby_says() {
     assert_eq!(verdict(&old, libc::SYS_process_vm_writev, a0(0)), eperm);
     let new = compile(DOCKER_DEFAULT, &cx((5, 0))).unwrap();
     assert_eq!(verdict(&new, libc::SYS_ptrace, a0(0)), ALLOW);
-}
-
-/// The default profile as the kernel runs it: calls it refuses, with an
-/// errno the kernel itself would not give, and calls it allows.
-#[test]
-fn docker_default_loads_and_refuses_in_the_kernel() {
-    let p = SeccompProfile::docker_default().unwrap().program;
-    exited_ok(under(&p, || {
-        // SAFETY: plain syscalls with integer or null arguments.
-        let checks = unsafe {
-            let stream = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
-            [
-                getppid([0; 6]) > 0,
-                refused(
-                    libc::syscall(libc::SYS_io_uring_setup, 1u32, std::ptr::null::<u8>()),
-                    libc::EPERM,
-                ),
-                refused(
-                    libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize),
-                    libc::ENOSYS,
-                ),
-                refused(libc::c_long::from(libc::socket(40, stream, 0)), libc::EPERM),
-                refused(libc::c_long::from(libc::socket(38, stream, 0)), libc::EPERM),
-                libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) >= 0,
-                // KEYCTL_GET_KEYRING_ID of the session keyring.
-                refused(libc::syscall(libc::SYS_keyctl, 0, -3, 0), libc::EPERM),
-                libc::personality(0xffff_ffff) >= 0,
-                refused(libc::c_long::from(libc::personality(0x4_0000)), libc::EPERM),
-                refused(libc::syscall(1000), libc::ENOSYS),
-            ]
-        };
-        checks
-            .iter()
-            .position(|ok| !ok)
-            .map_or(0, |i| i32::try_from(i + 1).unwrap_or(99))
-    }));
 }
 
 #[test]
@@ -727,4 +563,202 @@ fn kernel_releases_parse_as_moby_reads_them() {
     assert_eq!(parse_release("6.x"), None);
     assert_eq!(min_kernel("4.8").unwrap(), (4, 8));
     assert_eq!(min_kernel("").unwrap(), (0, 0));
+}
+
+/// The same filters run by the kernel, in a forked child. Skipped under
+/// qemu-user, which cannot install an aarch64 filter in an x86_64 kernel.
+mod kernel {
+    use super::*;
+
+    /// Runs `check` in a forked child under `prog`, installed with
+    /// `no_new_privs` as an unprivileged test needs, and gives its wait status.
+    /// `check` gives 0, or the number of the check that failed.
+    fn under(prog: &Program, check: impl Fn() -> i32) -> i32 {
+        let fprog = libc::sock_fprog {
+            len: u16::try_from(prog.insns.len()).unwrap(),
+            filter: prog.insns.as_ptr().cast_mut(),
+        };
+        // SAFETY: the child only makes syscalls and exits with `_exit`.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: plain syscalls in the forked child; `fprog` lives on.
+            unsafe {
+                // A SIGSYS of a check dumps no core.
+                if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+                    || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                    || libc::syscall(
+                        libc::SYS_seccomp,
+                        libc::SECCOMP_SET_MODE_FILTER,
+                        prog.flags,
+                        &raw const fprog,
+                    ) != 0
+                {
+                    libc::_exit(200);
+                }
+                libc::_exit(check());
+            }
+        }
+        let mut status = 0;
+        // SAFETY: reaping the child forked above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        status
+    }
+
+    fn exited_ok(status: i32) {
+        assert!(libc::WIFEXITED(status), "{status:#x}");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "the number of the failing check"
+        );
+    }
+
+    fn last_errno() -> i32 {
+        std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+    }
+
+    /// `getppid` with these arguments, which it ignores and the filter reads.
+    fn getppid(args: [u64; 6]) -> libc::c_long {
+        let [a, b, c, d, e, f] = args.map(u64::cast_signed);
+        // SAFETY: `getppid` reads no argument.
+        unsafe { libc::syscall(libc::SYS_getppid, a, b, c, d, e, f) }
+    }
+
+    /// `-1` with `errno` `e`.
+    fn refused(r: libc::c_long, e: i32) -> bool {
+        r == -1 && last_errno() == e
+    }
+
+    #[test]
+    fn arguments_compare_as_64_bit_values() {
+        for c in &COMPARES {
+            for index in [0, 1, 5] {
+                let p = compiled(&compare_profile(c, index));
+                let status = under(&p, || {
+                    let mut n = 0;
+                    for &v in c.hits {
+                        n += 1;
+                        if !refused(getppid(at(index, v)), 77) {
+                            return n;
+                        }
+                    }
+                    for &v in c.misses {
+                        n += 1;
+                        if getppid(at(index, v)) <= 0 {
+                            return n;
+                        }
+                    }
+                    0
+                });
+                exited_ok(status);
+            }
+        }
+    }
+
+    #[test]
+    fn each_rule_has_its_action() {
+        let p = compiled(ACTIONS);
+        exited_ok(under(&p, || {
+            let checks = [
+                getppid(a0(0)) > 0,
+                refused(getppid(a0(1)), 11),
+                refused(getppid(a0(2)), 12),
+                refused(getppid(a0(7)), 13),
+                getppid(a0(3)) > 0,
+                getppid(a0(8)) == 0,
+            ];
+            checks
+                .iter()
+                .position(|ok| !ok)
+                .map_or(0, |i| i32::try_from(i + 1).unwrap_or(99))
+        }));
+        for arg in [4, 5, 6, 9] {
+            let status = under(&p, || {
+                getppid(a0(arg));
+                1
+            });
+            assert!(
+                libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSYS,
+                "{arg}: {status:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn long_jumps_reach_their_targets() {
+        let p = long_profile();
+        let top = syscalls::all()
+            .map(|(_, n)| n)
+            .filter(|n| !spared().contains(n))
+            .max()
+            .unwrap();
+        let sample = [
+            libc::SYS_read,
+            libc::SYS_getpid,
+            libc::SYS_getuid,
+            libc::SYS_gettid,
+            libc::SYS_sched_yield,
+            libc::c_long::from(top),
+        ];
+        exited_ok(under(&p, || {
+            let mut n = 0;
+            for call in sample {
+                n += 1;
+                let want = i32::try_from(call + 1).unwrap_or(0);
+                // SAFETY: refused by the filter before the kernel runs it.
+                let r = unsafe { libc::syscall(call, 0, 0, 0, 0, 0, 0) };
+                if !refused(r, want) {
+                    return n;
+                }
+            }
+            for (i, want) in [(0, 1000), (59, 1059)] {
+                n += 1;
+                if !refused(getppid(a0(i)), want) {
+                    return n;
+                }
+            }
+            n += 1;
+            if getppid(a0(60)) <= 0 {
+                return n;
+            }
+            0
+        }));
+    }
+
+    /// The default profile as the kernel runs it: calls it refuses, with an
+    /// errno the kernel itself would not give, and calls it allows.
+    #[test]
+    fn docker_default_loads_and_refuses() {
+        let p = SeccompProfile::docker_default().unwrap().program;
+        exited_ok(under(&p, || {
+            // SAFETY: plain syscalls with integer or null arguments.
+            let checks = unsafe {
+                let stream = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+                [
+                    getppid([0; 6]) > 0,
+                    refused(
+                        libc::syscall(libc::SYS_io_uring_setup, 1u32, std::ptr::null::<u8>()),
+                        libc::EPERM,
+                    ),
+                    refused(
+                        libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize),
+                        libc::ENOSYS,
+                    ),
+                    refused(libc::c_long::from(libc::socket(40, stream, 0)), libc::EPERM),
+                    refused(libc::c_long::from(libc::socket(38, stream, 0)), libc::EPERM),
+                    libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) >= 0,
+                    // KEYCTL_GET_KEYRING_ID of the session keyring.
+                    refused(libc::syscall(libc::SYS_keyctl, 0, -3, 0), libc::EPERM),
+                    libc::personality(0xffff_ffff) >= 0,
+                    refused(libc::c_long::from(libc::personality(0x4_0000)), libc::EPERM),
+                    refused(libc::syscall(1000), libc::ENOSYS),
+                ]
+            };
+            checks
+                .iter()
+                .position(|ok| !ok)
+                .map_or(0, |i| i32::try_from(i + 1).unwrap_or(99))
+        }));
+    }
 }

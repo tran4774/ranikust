@@ -49,7 +49,7 @@ use asm::{Asm, JEQ_K, JGE_K, JSET_K, Label};
 pub use profile::SeccompProfile;
 
 /// A filter and the `seccomp(2)` flags it is installed with.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct Program {
     pub(crate) insns: Arc<[libc::sock_filter]>,
     pub(crate) flags: libc::c_ulong,
