@@ -4,7 +4,7 @@ date: 2026-11-04
 decision-makers: Tran Nguyen (maintainer)
 ---
 
-# ADR-0098: A rootless build without subuid ranges refuses images with several owners, and has no `ignore_chown_errors` flag
+# ADR-0098: A rootless build refuses an image with an owner its user namespace does not map, with one id or with ranges, and has no `ignore_chown_errors` flag
 
 ## Context and Problem Statement
 
@@ -14,9 +14,12 @@ namespace. Without `newuidmap` and an `/etc/subuid` range only one uid maps,
 and `chown` to any other uid fails with `EINVAL`
 ([modes-and-detection](../design/modes-and-detection.md#probe-order---modeauto)).
 Layers and `COPY --chown` set owners, so an image with several owners cannot
-be extracted or built as it is. What does a rootless user without subuid
-ranges get (#12, Q-040)? And, once that is settled, how does the refusal find
-the owners, and when (raised while planning Phase 3)?
+be extracted or built as it is. With `newuidmap` ranges the usual map covers
+65536 ids (`0 <uid> 1` and `1 <subuid> 65535`), so an owner at or above 65536
+fails the same way **[inferred]**. What does a rootless user without subuid
+ranges get (#12, Q-040)? What does a build with ranges do with an owner outside
+them (#92)? And how does the refusal find the owners, and when (raised while
+planning Phase 3)?
 
 ## Considered Options
 
@@ -43,6 +46,22 @@ from the two above:
 extracted. (b') alone cannot see an owner that a `COPY --chown`, a `RUN` or a
 `USER` creates. (c') has neither gap.
 
+What a build with ranges does with an owner outside them (#92):
+
+- (d) As ADR-0098 says for one id: scan the base layers' headers before the
+  build and refuse when an owner falls outside the map, refuse at the first
+  `chown` or `setuid` failing with `EINVAL` for what the build creates; the
+  message names the owner and the range needed (widen the ranges in
+  `/etc/subuid` and `/etc/subgid`).
+- (e) An `ignore_chown_errors`-style flag: rejected above for the one-id case,
+  for the same reason (a file silently gets the wrong owner).
+- (f) Remap owners outside the ranges to one id (for example `nobody`): builds
+  go through, but owners and permissions change without review.
+
+(d) is the reasoning of (a) for any map, not only a one-id map: a wrong owner is
+a permission change nobody reviewed, and the scan and the refusal are the same
+code with the map's ranges as input (the recommendation on #92).
+
 ## Decision Outcome
 
 Where a rootless build's user namespace maps only one uid, ranikust refuses an
@@ -50,23 +69,27 @@ image with several owners and offers no `ignore_chown_errors`-style flag: option
 (a) (the maintainer, 2026-11-04: "Q-040 a"). It finds the owners as (c') says,
 counting uids and gids, and the message names the owners found and the ways out
 (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended,
-which takes the recommendation on how the refusal finds the owners).
+which takes the recommendation on how the refusal finds the owners). Where the
+map has ranges, the same scan and refusal apply with the map's ranges as input:
+option (d) (the maintainer, 2026-11-04, on #92: "Từ chối như ADR-0098 (khuyến
+nghị)").
 
 - **Planned, Phase 3**
   ([#80](https://github.com/tran4774/ranikust/issues/80)). Nothing is built by
   this ADR. Today rootless is refused whole (`NEEDS_ROOT`,
   [modes-and-detection](../design/modes-and-detection.md#refusal-and-guidance)),
   so no behaviour changes until rootless overlay mode exists.
-- **Scope.** Only where the user namespace maps one uid, which is a rootless
-  user without `newuidmap` or without subuid ranges. Where a multi-range map is
-  written, owners inside its ranges map; an owner outside them is
-  [open: #92].
+- **Scope.** Any rootless user namespace. With one mapped uid (a rootless user
+  without `newuidmap` or without subuid ranges) the input of the scan is that
+  one id; where a multi-range map is written it is the map's ranges: owners
+  inside them map, an owner outside them is refused the same way.
 - **No flag.** No option makes a failed `chown` pass, now or as a later
   convenience; a user who needs several owners gets ranges or another privilege
   level.
 - **Before the build.** ranikust scans the tar headers of the base layers and
-  refuses before anything is extracted when any owner, uid or gid, is not the
-  one mapped id (0 inside the namespace, the invoking user's uid and gid outside).
+  refuses before anything is extracted when any owner, uid or gid, is not
+  mapped: with one id, not the one mapped id (0 inside the namespace, the
+  invoking user's uid and gid outside); with ranges, outside the map's ranges.
 - **During the build.** ranikust refuses at the first `chown` or `setuid` that
   fails with `EINVAL` for what the build creates: `COPY --chown`, a `RUN`,
   `USER`. This covers what no scan can see.
@@ -79,9 +102,10 @@ which takes the recommendation on how the refusal finds the owners).
   (Phase 3 task 4 of #41), which is a real operation as
   [ADR-0004](0004-support-every-privilege-level.md) says, not a read of
   `/etc/subuid`.
-- **The message** names the owners found and the ways out: install `uidmap`
-  and add ranges to `/etc/subuid` and `/etc/subgid`, run as root, or use a
-  container.
+- **The message** names the owners found and the ways out: with one id, install
+  `uidmap` and add ranges to `/etc/subuid` and `/etc/subgid`, run as root, or
+  use a container; with ranges, it names the owner and the range needed, to be
+  widened in `/etc/subuid` and `/etc/subgid`.
 
 ### Consequences
 
@@ -99,6 +123,8 @@ which takes the recommendation on how the refusal finds the owners).
 - Bad, because with a one-id map every base blob is decompressed once more to
   read its headers: overlay mode downloads a blob, then extracts it
   ([ADR-0055](0055-stream-layers-keep-nothing-proportional-to-the-image.md)).
+- Bad, because a user whose ranges are narrower than an image's owners must
+  widen them or build at another privilege level: no remapping is offered.
 - Neutral, because the ranges, or root or a container, remain the way out; both
   are ADR-0004's modes.
 
@@ -129,13 +155,12 @@ which takes the recommendation on how the refusal finds the owners).
 ## More Information
 
 Answers #12 (Q-040), which blocked Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)), and how the refusal
-finds the owners, raised while planning Phase 3. Related:
+([#41](https://github.com/tran4774/ranikust/issues/41)), how the refusal finds
+the owners, raised while planning Phase 3, and #92 (an owner outside a build's
+ranges). Related:
 [ADR-0004](0004-support-every-privilege-level.md) (refuse with guidance);
 [ADR-0049](0049-security-and-performance-over-kaniko-compatibility.md) listed
-Q-040 as not decided, and stays `accepted` with its body unchanged. What a build
-with subordinate ranges does with an owner outside them is not decided here:
-[#92](https://github.com/tran4774/ranikust/issues/92).
+Q-040 as not decided, and stays `accepted` with its body unchanged.
 [ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)
 settles where the store's operations run in the same namespace.
 

@@ -4,7 +4,7 @@ date: 2026-11-04
 decision-makers: Tran Nguyen (maintainer)
 ---
 
-# ADR-0105: A minimal `ranikust prune --all` in Phase 3 empties a rootless state directory inside the user namespace
+# ADR-0105: A minimal `ranikust prune --all` in Phase 3 empties a rootless state directory inside the user namespace and refuses when root runs it
 
 ## Context and Problem Statement
 
@@ -20,7 +20,9 @@ namespace, once task 5 of
 ranikust then has no tool left to empty `~/.local/share/ranikust`. How does a
 rootless user remove a state directory holding files of subordinate ids
 (raised while planning Phase 3,
-[#41](https://github.com/tran4774/ranikust/issues/41))?
+[#41](https://github.com/tran4774/ranikust/issues/41))? And what does the
+subcommand do when root runs it, where the state directory is the shared
+`/var/lib/ranikust` (or `--state-dir`) and no user namespace is involved (#93)?
 
 ## Considered Options
 
@@ -32,12 +34,29 @@ rootless user remove a state directory holding files of subordinate ids
 (b) needs podman installed. (c) hands out a shell in the namespace, a wider tool
 than the need.
 
+When root runs it (#93):
+
+- (d) Refuse, naming Phase 5's `prune`; root can remove its own state directory
+  with ordinary tools.
+- (e) Empty root's state directory too: the same `rnk-store` clean-up without
+  the namespace, with the same marker check and the same protection of running
+  builds (#76).
+- (f) Empty it as root only with `--state-dir` naming a directory other than the
+  default shared one.
+
+(d) because root does not need the subcommand to leave no state behind, which is
+the only reason this ADR builds it ahead of Phase 5; the shared root store is
+where concurrent builds and in-use tracking matter most, and that is Phase 5's
+design. (e) is the same code and would be the choice if a uniform subcommand
+mattered more than a narrow one (the recommendation on #93).
+
 ## Decision Outcome
 
 Phase 3 ships a minimal `ranikust prune --all` that empties the state directory
 inside the build's user namespace, and Phase 5 extends it into the full `prune`:
 option (a) (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as
-recommended).
+recommended). When root runs it, it refuses, naming Phase 5's `prune`: option
+(d) (the maintainer, 2026-11-04, on #93: "Từ chối khi là root (khuyến nghị)").
 
 - **Planned, Phase 3**, [#76](https://github.com/tran4774/ranikust/issues/76)
   (it serves task 8's acceptance criterion that the state directory is
@@ -46,8 +65,9 @@ recommended).
   namespace, and Phase 5's `prune` grows from it
   ([ADR-0021](0021-rnk-store-crate.md): `ranikust prune` only calls
   `rnk-store`).
-- **Scope.** It is for a rootless state directory. What it does when root
-  runs it is [open: #93]; Phase 5's `prune` covers root's store either way.
+- **Scope.** It is for a rootless state directory. When root runs it, it
+  refuses and names Phase 5's `prune`; root can remove its own state directory
+  with ordinary tools, and the shared `/var/lib/ranikust` is Phase 5's design.
 - **Safety.** `prune --all` opens the store as a build does (the
   state-directory checks and the `.ranikust-state` marker), so it refuses a
   directory ranikust did not make. It never removes what a running build uses,
@@ -64,9 +84,13 @@ recommended).
 - Good, because a user needs no other tool (podman) to leave no state behind.
 - Good, because it cannot empty a directory ranikust did not make, and never
   removes what a running build uses, since it opens the store as a build does.
+- Good, because the shared root store, where concurrent builds and in-use
+  tracking matter most, is emptied by no narrow flag ahead of Phase 5's design.
 - Bad, because the `prune` subcommand appears in Phase 3 with one flag, ahead
   of the Phase 5 design (size and age tiers, in-use tracking), which then
   extends it.
+- Bad, because root has no ranikust command to empty a state directory until
+  Phase 5, and removes it with ordinary tools.
 - Neutral, because a general `unshare` command stays unbuilt: nothing here hands
   out a shell in the namespace.
 

@@ -45,6 +45,12 @@ ranikust, `0700`, below directories only root may write
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
 
+Planned, Phase 3 (`--userns`, nothing built): an extracted layer's key includes
+the digest of the build's id map, so one state directory holds one copy per map
+([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md);
+how [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must
+include the map).
+
 - **Overlay mode:** stage roots are overlay mounts in
   `builds/<id>/stages/<n>/rootfs` ([overlay-snapshot](overlay-snapshot.md)),
   so the state directory must be on a filesystem that can hold an upper
@@ -119,8 +125,8 @@ under `volatile` is never trusted after a crash.
 ## Prune
 
 Not built. Phase 3 plans a minimal `ranikust prune --all` that empties a
-rootless state directory inside the user namespace
-([ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md));
+rootless state directory inside the user namespace and refuses when root runs
+it ([ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md));
 the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age. Both forms open the store as a build does
 (state-directory checks, the `.ranikust-state` marker), so they refuse a

@@ -409,8 +409,9 @@ Neither exists yet (ADR-0003).
   ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)):
   the whole build runs in the namespace, as rootless mode does
   ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)),
-  with a subordinate range for root and extracted layers kept apart from root's;
-  a `RUN`'s command runs where the init's uid is unmapped, in rootless mode too
+  with a range for root read from a dedicated `ranikust` entry of `/etc/subuid`
+  and `/etc/subgid` (the build is refused before anything is written where it is
+  missing) and extracted layers keyed by their id map; a `RUN`'s command runs where the init's uid is unmapped, in rootless mode too
   ([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
   (b)). How (a namespace nested per `RUN`, or a map without the init's uid) is
   settled with [#83](https://github.com/tran4774/ranikust/issues/83).
