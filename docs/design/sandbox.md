@@ -24,6 +24,33 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
 
 ## Process set-up, once per build
 
+0. **A sealed copy of the binary**
+   ([ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
+   `seal.rs`): right after the flags and the kernel check, a build runs
+   again from a copy of its binary no one can write, as runc does since 1.2
+   (`libcontainer/exeseal`), so every process it forks, the `RUN` child
+   until `execve` and the init, has that copy as `/proc/self/exe`. The ways,
+   in order:
+   - where ranikust may mount, an overlay made with `fsopen`, `fsconfig`
+     and `fsmount` and never attached: its lower layers are the binary's
+     directory and an empty directory (removed once mounted), with no upper
+     layer, `xino=off`, mounted read-only, `nodev`, `nosuid`. The file
+     opened from it must have the running binary's inode number, size and
+     time. No copy is made; nothing can unmount or remount it;
+   - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
+     copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
+     refuses it. It costs the binary's size in memory;
+   - an `O_TMPFILE` file in `TMPDIR` (else `/tmp`), `O_EXCL` so it never
+     gets a name, run from a read-only descriptor. No seal: only `ETXTBSY`
+     guards it while it runs.
+
+   The copy runs as `/proc/self/fd/<n>` with the same arguments,
+   environment and descriptors, plus `RANIKUST_SEALED_COPY=<way>`, and the
+   core-file limit ranikust started with (`forbid_core_dumps` records it
+   again). The copy's run makes no copy, checks `/proc/self/exe` (an
+   overlay mounted read-only, the memfd's seals, no link), takes its name
+   from `argv[0]` again and logs the way at debug. When no way works, or
+   the check fails, the build goes on with a warning.
 1. While the process is still **single-threaded** (before tokio or rayon
    start), `unshare(CLONE_NEWNS)` and make `/` a slave mount
    (`--make-rslave`). From then on every build mount disappears with the
@@ -262,11 +289,9 @@ The steps, in order:
      host); `execve`. The check covers the candidate's path only: the kernel
      opens a `#!` script's interpreter itself, so a `#!/proc/self/exe` line, or
      a symlink swapped in after the check, still runs ranikust's binary in the
-     sandbox, which then refuses its arguments (threat-model section 6).
-     [ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)
-     has the full sandbox bind the binary read-only over itself (not built yet,
-     [#32](https://github.com/tran4774/ranikust/issues/32)); `Direct` on `/`
-     keeps these barriers.
+     sandbox, which then refuses its arguments (threat-model section 6). That
+     binary is the sealed copy of the process set-up (step 0), so the `RUN`
+     cannot write it, in the full sandbox and in `Direct` alike.
 
 Between `clone` and `execve` the child of a multi-threaded process only makes
 system calls on arguments built before the clone: no allocation, no lock. A

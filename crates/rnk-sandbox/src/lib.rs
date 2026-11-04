@@ -16,10 +16,14 @@
 //! (ADR-0060). A bare `chroot` is never used when mounting
 //! is possible.
 //!
+//! Makes the sealed copy of ranikust's binary a build runs from, so that
+//! no process ranikust forks has a binary a `RUN` could write (ADR-0101).
+//!
 //! # Use
 //!
-//! While the process is single-threaded: [`enter_build_namespace`], then
-//! [`probe`]. Then [`Sandbox::start`], which replays the stub journals of
+//! While the process is single-threaded: [`run_from_sealed_copy`] first,
+//! which runs the process again from the copy, then
+//! [`enter_build_namespace`], then [`probe`]. Then [`Sandbox::start`], which replays the stub journals of
 //! dead builds and starts the spawner thread, and [`Sandbox::run`] per `RUN`.
 //! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only
 //! says root may not mount), then [`trim_to_run_capabilities`], still
@@ -35,7 +39,8 @@
 //! - Users and groups are looked up in the rootfs through `rnk-rootfs`, never
 //!   on the host.
 //! - Does not snapshot or diff the rootfs, or mount or probe overlays
-//!   (`rnk-snapshot`).
+//!   (`rnk-snapshot`). One exception: the overlay that seals ranikust's own
+//!   binary, read-only and never attached anywhere (ADR-0101).
 
 mod caps;
 mod child;

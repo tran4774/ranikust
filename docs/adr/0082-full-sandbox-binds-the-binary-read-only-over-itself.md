@@ -1,6 +1,6 @@
 ---
-status: accepted
-date: 2026-11-03
+status: superseded by ADR-0101
+date: 2026-11-04
 decision-makers: Tran Nguyen (maintainer)
 ---
 

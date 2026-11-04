@@ -14,6 +14,11 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 
 ## Owns
 
+- The sealed copy of ranikust's binary a build runs from (`seal.rs`,
+  ADR-0101): a read-only overlay of the binary's directory mounted nowhere,
+  else a sealed memfd, else an `O_TMPFILE` copy, run with `execve`; the
+  copy's run, marked by `RANIKUST_SEALED_COPY`, checks it and never makes
+  another.
 - Process set-up, called by `ranikust` while single-threaded: private mount
   namespace, spawner thread, stub-journal replay; and the probe of its own
   steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
@@ -34,8 +39,9 @@ Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
 Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 
 - Look up users on the host or parse `/etc/passwd` itself (`rnk-rootfs`);
-  snapshot, diff or mount stage roots or probe overlays (`rnk-snapshot`);
-  pick the mode (`ranikust`).
+  snapshot, diff or mount stage roots or probe overlays (`rnk-snapshot`;
+  the seal's overlay of ranikust's own binary, never attached, is the one
+  exception); pick the mode (`ranikust`).
 - Use a bare `chroot` where mounting is possible; `unshare` once threads
   exist; clone a `RUN` anywhere but on the spawner thread.
 - Allocate, lock, format or panic between `clone` and `execve`.
@@ -46,6 +52,9 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 ## API
 
 ```rust
+pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execve from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed(why)); Err only when RLIMIT_CORE cannot go back to 0
+pub enum SealedCopy { Overlay, Memfd, Tmpfile }  // ALL: the order tried
+pub enum Sealing { Sealed(SealedCopy), Unsealed(String) }
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
@@ -168,8 +177,15 @@ What a change here must keep, with where it lives:
   entering the root and switching user; a candidate through a magic link is
   refused (`ELOOP`). Not covered: a `#!/proc/self/exe` line or a symlink
   swapped after the check run ranikust's binary in the sandbox, which refuses
-  its arguments; ADR-0082 (bind the binary read-only over itself, #32) is
-  not built.
+  its arguments; that binary is the sealed copy (ADR-0101).
+- **Sealed copy** (ADR-0101): every process ranikust forks, the init
+  included, runs the copy, so no `RUN` reaches a binary it could write. The
+  overlay copy must have the running binary's inode number, size and time,
+  and its empty layer is removed once mounted; the memfd is sealed
+  `SEAL|SHRINK|GROW|WRITE`, made with `MFD_EXEC` where the kernel knows it;
+  the `O_TMPFILE` copy is `O_EXCL` and run read-only, and only `ETXTBSY`
+  guards it. The copy gets back the core-file limit ranikust started with.
+  When no way works the build goes on, warned.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.
@@ -208,11 +224,11 @@ What a change here must keep, with where it lives:
 ## Refs
 
 - **Design:** [`design/sandbox.md`](../../design/sandbox.md) ([per-`RUN` sequence](../../design/sandbox.md#per-run-sequence), [process set-up](../../design/sandbox.md#process-set-up-once-per-build), [stub mount points](../../design/sandbox.md#stub-mount-points), [variants by environment](../../design/sandbox.md#variants-by-environment)); [`design/modes-and-detection.md#probe-order---modeauto`](../../design/modes-and-detection.md#probe-order---modeauto); [`design/kaniko-mode.md#fake-proc`](../../design/kaniko-mode.md#fake-proc) (not built); [threat model T5-T12, T17-T19](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (default isolation), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (probe or refuse), [ADR-0010](../../adr/0010-run-network-host-or-none.md) (network), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (bare `chroot` only on request), [ADR-0018](../../adr/0018-no-proot-in-1-0.md) (no proot), [ADR-0019](../../adr/0019-java-tool-options-on-parallel-path.md) (`JAVA_TOOL_OPTIONS`), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: images with an owner the user namespace does not map are refused), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) (planned, Phase 3: the default seccomp profile), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns` runs the whole build in a user namespace; the init's uid unmapped in rootless mode too), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested)
-- **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries `Caps`), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets from memory), [#31](https://github.com/tran4774/ranikust/issues/31) (placed secret file whose target exists); tasks [#32](https://github.com/tran4774/ranikust/issues/32), [#33](https://github.com/tran4774/ranikust/issues/33), [#34](https://github.com/tran4774/ranikust/issues/34), [#35](https://github.com/tran4774/ranikust/issues/35), [#39](https://github.com/tran4774/ranikust/issues/39), [#40](https://github.com/tran4774/ranikust/issues/40), [#82](https://github.com/tran4774/ranikust/issues/82) (`--seccomp`), [#83](https://github.com/tran4774/ranikust/issues/83) (`--userns`), [#88](https://github.com/tran4774/ranikust/issues/88) (bind targets against changes during set-up), [#89](https://github.com/tran4774/ranikust/issues/89) (host-safety attack suite across modes)
+- **Decisions:** [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (default isolation), [ADR-0101](../../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md) (the sealed copy of the binary), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (probe or refuse), [ADR-0010](../../adr/0010-run-network-host-or-none.md) (network), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (bare `chroot` only on request), [ADR-0018](../../adr/0018-no-proot-in-1-0.md) (no proot), [ADR-0019](../../adr/0019-java-tool-options-on-parallel-path.md) (`JAVA_TOOL_OPTIONS`), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: images with an owner the user namespace does not map are refused), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) (planned, Phase 3: the default seccomp profile), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns` runs the whole build in a user namespace; the init's uid unmapped in rootless mode too), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested)
+- **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries `Caps`), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets from memory), [#31](https://github.com/tran4774/ranikust/issues/31) (placed secret file whose target exists); tasks [#33](https://github.com/tran4774/ranikust/issues/33), [#34](https://github.com/tran4774/ranikust/issues/34), [#35](https://github.com/tran4774/ranikust/issues/35), [#39](https://github.com/tran4774/ranikust/issues/39), [#40](https://github.com/tran4774/ranikust/issues/40), [#82](https://github.com/tran4774/ranikust/issues/82) (`--seccomp`), [#83](https://github.com/tran4774/ranikust/issues/83) (`--userns`), [#88](https://github.com/tran4774/ranikust/issues/88) (bind targets against changes during set-up), [#89](https://github.com/tran4774/ranikust/issues/89) (host-safety attack suite across modes)
 - **Evidence:** [exp-02](../../research/experiments/02-run-sandbox.md) (sequence, escape, PDEATHSIG, bounding set, stubs, 1-2.5 ms), [exp-06a](../../research/experiments/06a-root-rerun.md) (real root), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (Docker probe matrix), [exp-12a](../../research/experiments/12a-fake-proc.md), [exp-14](../../research/experiments/14-real-builds-without-proc.md), [exp-15](../../research/experiments/15-java-next-concurrency.md), [exp-16](../../research/experiments/16-cgroup-v1-cpuset.md) (fake `/proc`, Java)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/commands/run.go:288` `runCommandInExec` (no namespaces; `:335` searches the process's `PATH`); `:356` and `:407` process-group kill (replaced by the PID namespace, kept for `Direct`); `:375` users from the process's `/etc/passwd`; `:83-135` cache mounts via `swapDir` (a bind here)
-- **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot` and `libcontainer` capabilities <https://github.com/opencontainers/runc>
+- **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot`, `libcontainer` capabilities and `libcontainer/exeseal` (the sealed copy) <https://github.com/opencontainers/runc>
 
 ## Tests
 
@@ -220,7 +236,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 
 - **T0** (`cargo test -p rnk-sandbox`): spec validation, mount plan order,
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
-  failure records, the stub journal (placement through symlinks, removal,
+  failure records, the sealed copy (the order of the ways, a memfd sealed
+  against writes, an `O_TMPFILE` copy with no name, open read-only), the
+  stub journal (placement through symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed
@@ -239,7 +257,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   descriptors, no stub in the layer). Not yet: the fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
-  (`src/probe.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
+  (`src/probe.rs`); `an_overlay_copy_is_the_binary_read_only_and_mounted_nowhere`
+  (`src/seal/tests.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
   (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
@@ -261,7 +280,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `ranikust` binary then builds `tests/smoke/e2e` in each environment and
   is refused inside a plain chroot too; in the host variant it is sent
   SIGKILL and SIGINT during `RUN sleep 300` (and SIGKILL during a `RUN` that
-  cleared its own death signal), which leave no `RUN` process.
+  cleared its own death signal), which leave no `RUN` process, and builds in
+  overlay mode, kaniko mode per stage and with the overlay skipped while
+  `tests/vm/guest/sealed-exe.py` checks that ranikust and its init run one
+  sealed copy root cannot write (ADR-0101). The quick suite's kaniko mode
+  checks a build on a container's `/` runs from a sealed memfd.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid

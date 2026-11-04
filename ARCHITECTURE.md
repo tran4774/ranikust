@@ -133,14 +133,17 @@ it), transfer blobs, decode layers, mount, or delete except through
 
 Isolated execution of `RUN`: namespaces, `proc`/`dev`/`sys`, `pivot_root` (or
 `MS_MOVE`), capability drop, stub mount points, `USER` resolved inside the root,
-exec. Also the probes of its own capabilities, each tried for real. In
+exec. Also the probes of its own capabilities, each tried for real, and the
+sealed copy of ranikust's binary a build runs from
+([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)). In
 sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
 the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
 **Must not** snapshot or diff a root, mount or probe overlays
-(`rnk-snapshot`), or look up users on the host.
+(`rnk-snapshot`; its one overlay, never attached, seals ranikust's own
+binary), or look up users on the host.
 
 ### `rnk-snapshot`
 
@@ -236,7 +239,10 @@ declares none yet.
 
 1. **Set-up** (`ranikust`, single-threaded): parse flags; refuse a kernel older
    than Linux 5.8 (`rnk_rootfs::probe_support`,
-   [ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)); install the logs and
+   [ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)); for `build`, run
+   again from a sealed copy of the binary, which starts over from the top
+   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
+   `rnk-sandbox`); install the logs and
    the opt-in metrics; validate the flags into a `BuildConfig`; try to enter a
    private mount namespace (failing means root may not mount); check the state
    directory; clean up the store (`rnk-store`); start the `RUN` spawner thread
