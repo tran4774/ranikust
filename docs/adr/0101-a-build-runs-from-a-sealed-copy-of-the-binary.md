@@ -115,26 +115,39 @@ The decision:
   cannot be set.
 - **A binary on a writable mount, in kaniko mode on `/`.** Before any copy,
   ranikust measures which mount the binary it started from is on (`statx`
-  `STATX_MNT_ID` against `/`'s, `statvfs` `ST_RDONLY`) and passes the
-  answer to the copy in the variable; a run that ends without a checked
-  copy measures the file it runs from instead. Kaniko mode on `/` refuses,
+  `STATX_MNT_ID` against `/`'s, `statvfs` `ST_RDONLY`) and, on another
+  read-only mount, whether a writable mount reaches the file: whether it
+  has more than one hard link, and whether a writable mount of its file
+  system in `/proc/self/mountinfo` (the `major:minor` of the line of the
+  binary's own mount) has a root that contains the binary's path in that
+  file system (its own mount's root joined with its path below that
+  mount; paths compared by component, never opened). It passes the answer
+  to the copy in the variable; a run that ends without a checked copy
+  measures the file it runs from instead. Kaniko mode on `/` refuses,
   before anything is written, a binary on a writable mount other than `/`'s
   (a file or a directory bound without `:ro` from outside the container or
   from inside it, a volume), with the guidance to mount it read-only
-  (Docker `:ro`, Kubernetes `readOnly: true` on the `volumeMount`). It also
-  refuses one whose mount it cannot tell: a mount id of 0, which qemu-user's
-  `statx` gives for every file and Linux 6.8 and 7.0 give a memfd
-  [measured], or a failed call, each with its own guidance; a fallback
-  through `/proc/self/fdinfo` is
+  (Docker `:ro`, Kubernetes `readOnly: true` on the `volumeMount`); a
+  binary a writable mount reaches (bound `:ro` from a tree also bound
+  read-write), with the guidance to put it outside the mounted tree or to
+  mount that tree read-only; and a file with other hard links, with the
+  guidance to mount a copy with one link. It also refuses one whose mount
+  it cannot tell: a mount id of 0, which qemu-user's `statx` gives for
+  every file and Linux 6.8 and 7.0 give a memfd [measured]; a mount table
+  that cannot be parsed or does not place the file; or a failed call (the
+  mount table unreadable among them), each with its own guidance; a
+  fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
-  container's own root, or on a read-only mount, builds; overlay mode and
-  kaniko mode per stage do not check, since no `RUN` reaches the binary
-  there. Why, as hardening: a
-  `RUN` there is root on the container's `/`, and once the build no longer
-  executes the installed file, `ETXTBSY` no longer guards it, so a `RUN`
-  could alter a binary bound from outside the container. The maintainer
-  decided, on 2026-11-04 (the last three
-  [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197)):
+  container's own root, or on a read-only mount no writable mount
+  reaches, builds; overlay mode and kaniko mode per stage do not check,
+  since no `RUN` reaches the binary there. Why, as hardening: a `RUN`
+  there is root on the container's `/`, and once the build no longer
+  executes the installed file, `ETXTBSY` no longer guards it, so the
+  binary must not be reachable through a writable mount. The maintainer
+  decided, on 2026-11-04 (the second to fourth
+  [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
+  the last two
+  [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -148,7 +161,19 @@ The decision:
     "Accept, refuse it too (khuyến nghị)";
   - not to read the mount id from `/proc/self/fdinfo` yet, filed as
     [#95](https://github.com/tran4774/ranikust/issues/95):
-    "Not yet, task issue linked to #68 (khuyến nghị)".
+    "Not yet, task issue linked to #68 (khuyến nghị)";
+  - after the review of these refusals, to refuse too a binary whose file
+    is reachable through another writable mount, read from
+    `/proc/self/mountinfo`: a writable mount of the binary's file system
+    whose root contains the binary's path, or a file with more than one
+    hard link, with the guidance to put the binary outside the mounted
+    tree or to mount that tree read-only, failing closed when the mount
+    table cannot be read or parsed: "Refuse via mountinfo (khuyến nghị)";
+  - to give each cause of the refusal of a binary whose mount cannot be
+    told its own guidance, not the `:ro` one (a mount id of 0: run
+    natively from a regular file; a failed measurement: mount `/proc` and
+    allow `fstatfs`), which confirmed the code: "Accept, per-cause
+    guidance (khuyến nghị)".
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -182,7 +207,10 @@ The decision:
   that case is refused.
 - Bad, because kaniko mode on `/` refuses a binary bound read-write, which
   built before: the operator adds `:ro` (Docker binds read-write by
-  default).
+  default). It also refuses a binary bound `:ro` from a tree that is bound
+  read-write too, and a file with other hard links: cargo's
+  `target/release/ranikust` is a hard link of its copy in `deps/`
+  [measured], so the operator mounts a copy (`cp`, `install`).
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
 - Neutral, because under an emulator (qemu-user, Rosetta) the process that
@@ -230,7 +258,8 @@ The decision:
   `a_tmpfile_copy_is_the_binary_with_no_name_open_read_only`,
   `a_copy_an_interpreter_must_reopen_is_refused_before_the_exec` (a `#!`
   script in a memfd: `ENOENT`, the process goes on; with `execve` of
-  `/proc/self/fd/<n>` the shell ran and could not open it); the binary's
+  `/proc/self/fd/<n>` the shell ran and could not open it),
+  `the_tmpfile_copy_is_refused_on_fuse_only` (by `statfs` magic); the binary's
   `a_build_runs_from_a_sealed_copy_made_once` (a memfd, once; the hook's
   ways; a marker set from outside only warns); the VM smoke and quick
   suites' `tests/vm/guest/sealed-exe.py`: in overlay mode and in kaniko
@@ -271,12 +300,22 @@ The decision:
   `the_binarys_mount_is_measured_on_the_file` (`/` is `/`'s mount, `/proc`
   another, writable, a memfd never `/`'s),
   `the_marker_carries_the_binarys_mount`,
-  `an_unchecked_marker_is_not_believed_about_the_binary`, and the binary's
+  `an_unchecked_marker_is_not_believed_about_the_binary`,
+  `a_writable_mount_containing_the_binary_reaches_it` (sample mountinfo: a
+  file bind alone; its tree, `/` or the same file bound read-write too; a
+  directory bind inside a read-write one; a sibling and a name that only
+  starts the same; another file system with the same path; read-only by
+  the mount's or the file system's options; `\040` escapes; a path outside
+  its mount and a root that is not a path, unplaced), `rnk-rootfs`'s
+  `a_mount_is_read_only_by_its_own_options_or_its_filesystems` and
+  `a_line_without_its_filesystems_options_is_refused`, and the binary's
   `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`; the VM's
   kaniko quick suite, `binary_mounts_on_slash`: in a default Docker
   container a file or a directory bound read-write is refused with the
-  `:ro` guidance before the state directory exists, and the binary bound
-  `:ro` or copied into the container's root builds.
+  `:ro` guidance before the state directory exists, and so are the binary
+  bound `:ro` from a tree bound read-write too and a binary file with
+  another hard link, each with its own guidance; the binary bound `:ro`,
+  its tree bound `:ro` too, or copied into the container's root builds.
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its
