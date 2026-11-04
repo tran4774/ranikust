@@ -1,5 +1,7 @@
-// Derived in part from moby/profiles seccomp v0.2.4 (`seccomp_linux.go`,
-// `kernel_linux.go`), Copyright The Moby Authors, Apache-2.0; see NOTICE.
+// Derived in part from moby/profiles, https://github.com/moby/profiles,
+// seccomp/seccomp_linux.go and seccomp/kernel_linux.go at v0.2.4.
+// Copyright The Moby Authors. Licensed under the Apache License, Version 2.0.
+// Modified for ranikust: compiled to classic BPF here instead of libseccomp.
 
 //! Docker's JSON seccomp profiles, compiled to one classic BPF filter for
 //! the architecture ranikust is built for (ADR-0003, ADR-0103, ADR-0109).
