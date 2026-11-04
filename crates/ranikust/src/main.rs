@@ -819,8 +819,8 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         ))
         .with_guidance(
             "run the binary from a file that stays in place, or build it into an image run on an \
-             overlayfs root, as Docker's and containerd's default storage gives, where no mount \
-             table is read (ADR-0101)",
+             overlayfs root, as Docker's and containerd's default storage gives, where the \
+             binary's check reads no mount table (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
@@ -1331,7 +1331,8 @@ mod tests {
         assert!(
             unplaced.message.contains("/proc/self/mountinfo")
                 && unplaced.guidance.contains("stays in place")
-                && unplaced.guidance.contains("overlayfs root"),
+                && unplaced.guidance.contains("overlayfs root")
+                && !unplaced.guidance.contains("fuse-overlayfs"),
             "{}: {}",
             unplaced.message,
             unplaced.guidance

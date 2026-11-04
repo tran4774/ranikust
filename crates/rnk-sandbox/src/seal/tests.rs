@@ -410,8 +410,8 @@ fn a_binary_in_a_root_that_is_not_an_overlay_is_weighed() {
 
 /// ADR-0101: a fuse-overlayfs root (rootless podman's) copies up as
 /// overlayfs does, told by its type in the mount table; another FUSE root
-/// does not, nor an ext4 one, which reads no table; a FUSE root the table
-/// does not list, or a table that does not parse, leaves it untyped.
+/// does not, nor an ext4 one, for which no table is read; a FUSE root the
+/// table does not list, or a table that does not parse, leaves it untyped.
 #[test]
 fn a_fuse_overlayfs_root_copies_up_as_overlayfs_does() {
     const EXT4: rustix::fs::FsWord = 0xEF53;

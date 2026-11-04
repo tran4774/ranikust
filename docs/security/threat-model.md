@@ -133,22 +133,22 @@ These follow from decisions and are documented to users rather than fixed:
   `:ro`, a volume), one a writable mount reaches (its tree bound
   read-write too, by `/proc/self/mountinfo`; a file with another hard
   link), or one on a mount ranikust cannot tell (qemu-user, a memfd, a
-  mount table that does not place it; a fallback through
-  `/proc/self/fdinfo` is
-  [#95](https://github.com/tran4774/ranikust/issues/95)), is refused before
+  mount table that does not place it; a fallback through `/proc/self/fdinfo`
+  is [#95](https://github.com/tran4774/ranikust/issues/95)), is refused before
   the build: the binary must not be reachable through a writable mount
   other than the container's root once the copy took its write protection
   away. One in the container's own root concerns the container only when
   that root is an overlay, where a write copies up: overlayfs, as Docker's
   and containerd's default storage gives, or fuse-overlayfs, as rootless
   podman's can (its mount-table type declared by the root's mounter, the
-  operator's runtime, which is trusted). On any other root (Docker's btrfs,
-  zfs or vfs drivers, containerd's native snapshotter, a directory root, as
-  podman `--rootfs`, systemd-nspawn or LXC give) it gets the same checks for
-  its links and the other writable mounts that reach it. The check reads the
-  container's own mount table, so a writable view of the binary that this
-  table does not show is not detected: a residual risk accepted in ADR-0101.
-  Mount the binary from a path that no writable mount shares.
+  outer container runtime, trusted in section 3). On any other root
+  (Docker's btrfs, zfs or vfs drivers, containerd's native snapshotter, a
+  directory root, as podman `--rootfs`, systemd-nspawn or LXC give) it gets
+  the same checks for its links and the other writable mounts that reach
+  it. The check reads the container's own mount table, so a writable view
+  of the binary that this table does not show is not detected: a residual
+  risk accepted in ADR-0101. Mount the binary from a path that no writable
+  mount shares.
 - A full-sandbox `RUN`'s init (PID 1, ADR-0080) is a copy of ranikust: its
   argument and environment strings are zeroed before the command starts, so
   `/proc/1/cmdline`, which has no ptrace check, shows no `--build-arg`
