@@ -45,14 +45,14 @@ shows `/proc/sys` writes refused, after which an ADR decides on (d): options (a)
 and (c) (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as
 recommended).
 
-- **Today's routing is kept for both:** (a) for (i), (c) for (ii)
-  ([modes-and-detection](../design/modes-and-detection.md#where-environments-land)).
+- **Today's routing is kept for both:** (a) for (i), apart from the hint, (c)
+  for (ii) ([modes-and-detection](../design/modes-and-detection.md#where-environments-land)).
   The decision matters when rootless overlay arrives (task 8 of #41, planned,
   not built): it must not take (i) or (ii) from this routing.
 - **(i), the volume hint.** The log carries a hint to mount a volume at the
   state directory, which lets rootless overlay run. Today's route for (i) logs
-  no such hint (`crates/ranikust/src/main.rs:480` logs only "kaniko mode,
-  because root may not mount here"); the hint is added with task 8 of #41
+  only "kaniko mode, because root may not mount here" and no volume hint; the
+  hint is added with task 8 of #41
   ([#79](https://github.com/tran4774/ranikust/issues/79)).
 - **(ii), until measured.** The measurement is in a user-namespaced container
   (`hostUsers: false`, `procMount: Unmasked`, the default AppArmor profile): do
@@ -77,9 +77,11 @@ recommended).
 
 ## Evidence
 
-- Nothing is measured for (i) or (ii) here: the rows are **[inferred]** (rows 5b
-  and 7c of [ADR-0100](0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md),
-  which also lists the tier each runs in).
+- Nothing is measured for (ii) here: row 7c of
+  [ADR-0100](0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)
+  is **[inferred]**. Row 5b, case (i), is built: the T1 kaniko leg
+  ([testing](../testing.md), `RANIKUST_CASE_MODE=kaniko`) builds in a default
+  rootless Podman container where root may not mount.
 - **[inferred]** Most sysctls need capabilities in the initial user namespace, so
   a user-namespaced container may not be able to write `/proc/sys`; the
   measurement that would show it is the one this ADR waits for.
@@ -97,10 +99,11 @@ which stays `accepted` with its body unchanged; related:
 [ADR-0050](0050-ranikust-picks-the-build-root-no-workdir-flag.md) (kaniko mode
 on `/` only in a container).
 
-Follow-ups, with task 8 of #41 ([#79](https://github.com/tran4774/ranikust/issues/79)):
-the routing and the volume hint in `ranikust` with a T1 test of rootless Podman
-without a volume (kaniko on `/`) and, in the `k8s` suite of ADR-0100, rows 7b and
-7c. The `poc-runner` measurement for (ii) is not scheduled by this ADR; its
-result goes into an ADR. When it is built, change
+Follow-ups, with task 8 of #41
+([#79](https://github.com/tran4774/ranikust/issues/79)): the routing and the
+volume hint in `ranikust` with a T1 test of rootless Podman without a volume
+(kaniko on `/`) and, in the `k8s` suite of ADR-0100, rows 7b and 7c. The
+`poc-runner` measurement for (ii) is not scheduled by this ADR; its result goes
+into an ADR. When it is built, change
 [modes-and-detection](../design/modes-and-detection.md) and the book's
 [where to run it](../book/src/where-to-run.md).

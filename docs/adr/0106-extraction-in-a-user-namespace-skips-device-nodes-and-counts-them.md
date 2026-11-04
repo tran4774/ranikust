@@ -34,18 +34,18 @@ Extraction in a user namespace skips block and character device nodes and counts
 them as `nodes_skipped`, as ADR-0041's live extraction does: option (a) (the
 maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 
-- **Planned, Phase 3**, task 6 of #41 (extract and publish layers inside the
-  namespace); `--userns` ([#83](https://github.com/tran4774/ranikust/issues/83))
-  uses the same extraction. Nothing is built by this ADR; overlay as root keeps creating the
+- **Planned, Phase 3**, task 6 of #41
+  ([#77](https://github.com/tran4774/ranikust/issues/77), extract and publish
+  layers inside the namespace); `--userns`
+  ([#83](https://github.com/tran4774/ranikust/issues/83)) uses the same
+  extraction. Nothing is built by this ADR; overlay as root keeps creating the
   nodes.
-- **Any user namespace:** rootless mode and `--userns` alike, since both extract
-  in one.
 - **Whiteouts are not affected:** `mknod` of the 0/0 node of a whiteout works in
   a namespace **[measured]**, so whiteouts are still created.
 - **Reason:** the output reuses the base blobs unchanged, so the image keeps the
   nodes; and the root of a full-sandbox `RUN` is `nodev`, so no `RUN` could open
-  one anyway ([sandbox](../design/sandbox.md#per-run-sequence)). containerd skips
-  them in a user namespace too **[external]**.
+  one anyway ([sandbox](../design/sandbox.md#per-run-sequence)). containerd
+  skips them in a user namespace too **[external]**.
 
 ### Consequences
 
@@ -76,8 +76,9 @@ Raised while planning Phase 3
 [ADR-0041](0041-live-root-extraction-skips-device-nodes.md) (the same rule for
 live roots), [ADR-0032](0032-observable-behaviour-follows-buildkit.md).
 
-Follow-ups, with task 6 of #41: `rnk-rootfs` (`extract_overlay` in a namespace)
-and `rnk-snapshot`, with a T1 or T2 test of a base layer holding a device node.
-When it is built, change [overlay-snapshot](../design/overlay-snapshot.md), the
-`rnk-rootfs` and `rnk-snapshot` cards, and the book if a difference from overlay
-as root is user-visible (the `## Changelog` entry).
+Follow-ups, with [#77](https://github.com/tran4774/ranikust/issues/77):
+`rnk-rootfs` (`extract_overlay` in a namespace) and `rnk-snapshot`, with a T1 or
+T2 test of a base layer holding a device node. When it is built, change
+[overlay-snapshot](../design/overlay-snapshot.md), the `rnk-rootfs` and
+`rnk-snapshot` cards, and the book if a difference from overlay as root is
+user-visible (the `## Changelog` entry).

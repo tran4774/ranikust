@@ -15,8 +15,8 @@ writer) before `unshare`, the probes and the state directory's checks.
 
 - Parsing the subcommands and flags: `build` (the default) and `version` are
   built; `push` (an OCI layout only, ADR-0052) and `prune` (Phase 5; a minimal
-  `prune --all` in Phase 3, ADR-0105) are later; there is no `login` (ADR-0049). Kaniko's common flags plus `--mode`
-  (ADR-0011, ADR-0023).
+  `prune --all` in Phase 3, ADR-0105) are later; there is no `login` (ADR-0049).
+  Kaniko's common flags plus `--mode` (ADR-0011, ADR-0023).
 - Process set-up while single-threaded: a private mount namespace when
   permitted, the state directory's checks (`statedir`, ADR-0050), the probes
   of `rnk-sandbox` and `rnk-snapshot` in order, the outcome; in kaniko mode

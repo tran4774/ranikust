@@ -158,10 +158,10 @@ What a change here must keep, with where it lives:
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
   inheritable empty. Then `setsid`, a new session keyring (root's user and
-  persistent keyrings stay reachable until `--seccomp`), `setgroups`,
-  `setresgid`, `setresuid`; `WORKDIR` is resolved in the root without magic
-  links, entered with `fchdir`, and `getcwd` must show it below the root
-  (runc, CVE-2024-21626).
+  persistent keyrings stay reachable until a seccomp profile applies, planned,
+  ADR-0103), `setgroups`, `setresgid`, `setresuid`; `WORKDIR` is resolved in
+  the root without magic links, entered with `fchdir`, and `getcwd` must show it
+  below the root (runc, CVE-2024-21626).
 - **Only stdio crosses `execve`** (T7): every other descriptor becomes
   close-on-exec (`close_range`, or the `/proc/self/fd` list before 5.11);
   umask 022, `SIGPIPE` default, empty signal mask. `PATH` is searched after

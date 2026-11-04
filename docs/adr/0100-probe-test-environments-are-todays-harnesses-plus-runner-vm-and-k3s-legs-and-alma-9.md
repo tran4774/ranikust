@@ -51,8 +51,10 @@ maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended); 
 variants run in the VM or on the runner instead of a new T2c profile, so
 ADR-0063 stands.
 
-- **Planned, Phase 3**, task 14 of #41 (the privilege matrix harness). Nothing
-  is built by this ADR; the rows marked *new* below run in no tier today.
+- **Planned, Phase 3**, task 14 of #41 (the privilege matrix harness, issues
+  [#84](https://github.com/tran4774/ranikust/issues/84) to
+  [#87](https://github.com/tran4774/ranikust/issues/87)). Nothing is built by
+  this ADR; the rows marked *new* below run in no tier today.
 - **Required rows and their tiers.** "Basis" is how the expected outcome is
   known today. A row marked *today* is already asserted by the harness named.
 
@@ -66,7 +68,7 @@ ADR-0063 stands.
 | 3b | Docker `--cap-add SYS_ADMIN` and `apparmor=unconfined` | overlay, root (`MS_MOVE`) | measured | today: T2, VM and runner; T2c `sysadmin` |
 | 4 | Docker, seccomp and AppArmor unconfined, no added capability | overlay, rootless | inferred | new: T2, a Docker variant in the VM or on the runner |
 | 5 | Rootless Podman, default options, state directory on a volume | overlay, rootless, `/proc` rbind | steps measured (experiment 03) | new: T1 (`just test-rootless`), and a runner job in CI |
-| 5b | Rootless Podman, default options, no volume | kaniko on `/` ([ADR-0107](0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) | inferred | today: T1 kaniko leg |
+| 5b | Rootless Podman, default options, no volume | kaniko on `/` ([ADR-0107](0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) | built | today: T1 kaniko leg |
 | 6 | Ubuntu 24.04, regular user, no AppArmor profile | refused, with the AppArmor hint | measured | new: T2, a runner job (the `runner` user is this environment) and a VM leg |
 | 6b | Ubuntu 24.04, regular user, `uidmap` and ranges, the sample profile for `/usr/local/bin/ranikust` | overlay, rootless, fresh `proc` | mounting and `chown` measured, the build inferred | new: T2, a runner job and a VM leg |
 | 6c | Ubuntu 22.04 (also Debian 12, Fedora), regular user, `uidmap` and ranges | overlay, rootless, fresh `proc` | Ubuntu 22.04: namespace, map and rename measured, the overlay mount inferred; others inferred | new: T2, a VM leg on Ubuntu 22.04 |
@@ -148,8 +150,11 @@ join), [ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-severa
 (row 6d), [ADR-0107](0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)
 (rows 5b and 7c).
 
-Follow-ups, with task 14 of #41: one task issue per harness (runner jobs, VM
-legs, the `k8s` suite, the non-Ubuntu VM image). When each lands, change
+Follow-ups, one task issue per harness: runner jobs
+([#84](https://github.com/tran4774/ranikust/issues/84)), VM legs
+([#85](https://github.com/tran4774/ranikust/issues/85)), the `k8s` suite
+([#86](https://github.com/tran4774/ranikust/issues/86)) and the non-Ubuntu VM
+image ([#87](https://github.com/tran4774/ranikust/issues/87)). When each lands, change
 [modes-and-detection](../design/modes-and-detection.md#where-environments-land)
 (a Basis column), [testing](../testing.md) (the privilege-matrix row and "Not
 covered yet") and the book's [where to run it](../book/src/where-to-run.md)

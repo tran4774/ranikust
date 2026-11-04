@@ -110,9 +110,13 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    - Mount the overlay (`userxattr` is implied), then a new `proc`; if that
      fails, an rbind of the existing `/proc` (`RUN` then sees the container's
      processes, like BuildKit's `--oci-worker-no-process-sandbox`).
-   - On Ubuntu ≥ 24.04 `unshare` succeeds, then the `unprivileged_userns`
-     AppArmor profile makes the map write and every mount fail with
-     `EACCES`: the probe must reach those steps.
+   - On Ubuntu 24.04 (later releases probably the same) `unshare` succeeds,
+     then the `unprivileged_userns` AppArmor profile strips the namespace of
+     capabilities. Measured for an unconfined binary: with one id the `uid_map`
+     write fails with `EPERM`; with ranges the map is set up, then `chown` and
+     `unshare(CLONE_NEWNS)` fail with `EPERM` and a rename with `EACCES`
+     ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)).
+     The probe must reach those steps.
 3. **Sandbox capabilities.** Try `pivot_root` (Docker's seccomp profile
    blocks it even with `CAP_SYS_ADMIN`; fallback `MS_MOVE` + `chroot`) and a
    read-only `sysfs`, so the sandbox knows which variant to use

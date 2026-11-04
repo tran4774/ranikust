@@ -52,8 +52,10 @@ counting uids and gids, and the message names the owners found and the ways out
 (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended,
 which takes the recommendation on how the refusal finds the owners).
 
-- **Planned, Phase 3.** Nothing is built by this ADR. Today rootless is refused
-  whole (`NEEDS_ROOT`, [modes-and-detection](../design/modes-and-detection.md#refusal-and-guidance)),
+- **Planned, Phase 3**
+  ([#80](https://github.com/tran4774/ranikust/issues/80)). Nothing is built by
+  this ADR. Today rootless is refused whole (`NEEDS_ROOT`,
+  [modes-and-detection](../design/modes-and-detection.md#refusal-and-guidance)),
   so no behaviour changes until rootless overlay mode exists.
 - **Scope.** Only where the user namespace maps one uid, which is a rootless
   user without `newuidmap` or without subuid ranges. Where a multi-range map is
@@ -137,11 +139,11 @@ with subordinate ranges does with an owner outside them is not decided here:
 [ADR-0099](0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)
 settles where the store's operations run in the same namespace.
 
-Follow-ups, with Phase 3's rootless mode (task 9 of #41): the refusal in
-`ranikust` and `rnk-sandbox` (the issue's area) and the scan in `rnk-snapshot`
-and `rnk-builder`, with a test of a user without subuid ranges and an image with
-several owners (T0 for the check, T2 in the VM for a user without `uidmap` and
-one without ranges). When it is built, change
-`docs/design/modes-and-detection.md`, the `ranikust` and `rnk-sandbox` cards and
-the book from "planned" to what is true, add its `## Changelog` entry, and check
-the threat model.
+Follow-ups, with [#80](https://github.com/tran4774/ranikust/issues/80) (task 9
+of #41): the refusal in `ranikust` and `rnk-sandbox` (the issue's area) and the
+scan in `rnk-snapshot` and `rnk-builder`, with a test of a user without subuid
+ranges and an image with several owners (T0 for the check, T2 in the VM for a
+user without `uidmap` and one without ranges). When it is built, change
+`docs/design/modes-and-detection.md`, the `ranikust`, `rnk-sandbox`,
+`rnk-snapshot` and `rnk-builder` cards and the book from "planned" to what is
+true, add its `## Changelog` entry, and check the threat model.

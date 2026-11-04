@@ -31,9 +31,11 @@ namespace. How are read-only layer roots published without root (#5, Q-152)?
 the namespace on a layer of subordinate ids, with `EPERM`, `EACCES` and `EPERM`
 (R5 below), so it cannot work without the namespace; inside the namespace the
 rename of a `0555` directory already works when its uid and gid are mapped (R2 to
-R4), so the `u+w` step has nothing left to do. Where only the gid is unmapped (R6,
-R7) (a) would work, but ranikust never creates such a directory, and an unmapped
-owner from a tar fails at `chown` first.
+R4), so the `u+w` step has nothing left to do; (a) would work for a directory
+the namespace's root owns **[inferred]**. Where only the gid is unmapped (R6, R7)
+(a) works and a plain rename does not, but ranikust never creates such a
+directory, and an unmapped owner from a tar fails at `chown` first
+**[inferred]**.
 
 (b) was not taken: a marker beside a `0555` directory is never blocked (R5's
 note), so publication would work, but clean-up still cannot: a populated `0555`
@@ -51,7 +53,8 @@ build's user namespace as its mapped root: option (c), not in the issue's list
 (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 
 - **Planned, Phase 3.** Nothing is built by this ADR; it belongs to task 6 of
-  #41 (extract and publish layers inside the namespace). Overlay as root and
+  #41 ([#77](https://github.com/tran4774/ranikust/issues/77), extract and
+  publish layers inside the namespace). Overlay as root and
   kaniko mode keep the store as it is, and so does a layer root of `0555` as
   root.
 - **Every directory the store creates carries a mapped uid and a mapped gid.**
@@ -153,7 +156,7 @@ state directory `~/.local/share/ranikust`),
 [ADR-0106](0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)
 (device nodes in rootless extraction).
 
-Follow-ups, with task 6 of #41: `rnk-store`, `rnk-snapshot` and `rnk-rootfs`
+Follow-ups, with [#77](https://github.com/tran4774/ranikust/issues/77): `rnk-store`, `rnk-snapshot` and `rnk-rootfs`
 open and extract inside the namespace, with a T1 test of a `0555` layer root
 and of a `SIGKILL` during extraction. When it is built, change
 [overlay-snapshot](../design/overlay-snapshot.md),

@@ -39,22 +39,20 @@ inside the build's user namespace, and Phase 5 extends it into the full `prune`:
 option (a) (the maintainer, 2026-11-04: "tất cả theo khuyến nghị", all as
 recommended).
 
-- **Planned, Phase 3**, within the rootless mode tasks of #41 (it serves task 8's
-  acceptance criterion that the state directory is removable). Nothing is built
-  by this ADR; `prune` does not exist today.
+- **Planned, Phase 3**, [#76](https://github.com/tran4774/ranikust/issues/76)
+  (it serves task 8's acceptance criterion that the state directory is
+  removable). Nothing is built by this ADR; `prune` does not exist today.
 - **It reuses `rnk-store`'s clean-up**, which task 5 of #41 makes run inside the
   namespace, and Phase 5's `prune` grows from it
   ([ADR-0021](0021-rnk-store-crate.md): `ranikust prune` only calls
   `rnk-store`).
-- **Scope.** It works on any state directory, not only a rootless one; for a
-  rootless store it runs inside the user namespace, which is the plain reading
-  of "empties the state directory inside the namespace".
-- **Safety.** `prune --all` opens the store as a build does: the
-  state-directory checks, the `.ranikust-state` marker and the store's locks.
-  So it refuses a directory ranikust did not make and a state directory a
-  running build holds, the exact lock being the implementation's choice
-  ([#76](https://github.com/tran4774/ranikust/issues/76)). It deletes through
-  `rnk-rootfs` by descriptor, as the start-up clean-up does.
+- **Scope.** It is for a rootless state directory, as the title says. Whether
+  root's shared `/var/lib/ranikust` gets it is left to Phase 5's `prune`.
+- **Safety.** `prune --all` opens the store as a build does (the
+  state-directory checks and the `.ranikust-state` marker), so it refuses a
+  directory ranikust did not make. It never removes what a running build uses,
+  the mechanism being #76's. It deletes through `rnk-rootfs` by descriptor, as
+  the start-up clean-up does.
 - **Phase 5's defaults are still** those of [ADR-0032](0032-observable-behaviour-follows-buildkit.md)
   (BuildKit's tiers, size caps, age by last use); this ADR adds only the flag
   that removes everything.
@@ -64,8 +62,8 @@ recommended).
 - Good, because it reuses `rnk-store`'s clean-up, so no second way to delete
   exists to audit.
 - Good, because a user needs no other tool (podman) to leave no state behind.
-- Good, because it cannot empty a directory ranikust did not make, nor one a
-  running build holds, since it opens the store as a build does.
+- Good, because it cannot empty a directory ranikust did not make, and never
+  removes what a running build uses, since it opens the store as a build does.
 - Bad, because the `prune` subcommand appears in Phase 3 with one flag, ahead
   of the Phase 5 design (size and age tiers, in-use tracking), which then
   extends it.

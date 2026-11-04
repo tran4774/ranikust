@@ -12,9 +12,9 @@ decision-makers: Tran Nguyen (maintainer)
 "the build" in a user namespace, [ADR-0083](0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
 (b) says "the command" runs in one that leaves the init's uid unmapped, and
 [sandbox](../design/sandbox.md#per-run-sequence) had rootless mode add
-`CLONE_NEWUSER` to the `RUN`'s clone (rewritten with this ADR). A `RUN`'s root owns the image's root files
-only if they are owned by mapped ids, while root's builds share `layers/` in
-`/var/lib/ranikust`, extracted with real ids. How does `--userns` map ids as
+`CLONE_NEWUSER` to the `RUN`'s clone. A `RUN`'s root owns the image's root
+files only if they are owned by mapped ids, while root's builds share `layers/`
+in `/var/lib/ranikust`, extracted with real ids. How does `--userns` map ids as
 real root, and does it share the store (raised while planning Phase 3,
 [#41](https://github.com/tran4774/ranikust/issues/41))? And does rootless mode
 also leave the init's uid unmapped, which ADR-0083 names only for `--userns`?
@@ -23,8 +23,8 @@ also leave the init's uid unmapped, which ADR-0083 names only for `--userns`?
 
 - (a) The whole build runs in a user namespace, as in rootless mode, with a
   subordinate range for root (podman's `--userns=auto` allocates one from the
-  `containers` entry of `/etc/subuid` **[external]**) and extracted layers kept apart from root's
-  (keyed by the map, or in their own state directory).
+  `containers` entry of `/etc/subuid` **[external]**) and extracted layers kept
+  apart from root's (keyed by the map, or in their own state directory).
 - (b) Only the command runs in a user namespace, given the image's ids through
   an idmapped mount of the stage root (`mount_setattr(MOUNT_ATTR_IDMAP)`), the
   store unchanged, with a kernel floor for overlayfs on idmapped layers
@@ -39,8 +39,8 @@ rootless mode also leaves the init's uid unmapped: option (a) (the maintainer,
 2026-11-04: "tất cả theo khuyến nghị", all as recommended).
 
 - **Planned, Phase 3**, the `--userns` task
-  ([#83](https://github.com/tran4774/ranikust/issues/83), task 12 of #41) and the
-  init's uid (task 13, #34). Nothing is built by this ADR.
+  ([#83](https://github.com/tran4774/ranikust/issues/83), task 12 of #41) and
+  the init's uid (task 13, #34). Nothing is built by this ADR.
 - **One user-namespace path** for rootless mode and `--userns`: no kernel floor
   beyond rootless mode's.
 - **Extracted layers are kept apart** from the layers root's builds without the
@@ -93,11 +93,12 @@ range for root in `/etc/subuid`). If layers are keyed by their id map,
 [#1](https://github.com/tran4774/ranikust/issues/1) (Q-015, which digest names an
 extracted layer) is affected.
 
-Follow-ups, with [#83](https://github.com/tran4774/ranikust/issues/83) (after tasks 5 and 7 of #41): `rnk-sandbox`, `ranikust`
-and `rnk-store`, with T2 tests (a `RUN`'s uid 0 is an unprivileged host uid,
-its `uid_map` read from outside; the flattened content equals the build without
-`--userns`; a state directory whose parents the mapped uid cannot traverse is
-refused before anything is written). When it is built, change
+Follow-ups, with [#83](https://github.com/tran4774/ranikust/issues/83) (after
+tasks 5 and 7 of #41): `rnk-sandbox`, `ranikust` and `rnk-store`, with T2
+tests (a `RUN`'s uid 0 is an unprivileged host uid, its `uid_map` read from
+outside; the flattened content equals the build without `--userns`; a state
+directory whose parents the mapped uid cannot traverse is refused before
+anything is written). When it is built, change
 [sandbox](../design/sandbox.md), [cache-and-store](../design/cache-and-store.md)
 (if layers are kept apart), the threat model, the cards, the book's flag list
 and the `## Changelog`.
