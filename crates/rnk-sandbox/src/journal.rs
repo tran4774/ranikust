@@ -1286,7 +1286,7 @@ mod tests {
                 journals: 1,
                 stubs: 0
             }),
-            "parsing took longer than 10 s"
+            "parsing took longer than {BOUND:?}"
         );
     }
 

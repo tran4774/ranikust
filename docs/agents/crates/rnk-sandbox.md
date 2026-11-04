@@ -226,10 +226,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   file, FIFO, socket or whiteout where a directory is needed or as the
   target; stubs a `RUN` swaps for symlinks out of the root or for nodes;
   planted stub records aimed outside, naming `/` or ending in `..`),
-  `Direct` children that fail before
-  executing, mount sources and remount flags, `Direct` refusals, the sealed
-  heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
-  reading its own stream back), the init's status records,
+  `Direct` children that fail before executing, mount sources and remount
+  flags, `Direct` refusals, the sealed heredoc memfd, the relay (a surviving
+  write end, a full stream, a `RUN` reading its own stream back), the init's
+  status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox
