@@ -134,9 +134,10 @@ These follow from decisions and are documented to users rather than fixed:
   read-write too, by `/proc/self/mountinfo`; a writable bind of a link of
   it, even one whose name was removed, told by its inode; a file with
   another hard link), or one on a mount ranikust cannot tell (qemu-user, a
-  memfd, a mount table that does not place it, a writable directory of its
-  file system whose name was removed, a writable mount that cannot be
-  reached at its mount point; a fallback through `/proc/self/fdinfo` is
+  memfd, a mount table that does not place it (its own name removed
+  among them), a writable directory of its file system whose name was
+  removed, a writable mount that cannot be reached at its mount point; a
+  fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95)), is refused before
   the build: the binary must not be reachable through a writable mount
   other than the container's root once the copy took its write protection

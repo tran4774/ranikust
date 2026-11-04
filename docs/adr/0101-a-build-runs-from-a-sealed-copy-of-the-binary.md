@@ -150,8 +150,7 @@ The decision:
   mount of its file system that is a directory whose name was removed or
   that cannot be reached at its mount point, or a file with no link left;
   or a failed call (the mount table unreadable among them), each with its
-  own guidance; a fallback
-  through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
+  own guidance; a fallback through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
   (`statfs` magic), as Docker's and containerd's default storage gives, or

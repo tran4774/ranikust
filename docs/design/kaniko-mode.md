@@ -107,11 +107,11 @@ the scheduler runs one stage at a time) or a private directory per stage
     whose name was removed; a file with another hard link; in a
     root that is not an overlay (overlayfs or fuse-overlayfs), a binary in
     the root too), and on a mount ranikust cannot tell (qemu-user, a
-    memfd, a mount table that does not place it, a writable directory of
-    its file system whose name was removed, a writable mount that cannot be
-    reached at its mount point), before anything is
-    written: a `RUN` reaches it by name, and the build no longer runs it
-    (ADR-0101).
+    memfd, a mount table that does not place it (its own name removed
+    among them), a writable directory of its file system whose name was
+    removed, a writable mount that cannot be reached at its mount point),
+    before anything is written: a `RUN` reaches it by name, and the build
+    no longer runs it (ADR-0101).
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
     The `RUN` child drops every capability outside Docker's defaults from its
@@ -387,9 +387,7 @@ the directories in use (`readlink` of their fds), absolute and normalized. A
 state directory that is the root or an ancestor of it is refused, and so is
 one that is a directory of the root reached through another mount (a bind
 mount found by the mounts' device and `fs_root` in mountinfo), or that holds
-the root that way, since the list knows it by path only. A root or state
-directory on a mount whose root's name was removed (`//deleted`) cannot be
-placed, and is refused.
+the root that way, since the list knows it by path only.
 
 **`/var/run` is not on the list**, unlike kaniko: it is ignored only where it,
 or something below it, is a mount point, as every mount point is. An image's

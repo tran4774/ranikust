@@ -72,9 +72,9 @@ the tree read-only too), a file whose other link is bound read-write, even
 one whose name was removed since (bind no link of it read-write), and a file
 with other hard links (mount a copy: cargo's release binaries, such as
 `target/release/ranikust`, are links of their copies in `deps/`). A binary in
-the container's own root needs no such mount. On a root that is not an overlay (overlayfs, as Docker's and
-containerd's default storage gives, or fuse-overlayfs, as rootless podman's
-can), such as
+the container's own root needs no such mount. On a root that is not an
+overlay (overlayfs, as Docker's and containerd's default storage gives, or
+fuse-overlayfs, as rootless podman's can), such as
 [Docker's btrfs, zfs or vfs drivers or a directory root](how-it-builds.md#on-a-containers-),
 it too must have one link (leave it no hard-link alias) and no other writable
 mount may reach it. Put the build context there too, read-only:

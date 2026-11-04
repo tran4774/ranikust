@@ -683,8 +683,9 @@ Exceptions, all from emulation (the native CI job runs them all):
 - `root::tests::open_gives_cloexec_path_fd_and_mount_id`,
   `seal::tests::the_binarys_mount_is_measured_on_the_file`,
   `seal::tests::a_file_in_the_root_is_weighed_by_the_roots_file_system` and
-  `seal::tests::a_mount_root_is_reached_at_its_mount_point` are skipped: qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2),
-  so other mount-id comparisons pass only because both sides are 0 (ranikust's
+  `seal::tests::a_mount_root_is_reached_at_its_mount_point` are skipped:
+  qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so
+  other mount-id comparisons pass only because both sides are 0 (ranikust's
   measurement of its binary's mount reads a 0 as `NoMountId`, which kaniko
   mode on `/` refuses; a fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95)). The mount-ID checks

@@ -191,7 +191,8 @@ that stays in place, or build it into an image run on an overlayfs root, where
 the binary's check reads no mount table.
 When the measurement fails, mount `/proc` so that `/proc/self/exe` and
 `/proc/self/mountinfo` can be read, and let the seccomp profile allow
-`fstatfs`. Devices you give the container with `--device` stay reachable by a
+`fstatfs`, `openat2` and `statx`, with which ranikust looks up the writable
+mount points of the binary's file system. Devices you give the container with `--device` stay reachable by a
 `RUN`: ranikust cannot tell them from the container's own, so pass only what
 the build needs.
 
