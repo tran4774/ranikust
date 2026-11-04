@@ -1035,8 +1035,11 @@ fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     // The binary's own mount is a sample one, so its name places nothing:
     // only the writable mounts below count.
     let own = line_at(u64::MAX, dir.path(), true);
-    let failing = line_at(u64::MAX - 1, &long, false);
-    let bind = line_at(st.stx_mnt_id, &file, false);
+    let mut failing = line_at(u64::MAX - 1, &long, false);
+    let mut bind = line_at(st.stx_mnt_id, &file, false);
+    // Roots apart from the own mount's: no tree holds the binary's path.
+    failing.fs_root = PathBuf::from("/failing");
+    bind.fs_root = PathBuf::from("/bind");
     let check = |lines: &[&MountInfo], name: &Path| {
         let lines: Vec<MountInfo> = lines.iter().map(|m| (*m).clone()).collect();
         reached_from_slash(&lines, u64::MAX, name, binary)
