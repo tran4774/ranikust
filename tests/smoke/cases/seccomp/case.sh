@@ -1,7 +1,8 @@
 # --seccomp (ADR-0103, ADR-0109): a RUN in the full sandbox runs under
 # Docker's default profile, one seccomp filter more than with
-# --seccomp=unconfined, with or without --seccomp=default; a profile file's
-# rule takes effect. In the T1 kaniko leg, on the container's `/`, every
+# --seccomp=unconfined, with or without --seccomp=default, and the profile
+# refuses personality(ADDR_NO_RANDOMIZE) that unconfined allows; a profile
+# file's rule takes effect. In the T1 kaniko leg, on the container's `/`, every
 # --seccomp is refused (exit 2) and a RUN runs under the container's own
 # profile.
 
@@ -15,13 +16,17 @@ case_run() {
   n="$(run default cat /filters)"
   [ -n "$n" ] && [ "$n" -ge 1 ] || fail "filters under the default profile: $n"
   expect "$(run default cat /nice)" ok "setpriority under the default profile"
+  expect "$(run default cat /personality)" refused "the default profile refuses personality"
   build flag --seccomp=default >/dev/null
   expect "$(run flag cat /filters)" "$n" "--seccomp=default is the default"
+  expect "$(run flag cat /personality)" refused "--seccomp=default refuses personality"
   build unconfined --seccomp=unconfined >/dev/null
   expect "$(run unconfined cat /filters)" "$((n - 1))" "--seccomp=unconfined drops the profile"
+  expect "$(run unconfined cat /personality)" ok "--seccomp=unconfined allows personality"
   build file "--seccomp=$(rnk_ctx "$SMOKE_CASES_DIR/$CASE")/profile.json" >/dev/null
   expect "$(run file cat /filters)" "$n" "a profile file in the default's place"
   expect "$(run file cat /nice)" refused "the profile file refuses setpriority"
+  expect "$(run file cat /personality)" ok "the profile file allows personality"
 }
 
 case_run_on_slash() {
