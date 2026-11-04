@@ -7,7 +7,9 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0004](../adr/0004-support-every-privilege-level.md),
 [ADR-0014](../adr/0014-kaniko-mode-sequential-by-default.md),
 [ADR-0023](../adr/0023-mode-flag.md),
-[ADR-0050](../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md).
+[ADR-0050](../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md),
+[ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)
+(planned, Phase 3).
 
 ## Outcomes
 
@@ -93,7 +95,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      (each range must fit inside one range of the parent map: `0 0 1` +
      `1 1 65536` works where `0 0 65536` is `EPERM`). An unprivileged host
      user needs `newuidmap`/`newgidmap` and `/etc/subuid`; without them only
-     one uid maps and `chown` to any other fails with `EINVAL`.
+     one uid maps and `chown` to any other fails with `EINVAL`. Planned, with
+     Phase 3 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)):
+     then ranikust refuses an image with several owners, and no flag ignores
+     the failed `chown`.
    - Mount the overlay (`userxattr` is implied), then a new `proc`; if that
      fails, an rbind of the existing `/proc` (`RUN` then sees the container's
      processes, like BuildKit's `--oci-worker-no-process-sandbox`).
@@ -216,6 +221,11 @@ usable, and offer, in order:
    the binary.
 3. Run ranikust inside a container.
 
+Also planned: where a user namespace maps one uid, an image with several owners
+is refused (probe step 2,
+[ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md));
+what that refusal says is not settled.
+
 ## Failure handling
 
 - A probe step that fails with an unexpected errno is reported verbatim; the
@@ -229,7 +239,6 @@ usable, and offer, in order:
 ## Open questions
 
 - [Q-039](https://github.com/tran4774/ranikust/issues/11) Which environments must the probe be tested in?
-- [Q-040](https://github.com/tran4774/ranikust/issues/12) What happens to a rootless user without subuid ranges?
 - [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
 - [Q-017](https://github.com/tran4774/ranikust/issues/3) Which type carries the probe outcome to the libraries?
 
