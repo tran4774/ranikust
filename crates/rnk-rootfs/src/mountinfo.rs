@@ -79,7 +79,7 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
     let _source = fields.next()?;
     let super_options = fields.next()?;
     // Linux writes `ro` or `rw` first: anything else is a source shifted by
-    // a space (one that lands on `ro` or `rw` goes unseen).
+    // a space.
     let fs_rw = matches!(first_option(super_options), Some(b"ro" | b"rw"));
     // `fs_root` is not always a path (`mnt:[4026533352]` for nsfs).
     if !mount_point.starts_with(b"/") || !fs_rw {
