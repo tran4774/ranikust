@@ -134,16 +134,16 @@ the first `RUN`, and it reads every `--secret` once at the start
 take it away from `RUN`, it refuses to build. On a container's own root
 filesystem, which takes no unnamed file on most kernels, each of those files
 is made by a random name and removed at once, while no `RUN` runs, so it stays
-on disk, not in the container's memory ([ADR-0056]). ranikust runs from a
-sealed copy of its own binary in memory, as large as the binary, so no `RUN`
-can change the code it runs ([ADR-0101]); if the kernel refuses that copy
-(`vm.memfd_noexec=2`), it makes an unnamed one in `TMPDIR` where that file
-system allows it, else builds on with a warning. After a build in the
+on disk, not in the container's memory ([ADR-0056]). After a build in the
 container was killed (ranikust not its first process), later builds there keep
 this state in memory and cannot `COPY --from` an earlier stage or an image:
 restart the container, or run ranikust as the container's first process
 ([ADR-0066]). On a volume (below) the state stays on disk even then, but
-`COPY --from` still fails.
+`COPY --from` still fails. ranikust runs from a sealed copy of its own binary
+in memory, as large as the binary, so no `RUN` can change the code it runs
+([ADR-0101]); if the kernel refuses that copy (`vm.memfd_noexec=2`), it makes
+an unnamed one in `TMPDIR` where that file system allows it, else builds on
+with a warning.
 
 **What ranikust cannot hide** (it warns about each):
 

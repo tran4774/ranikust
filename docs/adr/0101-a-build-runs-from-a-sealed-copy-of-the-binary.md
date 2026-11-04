@@ -21,9 +21,10 @@ keep today's barriers in `Direct` on `/`. Building it
 changes nothing: `/proc/self/exe` names the file the process was executed
 from, on the mount it was executed from; a later bind over the path or a new
 mount namespace does not change it, and a fork inherits it. Only an `execve`
-of another file does. runc does not bind either: since 1.2.0 it executes
-`runc init` from a sealed copy. How does ranikust give every process it
-forks a binary no `RUN` can write?
+of another file does. runc does not bind either: it has executed
+`runc init` from a sealed copy since v1.0.0-rc7, its fix of CVE-2019-5736,
+and since 1.2.0 the parent makes that copy. How does ranikust give every
+process it forks a binary no `RUN` can write?
 
 ## Considered Options
 
@@ -48,8 +49,8 @@ Chosen option: (y). At start-up a build runs again from a sealed memfd copy
 of ranikust's binary, else an `O_TMPFILE` copy; when neither works it
 builds on from the installed binary with today's barriers and a warning.
 The maintainer chose (x) first, 2026-11-04 ("tất cả theo khuyến nghị", all
-as recommended); building it showed the overlay's limits, and asked whether
-to keep the overlay first, the maintainer answered, 2026-11-04: "Luôn dùng
+as recommended). Building it showed the overlay's limits; asked whether to
+keep the overlay first, the maintainer answered on 2026-11-04: "Luôn dùng
 memfd (khuyến nghị)" (always the memfd, as recommended). Why:
 
 - The overlay's file is the installed file: the copy runs that file's own
@@ -135,6 +136,9 @@ The decision:
   `1081130` before merge; T2, the VM, Linux 6.8), after a read-only bind
   over the binary's path in the build's mount namespace, `/proc/self/exe`
   of the running process still named the original mount, not the bind's.
+- runc [external], v1.0.0-rc7 (commit `0a8e4117e7f7`, CVE-2019-5736):
+  `libcontainer/nsenter/cloned_binary.c` makes `runc init` run from a
+  sealed copy of `/proc/self/exe`.
 - runc [external], v1.2.0 (commit `0b9fa21be2bc`), `libcontainer/dmz`:
   `CloneSelfExe` (`cloned_binary_linux.go`) tries `sealedOverlayfs`
   (`overlayfs_linux.go`: `fsopen`/`fsconfig`/`fsmount`, never attached,
