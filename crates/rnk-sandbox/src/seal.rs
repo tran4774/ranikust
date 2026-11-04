@@ -427,10 +427,11 @@ fn seen_at(root: &RootPath, path: &Path) -> Result<Option<(u64, MountRoot)>, Err
     let st = match root.statx(path) {
         Ok(st) => st,
         Err(e) => {
-            return match e.io_error().and_then(Errno::from_io_error) {
+            return match e.io_error().map(errno_of) {
                 // A name that leads nowhere places nothing: the caller fails closed.
-                Some(Errno::NOENT | Errno::NOTDIR | Errno::LOOP) | None => Ok(None),
+                Some(Errno::NOENT | Errno::NOTDIR | Errno::LOOP) => Ok(None),
                 Some(errno) => Err(errno),
+                None => Err(Errno::IO),
             };
         }
     };
@@ -460,8 +461,8 @@ fn root_at(root: &RootPath, m: &MountInfo) -> Result<Option<MountRoot>, Errno> {
 }
 
 /// [`reached_writable`] with the binary's name and each mount's root
-/// followed from this process's `/`; `Err` when a call fails and no
-/// writable mount was found to reach the binary.
+/// followed from this process's `/`; `Err` when `/` cannot be opened, or
+/// when a lookup fails and no writable mount was found to reach the binary.
 fn reached_from_slash(
     mounts: &[MountInfo],
     own: u64,
@@ -471,8 +472,14 @@ fn reached_from_slash(
     let root = RootPath::open("/").map_err(|e| e.io_error().map_or(Errno::IO, errno_of))?;
     // `readlink` names a removed file `<path> (deleted)`: only a name that
     // still leads to the binary, on its own mount, places it.
-    let named = seen_at(&root, path)? == Some((own, MountRoot::File(binary)));
     let mut failed = None;
+    let named = match seen_at(&root, path) {
+        Ok(found) => found == Some((own, MountRoot::File(binary))),
+        Err(errno) => {
+            failed = Some(errno);
+            false
+        }
+    };
     let reach = reached_writable(mounts, own, named.then_some(path), binary, |m| {
         root_at(&root, m).unwrap_or_else(|errno| {
             failed.get_or_insert(errno);

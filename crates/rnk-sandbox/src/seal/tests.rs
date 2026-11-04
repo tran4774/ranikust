@@ -920,6 +920,8 @@ fn a_mount_that_cannot_be_told_places_nothing() {
 /// file is that file; a line naming another mount there, or a mount point
 /// that is missing, is not reached. A file's name, as `readlink` of its
 /// descriptor gives it, leads to the file until the name is removed.
+/// Skipped under qemu-user, whose statx leaves the mount id at 0 (`just
+/// test-aarch64`).
 #[test]
 fn a_mount_root_is_reached_at_its_mount_point() {
     let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
@@ -972,19 +974,23 @@ fn a_mount_root_is_reached_at_its_mount_point() {
     assert_eq!(seen_at(&root, &name()), Ok(None), "{}", name().display());
 }
 
-/// Review of ADR-0101's T21 fix: the binary's own name, removed while it
-/// runs (`readlink` then gives `<path> (deleted)`) with a link left
-/// elsewhere, places nothing, whatever the stale name is below: on the
-/// host running it, without the check of the name, the stale path was
-/// placed in its mount's tree.
+/// A sample line of mount `id` at `point` on the binary's sample device,
+/// its root `/elsewhere`.
+fn line_at(id: u64, point: &Path, read_only: bool) -> MountInfo {
+    let mut m = mounts("8:1 /elsewhere /x rw", &[])
+        .into_iter()
+        .find(|m| m.mount_id == 10)
+        .expect("the sample's own line");
+    m.mount_id = id;
+    m.mount_point = point.to_owned();
+    m.read_only = read_only;
+    m
+}
+
+/// ADR-0101 (T21): the binary's own name, removed while it runs, places
+/// nothing: `readlink`'s stale name is not followed into its mount's tree.
 #[test]
 fn a_removed_name_of_the_binary_places_nothing() {
-    let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
-    let mounts: Vec<MountInfo> = text
-        .split(|b| *b == b'\n')
-        // A line of an odd shape elsewhere on this host does not matter here.
-        .filter_map(|line| rnk_rootfs::parse_mountinfo(line).ok()?.pop())
-        .collect();
     let dir = tempfile::tempdir().expect("tempdir");
     let (file, link) = (dir.path().join("f"), dir.path().join("g"));
     std::fs::write(&file, b"x").expect("write");
@@ -999,11 +1005,44 @@ fn a_removed_name_of_the_binary_places_nothing() {
             .expect("readlink")
             .into_bytes(),
     ));
+    // Its own mount alone, at the directory `readlink` names: no mount
+    // point is looked up.
+    let own = line_at(st.stx_mnt_id, name.parent().expect("a parent"), false);
     let binary = FileId::of(&st).expect("an inode");
     assert_eq!(
-        reached_from_slash(&mounts, st.stx_mnt_id, &name, binary),
+        reached_from_slash(&[own], st.stx_mnt_id, &name, binary),
         Ok(None),
         "{}",
         name.display()
     );
+}
+
+/// ADR-0101: a lookup that fails otherwise than leading nowhere (a name
+/// longer than any file system takes), at a mount point or at the
+/// binary's own name, keeps its errno (`Unknown`), unless a writable bind
+/// of the binary is found: a reach wins.
+#[test]
+fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("f");
+    std::fs::write(&file, b"x").expect("write");
+    let path = CString::new(file.as_os_str().as_bytes()).expect("a path");
+    let st = statx_of(rustix::fs::CWD, &path, AtFlags::empty()).expect("statx");
+    let binary = FileId::of(&st).expect("an inode");
+    let long = dir.path().join("x".repeat(300));
+    let root = RootPath::open("/").expect("/");
+    assert_eq!(seen_at(&root, &long), Err(Errno::NAMETOOLONG));
+    // The binary's own mount is a sample one, so its name places nothing:
+    // only the writable mounts below count.
+    let own = line_at(u64::MAX, dir.path(), true);
+    let failing = line_at(u64::MAX - 1, &long, false);
+    let bind = line_at(st.stx_mnt_id, &file, false);
+    let check = |lines: &[&MountInfo], name: &Path| {
+        let lines: Vec<MountInfo> = lines.iter().map(|m| (*m).clone()).collect();
+        reached_from_slash(&lines, u64::MAX, name, binary)
+    };
+    assert_eq!(check(&[&own, &failing], &file), Err(Errno::NAMETOOLONG));
+    assert_eq!(check(&[&own, &failing, &bind], &file), Ok(Some(true)));
+    assert_eq!(check(&[&own], &long), Err(Errno::NAMETOOLONG));
+    assert_eq!(check(&[&own, &bind], &long), Ok(Some(true)));
 }
