@@ -188,12 +188,12 @@ What a change here must keep, with where it lives:
   guards it. The copy runs with `execveat(fd, "", AT_EMPTY_PATH)`, the
   descriptor close-on-exec, never `/proc/self/fd/<n>`: an interpreter
   (binfmt_misc, a `#!` line) is then refused before the exec, and the next
-  way tried. The copy gets back the
-  core-file limit ranikust started with. When no way works the build goes
-  on, warned. The marker carries the installed binary's mount only to a
-  copy that checks; otherwise the file run is measured. Whether a writable
-  mount reaches the binary is told from paths in `/proc/self/mountinfo`
-  only, compared by component; nothing is opened by them.
+  way tried. The copy gets back the core-file limit ranikust started with.
+  When no way works the build goes on, warned. The marker carries the
+  installed binary's mount only to a copy that checks; otherwise the file run
+  is measured. Whether a writable mount reaches the binary is told from paths
+  in `/proc/self/mountinfo` only, compared by component; nothing is opened by
+  them.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.
@@ -252,18 +252,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the binary's mount against `/` (a zero id: `NoMountId`), measured on
   files and carried in the marker, a marker that does not check not
   believed, a writable mount reaching the binary by sample mountinfo,
-  a binary in a root that is not overlayfs weighed and the root mount not
-  counted,
-  FUSE told apart by `statfs` magic), the stub journal (placement through
-  symlinks, removal, parent times, replay of dead journals only, a lock
-  kept by a shared description), swaps and planted records, `Direct`
-  children that fail before executing, mount sources and remount flags, `Direct` refusals, the sealed
-  heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
-  reading its own stream back), the init's status records,
+  a binary in a root that is not overlayfs weighed (by sample values and
+  on `/`) and the root mount not counted, FUSE told apart by `statfs`
+  magic), the stub journal (placement through symlinks, removal, parent times,
+  replay of dead journals only, a lock kept by a shared description), swaps
+  and planted records, `Direct` children that fail before executing, mount
+  sources and remount flags, `Direct` refusals, the sealed heredoc memfd, the
+  relay (a surviving write end, a full stream, a `RUN` reading its own stream
+  back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
-  (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox
-  refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
+  (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox refuses
+  `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside

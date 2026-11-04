@@ -87,8 +87,9 @@ The decision:
   never get a name, run from a read-only descriptor. It has no seal: only
   `ETXTBSY` keeps the running copy from being written, as for the installed
   binary today, but such a write would not reach the installed binary.
-  Never on FUSE, whose daemon could serve other pages when the copy runs
-  than those written. Some file systems refuse `O_TMPFILE` (overlayfs on
+  Never made directly on FUSE (`TMPDIR`'s own file system type is read),
+  whose daemon could serve other pages when the copy runs than those
+  written. Some file systems refuse `O_TMPFILE` (overlayfs on
   Ubuntu's Linux 6.8, below): the build then goes on warned.
 - **Writes outside the state directory.** Only the `O_TMPFILE` copy, a file
   with no name in `TMPDIR`, made before the state directory is checked and
@@ -116,7 +117,8 @@ The decision:
 - **A binary on a writable mount, in kaniko mode on `/`.** Before any copy,
   ranikust measures which mount the binary it started from is on (`statx`
   `STATX_MNT_ID` against `/`'s, `statvfs` `ST_RDONLY`) and, on another
-  read-only mount, whether a writable mount reaches the file: whether it
+  read-only mount or on a root that is not overlayfs, whether a writable
+  mount reaches the file: whether it
   has more than one hard link, and whether a writable mount of its file
   system in `/proc/self/mountinfo` (the `major:minor` of the line of the
   binary's own mount, not `statx`'s `st_dev`, which differs on btrfs
@@ -140,21 +142,22 @@ The decision:
   with its own guidance; a
   fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
-  container's own root builds when that root is overlayfs (Docker,
-  containerd: a write there copies the file up and leaves the image's
-  layers as they are); on any other root (a directory root, as podman
-  `--rootfs`, systemd-nspawn or LXC give) it is weighed like one on
-  another read-only mount, the root mount itself not counting as a
-  writable mount that reaches it. One on a read-only mount no writable
-  mount reaches builds; overlay mode and kaniko mode per stage do not
-  check, since no `RUN` reaches the binary there. Why, as hardening: a `RUN`
-  there is root on the container's `/`, and once the build no longer
-  executes the installed file, `ETXTBSY` no longer guards it, so the
-  binary must not be reachable through a writable mount. The check reads
-  the container's own mount table, so a writable view of the binary that
-  this table does not show is not detected: an accepted residual risk,
-  with the guidance to mount the binary from a path that no writable mount
-  shares. The maintainer decided, on 2026-11-04 (the second to fourth
+  container's own root builds when that root is overlayfs, as Docker's
+  and containerd's default storage gives (a write there copies the file
+  up and leaves the image's layers as they are); on any other root (a
+  directory root, as podman `--rootfs`, systemd-nspawn or LXC give) it is
+  weighed like one on another read-only mount, the root mount itself not
+  counting as a writable mount that reaches it. One on a read-only mount
+  no writable mount reaches builds; overlay mode and kaniko mode per stage
+  do not check, since no `RUN` reaches the binary there. Why, as
+  hardening: a `RUN` there is root on the container's `/`, and once the
+  build no longer executes the installed file, `ETXTBSY` no longer guards
+  it, so the binary must not be reachable through a writable mount. The
+  check reads the container's own mount table, so a writable view of the
+  binary that this table does not show is not detected: an accepted
+  residual risk, with the guidance to mount the binary from a path that no
+  writable mount shares. The maintainer decided, on 2026-11-04 (the second
+  to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
@@ -204,10 +207,11 @@ The decision:
     writable mounts that reach it, when `/` is not overlayfs, overlay
     roots (Docker, containerd) not affected: "Kiểm tra cả khi root không
     phải overlay (khuyến nghị)";
-  - after describing the risk of a writable binary in general terms (with
-    the first set), to keep naming the configurations that are refused,
-    without a mechanism, in the book, `SECURITY.md`, the threat model and
-    the refusal messages: "Giữ, vì người dùng cần biết (khuyến nghị)";
+  - with the first set, "ADR-0101 and the threat model describe the risk
+    of a writable binary in general terms"; and with the fourth, to keep
+    naming the configurations that are refused, without a mechanism, in
+    the book, `SECURITY.md`, the threat model and the refusal messages:
+    "Giữ, vì người dùng cần biết (khuyến nghị)";
   - to accept the measurement the marker carries as it is: whoever starts
     ranikust sets the variable and is trusted, a `RUN` cannot set it (its
     environment is the Dockerfile's only), and the copy's run believes it
@@ -355,6 +359,8 @@ The decision:
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one
   nothing reaches builds), `a_directory_root_is_not_its_own_writable_mount`,
+  `a_file_in_the_root_is_weighed_by_the_roots_file_system` (`/` measured
+  through its descriptor: on the developer's ext4 root, `Linked`),
   `rnk-rootfs`'s
   `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
   `a_spilled_option_is_kept_out_of_read_only` and

@@ -150,6 +150,7 @@ test-aarch64 *args:
     "$qemu" "$BIN" version
     skip=(--skip root::tests::open_gives_cloexec_path_fd_and_mount_id
       --skip seal::tests::the_binarys_mount_is_measured_on_the_file
+      --skip seal::tests::a_file_in_the_root_is_weighed_by_the_roots_file_system
       --skip without_root_the_set_up_refuses_before_touching_the_state_dir
       --skip kaniko_variables_are_not_read
       --skip logging_flags_change_what_is_written

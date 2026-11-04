@@ -356,9 +356,9 @@ fn a_writable_mount_containing_the_binary_reaches_it() {
 /// writable mounts that reach it; on an overlay root it builds as it is.
 #[test]
 fn a_binary_in_a_root_that_is_not_overlayfs_is_weighed() {
-    const EXT4: i64 = 0xEF53;
+    const EXT4: rustix::fs::FsWord = 0xEF53;
     let never = || -> Result<Option<bool>, Errno> { panic!("the mount table is not read") };
-    let fs = |f_type: i64| move || -> Result<i64, Errno> { Ok(f_type) };
+    let fs = |f_type| move || -> Result<rustix::fs::FsWord, Errno> { Ok(f_type) };
     let reach = |reached: Option<bool>| move || -> Result<Option<bool>, Errno> { Ok(reached) };
     let root = BinaryMount::Root;
     // An overlay root: an image's links build, and nothing more is read.
@@ -379,7 +379,7 @@ fn a_binary_in_a_root_that_is_not_overlayfs_is_weighed() {
         Ok(BinaryMount::Unplaced)
     );
     // A file system that cannot be told is a failed measurement.
-    let failed = || -> Result<i64, Errno> { Err(Errno::NOSYS) };
+    let failed = || -> Result<rustix::fs::FsWord, Errno> { Err(Errno::NOSYS) };
     assert_eq!(verdict(root, failed, 1, never), Err(Errno::NOSYS));
     // Another read-only mount is weighed whatever its file system; others
     // are as `of` told them.
@@ -410,8 +410,8 @@ fn a_directory_root_is_not_its_own_writable_mount() {
     assert_eq!(reached_writable(&parse(&elsewhere), 1, bin), Some(false));
 }
 
-/// ADR-0101: the `O_TMPFILE` copy is never made on FUSE, whose daemon
-/// serves the pages the kernel runs; other file systems take it.
+/// ADR-0101: the `O_TMPFILE` copy is never made directly on FUSE, whose
+/// daemon serves the pages the kernel runs; other file systems take it.
 #[test]
 fn only_fuse_serves_its_own_pages() {
     // statfs(2): FUSE_SUPER_MAGIC; TMPFS_MAGIC, EXT4_SUPER_MAGIC, OVERLAYFS_SUPER_MAGIC.
@@ -442,6 +442,35 @@ fn the_binarys_mount_is_measured_on_the_file() {
     assert_ne!(mount(memfd), Ok(BinaryMount::Root));
     // `/proc` is not weighed further: writable is refused as it is.
     assert_eq!(mount_of(open_dir("/proc").as_fd()), BinaryMount::Writable);
+}
+
+/// ADR-0101: a file in the root is weighed by the root's own file system,
+/// measured through its descriptor: as it is on overlayfs, by its links
+/// and the mount table elsewhere. Skipped under qemu-user, whose statx
+/// leaves the mount id at 0 (`just test-aarch64`).
+#[test]
+fn a_file_in_the_root_is_weighed_by_the_roots_file_system() {
+    let root = rustix::fs::open(
+        "/",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .expect("/");
+    let st = statx_of(rustix::fs::CWD, c"/", AtFlags::empty()).expect("statx /");
+    let expected = if rustix::fs::statfs("/").expect("statfs /").f_type == OVERLAYFS {
+        BinaryMount::Root
+    } else if st.stx_nlink > 1 {
+        BinaryMount::Linked
+    } else {
+        let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
+        let mounts = rnk_rootfs::parse_mountinfo(&text).expect("parse mountinfo");
+        match reached_writable(&mounts, st.stx_mnt_id, Path::new("/")) {
+            None => BinaryMount::Unplaced,
+            Some(true) => BinaryMount::Exposed,
+            Some(false) => BinaryMount::Root,
+        }
+    };
+    assert_eq!(mount_of(root.as_fd()), expected);
 }
 
 /// ADR-0101: a marker whose copy does not check is not believed: the

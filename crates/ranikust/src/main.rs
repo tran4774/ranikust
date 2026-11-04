@@ -798,8 +798,9 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              reaches would let RUN alter that file"
         ))
         .with_guidance(
-            "put the binary outside the mounted tree, or mount that tree read-only: Docker :ro, \
-             Kubernetes readOnly: true on its volumeMount (ADR-0101)",
+            "put the binary outside the mounted tree, or mount that tree read-only (Docker :ro, \
+             Kubernetes readOnly: true on its volumeMount), or mount a single-link copy of the \
+             binary read-only from outside it (ADR-0101)",
         )),
         Some(BinaryMount::Linked) => Err(Failure::error(format!(
             "{how}: kaniko mode on / with ranikust's binary on a file with other hard links, \
@@ -817,7 +818,8 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         ))
         .with_guidance(
             "run the binary from a file that stays in place, or build it into an image run on an \
-             overlayfs root (Docker, containerd), where this is not needed (ADR-0101)",
+             overlayfs root (Docker's and containerd's default storage), where this is not needed \
+             (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \

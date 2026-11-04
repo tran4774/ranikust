@@ -33,7 +33,7 @@ const MARKER: &str = "RANIKUST_SEALED_COPY";
 const FUSE: i64 = 0x6573_5546;
 
 /// `OVERLAYFS_SUPER_MAGIC`.
-const OVERLAYFS: i64 = 0x794C_7630;
+const OVERLAYFS: rustix::fs::FsWord = 0x794c_7630;
 
 /// The seals of a memfd copy: no write, no change of size, no seal taken
 /// off.
@@ -277,14 +277,7 @@ fn placed(fd: BorrowedFd<'_>) -> Result<(BinaryMount, rustix::fs::Statx), Errno>
 fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
     let found = (|| {
         let (mount, st) = placed(exe)?;
-        let fs_type = || -> Result<i64, Errno> {
-            #[allow(
-                clippy::useless_conversion,
-                reason = "f_type's integer type differs between targets"
-            )]
-            let f_type = i64::from(rustix::fs::fstatfs(exe)?.f_type);
-            Ok(f_type)
-        };
+        let fs_type = || rustix::fs::fstatfs(exe).map(|st| st.f_type);
         let reach = || -> Result<Option<bool>, Errno> {
             // The path `/proc/self/exe` gives, named through the descriptor
             // measured above.
@@ -306,13 +299,15 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
 
 /// The binary's mount once its links and the mounts that reach it are
 /// weighed: on another read-only mount, and on a root whose file system
-/// (`fs_type`, `statfs`) is not overlayfs, a file with other links is
-/// [`BinaryMount::Linked`], one a writable mount reaches (`reach`, `None`
-/// when the mount table does not place it) [`BinaryMount::Exposed`].
-/// `fs_type` and `reach` are called only when needed.
+/// (`fs_type`, `statfs`) is not overlayfs, a file with no link or one the
+/// mount table does not place (`reach` gives `None`) is
+/// [`BinaryMount::Unplaced`], one with other links [`BinaryMount::Linked`],
+/// one a writable mount reaches [`BinaryMount::Exposed`]. `fs_type` and
+/// `reach` are called only when needed; their error is returned, for
+/// [`BinaryMount::Unknown`].
 fn verdict(
     mount: BinaryMount,
-    fs_type: impl FnOnce() -> Result<i64, Errno>,
+    fs_type: impl FnOnce() -> Result<rustix::fs::FsWord, Errno>,
     nlink: u32,
     reach: impl FnOnce() -> Result<Option<bool>, Errno>,
 ) -> Result<BinaryMount, Errno> {
@@ -321,7 +316,12 @@ fn verdict(
         // On an overlay root a write copies the file up and leaves the
         // layers' own files, an image's links among them, as they are.
         BinaryMount::Root => fs_type()? != OVERLAYFS,
-        _ => false,
+        BinaryMount::Writable
+        | BinaryMount::Exposed
+        | BinaryMount::Linked
+        | BinaryMount::NoMountId
+        | BinaryMount::Unplaced
+        | BinaryMount::Unknown(_) => false,
     };
     if !weighed {
         return Ok(mount);
@@ -353,14 +353,12 @@ fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool>
     let below = path.strip_prefix(&mine.mount_point).ok()?;
     // Paths compared, never opened.
     let in_fs = mine.fs_root.join(below);
-    // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
-    // A writable mount whose root does not contain the file (Docker's and
-    // kubelet's single-file binds) is passed over: sound while a `RUN` holds
-    // only Docker's default capabilities (ADR-0078).
     Some(mounts.iter().any(|m| {
         m.mount_id != own
+            // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
             && m.device == mine.device
             && !m.read_only
+            // Single-file binds pass: sound with Docker's default capabilities (ADR-0078).
             && in_fs.starts_with(&m.fs_root)
     }))
 }
@@ -547,7 +545,7 @@ fn serves_its_own_pages(f_type: i64) -> bool {
 
 /// A copy in an `O_TMPFILE` file in `dir`, which can never get a name
 /// (`O_EXCL`), open read-only: `execve` refuses a file open for writing.
-/// Never on FUSE.
+/// Never made directly on FUSE: `dir`'s own file system type is read.
 fn tmpfile_copy(exe: &File, dir: &Path) -> io::Result<OwnedFd> {
     let at = rustix::fs::open(
         dir,
