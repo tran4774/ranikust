@@ -680,15 +680,16 @@ tests with `ENOSYS`. `QEMU_AARCH64` names the emulator, else
 shows how to get one). The recipe prints the binfmt entry's interpreter.
 Exceptions, all from emulation (the native CI job runs them all):
 
-- `root::tests::open_gives_cloexec_path_fd_and_mount_id` and
-  `seal::tests::the_binarys_mount_is_measured_on_the_file` are skipped:
-  qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so other
-  mount-id comparisons pass only because both sides are 0 (ranikust's
+- `root::tests::open_gives_cloexec_path_fd_and_mount_id`,
+  `seal::tests::the_binarys_mount_is_measured_on_the_file` and
+  `seal::tests::a_file_in_the_root_is_weighed_by_the_roots_file_system` are
+  skipped: qemu-user's `statx` leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2),
+  so other mount-id comparisons pass only because both sides are 0 (ranikust's
   measurement of its binary's mount reads a 0 as `NoMountId`, which kaniko
   mode on `/` refuses; a fallback through `/proc/self/fdinfo` is
-  [#95](https://github.com/tran4774/ranikust/issues/95)). The mount-ID
-  checks that guard deletion (T4 of the threat model) are therefore not
-  exercised under emulation; the native CI job covers them.
+  [#95](https://github.com/tran4774/ranikust/issues/95)). The mount-ID checks
+  that guard deletion (T4 of the threat model) are therefore not exercised
+  under emulation; the native CI job covers them.
 - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
   `kaniko_variables_are_not_read` and `logging_flags_change_what_is_written`
   are skipped: qemu-user runs a thread of its own, so the set-up stops at its

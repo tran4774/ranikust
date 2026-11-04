@@ -384,7 +384,7 @@ fn a_binary_in_a_root_that_is_not_overlayfs_is_weighed() {
     // Another read-only mount is weighed whatever its file system; others
     // are as `of` told them.
     let ro = BinaryMount::ReadOnly;
-    let no_fs = || -> Result<i64, Errno> { panic!("no file system type is needed") };
+    let no_fs = || -> Result<rustix::fs::FsWord, Errno> { panic!("no file system type is needed") };
     assert_eq!(verdict(ro, no_fs, 2, never), Ok(BinaryMount::Linked));
     assert_eq!(
         verdict(ro, || Ok(OVERLAYFS), 1, reach(Some(true))),
@@ -459,15 +459,21 @@ fn a_file_in_the_root_is_weighed_by_the_roots_file_system() {
     let st = statx_of(rustix::fs::CWD, c"/", AtFlags::empty()).expect("statx /");
     let expected = if rustix::fs::statfs("/").expect("statfs /").f_type == OVERLAYFS {
         BinaryMount::Root
-    } else if st.stx_nlink > 1 {
-        BinaryMount::Linked
     } else {
-        let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
-        let mounts = rnk_rootfs::parse_mountinfo(&text).expect("parse mountinfo");
-        match reached_writable(&mounts, st.stx_mnt_id, Path::new("/")) {
-            None => BinaryMount::Unplaced,
-            Some(true) => BinaryMount::Exposed,
-            Some(false) => BinaryMount::Root,
+        match st.stx_nlink {
+            0 => BinaryMount::Unplaced,
+            1 => {
+                let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
+                match rnk_rootfs::parse_mountinfo(&text)
+                    .ok()
+                    .and_then(|mounts| reached_writable(&mounts, st.stx_mnt_id, Path::new("/")))
+                {
+                    None => BinaryMount::Unplaced,
+                    Some(true) => BinaryMount::Exposed,
+                    Some(false) => BinaryMount::Root,
+                }
+            }
+            _ => BinaryMount::Linked,
         }
     };
     assert_eq!(mount_of(root.as_fd()), expected);

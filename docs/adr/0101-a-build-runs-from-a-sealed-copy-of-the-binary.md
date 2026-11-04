@@ -117,10 +117,10 @@ The decision:
 - **A binary on a writable mount, in kaniko mode on `/`.** Before any copy,
   ranikust measures which mount the binary it started from is on (`statx`
   `STATX_MNT_ID` against `/`'s, `statvfs` `ST_RDONLY`) and, on another
-  read-only mount or on a root that is not overlayfs, whether a writable
-  mount reaches the file: whether it
-  has more than one hard link, and whether a writable mount of its file
-  system in `/proc/self/mountinfo` (the `major:minor` of the line of the
+  read-only mount or on a root that is not overlayfs, whether another
+  writable mount reaches the file: whether it has more than one hard link,
+  and whether another writable mount of its file system in
+  `/proc/self/mountinfo` (the `major:minor` of the line of the
   binary's own mount, not `statx`'s `st_dev`, which differs on btrfs
   subvolumes) has a root that contains the binary's path in that
   file system (its own mount's root joined with its path below that
@@ -132,11 +132,12 @@ The decision:
   from inside it, a volume), with the guidance to mount it read-only
   (Docker `:ro`, Kubernetes `readOnly: true` on the `volumeMount`); a
   binary a writable mount reaches (bound `:ro` from a tree also bound
-  read-write), with the guidance to put it outside the mounted tree or to
-  mount that tree read-only; and a file with other hard links, with the
-  guidance to mount a copy with one link. It also refuses one whose mount
-  it cannot tell: a mount id of 0, which qemu-user's `statx` gives for
-  every file and Linux 6.8 and 7.0 give a memfd [measured]; a mount table
+  read-write), with the guidance to put it outside the mounted tree, to
+  mount that tree read-only, or to mount a single-link copy read-only from
+  outside it; and a file with other hard links, with the guidance to
+  mount a copy with one link. It also refuses one whose mount it cannot
+  tell: a mount id of 0, which qemu-user's `statx` gives for every file
+  and Linux 6.8 and 7.0 give a memfd [measured]; a mount table
   that cannot be parsed or does not place the file, or a file with no link
   left; or a failed call (the mount table unreadable among them), each
   with its own guidance; a
@@ -156,8 +157,8 @@ The decision:
   check reads the container's own mount table, so a writable view of the
   binary that this table does not show is not detected: an accepted
   residual risk, with the guidance to mount the binary from a path that no
-  writable mount shares. The maintainer decided, on 2026-11-04 (the second
-  to fourth
+  writable mount shares. The maintainer decided, on 2026-11-04 (the
+  second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
@@ -165,7 +166,8 @@ The decision:
   [in a third](https://github.com/tran4774/ranikust/issues/32#issuecomment-6633392547),
   the last three
   [in a fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6634131493),
-  after the second host-safety pass):
+  after the second host-safety pass, one of them beside an answer of the
+  comment recorded on #32):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -204,14 +206,14 @@ The decision:
   - to name `/proc/self/mountinfo` too in the guidance for a failed
     measurement: "Nêu rõ mountinfo (khuyến nghị)";
   - to check a binary in the container's root too, for its links and the
-    writable mounts that reach it, when `/` is not overlayfs, overlay
-    roots (Docker, containerd) not affected: "Kiểm tra cả khi root không
-    phải overlay (khuyến nghị)";
-  - with the first set, "ADR-0101 and the threat model describe the risk
-    of a writable binary in general terms"; and with the fourth, to keep
-    naming the configurations that are refused, without a mechanism, in
-    the book, `SECURITY.md`, the threat model and the refusal messages:
-    "Giữ, vì người dùng cần biết (khuyến nghị)";
+    other writable mounts that reach it, when `/` is not overlayfs:
+    "Overlay roots (Docker, containerd) are not affected", "Kiểm tra cả
+    khi root không phải overlay (khuyến nghị)";
+  - in the comment recorded on #32, "ADR-0101 and the threat model
+    describe the risk of a writable binary in general terms"; in the
+    fourth, to keep naming the configurations that are refused, without a
+    mechanism, in the book, `SECURITY.md`, the threat model and the
+    refusal messages: "Giữ, vì người dùng cần biết (khuyến nghị)";
   - to accept the measurement the marker carries as it is: whoever starts
     ranikust sets the variable and is trusted, a `RUN` cannot set it (its
     environment is the Dockerfile's only), and the copy's run believes it
@@ -360,7 +362,9 @@ The decision:
   other links, none, or reached by a writable mount is refused, one
   nothing reaches builds), `a_directory_root_is_not_its_own_writable_mount`,
   `a_file_in_the_root_is_weighed_by_the_roots_file_system` (`/` measured
-  through its descriptor: on the developer's ext4 root, `Linked`),
+  through its descriptor: on an ext4 root `Linked`, a directory's link
+  count counting its subdirectories; on a one-link root the mount table
+  decides),
   `rnk-rootfs`'s
   `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
   `a_spilled_option_is_kept_out_of_read_only` and

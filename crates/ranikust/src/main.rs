@@ -1283,6 +1283,7 @@ mod tests {
             exposed.code == 1
                 && exposed.message.contains("a writable mount also reaches")
                 && exposed.guidance.contains("outside the mounted tree")
+                && exposed.guidance.contains("single-link copy")
                 && exposed.guidance.contains(":ro")
                 && exposed.guidance.contains("readOnly: true"),
             "{}: {}",
@@ -1327,7 +1328,8 @@ mod tests {
         let unplaced = refuse_writable_binary(how, Some(BinaryMount::Unplaced)).unwrap_err();
         assert!(
             unplaced.message.contains("/proc/self/mountinfo")
-                && unplaced.guidance.contains("stays in place"),
+                && unplaced.guidance.contains("stays in place")
+                && unplaced.guidance.contains("overlayfs root"),
             "{}: {}",
             unplaced.message,
             unplaced.guidance

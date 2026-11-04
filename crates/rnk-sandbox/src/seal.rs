@@ -30,7 +30,7 @@ use rustix::io::Errno;
 const MARKER: &str = "RANIKUST_SEALED_COPY";
 
 /// `FUSE_SUPER_MAGIC`.
-const FUSE: i64 = 0x6573_5546;
+const FUSE: rustix::fs::FsWord = 0x6573_5546;
 
 /// `OVERLAYFS_SUPER_MAGIC`.
 const OVERLAYFS: rustix::fs::FsWord = 0x794c_7630;
@@ -277,7 +277,7 @@ fn placed(fd: BorrowedFd<'_>) -> Result<(BinaryMount, rustix::fs::Statx), Errno>
 fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
     let found = (|| {
         let (mount, st) = placed(exe)?;
-        let fs_type = || rustix::fs::fstatfs(exe).map(|st| st.f_type);
+        let fs_type = || rustix::fs::fstatfs(exe).map(|fs| fs.f_type);
         let reach = || -> Result<Option<bool>, Errno> {
             // The path `/proc/self/exe` gives, named through the descriptor
             // measured above.
@@ -358,7 +358,7 @@ fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool>
             // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
             && m.device == mine.device
             && !m.read_only
-            // Single-file binds pass: sound with Docker's default capabilities (ADR-0078).
+            // Other files' single-file binds pass: sound with Docker's capabilities (ADR-0078).
             && in_fs.starts_with(&m.fs_root)
     }))
 }
@@ -539,7 +539,7 @@ fn memfd_copy(exe: &File) -> io::Result<OwnedFd> {
 
 /// Whether a file system of type `f_type` (`statfs`) is FUSE: its daemon
 /// could hand the kernel other pages to run than the ones written.
-fn serves_its_own_pages(f_type: i64) -> bool {
+fn serves_its_own_pages(f_type: rustix::fs::FsWord) -> bool {
     f_type == FUSE
 }
 
@@ -554,12 +554,7 @@ fn tmpfile_copy(exe: &File, dir: &Path) -> io::Result<OwnedFd> {
     )
     .map_err(context(format!("open {}", dir.display())))?;
     let st = rustix::fs::fstatfs(&at).map_err(context(format!("statfs {}", dir.display())))?;
-    #[allow(
-        clippy::useless_conversion,
-        reason = "f_type's integer type differs between targets"
-    )]
-    let f_type = i64::from(st.f_type);
-    if serves_its_own_pages(f_type) {
+    if serves_its_own_pages(st.f_type) {
         return Err(io::Error::other(format!(
             "{} is on FUSE, whose daemon serves the copy's pages",
             dir.display()
