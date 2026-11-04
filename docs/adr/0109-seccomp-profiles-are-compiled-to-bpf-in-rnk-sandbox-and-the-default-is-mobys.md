@@ -1,0 +1,112 @@
+---
+status: accepted
+date: 2026-11-05
+decision-makers: Tran Nguyen (maintainer)
+---
+
+# ADR-0109: Seccomp profiles are compiled to BPF by `rnk-sandbox`'s own code, and the default profile is moby's
+
+## Context and Problem Statement
+
+[ADR-0103](0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)
+applies a default seccomp profile to every `RUN` with the full sandbox and
+keeps `--seccomp=<file>` from
+[ADR-0003](0003-dockerfile-trust-and-default-isolation.md), but no ADR says how
+a profile becomes a filter or where the default profile comes from.
+[ADR-0009](0009-x86-64-first-aarch64-ready.md) only says the syscall numbers come
+from `libc` or `rustix` and the profiles are generated per architecture. Today
+`rnk-sandbox` has one hand-written filter, ADR-0033's, built with a small
+assembler. Which mechanism compiles a Docker JSON profile, which profile is the
+default, and how do unsupported parts of a profile behave (raised while
+implementing [#82](https://github.com/tran4774/ranikust/issues/82))?
+
+## Considered Options
+
+Mechanism:
+
+- (A1) Grow ADR-0033's assembler (`rnk-sandbox`'s `seccomp.rs`) into a
+  compiler from Docker's JSON format to classic BPF.
+- (A2) `seccompiler` 0.5.0 (rust-vmm), used to compile only.
+- (A3) libseccomp, the C library runc uses, through the `libseccomp` crate.
+
+(A2) sets `PR_SET_NO_NEW_PRIVS` whenever it installs a filter, which ADR-0103
+refuses, takes one match action per filter, so a profile with an action per
+rule becomes several stacked filters that settle conflicts differently from
+libseccomp, and does not read Docker's format. (A3) is LGPL-2.1, not on
+`deny.toml`'s allow list, and needs a C build for the static musl binary
+([ADR-0020](0020-static-musl-via-cargo-zigbuild.md)).
+
+Default profile:
+
+- (B1) moby/profiles seccomp v0.2.4's `default.json`, the copy BuildKit
+  vendors, embedded verbatim and compiled by the same code as a `<file>`.
+- (B2) A profile of ranikust's own.
+
+(B2) drifts from `docker build` and needs every entry justified and kept.
+
+## Decision Outcome
+
+`rnk-sandbox` compiles Docker JSON profiles to classic BPF with its own code,
+grown from ADR-0033's assembler, and the default profile is moby/profiles
+seccomp v0.2.4's `default.json`, embedded verbatim: options (A1) and (B1),
+with the defaults below (the maintainer, 2026-11-05: "Tự viết (khuyến
+nghị)", write our own, as recommended; "Chép của Docker (khuyến nghị)", copy
+Docker's, as recommended; "Đồng ý tất cả (khuyến nghị)", agree to all, as
+recommended).
+
+- **No new dependency** for the filter, and no `no_new_privs`: the profile is
+  installed in the `RUN`'s child where ADR-0033's filter is, after the mounts
+  and before the capability drop, while the child still holds
+  `CAP_SYS_ADMIN`.
+- **ADR-0033's filter stays** and is installed on top of the profile, under
+  `--seccomp=unconfined` too.
+- **`default` is one more profile:** the embedded `default.json` goes through
+  the same parser and compiler as `--seccomp=<file>`, with a `NOTICE` entry.
+- **A syscall name the architecture does not know** is skipped under
+  `SCMP_ACT_ALLOW`, as runc does, and makes the profile refused (exit 2) under
+  a stricter action.
+- **Refused (exit 2):** `SCMP_ACT_NOTIFY`, `SCMP_ACT_TRACE`, a `listenerPath`
+  and any flag ranikust does not know.
+- **`--seccomp` is refused (exit 2)** wherever a `RUN` gets `Isolation::Direct`,
+  which is kaniko mode on `/`, ADR-0103's case.
+- **`serde` and `serde_json`** come into `rnk-sandbox` to read the profile;
+  both are already workspace dependencies.
+
+### Consequences
+
+- Good, because the install stays under ranikust's control: setuid programs
+  keep working, ADR-0033's filter stacks as before, and nothing new is linked.
+- Good, because `default` is what `docker build` and BuildKit apply, and a
+  user's Docker profile file works unchanged within the limits above.
+- Bad, because the compiler is security-critical code of ranikust's own (64-bit
+  argument compares, an action per rule, long jumps), which needs its own
+  tests: compiled filters run in a forked child, and moby's profile is checked
+  against a table for x86_64 and aarch64.
+- Bad, because moby's profile has to be re-vendored by hand when it changes.
+- Neutral, because a profile that asks for what ranikust does not support is
+  refused before the build starts, never weakened.
+
+## Evidence
+
+- Nothing is measured here.
+- **[external]** `seccompiler` 0.5.0: `apply_filter` sets
+  `PR_SET_NO_NEW_PRIVS` (`src/lib.rs:344`); one match action per filter
+  (`src/backend/filter.rs:85-108`).
+- **[external]** libseccomp is LGPL-2.1; `deny.toml` allows no LGPL licence
+  **[code]**.
+- **[external]** BuildKit `cd8ee2441a4c` vendors
+  `github.com/moby/profiles/seccomp` v0.2.4 and applies its `default.json` to
+  every `RUN` (ADR-0103's Evidence); the profile is an allowlist whose default
+  action is `SCMP_ACT_ERRNO`.
+- **[external]** `seccomp(2)`: installing a filter without `no_new_privs`
+  needs `CAP_SYS_ADMIN` in the caller's user namespace.
+
+## More Information
+
+Refines [ADR-0103](0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)
+(how its profile is built) and
+[ADR-0033](0033-network-none-loopback-through-a-user-namespace.md) (its
+assembler and install point are shared). Built by
+[#82](https://github.com/tran4774/ranikust/issues/82), task 11 of
+[#41](https://github.com/tran4774/ranikust/issues/41); the design is in
+[sandbox](../design/sandbox.md).
