@@ -2,7 +2,8 @@
 # network.none-userns` where ranikust lacks CAP_NET_ADMIN (ADR-0033): the
 # RUN's network namespace is owned by a user namespace of uid 0, so root
 # holds every capability there; the seccomp filter must keep it from the
-# interfaces it closes. Used by tests/vm/guest/smoke.sh, which loads
+# interfaces it closes, with Docker's default profile below it or without
+# (--seccomp=unconfined). Used by tests/vm/guest/smoke.sh, which loads
 # ip_tables first so that the x_tables checks reach the kernel's code.
 import ctypes
 import errno
@@ -87,4 +88,9 @@ for proto, name in [(NETLINK_NETFILTER, "NETLINK_NETFILTER"), (NETLINK_XFRM, "NE
 socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 0).close()
 socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_AUDIT).close()
 
+# How many filters stack here: smoke.sh compares the default profile
+# with --seccomp=unconfined (ADR-0109).
+with open("/proc/self/status") as f:
+    filters = [l.split()[1] for l in f if l.startswith("Seccomp_filters:")]
+print(f"seccomp filters: {filters[0] if filters else 'unknown'}")
 print("netns checks: ok")

@@ -46,6 +46,9 @@ rnk_run() {
   return "$rc"
 }
 
+# ranikust runs on the VM itself: the context is where it is.
+rnk_ctx() { echo "$1"; }
+
 # ADR-0054: kaniko mode refuses a container's `/` where root may mount
 # (`--privileged`) or where /proc/sys is writable
 # (`systempaths=unconfined`), before anything is pulled. Run with the
@@ -403,6 +406,41 @@ slash_lock_in() {
   echo "slash lock: a second kaniko-mode build on / refused by the flock (exit 1, nothing written); the first built (exit 0)"
 }
 
+# ADR-0103, ADR-0109: kaniko mode on a default container's `/`, where `RUN`
+# runs `Direct`, refuses every `--seccomp` (exit 2) before anything is
+# pulled, and a `RUN` there runs under the container's own profile: as many
+# filters as a plain `docker run`. Run with the kaniko-mode suite, unless
+# the cases named leave seccomp out.
+seccomp_on_slash() {
+  local ctx="$W/seccomp-slash" out v rc own got
+  local in=(-v "$RNK:/ranikust/bin/ranikust:ro" -v "$ctx:/ranikust/ctx:ro")
+  sudo mkdir -p "$ctx" || return 1
+  printf 'FROM %s\nRUN echo "filters=$(sed -n "s/^Seccomp_filters:[[:space:]]*//p" /proc/self/status)"\n' \
+    "$BASE" | sudo tee "$ctx/Dockerfile" >/dev/null || return 1
+  echo '{"defaultAction": "SCMP_ACT_ALLOW"}' | sudo tee "$ctx/profile.json" >/dev/null || return 1
+  for v in default unconfined /ranikust/ctx/profile.json; do
+    rc=0
+    out="$(sudo docker run --rm "${in[@]}" "$BASE" /ranikust/bin/ranikust --mode=kaniko \
+      --context /ranikust/ctx --no-push "--seccomp=$v" 2>&1)" || rc=$?
+    if [ "$rc" != 2 ] || ! grep -qF 'kaniko mode on / runs RUN directly' <<<"$out"; then
+      echo "error: --seccomp=$v in kaniko mode on /: exit $rc, want 2 and the refusal" >&2
+      echo "$out" >&2
+      return 1
+    fi
+  done
+  own="$(sudo docker run --rm "$BASE" sed -n 's/^Seccomp_filters:[[:space:]]*//p' /proc/self/status)"
+  rc=0
+  out="$(sudo docker run --rm "${in[@]}" "$BASE" /ranikust/bin/ranikust --mode=kaniko \
+    --context /ranikust/ctx --no-push 2>&1)" || rc=$?
+  got="$(sed -n 's/^filters=\([0-9][0-9]*\)$/\1/p' <<<"$out" | head -1)"
+  if [ "$rc" != 0 ] || [ -z "$own" ] || [ "$got" != "$own" ]; then
+    echo "error: kaniko mode on /: a RUN under $got seccomp filters, a plain container $own (exit $rc)" >&2
+    echo "$out" >&2
+    return 1
+  fi
+  echo "seccomp on /: every --seccomp refused (exit 2); a RUN under the container's own profile ($own filters)"
+}
+
 # A plain command: under `||` errexit would be off inside the cases.
 set +e
 # shellcheck disable=SC2086
@@ -418,6 +456,10 @@ if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
   rt_no_mount_root_with_a_container_signal || rc=1
   rt_auto_privileged_container || rc=1
   slash_lock_refuses_a_second_build || rc=1
+fi
+if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
+  [[ -z "${RANIKUST_QUICK_CASES:-}" || " ${RANIKUST_QUICK_CASES} " == *" seccomp "* ]]; then
+  seccomp_on_slash || rc=1
 fi
 set -e
 

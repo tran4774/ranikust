@@ -3258,6 +3258,70 @@ mod tests {
         spec.stderr = Stdio::Fd(file.into());
     }
 
+    /// `Seccomp_filters` of `/proc/self/status` (Linux 5.9): how many
+    /// filters the process runs under.
+    fn seccomp_filters(status: &str) -> Option<u32> {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix("Seccomp_filters:"))
+            .and_then(|n| n.trim().parse().ok())
+    }
+
+    /// T2 (ADR-0103, ADR-0109): a full-sandbox `RUN` runs under Docker's
+    /// default profile, one filter more than ranikust, which refuses
+    /// `personality(ADDR_NO_RANDOMIZE)` (`setarch -R`);
+    /// `--seccomp=unconfined` adds none; a profile file's own rule takes
+    /// effect in its place.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_run_gets_its_seccomp_profile() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let own = seccomp_filters(&fs::read_to_string("/proc/self/status").unwrap())
+                .expect("Seccomp_filters in /proc/self/status");
+            let file = SeccompProfile::from_json(
+                br#"{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                    {"names": ["uname"], "action": "SCMP_ACT_ERRNO", "errnoRet": 13}]}"#,
+            )
+            .unwrap();
+            let probe = "cat /proc/self/status; \
+                 if setarch -R true; then echo personality=ok; else echo personality=refused; fi; \
+                 if uname >/dev/null; then echo uname=ok; else echo uname=refused; fi";
+            let mut got = Vec::new();
+            for (name, profile) in [
+                ("default", Some(SeccompProfile::docker_default().unwrap())),
+                ("unconfined", None),
+                ("file", Some(file)),
+            ] {
+                runner.seccomp = profile;
+                let out = top.join(format!("out-{name}"));
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+                output_to(&out, &mut spec);
+                let st = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap_or_default();
+                println!("{name}: {st:?}\n{text}");
+                got.push((name, st.map(|s| s.success()).ok(), text));
+            }
+            drop(mounts);
+            for ((name, ok, text), (filters, personality, uname)) in got.iter().zip([
+                (own + 1, "personality=refused", "uname=ok"),
+                (own, "personality=ok", "uname=ok"),
+                (own + 1, "personality=ok", "uname=refused"),
+            ]) {
+                assert_eq!(*ok, Some(true), "{name}: the RUN ran: {text}");
+                assert_eq!(seccomp_filters(text), Some(filters), "{name}: {text}");
+                assert!(text.contains(personality), "{name}: {personality}: {text}");
+                assert!(text.contains(uname), "{name}: {uname}: {text}");
+            }
+        });
+    }
+
     /// Red team (T2, the VM only; T1, T7): a descriptor of a directory
     /// outside the root, open in ranikust as the state directory and the
     /// build context are during a build, gives a `RUN` no way out: not a
