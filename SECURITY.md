@@ -93,7 +93,7 @@ These are documented properties, not vulnerabilities:
   and kaniko mode on a container's `/` with ranikust's binary reachable
   through a writable mount other than `/`'s (mount the binary, and any tree
   that holds it, read-only: Docker `:ro`, Kubernetes `readOnly: true`; a
-  file with one link; on a root that is not an overlay (overlayfs or
+  file with one link, no link of it bound read-write; on a root that is not an overlay (overlayfs or
   fuse-overlayfs), a binary in the root too), or on a mount it cannot determine
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
   [threat model section 6](docs/security/threat-model.md#6-accepted-risks));

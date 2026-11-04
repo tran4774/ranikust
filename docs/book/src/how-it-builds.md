@@ -175,7 +175,8 @@ overlay mode there (`--mode=overlay`, or `--mode=auto`, with a volume at
 `/var/lib/ranikust`) ([ADR-0054]). It also refuses its own binary when a
 writable mount other than the container's root reaches it, since a `RUN` could
 then alter it: a bind without `:ro` or a volume without `readOnly: true`, a
-directory holding it mounted read-write too, or another hard link of the file.
+directory holding it mounted read-write too, a link of it bound read-write
+(even one whose name was removed), or another hard link of the file.
 Mount a copy with one link read-only, outside any tree mounted read-write
 ([ADR-0101], [Installation](install.md#use-it-in-a-container)). On a container
 root that is not an overlay (overlayfs or fuse-overlayfs), such as Docker's
@@ -184,8 +185,10 @@ roots of podman `--rootfs`, systemd-nspawn or LXC, a binary in that root gets
 the same checks. It refuses too when it cannot tell which mount its binary is
 on, as under an emulator such as qemu-user or when started from a memfd: run
 ranikust natively, from a regular file. When `/proc/self/mountinfo` does not
-place the binary, run it from a file that stays in place, or build it into an
-image run on an overlayfs root, where the binary's check reads no mount table.
+place the binary, or a writable mount beside it was removed at its source or is
+hidden by another mount, run it from a file that stays in place, or build it
+into an image run on an overlayfs root, where the binary's check reads no mount
+table.
 When the measurement fails, mount `/proc` so that `/proc/self/exe` and
 `/proc/self/mountinfo` can be read, and let the seccomp profile allow
 `fstatfs`. Devices you give the container with `--device` stay reachable by a

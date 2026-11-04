@@ -68,9 +68,10 @@ writable mount other than the container's root, since a `RUN` is root on that
 `/`. ranikust refuses one bound read-write (Docker binds read-write unless told
 `:ro`; in Kubernetes set `readOnly: true` on its `volumeMount`), one inside a
 directory that is also mounted read-write (put it outside that tree, or mount
-the tree read-only too), and a file with other hard links (mount a copy:
-cargo's release binaries, such as `target/release/ranikust`, are links of
-their copies in `deps/`). A binary in the container's own root needs no such
+the tree read-only too), a file whose other link is bound read-write, even
+one whose name was removed since (bind no link of it read-write), and a file
+with other hard links (mount a copy: cargo's release binaries, such as
+`target/release/ranikust`, are links of their copies in `deps/`). A binary in the container's own root needs no such
 mount. On a root that is not an overlay (overlayfs, as Docker's and
 containerd's default storage gives, or fuse-overlayfs, as rootless podman's
 can), such as

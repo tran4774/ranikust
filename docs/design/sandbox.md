@@ -50,12 +50,17 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    read-only mount, and on a root that is not an overlay (`copies_up`:
    overlayfs by `fstatfs` magic, or FUSE whose own mountinfo line has the
    type `fuse.fuse-overlayfs`; `verdict`), a file with other hard links is
-   `Linked`, and one whose path in its file system lies under the root of
-   another writable mount of the same `major:minor` in
-   `/proc/self/mountinfo` is `Exposed` (`reached_writable`, by path
-   components, nothing opened); a table that cannot be parsed, does not
-   place the file or does not type a FUSE root (`root_type`), or a file
-   with no link left, is `Unplaced`, and a table that cannot be read
+   `Linked`, and one that another writable mount of the same `major:minor`
+   in `/proc/self/mountinfo` reaches is `Exposed` (`reached_writable`): a
+   directory root that contains the file's path in its file system
+   (compared by component), or a file root that is the binary's inode
+   whatever its name (its mount point reached from `/` through `RootPath`,
+   `statx` only, checked to be that mount by its id; `//deleted` is read
+   as a mark, `MountInfo::root_deleted`). A table that cannot be parsed,
+   does not place the file (its own name removed among them) or does not
+   type a FUSE root (`root_type`), a writable directory of its file system
+   whose name was removed or whose mount point cannot be reached, or a
+   file with no link left, is `Unplaced`, and a table that cannot be read
    `Unknown`. The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
    close-on-exec descriptor, with the same arguments, environment and
    descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file

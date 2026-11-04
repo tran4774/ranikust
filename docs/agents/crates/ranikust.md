@@ -143,8 +143,10 @@ Each step before the next; design in
    read-write too, another hard link; in a root that is not an overlay
    (overlayfs or fuse-overlayfs), a binary in the root too), or one whose
    mount cannot be told (`refuse_writable_binary` on `Sealing::binary()`,
-   ADR-0101: qemu-user, a memfd, a mount table that does not place it or a
-   failed call, each with its own guidance); then the warnings for
+   ADR-0101: qemu-user, a memfd, a mount table that does not place it, a
+   writable directory whose name was removed or that cannot be reached, or a
+   failed call, each with its own guidance; a link of it bound read-write,
+   even a removed one, is a reach); then the warnings for
    secret-looking build arguments and file secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
@@ -291,7 +293,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--ignore-path` is refused and `--snapshot-mode` changes nothing) and, in
   the kaniko leg (a default container), `--mode=auto` picking kaniko mode;
   `binary-mounts` is the red team of `refuse_writable_binary` (ADR-0101),
-  a directory root included.
+  a directory root and names removed on the host after the binds included.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);

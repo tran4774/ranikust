@@ -229,8 +229,9 @@ depend on higher ones. Besides the chain:
 - `rnk-snapshot` uses `rnk-layer` (decoder for extraction, writer for export)
   and `rnk-store`; `rnk-cache` uses `rnk-store`; `rnk-registry` does not: it
   writes pulls into a sink its caller gets from `rnk-store`.
-- `rnk-sandbox` uses `rnk-rootfs` for `USER` and for the parser of
-  `/proc/self/mountinfo` it shares with `rnk-snapshot` (ADR-0101).
+- `rnk-sandbox` uses `rnk-rootfs` for `USER`, for the parser of
+  `/proc/self/mountinfo` it shares with `rnk-snapshot`, and for `RootPath`
+  to reach a writable mount's mount point from `/` (ADR-0101).
 - `rnk-context` uses `rnk-ignore` for its walk (ADR-0027), and `rnk-sched` uses
   `rnk-dockerfile` for the stage graph: both interim, `[open: #7]`.
 - `rnk-rootfs` never depends on `rnk-layer`. `rnk-dockerfile`, `rnk-ignore` and

@@ -416,6 +416,13 @@ The decision:
   bound `:ro` from a tree bound read-write too and a binary file with
   another hard link, each with its own guidance; the binary bound `:ro`,
   its tree bound `:ro` too, or copied into the container's root builds.
+  T1 `binary-mounts` (rootless podman, Linux 7.0, both modes), with names
+  changed on the host once the binds exist: a writable bind of a link of
+  the binary whose name was removed, or beside which the binary's own
+  bound name was removed, is refused before the state directory exists;
+  another file bound read-write and replaced builds. The red team's
+  configuration, run again by hand, is refused the same way, the
+  installed binary unchanged [measured].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its
