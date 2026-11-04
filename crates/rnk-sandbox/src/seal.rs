@@ -410,7 +410,7 @@ impl FileId {
     }
 }
 
-/// What the root of a mount is, reached at its mount point.
+/// What a path leads to: a directory, or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MountRoot {
     /// A directory: its path in the file system tells what it holds.
@@ -419,17 +419,13 @@ enum MountRoot {
     File(FileId),
 }
 
-/// The root of the mount `m`, reached at its mount point from `root`
-/// through `RootPath`: the mount table's paths lead through the
-/// container's own files. `None` when the path cannot be followed or leads
-/// to another mount, one mounted over it.
-fn root_at(root: &RootPath, m: &MountInfo) -> Option<MountRoot> {
-    // A mount point that cannot be followed places nothing: the caller fails closed.
-    let st = root.statx(&m.mount_point).ok()?;
-    if st.mnt_id != m.mount_id {
-        return None;
-    }
-    Some(match st.file_type() {
+/// The mount `path` leads to from `root` through `RootPath` (`statx`, no
+/// open; the paths lead through the container's own files), and what it
+/// finds there. `None` when the path cannot be followed.
+fn seen_at(root: &RootPath, path: &Path) -> Option<(u64, MountRoot)> {
+    // A path that cannot be followed places nothing: the caller fails closed.
+    let st = root.statx(path).ok()?;
+    let found = match st.file_type() {
         FileType::Directory => MountRoot::Directory,
         FileType::Regular
         | FileType::Symlink
@@ -442,33 +438,46 @@ fn root_at(root: &RootPath, m: &MountInfo) -> Option<MountRoot> {
             dev_minor: st.dev_minor,
             ino: st.ino,
         }),
-    })
+    };
+    Some((st.mnt_id, found))
 }
 
-/// [`reached_writable`] with each mount's root reached from this process's
-/// `/`, opened only when a root must be told.
+/// The root of the mount `m`, reached at its mount point from `root`.
+/// `None` when the path cannot be followed or leads to another mount, one
+/// mounted over it.
+fn root_at(root: &RootPath, m: &MountInfo) -> Option<MountRoot> {
+    let (mount, found) = seen_at(root, &m.mount_point)?;
+    (mount == m.mount_id).then_some(found)
+}
+
+/// [`reached_writable`] with the binary's name and each mount's root
+/// followed from this process's `/`.
 fn reached_from_slash(mounts: &[MountInfo], own: u64, path: &Path, binary: FileId) -> Option<bool> {
-    let mut slash: Option<Option<RootPath>> = None;
-    reached_writable(mounts, own, path, binary, |m| {
-        // Without `/` no mount point is reached: the caller fails closed.
-        let root = slash.get_or_insert_with(|| RootPath::open("/").ok());
-        root.as_ref().and_then(|root| root_at(root, m))
+    // Without `/` nothing is followed: the caller fails closed.
+    let root = RootPath::open("/").ok()?;
+    // `readlink` names a removed file `<path> (deleted)`: only a name that
+    // still leads to the binary, on its own mount, places it.
+    let named = seen_at(&root, path) == Some((own, MountRoot::File(binary)));
+    reached_writable(mounts, own, named.then_some(path), binary, |m| {
+        root_at(&root, m)
     })
 }
 
 /// Whether another writable mount of the file system of the mount `own`
-/// reaches the file `binary` at `path`, as this process's root names it: a
-/// root that contains the file's path in its file system (`own`'s root
-/// joined with the path below `own`'s mount point), or a root that is the
-/// file itself, as `root_of` tells (a bind of a link of it, even one whose
-/// name was removed). `own` itself does not count (a writable root is the
-/// container's). `None` when `mounts` does not place the file, or when a
+/// reaches the file `binary`: a root that contains the file's path in its
+/// file system (`own`'s root joined with the file's `path`, as this
+/// process's root names it, below `own`'s mount point), or a root that is
+/// the file itself, as `root_of` tells (a bind of a link of it, even one
+/// whose name was removed). `own` itself does not count (a writable root
+/// is the container's). `path` is `None` when the file's name no longer
+/// leads to it. `None` when `mounts` does not place the file (no name, or
+/// its own root's name removed, and no root that is the file), or when a
 /// mount that may reach it is a directory whose name was removed or whose
 /// root is no path, or one `root_of` cannot reach.
 fn reached_writable(
     mounts: &[MountInfo],
     own: u64,
-    path: &Path,
+    path: Option<&Path>,
     binary: FileId,
     mut root_of: impl FnMut(&MountInfo) -> Option<MountRoot>,
 ) -> Option<bool> {
@@ -476,9 +485,11 @@ fn reached_writable(
     if !mine.fs_root.is_absolute() {
         return None;
     }
-    let below = path.strip_prefix(&mine.mount_point).ok()?;
     // A removed name tells nothing of where the file's own name is now.
-    let in_fs = (!mine.root_deleted).then(|| mine.fs_root.join(below));
+    let in_fs = path
+        .filter(|_| !mine.root_deleted)
+        .and_then(|path| path.strip_prefix(&mine.mount_point).ok())
+        .map(|below| mine.fs_root.join(below));
     let writable = || {
         mounts.iter().filter(|m| {
             m.mount_id != own

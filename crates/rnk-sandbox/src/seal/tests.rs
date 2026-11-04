@@ -358,7 +358,7 @@ fn a_writable_mount_containing_the_binary_reaches_it() {
             bin
         };
         assert_eq!(
-            reached_writable(&mounts(own, extra), 10, path, BIN, roots(&[HOSTS])),
+            reached_writable(&mounts(own, extra), 10, Some(path), BIN, roots(&[HOSTS])),
             want,
             "{own} {extra:?}"
         );
@@ -368,12 +368,12 @@ fn a_writable_mount_containing_the_binary_reaches_it() {
                 11 1 8:1 /home/u/tree /src rw - ext4 /dev/sda1 ro\n";
     let ro_fs = rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample");
     assert_eq!(
-        reached_writable(&ro_fs, 10, bin, BIN, roots(&[])),
+        reached_writable(&ro_fs, 10, Some(bin), BIN, roots(&[])),
         Some(false)
     );
     // No line for the binary's mount.
     assert_eq!(
-        reached_writable(&mounts(file, &[]), 99, bin, BIN, roots(&[HOSTS])),
+        reached_writable(&mounts(file, &[]), 99, Some(bin), BIN, roots(&[HOSTS])),
         None
     );
 }
@@ -479,7 +479,7 @@ fn a_directory_root_is_not_its_own_writable_mount() {
     let bin = Path::new("/usr/bin/ranikust");
     let root = "1 0 8:1 /var/lib/c/rootfs / rw,relatime - ext4 /dev/sda1 rw\n";
     let parse = |text: &str| rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample");
-    let reached = |text: &str| reached_writable(&parse(text), 1, bin, BIN, roots(&[]));
+    let reached = |text: &str| reached_writable(&parse(text), 1, Some(bin), BIN, roots(&[]));
     assert_eq!(reached(root), Some(false));
     let shared = format!("{root}2 1 8:1 /var/lib/c /mnt rw,relatime - ext4 /dev/sda1 rw\n");
     assert_eq!(reached(&shared), Some(true));
@@ -489,7 +489,7 @@ fn a_directory_root_is_not_its_own_writable_mount() {
     // binary bound read-write, its name removed; a removed directory.
     let link = format!("{root}2 1 8:1 /var/lib/c/x//deleted /x rw - ext4 /dev/sda1 rw\n");
     assert_eq!(
-        reached_writable(&parse(&link), 1, bin, BIN, roots(&[(2, BIN.ino)])),
+        reached_writable(&parse(&link), 1, Some(bin), BIN, roots(&[(2, BIN.ino)])),
         Some(true)
     );
     assert_eq!(reached(&link), None);
@@ -775,7 +775,7 @@ fn red_team_escaped_names_in_the_mount_table_are_compared_unescaped() {
     ];
     for (own, below, other, reached) in cases {
         assert_eq!(
-            reached_writable(&table(own, other), 10, &path(below), BIN, roots(&[])),
+            reached_writable(&table(own, other), 10, Some(&path(below)), BIN, roots(&[])),
             Some(reached),
             "{own} | {other}"
         );
@@ -785,7 +785,7 @@ fn red_team_escaped_names_in_the_mount_table_are_compared_unescaped() {
         reached_writable(
             &table(r"/h/t /r/b\012in ro", r"/h/t /x"),
             10,
-            &path(br"/r/b\012in/rnk"),
+            Some(&path(br"/r/b\012in/rnk")),
             BIN,
             roots(&[])
         ),
@@ -815,14 +815,15 @@ fn red_team_a_writable_bind_of_a_removed_link_reaches_the_binary() {
         |reached: Option<bool>| verdict(BinaryMount::ReadOnly, never, 1, move || Ok(reached));
     let removed = table("/d/bin/a", "/d/bin/b//deleted");
     assert!(removed[2].root_deleted && removed[2].fs_root == Path::new("/d/bin/b"));
-    let reached = reached_writable(&removed, 10, bin, BIN, roots(&[(11, BIN.ino)]));
+    let reached = reached_writable(&removed, 10, Some(bin), BIN, roots(&[(11, BIN.ino)]));
     assert_eq!(weigh(reached), Ok(BinaryMount::Exposed), "{reached:?}");
-    // The binary's own name removed, a link of it bound read-write.
+    // The binary's own name removed, a link of it bound read-write: its
+    // name (`readlink`'s `<path> (deleted)`) leads nowhere.
     let own_removed = table("/d/bin/a//deleted", "/d/bin/b");
-    let reached = reached_writable(&own_removed, 10, bin, BIN, roots(&[(11, BIN.ino)]));
+    let reached = reached_writable(&own_removed, 10, None, BIN, roots(&[(11, BIN.ino)]));
     assert_eq!(weigh(reached), Ok(BinaryMount::Exposed), "{reached:?}");
     // With no such link, where its one name now is cannot be told.
-    let reached = reached_writable(&own_removed, 10, bin, BIN, roots(&[(11, 6)]));
+    let reached = reached_writable(&own_removed, 10, None, BIN, roots(&[(11, 6)]));
     assert_eq!(weigh(reached), Ok(BinaryMount::Unplaced), "{reached:?}");
 }
 
@@ -835,11 +836,11 @@ fn a_writable_file_bind_is_told_by_its_inode_not_its_name() {
     let bin = Path::new("/ranikust/bin/ranikust");
     let renamed = mounts(file, &["11 1 8:1 /home/u/tree/c /x rw"]);
     assert_eq!(
-        reached_writable(&renamed, 10, bin, BIN, roots(&[HOSTS, (11, BIN.ino)])),
+        reached_writable(&renamed, 10, Some(bin), BIN, roots(&[HOSTS, (11, BIN.ino)])),
         Some(true)
     );
     assert_eq!(
-        reached_writable(&renamed, 10, bin, BIN, roots(&[HOSTS, (11, 6)])),
+        reached_writable(&renamed, 10, Some(bin), BIN, roots(&[HOSTS, (11, 6)])),
         Some(false)
     );
 }
@@ -857,7 +858,7 @@ fn a_replaced_file_bind_of_another_file_does_not_reach_the_binary() {
     let mounts = rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample");
     assert!(mounts[1].root_deleted);
     let bin = Path::new("/ranikust/bin/ranikust");
-    let reached = reached_writable(&mounts, 10, bin, BIN, roots(&[(2, 5), (3, 6)]));
+    let reached = reached_writable(&mounts, 10, Some(bin), BIN, roots(&[(2, 5), (3, 6)]));
     let never = || -> Result<Option<bool>, Errno> { panic!("not read") };
     let got = verdict(BinaryMount::ReadOnly, never, 1, move || Ok(reached));
     assert_eq!(got, Ok(BinaryMount::ReadOnly), "{reached:?}");
@@ -865,11 +866,24 @@ fn a_replaced_file_bind_of_another_file_does_not_reach_the_binary() {
 
 /// ADR-0101: what cannot be told fails closed: a writable directory of the
 /// binary's file system whose name was removed or whose root is no path,
-/// and a mount point that does not lead to its mount; on another file
-/// system, or read-only, none counts. A tree that holds the file is told by
-/// its path, before any mount point is reached.
+/// a mount point that does not lead to its mount, and a binary whose name
+/// no longer leads to it (removed in a directory bound read-only, a link
+/// left elsewhere); on another file system, or read-only, none counts. A
+/// tree that holds the file is told by its path, before any mount point is
+/// reached.
 #[test]
 fn a_mount_that_cannot_be_told_places_nothing() {
+    let dir = "8:1 /home/u/tree /ranikust/bin ro";
+    let elsewhere = mounts(dir, &["11 1 8:1 /home/u/other /o rw"]);
+    let bin_in_dir = Path::new("/ranikust/bin/ranikust");
+    assert_eq!(
+        reached_writable(&elsewhere, 10, Some(bin_in_dir), BIN, roots(&[HOSTS])),
+        Some(false)
+    );
+    assert_eq!(
+        reached_writable(&elsewhere, 10, None, BIN, roots(&[HOSTS])),
+        None
+    );
     let file = "8:1 /home/u/tree/ranikust /ranikust/bin/ranikust ro";
     let bin = Path::new("/ranikust/bin/ranikust");
     let removed = "11 1 8:1 /home/u/tree//deleted /src";
@@ -880,21 +894,28 @@ fn a_mount_that_cannot_be_told_places_nothing() {
         (removed.replace("8:1", "8:2") + " rw", Some(false)),
     ];
     for (line, want) in cases {
-        let got = reached_writable(&mounts(file, &[&line]), 10, bin, BIN, roots(&[HOSTS]));
+        let got = reached_writable(&mounts(file, &[&line]), 10, Some(bin), BIN, roots(&[HOSTS]));
         assert_eq!(got, want, "{line}");
     }
     let unreached = |m: &MountInfo| (m.mount_id != 11).then_some(MountRoot::Directory);
     let other = mounts(file, &["11 1 8:1 /home/u/other /src rw"]);
-    assert_eq!(reached_writable(&other, 10, bin, BIN, unreached), None);
+    assert_eq!(
+        reached_writable(&other, 10, Some(bin), BIN, unreached),
+        None
+    );
     let never = |_: &MountInfo| -> Option<MountRoot> { panic!("no mount point is reached") };
     let tree = mounts(file, &["11 1 8:1 /home/u /home rw"]);
-    assert_eq!(reached_writable(&tree, 10, bin, BIN, never), Some(true));
+    assert_eq!(
+        reached_writable(&tree, 10, Some(bin), BIN, never),
+        Some(true)
+    );
 }
 
 /// ADR-0101: a mount's root is reached at its mount point through
 /// `RootPath` from `/`, and must be that mount: `/proc` is a directory, a
 /// file is that file; a line naming another mount there, or a mount point
-/// that is missing, is not reached.
+/// that is missing, is not reached. A file's name, as `readlink` of its
+/// descriptor gives it, leads to the file until the name is removed.
 #[test]
 fn a_mount_root_is_reached_at_its_mount_point() {
     let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
@@ -929,4 +950,20 @@ fn a_mount_root_is_reached_at_its_mount_point() {
     let mut missing = proc.clone();
     missing.mount_point = dir.path().join("missing");
     assert_eq!(root_at(&root, &missing), None);
+    let open = File::open(&file).expect("open");
+    let name = || {
+        let link = format!("/proc/self/fd/{}", open.as_raw_fd());
+        PathBuf::from(OsString::from_vec(
+            rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())
+                .expect("readlink")
+                .into_bytes(),
+        ))
+    };
+    let own = (
+        st.stx_mnt_id,
+        MountRoot::File(FileId::of(&st).expect("an inode")),
+    );
+    assert_eq!(seen_at(&root, &name()), Some(own));
+    std::fs::remove_file(&file).expect("remove");
+    assert_eq!(seen_at(&root, &name()), None, "{}", name().display());
 }

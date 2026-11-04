@@ -124,7 +124,11 @@ The decision:
   own mount, not `statx`'s `st_dev`, which differs on btrfs subvolumes)
   has a root that contains the binary's path in that file system (its own
   mount's root joined with its path below that mount; paths compared by
-  component, never opened). It passes the answer to the copy in the
+  component, never opened) or, for a root that is a file, is the binary's
+  inode, whatever its name (reached at its mount point from `/` through
+  `RootPath`, `statx` only, and checked to be that mount by its id; the
+  table's `//deleted`, the kernel's mark of a root whose name was removed,
+  is read as a mark, never a component). It passes the answer to the copy in the
   variable; a run that ends without a checked copy measures the file it
   runs from instead. Kaniko mode on `/` refuses, before anything is
   written, a binary on a writable mount other than `/`'s (a file or a
@@ -134,13 +138,18 @@ The decision:
   binary a writable mount reaches (bound `:ro` from a tree also bound
   read-write), with the guidance to put it outside the mounted tree, to
   mount that tree read-only, or to mount a single-link copy read-only from
-  outside it; and a file with other hard links, with the guidance to give
+  outside it; a writable bind of a link of the binary, even one whose name
+  was removed, with the same guidance and to bind no link of it
+  read-write; and a file with other hard links, with the guidance to give
   the binary a single link (a single-link copy mounted read-only, or, in
   the container's root, no hard-link alias of it). It also refuses one
   whose mount it cannot tell: a mount id of 0, which qemu-user's `statx`
   gives for every file and Linux 6.8 and 7.0 give a memfd [measured]; a
-  mount table that cannot be parsed, does not place the file or does not
-  type a FUSE root, or a file with no link left; or a failed call (the
+  mount table that cannot be parsed, does not place the file (its own
+  bound name removed among them) or does not type a FUSE root, a writable
+  mount of its file system that is a directory whose name was removed or
+  that cannot be reached at its mount point, or a file with no link left;
+  or a failed call (the
   mount table unreadable among them), each with its own guidance; a fallback
   through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
@@ -369,6 +378,19 @@ The decision:
   starts the same; another file system with the same path; read-only by
   the mount's or the file system's options; `\040` escapes; a path outside
   its mount and a root that is not a path, unplaced),
+  `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary` (a
+  writable bind of a link of the binary, even one whose name was removed,
+  as the red team found the kernel prints it, which built before; the
+  binary's own bound name removed beside such a bind),
+  `a_writable_file_bind_is_told_by_its_inode_not_its_name` (a renamed
+  link), `a_replaced_file_bind_of_another_file_does_not_reach_the_binary`
+  (Docker's and kubelet's file binds, one marked removed, still build),
+  `a_mount_that_cannot_be_told_places_nothing` (a removed directory, a
+  root that is no path, a mount point that leads elsewhere, a binary whose
+  name no longer leads to it),
+  `a_mount_root_is_reached_at_its_mount_point` (on the host running it:
+  `/proc` a directory, a file its own inode, another mount id or a missing
+  path not reached, a removed file's name leading nowhere),
   `a_binary_in_a_root_that_is_not_an_overlay_is_weighed` (an overlay root
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one
@@ -384,8 +406,9 @@ The decision:
   directory's link count counting its subdirectories; the other branches
   are the test's logic, not a measurement),
   `rnk-rootfs`'s `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
-  `a_spilled_option_is_kept_out_of_read_only` and
-  `a_line_with_missing_or_shifted_options_is_refused`, and the binary's
+  `a_spilled_option_is_kept_out_of_read_only`,
+  `a_line_with_missing_or_shifted_options_is_refused` and
+  `a_removed_root_is_marked_not_named`, and the binary's
   `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`; the VM's
   kaniko quick suite, `binary_mounts_on_slash`: in a default Docker
   container a file or a directory bound read-write is refused with the
