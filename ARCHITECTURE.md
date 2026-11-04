@@ -132,8 +132,11 @@ it), transfer blobs, decode layers, mount, or delete except through
 ### `rnk-sandbox`
 
 Isolated execution of `RUN`: namespaces, `proc`/`dev`/`sys`, `pivot_root` (or
-`MS_MOVE`), capability drop, stub mount points, `USER` resolved inside the root,
-exec. Also the probes of its own capabilities, each tried for real. In
+`MS_MOVE`), capability drop, seccomp profiles (Docker's JSON format compiled to
+BPF, Docker's default embedded,
+[ADR-0109](docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)),
+stub mount points, `USER` resolved inside the root, exec. Also the probes of
+its own capabilities, each tried for real. In
 sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
 the bare-`chroot` path for `--parallel-stages` is held back, as the flag is

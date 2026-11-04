@@ -48,7 +48,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 |---|---|
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
-| `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }` |
+| `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
 | `setup.rs` | `enter_namespace`, `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay` |
 | `statedir.rs` | `prepare` (ADR-0050 checks), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
@@ -77,9 +77,16 @@ Modules of `crates/ranikust/src/` (all crate-private):
   warmer); `Renamed`: kaniko's old spellings (ADR-0052) and `--kaniko-dir`,
   kaniko's state directory, now `--state-dir` (ADR-0050). `--workdir` is not
   refused: it is an unknown flag, a clap error with exit 2 (ADR-0050).
-  Planned: `--seccomp`, `--userns` (Phase 3). Ours: `--mode`, `--state-dir`,
-  `--jobs`, `--network`, `--secret`, `--allow`, `--limit`, `--metrics-file`,
-  `--snapshot-workers`.
+  Planned: `--userns` (Phase 3). Ours: `--mode`, `--state-dir`,
+  `--jobs`, `--network`, `--secret`, `--allow`, `--seccomp`, `--limit`,
+  `--metrics-file`, `--snapshot-workers`.
+- `--seccomp=default|unconfined|<file>` (ADR-0103, ADR-0109): read by
+  `config::read_seccomp` right after `from_args`, before any set-up: the file
+  is opened non-blocking, must be regular and at most 1 MiB, and is compiled
+  by `rnk_sandbox::SeccompProfile::from_json`; any failure is exit 2.
+  `set_up` and `set_up_kaniko` hand it to the sandbox (`Seccomp::apply`); no
+  flag keeps the sandbox's own default, Docker's profile. Kaniko mode on `/`
+  refuses every value in `refuse_unsafe_slash`, exit 2.
 - `--snapshot-mode` is kaniko's (`full|redo|time`) and keeps that meaning in
   kaniko mode; the mode is `--mode`. Overlay mode warns and ignores it
   (ADR-0023). In overlay mode `overlay_mode_flags` refuses kaniko flags that
@@ -111,7 +118,7 @@ Each step before the next; design in
 3. `--metrics-file` refused in the build context or through a symlink
    (`check_metrics_file`, ADR-0076); `rnk_metrics::init` (no thread);
    `--metrics-file` over `RANIKUST_METRICS_FILE` (ADR-0037).
-4. `BuildConfig::from_args`, then the mode (ADR-0040): `--mode=kaniko` goes
+4. `BuildConfig::from_args` and `config::read_seccomp`, then the mode (ADR-0040): `--mode=kaniko` goes
    to kaniko mode; `--mode=overlay` checks the kaniko-mode flags and its
    state directory, then enters the namespace; `--mode=auto` enters the
    namespace first and goes to kaniko mode where it is refused to root for
@@ -131,8 +138,8 @@ Each step before the next; design in
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
    `refuse_unsafe_slash` runs in `main.rs`, before anything is written: `/`
-   is refused where root may mount (ADR-0054), with `--network=none`
-   (ADR-0057) and with a writable `/proc/sys`
+   is refused where root may mount (ADR-0054), with `--seccomp` (ADR-0103,
+   exit 2), with `--network=none` (ADR-0057) and with a writable `/proc/sys`
    (`exposure::proc_sys_read_only`, ADR-0054); then the warnings for
    secret-looking build arguments and file secrets. `RLIMIT_NOFILE` is
    raised (`statedir::raise_nofile_limit`); on `/`, with `--jobs` a warning
@@ -240,14 +247,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--single-snapshot` refused whatever the spelling), `config` (kaniko's
   checks, contexts, build arguments, absolute paths, state-dir defaults,
   `meta_options` leaking no destination, path or argument, the overlay-mode
-  refusals and warnings, whole-root `--ignore-path` refused), `setup` (the
+  refusals and warnings, whole-root `--ignore-path` refused, `--seccomp`
+  values and files refused for each reason), `setup` (the
   outcome from the probes' results, which refusals route `--mode=auto` to
   kaniko mode, a probe failure other than a refused mount never routes, no
   guidance sends a user back to the mode they used), `statedir` (each
   ADR-0050 refusal: `/`, system directories, symlinks, writable parents,
   nothing created through a planted link; `0700`), `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order).
-  `src/main.rs` tests: `--snapshot-mode` and `--snapshot-workers` reach the
+  `src/main.rs` tests: the order of the refusals on `/`, `--seccomp`'s
+  among them; `--snapshot-mode` and `--snapshot-workers` reach the
   walk, `--ignore-path` reaches the ignore lists of `/` and of a stage root
   and never uncovers protected paths. `build.rs`: `kaniko_units` (what each
   unit keeps; every stage another unit reads is a unit of its own; hostile
@@ -260,7 +269,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--metrics-file` over the variable; the report on every exit path, panic
   included (`RANIKUST_DEBUG_FAULT=panic|error`); a refused flag exits 2 before
   any work (no state directory, the value never echoed, no `RANIKUST_*`
-  variable read). `kaniko_mode_needs_root` and
+  variable read); a `--seccomp` file that cannot be read or compiled, or an
+  empty value, exits 2 in every mode before any work. `kaniko_mode_needs_root` and
   `without_root_the_set_up_refuses_before_touching_the_state_dir` run only
   as a normal user (skipped as root): nothing is created, the state
   directory is left empty and `ranikust.setup` is in the report.
@@ -271,7 +281,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   plain `chroot`. Cases: `tests/smoke/cases/`; `kaniko-flags` tests the
   meaning of `--snapshot-mode` and `--ignore-path` (in overlay mode
   `--ignore-path` is refused and `--snapshot-mode` changes nothing) and, in
-  the kaniko leg (a default container), `--mode=auto` picking kaniko mode.
+  the kaniko leg (a default container), `--mode=auto` picking kaniko mode;
+  `seccomp` the default profile, unconfined and a file, and in the kaniko leg
+  every `--seccomp` refused and a `RUN` under the container's profile.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
@@ -279,7 +291,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   never builds on `/`, `--mode=auto` with `--ignore-path` refused after
   overlay mode's set-up leaves nothing, a ramfs state directory refused, root
   without `CAP_SYS_ADMIN` refused before the state directory exists);
-  `slash_lock_refuses_a_second_build`; `adr0054_refusals` (kaniko mode on
+  `slash_lock_refuses_a_second_build`; `seccomp_on_slash` (every
+  `--seccomp` refused, exit 2, in kaniko mode on a default Docker
+  container's `/`, and a `RUN` there under the container's own profile);
+  `adr0054_refusals` (kaniko mode on
   `/` refused with `--privileged` and with `systempaths=unconfined`, before
   anything is pulled); `rt_auto_privileged_container` (`--mode=auto` in a
   `--privileged` container is refused, with or without `/.dockerenv`). A

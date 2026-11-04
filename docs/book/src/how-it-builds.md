@@ -31,8 +31,9 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
   directory, and each instruction writes into a fresh layer of it, so the
   changes are known without scanning the filesystem.
 - **`RUN` sandbox.** A `RUN` gets its own mount, process, hostname and IPC
-  namespaces, the stage's root as its `/`, and the capabilities Docker gives a
-  container by default: about the isolation of `docker build` ([ADR-0003]).
+  namespaces, the stage's root as its `/`, and the capabilities and the
+  seccomp profile Docker gives a container by default: about the isolation of
+  `docker build` ([ADR-0003]; `--seccomp` changes the profile, [ADR-0109]).
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
   `--network=none` ([ADR-0031]).
@@ -265,3 +266,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md
+[ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md

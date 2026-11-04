@@ -147,6 +147,22 @@ Copyright: The moby/sys authors. The source files carry no copyright line,
 License:   Apache License, Version 2.0 (LICENSE-APACHE)
 
 
+Seccomp profile and code derived from moby/profiles
+---------------------------------------------------
+
+Files:     crates/rnk-sandbox/src/seccomp/default.json
+             (seccomp/default.json, copied unchanged)
+           crates/rnk-sandbox/src/seccomp/profile.rs
+             (seccomp/seccomp_linux.go and seccomp/kernel_linux.go: which
+             rules a profile keeps for an architecture, the capabilities
+             and the kernel version)
+Source:    https://github.com/moby/profiles, module
+           github.com/moby/profiles/seccomp v0.2.4 (the version BuildKit
+           cd8ee2441a4cb4d29f816bab2b009eac131784d7 vendors)
+Copyright: Copyright The Moby Authors
+License:   Apache License, Version 2.0 (LICENSE-APACHE)
+
+
 Code derived from moby/patternmatcher
 -------------------------------------
 

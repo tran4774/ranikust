@@ -6,7 +6,8 @@ mounting is possible. Without mounts, kaniko mode runs the `RUN` directly
 (`Isolation::Direct`).
 
 Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
-[ADR-0010](../adr/0010-run-network-host-or-none.md).
+[ADR-0010](../adr/0010-run-network-host-or-none.md),
+[ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md).
 
 ## Invariants
 
@@ -74,11 +75,41 @@ network namespace. The first such `RUN` probes once
   `setns` as its first step, before any mount, so `sysfs` shows it.
 - The child stays in the build's user namespace, but as root it holds every
   capability in the helper's. So after every mount and before the capability
-  drop it installs a seccomp filter (`seccomp.rs`) that refuses what that
+  drop it installs a seccomp filter (`seccomp.rs`), on top of the `RUN`'s
+  profile and under `--seccomp=unconfined` too, that refuses what that
   would open: `setns`, new user namespaces, `io_uring`, the netfilter, IPVS and
   IPsec interfaces, all netlink but route, sock_diag, audit and uevent, and
   `clone3`. The exact list and the residual risk (every other interface
   `CAP_NET_ADMIN` opens, rtnetlink first) are in the ADR.
+
+**Seccomp profile**
+([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md),
+[ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)):
+every full-sandbox `RUN` runs under Docker's default profile (moby/profiles
+seccomp v0.2.4's `default.json`, embedded verbatim), with or without
+`--seccomp=default`; `--seccomp=unconfined` turns it off, and
+`--seccomp=<file>` puts a profile in Docker's JSON format in its place.
+
+- `seccomp/profile.rs` compiles it to one classic BPF filter before the
+  set-up, for the native architecture, the running kernel (`minKernel`) and
+  the `RUN`'s capabilities, Docker's 14 (`includes.caps`), as moby's
+  `setupSeccomp` reads a profile. Arguments compare as 64-bit values, each
+  rule keeps its action, and where several match one call the strictest wins.
+- A name the architecture does not know is skipped under `SCMP_ACT_ALLOW`, as
+  runc does, and refuses the profile under any other action. Under a default
+  action that refuses, a number `libc` does not name gets `ENOSYS`, so that C
+  libraries fall back. A call of another architecture (i386 or x32 on x86_64,
+  arm on aarch64) gets `EPERM`.
+- Refused with exit 2, before anything is written: `SCMP_ACT_NOTIFY`,
+  `SCMP_ACT_TRACE`, a `listenerPath`, a flag other than `TSYNC`, `LOG` and
+  `SPEC_ALLOW`, two conditions on one argument in a rule, a rule without
+  names, a filter longer than the kernel's 4096 instructions, and anything
+  malformed; a file that is not a regular file or is over 1 MiB.
+- The child installs it after every mount and before the capability drop,
+  without `no_new_privs`: the child still holds `CAP_SYS_ADMIN`, and a setuid
+  binary of the `RUN` keeps working.
+- A `Direct` `RUN` gets none: in kaniko mode on `/` the container's own
+  profile applies, and `--seccomp` is refused (exit 2).
 
 The steps, in order:
 
@@ -238,8 +269,8 @@ The steps, in order:
    keys or push input into the operator's shell (`TIOCSTI`); stdin is
    `/dev/null` unless the caller says otherwise, as under Docker. Then a new
    anonymous session keyring, so ranikust's keys stay out of reach (root's user
-   keyring stays reachable until a seccomp profile applies, planned for Phase 3,
-   [below](#hardening-planned-for-phase-3)).
+   keyring stays reachable under `--seccomp=unconfined` and in `Direct`; the
+   default profile refuses `keyctl`, `add_key` and `request_key`).
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
    [inferred]. A numeric uid with no passwd entry gets gid 0, as in Docker. A
@@ -369,16 +400,14 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 
 ## Differences from Docker
 
-- A default `RUN` has no seccomp filter today; a default profile is planned for
-  Phase 3 ([below](#hardening-planned-for-phase-3)). The one filter that exists
-  is the `--network=none` one of ADR-0033. A default `RUN` here can open
-  `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the host lets a
-  process without `CAP_SYS_ADMIN` do so, and (as root) use root's user and
-  persistent keyrings. The only evidence for what a Docker-style profile
-  refuses is the moby/profiles default profile as BuildKit `cd8ee24` vendors it
-  (`vendor/github.com/moby/profiles/seccomp/default_linux.go`) **[external]**:
-  it leaves out `AF_VSOCK` and `AF_ALG`, in a recent change, and allows a new
-  user namespace only with `CAP_SYS_ADMIN`. See the accepted risks of the
+- The default profile is Docker's ([above](#per-run-sequence)), compiled for
+  the native architecture only: Docker also compiles a profile's calls for
+  i386 and x32 on x86_64 (arm on aarch64), which get `EPERM` here, so a 32-bit
+  binary does not run under it. A profile that asks for what ranikust does
+  not support is refused, never weakened. Under `--seccomp=unconfined` a `RUN` can
+  open `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the host
+  lets a process without `CAP_SYS_ADMIN` do so, and (as root) use root's user
+  and persistent keyrings. See the accepted risks of the
   [threat model](../security/threat-model.md#6-accepted-risks).
 - A `RUN` gets stdout and stderr as pipes of its own, owned by its user and
   copied by a thread to ranikust's streams, never ranikust's own descriptors:
@@ -395,14 +424,8 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 
 ## Hardening planned for Phase 3
 
-Neither exists yet (ADR-0003).
+Not built yet (ADR-0003).
 
-- A default seccomp profile, and `--seccomp=default|unconfined|<file>` to change
-  it; profiles are generated per architecture. Decided
-  ([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)):
-  the default profile applies without the flag wherever the full sandbox runs,
-  `unconfined` turns it off, and in kaniko mode on `/` the flag is refused (the
-  container's own profile applies).
 - `--userns`: the build runs in a user namespace, so uid 0 inside maps to an
   unprivileged uid on the host. Every parent directory of the state directory
   must be traversable by the mapped uid. Decided
@@ -431,9 +454,9 @@ Neither exists yet (ADR-0003).
 
 ## Open questions
 
-None. What Q-032 asked to verify is tracked as tasks: `--seccomp`
+None. What Q-032 asked to verify is built or tracked as tasks: `--seccomp`
 ([#82](https://github.com/tran4774/ranikust/issues/82),
-[ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md))
+[ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md))
 and `--userns` ([#83](https://github.com/tran4774/ranikust/issues/83),
 [ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md))
 in Phase 3; the bind targets against changes during set-up
