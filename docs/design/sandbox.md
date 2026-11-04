@@ -59,9 +59,12 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    as a mark, `MountInfo::root_deleted`). A table that cannot be parsed,
    does not place the file (its own name removed among them) or does not
    type a FUSE root (`root_type`), a writable directory of its file system
-   whose name was removed or whose mount point cannot be reached, or a
-   file with no link left, is `Unplaced`, and a table that cannot be read
-   `Unknown`. The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
+   whose name was removed, a writable mount of it whose mount point leads
+   nowhere or to another mount, or a file with no link left, is
+   `Unplaced`, and a table that cannot be read, or a mount point whose
+   `statx` fails otherwise, `Unknown`. The measurement runs at every start,
+   so a host build too looks up the writable mount points of its binary's
+   file system; only kaniko mode on `/` uses the answer. The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
    close-on-exec descriptor, with the same arguments, environment and
    descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file
    limit ranikust started with (`forbid_core_dumps` records it again). A copy

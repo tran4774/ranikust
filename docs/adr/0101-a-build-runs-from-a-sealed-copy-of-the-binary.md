@@ -128,8 +128,8 @@ The decision:
   inode, whatever its name (reached at its mount point from `/` through
   `RootPath`, `statx` only, and checked to be that mount by its id; the
   table's `//deleted`, the kernel's mark of a root whose name was removed,
-  is read as a mark, never a component). It passes the answer to the copy in the
-  variable; a run that ends without a checked copy measures the file it
+  is read as a mark, never a component). It passes the answer to the copy
+  in the variable; a run that ends without a checked copy measures the file it
   runs from instead. Kaniko mode on `/` refuses, before anything is
   written, a binary on a writable mount other than `/`'s (a file or a
   directory bound without `:ro` from outside the container or from inside
@@ -149,8 +149,8 @@ The decision:
   bound name removed among them) or does not type a FUSE root, a writable
   mount of its file system that is a directory whose name was removed or
   that cannot be reached at its mount point, or a file with no link left;
-  or a failed call (the
-  mount table unreadable among them), each with its own guidance; a fallback
+  or a failed call (the mount table unreadable among them), each with its
+  own guidance; a fallback
   through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
@@ -391,6 +391,9 @@ The decision:
   `a_mount_root_is_reached_at_its_mount_point` (on the host running it:
   `/proc` a directory, a file its own inode, another mount id or a missing
   path not reached, a removed file's name leading nowhere),
+  `a_removed_name_of_the_binary_places_nothing` (on the host running it,
+  the binary's own name removed while it runs, a link left elsewhere: it
+  failed with the stale name placed),
   `a_binary_in_a_root_that_is_not_an_overlay_is_weighed` (an overlay root
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one

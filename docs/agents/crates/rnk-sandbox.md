@@ -57,7 +57,7 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execveat from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed); Err only when RLIMIT_CORE cannot go back to 0
 pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
 pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
-pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx at its mount point through RootPath), Unplaced: not placed (a removed or unreachable writable directory among them); NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
+pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx at its mount point through RootPath), Unplaced: not placed (a writable directory whose source was removed, or a writable mount not reached at its mount point, among them); Unknown: a failed call, a mount point's statx among them; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
@@ -197,7 +197,7 @@ What a change here must keep, with where it lives:
   component; a file root by its inode, its mount point reached from `/`
   through `RootPath` and only `statx`'d, never opened; the binary's own name
   counts only while it still leads to the binary on its mount. What cannot
-  be told is `Unplaced`.
+  be told is `Unplaced`, a call that fails otherwise `Unknown`.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.
@@ -262,7 +262,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   apart by `statfs` magic, escaped names in the mount table,
   `red_team_escaped_names_in_the_mount_table_are_compared_unescaped`; a
   file bind told by its inode, renamed or replaced, a mount root reached at
-  its mount point, what cannot be told placing nothing,
+  its mount point, what cannot be told placing nothing (the binary's own
+  name removed while it runs among them),
   `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary`), the
   stub journal (placement through symlinks,
   removal, parent times, replay of dead journals only, a lock kept by a shared

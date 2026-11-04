@@ -144,9 +144,10 @@ Each step before the next; design in
    (overlayfs or fuse-overlayfs), a binary in the root too), or one whose
    mount cannot be told (`refuse_writable_binary` on `Sealing::binary()`,
    ADR-0101: qemu-user, a memfd, a mount table that does not place it, a
-   writable directory whose name was removed or that cannot be reached, or a
-   failed call, each with its own guidance; a link of it bound read-write,
-   even a removed one, is a reach); then the warnings for
+   writable directory whose name was removed, a writable mount that cannot
+   be reached at its mount point, or a failed call, each with its own
+   guidance; a link of it bound read-write, even a removed one, is a
+   reach); then the warnings for
    secret-looking build arguments and file secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
