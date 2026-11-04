@@ -338,11 +338,15 @@ DOCKERFILE
       # Kept now: the process substitution below changes $!.
       build=$!
       for _ in $(seq 120); do pgrep -x rnksealed >/dev/null && break; sleep 1; done
-      pgrep -x rnksealed >/dev/null ||
-        { echo "error: sealed ($how): the RUN never started" >&2; cat "$slog" >&2; exit 1; }
+      pgrep -x rnksealed >/dev/null || {
+        echo "error: sealed ($how): the RUN never started" >&2; cat "$slog" >&2
+        sudo pkill -KILL -x ranikust; exit 1
+      }
       mapfile -t pids < <(pgrep -x ranikust; pgrep -x ranikust-init)
-      [ "${#pids[@]}" = 2 ] ||
-        { echo "error: sealed ($how): want one ranikust and one init, found ${pids[*]}" >&2; exit 1; }
+      [ "${#pids[@]}" = 2 ] || {
+        echo "error: sealed ($how): want one ranikust and one init, found ${pids[*]}" >&2
+        sudo pkill -KILL -x ranikust; exit 1
+      }
       sudo python3 -I guest/sealed-exe.py "$way" "$RNK" "${pids[@]}" ||
         { sudo pkill -KILL -x ranikust; exit 1; }
       sudo pkill -USR1 -x rnksealed

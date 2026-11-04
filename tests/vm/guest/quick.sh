@@ -68,6 +68,50 @@ adr0054_refusals() {
   done
 }
 
+# ADR-0101: kaniko mode on a container's `/` refuses its binary on a
+# writable mount from outside the container (a file or a directory bound
+# without `:ro`), with the guidance to mount it read-only, before its state
+# directory is made; bound `:ro`, or copied into the container's own root,
+# it builds. The binds are of a copy: a refusal that failed could not touch
+# the binary the suite runs.
+binary_mounts_on_slash() {
+  local ctx="$W/binmount" dir="$W/binmount-bin" out rc bad=0 how
+  local run=' --mode=kaniko --context /ranikust/ctx --no-push --state-dir /var/lib/rnk-binmount; rc=$?
+    test -e /var/lib/rnk-binmount && echo STATE-MADE; exit $rc'
+  sudo mkdir -p "$ctx" "$dir" &&
+    printf 'FROM scratch\nRUN true\n' | sudo tee "$ctx/Dockerfile" >/dev/null &&
+    sudo cp "$RNK" "$dir/ranikust" || return 1
+  for how in file:"$dir/ranikust:/ranikust/bin/ranikust" dir:"$dir:/ranikust/bin"; do
+    rc=0
+    out="$(sudo docker run --rm -v "${how#*:}" -v "$ctx:/ranikust/ctx:ro" "$BASE" \
+      sh -c "/ranikust/bin/ranikust$run" 2>&1)" || rc=$?
+    if [ "$rc" != 1 ] || ! grep -q 'writable mount from outside the container' <<<"$out" ||
+      ! grep -q 'ranikust/bin/ranikust:ro' <<<"$out" || grep -q STATE-MADE <<<"$out"; then
+      echo "error: binary mounts: a ${how%%:*} bound read-write: exit $rc, want 1, the :ro guidance, no state" >&2
+      echo "$out" >&2
+      bad=1
+    fi
+  done
+  for how in ro image; do
+    rc=0
+    if [ "$how" = ro ]; then
+      out="$(sudo docker run --rm -v "$dir/ranikust:/ranikust/bin/ranikust:ro" -v "$ctx:/ranikust/ctx:ro" \
+        "$BASE" sh -c "/ranikust/bin/ranikust$run" 2>&1)" || rc=$?
+    else
+      out="$(sudo docker run --rm -v "$dir/ranikust:/ranikust/in/ranikust:ro" -v "$ctx:/ranikust/ctx:ro" \
+        "$BASE" sh -c "cp /ranikust/in/ranikust /usr/local/bin/ranikust && /usr/local/bin/ranikust$run" \
+        2>&1)" || rc=$?
+    fi
+    if [ "$rc" != 0 ] || ! grep -q '^sha256:' <<<"$out"; then
+      echo "error: binary mounts: a binary $how: exit $rc, want 0 and a digest" >&2
+      echo "$out" >&2
+      bad=1
+    fi
+  done
+  [ "$bad" = 0 ] && echo "adr-0101: kaniko mode on / refuses its binary bound read-write (file or directory; exit 1, nothing made), builds it bound :ro or in the image"
+  return "$bad"
+}
+
 # Criterion 8 (C): outside a container where root may mount but overlayfs
 # refuses the state directory (here: one on overlayfs), `--mode=auto`
 # builds in kaniko mode with a directory per stage instead of refusing.
@@ -417,6 +461,7 @@ rc=$?
 if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
   [[ -z "${RANIKUST_QUICK_CASES:-}" || " ${RANIKUST_QUICK_CASES} " == *" kaniko-flags "* ]]; then
   adr0054_refusals || rc=1
+  binary_mounts_on_slash || rc=1
   auto_routes_to_stages || rc=1
   rt_container_env_on_a_host || rc=1
   rt_auto_ignore_path || rc=1
