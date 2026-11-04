@@ -688,7 +688,7 @@ fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
     let parent_st = match root.statx(parent) {
         Ok(st) => Some(st),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => return Ok(false),
-        // Errnos are open-ended: after any other, the parent's times are unknown.
+        // Any other error (a non-exhaustive type, maybe no errno): the parent's times are unknown.
         Err(_) => None,
     };
     if parent_st.is_some_and(|st| st.mnt_id != root.mnt_id()) {
@@ -900,7 +900,7 @@ fn parse(text: &[u8]) -> (Option<PathBuf>, Vec<StubRecord>) {
                 let kind = match *kind {
                     "d" => MountKind::Directory,
                     "f" => MountKind::File,
-                    // Not a code `place` writes: a torn or planted line.
+                    // Not a code `place` writes: a planted line.
                     _ => continue,
                 };
                 let (Some(path), Some(parent_atime), Some(parent_mtime)) =
@@ -957,7 +957,7 @@ fn parse(text: &[u8]) -> (Option<PathBuf>, Vec<StubRecord>) {
                     last.placed_mtime = Some(mtime);
                 }
             }
-            // Untrusted text: a torn last write or a planted line.
+            // The empty tail after the last newline, a torn last write or a planted line.
             _ => {}
         }
     }
