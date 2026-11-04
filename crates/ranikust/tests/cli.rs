@@ -17,6 +17,7 @@ fn ranikust(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")
+        .env_remove("RANIKUST_SEALED_COPY")
         .env_remove("DOCKER_CONFIG")
         .env_remove("DOCKER_AUTH_CONFIG")
         .env_remove("SOURCE_DATE_EPOCH")
@@ -521,6 +522,70 @@ fn logging_flags_change_what_is_written() {
     assert!(value["time"].is_string());
 }
 
+/// ADR-0101: a build runs again from a sealed copy of the binary, once,
+/// with the same arguments. As a user nothing can be mounted, so the copy
+/// is a sealed memfd; the test hook makes each later way the first, or
+/// leaves none, and the build then goes on with a warning. A marker set
+/// from outside makes no copy and passes for none: the run warns.
+#[test]
+fn a_build_runs_from_a_sealed_copy_made_once() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmpdir = tmp.path().to_str().expect("UTF-8 temp dir");
+    let args = [
+        "--no-push",
+        "--mode=overlay",
+        "--log-format=text",
+        "-v",
+        "debug",
+    ];
+    let run = |env: &[(&str, &str)]| {
+        let mut env = env.to_vec();
+        env.push(("TMPDIR", tmpdir));
+        let out = ranikust(tmp.path(), &args, &env);
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        // The copy got `-v debug`: the stop's debug lines are there.
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
+        assert!(err.contains("build settings validated"), "{err}");
+        err
+    };
+    let sealed = |err: &str| -> Vec<String> {
+        err.lines()
+            .filter(|l| l.contains("running from a sealed copy"))
+            .map(str::to_owned)
+            .collect()
+    };
+    let unsealed = "running from the binary as installed";
+    for (fault, way) in [
+        (None, "memfd"),
+        (Some("seal-memfd"), "memfd"),
+        (Some("seal-tmpfile"), "tmpfile"),
+    ] {
+        let env: Vec<_> = fault
+            .map(|f| ("RANIKUST_DEBUG_FAULT", f))
+            .into_iter()
+            .collect();
+        let err = run(&env);
+        let lines = sealed(&err);
+        assert_eq!(lines.len(), 1, "{fault:?}: {err}");
+        assert!(lines[0].contains(&format!("way={way}")), "{fault:?}: {err}");
+        assert!(!err.contains(unsealed), "{fault:?}: {err}");
+    }
+    // The O_TMPFILE copy left nothing behind.
+    assert_eq!(fs::read_dir(tmp.path()).expect("ls").count(), 0);
+    let err = run(&[("RANIKUST_DEBUG_FAULT", "seal-none")]);
+    assert!(sealed(&err).is_empty(), "{err}");
+    assert!(err.contains(unsealed), "{err}");
+    assert!(err.contains("no way was tried"), "{err}");
+    let err = run(&[("RANIKUST_SEALED_COPY", "memfd")]);
+    assert!(sealed(&err).is_empty(), "{err}");
+    assert!(err.contains(unsealed), "{err}");
+    assert!(err.contains("is no such copy"), "{err}");
+}
+
 /// ADR-0049: kaniko's variables are not read, so a mirror variable changes
 /// nothing: the run stops where it would without it.
 #[test]
@@ -601,6 +666,7 @@ fn ranikust_os(cwd: &Path, args: &[std::ffi::OsString]) -> Output {
         .env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")
+        .env_remove("RANIKUST_SEALED_COPY")
         .env("RUST_BACKTRACE", "0");
     cmd.output().expect("run ranikust")
 }

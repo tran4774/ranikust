@@ -8,7 +8,9 @@
 //! Set-up order, each step before the next: parse the flags (no I/O;
 //! refused kaniko flags are reported first) → the Linux 5.8 check of
 //! ADR-0028 (`rnk_rootfs::probe_support`), for every subcommand but
-//! `version` → logs and the opt-in metrics of `rnk-metrics`, which start no
+//! `version` → for `build`, the same run again from a sealed copy of the
+//! binary (ADR-0101, `rnk_sandbox::run_from_sealed_copy`), which starts
+//! over from the top → logs and the opt-in metrics of `rnk-metrics`, which start no
 //! thread, the report asked for with `--metrics-file` only (ADR-0037) → flag
 //! validation into a `BuildConfig` → the process set-up of `setup`: a
 //! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`,
@@ -50,6 +52,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use rnk_metrics::{Config, Outcome, Telemetry};
+use rnk_sandbox::{SealedCopy, Sealing};
 
 use crate::cli::{BuildArgs, Command, ParseError};
 use crate::config::BuildConfig;
@@ -62,9 +65,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Hidden test hook. `panic` panics and aborts and `error` fails with exit
 /// code 1, after metrics are set up; `kernel-missing`, `kernel-blocked` and
-/// `kernel-hidden` make the kernel check fail. It lets the tests run the real
-/// binary through these paths, including a release build, where
-/// `panic = "abort"`.
+/// `kernel-hidden` make the kernel check fail; `seal-memfd`, `seal-tmpfile`
+/// and `seal-none` skip the ways of sealing the binary before the one named,
+/// or all of them (ADR-0101). It lets the tests run the real binary through
+/// these paths, including a release build, where `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
 /// Exit code of a usage error, as clap uses.
@@ -166,6 +170,19 @@ fn main() -> ExitCode {
         report(&err.to_string(), "");
         return ExitCode::from(1);
     }
+    // ADR-0101: a build runs from a copy of the binary no `RUN` can write.
+    // Still single-threaded, nothing read yet: the copy starts over.
+    let sealing = if matches!(command, Command::Build(_)) {
+        match rnk_sandbox::run_from_sealed_copy(seal_ways(fault.as_deref())) {
+            Ok(sealing) => Some(sealing),
+            Err(e) => {
+                report(&format!("setrlimit(RLIMIT_CORE, 0): {e}"), "");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        None
+    };
 
     // ADR-0037: the report path comes only from the flag.
     let mut warnings = Vec::new();
@@ -190,6 +207,15 @@ fn main() -> ExitCode {
     for warning in &warnings {
         tracing::warn!("{warning}");
     }
+    match sealing {
+        Some(Sealing::Sealed(way)) => {
+            tracing::debug!(%way, "running from a sealed copy of the binary (ADR-0101)");
+        }
+        Some(Sealing::Unsealed(why)) => tracing::warn!(
+            "running from the binary as installed, not from a sealed copy (ADR-0101): {why}"
+        ),
+        None => {}
+    }
     let result = tracing::debug_span!("ranikust.run").in_scope(|| {
         run(
             &command,
@@ -210,6 +236,17 @@ fn main() -> ExitCode {
     };
     telemetry.finish(&outcome);
     ExitCode::from(code)
+}
+
+/// The ways to seal the binary, in order; the test hook's `seal-*` values
+/// skip the ways before the one they name.
+fn seal_ways(fault: Option<&str>) -> &'static [SealedCopy] {
+    match fault {
+        Some("seal-memfd") => &[SealedCopy::Memfd, SealedCopy::Tmpfile],
+        Some("seal-tmpfile") => &[SealedCopy::Tmpfile],
+        Some("seal-none") => &[],
+        _ => &SealedCopy::ALL,
+    }
 }
 
 /// Writes `ranikust: error: …` to stderr, then the guidance, if any.
