@@ -40,7 +40,7 @@ pub(crate) fn enter_mount_namespace() -> Result<()> {
     }
     // SAFETY: `NEWNS` does not unshare the descriptor table, the only flag
     // `unshare_unsafe` is unsafe for; the caller checked the process is
-    // single-threaded.
+    // single-threaded, or runs this in a forked child.
     match unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWNS) } {
         Ok(()) => {}
         Err(Errno::PERM) => return Err(Error::Privilege("a private mount namespace")),

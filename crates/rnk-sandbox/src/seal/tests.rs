@@ -161,6 +161,10 @@ fn the_copy_gets_the_environment_with_one_marker() {
 /// test harness's), no child is forked at all.
 #[test]
 fn the_overlay_is_made_only_where_root_may_mount() {
+    // Root may mount: as for the binary's tests, nothing to show as root.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
     let threads = may_mount().expect_err("threads are running");
     assert!(
         threads.to_string().starts_with("not single-threaded"),
@@ -230,6 +234,9 @@ fn the_binary_as_installed_passes_for_no_copy() {
     for way in [SealedCopy::Overlay, SealedCopy::Memfd, SealedCopy::Tmpfile] {
         assert!(check(way, exe.as_fd()).is_err(), "{way}");
     }
+    // The overlay check's control: the test binary's mount is attached.
+    assert!(attached(exe.as_fd()).expect("fdinfo"));
+    assert!(!runs_from_overlay());
     assert_eq!(SealedCopy::from_name("memfd"), Some(SealedCopy::Memfd));
     assert_eq!(SealedCopy::from_name("bind"), None);
 }

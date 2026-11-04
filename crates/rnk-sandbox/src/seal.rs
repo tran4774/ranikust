@@ -2,8 +2,8 @@
 //!
 //! Every process ranikust forks runs its binary until it executes
 //! something else: a `RUN` child until `execve`, a full-sandbox `RUN`'s init
-//! for good. Run from a copy no one can write, none of them hands a `RUN` a
-//! binary it could change through `/proc/<pid>/exe`, whatever the kernel
+//! for good. Run from a copy no `RUN` can write, none of them hands a `RUN`
+//! a binary it could change through `/proc/<pid>/exe`, whatever the kernel
 //! does about writes to a running file. As runc since 1.2
 //! (`libcontainer/exeseal`).
 
@@ -38,7 +38,8 @@ const SEALS: SealFlags = SealFlags::SEAL
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SealedCopy {
     /// The installed file seen through a read-only overlay mounted nowhere:
-    /// no copy at all, where ranikust may mount.
+    /// no copy at all, where root may mount as the build will find it. It
+    /// runs the installed file's own pages.
     Overlay,
     /// A copy in a sealed memfd: no write, no change of size. It takes the
     /// binary's size in memory.
@@ -403,9 +404,10 @@ fn may_mount() -> io::Result<()> {
 /// Whether [`enter_mount_namespace`](crate::setup::enter_mount_namespace)
 /// succeeds in a child, which then `_exit`s.
 fn mount_check_in_child() -> io::Result<()> {
-    // SAFETY: the child makes system calls that take no lock another thread
-    // could hold (only an error allocates, which the C library allows after
-    // `fork`), and ends in `_exit`, never returning from here.
+    // SAFETY: `may_mount` checked the process is single-threaded, so the
+    // child may allocate (the tests, with threads, use the system
+    // allocator, which is fork-safe); it ends in `_exit`, never returning
+    // from here. No death signal: a few system calls, then `_exit`.
     let pid = match unsafe { libc::fork() } {
         -1 => return Err(context("fork the mount check")(io::Error::last_os_error())),
         0 => {
@@ -425,11 +427,19 @@ fn mount_check_in_child() -> io::Result<()> {
             Ok(None) => return Err(io::Error::other("the mount check went missing")),
         }
     };
-    if status.exit_status() == Some(0) {
-        Ok(())
-    } else {
-        Err(io::Error::other("root may not mount here"))
+    match status.exit_status() {
+        Some(0) => Ok(()),
+        Some(1) => Err(io::Error::other("root may not mount here")),
+        _ => Err(io::Error::other(format!(
+            "the mount check ended with {status:?}"
+        ))),
     }
+}
+
+/// Whether this process runs from an overlay copy: `Direct` on `/` must
+/// not, as a `RUN` there reaches the installed file it runs.
+pub(crate) fn runs_from_overlay() -> bool {
+    File::open("/proc/self/exe").is_ok_and(|exe| check(SealedCopy::Overlay, exe.as_fd()).is_ok())
 }
 
 /// Whether the overlay's file is the running binary: overlay keeps a

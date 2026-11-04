@@ -450,9 +450,9 @@ sysadmin_slash_in() {
     sleep 0.5
   done
   why="$(sudo docker exec "$c" grep -E 'msg="running from a sealed copy of the binary \(ADR-0101\)".* way=memfd$' \
-    /ranikust/build.log | grep -o 'passed_over="[^"]*"' || true)"
+    /ranikust/build.log | grep -o 'passed_over="overlay: root may not mount here"' || true)"
   if [ "$ended" != 0 ] || [ -z "$why" ]; then
-    echo "error: red team: SYS_ADMIN on /: exit '${ended:-nothing}', want 0, from a memfd, the overlay passed over" >&2
+    echo "error: red team: SYS_ADMIN on /: exit '${ended:-nothing}', want 0, from a memfd, the overlay passed over as root may not mount" >&2
     sudo docker exec "$c" cat /ranikust/build.log >&2 || true
     return 1
   fi

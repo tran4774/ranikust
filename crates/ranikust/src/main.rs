@@ -212,7 +212,6 @@ fn main() -> ExitCode {
         Some(Sealing::Sealed { way, passed_over }) if passed_over.is_empty() => {
             tracing::debug!(%way, "running from a sealed copy of the binary (ADR-0101)");
         }
-        // Why a cheaper way was passed over, such as a refused mount.
         Some(Sealing::Sealed { way, passed_over }) => tracing::debug!(
             %way,
             %passed_over,
