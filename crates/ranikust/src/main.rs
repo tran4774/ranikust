@@ -816,15 +816,15 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
              (/proc/self/mountinfo cannot be parsed, does not place it or does not type a FUSE \
-             root; a writable mount of its file system is a directory whose name was removed, or \
-             cannot be reached at its mount point; or the binary's name was removed after the \
-             start); kaniko mode on / refuses to build without knowing"
+             root; a writable directory of its file system had its name removed, or a writable \
+             mount of it cannot be reached at its mount point; or the binary's own name was \
+             removed); kaniko mode on / refuses to build without knowing"
         ))
         .with_guidance(
-            "run the binary from a file that stays in place, beside no writable mount whose \
-             source was removed or that another mount hides, or build it into an image run on \
-             an overlayfs root, as Docker's and containerd's default storage gives, where the \
-             binary's check reads no mount table (ADR-0101)",
+            "run the binary from a file that stays in place, beside no writable directory mount \
+             whose source was removed and no writable mount another mount hides, or build it \
+             into an image run on an overlayfs root, as Docker's and containerd's default \
+             storage gives, where the binary's check reads no mount table (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
