@@ -61,11 +61,14 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    type a FUSE root (`root_type`), a writable directory of its file system
    whose name was removed, a writable mount of it whose mount point leads
    nowhere or to another mount, or a file with no link left, is
-   `Unplaced`, and a table that cannot be read, or a mount point whose
-   `statx` fails otherwise, `Unknown`. The measurement runs at every start,
-   so a host build too may look up the writable mount points of its
-   binary's file system (a binary on a read-only mount, or one link on a
-   root that is not an overlay); only kaniko mode on `/` uses the answer.
+   `Unplaced`, and a table that cannot be read, or a lookup of the
+   binary's name or of a mount point that fails otherwise (`openat2`,
+   `statx`; an error with no errno as `EIO`), `Unknown`, unless a writable
+   mount was found to reach the binary (`Exposed`). The measurement runs
+   at every start, so a host build too may look up the writable mount
+   points of its binary's file system (a binary with a single link, on a
+   read-only mount or on a root that is not an overlay); only kaniko mode
+   on `/` uses the answer.
    The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
    close-on-exec descriptor, with the same arguments, environment and
    descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file

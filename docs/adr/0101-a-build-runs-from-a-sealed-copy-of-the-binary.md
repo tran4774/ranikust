@@ -150,7 +150,8 @@ The decision:
   mount of its file system that is a directory whose name was removed or
   that cannot be reached at its mount point, or a file with no link left;
   or a failed call (the mount table unreadable among them), each with its
-  own guidance; a fallback through `/proc/self/fdinfo` is [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
+  own guidance; a fallback through `/proc/self/fdinfo` is
+  [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
   (`statfs` magic), as Docker's and containerd's default storage gives, or
@@ -393,6 +394,10 @@ The decision:
   `a_removed_name_of_the_binary_places_nothing` (on the host running it,
   the binary's own name removed while it runs, a link left elsewhere: it
   failed with the stale name placed),
+  `a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached` (a name
+  too long, or a path `RootPath` refuses, at a mount point or at the
+  binary's name, keeps its errno unless a writable bind of the binary is
+  found),
   `a_binary_in_a_root_that_is_not_an_overlay_is_weighed` (an overlay root
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one

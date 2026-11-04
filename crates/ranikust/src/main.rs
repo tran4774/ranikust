@@ -842,8 +842,9 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         .with_guidance(
             "mount /proc in the container so that /proc/self/exe and /proc/self/mountinfo can be \
              read, and let its seccomp profile allow fstatfs, openat2 and statx: ranikust reads \
-             the binary's mount with statx (STATX_MNT_ID) and fstatvfs, and looks up each \
-             writable mount point of its file system with openat2 and statx (ADR-0101)",
+             the binary's mount with statx (STATX_MNT_ID) and fstatvfs, and looks up the \
+             binary's name and each writable mount point of its file system with openat2 and \
+             statx (ADR-0101)",
         )),
         None => Err(Failure::error(format!(
             "{how}: the mount of ranikust's binary was not measured; kaniko mode on / refuses \
@@ -1333,7 +1334,8 @@ mod tests {
             unknown.message.contains(&errno.to_string())
                 && unknown.guidance.contains("/proc/self/exe")
                 && unknown.guidance.contains("/proc/self/mountinfo")
-                && unknown.guidance.contains("fstatfs"),
+                && unknown.guidance.contains("fstatfs")
+                && unknown.guidance.contains("openat2"),
             "{}: {}",
             unknown.message,
             unknown.guidance

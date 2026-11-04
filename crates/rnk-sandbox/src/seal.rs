@@ -422,7 +422,7 @@ enum MountRoot {
 /// The mount `path` leads to from `root` through `RootPath` (`statx`, no
 /// open; the paths lead through the container's own files), and what it
 /// finds there. `None` when the path leads nowhere; `Err` when the call
-/// fails otherwise.
+/// fails otherwise (`EIO` for an error with no errno).
 fn seen_at(root: &RootPath, path: &Path) -> Result<Option<(u64, MountRoot)>, Errno> {
     let st = match root.statx(path) {
         Ok(st) => st,
@@ -431,6 +431,7 @@ fn seen_at(root: &RootPath, path: &Path) -> Result<Option<(u64, MountRoot)>, Err
                 // A name that leads nowhere places nothing: the caller fails closed.
                 Some(Errno::NOENT | Errno::NOTDIR | Errno::LOOP) => Ok(None),
                 Some(errno) => Err(errno),
+                // A path RootPath refuses with no errno is not a missing name.
                 None => Err(Errno::IO),
             };
         }
@@ -551,8 +552,8 @@ fn reached_writable(
     placed.then_some(false)
 }
 
-// Opening `/proc/self/exe` fails with an errno; `EIO` only stands in for
-// an error that has none, which `open` never gives.
+// The calls of the seal fail with an errno; `EIO` only stands in for an
+// error that has none.
 fn errno_of(e: &io::Error) -> Errno {
     Errno::from_io_error(e).unwrap_or(Errno::IO)
 }
