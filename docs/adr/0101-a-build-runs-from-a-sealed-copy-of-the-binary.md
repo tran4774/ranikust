@@ -51,7 +51,7 @@ Chosen option: (y). At start-up a build runs again from a sealed memfd copy
 of ranikust's binary, else an `O_TMPFILE` copy; when neither works it
 builds on from the installed binary with today's barriers and a warning.
 Kaniko mode on `/` refuses a binary on a writable mount other than `/`'s,
-or on one it cannot tell, sealed or not (below).
+reached by one, or on one it cannot tell, sealed or not (below).
 The maintainer chose (x) first, 2026-11-04 ("tất cả theo khuyến nghị", all
 as recommended). Building it showed the overlay's limits; asked whether to
 keep the overlay first, the maintainer answered on 2026-11-04: "Luôn dùng
