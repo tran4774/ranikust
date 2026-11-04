@@ -298,15 +298,17 @@ EOF
     # mount (overlay mode, and kaniko mode with a directory per stage), a
     # sealed memfd when the overlay is skipped. While the RUN waits, root
     # on the host may write neither ranikust's nor its init's
-    # /proc/<pid>/exe, and the RUN may not open its init's for writing.
-    # The RUN still gets the core-file limit ranikust started with.
+    # /proc/<pid>/exe (guest/sealed-exe.py). The RUN cannot even open its
+    # init's: the init is not dumpable (ADR-0051), the barrier before the
+    # seal; the RUN reports the errno. The RUN still gets the core-file
+    # limit ranikust started with.
     s="$W/host/sealed"
     sudo mkdir -m 700 -p "$s/ctx"
     sudo tee "$s/ctx/Dockerfile" >/dev/null <<DOCKERFILE
 FROM $IMAGE
 RUN <<PY
 #!/usr/local/bin/python3
-import ctypes, os, resource, signal, sys
+import ctypes, errno, os, resource, signal, sys
 ctypes.CDLL(None).prctl(15, b"rnksealed", 0, 0, 0)
 core = resource.getrlimit(resource.RLIMIT_CORE)[0]
 if core != 1048576:
@@ -315,7 +317,7 @@ for flags in (os.O_WRONLY, os.O_RDWR):
     try:
         os.close(os.open("/proc/1/exe", flags))
     except OSError as e:
-        print(f"RUN: its init's /proc/1/exe for writing: {e.strerror}", flush=True)
+        print(f"RUN: its init's /proc/1/exe for writing: {errno.errorcode[e.errno]}", flush=True)
     else:
         sys.exit("RUN: opened its init's /proc/1/exe for writing")
 signal.signal(signal.SIGUSR1, lambda *a: sys.exit(0))
@@ -345,7 +347,8 @@ DOCKERFILE
         { sudo pkill -KILL -x ranikust; exit 1; }
       sudo pkill -USR1 -x rnksealed
       wait "$build" || { echo "error: sealed ($how): the build failed" >&2; cat "$slog" >&2; exit 1; }
-      grep -q "msg=\"running from a sealed copy of the binary (ADR-0101)\" way=$way" "$slog" ||
+      # The text format sorts the fields: a passed-over way comes first.
+      grep -qE "msg=\"running from a sealed copy of the binary \(ADR-0101\)\".* way=$way\$" "$slog" ||
         { echo "error: sealed ($how): no $way copy in the log" >&2; cat "$slog" >&2; exit 1; }
       [ "$(grep -c "^RUN: its init" "$slog")" = 2 ] ||
         { echo "error: sealed ($how): the RUN did not report both opens" >&2; cat "$slog" >&2; exit 1; }

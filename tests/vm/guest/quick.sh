@@ -409,6 +409,56 @@ slash_lock_in() {
   echo "slash lock: a second kaniko-mode build on / refused by the flock (exit 1, nothing written); the first built (exit 0)"
 }
 
+# ADR-0101: Docker `--cap-add SYS_ADMIN` alone keeps AppArmor's
+# `docker-default`, which denies mount(2): the build takes kaniko mode on
+# `/` (design/modes-and-detection.md), where a `RUN` reaches the installed
+# binary. It must run from a sealed memfd there, never from the overlay,
+# whose copy runs the installed file's pages. FROM scratch, as above.
+rt_sysadmin_slash_runs_from_a_memfd() {
+  local c="rnk-sysadmin-slash-$$" rc=0
+  sysadmin_slash_in "$c" || rc=1
+  # Removed on every path, with whatever still runs in it.
+  sudo docker rm -f "$c" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+sysadmin_slash_in() {
+  local c="$1" ctx="$W/sysadmin-slash" i pid ended= why
+  sudo mkdir -p "$ctx" &&
+    printf 'FROM scratch\nRUN sleep 10\n' | sudo tee "$ctx/Dockerfile" >/dev/null || return 1
+  sudo docker run -d --name "$c" --cap-add SYS_ADMIN -v "$RNK:/ranikust/bin/ranikust:ro" \
+    -v "$ctx:/ranikust/ctx:ro" "$BASE" sleep 300 >/dev/null || return 1
+  sudo docker exec -d "$c" sh -c '/ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx \
+    --no-push --log-format=text -v debug >/ranikust/build.log 2>&1; echo $? >/ranikust/build.rc' ||
+    return 1
+  for i in $(seq 120); do
+    sudo docker exec "$c" pgrep -f '^sleep 10$' >/dev/null 2>&1 && break
+    if [ "$i" = 120 ]; then
+      echo "error: red team: SYS_ADMIN on /: the build's RUN never started" >&2
+      sudo docker exec "$c" cat /ranikust/build.log >&2 || true
+      return 1
+    fi
+    sleep 0.5
+  done
+  pid="$(pgrep -x ranikust)" && sudo python3 -I guest/sealed-exe.py memfd "$RNK" "$pid" || {
+    echo "error: red team: SYS_ADMIN on /: the build does not run from a sealed memfd copy" >&2
+    return 1
+  }
+  for i in $(seq 120); do
+    ended="$(sudo docker exec "$c" cat /ranikust/build.rc 2>/dev/null || true)"
+    [ -n "$ended" ] && break
+    sleep 0.5
+  done
+  why="$(sudo docker exec "$c" grep -E 'msg="running from a sealed copy of the binary \(ADR-0101\)".* way=memfd$' \
+    /ranikust/build.log | grep -o 'passed_over="[^"]*"' || true)"
+  if [ "$ended" != 0 ] || [ -z "$why" ]; then
+    echo "error: red team: SYS_ADMIN on /: exit '${ended:-nothing}', want 0, from a memfd, the overlay passed over" >&2
+    sudo docker exec "$c" cat /ranikust/build.log >&2 || true
+    return 1
+  fi
+  echo "red team: SYS_ADMIN without mount(2) builds on / from a sealed memfd ($why)"
+}
+
 # A plain command: under `||` errexit would be off inside the cases.
 set +e
 # shellcheck disable=SC2086
@@ -424,6 +474,7 @@ if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
   rt_no_mount_root_with_a_container_signal || rc=1
   rt_auto_privileged_container || rc=1
   slash_lock_refuses_a_second_build || rc=1
+  rt_sysadmin_slash_runs_from_a_memfd || rc=1
 fi
 set -e
 
