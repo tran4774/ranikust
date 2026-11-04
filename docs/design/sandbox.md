@@ -39,8 +39,8 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    to be the same file (device and inode), bound by descriptor (`open_tree`,
    or `mount(2)` where it is refused) and remounted read-only, then checked
    again by path. Where that path is on a read-only mount already, nothing
-   is made. A failure refuses the build (`Error::OwnBinary`, with
-   guidance). The bind changes what the path names in ranikust's namespace,
+   is made. A failure of the bind refuses the build (`Error::OwnBinary`,
+   with guidance). The bind changes what the path names in ranikust's namespace,
    which no `RUN` reaches (each enters its own root), not what
    `/proc/<pid>/exe` names ([per-`RUN` step 8](#per-run-sequence)).
    `Sandbox::start_direct` binds nothing, whether or not step 1 ran.

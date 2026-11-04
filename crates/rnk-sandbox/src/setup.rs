@@ -98,7 +98,8 @@ const SELF_EXE: &CStr = c"/proc/self/exe";
 ///
 /// [`Error::OwnBinary`] when `link` is an errno, the path does not name the
 /// running file, or a step of the bind fails; [`Error::Sys`] when
-/// `/proc/self/exe` cannot be opened or `statx` gives no mount id.
+/// `/proc/self/exe` cannot be opened, or its `statx` fails or gives no
+/// mount id.
 pub(crate) fn bind_own_binary(link: rustix::io::Result<&CStr>, mount_api: bool) -> Result<()> {
     let link = link.map_err(|e| step_err(Path::new("/proc/self/exe"), "readlink", e))?;
     let exe = rustix::fs::open(SELF_EXE, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())

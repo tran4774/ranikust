@@ -172,8 +172,8 @@ What a change here must keep, with where it lives:
   its arguments (threat model section 6).
 - **Own binary** (ADR-0082, `setup::bind_own_binary`): in a process that
   entered the build namespace, `Sandbox::start` binds the running binary
-  read-only over itself there and checks it by path; a failure refuses the
-  full sandbox (`Error::OwnBinary`). `Sandbox::start_direct`, and a process
+  read-only over itself there and checks it by path; a failure of the bind
+  refuses the full sandbox (`Error::OwnBinary`). `Sandbox::start_direct`, and a process
   that never entered the namespace (tests), bind nothing. `/proc/<pid>/exe`
   is unchanged. Procedure:
   [design](../../design/sandbox.md#process-set-up-once-per-build).
@@ -231,9 +231,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, the own-binary bind refused
-  before any mount (`src/setup.rs`), `Direct` refusals, the sealed
-  heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
-  reading its own stream back), the init's status records,
+  before any mount (`src/setup.rs`), `Direct` refusals, the sealed heredoc
+  memfd, the relay (a surviving write end, a full stream, a `RUN` reading
+  its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox
