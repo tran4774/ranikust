@@ -105,6 +105,14 @@ after_binds() {
     [ -e "$sig/up" ] && break
     sleep 0.1
   done
+  # A change made before the binds exist would test nothing.
+  [ -e "$sig/up" ] || {
+    touch "$sig/go"
+    wait "$pid" || true
+    cat "$sig.log" >&2
+    fail "$what: the container did not start"
+    return 1
+  }
   "${cmd[@]}"
   touch "$sig/go"
   wait "$pid" || rc=$?
