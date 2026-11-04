@@ -422,3 +422,75 @@ fn red_team_finding_ignore_paths_that_together_take_the_whole_root_pass_the_earl
         );
     }
 }
+
+/// `--seccomp` keeps its value until [`read_seccomp`] reads it; a file
+/// named `default` is given as a path.
+#[test]
+fn seccomp_values_read_as_the_sandbox_takes_them() {
+    let seccomp = |flag: &str| config(&["--no-push", flag]).map(|c| c.seccomp);
+    assert_eq!(config(&["--no-push"]).map(|c| c.seccomp), Ok(None));
+    assert_eq!(seccomp("--seccomp=default"), Ok(Some(SeccompArg::Default)));
+    assert_eq!(
+        seccomp("--seccomp=unconfined"),
+        Ok(Some(SeccompArg::Unconfined))
+    );
+    assert_eq!(
+        seccomp("--seccomp=./default"),
+        Ok(Some(SeccompArg::File(PathBuf::from("./default"))))
+    );
+    assert!(matches!(read_seccomp(None), Ok(Seccomp::Unset)));
+    assert!(matches!(
+        read_seccomp(Some(&SeccompArg::Unconfined)),
+        Ok(Seccomp::Unconfined)
+    ));
+    assert!(matches!(
+        read_seccomp(Some(&SeccompArg::Default)),
+        Ok(Seccomp::Profile(_))
+    ));
+}
+
+/// A `--seccomp` file is compiled before the set-up (ADR-0109): one that
+/// cannot be a profile is refused, whatever the reason, and a good one is
+/// read.
+#[test]
+fn seccomp_files_that_cannot_be_profiles_are_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path();
+    let read = |p: &Path| read_seccomp(Some(&SeccompArg::File(p.to_path_buf())));
+    let file = |name: &str, bytes: &[u8]| {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("write");
+        path
+    };
+    let good = file(
+        "good.json",
+        br#"{"defaultAction": "SCMP_ACT_ALLOW",
+             "syscalls": [{"names": ["uname"], "action": "SCMP_ACT_ERRNO"}]}"#,
+    );
+    assert!(matches!(read(&good), Ok(Seccomp::Profile(_))));
+    let fifo = dir.join("fifo");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .expect("mkfifo");
+    let large = vec![b' '; usize::try_from(MAX_SECCOMP_FILE).unwrap() + 1];
+    for (path, want) in [
+        (file("malformed.json", b"{"), "seccomp profile"),
+        (
+            file("notify.json", br#"{"defaultAction": "SCMP_ACT_NOTIFY"}"#),
+            "SCMP_ACT_NOTIFY",
+        ),
+        (file("large.json", &large), "larger than"),
+        (dir.join("missing.json"), "cannot open"),
+        (fifo, "not a regular file"),
+        (dir.to_path_buf(), "not a regular file"),
+    ] {
+        let err = read(&path).expect_err("refused");
+        assert!(err.0.starts_with("--seccomp="), "{}", err.0);
+        assert!(err.0.contains(want), "{}: {}", path.display(), err.0);
+    }
+}

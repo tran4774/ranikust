@@ -403,6 +403,20 @@ pub(crate) struct BuildArgs {
     )]
     pub(crate) allow: Vec<Entitlement>,
 
+    /// The seccomp profile of every `RUN` in the full sandbox, as `docker
+    /// run --security-opt seccomp=`: `default`, Docker's own, which also
+    /// applies without the flag; `unconfined`; or a profile file in
+    /// Docker's JSON format (`./default` for a file of that name). Refused
+    /// in kaniko mode on a container's `/`, where the container's own
+    /// profile applies (ADR-0103, ADR-0109).
+    #[arg(
+        long,
+        value_name = "default|unconfined|FILE",
+        value_parser = parse_seccomp,
+        help_heading = "ranikust"
+    )]
+    pub(crate) seccomp: Option<SeccompArg>,
+
     /// Raises or lowers a bound on what a registry or an image can make
     /// ranikust hold or wait for (ADR-0079): sizes in bytes or with KiB,
     /// MiB, GiB, at most 1 GiB; durations with s, m, h, at most 24h; above
@@ -778,6 +792,26 @@ fn parse_entitlement(value: &str) -> Result<Entitlement, String> {
         _ => Err(format!(
             "unknown entitlement {value:?} (network.host, network.none-userns)"
         )),
+    }
+}
+
+/// A `--seccomp` value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SeccompArg {
+    /// `default`: Docker's default profile (ADR-0109).
+    Default,
+    /// `unconfined`: no profile; ADR-0033's filter stays where it applies.
+    Unconfined,
+    /// A profile file in Docker's JSON format, read before the set-up.
+    File(PathBuf),
+}
+
+fn parse_seccomp(value: &str) -> Result<SeccompArg, String> {
+    match value {
+        "default" => Ok(SeccompArg::Default),
+        "unconfined" => Ok(SeccompArg::Unconfined),
+        "" => Err("give default, unconfined or a profile file".to_owned()),
+        path => Ok(SeccompArg::File(PathBuf::from(path))),
     }
 }
 

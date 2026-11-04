@@ -51,8 +51,8 @@ use std::process::ExitCode;
 
 use rnk_metrics::{Config, Outcome, Telemetry};
 
-use crate::cli::{BuildArgs, Command, ParseError};
-use crate::config::BuildConfig;
+use crate::cli::{BuildArgs, Command, ParseError, SeccompArg};
+use crate::config::{BuildConfig, Seccomp};
 
 /// The allocator of every Rust allocation: the release binary is static musl,
 /// whose allocator is 250–300 times slower than mimalloc at 16 threads
@@ -389,6 +389,8 @@ fn build(
     metrics_file: Option<&Path>,
 ) -> Result<(), Failure> {
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
+    let seccomp = config::read_seccomp(config.seccomp.as_ref())
+        .map_err(|invalid| Failure::usage(invalid.0))?;
     telemetry.set_meta("mode", config::name(config.mode));
     telemetry.set_meta("options", config.meta_options());
     tracing::debug!(
@@ -414,7 +416,14 @@ fn build(
                 }
             };
             let runtime = container::detect(&container::Real);
-            kaniko(&config, "--mode=kaniko", can_mount, runtime, metrics_file)
+            kaniko(
+                &config,
+                &seccomp,
+                "--mode=kaniko",
+                can_mount,
+                runtime,
+                metrics_file,
+            )
         }
         config::Mode::Overlay => {
             overlay_flags(args)?;
@@ -422,7 +431,7 @@ fn build(
             let span = tracing::debug_span!("ranikust.setup");
             span.in_scope(setup::enter_namespace)
                 .map_err(Failure::refused)?;
-            overlay(&config, &span)
+            overlay(&config, &seccomp, &span)
         }
         // Whether root may mount decides, before anything is written
         // (ADR-0040).
@@ -439,7 +448,11 @@ fn build(
                     // writes anything, and count only if it is picked.
                     let flags = config::overlay_mode_flags(args);
                     let refusal = match span.in_scope(|| {
-                        setup::set_up(&config.state_dir, config.allow_network_none_userns)
+                        setup::set_up(
+                            &config.state_dir,
+                            config.allow_network_none_userns,
+                            &seccomp,
+                        )
                     }) {
                         Ok(setup) => {
                             let warnings = match flags {
@@ -471,7 +484,14 @@ fn build(
                                 "kaniko mode with a directory per stage, because overlay mode \
                                  cannot run here: {why}"
                             );
-                            kaniko(&config, "--mode=auto", true, runtime, metrics_file)
+                            kaniko(
+                                &config,
+                                &seccomp,
+                                "--mode=auto",
+                                true,
+                                runtime,
+                                metrics_file,
+                            )
                         }
                     }
                 }
@@ -479,7 +499,14 @@ fn build(
                     let why = refusal.reason;
                     tracing::info!("kaniko mode, because root may not mount here: {why}");
                     let runtime = container::detect(&container::Real);
-                    kaniko(&config, "--mode=auto", false, runtime, metrics_file)
+                    kaniko(
+                        &config,
+                        &seccomp,
+                        "--mode=auto",
+                        false,
+                        runtime,
+                        metrics_file,
+                    )
                 }
                 Err(refusal) => Err(Failure::refused(refusal)),
             }
@@ -499,9 +526,9 @@ fn overlay_flags(args: &BuildArgs) -> Result<(), Failure> {
 
 /// Overlay mode, once the namespace is entered: the rest of the set-up,
 /// then the build.
-fn overlay(config: &BuildConfig, span: &tracing::Span) -> Result<(), Failure> {
+fn overlay(config: &BuildConfig, seccomp: &Seccomp, span: &tracing::Span) -> Result<(), Failure> {
     let setup = span
-        .in_scope(|| setup::set_up(&config.state_dir, config.allow_network_none_userns))
+        .in_scope(|| setup::set_up(&config.state_dir, config.allow_network_none_userns, seccomp))
         .map_err(Failure::refused)?;
     overlay_built(config, setup)
 }
@@ -547,11 +574,13 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 /// directory, `<state>/builds/<id>/stages/<n>/rootfs`, scheduled as
 /// overlay mode's stages (`#per-stage-directories`, ADR-0059). Then
 /// `RLIMIT_NOFILE` is raised (the original kept for `RUN`), the state
-/// directory and store set up, and the ignore list built. `can_mount` is
+/// directory and store set up, and the ignore list built. `seccomp` is the
+/// profile of a full-sandbox `RUN`; `can_mount` is
 /// whether the build's mount namespace could be entered; `runtime` is
 /// what [`container::detect`] found, read once by the caller.
 fn kaniko(
     config: &BuildConfig,
+    seccomp: &Seccomp,
     how: &str,
     can_mount: bool,
     runtime: Option<container::Runtime>,
@@ -607,7 +636,7 @@ fn kaniko(
         None
     };
     let setup = tracing::debug_span!("ranikust.setup")
-        .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile))
+        .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile, seccomp))
         .map_err(Failure::refused)?;
     if on_slash {
         // After the set-up gave ranikust only what a `RUN` keeps: the
@@ -665,6 +694,20 @@ fn refuse_unsafe_slash(config: &BuildConfig, how: &str, can_mount: bool) -> Resu
             "{how}: kaniko mode on / in a container where root may mount would run RUN with \
              the host's devices and a writable /proc/sys; use overlay mode there \
              (--mode=overlay or --mode=auto), with a volume at the state directory"
+        )));
+    }
+    if let Some(arg) = &config.seccomp {
+        // A `RUN` there runs `Direct`, under the container's own profile
+        // (ADR-0103, ADR-0109).
+        let value = match arg {
+            SeccompArg::Default => "default".to_owned(),
+            SeccompArg::Unconfined => "unconfined".to_owned(),
+            SeccompArg::File(path) => path.display().to_string(),
+        };
+        return Err(Failure::usage(format!(
+            "{how}: --seccomp={value}: kaniko mode on / runs RUN directly, under the \
+             container's own seccomp profile (ADR-0103); drop the flag, or give the container \
+             the profile (docker run --security-opt seccomp=FILE)"
         )));
     }
     if config.network == config::Network::None {
@@ -1087,10 +1130,38 @@ mod tests {
     }
 
     /// Kaniko mode on `/` refuses in a fixed order: root that may mount
-    /// (ADR-0054) before `--network=none` (ADR-0057). Both return before
-    /// /proc/sys is read, so this needs no file and no privilege.
+    /// (ADR-0054) before `--seccomp` (ADR-0103, a usage error) before
+    /// `--network=none` (ADR-0057). All return before /proc/sys is read, so
+    /// this needs no file and no privilege.
     #[test]
     fn the_refusals_on_slash_come_in_their_order() {
+        let both = config_of(&["--no-push", "--network=none", "--seccomp=unconfined"]);
+        let may_mount = refuse_unsafe_slash(&both, "--mode=kaniko", true).unwrap_err();
+        assert!(
+            may_mount
+                .message
+                .contains("in a container where root may mount"),
+            "{}",
+            may_mount.message
+        );
+        let seccomp = refuse_unsafe_slash(&both, "--mode=kaniko", false).unwrap_err();
+        assert_eq!(seccomp.code, EXIT_USAGE, "{}", seccomp.message);
+        assert!(
+            seccomp
+                .message
+                .contains("--seccomp=unconfined: kaniko mode on / runs RUN directly"),
+            "{}",
+            seccomp.message
+        );
+        for value in ["default", "/p.json"] {
+            let config = config_of(&["--no-push", &format!("--seccomp={value}")]);
+            let refused = refuse_unsafe_slash(&config, "--mode=kaniko", false).unwrap_err();
+            assert_eq!(refused.code, EXIT_USAGE, "{value}");
+            assert!(
+                refused.message.contains(&format!("--seccomp={value}:")),
+                "{value}"
+            );
+        }
         let config = config_of(&["--no-push", "--network=none"]);
         let may_mount = refuse_unsafe_slash(&config, "--mode=kaniko", true).unwrap_err();
         assert!(

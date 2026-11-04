@@ -24,6 +24,8 @@ use rnk_sandbox::{Caps, Error as SandboxError, Sandbox};
 use rnk_snapshot::{Error as SnapshotError, MountApi, OverlayCaps};
 use rnk_store::{BuildPaths, Store};
 
+use crate::config::Seccomp;
+
 /// The outcome the probes picked (ADR-0002, ADR-0004). Each library gets
 /// only its own part (Q-017, interim (b)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,12 +196,17 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 /// Before the spawner, the only other thread is the overlay probe's
 /// `mount(2)` attempt, which it joins: the process is single-threaded
 /// again when the spawner starts. `userns_network` is `--allow
-/// network.none-userns` (ADR-0033).
+/// network.none-userns` (ADR-0033); `seccomp` the profile of every `RUN`
+/// (ADR-0109).
 ///
 /// # Errors
 ///
 /// A [`Refusal`] naming what failed and what to do instead.
-pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Refusal> {
+pub(crate) fn set_up(
+    state_dir: &Path,
+    userns_network: bool,
+    seccomp: &Seccomp,
+) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
     if crate::statedir::on_overlayfs(state_dir) {
@@ -237,6 +244,7 @@ pub(crate) fn set_up(state_dir: &Path, userns_network: bool) -> Result<Setup, Re
     if userns_network {
         sandbox.allow_userns_network();
     }
+    seccomp.apply(&mut sandbox);
     Ok(Setup {
         outcome,
         state_dir: state_dir.to_path_buf(),
@@ -306,7 +314,8 @@ const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switchin
 /// the full sandbox, probed here; without mount privileges (`can_mount`
 /// false) that case is refused (Q-330, ADR-0050), never a bare `chroot` on
 /// the host. `nofile` is the `RLIMIT_NOFILE` ranikust
-/// started with, given back to every `RUN`.
+/// started with, given back to every `RUN`; `seccomp` the profile of a
+/// full-sandbox `RUN` (ADR-0109), which the caller refused on `/`.
 ///
 /// # Errors
 ///
@@ -317,6 +326,7 @@ pub(crate) fn set_up_kaniko(
     on_slash: bool,
     can_mount: bool,
     nofile: rnk_sandbox::NofileLimit,
+    seccomp: &Seccomp,
 ) -> Result<KanikoSetup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     if euid != 0 {
@@ -396,6 +406,8 @@ pub(crate) fn set_up_kaniko(
         guidance: "",
     })?;
     sandbox.set_nofile_limit(nofile);
+    // A `Direct` `RUN` never gets the profile, whatever it is (ADR-0103).
+    seccomp.apply(&mut sandbox);
     match &root {
         Some((_, path)) => tracing::info!(
             "ranikust: kaniko mode on {}, RUN directly, as kaniko",

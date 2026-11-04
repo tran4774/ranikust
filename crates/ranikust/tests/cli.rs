@@ -337,6 +337,45 @@ fn a_seccomp_block_gets_its_own_message() {
     assert!(stderr(&out).contains("seccomp"), "{}", stderr(&out));
 }
 
+/// `--seccomp` with a file that cannot be a profile, or no value, is a
+/// usage error before any work (ADR-0109): nothing is created.
+#[test]
+fn a_seccomp_file_that_cannot_be_read_or_compiled_is_refused_before_any_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let state_flag = format!("--state-dir={}", state.display());
+    let malformed = tmp.path().join("malformed.json");
+    fs::write(&malformed, "{\"defaultAction\": ").expect("write");
+    let notify = tmp.path().join("notify.json");
+    fs::write(&notify, r#"{"defaultAction": "SCMP_ACT_NOTIFY"}"#).expect("write");
+    let missing = tmp.path().join("missing.json");
+    for (file, want) in [
+        (&malformed, "seccomp profile"),
+        (&notify, "SCMP_ACT_NOTIFY"),
+        (&missing, "cannot open"),
+    ] {
+        let flag = format!("--seccomp={}", file.display());
+        for mode in ["--mode=auto", "--mode=overlay", "--mode=kaniko"] {
+            let out = ranikust(tmp.path(), &["--no-push", &state_flag, mode, &flag], &[]);
+            assert_eq!(
+                out.status.code(),
+                Some(2),
+                "{flag} {mode}: {}",
+                stderr(&out)
+            );
+            assert!(
+                stderr(&out).contains(want),
+                "{flag} {mode}: {}",
+                stderr(&out)
+            );
+            assert!(!state.exists(), "{flag} {mode}: nothing is created");
+        }
+    }
+    let out = ranikust(tmp.path(), &["--no-push", &state_flag, "--seccomp="], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(!state.exists(), "nothing is created");
+}
+
 #[test]
 fn enosys_on_a_new_kernel_does_not_blame_the_kernel() {
     // An x86_64 binary under Rosetta (an amd64 container on Apple Silicon)
