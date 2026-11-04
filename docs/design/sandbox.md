@@ -27,12 +27,11 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
 0. **A sealed copy of the binary**
    ([ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
    `seal.rs`): right after the flags and the kernel check, a build runs
-   again from a copy of its binary no `RUN` can write, as runc has done
-   since v1.0.0-rc7 (the copies are the first two of runc 1.2.0's
-   `CloneBinary`; runc tries a read-only overlay first, which ranikust
-   does not, ADR-0101), so every process it forks, the `RUN` child until
-   `execve` and the init, has that copy as `/proc/self/exe`, in every
-   mode. The ways, in order:
+   again from a copy of its binary no `RUN` can write, as runc does (the
+   first two copies of runc 1.2.0's `CloneBinary`; runc tries a read-only
+   overlay first, which ranikust does not, ADR-0101), so every process it
+   forks, the `RUN` child until `execve` and the init, has that copy as
+   `/proc/self/exe`, in every mode. The ways, in order:
    - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
      copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
      refuses it. It costs the binary's size in memory;

@@ -36,7 +36,8 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
   `--network=none` ([ADR-0031]). ranikust itself runs from a sealed copy
-  of its binary in memory that no `RUN` can write ([ADR-0101]).
+  of its binary that no `RUN` can write, in memory where the kernel allows
+  one ([ADR-0101]).
 - **Network.** `RUN` uses the network ranikust has, as kaniko's does
   ([ADR-0010]). It reaches services on the host and the cloud metadata service
   (`169.254.169.254`), which gives out the machine's or pod's cloud
