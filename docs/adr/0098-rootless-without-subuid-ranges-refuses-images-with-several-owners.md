@@ -78,8 +78,8 @@ map has ranges, the same scan and refusal apply with the map's ranges as input:
 option (d), (a) in #92 (the maintainer, 2026-11-04: "Từ chối như ADR-0098
 (khuyến nghị)"). A `--userns` build, whose root maps the `ranikust` range
 ([ADR-0104](0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)),
-refuses an owner outside that range the same way (the maintainer, 2026-11-04:
-"Từ chối như ADR-0098 (khuyến nghị)").
+refuses an owner outside that range the same way (the maintainer, 2026-11-04,
+asked as a follow-up to #92: "Từ chối như ADR-0098 (khuyến nghị)").
 
 - **Planned, Phase 3**
   ([#80](https://github.com/tran4774/ranikust/issues/80)). Nothing is built by
