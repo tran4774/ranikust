@@ -43,7 +43,9 @@ pub struct MountInfoError {
 
 /// Parses the text of `/proc/self/mountinfo`. The kernel escapes space,
 /// tab, newline and backslash in paths as `\NNN` octal; the optional fields
-/// (`shared:N`, `master:N`, …) run up to a lone `-`.
+/// (`shared:N`, `master:N`, …) run up to a lone `-`. Fields after the file
+/// system's options are ignored: a file system may print an option value
+/// with a space in it.
 ///
 /// # Errors
 ///
@@ -74,15 +76,16 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
     fields.by_ref().find(|f| *f == b"-")?;
     let fs_type = String::from_utf8_lossy(&unescape(fields.next()?)?).into_owned();
     let _source = fields.next()?;
-    // A file system may print an option value unescaped, spaces included:
-    // fields after this one are then its spill; the kernel writes `ro` or
-    // `rw` first.
+    // Fields after this one are an option value's spill past a space.
     let super_options = fields.next()?;
+    // The kernel writes `ro` or `rw` first in both: anything else means a
+    // field shifted by a space, and the line is not guessed at.
+    let ok = |opts: &[u8]| matches!(first_option(opts), b"ro" | b"rw");
     // `fs_root` is not always a path (`mnt:[4026533352]` for nsfs).
-    if !mount_point.starts_with(b"/") {
+    if !mount_point.starts_with(b"/") || !ok(options) || !ok(super_options) {
         return None;
     }
-    let ro = |opts: &[u8]| opts.split(|b| *b == b',').next() == Some(b"ro".as_slice());
+    let ro = |opts: &[u8]| first_option(opts) == b"ro";
     Some(MountInfo {
         mount_id,
         parent_id,
@@ -92,6 +95,10 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
         fs_type,
         read_only: ro(options) || ro(super_options),
     })
+}
+
+fn first_option(opts: &[u8]) -> &[u8] {
+    opts.split(|b| *b == b',').next().unwrap_or_default()
 }
 
 fn number(field: &[u8]) -> Option<u64> {
@@ -144,7 +151,13 @@ mod tests {
 
     #[test]
     fn a_line_without_its_filesystems_options_is_refused() {
-        for bad in ["1 0 8:1 / / rw - ext4 /dev/sda1", "1 0 8:1 / / rw - ext4"] {
+        for bad in [
+            "1 0 8:1 / / rw - ext4 /dev/sda1",
+            "1 0 8:1 / / rw - ext4",
+            // A source with a space: the options read are not options.
+            "1 0 8:1 / / rw - ext4 /dev/my disk rw",
+            "1 0 8:1 / / relatime - ext4 /dev/sda1 rw",
+        ] {
             let e = parse_mountinfo(bad.as_bytes()).unwrap_err();
             assert_eq!(e.line, 1, "{bad:?}");
         }
@@ -157,9 +170,10 @@ mod tests {
         let text = b"\
 1 0 0:40 / /n rw - nfs srv:/x rw,fsc=a b,ro
 2 0 0:41 / /m rw - nfs srv:/y ro,fsc=a b
+3 0 0:42 / /o rw - nfs srv:/z rw,fsc=a,ro b
 ";
         let mounts = parse_mountinfo(text).unwrap();
         let ro: Vec<bool> = mounts.iter().map(|m| m.read_only).collect();
-        assert_eq!(ro, [false, true]);
+        assert_eq!(ro, [false, true, false]);
     }
 }

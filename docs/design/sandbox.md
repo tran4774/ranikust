@@ -50,9 +50,9 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    same `major:minor` in `/proc/self/mountinfo` is `Exposed`
    (`reached_writable`, by path components, nothing opened); a table that
    cannot be parsed or does not place the file, or a file with no link
-   left, is `Unplaced`, and a table that cannot be read `Unknown`. The copy runs with
-   `execveat(<n>, "", AT_EMPTY_PATH)` on its close-on-exec descriptor,
-   with the same arguments, environment and descriptors, plus
+   left, is `Unplaced`, and a table that cannot be read `Unknown`. The copy
+   runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its close-on-exec
+   descriptor, with the same arguments, environment and descriptors, plus
    `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file limit ranikust
    started with (`forbid_core_dumps` records it again). A copy that needs
    an interpreter (binfmt_misc, with or without `O`; a `#!` line) is

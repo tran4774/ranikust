@@ -251,9 +251,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the binary's mount against `/` (a zero id: `NoMountId`), measured on
   files and carried in the marker, a marker that does not check not
   believed, a writable mount reaching the binary by sample mountinfo,
-  the `O_TMPFILE` copy refused on FUSE only), the stub journal (placement
-  through symlinks, removal, parent times, replay of dead journals only, a lock kept by a shared
-  description), swaps and planted records, `Direct` children that fail before
+  FUSE told apart by `statfs` magic), the stub journal (placement through
+  symlinks, removal, parent times, replay of dead journals only, a lock
+  kept by a shared description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed
   heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
   reading its own stream back), the init's status records,

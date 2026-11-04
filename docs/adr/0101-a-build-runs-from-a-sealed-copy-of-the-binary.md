@@ -260,10 +260,10 @@ The decision:
   script in a memfd: `ENOENT`, the process goes on; with `execve` of
   `/proc/self/fd/<n>` the shell ran and could not open it),
   `only_fuse_serves_its_own_pages` (the `O_TMPFILE` copy's check, by
-  `statfs` magic); the binary's
-  `a_build_runs_from_a_sealed_copy_made_once` (a memfd, once; the hook's
-  ways; a marker set from outside only warns); the VM smoke and quick
-  suites' `tests/vm/guest/sealed-exe.py`: in overlay mode and in kaniko
+  `statfs` magic); the binary's `a_build_runs_from_a_sealed_copy_made_once`
+  (a memfd, once; the hook's ways; a marker set from outside only warns);
+  the VM smoke and quick suites' `tests/vm/guest/sealed-exe.py`: in
+  overlay mode and in kaniko
   mode per stage ranikust and its init run one sealed memfd, and with the
   memfd skipped one `O_TMPFILE` copy, that root cannot open for writing; a
   kaniko-mode build on a container's `/` runs from a sealed memfd

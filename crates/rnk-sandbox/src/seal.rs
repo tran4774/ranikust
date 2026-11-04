@@ -273,7 +273,7 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
             rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?.into_bytes(),
         ));
         let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
-        // The marker carries a token, not the error's line; the refusal names the cause.
+        // The marker has room for a token only; the refusal lists the possible causes.
         let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
             return Ok(BinaryMount::Unplaced);
         };
