@@ -149,7 +149,6 @@ impl Sandbox {
 
     fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
         let mut runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
-        runner.seccomp = Some(SeccompProfile::docker_default()?);
         let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
         if replayed.journals > 0 {
             tracing::info!(
@@ -158,6 +157,8 @@ impl Sandbox {
                 replayed.journals
             );
         }
+        // After the replay, which no profile error may hold up.
+        runner.seccomp = Some(SeccompProfile::docker_default()?);
         Self::spawn_thread(runner)
     }
 
@@ -3271,7 +3272,9 @@ mod tests {
     /// default profile, one filter more than ranikust, which refuses
     /// `personality(ADDR_NO_RANDOMIZE)` (`setarch -R`);
     /// `--seccomp=unconfined` adds none; a profile file's own rule takes
-    /// effect in its place.
+    /// effect in its place. The child joins its new session keyring before
+    /// the profile: a profile that refuses the join with an errno the child
+    /// does not take for "unsupported" still lets the `RUN` start.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_run_gets_its_seccomp_profile() {
@@ -3289,6 +3292,14 @@ mod tests {
                     {"names": ["uname"], "action": "SCMP_ACT_ERRNO", "errnoRet": 13}]}"#,
             )
             .unwrap();
+            // `KEYCTL_JOIN_SESSION_KEYRING` is 1; errno 99 is not one the
+            // child takes for "unsupported".
+            let join = SeccompProfile::from_json(
+                br#"{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                    {"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": 99,
+                     "args": [{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}]}]}"#,
+            )
+            .unwrap();
             let probe = "cat /proc/self/status; \
                  if setarch -R true; then echo personality=ok; else echo personality=refused; fi; \
                  if uname >/dev/null; then echo uname=ok; else echo uname=refused; fi";
@@ -3297,6 +3308,7 @@ mod tests {
                 ("default", Some(SeccompProfile::docker_default().unwrap())),
                 ("unconfined", None),
                 ("file", Some(file)),
+                ("join", Some(join)),
             ] {
                 runner.seccomp = profile;
                 let out = top.join(format!("out-{name}"));
@@ -3313,6 +3325,7 @@ mod tests {
                 (own + 1, "personality=refused", "uname=ok"),
                 (own, "personality=ok", "uname=ok"),
                 (own + 1, "personality=ok", "uname=refused"),
+                (own + 1, "personality=ok", "uname=ok"),
             ]) {
                 assert_eq!(*ok, Some(true), "{name}: the RUN ran: {text}");
                 assert_eq!(seccomp_filters(text), Some(filters), "{name}: {text}");

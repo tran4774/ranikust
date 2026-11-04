@@ -510,6 +510,10 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     if args.loopback {
         loopback_up(err);
     }
+    // Before the profile, which refuses `keyctl` (runc's order); the
+    // command, PID 2, inherits the keyring. Still as root: it counts against
+    // root's key quota, and the command keeps possessing it after the switch.
+    join_session_keyring(err);
     // After the namespace is joined and every mount made, which the filters
     // would refuse.
     for p in &args.seccomp {
@@ -890,8 +894,9 @@ pub(crate) fn stat_pid_and_ppid(stat: &[u8]) -> Option<(i32, i32)> {
     Some((pid, parse_fd(rest.get(..end)?)?))
 }
 
-/// A new session and session keyring, `WORKDIR`, the `USER` ids, the death
-/// signal again, stdio, process state, then `execve`.
+/// A new session, `WORKDIR`, the `USER` ids, the death signal again, stdio,
+/// process state, then `execve`. The caller has joined a new session
+/// keyring ([`join_session_keyring`]).
 ///
 /// `rearm` is the `Direct` child's parent check: the switch cleared the
 /// death signal, so it is armed again and the parent checked alive. The
@@ -908,9 +913,6 @@ pub(crate) fn switch_user_and_exec(
     // push input into the operator's shell (`TIOCSTI`). Also a process
     // group of its own, which `Direct` kills afterwards.
     check(err, Step::Session, rustix::process::setsid().map(drop));
-    // Still as root: the keyring counts against root's key quota, and the
-    // process keeps possessing it after the switch.
-    join_session_keyring(err);
     // Change to WORKDIR before switching user, in case only root may
     // traverse its parents, and again after if that was refused (runc).
     let workdir = args.workdir.as_c_str();
@@ -2057,10 +2059,10 @@ pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
 }
 
 /// A new, empty session keyring, so that a `RUN` cannot use the keys of
-/// ranikust's session keyring (threat T11), as runc does. Where `keyctl` is
-/// missing or refused (Docker's seccomp profile), the `RUN` cannot reach
-/// any keyring either.
-fn join_session_keyring(err: RawFd) {
+/// ranikust's session keyring (threat T11), as runc does, before the
+/// `RUN`'s profile. Where `keyctl` is missing or refused (an outer profile,
+/// such as Docker's), the `RUN` cannot reach any keyring either.
+pub(crate) fn join_session_keyring(err: RawFd) {
     // `KEYCTL_JOIN_SESSION_KEYRING` from `linux/keyctl.h`, a stable ABI.
     const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
     let anonymous: libc::c_long = 0;
