@@ -185,7 +185,7 @@ the same checks. It refuses too when it cannot tell which mount its binary is
 on, as under an emulator such as qemu-user or when started from a memfd: run
 ranikust natively, from a regular file. When `/proc/self/mountinfo` does not
 place the binary, run it from a file that stays in place, or build it into an
-image run on an overlay root (overlayfs or fuse-overlayfs). When the
+image run on an overlayfs root, where no mount table is read. When the
 measurement fails, mount `/proc` so that `/proc/self/exe` and
 `/proc/self/mountinfo` can be read, and let the seccomp profile allow
 `fstatfs`. Devices you give the container with `--device` stay reachable by a

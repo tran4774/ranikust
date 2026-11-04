@@ -141,8 +141,8 @@ The decision:
   gives for every file and Linux 6.8 and 7.0 give a memfd [measured]; a
   mount table that cannot be parsed, does not place the file or does not
   type a FUSE root, or a file with no link left; or a failed call (the
-  mount table unreadable among them),
-  each with its own guidance; a fallback through `/proc/self/fdinfo` is
+  mount table unreadable among them), each with its own guidance; a
+  fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
@@ -376,8 +376,9 @@ The decision:
   nothing reaches builds; a root the table does not type is unplaced),
   `a_directory_root_is_not_its_own_writable_mount`,
   `a_fuse_overlayfs_root_copies_up_as_overlayfs_does` (sample tables: a
-  fuse-overlayfs root copies up, an sshfs one and a directory root do not,
-  a table without the root's line or one that does not parse types none),
+  fuse-overlayfs root copies up, an sshfs one does not, nor an ext4 root,
+  which reads no table; a table without the root's line, or with a line
+  that does not parse, the root's or another's, types none),
   `a_file_in_the_root_is_weighed_by_the_roots_file_system` (`mount_of` on
   `/` through its descriptor, as the host running it has `/`; run for this
   change on an ext4 `/` under Linux 7.0, where it is `Linked`, a

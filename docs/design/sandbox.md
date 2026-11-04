@@ -56,13 +56,12 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    components, nothing opened); a table that cannot be parsed, does not
    place the file or does not type a FUSE root (`root_type`), or a file
    with no link left, is `Unplaced`, and a table that cannot be read
-   `Unknown`. The copy
-   runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its close-on-exec
-   descriptor, with the same arguments, environment and descriptors, plus
-   `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file limit ranikust
-   started with (`forbid_core_dumps` records it again). A copy that needs
-   an interpreter (binfmt_misc, with or without `O`; a `#!` line) is
-   refused before the exec (`ENOENT`), and the next way is tried. The
+   `Unknown`. The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
+   close-on-exec descriptor, with the same arguments, environment and
+   descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file
+   limit ranikust started with (`forbid_core_dumps` records it again). A copy
+   that needs an interpreter (binfmt_misc, with or without `O`; a `#!` line)
+   is refused before the exec (`ENOENT`), and the next way is tried. The
    copy's run makes no copy, checks `/proc/self/exe` (the memfd's seals,
    or no link), takes its name from `argv[0]` again and logs at debug the
    way, the binary's mount and why each way before it failed. When no way

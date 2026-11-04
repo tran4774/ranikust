@@ -340,10 +340,10 @@ fn root_type(text: &[u8], own: u64) -> Option<String> {
 /// not copy up (`copies`, [`copies_up`]), a file with no link or one the
 /// mount table does not place (`reach` gives `None`) is
 /// [`BinaryMount::Unplaced`], one with other links [`BinaryMount::Linked`],
-/// one another writable mount reaches [`BinaryMount::Exposed`]; so is a
-/// root the table does not type (`copies` gives `None`) `Unplaced`.
-/// `copies` and `reach` are called only when needed; their error is
-/// returned, for [`BinaryMount::Unknown`].
+/// one another writable mount reaches [`BinaryMount::Exposed`]. A file on
+/// a root the table does not type (`copies` gives `None`) is `Unplaced`,
+/// before its links are weighed. `copies` and `reach` are called only when
+/// needed; their error is returned, for [`BinaryMount::Unknown`].
 fn verdict(
     mount: BinaryMount,
     copies: impl FnOnce() -> Result<Option<bool>, Errno>,

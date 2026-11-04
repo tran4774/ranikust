@@ -410,8 +410,8 @@ fn a_binary_in_a_root_that_is_not_an_overlay_is_weighed() {
 
 /// ADR-0101: a fuse-overlayfs root (rootless podman's) copies up as
 /// overlayfs does, told by its type in the mount table; another FUSE root
-/// or a directory root does not; a FUSE root the table does not list, or a
-/// table that does not parse, leaves it untyped; only FUSE reads the table.
+/// does not, nor an ext4 one, which reads no table; a FUSE root the table
+/// does not list, or a table that does not parse, leaves it untyped.
 #[test]
 fn a_fuse_overlayfs_root_copies_up_as_overlayfs_does() {
     const EXT4: rustix::fs::FsWord = 0xEF53;
@@ -432,10 +432,15 @@ fn a_fuse_overlayfs_root_copies_up_as_overlayfs_does() {
     assert_eq!(copies_up(OVERLAYFS, never), Ok(Some(true)));
     assert_eq!(copies_up(FUSE, table(sshfs)), Ok(Some(false)));
     assert_eq!(copies_up(EXT4, never), Ok(Some(false)));
-    // No line for the root's mount, or one that does not parse.
+    // No line for the root's mount, or a table with a line that does not
+    // parse, the root's or another's: a partly parsed table is not believed.
     let other = podman.replacen("1 0", "2 0", 1);
     assert_eq!(copies_up(FUSE, table(&other)), Ok(None));
     assert_eq!(copies_up(FUSE, table("1 0 0:45 / /\n")), Ok(None));
+    assert_eq!(
+        copies_up(FUSE, table(&format!("{podman}2 1 0:46 / /x\n"))),
+        Ok(None)
+    );
     let failed = || -> Result<Option<String>, Errno> { Err(Errno::NOSYS) };
     assert_eq!(copies_up(FUSE, failed), Err(Errno::NOSYS));
 }

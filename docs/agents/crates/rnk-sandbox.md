@@ -254,14 +254,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   files and carried in the marker, a marker that does not check not
   believed, a writable mount reaching the binary by sample mountinfo,
   a binary in a root that is not an overlay weighed (by sample values and
-  on `/`), a fuse-overlayfs root counted as an overlay, the root mount
-  not counted, FUSE told apart by `statfs`
-  magic), the stub journal (placement through symlinks, removal, parent times,
-  replay of dead journals only, a lock kept by a shared description), swaps
-  and planted records, `Direct` children that fail before executing, mount
-  sources and remount flags, `Direct` refusals, the sealed heredoc memfd, the
-  relay (a surviving write end, a full stream, a `RUN` reading its own stream
-  back), the init's status records,
+  on `/`), a fuse-overlayfs root counted as an overlay, a FUSE root the
+  table does not type unplaced, the root mount not counted, FUSE told
+  apart by `statfs` magic), the stub journal (placement through symlinks,
+  removal, parent times, replay of dead journals only, a lock kept by a shared
+  description), swaps and planted records, `Direct` children that fail before
+  executing, mount sources and remount flags, `Direct` refusals, the sealed
+  heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
+  reading its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox refuses
