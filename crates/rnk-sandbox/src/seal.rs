@@ -21,7 +21,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use rnk_rootfs::MountInfo;
+use rnk_rootfs::{FileType, MountInfo, RootPath};
 use rustix::fs::{AtFlags, Mode, OFlags, SealFlags, StatVfsMountFlags, StatxFlags};
 use rustix::io::Errno;
 
@@ -96,7 +96,8 @@ pub enum BinaryMount {
     Writable,
     /// On another read-only mount, or on a root that is not an overlay,
     /// but another writable mount of its file system has a root that
-    /// contains the file (`/proc/self/mountinfo`).
+    /// contains the file (`/proc/self/mountinfo`), or is the file itself (a
+    /// bind of it or of one of its links, even one whose name was removed).
     Exposed,
     /// On another read-only mount, or on a root that is not an overlay,
     /// but the file has other hard links, which no mount table places.
@@ -106,8 +107,10 @@ pub enum BinaryMount {
     NoMountId,
     /// Cannot be told: `/proc/self/mountinfo` does not place the file (a
     /// line it cannot parse, no line for its mount, a mount root that is
-    /// not a path, a path outside that mount) or does not type a FUSE root,
-    /// or the file has no name left.
+    /// not a path, a path outside that mount, a root of its own whose name
+    /// was removed) or does not type a FUSE root; a writable mount of its
+    /// file system is a directory whose name was removed, or cannot be
+    /// reached at its mount point; or the file has no name left.
     Unplaced,
     /// Cannot be told: the error of the call that failed.
     Unknown(Errno),
@@ -247,13 +250,15 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing> 
     Ok(Sealing::Unsealed { why, binary })
 }
 
-/// `statx` of `path` at `fd`, with the mount id and the link count.
+/// `statx` of `path` at `fd`, with the mount id, the link count and the
+/// inode.
 fn statx_of(
     fd: BorrowedFd<'_>,
     path: &std::ffi::CStr,
     flags: AtFlags,
 ) -> Result<rustix::fs::Statx, Errno> {
-    let st = rustix::fs::statx(fd, path, flags, StatxFlags::MNT_ID | StatxFlags::NLINK)?;
+    let want = StatxFlags::MNT_ID | StatxFlags::NLINK | StatxFlags::INO;
+    let st = rustix::fs::statx(fd, path, flags, want)?;
     // Linux 5.8, which ranikust needs (ADR-0028), always fills it.
     if StatxFlags::from_bits_retain(st.stx_mask).contains(StatxFlags::MNT_ID) {
         Ok(st)
@@ -300,7 +305,10 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
             let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
                 return Ok(None);
             };
-            Ok(reached_writable(&mounts, st.stx_mnt_id, &path))
+            let Some(binary) = FileId::of(&st) else {
+                return Ok(None);
+            };
+            Ok(reached_from_slash(&mounts, st.stx_mnt_id, &path, binary))
         };
         verdict(mount, copies, st.stx_nlink, reach)
     })();
@@ -381,28 +389,126 @@ fn verdict(
     })
 }
 
+/// A file's identity: the device `statx` gives it and its inode number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileId {
+    dev_major: u32,
+    dev_minor: u32,
+    ino: u64,
+}
+
+impl FileId {
+    /// The identity in `st`, if it holds the inode number.
+    fn of(st: &rustix::fs::Statx) -> Option<Self> {
+        StatxFlags::from_bits_retain(st.stx_mask)
+            .contains(StatxFlags::INO)
+            .then_some(Self {
+                dev_major: st.stx_dev_major,
+                dev_minor: st.stx_dev_minor,
+                ino: st.stx_ino,
+            })
+    }
+}
+
+/// What the root of a mount is, reached at its mount point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MountRoot {
+    /// A directory: its path in the file system tells what it holds.
+    Directory,
+    /// Anything else: that one file, whatever its name.
+    File(FileId),
+}
+
+/// The root of the mount `m`, reached at its mount point from `root`
+/// through `RootPath`: the mount table's paths lead through the
+/// container's own files. `None` when the path cannot be followed or leads
+/// to another mount, one mounted over it.
+fn root_at(root: &RootPath, m: &MountInfo) -> Option<MountRoot> {
+    // A mount point that cannot be followed places nothing: the caller fails closed.
+    let st = root.statx(&m.mount_point).ok()?;
+    if st.mnt_id != m.mount_id {
+        return None;
+    }
+    Some(match st.file_type() {
+        FileType::Directory => MountRoot::Directory,
+        FileType::Regular
+        | FileType::Symlink
+        | FileType::CharDevice
+        | FileType::BlockDevice
+        | FileType::Fifo
+        | FileType::Socket
+        | FileType::Unknown => MountRoot::File(FileId {
+            dev_major: st.dev_major,
+            dev_minor: st.dev_minor,
+            ino: st.ino,
+        }),
+    })
+}
+
+/// [`reached_writable`] with each mount's root reached from this process's
+/// `/`, opened only when a root must be told.
+fn reached_from_slash(mounts: &[MountInfo], own: u64, path: &Path, binary: FileId) -> Option<bool> {
+    let mut slash: Option<Option<RootPath>> = None;
+    reached_writable(mounts, own, path, binary, |m| {
+        // Without `/` no mount point is reached: the caller fails closed.
+        let root = slash.get_or_insert_with(|| RootPath::open("/").ok());
+        root.as_ref().and_then(|root| root_at(root, m))
+    })
+}
+
 /// Whether another writable mount of the file system of the mount `own`
-/// has a root that contains the file at `path`, as this process's root
-/// names it: the file's path in its file system is `own`'s root joined with
-/// the path below `own`'s mount point. `own` itself does not count (a
-/// writable root is the container's). `None` when `mounts` does not place
-/// it.
-fn reached_writable(mounts: &[MountInfo], own: u64, path: &Path) -> Option<bool> {
+/// reaches the file `binary` at `path`, as this process's root names it: a
+/// root that contains the file's path in its file system (`own`'s root
+/// joined with the path below `own`'s mount point), or a root that is the
+/// file itself, as `root_of` tells (a bind of a link of it, even one whose
+/// name was removed). `own` itself does not count (a writable root is the
+/// container's). `None` when `mounts` does not place the file, or when a
+/// mount that may reach it is a directory whose name was removed or whose
+/// root is no path, or one `root_of` cannot reach.
+fn reached_writable(
+    mounts: &[MountInfo],
+    own: u64,
+    path: &Path,
+    binary: FileId,
+    mut root_of: impl FnMut(&MountInfo) -> Option<MountRoot>,
+) -> Option<bool> {
     let mine = mounts.iter().find(|m| m.mount_id == own)?;
     if !mine.fs_root.is_absolute() {
         return None;
     }
     let below = path.strip_prefix(&mine.mount_point).ok()?;
-    // Paths compared, never opened.
-    let in_fs = mine.fs_root.join(below);
-    Some(mounts.iter().any(|m| {
-        m.mount_id != own
-            // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
-            && m.device == mine.device
-            && !m.read_only
-            // Other single-file binds pass: RUN keeps Docker's default capabilities (ADR-0078).
-            && in_fs.starts_with(&m.fs_root)
-    }))
+    // A removed name tells nothing of where the file's own name is now.
+    let in_fs = (!mine.root_deleted).then(|| mine.fs_root.join(below));
+    let writable = || {
+        mounts.iter().filter(|m| {
+            m.mount_id != own
+                // mountinfo's device on both sides: `st_dev` differs on btrfs subvolumes.
+                && m.device == mine.device
+                && !m.read_only
+        })
+    };
+    // By path first: a tree that holds the file needs no mount point reached.
+    if let Some(in_fs) = &in_fs
+        && writable().any(|m| !m.root_deleted && in_fs.starts_with(&m.fs_root))
+    {
+        return Some(true);
+    }
+    let mut placed = in_fs.is_some();
+    for m in writable() {
+        match root_of(m) {
+            // A file bind writes that one inode only: RUN cannot mount (ADR-0078).
+            Some(MountRoot::File(id)) => {
+                if id == binary {
+                    return Some(true);
+                }
+            }
+            // A directory whose name was removed, or that is no path, cannot
+            // be told apart from a tree that holds the file.
+            Some(MountRoot::Directory) => placed &= !m.root_deleted && m.fs_root.is_absolute(),
+            None => placed = false,
+        }
+    }
+    placed.then_some(false)
 }
 
 // Opening `/proc/self/exe` fails with an errno; `EIO` only stands in for

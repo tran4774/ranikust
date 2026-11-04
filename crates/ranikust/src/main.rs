@@ -794,13 +794,14 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              readOnly: true on its volumeMount (ADR-0101)",
         )),
         Some(BinaryMount::Exposed) => Err(Failure::error(format!(
-            "{how}: kaniko mode on / with ranikust's binary in a tree that a writable mount also \
-             reaches would let RUN alter that file"
+            "{how}: kaniko mode on / with ranikust's binary in a tree or a file that a writable \
+             mount also reaches (a link of it bound read-write among them, even one whose name \
+             was removed) would let RUN alter that file"
         ))
         .with_guidance(
             "put the binary outside the mounted tree, or mount that tree read-only (Docker :ro, \
              Kubernetes readOnly: true on its volumeMount), or mount a single-link copy of the \
-             binary read-only from outside it (ADR-0101)",
+             binary read-only from outside it, and bind no link of it read-write (ADR-0101)",
         )),
         Some(BinaryMount::Linked) => Err(Failure::error(format!(
             "{how}: kaniko mode on / with ranikust's binary on a file with other hard links, \
@@ -814,12 +815,15 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         )),
         Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
-             (/proc/self/mountinfo cannot be parsed or does not place it, or the file was removed \
-             after the start); kaniko mode on / refuses to build without knowing"
+             (/proc/self/mountinfo cannot be parsed, does not place it or does not type a FUSE \
+             root; a writable mount of its file system is a directory whose name was removed, or \
+             cannot be reached at its mount point; or the binary's name was removed after the \
+             start); kaniko mode on / refuses to build without knowing"
         ))
         .with_guidance(
-            "run the binary from a file that stays in place, or build it into an image run on an \
-             overlayfs root, as Docker's and containerd's default storage gives, where the \
+            "run the binary from a file that stays in place, beside no writable mount whose \
+             source was removed or that another mount hides, or build it into an image run on \
+             an overlayfs root, as Docker's and containerd's default storage gives, where the \
              binary's check reads no mount table (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
@@ -1283,6 +1287,8 @@ mod tests {
         assert!(
             exposed.code == 1
                 && exposed.message.contains("a writable mount also reaches")
+                && exposed.message.contains("even one whose name was removed")
+                && exposed.guidance.contains("bind no link of it read-write")
                 && exposed.guidance.contains("outside the mounted tree")
                 && exposed.guidance.contains("single-link copy")
                 && exposed.guidance.contains(":ro")
@@ -1330,6 +1336,10 @@ mod tests {
         let unplaced = refuse_writable_binary(how, Some(BinaryMount::Unplaced)).unwrap_err();
         assert!(
             unplaced.message.contains("/proc/self/mountinfo")
+                && unplaced.message.contains("does not type a FUSE root")
+                && unplaced
+                    .message
+                    .contains("cannot be reached at its mount point")
                 && unplaced.guidance.contains("stays in place")
                 && unplaced.guidance.contains("overlayfs root")
                 && !unplaced.guidance.contains("fuse-overlayfs"),

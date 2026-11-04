@@ -6,6 +6,10 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt as _;
 use std::path::PathBuf;
 
+/// What the kernel appends to the root of a mount whose name was removed
+/// (`dentry_path`); a path it prints never holds `//` otherwise.
+const DELETED: &[u8] = b"//deleted";
+
 /// One line of `/proc/self/mountinfo` (`proc(5)`), the fields ranikust uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -16,10 +20,16 @@ pub struct MountInfo {
     pub parent_id: u64,
     /// Field 3, the filesystem's device, `major:minor` as written.
     pub device: String,
-    /// Field 4, the directory of the filesystem mounted here: `/` for a
-    /// whole filesystem, a subdirectory for a bind mount; unescaped, and not
-    /// a path for some pseudo filesystems (`mnt:[…]` for nsfs).
+    /// Field 4, the directory or file of the filesystem mounted here: `/`
+    /// for a whole filesystem, a subdirectory or a file for a bind mount;
+    /// unescaped, without the mark [`root_deleted`](Self::root_deleted)
+    /// reads, and not a path for some pseudo filesystems (`mnt:[…]` for
+    /// nsfs).
     pub fs_root: PathBuf,
+    /// Field 4 ended in `//deleted`, the kernel's mark of a root whose name
+    /// was removed after the mount (`dentry_path`): `fs_root` is the name it
+    /// had, which may since name another file or none.
+    pub root_deleted: bool,
     /// Field 5, the mount point relative to the process's root, unescaped.
     pub mount_point: PathBuf,
     /// The filesystem type, after the `-` separator.
@@ -42,7 +52,8 @@ pub struct MountInfoError {
 }
 
 /// Parses the text of `/proc/self/mountinfo`. The kernel escapes space,
-/// tab, newline and backslash in paths as `\NNN` octal; the optional fields
+/// tab, newline and backslash in paths as `\NNN` octal, and marks a mount
+/// root whose name was removed with `//deleted`; the optional fields
 /// (`shared:N`, `master:N`, …) run up to a lone `-`. Fields after the file
 /// system's options are ignored: a file system may print an option value
 /// with a space in it.
@@ -71,6 +82,11 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
     let parent_id = number(fields.next()?)?;
     let device = String::from_utf8_lossy(fields.next()?).into_owned();
     let fs_root = unescape(fields.next()?)?;
+    // A mark, never a component: `/d/b//deleted` is not `/d/b/deleted`.
+    let (fs_root, root_deleted) = match fs_root.strip_suffix(DELETED) {
+        Some(name) => (name.to_vec(), true),
+        None => (fs_root, false),
+    };
     let mount_point = unescape(fields.next()?)?;
     let options = fields.next()?;
     // Optional fields, then the separator.
@@ -91,6 +107,7 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
         parent_id,
         device,
         fs_root: PathBuf::from(OsString::from_vec(fs_root)),
+        root_deleted,
         mount_point: PathBuf::from(OsString::from_vec(mount_point)),
         fs_type,
         read_only: ro(options) || ro(super_options),
@@ -164,6 +181,33 @@ mod tests {
         // only read for `ro`.
         let odd = parse_mountinfo(b"1 0 8:1 / / ,noatime - ext4 /dev/sda1 rw\n").unwrap();
         assert!(!odd[0].read_only);
+    }
+
+    /// A root whose name was removed ends in `//deleted`: a mark read off,
+    /// never a component; a name `deleted` is a name (ADR-0101).
+    #[test]
+    fn a_removed_root_is_marked_not_named() {
+        let text = b"\
+1 0 0:49 /d/b//deleted /x rw - tmpfs tmpfs rw
+2 0 0:49 /d/deleted /y rw - tmpfs tmpfs rw
+3 0 0:49 /d/a\\134//deleted /z rw - tmpfs tmpfs rw
+4 0 0:49 / /w rw - tmpfs tmpfs rw
+";
+        let mounts = parse_mountinfo(text).unwrap();
+        let roots: Vec<(&Path, bool)> = mounts
+            .iter()
+            .map(|m| (m.fs_root.as_path(), m.root_deleted))
+            .collect();
+        assert_eq!(
+            roots,
+            [
+                (Path::new("/d/b"), true),
+                (Path::new("/d/deleted"), false),
+                (Path::new("/d/a\\"), true),
+                (Path::new("/"), false),
+            ]
+        );
+        assert_eq!(mounts[0].mount_point, Path::new("/x"));
     }
 
     /// An option value printed with a space spills into more fields; only

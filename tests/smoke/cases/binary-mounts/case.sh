@@ -1,8 +1,10 @@
 # Red team (ADR-0101, T21): binds that reach kaniko mode's binary on `/`
-# (hostile names, a grandparent, the same file twice, a directory root's
-# links and parent) are refused, with or without a sealed copy.
+# (hostile names, a grandparent, the same file twice, a link bound
+# read-write whose name or the binary's was removed after the bind, a
+# directory root's links and parent) are refused, with or without a sealed
+# copy; another file bound read-write and replaced after the bind builds.
 case_run() {
-  local d t sib g mp nl
+  local d t sib g mp nl l
   d="$(out binds)"
   rm -rf "$d" && mkdir -p "$d/ctx"
   printf 'FROM scratch\nCOPY Dockerfile /d\n' >"$d/ctx/Dockerfile"
@@ -34,6 +36,21 @@ case_run() {
     on_slash "writable mount other than /'s" "$env, the binary bound rw" /ranikust/bin/ranikust \
       -e "$env" -v "$g/p/q/ranikust:/ranikust/bin/ranikust"
   done
+  # Names changed on the host once the binds exist: the mount table shows
+  # a removed name as `<root>//deleted`, and the link count is 1 again.
+  local leg
+  for leg in 1 2 3; do
+    l="$d/l$leg"
+    mkdir -p "$l" && install -m 0755 "$RNK" "$l/a"
+  done
+  ln "$d/l1/a" "$d/l1/b" && ln "$d/l2/a" "$d/l2/b"
+  printf 'h\n' >"$d/l3/h" && printf 'h2\n' >"$d/l3/h2"
+  after_binds reached "a link bound rw, its name removed" rm -f "$d/l1/b" -- \
+    -v "$d/l1/a:/ranikust/bin/ranikust:ro" -v "$d/l1/b:/x"
+  after_binds reached "a link bound rw, the binary's bound name removed" rm -f "$d/l2/a" -- \
+    -v "$d/l2/a:/ranikust/bin/ranikust:ro" -v "$d/l2/b:/x"
+  after_binds built "another file bound rw, replaced" mv -f "$d/l3/h2" "$d/l3/h" -- \
+    -v "$d/l3/a:/ranikust/bin/ranikust:ro" -v "$d/l3/h:/h"
   # Docker has no directory root.
   [ "$ENGINE" = podman ] || return 0
   mkdir -p "$d/root/usr/local/bin" && chmod 755 "$d/root"
@@ -61,6 +78,45 @@ in_root() {
   fi || {
     echo "$got" >&2
     fail "directory root, $what: exit $rc, want $want"
+  }
+}
+
+# after_binds WANT WHAT CMD... -- ARG...: as on_slash with the binary at
+# /ranikust/bin/ranikust, but CMD runs on the host once the container runs
+# with its binds (ARG), before ranikust starts.
+after_binds() {
+  local want="$1" what="$2" cmd=() sig pid got rc=0 i
+  shift 2
+  while [ "$1" != -- ]; do
+    cmd+=("$1")
+    shift
+  done
+  shift
+  sig="$(out binds)/sig"
+  rm -rf "$sig" && mkdir -p "$sig"
+  $ENGINE run --rm "$@" -v "$sig:/sig" -v "$(out binds)/ctx:/ranikust/ctx:ro" "$BASE" sh -c '
+    touch /sig/up
+    while [ ! -e /sig/go ]; do sleep 0.1; done
+    /ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx --no-push \
+      --state-dir /var/lib/rnk-binds
+    rc=$?; test -e /var/lib/rnk-binds && echo STATE-MADE; exit $rc' >"$sig.log" 2>&1 &
+  pid=$!
+  for i in $(seq 600); do
+    [ -e "$sig/up" ] && break
+    sleep 0.1
+  done
+  "${cmd[@]}"
+  touch "$sig/go"
+  wait "$pid" || rc=$?
+  got="$(cat "$sig.log")"
+  [ "$want" = reached ] && want='a writable mount also reaches'
+  if [ "$want" = built ]; then
+    [ "$rc" = 0 ] && grep -q '^sha256:' <<<"$got"
+  else
+    [ "$rc" = 1 ] && grep -qF -- "$want" <<<"$got" && ! grep -q STATE-MADE <<<"$got"
+  fi || {
+    echo "$got" >&2
+    fail "$what: exit $rc, want $want"
   }
 }
 
