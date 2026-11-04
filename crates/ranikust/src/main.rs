@@ -10,14 +10,14 @@
 //! ADR-0028 (`rnk_rootfs::probe_support`), for every subcommand but
 //! `version` → for `build`, the same run again from a sealed copy of the
 //! binary (ADR-0101, `rnk_sandbox::run_from_sealed_copy`), which starts
-//! over from the top → logs and the opt-in metrics of `rnk-metrics`, which start no
-//! thread, the report asked for with `--metrics-file` only (ADR-0037) → flag
-//! validation into a `BuildConfig` → the process set-up of `setup`: a
-//! private mount namespace, the probes of `rnk-sandbox` and `rnk-snapshot`,
-//! the outcome, the spawner thread → hand-off. `--mode=auto` picks kaniko
-//! mode where root may not mount (ADR-0040). Kaniko mode: root required;
-//! the container check of `container` decides where it builds: on the
-//! shared root `/` in a container
+//! over from the top → logs and the opt-in metrics of `rnk-metrics`, which
+//! start no thread, the report asked for with `--metrics-file` only
+//! (ADR-0037) → flag validation into a `BuildConfig` → the process set-up
+//! of `setup`: a private mount namespace, the probes of `rnk-sandbox` and
+//! `rnk-snapshot`, the outcome, the spawner thread → hand-off.
+//! `--mode=auto` picks kaniko mode where root may not mount (ADR-0040).
+//! Kaniko mode: root required; the container check of `container` decides
+//! where it builds: on the shared root `/` in a container
 //! (`design/kaniko-mode.md#stage-roots-on-the-shared-root`), else in a
 //! directory per stage made in the state directory, the stages scheduled as
 //! overlay mode's (`#per-stage-directories`, ADR-0050, ADR-0059); the state
@@ -171,7 +171,8 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     // ADR-0101: a build runs from a copy of the binary no `RUN` can write.
-    // Still single-threaded, nothing read yet: the copy starts over.
+    // Still single-threaded, no credential or state read: the copy starts
+    // over from the top.
     let sealing = if matches!(command, Command::Build(_)) {
         match rnk_sandbox::run_from_sealed_copy(seal_ways(fault.as_deref())) {
             Ok(sealing) => Some(sealing),
