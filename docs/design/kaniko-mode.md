@@ -105,8 +105,8 @@ the scheduler runs one stage at a time) or a private directory per stage
     volume), when a writable mount reaches it (its tree bound read-write
     too, by `/proc/self/mountinfo`; a file with another hard link), and on
     a mount ranikust cannot tell (qemu-user, a memfd, a mount table that
-    does not place it), before anything is written: a `RUN` reaches it by name, and the build
-    no longer runs it (ADR-0101).
+    does not place it), before anything is written: a `RUN` reaches it by
+    name, and the build no longer runs it (ADR-0101).
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
     The `RUN` child drops every capability outside Docker's defaults from its

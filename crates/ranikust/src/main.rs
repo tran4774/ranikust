@@ -804,17 +804,17 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              which a writable mount may reach, would let RUN alter that file"
         ))
         .with_guidance(
-            "mount a copy of the binary with a single link (cp makes one; cargo's \
-             target/*/release/ranikust is linked to deps/) (ADR-0101)",
+            "mount a single-link copy of the binary read-only (cp makes one; cargo's release \
+             binary is a hard link of its copy in deps/) (ADR-0101)",
         )),
         Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
-             (/proc/self/mountinfo does not place it); kaniko mode on / refuses to build without \
-             knowing"
+             (/proc/self/mountinfo does not place it, or the file was removed after the start); \
+             kaniko mode on / refuses to build without knowing"
         ))
         .with_guidance(
-            "mount /proc in the container, or build the binary into the image, where this is not \
-             needed (ADR-0101)",
+            "run the binary from a file that stays in place, with no chroot, or build it into the \
+             image, where this is not needed (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
@@ -1288,7 +1288,8 @@ mod tests {
         assert!(
             linked.code == 1
                 && linked.message.contains("other hard links")
-                && linked.guidance.contains("single link"),
+                && linked.guidance.contains("single-link copy")
+                && linked.guidance.contains("read-only"),
             "{}: {}",
             linked.message,
             linked.guidance
@@ -1320,7 +1321,7 @@ mod tests {
         let unplaced = refuse_writable_binary(how, Some(BinaryMount::Unplaced)).unwrap_err();
         assert!(
             unplaced.message.contains("/proc/self/mountinfo")
-                && unplaced.guidance.contains("/proc"),
+                && unplaced.guidance.contains("stays in place"),
             "{}: {}",
             unplaced.message,
             unplaced.guidance

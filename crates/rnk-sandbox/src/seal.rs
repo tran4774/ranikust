@@ -95,8 +95,8 @@ pub enum BinaryMount {
     /// for every file and the kernel for a memfd (Linux 6.8 and 7.0).
     NoMountId,
     /// Cannot be told: `/proc/self/mountinfo` does not place the file (a
-    /// line it cannot parse, no line for its mount, a path outside that
-    /// mount, or a file with no name).
+    /// line it cannot parse, no line for its mount, a mount root that is
+    /// not a path, a path outside that mount), or the file has no name left.
     Unplaced,
     /// Cannot be told: the error of the call that failed.
     Unknown(Errno),
@@ -273,6 +273,7 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
             rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?.into_bytes(),
         ));
         let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
+        // The marker carries a token, not the error's line; the refusal names the cause.
         let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
             return Ok(BinaryMount::Unplaced);
         };

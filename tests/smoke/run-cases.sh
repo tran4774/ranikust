@@ -18,7 +18,7 @@ source tests/smoke/cases.bash
 BASE="${RANIKUST_SMOKE_REGISTRY:-docker.io}/library/alpine:3.20"
 ENGINE=podman
 CASES_OUT="$TARGET/smoke/cases"
-# A copy with one link: cargo links target/*/release/ranikust to its deps/
+# A copy with one link: cargo's release binary is a hard link of its deps/
 # copy, and kaniko mode on `/` refuses a binary with other links (ADR-0101).
 mkdir -p "$CASES_OUT/.bin"
 install -m 0755 "$RNK" "$CASES_OUT/.bin/ranikust"

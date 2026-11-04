@@ -259,7 +259,8 @@ The decision:
   `a_copy_an_interpreter_must_reopen_is_refused_before_the_exec` (a `#!`
   script in a memfd: `ENOENT`, the process goes on; with `execve` of
   `/proc/self/fd/<n>` the shell ran and could not open it),
-  `the_tmpfile_copy_is_refused_on_fuse_only` (by `statfs` magic); the binary's
+  `only_fuse_serves_its_own_pages` (the `O_TMPFILE` copy's check, by
+  `statfs` magic); the binary's
   `a_build_runs_from_a_sealed_copy_made_once` (a memfd, once; the hook's
   ways; a marker set from outside only warns); the VM smoke and quick
   suites' `tests/vm/guest/sealed-exe.py`: in overlay mode and in kaniko
@@ -307,7 +308,8 @@ The decision:
   starts the same; another file system with the same path; read-only by
   the mount's or the file system's options; `\040` escapes; a path outside
   its mount and a root that is not a path, unplaced), `rnk-rootfs`'s
-  `a_mount_is_read_only_by_its_own_options_or_its_filesystems` and
+  `a_mount_is_read_only_by_its_own_options_or_its_filesystems`,
+  `a_spilled_option_is_kept_out_of_read_only` and
   `a_line_without_its_filesystems_options_is_refused`, and the binary's
   `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`; the VM's
   kaniko quick suite, `binary_mounts_on_slash`: in a default Docker

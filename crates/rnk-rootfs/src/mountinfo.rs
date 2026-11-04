@@ -24,8 +24,8 @@ pub struct MountInfo {
     pub mount_point: PathBuf,
     /// The filesystem type, after the `-` separator.
     pub fs_type: String,
-    /// No write goes through this mount: `ro` in its own options (field 6)
-    /// or in its filesystem's (the last field).
+    /// No write goes through this mount: `ro` first in its own options
+    /// (field 6) or in its filesystem's (the field after the source).
     pub read_only: bool,
 }
 
@@ -74,12 +74,15 @@ fn parse_line(line: &[u8]) -> Option<MountInfo> {
     fields.by_ref().find(|f| *f == b"-")?;
     let fs_type = String::from_utf8_lossy(&unescape(fields.next()?)?).into_owned();
     let _source = fields.next()?;
+    // A file system may print an option value unescaped, spaces included:
+    // fields after this one are then its spill; the kernel writes `ro` or
+    // `rw` first.
     let super_options = fields.next()?;
     // `fs_root` is not always a path (`mnt:[4026533352]` for nsfs).
-    if !mount_point.starts_with(b"/") || fields.next().is_some() {
+    if !mount_point.starts_with(b"/") {
         return None;
     }
-    let ro = |opts: &[u8]| opts.split(|b| *b == b',').any(|o| o == b"ro");
+    let ro = |opts: &[u8]| opts.split(|b| *b == b',').next() == Some(b"ro".as_slice());
     Some(MountInfo {
         mount_id,
         parent_id,
@@ -141,13 +144,22 @@ mod tests {
 
     #[test]
     fn a_line_without_its_filesystems_options_is_refused() {
-        for bad in [
-            "1 0 8:1 / / rw - ext4 /dev/sda1",
-            "1 0 8:1 / / rw - ext4",
-            "1 0 8:1 / / rw - ext4 /dev/sda1 rw extra",
-        ] {
+        for bad in ["1 0 8:1 / / rw - ext4 /dev/sda1", "1 0 8:1 / / rw - ext4"] {
             let e = parse_mountinfo(bad.as_bytes()).unwrap_err();
             assert_eq!(e.line, 1, "{bad:?}");
         }
+    }
+
+    /// An option value printed with a space spills into more fields; only
+    /// the first option, `ro` or `rw`, tells a read-only file system.
+    #[test]
+    fn a_spilled_option_is_kept_out_of_read_only() {
+        let text = b"\
+1 0 0:40 / /n rw - nfs srv:/x rw,fsc=a b,ro
+2 0 0:41 / /m rw - nfs srv:/y ro,fsc=a b
+";
+        let mounts = parse_mountinfo(text).unwrap();
+        let ro: Vec<bool> = mounts.iter().map(|m| m.read_only).collect();
+        assert_eq!(ro, [false, true]);
     }
 }

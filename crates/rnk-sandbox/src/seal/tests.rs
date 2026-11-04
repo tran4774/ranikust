@@ -354,7 +354,7 @@ fn a_writable_mount_containing_the_binary_reaches_it() {
 /// ADR-0101: the `O_TMPFILE` copy is never made on FUSE, whose daemon
 /// serves the pages the kernel runs; other file systems take it.
 #[test]
-fn the_tmpfile_copy_is_refused_on_fuse_only() {
+fn only_fuse_serves_its_own_pages() {
     // statfs(2): FUSE_SUPER_MAGIC; TMPFS_MAGIC, EXT4_SUPER_MAGIC, OVERLAYFS_SUPER_MAGIC.
     assert!(serves_its_own_pages(0x6573_5546));
     for other in [0x0102_1994, 0xEF53, 0x794C_7630] {
